@@ -1,0 +1,56 @@
+# Пакетная сборка. Нужна не ради публикации в PyPI, а чтобы сервер ставился
+# как пакет (`pip install .`, `uvx --from . mcp1c-server`), а не только
+# запускался из копии репозитория через `PYTHONPATH=src`. Запуск через
+# `python -m mcp1c.server` при этом остаётся рабочим и описан в README.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcp1c"
+version = "0.1.0"
+description = "MCP-сервер: справочник структуры конфигураций 1С, синтаксиса платформы и языка запросов для агентов, пишущих на BSL"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.12"
+authors = [{ name = "Andrey Azeev" }]
+keywords = ["mcp", "1c", "1c-enterprise", "bsl", "metadata", "llm-tools"]
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Natural Language :: Russian",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Documentation",
+    "Topic :: Text Processing :: Indexing",
+]
+
+# Обоснование каждой зависимости — в комментариях requirements.txt и цифрами
+# в CHANGELOG.md. Списки держатся согласованными вручную: requirements.txt
+# читает Dockerfile, этот список — pip.
+dependencies = [
+    "mcp>=2.0",
+    "numpy>=2.0",
+    "snowballstemmer>=3.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.urls]
+Homepage = "https://github.com/AzeevAN/mcp-1c"
+Repository = "https://github.com/AzeevAN/mcp-1c"
+Changelog = "https://github.com/AzeevAN/mcp-1c/blob/main/CHANGELOG.md"
+Issues = "https://github.com/AzeevAN/mcp-1c/issues"
+
+[project.scripts]
+mcp1c = "mcp1c.cli:main"
+mcp1c-server = "mcp1c.server:main"
+mcp1c-bench = "mcp1c.bench:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

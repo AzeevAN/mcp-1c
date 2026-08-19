@@ -234,6 +234,62 @@ def test_занятость_объясняется(tmp_path, monkeypatch):
     assert "Розница:modules" not in registry.sources
 
 
+def test_падение_проверки_места_названо_своей_причиной(tmp_path, monkeypatch):
+    """Заголовок «не похоже на zip-архив» на этом отказе был бы ложью.
+
+    `enough_space` падает не из-за архива, а из-за каталога данных: нет прав,
+    том отвалился. Постановка (§3) требует, чтобы случай прав был в тексте
+    ошибки, а не оставался догадкой.
+    """
+    monkeypatch.setenv("ADMIN_TOKEN", "секрет")
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    client, registry = _стенд(tmp_path)
+    client.post("/login", data={"token": "секрет"})
+
+    def нет_прав(нужно, каталог):
+        raise PermissionError(f"[Errno 13] Permission denied: '{каталог}'")
+
+    monkeypatch.setattr("mcp1c.intake.enough_space", нет_прав)
+
+    client.post(
+        "/sources/incoming/parse", data={"name": "модули.zip"}, follow_redirects=False
+    )
+
+    текст = client.get("/sources").text
+    assert "свободное место" in текст
+    assert "uid 10001" in текст
+    assert "не похоже на zip-архив" not in текст
+    assert "Розница:modules" not in registry.sources
+
+
+def test_сканирование_идёт_не_в_цикле_событий(tmp_path, monkeypatch):
+    """sha256 архива на 1,4 ГБ в цикле событий останавливает весь процесс."""
+    import asyncio
+
+    from mcp1c.incoming import IncomingScanner
+
+    monkeypatch.setenv("ADMIN_TOKEN", "секрет")
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    client, _ = _стенд(tmp_path)
+    client.post("/login", data={"token": "секрет"})
+    где_считали = []
+
+    def подмена(self):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            где_считали.append("поток")
+        else:
+            где_считали.append("цикл событий")
+        return []
+
+    monkeypatch.setattr(IncomingScanner, "scan", подмена)
+
+    client.get("/sources")
+
+    assert где_считали == ["поток"]
+
+
 def дождаться(client, условие, таймаут: float = 20.0) -> str:
     import time
 

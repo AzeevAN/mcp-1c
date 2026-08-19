@@ -112,10 +112,10 @@
   в `data/incoming/` сервер не удаляет ни при успехе, ни при отказе: удалять
   этот каталог серверу запрещено правилом из `AGENTS.md`.
 
-  Тестов на приём — 52 (`test_intake_extract.py`, `test_intake_select.py`,
+  Тестов на приём — 54 (`test_intake_extract.py`, `test_intake_select.py`,
   `test_intake_space.py`, `test_incoming_state.py`, `test_incoming_job.py`,
   `test_incoming_page.py`, `test_registry_modules.py`,
-  `test_bootstrap_modules.py`); всего в пакете стало 490.
+  `test_bootstrap_modules.py`); всего в пакете стало 492.
 
 - **Полоса передачи файла на странице «Источники».** Проценты, объём,
   скорость и оценка остатка, дальше — «Файл передан, сервер принимает и ставит

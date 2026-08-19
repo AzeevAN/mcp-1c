@@ -67,6 +67,9 @@ th, td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid #ddd;
          vertical-align: top; }
 .note { background: #fff8e1; padding: .5rem .8rem; margin: .3rem 0; }
 .error { background: #ffebee; padding: .5rem .8rem; margin: .5rem 0; }
+.upload { margin: .8rem 0; }
+.upload progress { width: 100%; height: 1.1rem; display: block; margin: .3rem 0; }
+.upload span { font-size: 13px; color: #555; }
 .warn { background: #fff8e1; color: #7a5200; }
 .card { background: #fafafa; padding: 1rem; border: 1px solid #ddd;
         white-space: pre-wrap; word-break: break-word; font-size: 13px; }
@@ -189,6 +192,13 @@ _ФОНОВЫЕ: set[asyncio.Task] = set()
 # Сколько завершённых заданий держать на экране. Нужны, чтобы человек увидел
 # результат, вернувшись через минуту; копить их незачем.
 JOBS_KEPT = 10
+
+
+def _объём(байт: int) -> str:
+    """Размер человеку: мелкий файл в мегабайтах — это «0.0 МБ», то есть ничего."""
+    if байт < 1024 * 1024:
+        return f"{байт / 1024:.0f} КБ"
+    return f"{байт / 1024 / 1024:.1f} МБ"
 
 
 def _start_job(name: str, size: int) -> dict:
@@ -524,6 +534,119 @@ def _card_link(scope: str, config: str, hit) -> str:
 # сервер, клиенту остаётся двигать `viewBox`. Ради этого тянуть d3 (250 КБ) или
 # сборку React значило бы завести второй язык и шаг сборки в проекте, где
 # дашборд — 1 155 строк на голом HTML без единого внешнего файла.
+_UPLOAD_JS = """
+/* Показ передачи файла.
+ *
+ * Сервер хода передачи не видит: `await request.form()` возвращает управление
+ * только когда тело пришло целиком, и задание заводится уже после этого. На
+ * localhost это незаметно, на удалённом сервере человек жмёт «Загрузить» и
+ * получает пустой экран на всё время заливки.
+ *
+ * Отправлено байт знает только браузер — `xhr.upload.onprogress`. Форма
+ * остаётся обычной: без JS submit уходит как раньше, просто без индикатора.
+ */
+(function () {
+  var форма = document.getElementById("upload-form");
+  if (!форма || !window.XMLHttpRequest || !window.FormData) return;
+
+  var поле = форма.querySelector("input[type=file]");
+  var кнопка = форма.querySelector("button");
+  var показ = document.getElementById("upload-progress");
+  var полоса = document.getElementById("upload-bar");
+  var строка = document.getElementById("upload-text");
+  var предел = parseInt(форма.getAttribute("data-limit"), 10);
+
+  /* Мелкий файл в мегабайтах — это «0,0 из 0,0 МБ»: единица не подходит. */
+  function объём(байт) {
+    if (байт < 1048576) return Math.round(байт / 1024) + " КБ";
+    return (байт / 1048576).toFixed(1).replace(".", ",") + " МБ";
+  }
+
+  function сказать(текст) { строка.textContent = текст; показ.hidden = false; }
+
+  function отказ(текст) {
+    сказать(текст);
+    полоса.hidden = true;
+    поле.disabled = false;
+    кнопка.disabled = false;
+  }
+
+  форма.addEventListener("submit", function (событие) {
+    var файл = поле.files && поле.files[0];
+    if (!файл) return;                     /* пустое поле — пусть скажет браузер */
+
+    /* Предел проверяется и на сервере, но там — после приёма: к моменту
+     * отказа трафик уже потрачен. Здесь размер известен до отправки. */
+    if (предел && файл.size > предел) {
+      событие.preventDefault();
+      отказ("Файл " + объём(файл.size) + ", предел " + объём(предел) + ".");
+      return;
+    }
+
+    событие.preventDefault();
+
+    /* Данные собираются ДО выключения поля: выключенные элементы формы в
+     * FormData не попадают, и на сервер уходит пустой запрос. Проверено в
+     * браузере 2026-08-19: файл молча терялся, сервер отвечал «файл не
+     * выбран», задание не заводилось вовсе. */
+    var данные = new FormData(форма);
+
+    поле.disabled = true;
+    кнопка.disabled = true;
+    полоса.hidden = false;
+    полоса.value = 0;
+    сказать("Передача началась…");
+
+    var начало = Date.now();
+    var xhr = new XMLHttpRequest();
+    xhr.open("POST", форма.getAttribute("action"));
+
+    xhr.upload.onprogress = function (событие) {
+      if (!событие.lengthComputable) {
+        сказать("Передано " + объём(событие.loaded) + "…");
+        return;
+      }
+      var доля = событие.loaded / событие.total;
+      полоса.value = Math.round(доля * 100);
+      var строки = [
+        Math.round(доля * 100) + "% — " + объём(событие.loaded) +
+        " из " + объём(событие.total)
+      ];
+      /* Скорость и остаток врут на первых долях секунды и на мелких файлах:
+       * показываем, только когда цифра уже что-то значит. */
+      var секунд = (Date.now() - начало) / 1000;
+      if (секунд >= 1 && событие.loaded > 1048576) {
+        var скорость = событие.loaded / секунд;
+        строки.push(объём(скорость) + "/с");
+        var осталось = (событие.total - событие.loaded) / скорость;
+        if (осталось >= 1) строки.push("осталось " + Math.ceil(осталось) + " с");
+      }
+      сказать(строки.join(", "));
+    };
+
+    /* Байты ушли, но ответа ещё нет: сервер дочитывает буфер, кладёт файл на
+     * диск и ставит задание. Молчать здесь нельзя — это опять пустой экран. */
+    xhr.upload.onload = function () {
+      полоса.removeAttribute("value");     /* неопределённый прогресс */
+      сказать("Файл передан. Сервер принимает и ставит в разбор…");
+    };
+
+    xhr.onload = function () {
+      if (xhr.status >= 200 && xhr.status < 400) {
+        window.location.replace("/sources");
+      } else {
+        отказ("Сервер отказал, код " + xhr.status + ". Обновите страницу.");
+      }
+    };
+    xhr.onerror = function () { отказ("Связь оборвалась. Файл не передан."); };
+    xhr.onabort = function () { отказ("Передача прервана."); };
+
+    xhr.send(данные);
+  });
+})();
+"""
+
+
 _GRAPH_JS = """
 (function(){
   var svg=document.getElementById('graph'); if(!svg) return;
@@ -978,14 +1101,14 @@ def _sources_page(
             else ""
         )
         parts.append(f"<h2>Загрузка</h2>{очистка}<table>"
-                     "<tr><th>Файл<th>Принято<th>Состояние</tr>")
+                     "<tr><th>Файл<th>Размер<th>Состояние</tr>")
         for job in reversed(_JOBS):
             подробность = (
                 f" — {escape(job['error'])}" if job["state"] == JOB_FAILED else ""
             )
             parts.append(
                 f"<tr><td>{escape(job['name'])}"
-                f"<td>{job['size'] / 1024 / 1024:.1f} МБ"
+                f"<td>{_объём(job['size'])}"
                 f"<td>{escape(job['state'])}{подробность}</tr>"
             )
         parts.append("</table>")
@@ -1026,9 +1149,18 @@ def _sources_page(
     if authorized:
         parts.append(
             "<h2>Загрузить</h2>"
-            "<form method=post action=/sources enctype=multipart/form-data>"
+            # `data-limit` — тот же MAX_UPLOAD числом: браузер знает размер
+            # файла до отправки и отказывает сразу, а не после того, как
+            # полтерабайта трафика уже потрачены на серверную проверку.
+            f"<form id=upload-form data-limit={MAX_UPLOAD} "
+            "method=post action=/sources enctype=multipart/form-data>"
             "<input type=file name=file accept='.zip,.hbk' required> "
             "<button>Загрузить</button>"
+            # Индикатор скрыт до начала передачи и наполняется скриптом.
+            # Без JS остаётся скрытым, а форма работает как обычная.
+            "<div id=upload-progress class=upload hidden>"
+            "<progress id=upload-bar max=100 value=0 hidden></progress>"
+            "<span id=upload-text></span></div>"
             # Имя файла названо прямо: в каталоге установки платформы лежат
             # 38 файлов `.hbk`, и без подсказки человек берёт наугад соседний.
             "<p>Принимаются три вида файлов:</p>"
@@ -1050,8 +1182,10 @@ def _sources_page(
             "<code>shlang_ru.hbk</code> — справка по встроенному языку, "
             "другой формат страниц, не подходит. По размеру их не "
             "отличить.</p>"
-            "<p>Разбор идёт в фоне: страница ответит сразу, а состояние покажет "
-            "в разделе «Загрузка» выше.</p></form>"
+            "<p>Передача файла показывается полосой здесь же. Разбор идёт в "
+            "фоне: страница ответит сразу, а состояние покажет в разделе "
+            "«Загрузка» выше.</p></form>"
+            f"<script>{_UPLOAD_JS}</script>"
         )
     else:
         parts.append(_login_form())

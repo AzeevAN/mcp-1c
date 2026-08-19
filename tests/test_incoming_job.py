@@ -158,7 +158,10 @@ def test_разбор_записан_в_registry_json(tmp_path, monkeypatch):
     client.post(
         "/sources/incoming/parse", data={"name": "модули.zip"}, follow_redirects=False
     )
-    дождаться(client, lambda t: "Розница:modules" in t)
+    # Ждём «готово» у задания, а не появления источника на странице: источник
+    # виден из памяти сразу после `add_modules`, а `save()` идёт следом —
+    # ожидание по нему попадало бы в это окно и давало флейк.
+    дождаться(client, lambda t: dashboard.JOB_DONE in t)
 
     # Смотрим в файл, а не в память: проверка по `registry.sources` зелена и
     # без записи на диск.
@@ -187,9 +190,11 @@ def test_ноль_отобранных_файлов_не_даёт_разобра
         follow_redirects=False,
     )
 
-    текст = дождаться(client, lambda t: "ни модулей, ни форм" in t)
+    # Ждём состояние строки, а не текст задания: задание получает ошибку
+    # раньше, чем `note_failure` успевает её записать.
+    текст = дождаться(client, lambda t: "разбор не удался" in t)
+    assert "ни модулей, ни форм" in текст
     assert "Розница:modules" not in registry.sources
-    assert "разбор не удался" in текст
 
 
 def test_копирующийся_файл_обработчик_не_берёт(tmp_path, monkeypatch):

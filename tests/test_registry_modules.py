@@ -162,3 +162,33 @@ def test_выгрузка_без_модулей_и_форм_отвергаетс
 
     assert "Розница:modules" not in registry.sources
     assert not (registry.modules_dir / "Розница").exists()
+
+
+def test_негодный_архив_не_сносит_прежний_разбор(tmp_path):
+    """Отказ обязан приходить ДО удаления: иначе ошибочное нажатие стоит 351 МБ.
+
+    Сценарий боевой и предусмотрен самим текстом отказа: человек кладёт в
+    `incoming/` выгрузку структуры метаданных вместо выгрузки в файлы и жмёт
+    «разобрать». Проверка места не останавливает — отбираемого ноль, нужен
+    только запас под индекс, места хватает.
+    """
+    from mcp1c.registry import RegistryError
+
+    registry = _реестр_с_конфигурацией(tmp_path)
+    источник = registry.add_modules(_выгрузка_в_файлы(tmp_path), configuration="Розница")
+    корень = registry.modules_dir / "Розница"
+    было = sorted(p.relative_to(корень).as_posix() for p in корень.rglob("*"))
+
+    метаданные = tmp_path / "СтруктураКонфигурации_Розница.zip"
+    with zipfile.ZipFile(метаданные, "w") as zf:
+        zf.writestr("manifest.json", '{"schema_version": "1"}')
+
+    with pytest.raises(RegistryError, match="ни модулей, ни форм"):
+        registry.add_modules(метаданные, configuration="Розница")
+
+    # Прежний разбор цел: каталог, файлы в нём и учётная запись.
+    assert корень.is_dir()
+    assert sorted(p.relative_to(корень).as_posix() for p in корень.rglob("*")) == было
+    в_реестре = registry.sources["Розница:modules"]
+    assert в_реестре.sha256 == источник.sha256
+    assert в_реестре.items_total == источник.items_total

@@ -293,6 +293,13 @@ def _run_incoming(registry: Registry, сканер, job: dict, архив: Path)
         # гигабайтный архив заново. `_index_source` зовёт `save()` по той же
         # причине.
         registry.save()
+    except (ExportError, RegistryError, V8ContainerError, ValueError) as error:
+        # Известная ошибка проекта — это сообщение человеку, и имя класса ему
+        # ничего не добавляет: «загружено 2 конфигураций» он поймёт, а
+        # «RegistryError:» перед этим — нет. `_run_job` делит ошибки так же.
+        job["state"] = JOB_FAILED
+        job["error"] = str(error)
+        сканер.note_failure(архив, job["error"])
     except Exception as error:
         job["state"] = JOB_FAILED
         job["error"] = f"{type(error).__name__}: {error}"

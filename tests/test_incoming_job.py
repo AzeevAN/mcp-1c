@@ -138,9 +138,14 @@ def test_несколько_конфигураций_разбор_не_прив�
     )
 
     assert ответ.status_code == 303
-    дождаться(client, lambda t: "модули.zip" in t and "ошибка" in t)
+    страница = дождаться(client, lambda t: "модули.zip" in t and "ошибка" in t)
     assert "Розница:modules" not in registry.sources
     assert "УправлениеТорговлей:modules" not in registry.sources
+    # Причина — сообщение человеку, а не отчёт для разработчика: имя класса
+    # исключения в него не протекает. Неожиданная ошибка печатается иначе,
+    # с именем класса и стеком в логе, — так же делит ошибки `_run_job`.
+    assert "конфигураций" in страница
+    assert "RegistryError" not in страница
 
 
 def test_разбор_записан_в_registry_json(tmp_path, monkeypatch):

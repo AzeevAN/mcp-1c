@@ -1194,6 +1194,37 @@ def _sources_page(
         parts.append("</table>")
 
     if authorized:
+        # Имя файла говорит, что за база, — блок виден только вошедшему, как
+        # и журнал заданий. В «Исходные файлы» эти файлы не подмешиваются: там
+        # заголовок «для ответов не нужны», а для неразобранной выгрузки это
+        # неправда.
+        from .incoming import STATE_NEW, STATE_STALE, STATE_UPDATED
+
+        входящие = _scanner(registry).scan()
+        if входящие:
+            parts.append("<h2>Входящие выгрузки</h2><table>"
+                         "<tr><th>Файл<th>Размер<th>Состояние</tr>")
+            for строка in входящие:
+                можно = строка["state"] in (STATE_NEW, STATE_UPDATED, STATE_STALE)
+                кнопка = (
+                    "<form method=post action=/sources/incoming/parse "
+                    "style='display:inline'>"
+                    f"<input type=hidden name=name value='{escape(строка['name'])}'>"
+                    "<button>разобрать</button></form>"
+                    if можно
+                    else ""
+                )
+                подробность = (
+                    f" — {escape(строка['detail'])}" if строка["detail"] else ""
+                )
+                parts.append(
+                    f"<tr><td>{escape(строка['name'])}"
+                    f"<td>{_объём(строка['size'])}"
+                    f"<td>{escape(строка['state'])}{подробность} {кнопка}</tr>"
+                )
+            parts.append("</table>")
+
+    if authorized:
         parts.append(
             "<h2>Загрузить</h2>"
             # `data-limit` — тот же MAX_UPLOAD числом: браузер знает размер

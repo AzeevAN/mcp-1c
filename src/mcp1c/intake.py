@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+import shutil
+import zipfile
 from pathlib import Path, PurePosixPath
 
 FORMAT_TREE = "tree"
@@ -46,3 +48,30 @@ def safe_target(name: str, корень: Path) -> Path | None:
     if корень != цель and корень not in цель.parents:
         return None
     return цель
+
+
+# Индекс пишется после отбора и в сумму отобранного не входит. По разведке на
+# корпусе Розницы это 18,1 МБ сигнатур и 5,8 МБ форм — берём с запасом.
+INDEX_RESERVE = 25 * 1024 * 1024
+
+
+def planned_size(архив: Path) -> tuple[int, str]:
+    """Сколько места займёт отобранное, плюс запас под индекс.
+
+    Размеры берутся из центрального каталога: тело архива не читается вовсе.
+    Соврать в опасную сторону это не может — `zipfile` обрезает вывод по
+    объявленному размеру, а несовпадение ловит CRC.
+
+    Для плоской выгрузки цифра — оценка сверху: `file_size` контейнера `.Form`
+    включает двоичную запись `form`, которую мы не сохраняем.
+    """
+    with zipfile.ZipFile(архив) as zf:
+        записи = [i for i in zf.infolist() if not i.is_dir()]
+        формат = detect_format([i.filename for i in записи])
+        нужно = sum(i.file_size for i in записи if is_wanted(i.filename, формат))
+    return нужно + INDEX_RESERVE, формат
+
+
+def enough_space(нужно: int, каталог: Path) -> tuple[bool, int]:
+    свободно = shutil.disk_usage(каталог).free
+    return свободно >= нужно, свободно

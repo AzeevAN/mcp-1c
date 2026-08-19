@@ -207,6 +207,34 @@ def write_export(directory: Path, config: Configuration) -> Path:
     return target
 
 
+# Пространство имён Configuration.xml выгрузки в файлы — то же, что в
+# registry._NS_MDCLASSES.
+_NS_MDCLASSES = "http://v8.1c.ru/8.3/MDClasses"
+
+
+def modules_configuration_xml(
+    *, name: str = "Конфигурация", compatibility: str = "Version8_3_21"
+) -> str:
+    """`Configuration.xml` минимальной выгрузки в файлы — с непустым
+    `CompatibilityMode`.
+
+    `registry._сведения_о_выгрузке` распознаёт выгрузку в файлы положительным
+    правилом: конфигурация — только если `CompatibilityMode` непустой, а не
+    «не похоже на расширение, значит конфигурация». Заготовка `<x/>` без
+    единого тега MDClasses раньше проходила как конфигурация по умолчанию;
+    при положительном правиле она не конфигурация и не расширение, а отказ.
+    Единый помощник — чтобы восьмая копия `<x/>` не завелась снова в другом
+    файле теста.
+    """
+    return (
+        f'<MetaDataObject xmlns="{_NS_MDCLASSES}">'
+        '<Configuration uuid="00000000-0000-0000-0000-000000000000">'
+        f"<Properties><Name>{name}</Name><NamePrefix/>"
+        f"<CompatibilityMode>{compatibility}</CompatibilityMode></Properties>"
+        "</Configuration></MetaDataObject>"
+    )
+
+
 def build_syntax(platform: str = "8.3.99.1") -> SyntaxIndex:
     """Справка из трёх элементов: метод, его член и свойство."""
     index = SyntaxIndex(platforms=[platform], language="ru", source="test")

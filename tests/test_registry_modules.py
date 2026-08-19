@@ -4,14 +4,14 @@ from pathlib import Path
 
 import pytest
 
-from conftest import build_configuration, write_export
+from conftest import build_configuration, modules_configuration_xml, write_export
 from mcp1c.registry import KIND_CONFIGURATION, KIND_MODULES, Registry
 
 
 def _выгрузка_в_файлы(tmp_path: Path) -> Path:
     путь = tmp_path / "модули.zip"
     with zipfile.ZipFile(путь, "w") as zf:
-        zf.writestr("Configuration.xml", "<x/>")
+        zf.writestr("Configuration.xml", modules_configuration_xml())
         zf.writestr("Catalogs/Т/Ext/ObjectModule.bsl", "Процедура А() КонецПроцедуры")
     return путь
 
@@ -82,7 +82,7 @@ def _другая_выгрузка(tmp_path: Path) -> Path:
     """Вторая выгрузка той же конфигурации: прежнего модуля в ней уже нет."""
     путь = tmp_path / "модули2.zip"
     with zipfile.ZipFile(путь, "w") as zf:
-        zf.writestr("Configuration.xml", "<x/>")
+        zf.writestr("Configuration.xml", modules_configuration_xml())
         zf.writestr("Catalogs/Д/Ext/ObjectModule.bsl", "Процедура Б() КонецПроцедуры")
     return путь
 
@@ -240,7 +240,7 @@ def test_архив_с_членами_наружу_не_даёт_пустой_и
 
     злой = tmp_path / "злой.zip"
     with zipfile.ZipFile(злой, "w") as zf:
-        zf.writestr("Configuration.xml", "<x/>")
+        zf.writestr("Configuration.xml", modules_configuration_xml())
         zf.writestr("../наружу/ObjectModule.bsl", "Процедура В() КонецПроцедуры")
         zf.writestr("/tmp/абсолютный/ObjectModule.bsl", "Процедура Г() КонецПроцедуры")
 

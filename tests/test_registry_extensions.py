@@ -458,3 +458,164 @@ def test_разные_сырые_имена_с_одним_очищенным_з�
     ]
     assert ключи_расширений == ["Розница:ext:a_b"]
     assert (registry.extensions_dir / "Розница" / "a_b").is_dir()
+
+# --------------------------------------------------------- ревью: важно 1
+#
+# `_сведения_о_выгрузке` при ET.ParseError и при отсутствующих Properties
+# по-прежнему давала мягкое (False, "") — то есть «это конфигурация», а
+# дальше add_modules сносил уже разобранный код в ветке модулей. Причина
+# была в форме фикстур: синтетические архивы тестов несли Configuration.xml
+# = "<x/>", и мягкий возврат существовал ради них. Починено положительным
+# правилом: в ветку модулей уходим только при непустом CompatibilityMode, во
+# всех остальных случаях — отказ.
+
+
+def _выгрузка_с_обрезанным_configuration_xml(
+    tmp_path: Path, *, файл: str = "обрезанный.zip"
+) -> Path:
+    """Валидный архив (CRC сходится с содержимым), но Configuration.xml
+    оборван на середине — так выглядит выгрузка, прерванная на записи."""
+    путь = tmp_path / файл
+    полный = _configuration_xml(
+        name="Доп", prefix="Доп_", belonging="Adopted", purpose="AddOn"
+    )
+    обрезанный = полный[: len(полный) // 2]
+    with zipfile.ZipFile(путь, "w") as zf:
+        zf.writestr("Configuration.xml", обрезанный)
+        zf.writestr("Catalogs/Р/Ext/ObjectModule.bsl", "Процедура И() КонецПроцедуры")
+    return путь
+
+
+def _выгрузка_с_чужим_namespace(
+    tmp_path: Path, *, файл: str = "чужой_namespace.zip"
+) -> Path:
+    """Configuration.xml валиден как XML, но в пространстве имён 8.2, а не
+    8.3 — `_NS_MDCLASSES` его не найдёт, `Properties is None`."""
+    путь = tmp_path / файл
+    ns82 = "http://v8.1c.ru/8.2/MDClasses"
+    xml = (
+        f'<MetaDataObject xmlns="{ns82}">'
+        '<Configuration uuid="00000000-0000-0000-0000-000000000000">'
+        "<Properties><Name>Доп</Name><NamePrefix>Доп_</NamePrefix>"
+        "<ObjectBelonging>Adopted</ObjectBelonging>"
+        "<ConfigurationExtensionPurpose>AddOn</ConfigurationExtensionPurpose>"
+        "</Properties></Configuration></MetaDataObject>"
+    )
+    with zipfile.ZipFile(путь, "w") as zf:
+        zf.writestr("Configuration.xml", xml)
+        zf.writestr("Catalogs/Р/Ext/ObjectModule.bsl", "Процедура К() КонецПроцедуры")
+    return путь
+
+
+def _выгрузка_с_пустым_configuration_xml(
+    tmp_path: Path, *, файл: str = "пустой.zip"
+) -> Path:
+    путь = tmp_path / файл
+    with zipfile.ZipFile(путь, "w") as zf:
+        zf.writestr("Configuration.xml", "")
+        zf.writestr("Catalogs/Р/Ext/ObjectModule.bsl", "Процедура Л() КонецПроцедуры")
+    return путь
+
+
+def test_нечитаемый_манифест_отказывает_а_не_сносит_конфигурацию(tmp_path):
+    """Важно, ревью: обрезанный, из чужого namespace и нулевой длины
+    Configuration.xml — во всех трёх случаях отказ с объяснением, код
+    конфигурации цел."""
+    registry = _реестр_с_конфигурацией(tmp_path)
+    registry.add_modules(_выгрузка_конфигурации(tmp_path), configuration="Розница")
+    модуль_конфигурации = (
+        registry.modules_dir / "Розница" / "Catalogs/Т/Ext/ObjectModule.bsl"
+    )
+
+    for построить, файл in (
+        (_выгрузка_с_обрезанным_configuration_xml, "обрезанный.zip"),
+        (_выгрузка_с_чужим_namespace, "чужой_ns.zip"),
+        (_выгрузка_с_пустым_configuration_xml, "пустой.zip"),
+    ):
+        with pytest.raises(RegistryError):
+            registry.add_modules(построить(tmp_path, файл=файл), configuration="Розница")
+        assert модуль_конфигурации.is_file(), f"{файл}: код конфигурации задет"
+
+
+# --------------------------------------------------------- ревью: важно 2
+
+
+def _испортить_crc_в_центральном_каталоге(архив: Path, имя_члена: str) -> None:
+    """Портит CRC-32 записи `имя_члена` в центральном каталоге zip — архив
+    остаётся структурно валиден (центральный каталог на месте, `infolist()`
+    работает), но чтение члена ловит несовпадение CRC (`BadZipFile`). Так
+    выглядит выгрузка, у которой побилась ровно одна запись."""
+    данные = bytearray(архив.read_bytes())
+    сигнатура = b"PK\x01\x02"
+    имя_байты = имя_члена.encode()
+    позиция = 0
+    while True:
+        позиция = данные.find(сигнатура, позиция)
+        if позиция == -1:
+            raise AssertionError(f"запись {имя_члена!r} не найдена в архиве")
+        длина_имени = int.from_bytes(данные[позиция + 28 : позиция + 30], "little")
+        начало_имени = позиция + 46
+        if данные[начало_имени : начало_имени + длина_имени] == имя_байты:
+            смещение = позиция + 16
+            данные[смещение : смещение + 4] = (
+                int.from_bytes(данные[смещение : смещение + 4], "little") ^ 0xFFFFFFFF
+            ).to_bytes(4, "little")
+            break
+        позиция += 4
+    архив.write_bytes(bytes(данные))
+
+
+def test_битый_crc_configuration_xml_даёт_понятную_ошибку(tmp_path):
+    """Важно, ревью: `_сведения_о_выгрузке` больше не ловила `BadZipFile` —
+    архив с валидным центральным каталогом, но битым CRC именно у
+    Configuration.xml, ронял голое исключение вместо объяснения."""
+    registry = _реестр_с_конфигурацией(tmp_path)
+    архив = _выгрузка_расширения(tmp_path, файл="битый_crc.zip")
+    _испортить_crc_в_центральном_каталоге(архив, "Configuration.xml")
+
+    with pytest.raises(RegistryError, match="не читается"):
+        registry.add_modules(архив, configuration="Розница")
+
+
+# --------------------------------------------------------------- ревью: мелочь 3
+
+
+def _выгрузка_расширения_как_finder(
+    tmp_path: Path, *, файл: str = "finder.zip", папка: str = "Доп", name: str = "Доп"
+) -> Path:
+    """Имитация архива, собранного Finder («Сжать объекты») на macOS:
+    обёртка-папка плюс служебный `__MACOSX/` и `.DS_Store` в корне."""
+    путь = tmp_path / файл
+    with zipfile.ZipFile(путь, "w") as zf:
+        zf.writestr(".DS_Store", b"\x00\x00\x00\x00")
+        zf.writestr("__MACOSX/", "")
+        zf.writestr(f"__MACOSX/{папка}/", "")
+        zf.writestr(f"__MACOSX/{папка}/._Configuration.xml", b"\x00\x05\x16\x07\x00\x02")
+        zf.writestr(f"{папка}/", "")
+        zf.writestr(
+            f"{папка}/Configuration.xml",
+            _configuration_xml(
+                name=name, prefix=f"{name}_", belonging="Adopted", purpose="AddOn"
+            ),
+        )
+        zf.writestr(f"{папка}/Catalogs/Р/Ext/ObjectModule.bsl", "Процедура М() КонецПроцедуры")
+    return путь
+
+
+def test_архив_упакованный_finder_распознаётся(tmp_path):
+    """Мелочь 3, ревью: `__MACOSX/` и `.DS_Store` не должны мешать найти
+    единственный каталог верхнего уровня — владелец работает на macOS, и
+    «Сжать объекты» через Finder добавляет их всегда."""
+    registry = _реестр_с_конфигурацией(tmp_path)
+    registry.add_modules(_выгрузка_конфигурации(tmp_path), configuration="Розница")
+    модуль_конфигурации = (
+        registry.modules_dir / "Розница" / "Catalogs/Т/Ext/ObjectModule.bsl"
+    )
+
+    источник = registry.add_modules(
+        _выгрузка_расширения_как_finder(tmp_path), configuration="Розница"
+    )
+
+    assert источник.kind == KIND_EXTENSION
+    assert источник.id == "Розница:ext:Доп"
+    assert модуль_конфигурации.is_file()

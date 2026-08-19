@@ -238,7 +238,54 @@ def _run_job(registry: Registry, job: dict, directory: str, path: Path, suffix: 
     else:
         job["state"] = JOB_DONE
     finally:
-        shutil.rmtree(directory, ignore_errors=True)
+        # Каталог сносится, только если он наш временный. Файл из `incoming/`
+        # принадлежит человеку: сервер его не удаляет.
+        if directory:
+            shutil.rmtree(directory, ignore_errors=True)
+
+
+_СКАНЕРЫ: dict[str, "IncomingScanner"] = {}
+
+
+def _scanner(registry: Registry) -> "IncomingScanner":
+    """Сканер один на каталог данных: множество `running` живёт в памяти, и
+    страница обязана видеть то же самое, что обработчик разбора."""
+    from .incoming import IncomingScanner
+
+    ключ = str(registry.data_dir)
+    if ключ not in _СКАНЕРЫ:
+        _СКАНЕРЫ[ключ] = IncomingScanner(registry)
+    return _СКАНЕРЫ[ключ]
+
+
+def _configuration_for(registry: Registry, архив: Path) -> str:
+    """Определение конфигурации — по единственной загруженной, иначе отказ с
+    объяснением (привязка по манифесту — работа провайдера, разведка раздел 5)."""
+    имена = sorted(registry.configurations)
+    if len(имена) == 1:
+        return имена[0]
+    raise RegistryError(
+        f"{архив.name}: загружено {len(имена)} конфигураций, "
+        "привязка выгрузки в файлы к конкретной пока не реализована."
+    )
+
+
+def _run_incoming(registry: Registry, сканер, job: dict, архив: Path) -> None:
+    """Разбор выгрузки из `incoming/`. Исходник остаётся на месте."""
+    job["state"] = JOB_PARSING
+    try:
+        имя_конфигурации = _configuration_for(registry, архив)
+        registry.add_modules(архив, configuration=имя_конфигурации)
+    except Exception as error:
+        job["state"] = JOB_FAILED
+        job["error"] = f"{type(error).__name__}: {error}"
+        сканер.note_failure(архив, job["error"])
+        traceback.print_exc()
+    else:
+        job["state"] = JOB_DONE
+        сканер.clear_failure(архив)
+    finally:
+        сканер.running.discard(архив.name)
 
 
 def _layout(title: str, body: str, *, refresh: int = 0) -> HTMLResponse:
@@ -1584,6 +1631,46 @@ def routes(registry: Registry) -> list[Route]:
         задача.add_done_callback(_ФОНОВЫЕ.discard)
         return RedirectResponse("/sources", status_code=303)
 
+    async def parse_incoming(request: Request):
+        """Разобрать выгрузку из `incoming/`. Запись — значит `ADMIN_TOKEN`."""
+        if not _admin_token():
+            return PlainTextResponse("Разбор выключен: не задан ADMIN_TOKEN.", 404)
+        if not _authorized(request):
+            page = _sources_page(registry, error="Нужен вход администратора.")
+            return HTMLResponse(page.body, status_code=403)
+
+        from . import intake
+
+        form = await request.form()
+        имя = Path(str(form.get("name", ""))).name
+        сканер = _scanner(registry)
+        архив = registry.incoming_dir / имя
+        if not имя or not архив.is_file():
+            return RedirectResponse("/sources", status_code=303)
+        if сканер.running:
+            # Два разбора одновременно видели бы одно и то же свободное место
+            # и оба прошли бы проверку.
+            return RedirectResponse("/sources", status_code=303)
+
+        job = _start_job(имя, архив.stat().st_size)
+        нужно, _формат = intake.planned_size(архив)
+        хватает, свободно = intake.enough_space(нужно, registry.data_dir)
+        if not хватает:
+            job["state"] = JOB_FAILED
+            job["error"] = (
+                f"нужно {нужно // 2**20} МБ, свободно {свободно // 2**20} МБ"
+            )
+            сканер.note_failure(архив, job["error"])
+            return RedirectResponse("/sources", status_code=303)
+
+        сканер.running.add(имя)
+        задача = asyncio.create_task(
+            run_in_threadpool(_run_incoming, registry, сканер, job, архив)
+        )
+        _ФОНОВЫЕ.add(задача)
+        задача.add_done_callback(_ФОНОВЫЕ.discard)
+        return RedirectResponse("/sources", status_code=303)
+
     async def clear_jobs(request: Request):
         """Убрать из журнала завершённые записи.
 
@@ -1655,6 +1742,7 @@ def routes(registry: Registry) -> list[Route]:
         Route("/sources/remove", remove, methods=["POST"]),
         Route("/sources/forget", forget, methods=["POST"]),
         Route("/sources/jobs/clear", clear_jobs, methods=["POST"]),
+        Route("/sources/incoming/parse", parse_incoming, methods=["POST"]),
         Route("/queries", guard_read(queries_form), methods=["GET"]),
         Route("/queries", guard_read(queries_run), methods=["POST"]),
         Route("/object", guard_read(object_card), methods=["GET"]),

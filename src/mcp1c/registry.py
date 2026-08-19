@@ -615,6 +615,42 @@ class Registry:
             self._relation_cache.pop(config.name, None)
         return source
 
+    def _modules_root(self, configuration: str) -> Path:
+        """Каталог кода конфигурации внутри `modules_dir`.
+
+        Имя чистится тем же правилом, что и имена файлов кэша
+        (`index_cache.safe_name`): оно приходит из манифеста, а там встречается
+        и косая черта, и двоеточие.
+
+        Чистки мало: точку правило сохраняет, поэтому имя «..» проходит через
+        неё неизменным. Каталог мы теперь удаляем перед распаковкой и при
+        снятии источника — промах увёл бы удаление за пределы `modules_dir`,
+        вплоть до соседнего `incoming/`, который сервер трогать не вправе.
+        Поэтому путь проверяется, а не предполагается верным.
+        """
+        корень = (self.modules_dir / index_cache.safe_name(configuration)).resolve()
+        база = self.modules_dir.resolve()
+        if корень == база or база not in корень.parents:
+            raise RegistryError(
+                f"Имя конфигурации «{configuration}» не годится для каталога "
+                "кода: путь уходит за пределы data/modules."
+            )
+        return корень
+
+    def _drop_modules_root(self, корень: Path) -> None:
+        """Снести каталог кода. Только внутри `modules_dir` и только его.
+
+        Проверка повторяется здесь намеренно: путь может прийти из
+        `registry.json`, где его правил кто угодно, а рядом с `data/modules/`
+        лежит `data/incoming/` с исходником человека.
+        """
+        цель = корень.resolve()
+        база = self.modules_dir.resolve()
+        if цель == база or база not in цель.parents:
+            return
+        if цель.is_dir():
+            shutil.rmtree(цель, ignore_errors=True)
+
     def add_modules(self, path: str | Path, *, configuration: str) -> Source:
         """Выгрузка конфигурации в файлы: код на диск, учётная запись в реестр.
 
@@ -630,8 +666,25 @@ class Registry:
                 f"{архив.name}: конфигурация «{configuration}» не загружена."
             )
         digest = _sha256(архив)
-        корень = self.modules_dir / configuration
+        корень = self._modules_root(configuration)
+        # Корень чистится перед распаковкой: `extract` пишет поверх, и файлы,
+        # которых в новой выгрузке нет (удалённый объект, переименованный
+        # модуль), остались бы навсегда — переразбор молча смешивал бы две
+        # выгрузки в одном каталоге.
+        self._drop_modules_root(корень)
         файлов, байт = intake.extract(архив, корень)
+        if not файлов:
+            # Выгрузка метаданных (`СтруктураКонфигурации_*.zip`) — тоже .zip,
+            # и отбор не находит в ней ничего. Без этой проверки завёлся бы
+            # источник со `status=ready` и нулём элементов, а страница сказала
+            # бы «разобрано» при пустом каталоге.
+            self._drop_modules_root(корень)
+            raise RegistryError(
+                f"{архив.name}: в архиве не нашлось ни модулей, ни форм. "
+                "Похоже, это выгрузка структуры метаданных — её подают не "
+                "через data/incoming/, а формой «Загрузить» на странице "
+                "«Источники» (или командой reg-add)."
+            )
         source = Source(
             id=f"{configuration}:modules",
             kind=KIND_MODULES,
@@ -1046,6 +1099,15 @@ class Registry:
             if source.kind == KIND_CONFIGURATION:
                 self.configurations.pop(source_id, None)
                 self._relation_cache.pop(source_id, None)
+                return
+            if source.kind == KIND_MODULES:
+                # Каталог с кодом — всё, что этот источник занимает на диске
+                # (351 МБ на живой конфигурации). `orphan_sources` его не
+                # покажет: тот обходит только `sources_dir`. Не снести здесь
+                # значит занять место невидимо и навсегда — вернуть его через
+                # интерфейс было бы нечем.
+                if source.stored_path:
+                    self._drop_modules_root(self._absolute(source.stored_path))
                 return
             if source.kind == KIND_QUERY:
                 # В `syntax_versions` источника нет, но его элементы сидят в

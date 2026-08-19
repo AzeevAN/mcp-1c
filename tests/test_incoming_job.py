@@ -170,6 +170,28 @@ def test_разбор_записан_в_registry_json(tmp_path, monkeypatch):
     assert "Розница:modules" in заново.sources
 
 
+def test_ноль_отобранных_файлов_не_даёт_разобрано(tmp_path, monkeypatch):
+    """Выгрузка метаданных — тоже .zip, и отбор не находит в ней ничего."""
+    monkeypatch.setenv("ADMIN_TOKEN", "секрет")
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    client, registry = _стенд(tmp_path)
+    client.post("/login", data={"token": "секрет"})
+    метаданные = registry.incoming_dir / "метаданные.zip"
+    with zipfile.ZipFile(метаданные, "w") as zf:
+        zf.writestr("manifest.json", '{"schema_version": "1"}')
+    состарить(метаданные)
+
+    client.post(
+        "/sources/incoming/parse",
+        data={"name": "метаданные.zip"},
+        follow_redirects=False,
+    )
+
+    текст = дождаться(client, lambda t: "ни модулей, ни форм" in t)
+    assert "Розница:modules" not in registry.sources
+    assert "разбор не удался" in текст
+
+
 def дождаться(client, условие, таймаут: float = 20.0) -> str:
     import time
 

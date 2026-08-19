@@ -2,6 +2,8 @@
 import zipfile
 from pathlib import Path
 
+import pytest
+
 from conftest import build_configuration, write_export
 from mcp1c.registry import KIND_CONFIGURATION, KIND_MODULES, Registry
 
@@ -74,3 +76,89 @@ def test_источник_модулей_переживает_перезапус
     assert заново.sources["Розница:modules"].kind == KIND_MODULES
     # Метаданные конфигурации тоже восстановлены — не только модули.
     assert заново.sources["Розница"].kind == KIND_CONFIGURATION
+
+
+def _другая_выгрузка(tmp_path: Path) -> Path:
+    """Вторая выгрузка той же конфигурации: прежнего модуля в ней уже нет."""
+    путь = tmp_path / "модули2.zip"
+    with zipfile.ZipFile(путь, "w") as zf:
+        zf.writestr("Configuration.xml", "<x/>")
+        zf.writestr("Catalogs/Д/Ext/ObjectModule.bsl", "Процедура Б() КонецПроцедуры")
+    return путь
+
+
+def _реестр_с_конфигурацией(tmp_path: Path) -> Registry:
+    входящее = tmp_path / "in"
+    входящее.mkdir()
+    registry = Registry(tmp_path / "data")
+    registry.add_configuration(write_export(входящее, build_configuration(name="Розница")))
+    return registry
+
+
+def test_переразбор_не_оставляет_файлов_прежней_выгрузки(tmp_path):
+    """Иначе две выгрузки молча смешиваются: `extract` пишет поверх."""
+    registry = _реестр_с_конфигурацией(tmp_path)
+    registry.add_modules(_выгрузка_в_файлы(tmp_path), configuration="Розница")
+    прежний = registry.modules_dir / "Розница" / "Catalogs/Т/Ext/ObjectModule.bsl"
+    assert прежний.is_file()
+
+    registry.add_modules(_другая_выгрузка(tmp_path), configuration="Розница")
+
+    assert not прежний.exists()
+    новый = registry.modules_dir / "Розница" / "Catalogs/Д/Ext/ObjectModule.bsl"
+    assert новый.is_file()
+
+
+def test_имя_конфигурации_не_уводит_за_modules_dir(tmp_path):
+    """Имя берётся из манифеста: там встречается и косая черта, и `..`."""
+    from mcp1c.registry import RegistryError
+
+    registry = _реестр_с_конфигурацией(tmp_path)
+    архив = _выгрузка_в_файлы(tmp_path)
+    сосед = registry.incoming_dir
+    сосед.mkdir(parents=True, exist_ok=True)
+    (сосед / "не трогать.zip").write_bytes(b"PK\x05\x06" + b"\0" * 18)
+
+    # Конфигурация с таким именем в реестр не попадёт — проверяем сам путь.
+    registry.configurations["../incoming"] = registry.configurations["Розница"]
+    registry.configurations[".."] = registry.configurations["Розница"]
+
+    with pytest.raises(RegistryError):
+        registry.add_modules(архив, configuration="..")
+
+    # Косая черта не создаёт вложенности: имя чистится до одного сегмента.
+    registry.add_modules(архив, configuration="../incoming")
+    assert (сосед / "не трогать.zip").is_file()
+    легло = sorted(p.name for p in registry.modules_dir.iterdir())
+    assert легло == [".._incoming"]
+
+
+def test_снятие_источника_удаляет_каталог_с_кодом(tmp_path):
+    """351 МБ на живой конфигурации: `orphan_sources` их не покажет."""
+    registry = _реестр_с_конфигурацией(tmp_path)
+    источник = registry.add_modules(_выгрузка_в_файлы(tmp_path), configuration="Розница")
+    корень = registry.modules_dir / "Розница"
+    assert корень.is_dir()
+
+    registry.remove(источник.id)
+
+    assert not корень.exists()
+    assert источник.id not in registry.sources
+    # Каталог приёма рядом — его снятие источника не касается.
+    assert not registry.incoming_dir.exists() or registry.incoming_dir.is_dir()
+
+
+def test_выгрузка_без_модулей_и_форм_отвергается(tmp_path):
+    """Ноль отобранных файлов — не «разобрано»: источник не заводится."""
+    from mcp1c.registry import RegistryError
+
+    registry = _реестр_с_конфигурацией(tmp_path)
+    пустая = tmp_path / "метаданные.zip"
+    with zipfile.ZipFile(пустая, "w") as zf:
+        zf.writestr("manifest.json", '{"schema_version": "1"}')
+
+    with pytest.raises(RegistryError, match="ни модулей, ни форм"):
+        registry.add_modules(пустая, configuration="Розница")
+
+    assert "Розница:modules" not in registry.sources
+    assert not (registry.modules_dir / "Розница").exists()

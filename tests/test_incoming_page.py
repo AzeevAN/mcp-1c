@@ -88,3 +88,25 @@ def test_у_неудачи_есть_кнопка_разобрать(tmp_path, mo
     assert "разбор не удался" in страница
     хвост = страница.split("Входящие выгрузки")[1]
     assert "<button>разобрать</button>" in хвост
+
+
+def test_пустой_каталог_подсказывает_куда_класть(tmp_path, monkeypatch):
+    """Без подсказки приём невидим: пустой каталог не рисовал блок вовсе."""
+    monkeypatch.setenv("ADMIN_TOKEN", "секрет")
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    данные = tmp_path / "data"
+    входящее = tmp_path / "in"
+    данные.mkdir()
+    входящее.mkdir()
+    registry = Registry(данные)
+    registry.add_configuration(write_export(входящее, build_configuration()))
+    registry.startup()
+    client = живой_клиент(Starlette(routes=dashboard.routes(registry)))
+    client.post("/login", data={"token": "секрет"})
+
+    страница = client.get("/sources").text
+
+    # Каталог создал сам сервер (`startup`), в боевом `data/` его не было.
+    assert registry.incoming_dir.is_dir()
+    assert "Входящие выгрузки" in страница
+    assert "без вложенных подкаталогов" in страница

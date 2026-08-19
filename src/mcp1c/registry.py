@@ -1496,6 +1496,12 @@ class Registry:
         return orphans
 
     def startup(self) -> list[str]:
+        # Каталог приёма создаёт сервер, как и каталог данных в `save()`.
+        # Пока каталога нет, `scan()` возвращает пустой список, блок
+        # «Входящие выгрузки» на странице не рисуется вовсе — и человек не
+        # видит даже подсказки, куда класть архив. В боевом `data/` каталога
+        # нет: `mkdir` из `Dockerfile` на bind-mount не действует.
+        self.incoming_dir.mkdir(parents=True, exist_ok=True)
         # Словарь перечитывается первым: правки в нём должны применяться
         # перезагрузкой, без пересборки образа и рестарта контейнера.
         self.dictionary = Dictionary.load(self.dictionary_path)

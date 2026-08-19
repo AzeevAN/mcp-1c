@@ -29,6 +29,17 @@ def detect_format(names: list[str]) -> str:
 
 def is_wanted(name: str, формат: str) -> bool:
     путь = PurePosixPath(name)
+    # Мусор архиватора Finder на macOS («Сжать объекты»): `__MACOSX/` несёт
+    # копии ресурсных вилок каждого файла под именем `._Имя` — с тем же
+    # суффиксом, что у оригинала. Без исключения `__MACOSX/.../._ObjectModule.bsl`
+    # проходит отбор как настоящий `.bsl`, а `._Ext.txt` — как настоящий
+    # плоский модуль: рядом с кодом на диске ложится двоичный
+    # AppleDouble-файл (найдено ре-ревью: `items_total=2` на архиве с одним
+    # настоящим модулем).
+    if путь.parts and путь.parts[0] == "__MACOSX":
+        return False
+    if путь.name.startswith("._"):
+        return False
     if формат == FORMAT_FLAT:
         return путь.suffix in _FLAT_SUFFIXES
     return путь.suffix in _TREE_SUFFIXES or путь.name in _TREE_NAMES

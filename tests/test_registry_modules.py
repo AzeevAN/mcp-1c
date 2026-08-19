@@ -232,11 +232,18 @@ def test_архив_с_членами_наружу_не_даёт_пустой_и
     центральному каталогу, но `intake.safe_target` отвергает их при записи —
     на диск не ложится ничего. Без проверки после распаковки завёлся бы
     источник со `status=ready` при пустом каталоге.
+
+    Распаковка идёт во временный каталог и меняется местами со старым только
+    после успеха (`_extract_code`) — пустой результат до замены не доходит
+    вовсе, поэтому прежний разбор остаётся на месте, а не сносится вслед за
+    неудачной попыткой.
     """
     from mcp1c.registry import RegistryError
 
     registry = _реестр_с_конфигурацией(tmp_path)
     годный = registry.add_modules(_выгрузка_в_файлы(tmp_path), configuration="Розница")
+    прежний_модуль = registry.modules_dir / "Розница" / "Catalogs/Т/Ext/ObjectModule.bsl"
+    assert прежний_модуль.is_file()
 
     злой = tmp_path / "злой.zip"
     with zipfile.ZipFile(злой, "w") as zf:
@@ -247,10 +254,13 @@ def test_архив_с_членами_наружу_не_даёт_пустой_и
     with pytest.raises(RegistryError, match="ни модулей, ни форм"):
         registry.add_modules(злой, configuration="Розница")
 
-    # Источник не переписан нулём, пустого каталога не осталось.
+    # Источник не переписан нулём — запись в реестре та же, что была.
     assert registry.sources["Розница:modules"].items_total == годный.items_total
     assert registry.sources["Розница:modules"].sha256 == годный.sha256
-    assert not (registry.modules_dir / "Розница").exists()
+    # И прежний разбор на диске цел — пустой результат распаковки не сносит
+    # то, что уже было (регресс, который ловила старая версия теста, — как
+    # раз в том, что каталог раньше пропадал вовсе).
+    assert прежний_модуль.is_file()
     assert not (tmp_path / "наружу").exists()
 
 

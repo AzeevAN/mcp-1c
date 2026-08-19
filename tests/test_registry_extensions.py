@@ -584,13 +584,16 @@ def _выгрузка_расширения_как_finder(
     tmp_path: Path, *, файл: str = "finder.zip", папка: str = "Доп", name: str = "Доп"
 ) -> Path:
     """Имитация архива, собранного Finder («Сжать объекты») на macOS:
-    обёртка-папка плюс служебный `__MACOSX/` и `.DS_Store` в корне."""
+    обёртка-папка плюс служебный `__MACOSX/` (с копией ресурсной вилки РОВНО
+    настоящего модуля — `._ObjectModule.bsl`, тем же суффиксом, что и
+    оригинал) и `.DS_Store` в корне."""
     путь = tmp_path / файл
     with zipfile.ZipFile(путь, "w") as zf:
         zf.writestr(".DS_Store", b"\x00\x00\x00\x00")
         zf.writestr("__MACOSX/", "")
         zf.writestr(f"__MACOSX/{папка}/", "")
         zf.writestr(f"__MACOSX/{папка}/._Configuration.xml", b"\x00\x05\x16\x07\x00\x02")
+        zf.writestr(f"__MACOSX/{папка}/Catalogs/Р/Ext/._ObjectModule.bsl", b"\x00\x05\x16\x07\x00\x02")
         zf.writestr(f"{папка}/", "")
         zf.writestr(
             f"{папка}/Configuration.xml",
@@ -619,3 +622,98 @@ def test_архив_упакованный_finder_распознаётся(tmp_p
     assert источник.kind == KIND_EXTENSION
     assert источник.id == "Розница:ext:Доп"
     assert модуль_конфигурации.is_file()
+
+
+def test_мусор_finder_не_попадает_в_отобранный_код(tmp_path):
+    """Мелочь, ревью: `intake.is_wanted` не знал про `__MACOSX/` —
+    `__MACOSX/.../._ObjectModule.bsl` (копия ресурсной вилки настоящего
+    модуля) проходила отбор как настоящий `.bsl`. Ревью воспроизвело:
+    `items_total=2` на архиве с одним настоящим модулем, и рядом с ним на
+    диске лежал двоичный AppleDouble-файл."""
+    registry = _реестр_с_конфигурацией(tmp_path)
+
+    источник = registry.add_modules(
+        _выгрузка_расширения_как_finder(tmp_path), configuration="Розница"
+    )
+
+    assert источник.items_total == 1
+    каталог = registry.extensions_dir / "Розница" / "Доп"
+    файлы = sorted(p.name for p in каталог.rglob("*") if p.is_file())
+    assert файлы == ["ObjectModule.bsl"]
+
+
+# --------------------------------------------------------------- ре-ревью: критично
+
+
+def test_расширение_с_compatibilitymode_не_считается_конфигурацией(tmp_path):
+    """КРИТИЧНО, ре-ревью: регресс того самого класса, ради которого начат
+    этот круг. Манифест со всеми четырьмя признаками расширения
+    (`ObjectBelonging`, `ConfigurationExtensionPurpose`, непустой
+    `NamePrefix`) плюс непустым `CompatibilityMode` обязан отказывать —
+    порядок проверок сначала смотрит сильные признаки расширения и только
+    при их отсутствии решает по `CompatibilityMode`. Раньше `CompatibilityMode`
+    проверялся первым и без всякого отказа тихо считал такой архив
+    конфигурацией — а дальше ветка модулей сносила уже разобранный код."""
+    registry = _реестр_с_конфигурацией(tmp_path)
+    registry.add_modules(_выгрузка_конфигурации(tmp_path), configuration="Розница")
+    модуль_конфигурации = (
+        registry.modules_dir / "Розница" / "Catalogs/Т/Ext/ObjectModule.bsl"
+    )
+    assert модуль_конфигурации.is_file()
+
+    архив = tmp_path / "регресс.zip"
+    xml = _configuration_xml(
+        name="Доп",
+        prefix="Доп_",
+        belonging="Adopted",
+        purpose="AddOn",
+        compatibility="Version8_3_12",
+    )
+    with zipfile.ZipFile(архив, "w") as zf:
+        zf.writestr("Configuration.xml", xml)
+        zf.writestr("Catalogs/Р/Ext/ObjectModule.bsl", "Процедура Н() КонецПроцедуры")
+
+    with pytest.raises(RegistryError):
+        registry.add_modules(архив, configuration="Розница")
+
+    # Модули конфигурации не тронуты, ветка расширения не заведена.
+    assert модуль_конфигурации.is_file()
+    assert "Розница:modules" in registry.sources
+    assert not any(i.startswith("Розница:ext:") for i in registry.sources)
+
+
+def test_ошибка_распаковки_не_уносит_прежний_разбор(tmp_path):
+    """ВАЖНО, ре-ревью: снос каталога раньше шёл ДО распаковки — любая
+    ошибка `intake.extract` (битый CRC у МОДУЛЯ, не у манифеста; кончившееся
+    место; права) оставляла каталог пустым или полупустым, а источник в
+    реестре продолжал висеть со старым `items_total` — реестр и диск
+    расходились. Теперь распаковка идёт во временный каталог рядом с
+    корнем, замена — только после успеха."""
+    registry = _реестр_с_конфигурацией(tmp_path)
+    годный = registry.add_modules(_выгрузка_конфигурации(tmp_path), configuration="Розница")
+    прежний_модуль = registry.modules_dir / "Розница" / "Catalogs/Т/Ext/ObjectModule.bsl"
+    assert прежний_модуль.is_file()
+
+    битый = tmp_path / "битый_модуль.zip"
+    with zipfile.ZipFile(битый, "w") as zf:
+        zf.writestr(
+            "Configuration.xml",
+            _configuration_xml(name="Розница", compatibility="Version8_3_21"),
+        )
+        zf.writestr("Catalogs/Д/Ext/ObjectModule.bsl", "Процедура О() КонецПроцедуры")
+    _испортить_crc_в_центральном_каталоге(битый, "Catalogs/Д/Ext/ObjectModule.bsl")
+
+    with pytest.raises(zipfile.BadZipFile):
+        registry.add_modules(битый, configuration="Розница")
+
+    # Прежний разбор цел на диске — распаковка провалилась ДО замены
+    # каталога, а не после сноса старого.
+    assert прежний_модуль.is_file()
+    новый_модуль = registry.modules_dir / "Розница" / "Catalogs/Д/Ext/ObjectModule.bsl"
+    assert not новый_модуль.exists()
+    # И реестр не соврал: запись — та же, что и была.
+    assert registry.sources["Розница:modules"].items_total == годный.items_total
+    assert registry.sources["Розница:modules"].sha256 == годный.sha256
+    # Мусора-огрызка временного каталога рядом не осталось.
+    остатки = sorted(p.name for p in registry.modules_dir.iterdir())
+    assert остатки == ["Розница"]

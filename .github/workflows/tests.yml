@@ -1,0 +1,83 @@
+# Тесты не зависят от содержимого `data/`: проприетарных выгрузок и справки
+# в репозитории нет, всё нужное собирается синтетически в tests/conftest.py.
+# Поэтому прогон идёт на голом runner'е, без секретов и без внешних данных.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    name: pytest (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Установить зависимости
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: Прогнать тесты
+        run: python -m pytest
+
+  exporter:
+    # Правило проекта: `exporter-1c/dist/` — результат сборки, руками не
+    # правится, и пересобирается тем же коммитом, что и `src/`. Проверяем
+    # ровно это: пересобрали — файлы не изменились. Заодно сборщик сам
+    # проверяет, что XML-варианты компилируются на 8.3.5.
+    name: сборка обработки выгрузки
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Пересобрать модули
+        run: python exporter-1c/build_modules.py
+
+      - name: dist разошёлся с src?
+        run: |
+          if ! git diff --exit-code -- exporter-1c/dist; then
+            echo "::error::exporter-1c/dist не пересобран. Запустите: python exporter-1c/build_modules.py"
+            exit 1
+          fi
+
+  package:
+    name: сборка пакета
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Собрать колесо и проверить метаданные
+        run: |
+          python -m pip install build twine
+          python -m build
+          python -m twine check dist/*

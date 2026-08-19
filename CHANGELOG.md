@@ -486,6 +486,13 @@
   «чем разрешено пользоваться в этом коде», а не «что вообще существует», и
   пригодится провайдеру `modules`, когда тот появится.
 
+  Три числа сняты чтением тегов `Version`, `CompatibilityMode`,
+  `ConfigurationExtensionCompatibilityMode` из `Configuration.xml` внутри
+  архива выгрузки в файлы — корпус типовая конфигурация розничных продаж
+  2.3.10.5, прогон 2026-08-19, воспроизводится однострочником:
+
+      python3 -c "import zipfile,re; xml=zipfile.ZipFile('<выгрузка.zip>').read('Configuration.xml').decode('utf-8-sig'); [print(t, re.search(fr'<{t}>(.*?)</{t}>', xml).group(1)) for t in ('Version','CompatibilityMode','ConfigurationExtensionCompatibilityMode')]"
+
 ## [0.2.0] — 2026-08-19
 
 Язык запросов отдельным источником, дашборд, авторизация, слияние справок

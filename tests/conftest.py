@@ -12,11 +12,52 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from starlette.testclient import TestClient
 
 from mcp1c.model import Configuration, Field, MetadataObject, TabularPart
 from mcp1c.search import Doc, SearchIndex
 from mcp1c.store import save_syntax
 from mcp1c.syntax_model import SyntaxIndex, SyntaxItem, SyntaxVariant
+
+
+# Клиенты, у которых открыт портал: закрываются после теста автоматически.
+_ОТКРЫТЫЕ_КЛИЕНТЫ: list[TestClient] = []
+
+
+def живой_клиент(app) -> TestClient:
+    """`TestClient` с одним event loop на весь тест.
+
+    Без `with` starlette поднимает новый blocking portal **на каждый запрос** и
+    закрывает его сразу после ответа (`testclient.py`, `_portal_factory`: при
+    `self.portal is None` портал живёт ровно один вызов). Дашборд планирует
+    фоновый разбор через `asyncio.create_task` — задача попадает на этот
+    умирающий loop и отменяется вместе с ним.
+
+    Работу при этом доделывает сырой поток из `run_in_threadpool`: он к отмене
+    asyncio нечувствителен. Поэтому локально всё зелёное — поток успевает
+    домутировать реестр раньше, чем истечёт опрос. На медленном раннере не
+    успевает, и падают разные тесты от прогона к прогону.
+
+    Найдено 2026-08-19 первым же прогоном CI: 3-4 падения из 432 на
+    ubuntu-latest при 432 зелёных локально.
+    """
+    client = TestClient(app)
+    client.__enter__()
+    _ОТКРЫТЫЕ_КЛИЕНТЫ.append(client)
+    return client
+
+
+@pytest.fixture(autouse=True)
+def _закрыть_живых_клиентов():
+    """Портал — поток с event loop, и оставлять его открытым нельзя.
+
+    Клиенты создаются внутри тестов хелперами `client_for`, а не фикстурой,
+    поэтому закрываются здесь: иначе на 432 тестах накопились бы сотни
+    брошенных потоков, конкурирующих за GIL.
+    """
+    yield
+    while _ОТКРЫТЫЕ_КЛИЕНТЫ:
+        _ОТКРЫТЫЕ_КЛИЕНТЫ.pop().__exit__(None, None, None)
 
 
 @pytest.fixture

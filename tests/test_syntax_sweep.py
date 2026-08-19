@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from mcp1c.registry import Registry
 
-from conftest import write_syntax
+from conftest import write_syntax, живой_клиент
 
 
 def test_чужой_разобранный_индекс_сносится_на_старте(tmp_path):
@@ -100,7 +100,6 @@ def test_неиспользуемые_исходники_перечисляют�
 def test_страница_источников_показывает_неиспользуемые_файлы(tmp_path, monkeypatch):
     """Сто мегабайт молча — плохо; список с размерами и кнопкой — приемлемо."""
     from starlette.applications import Starlette
-    from starlette.testclient import TestClient
 
     from mcp1c import dashboard
 
@@ -116,7 +115,7 @@ def test_страница_источников_показывает_неиспо
     лишний.parent.mkdir(parents=True, exist_ok=True)
     лишний.write_bytes(b"x" * (3 * 1024 * 1024))
 
-    client = TestClient(Starlette(routes=dashboard.routes(registry)))
+    client = живой_клиент(Starlette(routes=dashboard.routes(registry)))
     страница = client.get("/sources").text
 
     assert "8.3.5.1570.hbk" in страница
@@ -129,7 +128,6 @@ def test_страница_источников_показывает_неиспо
 
 def test_удаление_неиспользуемого_файла(tmp_path, monkeypatch):
     from starlette.applications import Starlette
-    from starlette.testclient import TestClient
 
     from mcp1c import dashboard
 
@@ -144,7 +142,7 @@ def test_удаление_неиспользуемого_файла(tmp_path, mo
     лишний.parent.mkdir(parents=True, exist_ok=True)
     лишний.write_bytes(b"x" * 1024)
 
-    client = TestClient(Starlette(routes=dashboard.routes(registry)))
+    client = живой_клиент(Starlette(routes=dashboard.routes(registry)))
     client.post("/login", data={"token": "secret-token"})
     ответ = client.post(
         "/sources/forget", data={"path": "sources/hbk/8.3.5.1570.hbk"},
@@ -160,7 +158,6 @@ def test_удаление_неиспользуемого_файла(tmp_path, mo
 def test_удаление_не_выходит_за_каталог_данных(tmp_path, monkeypatch):
     """Путь приходит от клиента — из него нельзя сложить дорогу наружу."""
     from starlette.applications import Starlette
-    from starlette.testclient import TestClient
 
     from mcp1c import dashboard
 
@@ -174,7 +171,7 @@ def test_удаление_не_выходит_за_каталог_данных(t
 
     registry = Registry(data)
     registry.add_syntax(write_syntax(data / "index" / "syntax", platform="8.3.99.1"))
-    client = TestClient(Starlette(routes=dashboard.routes(registry)))
+    client = живой_клиент(Starlette(routes=dashboard.routes(registry)))
     client.post("/login", data={"token": "secret-token"})
 
     client.post("/sources/forget", data={"path": "../чужое.txt"})

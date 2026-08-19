@@ -16,7 +16,7 @@ from mcp1c import dashboard
 from mcp1c.cli import main
 from mcp1c.registry import Registry
 
-from conftest import build_configuration, query_hbk_stub, write_export
+from conftest import build_configuration, query_hbk_stub, write_export, живой_клиент
 
 
 def client_for(tmp_path) -> tuple[TestClient, Registry]:
@@ -27,7 +27,7 @@ def client_for(tmp_path) -> tuple[TestClient, Registry]:
     registry = Registry(data_dir)
     registry.add_configuration(write_export(incoming, build_configuration()))
     app = Starlette(routes=dashboard.routes(registry))
-    return TestClient(app), registry
+    return живой_клиент(app), registry
 
 
 def test_страница_источников_называет_язык_запросов(tmp_path, monkeypatch):

@@ -48,15 +48,28 @@ class IncomingScanner:
 
     def _load(self) -> dict:
         try:
-            return json.loads(self._state_path.read_text(encoding="utf-8"))
+            состояние = json.loads(self._state_path.read_text(encoding="utf-8"))
+            # Валидируем форму: верхний уровень — словарь, и в нём есть ключи.
+            if (
+                isinstance(состояние, dict)
+                and isinstance(состояние.get("digests"), dict)
+                and isinstance(состояние.get("failures"), dict)
+            ):
+                return состояние
         except (OSError, ValueError):
-            return {"digests": {}, "failures": {}}
+            pass
+        return {"digests": {}, "failures": {}}
 
     def _save(self) -> None:
-        self._state_path.parent.mkdir(parents=True, exist_ok=True)
-        self._state_path.write_text(
-            json.dumps(self._state, ensure_ascii=False), encoding="utf-8"
-        )
+        try:
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            self._state_path.write_text(
+                json.dumps(self._state, ensure_ascii=False), encoding="utf-8"
+            )
+        except OSError:
+            # Кэш расходный: если записать не смогли (том read-only, нет места),
+            # молча деградируем. В следующий раз пересчитаем.
+            pass
 
     def digest(self, путь: Path) -> str:
         """sha256 с кэшем по `(путь, размер, mtime)`."""
@@ -98,27 +111,32 @@ class IncomingScanner:
         по_хешу = {s.sha256: s for s in источники}
         по_имени = {s.origin: s for s in источники}
         for путь in sorted(каталог.glob("*.zip")):
-            хеш = self.digest(путь)
-            источник = по_хешу.get(хеш)
-            if путь.name in self.running:
-                состояние, подробность = STATE_RUNNING, ""
-            elif источник is not None:
-                устарел = getattr(источник, "selection_version", SELECTION_VERSION)
-                состояние = STATE_STALE if устарел < SELECTION_VERSION else STATE_READY
-                подробность = источник.id
-            elif путь.name in self._state["failures"]:
-                состояние = STATE_FAILED
-                подробность = self._state["failures"][путь.name]
-            elif путь.name in по_имени:
-                состояние, подробность = STATE_UPDATED, по_имени[путь.name].id
-            else:
-                состояние, подробность = STATE_NEW, ""
-            строки.append(
-                {
-                    "name": путь.name,
-                    "size": путь.stat().st_size,
-                    "state": состояние,
-                    "detail": подробность,
-                }
-            )
+            try:
+                хеш = self.digest(путь)
+                источник = по_хешу.get(хеш)
+                if путь.name in self.running:
+                    состояние, подробность = STATE_RUNNING, ""
+                elif источник is not None:
+                    устарел = getattr(источник, "selection_version", SELECTION_VERSION)
+                    состояние = STATE_STALE if устарел < SELECTION_VERSION else STATE_READY
+                    подробность = источник.id
+                elif путь.name in self._state["failures"]:
+                    состояние = STATE_FAILED
+                    подробность = self._state["failures"][путь.name]
+                elif путь.name in по_имени:
+                    состояние, подробность = STATE_UPDATED, по_имени[путь.name].id
+                else:
+                    состояние, подробность = STATE_NEW, ""
+                строки.append(
+                    {
+                        "name": путь.name,
+                        "size": путь.stat().st_size,
+                        "state": состояние,
+                        "detail": подробность,
+                    }
+                )
+            except OSError:
+                # Файл исчез между glob и stat, или это каталог вместо файла.
+                # Одна строка не имеет права уносить всю страницу — пропускаем.
+                pass
         return строки

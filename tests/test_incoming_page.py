@@ -115,6 +115,78 @@ def test_копирующийся_файл_показан_без_кнопки(tm
     assert "<button>разобрать</button>" not in хвост
 
 
+def _стенд_с_двумя_конфигурациями(tmp_path, monkeypatch):
+    monkeypatch.setenv("ADMIN_TOKEN", "секрет")
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    данные = tmp_path / "data"
+    входящее1 = tmp_path / "in1"
+    входящее2 = tmp_path / "in2"
+    данные.mkdir()
+    входящее1.mkdir()
+    входящее2.mkdir()
+    registry = Registry(данные)
+    registry.add_configuration(write_export(входящее1, build_configuration(name="Розница")))
+    registry.add_configuration(
+        write_export(входящее2, build_configuration(name="УправлениеТорговлей"))
+    )
+    registry.incoming_dir.mkdir(parents=True, exist_ok=True)
+    архив = registry.incoming_dir / "модули.zip"
+    архив.write_bytes(b"PK\x05\x06" + b"\0" * 18)
+    состарить(архив)
+    client = живой_клиент(Starlette(routes=dashboard.routes(registry)))
+    client.post("/login", data={"token": "секрет"})
+    return client, registry
+
+
+def test_при_двух_конфигурациях_есть_выбор_с_обоими_именами(tmp_path, monkeypatch):
+    client, _ = _стенд_с_двумя_конфигурациями(tmp_path, monkeypatch)
+
+    страница = client.get("/sources").text
+    хвост = страница.split("Входящие выгрузки")[1]
+
+    assert "<select name=configuration>" in хвост
+    assert "<option>Розница</option>" in хвост
+    assert "<option>УправлениеТорговлей</option>" in хвост
+
+
+def test_при_одной_конфигурации_выбора_нет(tmp_path, monkeypatch):
+    client, _, _ = _стенд_со_свежим_реестром(tmp_path, monkeypatch)
+
+    страница = client.get("/sources").text
+    хвост = страница.split("Входящие выгрузки")[1]
+
+    assert "<select name=configuration>" not in хвост
+    assert "<button>разобрать</button>" in хвост
+
+
+def _стенд_без_конфигураций(tmp_path, monkeypatch):
+    monkeypatch.setenv("ADMIN_TOKEN", "секрет")
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    данные = tmp_path / "data"
+    данные.mkdir()
+    registry = Registry(данные)
+    registry.incoming_dir.mkdir(parents=True, exist_ok=True)
+    архив = registry.incoming_dir / "модули.zip"
+    архив.write_bytes(b"PK\x05\x06" + b"\0" * 18)
+    состарить(архив)
+    client = живой_клиент(Starlette(routes=dashboard.routes(registry)))
+    client.post("/login", data={"token": "секрет"})
+    return client, registry
+
+
+def test_без_конфигураций_кнопки_нет_но_файл_виден(tmp_path, monkeypatch):
+    """Привязывать не к чему — но человек должен видеть, что файл замечен."""
+    client, _ = _стенд_без_конфигураций(tmp_path, monkeypatch)
+
+    страница = client.get("/sources").text
+
+    assert "модули.zip" in страница
+    хвост = страница.split("Входящие выгрузки")[1]
+    assert "<button>разобрать</button>" not in хвост
+    assert "<button>переразобрать</button>" not in хвост
+    assert "<select name=configuration>" not in хвост
+
+
 def test_пустой_каталог_подсказывает_куда_класть(tmp_path, monkeypatch):
     """Без подсказки приём невидим: пустой каталог не рисовал блок вовсе."""
     monkeypatch.setenv("ADMIN_TOKEN", "секрет")

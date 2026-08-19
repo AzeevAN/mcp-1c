@@ -271,3 +271,49 @@ def test_негодный_архив_не_хешируется(tmp_path, monkeyp
         registry.add_modules(метаданные, configuration="Розница")
 
     assert считали == []
+
+
+def test_платформа_модулей_наследуется_от_конфигурации(tmp_path):
+    """Выгрузка в файлы точной сборки платформы не содержит — берём у хозяйки."""
+    registry = _реестр_с_конфигурацией(tmp_path)
+
+    модули = registry.add_modules(_выгрузка_в_файлы(tmp_path), configuration="Розница")
+
+    assert модули.platform == registry.sources["Розница"].platform
+    assert модули.platform == "8.3.23.1997"
+
+
+def test_платформа_модулей_пустая_если_у_конфигурации_пустая(tmp_path):
+    """Ничего не выдумываем: нет платформы у конфигурации — нет и у модулей."""
+    входящее = tmp_path / "in"
+    входящее.mkdir()
+    registry = Registry(tmp_path / "data")
+    конфигурация = build_configuration(name="Розница")
+    конфигурация.platform = ""
+    registry.add_configuration(write_export(входящее, конфигурация))
+
+    модули = registry.add_modules(_выгрузка_в_файлы(tmp_path), configuration="Розница")
+
+    assert модули.platform == ""
+
+
+def test_гонка_снятия_конфигурации_не_роняет_разбор(tmp_path, monkeypatch):
+    """Между `extract` (секунды в отдельном потоке) и записью источника
+    конфигурацию мог снять параллельный запрос — не голый `KeyError`."""
+    from mcp1c import intake
+
+    registry = _реестр_с_конфигурацией(tmp_path)
+    настоящий = intake.extract
+
+    def подмена(архив, корень):
+        результат = настоящий(архив, корень)
+        registry.remove("Розница")
+        return результат
+
+    monkeypatch.setattr(intake, "extract", подмена)
+
+    модули = registry.add_modules(_выгрузка_в_файлы(tmp_path), configuration="Розница")
+
+    assert модули.platform == ""
+    assert "Розница:modules" in registry.sources
+    assert "Розница" not in registry.configurations

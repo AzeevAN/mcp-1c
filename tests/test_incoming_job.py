@@ -148,6 +148,58 @@ def test_несколько_конфигураций_разбор_не_прив�
     assert "RegistryError" not in страница
 
 
+def test_выбор_конфигурации_привязывает_код_к_ней(tmp_path, monkeypatch):
+    """Форма шлёт выбранное имя — оно и есть хозяйка, вторая не задета."""
+    monkeypatch.setenv("ADMIN_TOKEN", "секрет")
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    client, registry = _стенд(tmp_path)
+    ещё_входящее = tmp_path / "in2"
+    ещё_входящее.mkdir()
+    registry.add_configuration(
+        write_export(ещё_входящее, build_configuration(name="УправлениеТорговлей"))
+    )
+    client.post("/login", data={"token": "секрет"})
+
+    ответ = client.post(
+        "/sources/incoming/parse",
+        data={"name": "модули.zip", "configuration": "УправлениеТорговлей"},
+        follow_redirects=False,
+    )
+
+    assert ответ.status_code == 303
+    дождаться(client, lambda t: "УправлениеТорговлей:modules" in t or dashboard.JOB_DONE in t)
+    assert "УправлениеТорговлей:modules" in registry.sources
+    assert "Розница:modules" not in registry.sources
+    assert (registry.modules_dir / "УправлениеТорговлей").is_dir()
+
+
+def test_неизвестная_конфигурация_отклоняется_до_разбора(tmp_path, monkeypatch):
+    """Форму присылает человек — подставить можно что угодно, проверяем."""
+    monkeypatch.setenv("ADMIN_TOKEN", "секрет")
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    client, registry = _стенд(tmp_path)
+    ещё_входящее = tmp_path / "in2"
+    ещё_входящее.mkdir()
+    registry.add_configuration(
+        write_export(ещё_входящее, build_configuration(name="УправлениеТорговлей"))
+    )
+    client.post("/login", data={"token": "секрет"})
+
+    ответ = client.post(
+        "/sources/incoming/parse",
+        data={"name": "модули.zip", "configuration": "НетТакой"},
+        follow_redirects=False,
+    )
+
+    assert ответ.status_code == 303
+    текст = client.get("/sources").text
+    assert "НетТакой" in текст
+    assert "реестре" in текст
+    assert "Розница:modules" not in registry.sources
+    assert "УправлениеТорговлей:modules" not in registry.sources
+    assert not (registry.modules_dir / "НетТакой").exists()
+
+
 def test_разбор_записан_в_registry_json(tmp_path, monkeypatch):
     """Память процесса — не результат работы: рестарт её не переживает.
 

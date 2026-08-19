@@ -276,16 +276,28 @@ def _configuration_for(registry: Registry, архив: Path) -> str:
             "к ней и привязывается код."
         )
     raise RegistryError(
-        f"{архив.name}: загружено {len(имена)} конфигураций, "
-        "привязка выгрузки в файлы к конкретной пока не реализована."
+        f"{архив.name}: загружено {len(имена)} конфигураций — выберите "
+        "нужную в форме рядом с кнопкой."
     )
 
 
-def _run_incoming(registry: Registry, сканер, job: dict, архив: Path) -> None:
-    """Разбор выгрузки из `incoming/`. Исходник остаётся на месте."""
+def _run_incoming(
+    registry: Registry,
+    сканер,
+    job: dict,
+    архив: Path,
+    конфигурация: str | None = None,
+) -> None:
+    """Разбор выгрузки из `incoming/`. Исходник остаётся на месте.
+
+    `конфигурация` — уже проверенный обработчиком выбор человека (форма,
+    поле `configuration`). Пустая строка или `None` — поле не прислали или
+    человек оставил его пустым, тогда решает `_configuration_for` сама, как
+    и раньше.
+    """
     job["state"] = JOB_PARSING
     try:
-        имя_конфигурации = _configuration_for(registry, архив)
+        имя_конфигурации = конфигурация or _configuration_for(registry, архив)
         registry.add_modules(архив, configuration=имя_конфигурации)
         # `add_modules` пишет только в `self.sources`, в память процесса.
         # Без записи на диск разбор не переживал бы рестарт: код на месте,
@@ -1243,6 +1255,10 @@ def _sources_page(
 
         if входящие is None:
             входящие = _scanner(registry).scan()
+        # Список тот же, что в таблице «Загружено»: у источника конфигурации
+        # `id` — это её имя (`add_configuration`), сортировка по `id` там и
+        # сортировка имён здесь совпадают.
+        имена_конфигураций = sorted(registry.configurations)
         if входящие:
             parts.append("<h2>Входящие выгрузки</h2><table>"
                          "<tr><th>Файл<th>Размер<th>Состояние</tr>")
@@ -1250,12 +1266,18 @@ def _sources_page(
                 # «Разбор не удался» — не тупик: постановка (§2) назначает ему
                 # то же действие. Без кнопки исправленный архив разобрать было
                 # бы нечем, кроме переименования файла.
-                можно = строка["state"] in (
-                    STATE_NEW,
-                    STATE_UPDATED,
-                    STATE_STALE,
-                    STATE_FAILED,
-                ) and not строка.get("settling")
+                # Конфигураций ноль — привязывать код не к чему, кнопки нет
+                # вовсе (нынешний отказ человек увидел бы только после нажатия).
+                можно = (
+                    строка["state"] in (
+                        STATE_NEW,
+                        STATE_UPDATED,
+                        STATE_STALE,
+                        STATE_FAILED,
+                    )
+                    and not строка.get("settling")
+                    and bool(имена_конфигураций)
+                )
                 # «Переразобрать» там, где прежний разбор перетирается: человек
                 # должен понимать, что делает с уже лежащим на диске кодом.
                 подпись = (
@@ -1263,10 +1285,23 @@ def _sources_page(
                     if строка["state"] in (STATE_UPDATED, STATE_STALE)
                     else "разобрать"
                 )
+                # Выбор конфигурации — только когда есть из чего выбирать:
+                # при одной загруженной лишний выбор из одного варианта только
+                # мешает, `_configuration_for` и так возьмёт единственную.
+                выбор = (
+                    "<select name=configuration>"
+                    + "".join(
+                        f"<option>{escape(имя)}</option>" for имя in имена_конфигураций
+                    )
+                    + "</select> "
+                    if можно and len(имена_конфигураций) > 1
+                    else ""
+                )
                 кнопка = (
                     "<form method=post action=/sources/incoming/parse "
                     "style='display:inline'>"
                     f"<input type=hidden name=name value='{escape(строка['name'])}'>"
+                    f"{выбор}"
                     f"<button>{подпись}</button></form>"
                     if можно
                     else ""
@@ -1827,9 +1862,27 @@ def routes(registry: Registry) -> list[Route]:
             await run_in_threadpool(сканер.note_failure, архив, job["error"])
             return RedirectResponse("/sources", status_code=303)
 
+        # Конфигурацию выбирает человек в форме рядом с кнопкой (поле не
+        # обязательно — пустое отдаёт решение `_configuration_for`). Форму
+        # присылает человек, и подставить туда можно что угодно; имя уходит
+        # в путь на диске (`_modules_root`), поэтому проверяем членство в
+        # уже загруженных ДО того, как задание уйдёт в фон — здесь же, где
+        # и остальные синхронные отказы этого обработчика.
+        конфигурация = str(form.get("configuration", "")).strip()
+        if конфигурация and конфигурация not in registry.configurations:
+            job["state"] = JOB_FAILED
+            job["error"] = (
+                f"конфигурации «{конфигурация}» нет в реестре — выберите "
+                "загруженную в форме рядом с кнопкой."
+            )
+            await run_in_threadpool(сканер.note_failure, архив, job["error"])
+            return RedirectResponse("/sources", status_code=303)
+
         сканер.running.add(имя)
         задача = asyncio.create_task(
-            run_in_threadpool(_run_incoming, registry, сканер, job, архив)
+            run_in_threadpool(
+                _run_incoming, registry, сканер, job, архив, конфигурация or None
+            )
         )
         _ФОНОВЫЕ.add(задача)
         задача.add_done_callback(_ФОНОВЫЕ.discard)

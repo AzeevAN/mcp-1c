@@ -1108,8 +1108,20 @@ _SOURCE_KIND_TITLES = {KIND_QUERY: "Язык запросов"}
 
 
 def _sources_page(
-    registry: Registry, *, error: str = "", authorized: bool = False
+    registry: Registry,
+    *,
+    error: str = "",
+    authorized: bool = False,
+    входящие: list[dict] | None = None,
 ) -> HTMLResponse:
+    """Страница «Источники».
+
+    `входящие` — уже собранный список из `IncomingScanner.scan()`. Параметр
+    необязательный: сканирование считает sha256 файлов в `incoming/`, а это
+    секунды на архиве в полтора гигабайта, и в цикле событий такой счёт
+    останавливает весь процесс — включая `/health` и инструменты MCP. Поэтому
+    обработчик `GET /sources` считает его в потоке и передаёт готовым.
+    """
     parts: list[str] = []
     if error:
         parts.append(f"<div class=error>{escape(error)}</div>")
@@ -1211,7 +1223,8 @@ def _sources_page(
             STATE_UPDATED,
         )
 
-        входящие = _scanner(registry).scan()
+        if входящие is None:
+            входящие = _scanner(registry).scan()
         if входящие:
             parts.append("<h2>Входящие выгрузки</h2><table>"
                          "<tr><th>Файл<th>Размер<th>Состояние</tr>")
@@ -1457,7 +1470,16 @@ def routes(registry: Registry) -> list[Route]:
         return _overview_page(registry)
 
     async def sources(request: Request) -> HTMLResponse:
-        return _sources_page(registry, authorized=_authorized(request))
+        authorized = _authorized(request)
+        # Сканирование считает sha256 файлов из `incoming/`: на архиве в
+        # 1,4 ГБ это секунды, и в цикле событий они останавливают весь
+        # процесс — другие страницы, `/health`, инструменты MCP. Уходит в
+        # поток тем же способом, что и разбор. Невошедшему блок не рисуется,
+        # значит и считать нечего.
+        входящие = (
+            await run_in_threadpool(_scanner(registry).scan) if authorized else None
+        )
+        return _sources_page(registry, authorized=authorized, входящие=входящие)
 
     async def dictionary_page(request: Request) -> HTMLResponse:
         return _dictionary_page(

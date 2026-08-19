@@ -184,3 +184,24 @@ def test_свежий_файл_не_хешируется_и_объясняетс
     assert строки[0]["state"] == STATE_NEW
     assert "копируется" in строки[0]["detail"]
     assert строки[0]["settling"] is True
+
+
+def test_метка_в_будущем_не_считается_копированием(tmp_path):
+    """`cp -p`, `rsync -t`, перекос часов — и файл навсегда «копируется».
+
+    Односторонняя проверка возраста давала тупик того же класса, что и
+    неснимаемая неудача: ни кнопки, ни разбора, выйти через интерфейс нельзя.
+    """
+    import os
+    import time
+
+    registry = _реестр(tmp_path)
+    файл = _архив(registry, "в.zip")
+    вперёд = time.time() + 3600
+    os.utime(файл, (вперёд, вперёд))
+
+    строки = IncomingScanner(registry).scan()
+
+    assert строки[0]["settling"] is False
+    assert строки[0]["state"] == STATE_NEW
+    assert строки[0]["detail"] == ""

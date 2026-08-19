@@ -49,3 +49,20 @@ def test_обычный_член_ложится_внутрь_корня(tmp_path
     цель = safe_target("Catalogs/Товары/Ext/ObjectModule.bsl", tmp_path)
     assert цель is not None
     assert tmp_path in цель.parents
+
+
+def test_ресурсная_вилка_finder_отвергается():
+    """Мелочь 3, ре-ревью: правило про `__MACOSX/` и правило про `._` —
+    два разных условия, и тест на архив «как Finder» бьёт сразу по обоим
+    сразу (`__MACOSX/.../._ObjectModule.bsl`). Здесь — по одному отдельно:
+    имя, начинающееся на `._`, отвергается вне `__MACOSX/` тоже."""
+    assert not is_wanted("Catalogs/Товары/Ext/._ObjectModule.bsl", FORMAT_TREE)
+    assert not is_wanted("Constants/М/._Ext.txt", FORMAT_FLAT)
+
+
+def test_каталог_метаданных_named___macosx__не_путается_со_служебным():
+    """Обратная сторона: `__MACOSX` — законное имя каталога метаданных,
+    если оно не на первом (верхнем) уровне пути. Правило исключает только
+    `__MACOSX/` как каталог ВЕРХНЕГО уровня архива (мусор Finder), а не
+    любое вхождение этой строки где-то в пути."""
+    assert is_wanted("Catalogs/__MACOSX/Ext/ObjectModule.bsl", FORMAT_TREE)

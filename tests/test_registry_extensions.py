@@ -717,3 +717,74 @@ def test_ошибка_распаковки_не_уносит_прежний_ра
     # Мусора-огрызка временного каталога рядом не осталось.
     остатки = sorted(p.name for p in registry.modules_dir.iterdir())
     assert остатки == ["Розница"]
+
+
+def test_второе_переименование_не_удалось_прежний_разбор_восстановлен(tmp_path, monkeypatch):
+    """ВАЖНО 1, ре-ревью: рокировка (`корень -> отставленный`, затем
+    `временный -> корень`) — точка невозврата ОДНО переименование, не снос.
+    Если второе переименование не удалось (место кончилось между первым
+    `rename` и вторым — не гипотетика), отставленный каталог обязан
+    вернуться на место корня: прежний разбор снова цел, реестр и диск
+    согласованы."""
+    from pathlib import Path
+
+    registry = _реестр_с_конфигурацией(tmp_path)
+    годный = registry.add_modules(_выгрузка_конфигурации(tmp_path), configuration="Розница")
+    прежний_модуль = registry.modules_dir / "Розница" / "Catalogs/Т/Ext/ObjectModule.bsl"
+    assert прежний_модуль.is_file()
+
+    настоящий_rename = Path.rename
+
+    def подмена(self, цель):
+        # Перехватываем только переименование ВРЕМЕННОГО каталога на место
+        # корня — не первую рокировку («корень -> отставленный») и не откат
+        # («отставленный -> корень»), у них другое имя источника.
+        if ".tmp-" in self.name:
+            raise OSError("нет места (симуляция)")
+        return настоящий_rename(self, цель)
+
+    monkeypatch.setattr(Path, "rename", подмена)
+
+    новая = tmp_path / "новая.zip"
+    with zipfile.ZipFile(новая, "w") as zf:
+        zf.writestr(
+            "Configuration.xml",
+            _configuration_xml(name="Розница", compatibility="Version8_3_21"),
+        )
+        zf.writestr("Catalogs/Д/Ext/ObjectModule.bsl", "Процедура П() КонецПроцедуры")
+
+    with pytest.raises(OSError):
+        registry.add_modules(новая, configuration="Розница")
+
+    # Прежний разбор на месте — рокировка откатилась.
+    assert прежний_модуль.is_file()
+    новый_модуль = registry.modules_dir / "Розница" / "Catalogs/Д/Ext/ObjectModule.bsl"
+    assert not новый_модуль.exists()
+    assert registry.sources["Розница:modules"].items_total == годный.items_total
+    assert registry.sources["Розница:modules"].sha256 == годный.sha256
+    # Ни временного, ни отставленного каталога рядом не осталось.
+    остатки = sorted(p.name for p in registry.modules_dir.iterdir())
+    assert остатки == ["Розница"]
+
+
+def test_режим_каталога_не_сужается_после_переразбора(tmp_path):
+    """ВАЖНО 2, ре-ревью: `tempfile.mkdtemp` создаёт каталог с правами 0700,
+    и без явного выравнивания эти права молча достались бы каталогу кода
+    после рокировки — раньше его создавал `mkdir` внутри `extract()` и он
+    получал обычные 0755. На bind-mount человек на хосте, читавший каталог
+    свободно, после переразбора вдруг перестал бы туда заходить."""
+    registry = _реестр_с_конфигурацией(tmp_path)
+    registry.add_modules(_выгрузка_конфигурации(tmp_path), configuration="Розница")
+    корень = registry.modules_dir / "Розница"
+    assert oct(корень.stat().st_mode & 0o777) == "0o755"
+
+    # Владелец сузил права каталога руками (bind-mount, свои соображения) —
+    # переразбор не имеет права отменить это молча ни в одну, ни в другую
+    # сторону: сохраняем ровно то, что было.
+    корень.chmod(0o750)
+
+    registry.add_modules(
+        _выгрузка_конфигурации(tmp_path, файл="модули2.zip"), configuration="Розница"
+    )
+
+    assert oct(корень.stat().st_mode & 0o777) == "0o750"

@@ -169,3 +169,107 @@ def test_очистка_журнала_без_токена_отклоняетс�
     client, _, _ = client_for(tmp_path)
 
     assert client.post("/sources/jobs/clear").status_code == 403
+
+
+# --- Показ передачи файла ----------------------------------------------------
+#
+# Сервер хода передачи не видит: `await request.form()` возвращает управление
+# только когда тело пришло целиком, и `_start_job` вызывается уже после этого.
+# Проверено на живом сокете 2026-08-19: 40 МБ шли 8,1 с, за это время 32 опроса
+# `/sources` со второго соединения не увидели ни одного задания.
+#
+# Значит показать передачу может только браузер — у него есть
+# `XMLHttpRequest.upload.onprogress`. Форма при этом остаётся обычной: правило
+# дашборда — работать с выключенным JS.
+
+
+def test_форма_загрузки_остаётся_обычной(tmp_path, monkeypatch):
+    """JS только дополняет форму. Выключен — загрузка работает как раньше."""
+    monkeypatch.setenv("ADMIN_TOKEN", "секрет")
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    client, _, _ = client_for(tmp_path)
+    client.post("/login", data={"token": "секрет"})
+
+    страница = client.get("/sources").text
+
+    assert "method=post action=/sources enctype=multipart/form-data" in страница
+    assert "<input type=file name=file" in страница
+
+
+def test_страница_источников_несёт_индикатор_передачи(tmp_path, monkeypatch):
+    monkeypatch.setenv("ADMIN_TOKEN", "секрет")
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    client, _, _ = client_for(tmp_path)
+    client.post("/login", data={"token": "секрет"})
+
+    страница = client.get("/sources").text
+
+    assert "id=upload-form" in страница
+    assert "id=upload-progress" in страница
+    assert "upload.onprogress" in страница
+
+
+def test_предел_размера_отдан_браузеру_числом(tmp_path, monkeypatch):
+    """Иначе файл-переросток заливается целиком и лишь потом получает отказ.
+
+    Проверка `MAX_UPLOAD` на сервере стоит после приёма: к моменту отказа
+    полтерабайта трафика уже потрачены. Браузер знает размер до отправки —
+    но только если предел ему назвали.
+    """
+    monkeypatch.setenv("ADMIN_TOKEN", "секрет")
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    client, _, _ = client_for(tmp_path)
+    client.post("/login", data={"token": "секрет"})
+
+    страница = client.get("/sources").text
+
+    assert str(dashboard.MAX_UPLOAD) in страница
+
+
+def test_индикатор_не_отдаётся_невошедшему(tmp_path, monkeypatch):
+    """Форма загрузки видна только администратору — и скрипт вместе с ней."""
+    monkeypatch.setenv("ADMIN_TOKEN", "секрет")
+    # Токен латиницей: заголовки HTTP кодируются latin-1, и кириллический до
+    # сервера физически не доходит — см. README, раздел «Безопасность».
+    monkeypatch.setenv("API_TOKEN", "read-only")
+    client, _, _ = client_for(tmp_path)
+
+    страница = client.get("/sources", headers={"X-Api-Token": "read-only"}).text
+
+    assert "id=upload-form" not in страница
+    assert "upload.onprogress" not in страница
+
+
+def test_размер_мелкого_файла_показан_в_килобайтах(tmp_path, monkeypatch):
+    """«0.0 МБ» не сообщает ничего: выгрузка бывает и в две тысячи байт."""
+    monkeypatch.setenv("ADMIN_TOKEN", "секрет")
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    client, _, _ = client_for(tmp_path)
+    client.post("/login", data={"token": "секрет"})
+
+    задание = dashboard._start_job("Мелкая.zip", 1588)
+    задание["state"] = dashboard.JOB_DONE
+
+    страница = client.get("/sources").text
+
+    assert "2 КБ" in страница
+    assert "0.0 МБ" not in страница
+
+
+def test_журнал_не_называет_размер_принятым(tmp_path, monkeypatch):
+    """Колонка «Принято» врала: к моменту задания файл уже пришёл целиком.
+
+    `await request.form()` возвращает управление только когда тело получено,
+    и `_start_job` вызывается после этого. Хода приёма журнал не показывает и
+    показать не может — значит и называться так не должен.
+    """
+    monkeypatch.setenv("ADMIN_TOKEN", "секрет")
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    client, _, _ = client_for(tmp_path)
+    client.post("/login", data={"token": "секрет"})
+    dashboard._start_job("Любая.zip", 5 * 1024 * 1024)
+
+    страница = client.get("/sources").text
+
+    assert "<th>Размер" in страница
+    assert "<th>Принято" not in страница

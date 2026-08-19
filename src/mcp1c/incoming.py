@@ -74,10 +74,11 @@ class IncomingScanner:
         self.registry = registry
         self._state_path = registry.data_dir / "incoming-state.json"
         self._state = self._load()
-        # `note_failure` зовётся из потока разбора, `digest` — из цикла
-        # событий, словарь у них общий, и `json.dumps` идёт поверх него.
-        # Без замка «dictionary changed size during iteration» уронил бы
-        # показ страницы, а `_save` ловит только `OSError`.
+        # Словарь общий у потоков: в него пишет разбор (`note_failure`,
+        # `clear_failure`), а сканирование страницы (`digest`) идёт своим
+        # потоком из `run_in_threadpool` — и `json.dumps` бежит поверх того же
+        # словаря. Без замка «dictionary changed size during iteration» уронил
+        # бы показ страницы, а `_save` ловит только `OSError`.
         self._замок = threading.RLock()
         self.running: set[str] = set()
 

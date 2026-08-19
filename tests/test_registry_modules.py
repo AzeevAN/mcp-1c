@@ -192,3 +192,34 @@ def test_негодный_архив_не_сносит_прежний_разбо
     в_реестре = registry.sources["Розница:modules"]
     assert в_реестре.sha256 == источник.sha256
     assert в_реестре.items_total == источник.items_total
+
+
+def test_снятие_источника_не_держит_замок_на_время_удаления(tmp_path, monkeypatch):
+    """Тот же замок берут `resolve()` и инструменты MCP: 11 072 файла — не миг."""
+    import shutil
+    import threading
+
+    registry = _реестр_с_конфигурацией(tmp_path)
+    источник = registry.add_modules(_выгрузка_в_файлы(tmp_path), configuration="Розница")
+    свободен = []
+    настоящий_rmtree = shutil.rmtree
+
+    def под_наблюдением(путь, *args, **kwargs):
+        # Проверяем из ЧУЖОГО потока: `RLock` повторно входим для своего.
+        def попробовать():
+            взят = registry._lock.acquire(timeout=2)
+            свободен.append(взят)
+            if взят:
+                registry._lock.release()
+
+        поток = threading.Thread(target=попробовать)
+        поток.start()
+        поток.join()
+        return настоящий_rmtree(путь, *args, **kwargs)
+
+    monkeypatch.setattr("mcp1c.registry.shutil.rmtree", под_наблюдением)
+
+    registry.remove(источник.id)
+
+    assert свободен == [True]
+    assert not (registry.modules_dir / "Розница").exists()

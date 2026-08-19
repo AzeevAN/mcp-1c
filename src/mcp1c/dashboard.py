@@ -1787,7 +1787,12 @@ def routes(registry: Registry) -> list[Route]:
             # навсегда — `_start_job` вычищает только завершённые записи.
             job["state"] = JOB_FAILED
             job["error"] = f"{архив.name}: не похоже на zip-архив ({error})"
-            сканер.note_failure(архив, job["error"])
+            # `note_failure` считает sha256 файла, чтобы привязать отказ к
+            # содержимому: на архиве в 1,4 ГБ это секунды, и в цикле событий
+            # они остановили бы весь процесс — ровно то, ради чего сканирование
+            # уводили в поток. Промах кэша достижим: человек положил
+            # исправленный архив и жмёт кнопку со старой страницы.
+            await run_in_threadpool(сканер.note_failure, архив, job["error"])
             return RedirectResponse("/sources", status_code=303)
         try:
             хватает, свободно = intake.enough_space(нужно, registry.data_dir)
@@ -1805,14 +1810,14 @@ def routes(registry: Registry) -> list[Route]:
                 "работает от uid 10001, а `chown` из образа на bind-mount не "
                 "действует."
             )
-            сканер.note_failure(архив, job["error"])
+            await run_in_threadpool(сканер.note_failure, архив, job["error"])
             return RedirectResponse("/sources", status_code=303)
         if not хватает:
             job["state"] = JOB_FAILED
             job["error"] = (
                 f"нужно {нужно // 2**20} МБ, свободно {свободно // 2**20} МБ"
             )
-            сканер.note_failure(архив, job["error"])
+            await run_in_threadpool(сканер.note_failure, архив, job["error"])
             return RedirectResponse("/sources", status_code=303)
 
         сканер.running.add(имя)
@@ -1878,7 +1883,10 @@ def routes(registry: Registry) -> list[Route]:
 
         form = await request.form()
         try:
-            registry.remove(str(form.get("id", "")))
+            # У источника модулей снятие уносит каталог с кодом — 11 072 файла
+            # на живой конфигурации. В цикле событий это остановило бы все
+            # страницы и `/health`; словарной операцией `remove` быть перестал.
+            await run_in_threadpool(registry.remove, str(form.get("id", "")))
         except RegistryError as error:
             return _sources_page(registry, error=str(error), authorized=True)
         registry.save()

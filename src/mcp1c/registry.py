@@ -1108,6 +1108,7 @@ class Registry:
                 preloaded_query = None
 
     def remove(self, source_id: str) -> None:
+        каталог_модулей: Path | None = None
         with self._lock:
             source = self.sources.pop(source_id, None)
             if source is None:
@@ -1120,13 +1121,16 @@ class Registry:
             if source.kind == KIND_MODULES:
                 # Каталог с кодом — всё, что этот источник занимает на диске
                 # (351 МБ на живой конфигурации). `orphan_sources` его не
-                # покажет: тот обходит только `sources_dir`. Не снести здесь
-                # значит занять место невидимо и навсегда — вернуть его через
-                # интерфейс было бы нечем.
-                if source.stored_path:
-                    self._drop_modules_root(self._absolute(source.stored_path))
-                return
-            if source.kind == KIND_QUERY:
+                # покажет: тот обходит только `sources_dir`. Не снести значит
+                # занять место невидимо и навсегда — вернуть его через
+                # интерфейс было бы нечем. Но сносится он ПОСЛЕ выхода из-под
+                # замка: это 11 072 файла, а тот же замок берут `resolve()` и
+                # все инструменты MCP — на время удаления встали бы и
+                # страницы, и `/health`, и ответы инструментов.
+                каталог_модулей = (
+                    self._absolute(source.stored_path) if source.stored_path else None
+                )
+            elif source.kind == KIND_QUERY:
                 # В `syntax_versions` источника нет, но его элементы сидят в
                 # поисковом индексе и таблице имён `self.syntax` — без
                 # пересборки они останутся там до перезапуска.
@@ -1138,6 +1142,11 @@ class Registry:
             else:
                 self._relation_cache.clear()
                 snapshot = dict(self.syntax_versions)
+
+        if source.kind == KIND_MODULES:
+            if каталог_модулей is not None:
+                self._drop_modules_root(каталог_модулей)
+            return
 
         self._apply_syntax(snapshot)
 

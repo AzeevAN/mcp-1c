@@ -295,6 +295,68 @@ def test_сканирование_идёт_не_в_цикле_событий(tmp
     assert где_считали == ["поток"]
 
 
+def test_запись_неудачи_идёт_не_в_цикле_событий(tmp_path, monkeypatch):
+    """`note_failure` считает sha256 — на 1,4 ГБ это секунды."""
+    import asyncio
+
+    from mcp1c.incoming import IncomingScanner
+
+    monkeypatch.setenv("ADMIN_TOKEN", "секрет")
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    client, registry = _стенд(tmp_path)
+    client.post("/login", data={"token": "секрет"})
+    битый = registry.incoming_dir / "битый.zip"
+    битый.write_bytes(b"not a zip at all")
+    состарить(битый)
+    где_писали = []
+    настоящая = IncomingScanner.note_failure
+
+    def подмена(self, путь, причина):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            где_писали.append("поток")
+        else:
+            где_писали.append("цикл событий")
+        return настоящая(self, путь, причина)
+
+    monkeypatch.setattr(IncomingScanner, "note_failure", подмена)
+
+    client.post(
+        "/sources/incoming/parse", data={"name": "битый.zip"}, follow_redirects=False
+    )
+
+    assert где_писали == ["поток"]
+
+
+def test_снятие_источника_идёт_не_в_цикле_событий(tmp_path, monkeypatch):
+    """Снятие источника модулей уносит тысячи файлов — не словарная операция."""
+    import asyncio
+
+    monkeypatch.setenv("ADMIN_TOKEN", "секрет")
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    client, registry = _стенд(tmp_path)
+    client.post("/login", data={"token": "секрет"})
+    где_снимали = []
+    настоящий = Registry.remove
+
+    def подмена(self, source_id):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            где_снимали.append("поток")
+        else:
+            где_снимали.append("цикл событий")
+        return настоящий(self, source_id)
+
+    monkeypatch.setattr(Registry, "remove", подмена)
+
+    client.post("/sources/remove", data={"id": "Розница"}, follow_redirects=False)
+
+    assert где_снимали == ["поток"]
+    assert "Розница" not in registry.sources
+
+
 def дождаться(client, условие, таймаут: float = 20.0) -> str:
     import time
 

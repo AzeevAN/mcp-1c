@@ -30,3 +30,17 @@ def test_член_наружу_не_записывается(tmp_path):
 
     assert файлов == 0
     assert not (tmp_path / "наружу.bsl").exists()
+
+
+def test_дублирующиеся_имена_считаются_по_факту(tmp_path):
+    архив = tmp_path / "дубли.zip"
+    with zipfile.ZipFile(архив, "w") as zf:
+        zf.writestr("Catalogs/Т/Ext/ObjectModule.bsl", "A" * 100)
+        zf.writestr("Catalogs/Т/Ext/ObjectModule.bsl", "B" * 999)
+    корень = tmp_path / "modules"
+
+    файлов, байт = extract(архив, корень)
+
+    assert файлов == 1
+    assert байт == 999
+    assert (корень / "Catalogs/Т/Ext/ObjectModule.bsl").read_text() == "B" * 999

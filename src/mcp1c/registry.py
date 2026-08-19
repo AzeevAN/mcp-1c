@@ -23,6 +23,7 @@ import json
 import re
 import shutil
 import threading
+import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -56,6 +57,7 @@ KIND_CONFIGURATION = "configuration"
 KIND_SYNTAX = "syntax"
 KIND_QUERY = "query"
 KIND_MODULES = "modules"
+KIND_EXTENSION = "extension"
 
 STATUS_LOADING = "loading"
 STATUS_READY = "ready"
@@ -103,6 +105,60 @@ def _похоже_на_выгрузку_в_файлы(path: Path) -> bool:
         и.endswith(("manifest.json", "manifest.xml")) for и in имена
     )
     return есть_код and not есть_манифест
+
+
+# Пространство имён `Configuration.xml` выгрузки в файлы — как у метаданных,
+# так и у расширения: оба используют один формат MDClasses.
+_NS_MDCLASSES = "http://v8.1c.ru/8.3/MDClasses"
+
+
+def _сведения_о_выгрузке(path: Path) -> tuple[bool, str]:
+    """Расширение это или конфигурация, и как расширение зовут.
+
+    Смотрит только `Configuration.xml` в корне архива — тело не читается: имя
+    расширения и признаки лежат в его `Properties`, а модулей в архиве могут
+    быть тысячи.
+
+    Правило распознавания (проверено на живой паре «конфигурация + её
+    расширение», CHANGELOG → «Найдено»): у расширения есть `ObjectBelonging`
+    и `ConfigurationExtensionPurpose`, непустой `NamePrefix`, и **нет**
+    `CompatibilityMode`. У конфигурации наоборот: `CompatibilityMode` есть, а
+    `NamePrefix` присутствует, но пустой. `ConfigurationExtensionCompatibilityMode`
+    — ложный признак, он стоит у обеих, отличить по нему нельзя.
+
+    `(False, "")` — это не выгрузка расширения: нет `Configuration.xml`, он
+    битый, в нём нет `Properties` (синтетические архивы тестов модулей несут
+    `<x/>`), или признаки не сошлись. Так же обрабатывается настоящая
+    выгрузка конфигурации — вызывающий продолжает её как модули.
+    """
+    try:
+        with zipfile.ZipFile(path) as zf:
+            содержимое = zf.read("Configuration.xml")
+    except (OSError, zipfile.BadZipFile, KeyError):
+        return False, ""
+    try:
+        корень = ET.fromstring(содержимое)
+    except ET.ParseError:
+        return False, ""
+    свойства = корень.find(
+        f"{{{_NS_MDCLASSES}}}Configuration/{{{_NS_MDCLASSES}}}Properties"
+    )
+    if свойства is None:
+        return False, ""
+
+    def значение(тег: str) -> str:
+        узел = свойства.find(f"{{{_NS_MDCLASSES}}}{тег}")
+        return (узел.text or "").strip() if узел is not None and узел.text else ""
+
+    это_расширение = (
+        not значение("CompatibilityMode")
+        and bool(значение("ObjectBelonging"))
+        and bool(значение("ConfigurationExtensionPurpose"))
+        and bool(значение("NamePrefix"))
+    )
+    if not это_расширение:
+        return False, ""
+    return True, значение("Name")
 
 
 def _нет_модулей(архив: Path) -> "RegistryError":
@@ -434,6 +490,9 @@ class Registry:
         # НЕ удаляет — исходник принадлежит человеку.
         self.incoming_dir = self.data_dir / "incoming"
         self.modules_dir = self.data_dir / "modules"
+        # Каталог кода расширений — рядом с `modules_dir`, но не внутри него:
+        # у расширения свой ключ и своя жизнь, а не подкаталог конфигурации.
+        self.extensions_dir = self.data_dir / "extensions"
         self.registry_path = self.data_dir / "registry.json"
         self.dictionary_path = self.data_dir / "dictionary.json"
         self.dictionary = Dictionary.load(self.dictionary_path)
@@ -488,6 +547,11 @@ class Registry:
         KIND_SYNTAX: ("syntax", "lookup"),
         KIND_QUERY: ("syntax", "lookup"),
         KIND_MODULES: ("modules",),
+        # Тот же вид кэша, что у модулей конфигурации: провайдер поиска по
+        # коду, когда появится, не должен различать их источники. Без этой
+        # записи `sweep` счёл бы кэш расширения ничьим на первом же старте —
+        # ровно то, от чего предупреждает комментарий выше для KIND_QUERY.
+        KIND_EXTENSION: ("modules",),
     }
 
     def _cache_path(self, source_id: str, kind: str) -> Path:
@@ -676,12 +740,56 @@ class Registry:
         if цель.is_dir():
             shutil.rmtree(цель, ignore_errors=True)
 
+    def _extension_root(self, configuration: str, extension: str) -> Path:
+        """Каталог кода расширения: `extensions_dir/<Конфигурация>/<Расширение>`.
+
+        Два уровня, а не склейка имён в одно: `index_cache.safe_name`
+        схлопывает необычные символы в подчёркивание, и склейка вида
+        `Розница@ЮТД` дала бы `Розница_ЮТД` — путь, который может совпасть с
+        конфигурацией, названной так же. Каждый уровень чистится тем же
+        правилом, что и `_modules_root`, и путь так же проверяется на
+        принадлежность корню: имя расширения приходит из выгрузки человека,
+        а не проверено заранее.
+        """
+        корень = (
+            self.extensions_dir
+            / index_cache.safe_name(configuration)
+            / index_cache.safe_name(extension)
+        ).resolve()
+        база = self.extensions_dir.resolve()
+        if корень == база or база not in корень.parents:
+            raise RegistryError(
+                f"Расширение «{extension}» конфигурации «{configuration}» не "
+                "годится для каталога кода: путь уходит за пределы "
+                "data/extensions."
+            )
+        return корень
+
+    def _drop_extension_root(self, корень: Path) -> None:
+        """Снести каталог кода расширения. Только внутри `extensions_dir`.
+
+        Проверка повторяется, как и в `_drop_modules_root`: путь может прийти
+        из `registry.json`, где его правил кто угодно.
+        """
+        цель = корень.resolve()
+        база = self.extensions_dir.resolve()
+        if цель == база or база not in цель.parents:
+            return
+        if цель.is_dir():
+            shutil.rmtree(цель, ignore_errors=True)
+
     def add_modules(self, path: str | Path, *, configuration: str) -> Source:
         """Выгрузка конфигурации в файлы: код на диск, учётная запись в реестр.
 
-        Ключ источника — не имя конфигурации: под ним уже лежат метаданные, и
-        присвоение по тому же ключу вытеснило бы их из `self.sources`, а
-        `save()` записал бы реестр уже без них.
+        Выгрузка расширения распознаётся по `Configuration.xml`
+        (`_сведения_о_выгрузке`) и уходит в `_add_extension`: другой ключ
+        (`:ext:<Имя>` вместо `:modules`), другой каталог, другой вид
+        источника. Публичная сигнатура остаётся прежней — на неё опираются
+        страница, тесты и `restore()`.
+
+        Ключ источника модулей — не имя конфигурации: под ним уже лежат
+        метаданные, и присвоение по тому же ключу вытеснило бы их из
+        `self.sources`, а `save()` записал бы реестр уже без них.
         """
         from . import intake
 
@@ -690,6 +798,19 @@ class Registry:
             raise RegistryError(
                 f"{архив.name}: конфигурация «{configuration}» не загружена."
             )
+
+        это_расширение, имя_расширения = _сведения_о_выгрузке(архив)
+        if это_расширение:
+            if not имя_расширения:
+                raise RegistryError(
+                    f"{архив.name}: похоже на выгрузку расширения, но тег "
+                    "Name в Configuration.xml пуст — имя расширения взять "
+                    "неоткуда."
+                )
+            return self._add_extension(
+                архив, configuration=configuration, extension=имя_расширения
+            )
+
         корень = self._modules_root(configuration)
         # Годность архива выясняется ДО того, как что-то удалено. Выгрузка
         # метаданных (`СтруктураКонфигурации_*.zip`) — тоже .zip, и отбор не
@@ -735,6 +856,55 @@ class Registry:
         source = Source(
             id=f"{configuration}:modules",
             kind=KIND_MODULES,
+            origin=архив.name,
+            sha256=digest,
+            loaded_at=_now(),
+            platform=платформа,
+            status=STATUS_READY,
+            items_total=файлов,
+            stored_path=self._relative(корень),
+        )
+        with self._lock:
+            self.sources[source.id] = source
+        return source
+
+    def _add_extension(
+        self, архив: Path, *, configuration: str, extension: str
+    ) -> Source:
+        """Выгрузка расширения: код в свой каталог, источник `:ext:<Имя>`.
+
+        Ключ и каталог держат расширение отдельно и от модулей конфигурации,
+        и от других расширений той же конфигурации (`_extension_root`).
+        Личность расширения задаёт тег `Name` внутри его выгрузки, а не имя
+        файла архива: повторный разбор того же расширения под другим именем
+        файла переиспользует тот же ключ, тот же каталог, тот же источник —
+        `origin` просто обновляется на имя последнего разобранного файла.
+        Конфигурацию, к которой расширение принадлежит, называет человек;
+        сколько расширений у одной конфигурации — не ограничено, в отличие
+        от модулей, которых на конфигурацию ровно одна выгрузка.
+        """
+        from . import intake
+
+        корень = self._extension_root(configuration, extension)
+        # Тот же порядок, что у add_modules: годность архива выясняется до
+        # того, как что-то удалено, — иначе ошибочное нажатие сносит уже
+        # разобранное расширение, а взять его заново неоткуда, если исходник
+        # из incoming/ уже убран.
+        if not _отбираемых_членов(архив):
+            raise _нет_модулей(архив)
+        digest = _sha256(архив)
+        self._drop_extension_root(корень)
+        файлов, байт = intake.extract(архив, корень)
+        if not файлов:
+            self._drop_extension_root(корень)
+            raise _нет_модулей(архив)
+        # Платформа — как у модулей: выгрузка расширения точной сборки не
+        # содержит (тег Version пуст), берём у привязанной конфигурации.
+        привязанная = self.configurations.get(configuration)
+        платформа = привязанная.source.platform if привязанная else ""
+        source = Source(
+            id=f"{configuration}:ext:{extension}",
+            kind=KIND_EXTENSION,
             origin=архив.name,
             sha256=digest,
             loaded_at=_now(),
@@ -1149,15 +1319,16 @@ class Registry:
                 self.configurations.pop(source_id, None)
                 self._relation_cache.pop(source_id, None)
                 return
-            if source.kind == KIND_MODULES:
+            if source.kind in (KIND_MODULES, KIND_EXTENSION):
                 # Каталог с кодом — всё, что этот источник занимает на диске
-                # (351 МБ на живой конфигурации). `orphan_sources` его не
-                # покажет: тот обходит только `sources_dir`. Не снести значит
-                # занять место невидимо и навсегда — вернуть его через
-                # интерфейс было бы нечем. Но сносится он ПОСЛЕ выхода из-под
-                # замка: это 11 072 файла, а тот же замок берут `resolve()` и
-                # все инструменты MCP — на время удаления встали бы и
-                # страницы, и `/health`, и ответы инструментов.
+                # (351 МБ на живой конфигурации, меньше у расширения).
+                # `orphan_sources` его не покажет: тот обходит только
+                # `sources_dir`. Не снести значит занять место невидимо и
+                # навсегда — вернуть его через интерфейс было бы нечем. Но
+                # сносится он ПОСЛЕ выхода из-под замка: это тысячи файлов, а
+                # тот же замок берут `resolve()` и все инструменты MCP — на
+                # время удаления встали бы и страницы, и `/health`, и ответы
+                # инструментов.
                 каталог_модулей = (
                     self._absolute(source.stored_path) if source.stored_path else None
                 )
@@ -1174,9 +1345,12 @@ class Registry:
                 self._relation_cache.clear()
                 snapshot = dict(self.syntax_versions)
 
-        if source.kind == KIND_MODULES:
+        if source.kind in (KIND_MODULES, KIND_EXTENSION):
             if каталог_модулей is not None:
-                self._drop_modules_root(каталог_модулей)
+                if source.kind == KIND_MODULES:
+                    self._drop_modules_root(каталог_модулей)
+                else:
+                    self._drop_extension_root(каталог_модулей)
             return
 
         self._apply_syntax(snapshot)
@@ -1398,15 +1572,15 @@ class Registry:
                     self.add_configuration(
                         stored, keep_source=False, known_sha256=source.sha256
                     )
-                elif source.kind == KIND_MODULES:
-                    # Код уже лежит на диске — его положил `add_modules` до
-                    # остановки, а индекс по модулям этот план не строит.
-                    # Перечитывать архив здесь нечем (человек мог его уже
-                    # убрать) и незачем: без этой ветки запись выпала бы из
-                    # `self.sources` молча, и после рестарта выглядело бы
-                    # так, будто выгрузку вообще не разбирали, — гоняли бы
-                    # заново гигабайтный архив там, где хватило бы записи из
-                    # `registry.json`.
+                elif source.kind in (KIND_MODULES, KIND_EXTENSION):
+                    # Код уже лежит на диске — его положил `add_modules`
+                    # (или `_add_extension`) до остановки, а индекс по коду
+                    # этот план не строит. Перечитывать архив здесь нечем
+                    # (человек мог его уже убрать) и незачем: без этой ветки
+                    # запись выпала бы из `self.sources` молча, и после
+                    # рестарта выглядело бы так, будто выгрузку вообще не
+                    # разбирали, — гоняли бы заново гигабайтный архив там,
+                    # где хватило бы записи из `registry.json`.
                     with self._lock:
                         self.sources[source.id] = source
                 else:

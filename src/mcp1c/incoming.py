@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 from .intake import SELECTION_VERSION
-from .registry import KIND_MODULES, Registry
+from .registry import KIND_EXTENSION, KIND_MODULES, Registry
 
 STATE_READY = "разобрано"
 STATE_RUNNING = "разбирается"
@@ -179,7 +179,14 @@ class IncomingScanner:
         if not каталог.is_dir():
             return строки
         источники = [
-            s for s in self.registry.sources.values() if s.kind == KIND_MODULES
+            s
+            for s in self.registry.sources.values()
+            # Расширение — тот же вид выгрузки в файлы, что и модули
+            # конфигурации, просто в свой каталог и под ключом `:ext:<Имя>`.
+            # Без учёта этого вида разобранное расширение навсегда
+            # показывалось бы «не разобрано»: сверка идёт по sha256, а
+            # источники этого вида сюда просто не попадали бы.
+            if s.kind in (KIND_MODULES, KIND_EXTENSION)
         ]
         по_хешу = {s.sha256: s for s in источники}
         по_имени = {s.origin: s for s in источники}

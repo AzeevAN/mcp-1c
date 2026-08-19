@@ -54,6 +54,7 @@ REGISTRY_VERSION = 1
 KIND_CONFIGURATION = "configuration"
 KIND_SYNTAX = "syntax"
 KIND_QUERY = "query"
+KIND_MODULES = "modules"
 
 STATUS_LOADING = "loading"
 STATUS_READY = "ready"
@@ -383,6 +384,11 @@ class Registry:
         self.index_dir = self.data_dir / "index"
         self.cache_dir = self.index_dir / "cache"
         self.bootstrap_dir = self.data_dir / "bootstrap"
+        # Каталог, содержимое которого разбирается по команде, а не при
+        # старте: гигабайтную выгрузку так разбирать нельзя. Сервер его
+        # НЕ удаляет — исходник принадлежит человеку.
+        self.incoming_dir = self.data_dir / "incoming"
+        self.modules_dir = self.data_dir / "modules"
         self.registry_path = self.data_dir / "registry.json"
         self.dictionary_path = self.data_dir / "dictionary.json"
         self.dictionary = Dictionary.load(self.dictionary_path)
@@ -436,6 +442,7 @@ class Registry:
         KIND_CONFIGURATION: ("objects", "fields"),
         KIND_SYNTAX: ("syntax", "lookup"),
         KIND_QUERY: ("syntax", "lookup"),
+        KIND_MODULES: ("modules",),
     }
 
     def _cache_path(self, source_id: str, kind: str) -> Path:
@@ -586,6 +593,37 @@ class Registry:
             self.configurations[config.name] = loaded
             self.sources[source.id] = source
             self._relation_cache.pop(config.name, None)
+        return source
+
+    def add_modules(self, path: str | Path, *, configuration: str) -> Source:
+        """Выгрузка конфигурации в файлы: код на диск, учётная запись в реестр.
+
+        Ключ источника — не имя конфигурации: под ним уже лежат метаданные, и
+        присвоение по тому же ключу вытеснило бы их из `self.sources`, а
+        `save()` записал бы реестр уже без них.
+        """
+        from . import intake
+
+        архив = Path(path)
+        if configuration not in self.configurations:
+            raise RegistryError(
+                f"{архив.name}: конфигурация «{configuration}» не загружена."
+            )
+        digest = _sha256(архив)
+        корень = self.modules_dir / configuration
+        файлов, байт = intake.extract(архив, корень)
+        source = Source(
+            id=f"{configuration}:modules",
+            kind=KIND_MODULES,
+            origin=архив.name,
+            sha256=digest,
+            loaded_at=_now(),
+            status=STATUS_READY,
+            items_total=файлов,
+            stored_path=self._relative(корень),
+        )
+        with self._lock:
+            self.sources[source.id] = source
         return source
 
     def add_syntax(

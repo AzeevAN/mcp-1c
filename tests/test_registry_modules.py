@@ -295,3 +295,25 @@ def test_платформа_модулей_пустая_если_у_конфиг
     модули = registry.add_modules(_выгрузка_в_файлы(tmp_path), configuration="Розница")
 
     assert модули.platform == ""
+
+
+def test_гонка_снятия_конфигурации_не_роняет_разбор(tmp_path, monkeypatch):
+    """Между `extract` (секунды в отдельном потоке) и записью источника
+    конфигурацию мог снять параллельный запрос — не голый `KeyError`."""
+    from mcp1c import intake
+
+    registry = _реестр_с_конфигурацией(tmp_path)
+    настоящий = intake.extract
+
+    def подмена(архив, корень):
+        результат = настоящий(архив, корень)
+        registry.remove("Розница")
+        return результат
+
+    monkeypatch.setattr(intake, "extract", подмена)
+
+    модули = registry.add_modules(_выгрузка_в_файлы(tmp_path), configuration="Розница")
+
+    assert модули.platform == ""
+    assert "Розница:modules" in registry.sources
+    assert "Розница" not in registry.configurations

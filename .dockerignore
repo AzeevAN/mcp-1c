@@ -1,0 +1,10 @@
+.git
+.venv
+data
+tests
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+*.zip
+*.hbk

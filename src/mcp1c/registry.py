@@ -89,16 +89,19 @@ def _sha256(path: Path) -> str:
 def _похоже_на_выгрузку_в_файлы(path: Path) -> bool:
     """Выгрузка в файлы против выгрузки schema v1.
 
-    Смотрим только имена членов: тело не читается, центрального каталога
-    достаточно.
+    Выгрузок в файлы две: иерархическая (модули в .bsl, .Form) и плоская
+    (модули в .txt). Смотрим только имена членов: тело не читается,
+    центрального каталога достаточно.
     """
     try:
         with zipfile.ZipFile(path) as zf:
             имена = zf.namelist()
     except (OSError, zipfile.BadZipFile):
         return False
-    есть_код = any(и.endswith((".bsl", ".Form")) for и in имена)
-    есть_манифест = any(и.endswith("manifest.json") for и in имена)
+    есть_код = any(и.endswith((".bsl", ".Form", ".txt")) for и in имена)
+    есть_манифест = any(
+        и.endswith(("manifest.json", "manifest.xml")) for и in имена
+    )
     return есть_код and not есть_манифест
 
 

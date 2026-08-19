@@ -55,3 +55,22 @@ def test_исходник_не_копируется(tmp_path):
     # `keep_source=True` положил бы второй экземпляр архива на том.
     скопировано = list((registry.sources_dir).rglob("модули.zip"))
     assert скопировано == []
+
+
+def test_источник_модулей_переживает_перезапуск(tmp_path):
+    входящее = tmp_path / "in"
+    входящее.mkdir()
+    данные = tmp_path / "data"
+    registry = Registry(данные)
+    registry.add_configuration(write_export(входящее, build_configuration(name="Розница")))
+    registry.add_modules(_выгрузка_в_файлы(tmp_path), configuration="Розница")
+    registry.save()
+
+    заново = Registry(данные)
+    проблемы = заново.restore()
+
+    assert проблемы == []
+    assert "Розница:modules" in заново.sources
+    assert заново.sources["Розница:modules"].kind == KIND_MODULES
+    # Метаданные конфигурации тоже восстановлены — не только модули.
+    assert заново.sources["Розница"].kind == KIND_CONFIGURATION

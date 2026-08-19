@@ -34,10 +34,11 @@ def _configuration_xml(
 ) -> str:
     """`Configuration.xml`, минимальный, но с теми же тегами, что у 1С.
 
-    Набор признаков — из брифа задачи, проверен на живой паре «Розница для
-    Казахстана» + её расширение «ЮТД» (CHANGELOG → «Найдено»): у расширения
-    есть `ObjectBelonging` и `ConfigurationExtensionPurpose`, непустой
-    `NamePrefix`, и нет `CompatibilityMode`. У конфигурации наоборот.
+    Набор признаков — из брифа задачи, проверен на живой паре «конфигурация +
+    её расширение» (CHANGELOG → «Найдено»): у расширения есть `ObjectBelonging`
+    и `ConfigurationExtensionPurpose`, непустой `NamePrefix`, и нет
+    `CompatibilityMode`. У конфигурации наоборот. Имена в тестах здесь —
+    нейтральные, не имена реальных внедрений (см. `AGENTS.md`).
     """
     поля = [f"<Name>{name}</Name>"]
     поля.append(f"<NamePrefix>{prefix}</NamePrefix>" if prefix else "<NamePrefix/>")
@@ -74,7 +75,7 @@ def _выгрузка_расширения(
     tmp_path: Path,
     *,
     файл: str = "расширение.zip",
-    name: str = "ЮТД",
+    name: str = "РасширениеА",
     код: str = "Процедура Б() КонецПроцедуры",
 ) -> Path:
     путь = tmp_path / файл
@@ -102,7 +103,7 @@ def test_ключ_источника_расширения_отдельный(tmp
 
     источник = registry.add_modules(_выгрузка_расширения(tmp_path), configuration="Розница")
 
-    assert источник.id == "Розница:ext:ЮТД"
+    assert источник.id == "Розница:ext:РасширениеА"
     assert источник.kind == KIND_EXTENSION
     assert "Розница:modules" not in registry.sources
 
@@ -115,12 +116,12 @@ def test_конфигурация_потом_расширение_оба_ист�
     registry.add_modules(_выгрузка_расширения(tmp_path), configuration="Розница")
 
     assert registry.sources["Розница:modules"].kind == KIND_MODULES
-    assert registry.sources["Розница:ext:ЮТД"].kind == KIND_EXTENSION
+    assert registry.sources["Розница:ext:РасширениеА"].kind == KIND_EXTENSION
     модуль_конфигурации = (
         registry.modules_dir / "Розница" / "Catalogs/Т/Ext/ObjectModule.bsl"
     )
     модуль_расширения = (
-        registry.extensions_dir / "Розница" / "ЮТД" / "Catalogs/Р/Ext/ObjectModule.bsl"
+        registry.extensions_dir / "Розница" / "РасширениеА" / "Catalogs/Р/Ext/ObjectModule.bsl"
     )
     assert модуль_конфигурации.is_file()
     assert модуль_расширения.is_file()
@@ -134,9 +135,9 @@ def test_расширение_потом_конфигурация_оба_ист�
 
     registry.add_modules(_выгрузка_конфигурации(tmp_path), configuration="Розница")
 
-    assert registry.sources["Розница:ext:ЮТД"].kind == KIND_EXTENSION
+    assert registry.sources["Розница:ext:РасширениеА"].kind == KIND_EXTENSION
     assert registry.sources["Розница:modules"].kind == KIND_MODULES
-    assert (registry.extensions_dir / "Розница" / "ЮТД").is_dir()
+    assert (registry.extensions_dir / "Розница" / "РасширениеА").is_dir()
     assert (registry.modules_dir / "Розница").is_dir()
 
 
@@ -144,16 +145,16 @@ def test_два_расширения_одновременно(tmp_path):
     registry = _реестр_с_конфигурацией(tmp_path)
 
     registry.add_modules(
-        _выгрузка_расширения(tmp_path, файл="а.zip", name="ЮТД"), configuration="Розница"
+        _выгрузка_расширения(tmp_path, файл="а.zip", name="РасширениеА"), configuration="Розница"
     )
     registry.add_modules(
         _выгрузка_расширения(tmp_path, файл="б.zip", name="Мобильный"),
         configuration="Розница",
     )
 
-    assert registry.sources["Розница:ext:ЮТД"].kind == KIND_EXTENSION
+    assert registry.sources["Розница:ext:РасширениеА"].kind == KIND_EXTENSION
     assert registry.sources["Розница:ext:Мобильный"].kind == KIND_EXTENSION
-    assert (registry.extensions_dir / "Розница" / "ЮТД").is_dir()
+    assert (registry.extensions_dir / "Розница" / "РасширениеА").is_dir()
     assert (registry.extensions_dir / "Розница" / "Мобильный").is_dir()
 
 
@@ -161,7 +162,7 @@ def test_снятие_расширения_сносит_только_свой_к
     registry = _реестр_с_конфигурацией(tmp_path)
     registry.add_modules(_выгрузка_конфигурации(tmp_path), configuration="Розница")
     первое = registry.add_modules(
-        _выгрузка_расширения(tmp_path, файл="а.zip", name="ЮТД"), configuration="Розница"
+        _выгрузка_расширения(tmp_path, файл="а.zip", name="РасширениеА"), configuration="Розница"
     )
     registry.add_modules(
         _выгрузка_расширения(tmp_path, файл="б.zip", name="Мобильный"),
@@ -170,10 +171,10 @@ def test_снятие_расширения_сносит_только_свой_к
 
     registry.remove(первое.id)
 
-    assert not (registry.extensions_dir / "Розница" / "ЮТД").exists()
+    assert not (registry.extensions_dir / "Розница" / "РасширениеА").exists()
     assert (registry.extensions_dir / "Розница" / "Мобильный").is_dir()
     assert (registry.modules_dir / "Розница").is_dir()
-    assert "Розница:ext:ЮТД" not in registry.sources
+    assert "Розница:ext:РасширениеА" not in registry.sources
     assert "Розница:ext:Мобильный" in registry.sources
     assert "Розница:modules" in registry.sources
 
@@ -187,8 +188,8 @@ def test_источник_расширения_переживает_переза
     проблемы = заново.restore()
 
     assert проблемы == []
-    assert "Розница:ext:ЮТД" in заново.sources
-    assert заново.sources["Розница:ext:ЮТД"].kind == KIND_EXTENSION
+    assert "Розница:ext:РасширениеА" in заново.sources
+    assert заново.sources["Розница:ext:РасширениеА"].kind == KIND_EXTENSION
     # Метаданные конфигурации тоже восстановлены — не только расширение.
     assert заново.sources["Розница"].kind == KIND_CONFIGURATION
 
@@ -239,8 +240,8 @@ def test_две_копии_одного_расширения_под_разным
     имя последнего разобранного файла.
     """
     registry = _реестр_с_конфигурацией(tmp_path)
-    оригинал = _выгрузка_расширения(tmp_path, файл="retailExt.zip", name="ЮТД")
-    копия = tmp_path / "ЮТД-копия.zip"
+    оригинал = _выгрузка_расширения(tmp_path, файл="оригинал.zip", name="РасширениеА")
+    копия = tmp_path / "РасширениеА-копия.zip"
     копия.write_bytes(оригинал.read_bytes())
 
     первый = registry.add_modules(оригинал, configuration="Розница")
@@ -251,9 +252,209 @@ def test_две_копии_одного_расширения_под_разным
         for идентификатор in registry.sources
         if идентификатор.startswith("Розница:ext:")
     ]
-    assert ключи_расширений == ["Розница:ext:ЮТД"]
-    assert первый.id == второй.id == "Розница:ext:ЮТД"
-    assert второй.origin == "ЮТД-копия.zip"
-    каталог = registry.extensions_dir / "Розница" / "ЮТД"
+    assert ключи_расширений == ["Розница:ext:РасширениеА"]
+    assert первый.id == второй.id == "Розница:ext:РасширениеА"
+    assert второй.origin == "РасширениеА-копия.zip"
+    каталог = registry.extensions_dir / "Розница" / "РасширениеА"
     файлы = [p for p in каталог.rglob("*") if p.is_file()]
     assert len(файлы) == второй.items_total == 1
+
+
+# --------------------------------------------------------- ревью: критично 1
+#
+# `_сведения_о_выгрузке` читала строго `zf.read("Configuration.xml")` из
+# корня архива. Расширение, упакованное командой `zip -r архив.zip папка`
+# (обычный способ упаковки — `intake.extract`/`safe_target` вложенность и так
+# поддерживают), корневого `Configuration.xml` не имеет: `KeyError` тихо
+# читался как «это конфигурация», и `add_modules` шёл в разрушительную ветку
+# модулей. Ревью воспроизвело потерю кода конфигурации на такой упаковке.
+
+
+def _выгрузка_расширения_в_папке(
+    tmp_path: Path,
+    *,
+    файл: str = "расширение.zip",
+    папка: str = "РасширениеА",
+    name: str = "РасширениеА",
+    код: str = "Процедура Д() КонецПроцедуры",
+) -> Path:
+    """Раскладка `zip -r архив.zip папка`: `Configuration.xml` не в корне, а
+    в единственном каталоге верхнего уровня. Так же устроена настоящая
+    плоская выгрузка 8.3.5 (`__data/utd/UtdConfig.zip`, проверено вручную:
+    единственная запись-каталог верхнего уровня, `Configuration.xml` внутри
+    неё, ни одного файла прямо в корне) — не гипотетический случай.
+    """
+    путь = tmp_path / файл
+    with zipfile.ZipFile(путь, "w") as zf:
+        zf.writestr(f"{папка}/", "")
+        zf.writestr(
+            f"{папка}/Configuration.xml",
+            _configuration_xml(
+                name=name, prefix=f"{name}_", belonging="Adopted", purpose="AddOn"
+            ),
+        )
+        zf.writestr(f"{папка}/Catalogs/Р/Ext/ObjectModule.bsl", код)
+    return путь
+
+
+def test_расширение_упакованное_вместе_с_папкой_распознаётся(tmp_path):
+    """Критично, ревью: распознавание обязано искать `Configuration.xml` и в
+    единственном каталоге верхнего уровня, а не только в корне архива."""
+    registry = _реестр_с_конфигурацией(tmp_path)
+    registry.add_modules(_выгрузка_конфигурации(tmp_path), configuration="Розница")
+    модуль_конфигурации = (
+        registry.modules_dir / "Розница" / "Catalogs/Т/Ext/ObjectModule.bsl"
+    )
+    assert модуль_конфигурации.is_file()
+
+    источник = registry.add_modules(
+        _выгрузка_расширения_в_папке(tmp_path), configuration="Розница"
+    )
+
+    assert источник.kind == KIND_EXTENSION
+    assert источник.id == "Розница:ext:РасширениеА"
+    # Главное: код типовой конфигурации цел — не стёрт веткой модулей.
+    assert модуль_конфигурации.is_file()
+    assert (registry.modules_dir / "Розница").is_dir()
+
+
+def _выгрузка_с_неполными_признаками(
+    tmp_path: Path, *, файл: str = "подозрительный.zip"
+) -> Path:
+    """`ObjectBelonging` есть, `ConfigurationExtensionPurpose` и `NamePrefix`
+    — нет: сильный признак расширения виден, но набор неполный. Ни на
+    расширение (не все условия), ни на конфигурацию (у неё нет ObjectBelonging
+    вовсе) это не тянет."""
+    путь = tmp_path / файл
+    with zipfile.ZipFile(путь, "w") as zf:
+        zf.writestr(
+            "Configuration.xml", _configuration_xml(name="Т", belonging="Adopted")
+        )
+        zf.writestr("Catalogs/Р/Ext/ObjectModule.bsl", "Процедура Е() КонецПроцедуры")
+    return путь
+
+
+def test_неполный_набор_признаков_расширения_отклоняется(tmp_path):
+    """Критично, ревью: цена ошибок несимметрична — ложное «конфигурация»
+    стоит весь разобранный код. Частичное совпадение признаков отказывает
+    явно, а не молча падает в ветку модулей."""
+    registry = _реестр_с_конфигурацией(tmp_path)
+    registry.add_modules(_выгрузка_конфигурации(tmp_path), configuration="Розница")
+    модуль_конфигурации = (
+        registry.modules_dir / "Розница" / "Catalogs/Т/Ext/ObjectModule.bsl"
+    )
+
+    with pytest.raises(RegistryError, match="неполный"):
+        registry.add_modules(
+            _выгрузка_с_неполными_признаками(tmp_path), configuration="Розница"
+        )
+
+    assert модуль_конфигурации.is_file()
+    assert not registry.extensions_dir.exists() or not list(
+        registry.extensions_dir.rglob("*")
+    )
+
+
+def _выгрузка_без_configuration_xml(
+    tmp_path: Path, *, файл: str = "без_ключа.zip"
+) -> Path:
+    путь = tmp_path / файл
+    with zipfile.ZipFile(путь, "w") as zf:
+        zf.writestr("Catalogs/Р/Ext/ObjectModule.bsl", "Процедура Ж() КонецПроцедуры")
+    return путь
+
+
+def test_архив_без_configuration_xml_отклоняется(tmp_path):
+    """Критично, ревью: не нашли `Configuration.xml` — отказ с объяснением,
+    а не молчаливое «считаем конфигурацией». Архивы совсем без модулей и форм
+    (например, выгрузка структуры метаданных) отсекает более ранняя проверка
+    `_отбираемых_членов` со своим текстом — до этой ветки не доходит."""
+    registry = _реестр_с_конфигурацией(tmp_path)
+    registry.add_modules(_выгрузка_конфигурации(tmp_path), configuration="Розница")
+    модуль_конфигурации = (
+        registry.modules_dir / "Розница" / "Catalogs/Т/Ext/ObjectModule.bsl"
+    )
+
+    with pytest.raises(RegistryError, match="Configuration.xml"):
+        registry.add_modules(
+            _выгрузка_без_configuration_xml(tmp_path), configuration="Розница"
+        )
+
+    assert модуль_конфигурации.is_file()
+
+
+def test_configuration_xml_неправдоподобно_большой_отклоняется(tmp_path, monkeypatch):
+    """Критично, ревью, пункт 4: объявленный размер из центрального каталога
+    проверяется до `zf.read` — иначе он тянет в память что дадут."""
+    import mcp1c.registry as registry_module
+
+    monkeypatch.setattr(registry_module, "_MAX_CONFIGURATION_XML_SIZE", 100)
+    registry = _реестр_с_конфигурацией(tmp_path)
+
+    with pytest.raises(RegistryError, match="весит"):
+        registry.add_modules(_выгрузка_расширения(tmp_path), configuration="Розница")
+
+
+# --------------------------------------------------------- ревью: критично 2
+
+
+def test_имя_расширения_точка_не_сносит_остальные_расширения(tmp_path):
+    """Критично, ревью: `safe_name(".")` == "." и `pathlib` схлопывает его
+    при `resolve()`. Без явного отказа второй уровень пути
+    `extensions_dir/<Конфигурация>/.` резолвится в САМ каталог конфигурации
+    (существующий, чужой), а не в `extensions_dir` — и проверка на
+    принадлежность корню это пропускает. Ревью воспроизвело: были два
+    расширения, разбор архива с `Name = .` оставил на диске только своё,
+    оба прежних источника остались в реестре и указывают на пустоту."""
+    registry = _реестр_с_конфигурацией(tmp_path)
+    registry.add_modules(
+        _выгрузка_расширения(tmp_path, файл="а.zip", name="РасширениеА"),
+        configuration="Розница",
+    )
+    registry.add_modules(
+        _выгрузка_расширения(tmp_path, файл="б.zip", name="РасширениеБ"),
+        configuration="Розница",
+    )
+
+    ловушка = _выгрузка_расширения(tmp_path, файл="в.zip", name=".")
+    with pytest.raises(RegistryError):
+        registry.add_modules(ловушка, configuration="Розница")
+
+    assert (registry.extensions_dir / "Розница" / "РасширениеА").is_dir()
+    assert (registry.extensions_dir / "Розница" / "РасширениеБ").is_dir()
+    assert "Розница:ext:РасширениеА" in registry.sources
+    assert "Розница:ext:РасширениеБ" in registry.sources
+
+
+# --------------------------------------------------------------- ревью: важно 3
+
+
+def test_разные_сырые_имена_с_одним_очищенным_значением_дают_один_источник(tmp_path):
+    """Важно, ревью: `Name = a/b` и `Name = a:b` дают один и тот же каталог
+    (`index_cache.safe_name` схлопывает и `/`, и `:` в `_`) — ключ обязан
+    строиться из ТОГО ЖЕ очищенного имени, что и каталог, иначе второй разбор
+    тихо переписывает файлы первого, а оба источника остаются в реестре и
+    врут счётчиком."""
+    registry = _реестр_с_конфигурацией(tmp_path)
+
+    первый = registry.add_modules(
+        _выгрузка_расширения(
+            tmp_path, файл="а.zip", name="a/b", код="Процедура П1() КонецПроцедуры"
+        ),
+        configuration="Розница",
+    )
+    второй = registry.add_modules(
+        _выгрузка_расширения(
+            tmp_path, файл="б.zip", name="a:b", код="Процедура П2() КонецПроцедуры"
+        ),
+        configuration="Розница",
+    )
+
+    assert первый.id == второй.id == "Розница:ext:a_b"
+    ключи_расширений = [
+        идентификатор
+        for идентификатор in registry.sources
+        if идентификатор.startswith("Розница:ext:")
+    ]
+    assert ключи_расширений == ["Розница:ext:a_b"]
+    assert (registry.extensions_dir / "Розница" / "a_b").is_dir()

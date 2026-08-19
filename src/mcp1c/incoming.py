@@ -98,10 +98,16 @@ class IncomingScanner:
 
     def _save(self) -> None:
         try:
+            # Запись идёт под тем же замком, что и сборка снимка. Иначе два
+            # сохранения из разных потоков пула успевают разойтись между
+            # `dumps` и `write_text`, и на диск ложится более старый снимок:
+            # кэш хеша переживёт потерю, а записанный отказ — нет, он и
+            # существует ради того, чтобы пережить рестарт.
             with self._замок:
                 self._state_path.parent.mkdir(parents=True, exist_ok=True)
-                тело = json.dumps(self._state, ensure_ascii=False)
-            self._state_path.write_text(тело, encoding="utf-8")
+                self._state_path.write_text(
+                    json.dumps(self._state, ensure_ascii=False), encoding="utf-8"
+                )
         except OSError:
             # Кэш расходный: если записать не смогли (том read-only, нет места),
             # молча деградируем. В следующий раз пересчитаем.

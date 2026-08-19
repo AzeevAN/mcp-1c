@@ -205,3 +205,38 @@ def test_метка_в_будущем_не_считается_копирован
     assert строки[0]["settling"] is False
     assert строки[0]["state"] == STATE_NEW
     assert строки[0]["detail"] == ""
+
+
+def test_состояние_пишется_на_диск_под_замком(tmp_path, monkeypatch):
+    """`note_failure` зовётся из потоков пула: два сохранения могут разойтись.
+
+    Если запись файла идёт вне замка, на диск ложится более старый снимок.
+    Кэш хеша потерю переживёт, а записанный отказ — нет: он и существует
+    ради того, чтобы пережить рестарт.
+    """
+    import threading
+
+    registry = _реестр(tmp_path)
+    файл = состарить(_архив(registry, "в.zip"))
+    сканер = IncomingScanner(registry)
+    занят = []
+    настоящая_запись = Path.write_text
+
+    def под_наблюдением(self, *args, **kwargs):
+        # Проверяем из ЧУЖОГО потока: `RLock` для своего повторно входим.
+        def попробовать():
+            взят = сканер._замок.acquire(timeout=0.2)
+            занят.append(not взят)
+            if взят:
+                сканер._замок.release()
+
+        поток = threading.Thread(target=попробовать)
+        поток.start()
+        поток.join()
+        return настоящая_запись(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", под_наблюдением)
+
+    сканер.note_failure(файл, "битый архив")
+
+    assert занят and all(занят)

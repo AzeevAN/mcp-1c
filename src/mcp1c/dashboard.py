@@ -1653,8 +1653,17 @@ def routes(registry: Registry) -> list[Route]:
             return RedirectResponse("/sources", status_code=303)
 
         job = _start_job(имя, архив.stat().st_size)
-        нужно, _формат = intake.planned_size(архив)
-        хватает, свободно = intake.enough_space(нужно, registry.data_dir)
+        try:
+            нужно, _формат = intake.planned_size(архив)
+            хватает, свободно = intake.enough_space(нужно, registry.data_dir)
+        except Exception as error:
+            # Битый архив (не zip, обрезан, нечитаем) валит расчёт размера до
+            # фоновой задачи. Без этой ветки задание висело бы в «принимается»
+            # навсегда — `_start_job` вычищает только завершённые записи.
+            job["state"] = JOB_FAILED
+            job["error"] = f"{архив.name}: не похоже на zip-архив ({error})"
+            сканер.note_failure(архив, job["error"])
+            return RedirectResponse("/sources", status_code=303)
         if not хватает:
             job["state"] = JOB_FAILED
             job["error"] = (

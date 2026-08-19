@@ -78,6 +78,65 @@ def test_имя_с_выходом_наружу_отвергается(tmp_path, 
     assert ответ.status_code == 303
 
 
+def test_битый_архив_не_роняет_обработчик(tmp_path, monkeypatch):
+    monkeypatch.setenv("ADMIN_TOKEN", "секрет")
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    client, registry = _стенд(tmp_path)
+    client.post("/login", data={"token": "секрет"})
+    битый = registry.incoming_dir / "битый.zip"
+    битый.write_bytes(b"this is not a zip, just garbage bytes")
+
+    ответ = client.post(
+        "/sources/incoming/parse", data={"name": "битый.zip"}, follow_redirects=False
+    )
+
+    assert ответ.status_code == 303
+    текст = client.get("/sources").text
+    assert "битый.zip" in текст
+    assert "zip-архив" in текст
+    assert not any(
+        job["name"] == "битый.zip" and job["state"] == dashboard.JOB_READING
+        for job in dashboard._JOBS
+    )
+
+
+def test_нет_места_отражается_в_задании(tmp_path, monkeypatch):
+    monkeypatch.setenv("ADMIN_TOKEN", "секрет")
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    client, registry = _стенд(tmp_path)
+    client.post("/login", data={"token": "секрет"})
+    monkeypatch.setattr("mcp1c.intake.enough_space", lambda нужно, каталог: (False, 0))
+
+    ответ = client.post(
+        "/sources/incoming/parse", data={"name": "модули.zip"}, follow_redirects=False
+    )
+
+    assert ответ.status_code == 303
+    текст = client.get("/sources").text
+    assert "нужно" in текст and "свободно" in текст
+
+
+def test_несколько_конфигураций_разбор_не_привязывается(tmp_path, monkeypatch):
+    monkeypatch.setenv("ADMIN_TOKEN", "секрет")
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    client, registry = _стенд(tmp_path)
+    ещё_входящее = tmp_path / "in2"
+    ещё_входящее.mkdir()
+    registry.add_configuration(
+        write_export(ещё_входящее, build_configuration(name="УправлениеТорговлей"))
+    )
+    client.post("/login", data={"token": "секрет"})
+
+    ответ = client.post(
+        "/sources/incoming/parse", data={"name": "модули.zip"}, follow_redirects=False
+    )
+
+    assert ответ.status_code == 303
+    дождаться(client, lambda t: "модули.zip" in t and "ошибка" in t)
+    assert "Розница:modules" not in registry.sources
+    assert "УправлениеТорговлей:modules" not in registry.sources
+
+
 def дождаться(client, условие, таймаут: float = 20.0) -> str:
     import time
 

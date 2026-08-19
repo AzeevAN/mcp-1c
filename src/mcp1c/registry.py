@@ -23,6 +23,7 @@ import json
 import re
 import shutil
 import threading
+import zipfile
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -83,6 +84,22 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: stream.read(1 << 20), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _похоже_на_выгрузку_в_файлы(path: Path) -> bool:
+    """Выгрузка в файлы против выгрузки schema v1.
+
+    Смотрим только имена членов: тело не читается, центрального каталога
+    достаточно.
+    """
+    try:
+        with zipfile.ZipFile(path) as zf:
+            имена = zf.namelist()
+    except (OSError, zipfile.BadZipFile):
+        return False
+    есть_код = any(и.endswith((".bsl", ".Form")) for и in имена)
+    есть_манифест = any(и.endswith("manifest.json") for и in имена)
+    return есть_код and not есть_манифест
 
 
 def _combined_sha256(sources: Iterable["Source"]) -> str:
@@ -1317,6 +1334,15 @@ class Registry:
                 continue
             suffix = path.suffix.lower()
             if suffix not in (".zip", ".hbk"):
+                continue
+            if suffix == ".zip" and _похоже_на_выгрузку_в_файлы(path):
+                # Гигабайтную выгрузку нельзя разбирать при каждом старте,
+                # и падать на ней вечно — тоже: упавший файл в реестр не
+                # попадает, а `known` считается один раз до цикла.
+                added.append(
+                    f"{path.name}: это выгрузка конфигурации в файлы — "
+                    "её кладут в data/incoming/ и разбирают по кнопке."
+                )
                 continue
             if _sha256(path) in known:
                 continue

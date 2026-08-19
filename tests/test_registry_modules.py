@@ -223,3 +223,51 @@ def test_снятие_источника_не_держит_замок_на_вр�
 
     assert свободен == [True]
     assert not (registry.modules_dir / "Розница").exists()
+
+
+def test_архив_с_членами_наружу_не_даёт_пустой_источник(tmp_path):
+    """Предпроверка считает имена, `extract` их ещё и санирует.
+
+    Отбираемые члены с `..` и абсолютным путём проходят предпроверку по
+    центральному каталогу, но `intake.safe_target` отвергает их при записи —
+    на диск не ложится ничего. Без проверки после распаковки завёлся бы
+    источник со `status=ready` при пустом каталоге.
+    """
+    from mcp1c.registry import RegistryError
+
+    registry = _реестр_с_конфигурацией(tmp_path)
+    годный = registry.add_modules(_выгрузка_в_файлы(tmp_path), configuration="Розница")
+
+    злой = tmp_path / "злой.zip"
+    with zipfile.ZipFile(злой, "w") as zf:
+        zf.writestr("Configuration.xml", "<x/>")
+        zf.writestr("../наружу/ObjectModule.bsl", "Процедура В() КонецПроцедуры")
+        zf.writestr("/tmp/абсолютный/ObjectModule.bsl", "Процедура Г() КонецПроцедуры")
+
+    with pytest.raises(RegistryError, match="ни модулей, ни форм"):
+        registry.add_modules(злой, configuration="Розница")
+
+    # Источник не переписан нулём, пустого каталога не осталось.
+    assert registry.sources["Розница:modules"].items_total == годный.items_total
+    assert registry.sources["Розница:modules"].sha256 == годный.sha256
+    assert not (registry.modules_dir / "Розница").exists()
+    assert not (tmp_path / "наружу").exists()
+
+
+def test_негодный_архив_не_хешируется(tmp_path, monkeypatch):
+    """sha256 — полный проход по файлу; платить им за отказ незачем."""
+    from mcp1c.registry import RegistryError
+
+    registry = _реестр_с_конфигурацией(tmp_path)
+    метаданные = tmp_path / "СтруктураКонфигурации_Розница.zip"
+    with zipfile.ZipFile(метаданные, "w") as zf:
+        zf.writestr("manifest.json", '{"schema_version": "1"}')
+    считали = []
+    monkeypatch.setattr(
+        "mcp1c.registry._sha256", lambda путь: считали.append(путь) or "x"
+    )
+
+    with pytest.raises(RegistryError, match="ни модулей, ни форм"):
+        registry.add_modules(метаданные, configuration="Розница")
+
+    assert считали == []

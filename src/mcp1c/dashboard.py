@@ -276,6 +276,12 @@ def _run_incoming(registry: Registry, сканер, job: dict, архив: Path)
     try:
         имя_конфигурации = _configuration_for(registry, архив)
         registry.add_modules(архив, configuration=имя_конфигурации)
+        # `add_modules` пишет только в `self.sources`, в память процесса.
+        # Без записи на диск разбор не переживал бы рестарт: код на месте,
+        # 351 МБ занято, а страница говорит «не разобрано» — и человек гонит
+        # гигабайтный архив заново. `_index_source` зовёт `save()` по той же
+        # причине.
+        registry.save()
     except Exception as error:
         job["state"] = JOB_FAILED
         job["error"] = f"{type(error).__name__}: {error}"
@@ -1198,19 +1204,39 @@ def _sources_page(
         # и журнал заданий. В «Исходные файлы» эти файлы не подмешиваются: там
         # заголовок «для ответов не нужны», а для неразобранной выгрузки это
         # неправда.
-        from .incoming import STATE_NEW, STATE_STALE, STATE_UPDATED
+        from .incoming import (
+            STATE_FAILED,
+            STATE_NEW,
+            STATE_STALE,
+            STATE_UPDATED,
+        )
 
         входящие = _scanner(registry).scan()
         if входящие:
             parts.append("<h2>Входящие выгрузки</h2><table>"
                          "<tr><th>Файл<th>Размер<th>Состояние</tr>")
             for строка in входящие:
-                можно = строка["state"] in (STATE_NEW, STATE_UPDATED, STATE_STALE)
+                # «Разбор не удался» — не тупик: постановка (§2) назначает ему
+                # то же действие. Без кнопки исправленный архив разобрать было
+                # бы нечем, кроме переименования файла.
+                можно = строка["state"] in (
+                    STATE_NEW,
+                    STATE_UPDATED,
+                    STATE_STALE,
+                    STATE_FAILED,
+                ) and not строка.get("settling")
+                # «Переразобрать» там, где прежний разбор перетирается: человек
+                # должен понимать, что делает с уже лежащим на диске кодом.
+                подпись = (
+                    "переразобрать"
+                    if строка["state"] in (STATE_UPDATED, STATE_STALE)
+                    else "разобрать"
+                )
                 кнопка = (
                     "<form method=post action=/sources/incoming/parse "
                     "style='display:inline'>"
                     f"<input type=hidden name=name value='{escape(строка['name'])}'>"
-                    "<button>разобрать</button></form>"
+                    f"<button>{подпись}</button></form>"
                     if можно
                     else ""
                 )

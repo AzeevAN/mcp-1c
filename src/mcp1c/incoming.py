@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
+import time
 from pathlib import Path
 
 from .intake import SELECTION_VERSION
@@ -28,6 +30,11 @@ STATE_STALE = "отбор устарел"
 # `cp` полутора гигабайт идёт минуты, и файл виден с первой секунды.
 SETTLE_SECONDS = 5.0
 
+# Что показываем про файл, который ещё копируется. Своего состояния у него
+# нет намеренно: состояний ровно шесть, и «не разобрано» — правда, просто с
+# оговоркой, почему кнопки пока нет.
+SETTLING_DETAIL = "файл ещё копируется, разбор недоступен"
+
 
 def _sha256_файла(путь: Path) -> str:
     digest = hashlib.sha256()
@@ -37,6 +44,27 @@ def _sha256_файла(путь: Path) -> str:
     return digest.hexdigest()
 
 
+def _причина_неудачи(запись, хеш: str) -> str | None:
+    """Причина, если записанная неудача относится к нынешнему содержимому.
+
+    Неудача привязана к хешу файла: иначе исправленный архив, положенный под
+    тем же именем, оставался бы в «разбор не удался» навсегда — снять отказ
+    можно было бы только переименованием файла или правкой `incoming-state.json`.
+
+    Старый формат (причина строкой, без хеша) читается как есть: файл
+    расходный, но ронять показ он не имеет права ни в каком виде.
+    """
+    if isinstance(запись, str):
+        return запись
+    if not isinstance(запись, dict):
+        return None
+    записанный = запись.get("sha256")
+    if записанный and записанный != хеш:
+        return None
+    причина = запись.get("reason")
+    return причина if isinstance(причина, str) else ""
+
+
 class IncomingScanner:
     """Состояние файлов `incoming/`. Одно на реестр, состояние на диске."""
 
@@ -44,6 +72,11 @@ class IncomingScanner:
         self.registry = registry
         self._state_path = registry.data_dir / "incoming-state.json"
         self._state = self._load()
+        # `note_failure` зовётся из потока разбора, `digest` — из цикла
+        # событий, словарь у них общий, и `json.dumps` идёт поверх него.
+        # Без замка «dictionary changed size during iteration» уронил бы
+        # показ страницы, а `_save` ловит только `OSError`.
+        self._замок = threading.RLock()
         self.running: set[str] = set()
 
     def _load(self) -> dict:
@@ -62,42 +95,68 @@ class IncomingScanner:
 
     def _save(self) -> None:
         try:
-            self._state_path.parent.mkdir(parents=True, exist_ok=True)
-            self._state_path.write_text(
-                json.dumps(self._state, ensure_ascii=False), encoding="utf-8"
-            )
+            with self._замок:
+                self._state_path.parent.mkdir(parents=True, exist_ok=True)
+                тело = json.dumps(self._state, ensure_ascii=False)
+            self._state_path.write_text(тело, encoding="utf-8")
         except OSError:
             # Кэш расходный: если записать не смогли (том read-only, нет места),
             # молча деградируем. В следующий раз пересчитаем.
             pass
 
+    def дописывается(self, путь: Path) -> bool:
+        """Файл менялся только что — копирование могло не закончиться.
+
+        Признак из постановки (§2): `cp` полутора гигабайт идёт минуты, и файл
+        виден с первой секунды. Разбор такого архива даёт `BadZipFile`
+        (центральный каталог лежит в конце файла) и вечную запись неудачи, а
+        показ страницы — пересчёт sha256 на каждом обновлении: mtime растущего
+        файла меняется, и кэш хеша не срабатывает.
+        """
+        return self._дописывается(путь.stat())
+
+    @staticmethod
+    def _дописывается(отпечаток) -> bool:
+        return (time.time() - отпечаток.st_mtime) < SETTLE_SECONDS
+
     def digest(self, путь: Path) -> str:
         """sha256 с кэшем по `(путь, размер, mtime)`."""
         отпечаток = путь.stat()
         ключ = путь.name
-        запись = self._state["digests"].get(ключ)
-        если_то_же = (
-            запись
-            and запись["size"] == отпечаток.st_size
-            and запись["mtime"] == отпечаток.st_mtime
-        )
-        if если_то_же:
-            return запись["sha256"]
+        with self._замок:
+            запись = self._state["digests"].get(ключ)
+            если_то_же = (
+                запись
+                and запись["size"] == отпечаток.st_size
+                and запись["mtime"] == отпечаток.st_mtime
+            )
+            if если_то_же:
+                return запись["sha256"]
         значение = _sha256_файла(путь)
-        self._state["digests"][ключ] = {
-            "size": отпечаток.st_size,
-            "mtime": отпечаток.st_mtime,
-            "sha256": значение,
-        }
+        with self._замок:
+            self._state["digests"][ключ] = {
+                "size": отпечаток.st_size,
+                "mtime": отпечаток.st_mtime,
+                "sha256": значение,
+            }
         self._save()
         return значение
 
     def note_failure(self, путь: Path, причина: str) -> None:
-        self._state["failures"][путь.name] = причина
+        """Запомнить отказ вместе с хешем файла, на котором он случился."""
+        try:
+            хеш = self.digest(путь)
+        except OSError:
+            # Файл мог исчезнуть, пока шёл разбор. Причина всё равно нужнее
+            # хеша: без неё отказ через рестарт неотличим от «не разбирали».
+            хеш = ""
+        with self._замок:
+            self._state["failures"][путь.name] = {"reason": причина, "sha256": хеш}
         self._save()
 
     def clear_failure(self, путь: Path) -> None:
-        self._state["failures"].pop(путь.name, None)
+        with self._замок:
+            self._state["failures"].pop(путь.name, None)
         self._save()
 
     def scan(self) -> list[dict]:
@@ -112,27 +171,30 @@ class IncomingScanner:
         по_имени = {s.origin: s for s in источники}
         for путь in sorted(каталог.glob("*.zip")):
             try:
-                хеш = self.digest(путь)
-                источник = по_хешу.get(хеш)
+                отпечаток = путь.stat()
+                # Каталог с расширением `.zip` — не входящая выгрузка. Раньше
+                # его отсекала ошибка чтения при подсчёте хеша, но у свежего
+                # каталога хеш не считается вовсе, и он попал бы в список.
+                if not путь.is_file():
+                    continue
+                дописывается = self._дописывается(отпечаток)
                 if путь.name in self.running:
                     состояние, подробность = STATE_RUNNING, ""
-                elif источник is not None:
-                    устарел = getattr(источник, "selection_version", SELECTION_VERSION)
-                    состояние = STATE_STALE if устарел < SELECTION_VERSION else STATE_READY
-                    подробность = источник.id
-                elif путь.name in self._state["failures"]:
-                    состояние = STATE_FAILED
-                    подробность = self._state["failures"][путь.name]
-                elif путь.name in по_имени:
-                    состояние, подробность = STATE_UPDATED, по_имени[путь.name].id
+                elif дописывается:
+                    # Хеш не считаем вовсе: он всё равно устареет к концу `cp`,
+                    # а стоит секунды на каждом показе страницы.
+                    состояние, подробность = STATE_NEW, SETTLING_DETAIL
                 else:
-                    состояние, подробность = STATE_NEW, ""
+                    состояние, подробность = self._состояние(
+                        путь, по_хешу, по_имени
+                    )
                 строки.append(
                     {
                         "name": путь.name,
-                        "size": путь.stat().st_size,
+                        "size": отпечаток.st_size,
                         "state": состояние,
                         "detail": подробность,
+                        "settling": дописывается,
                     }
                 )
             except OSError:
@@ -140,3 +202,20 @@ class IncomingScanner:
                 # Одна строка не имеет права уносить всю страницу — пропускаем.
                 pass
         return строки
+
+    def _состояние(self, путь: Path, по_хешу: dict, по_имени: dict) -> tuple[str, str]:
+        """Состояние дописанного файла — по хешу, реестру и записи неудачи."""
+        хеш = self.digest(путь)
+        источник = по_хешу.get(хеш)
+        if источник is not None:
+            устарел = getattr(источник, "selection_version", SELECTION_VERSION)
+            состояние = STATE_STALE if устарел < SELECTION_VERSION else STATE_READY
+            return состояние, источник.id
+        with self._замок:
+            запись = self._state["failures"].get(путь.name)
+        причина = _причина_неудачи(запись, хеш) if запись is not None else None
+        if причина is not None:
+            return STATE_FAILED, причина
+        if путь.name in по_имени:
+            return STATE_UPDATED, по_имени[путь.name].id
+        return STATE_NEW, ""

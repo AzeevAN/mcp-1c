@@ -5,7 +5,7 @@
 двоичного контейнера `.Form`, а часть общих модулей поставляется
 скомпилированными — исходника в них нет вовсе.
 
-Запуск: python3 tools/lab/measure_flat.py data/lab/utd/UtdConfig
+Запуск: python3 tools/lab/measure_flat.py <каталог плоской выгрузки>
 """
 
 import marshal

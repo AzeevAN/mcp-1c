@@ -1,0 +1,1531 @@
+"""Дашборд: реестр, загрузка источников, прогон запросов.
+
+Отдаёт список маршрутов, а не приложение: `server.py` монтирует их рядом с
+`/health`, тесты вешают на голый `Starlette`. Про MCP модуль не знает — тот же
+приём, что уже применён к `tools.py`.
+
+Разметка собирается строками. Шага сборки нет намеренно: четыре экрана не
+стоят npm в образе, а дашборд обязан работать и с выключенным JS.
+
+Спецификация — docs/dashboard-design.md.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hmac
+import os
+import re
+import secrets
+import shutil
+import tempfile
+import traceback
+from html import escape
+from pathlib import Path
+from urllib.parse import quote
+
+from starlette.concurrency import run_in_threadpool
+from starlette.requests import Request
+from starlette.responses import HTMLResponse, PlainTextResponse, RedirectResponse
+from starlette.routing import Route
+
+from . import tools
+from .dictionary import SOURCE_BUILTIN as DICT_BUILTIN
+from .graph_view import DEFAULT_LIMIT as DEFAULT_GRAPH_LIMIT
+from .graph_view import Neighbourhood, bounds, neighbourhood
+from .loader import ExportError
+from .registry import KIND_QUERY, Registry, RegistryError
+from .render import DETAIL_LEVELS
+from .search import FIELD_KIND_TITLES
+from .syntax_model import KIND_TITLES
+from .v8container import V8ContainerError
+
+PAGE_TITLE = "Структура конфигураций 1С"
+COOKIE = "mcp1c_session"
+
+# Справка весит 60-70 МБ, крупная выгрузка — единицы. Запас десятикратный; без
+# потолка первый же случайный файл на гигабайты положит контейнер по памяти.
+MAX_UPLOAD = 500 * 1024 * 1024
+CHUNK = 1024 * 1024
+
+# Сессии живут в памяти процесса и умирают с перезапуском. Отдельного хранилища
+# не заводим: вход — это одна вставка токена.
+# Сессия -> уровень доступа. Уровня два: читатель видит страницы, но не формы
+# правки; администратор может всё. Разделены потому, что токен чтения лежит в
+# конфиге каждого MCP-клиента и утекает вместе с ним.
+LEVEL_READ = "read"
+LEVEL_ADMIN = "admin"
+_SESSIONS: dict[str, str] = {}
+
+_STYLE = """
+body { font: 15px/1.5 system-ui, sans-serif; margin: 0 auto; max-width: 60rem;
+       padding: 1rem 1.5rem 4rem; color: #1b1b1b; }
+nav { margin-bottom: 1.5rem; }
+nav a { margin-right: 1rem; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid #ddd;
+         vertical-align: top; }
+.note { background: #fff8e1; padding: .5rem .8rem; margin: .3rem 0; }
+.error { background: #ffebee; padding: .5rem .8rem; margin: .5rem 0; }
+.warn { background: #fff8e1; color: #7a5200; }
+.card { background: #fafafa; padding: 1rem; border: 1px solid #ddd;
+        white-space: pre-wrap; word-break: break-word; font-size: 13px; }
+/* Блоки кода внутри разобранной карточки. `pre.card` — это режим «как есть»,
+   у него своё оформление, поэтому исключён. */
+pre:not(.card) { background: #f1f1f1; padding: .6rem .8rem; margin: .6rem 0;
+                 overflow-x: auto; white-space: pre; }
+pre:not(.card) code { font: 13px/1.45 ui-monospace, Menlo, Consolas, monospace; }
+.graph { border: 1px solid #ddd; background: #fcfcfc; width: 100%;
+         height: 34rem; cursor: grab; touch-action: none; }
+.graph:active { cursor: grabbing; }
+.graph text { font: 11px system-ui, sans-serif; fill: #333; }
+.graph .edge { stroke: #b9b9b9; stroke-width: 1.2; }
+.graph .edge.in { stroke-dasharray: 4 3; }
+.graph a:hover circle { stroke: #1b1b1b; stroke-width: 2.5; }
+.graph .subject { stroke: #1b1b1b; stroke-width: 2.5; }
+.legend span { display: inline-block; margin-right: .9rem; font-size: 13px; }
+.legend i { display: inline-block; width: .7rem; height: .7rem;
+            border-radius: 50%; margin-right: .25rem; vertical-align: middle; }
+"""
+
+# Цвет по виду объекта. Не украшение: на картинке из шестидесяти узлов вид —
+# первое, что нужно различать («документ окружён регистрами»), а читать
+# шестьдесят подписей глазами дороже, чем увидеть цвет.
+KIND_COLORS = {
+    "Справочник": "#4c8ed9",
+    "Документ": "#e0803c",
+    "РегистрСведений": "#5aa469",
+    "РегистрНакопления": "#3f8f6b",
+    "РегистрБухгалтерии": "#2f7d5e",
+    "РегистрРасчета": "#7fae55",
+    "ПланСчетов": "#9b6bbf",
+    "ПланВидовХарактеристик": "#8a72c4",
+    "ПланВидовРасчета": "#a37fd0",
+    "ПланОбмена": "#b07f9e",
+    "Перечисление": "#c9a227",
+    "Константа": "#9a9a9a",
+    "ОбщийМодуль": "#7d7d7d",
+    "Обработка": "#a8a8a8",
+    "Отчет": "#a8a8a8",
+    "БизнесПроцесс": "#c07b7b",
+    "Задача": "#c07b7b",
+}
+KIND_FALLBACK = "#8f8f8f"
+
+
+def _admin_token() -> str:
+    """Читается на каждый запрос, а не при импорте: так его подменяют тесты."""
+    return os.environ.get("ADMIN_TOKEN", "")
+
+
+def _api_token() -> str:
+    """Токен чтения. Пуст — читать может кто угодно, как было всегда."""
+    return os.environ.get("API_TOKEN", "")
+
+
+def _same(given: str, expected: str) -> bool:
+    """Сравнение постоянного времени, устойчивое к не-ASCII.
+
+    `hmac.compare_digest` на строках с кириллицей бросает `TypeError`, а токен
+    задаёт человек — «секрет» кириллицей он напишет первым делом. Сравниваем
+    байты в UTF-8: длина при этом всё равно утекает, но она утекает и так.
+    """
+    if not expected:
+        return False
+    return hmac.compare_digest(given.encode("utf-8"), expected.encode("utf-8"))
+
+
+def _token_from_headers(request: Request) -> str:
+    """Токен из заголовка: `X-Api-Token` или `Authorization: Bearer`.
+
+    Заголовки HTTP кодируются latin-1, поэтому кириллический токен сюда
+    физически не доходит — через форму входа он работает, через заголовок нет.
+    """
+    direct = request.headers.get("x-api-token", "")
+    if direct:
+        return direct
+    auth = request.headers.get("authorization", "")
+    prefix = "bearer "
+    return auth[len(prefix):] if auth.lower().startswith(prefix) else ""
+
+
+def _authorized(request: Request) -> bool:
+    """Право записи: загрузка источников, удаление, правка словаря."""
+    session = request.cookies.get(COOKIE, "")
+    if session and _SESSIONS.get(session) == LEVEL_ADMIN:
+        return True
+    return _same(_token_from_headers(request), _admin_token())
+
+
+def can_read(request: Request) -> bool:
+    """Право чтения: страницы дашборда и инструменты MCP.
+
+    Админский токен годится и здесь — иначе владельцу пришлось бы держать в
+    клиенте два заголовка вместо одного.
+    """
+    expected = _api_token()
+    if not expected:
+        return True
+    session = request.cookies.get(COOKIE, "")
+    if session and session in _SESSIONS:
+        return True
+    given = _token_from_headers(request)
+    return _same(given, expected) or _same(given, _admin_token())
+
+
+# Что сейчас грузится. Живёт в памяти процесса и умирает с перезапуском —
+# как и сессии: это состояние минуты, а не факт о данных. Список короткий,
+# показывается только вошедшему: имя файла тоже говорит, что за база.
+JOB_READING = "принимается"
+JOB_PARSING = "разбирается"
+JOB_DONE = "готово"
+JOB_FAILED = "ошибка"
+_JOBS: list[dict] = []
+# Сколько завершённых заданий держать на экране. Нужны, чтобы человек увидел
+# результат, вернувшись через минуту; копить их незачем.
+JOBS_KEPT = 10
+
+
+def _start_job(name: str, size: int) -> dict:
+    job = {"name": name, "size": size, "state": JOB_READING, "error": "", "result": ""}
+    _JOBS.append(job)
+    завершённые = [j for j in _JOBS if j["state"] in (JOB_DONE, JOB_FAILED)]
+    for лишнее in завершённые[:-JOBS_KEPT]:
+        _JOBS.remove(лишнее)
+    return job
+
+
+def _index_source(registry: Registry, path: Path, suffix: str) -> None:
+    """Выполняется в отдельном потоке: разбор .hbk занимает около 4 секунд."""
+    if suffix == ".hbk":
+        registry.add_syntax(path)
+    else:
+        registry.add_configuration(path)
+    registry.save()
+
+
+def _run_job(registry: Registry, job: dict, directory: str, path: Path, suffix: str) -> None:
+    """Разбор в фоне. Ошибку кладём в задание: ответа, куда её вернуть, уже нет."""
+    job["state"] = JOB_PARSING
+    try:
+        _index_source(registry, path, suffix)
+    except (ExportError, RegistryError, V8ContainerError, ValueError) as error:
+        job["state"] = JOB_FAILED
+        job["error"] = str(error)
+    except Exception as error:  # фоновая задача не должна ронять процесс молча
+        job["state"] = JOB_FAILED
+        job["error"] = f"{type(error).__name__}: {error}"
+        # На странице остаётся одна строка — больше туда не влезет. Но без
+        # стека неожиданную ошибку разбирать не по чему: имя класса и текст
+        # не говорят, где именно упало. Один раз это уже стоило отдельного
+        # расследования, поэтому стек уходит в лог контейнера.
+        traceback.print_exc()
+    else:
+        job["state"] = JOB_DONE
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def _layout(title: str, body: str, *, refresh: int = 0) -> HTMLResponse:
+    обновление = f"<meta http-equiv=refresh content={refresh}>" if refresh else ""
+    return HTMLResponse(
+        f"<!doctype html><html lang=ru><meta charset=utf-8>{обновление}"
+        f"<title>{escape(title)}</title><style>{_STYLE}</style>"
+        f"<nav><a href=/>Обзор</a><a href=/sources>Источники</a>"
+        f"<a href=/queries>Запросы</a><a href=/graph>Связи</a>"
+        f"<a href=/dictionary>Словарь</a></nav>{body}"
+    )
+
+
+def _overview_page(registry: Registry) -> HTMLResponse:
+    rows = registry.overview()
+    if not rows:
+        return _layout(PAGE_TITLE, "<p>Не загружено ни одной конфигурации.</p>")
+
+    parts = [
+        "<table><tr><th>Конфигурация<th>Версия<th>Платформа<th>Объектов"
+        "<th>Связей</tr>"
+    ]
+    notes: list[str] = []
+    for row in rows:
+        parts.append(
+            f"<tr><td>{escape(row['name'])}<td>{escape(row['version'])}"
+            f"<td>{escape(row['platform'])}<td>{row['objects']}<td>{row['edges']}</tr>"
+        )
+        for note in row["notes"]:
+            notes.append(f"<div class=note>{escape(row['name'])}: {escape(note)}</div>")
+    parts.append("</table>")
+    parts.extend(notes)
+    parts.extend(_coverage_block(registry))
+    return _layout(PAGE_TITLE, "".join(parts))
+
+
+def _coverage_block(registry: Registry) -> list[str]:
+    """Каких справок не хватает под загруженные конфигурации.
+
+    Здесь это видно раньше всего: человек смотрит обзор, чтобы понять,
+    отвечает сервер по его платформе или по соседней.
+    """
+    покрытие = registry.syntax_coverage()
+    if not покрытие["loaded"] and not покрытие["missing"]:
+        return []
+
+    parts = ["<h2>Справки платформы</h2>"]
+    if покрытие["loaded"]:
+        parts.append(f"<p>Загружены: {escape(', '.join(покрытие['loaded']))}.</p>")
+    else:
+        parts.append("<p>Не загружено ни одной справки.</p>")
+
+    for пропуск in покрытие["missing"]:
+        конфигурации = escape(", ".join(пропуск["configurations"]))
+        parts.append(
+            f"<div class=note>Не хватает справки {escape(пропуск['platform'])} — "
+            f"на ней работает {конфигурации}. Ответы собраны из соседних версий: "
+            "наличие элементов отфильтровано, сигнатуры и доступность могут "
+            "отличаться.</div>"
+        )
+    for лишняя in покрытие["unused"]:
+        parts.append(
+            f"<div class=note>Справка {escape(лишняя)} не используется: "
+            "конфигураций на этой платформе нет.</div>"
+        )
+    return parts
+
+
+SCOPES = {
+    "objects": "объектам",
+    "fields": "реквизитам",
+    # Прежняя подпись «справке платформы» врала: индекс этого режима с
+    # задачи query-ranking общий для справки платформы и языка запросов
+    # (`shquery_ru.hbk`), и элементы языка запросов участвуют в выдаче
+    # наравне с методами и свойствами.
+    "syntax": "справке платформы и языку запросов",
+}
+
+
+def _run_queries(
+    registry: Registry, config: str | None, scope: str, phrases: list[str]
+) -> list[tuple[str, list, list]]:
+    """Прогон фраз по выбранному индексу. Пять попаданий на фразу.
+
+    Возвращает ещё и то, что отсеял фильтр версии. Молча отбрасывать нельзя:
+    человек прочтёт «ничего не найдено» там, где верный вывод — «метод есть,
+    но не в этой версии платформы».
+    """
+    context = registry.resolve(config, require_configuration=(scope != "syntax"))
+
+    if scope == "syntax":
+        if context.syntax is None:
+            raise RegistryError("Справка платформы не подключена.")
+        index = context.syntax.index
+        # Фильтр по версии обязателен: без него дашборд покажет методы,
+        # которых в этой конфигурации нет. Смысл фильтрации в том, что
+        # предупреждение человек пропустит, а отсутствие в выдаче — нет.
+        keep = context.syntax_filter()
+    else:
+        index = (
+            context.configuration.index
+            if scope == "objects"
+            else context.configuration.field_index
+        )
+        keep = None
+
+    result: list[tuple[str, list, list]] = []
+    for phrase in phrases:
+        hits = index.search(phrase, limit=20 if keep else 5)
+        hidden: list = []
+        if keep is not None:
+            hidden = [hit for hit in hits if not keep(hit.doc.payload)]
+            hits = [hit for hit in hits if keep(hit.doc.payload)]
+        result.append((phrase, hits[:5], hidden[:5]))
+    return result
+
+
+_RE_CODE = re.compile(r"`([^`]+)`")
+_RE_BOLD = re.compile(r"\*\*([^*]+)\*\*")
+
+
+def _inline(text: str) -> str:
+    """Внутристрочная разметка. Экранирование — до неё, а не после.
+
+    Порядок важен: сначала гасим угловые скобки, потом ставим свои теги.
+    Наоборот — и `<code>` из нашей же разметки уехал бы в `&lt;code&gt;`.
+    """
+    готово = escape(text)
+    готово = _RE_CODE.sub(r"<code>\1</code>", готово)
+    return _RE_BOLD.sub(r"<b>\1</b>", готово)
+
+
+def _блок_кода(строки: list[str], начало: int) -> tuple[str, int]:
+    """Ограждённый блок в `<pre><code>` и номер первой строки после него.
+
+    Язык после тройки отбрасывается: подсветки на странице нет. Незакрытый
+    блок доходит до конца текста — остаток страницы при этом виден, просто
+    внутри `<pre>`, а не абзацами.
+    """
+    конец = начало + 1
+    while конец < len(строки) and not строки[конец].strip().startswith("```"):
+        конец += 1
+    тело = "\n".join(строки[начало + 1 : конец])
+    return f"<pre><code>{escape(тело)}</code></pre>", конец + 1
+
+
+def _ячейки_строки(строка: str) -> list[str] | None:
+    """Ячейки markdown-строки таблицы. `None`, если это не строка таблицы."""
+    голая = строка.strip()
+    if not голая.startswith("|") or not голая.endswith("|"):
+        return None
+    # Экранированная черта — значение, а не граница ячейки.
+    return [
+        ячейка.strip().replace("\x00", "|")
+        for ячейка in голая[1:-1].replace("\\|", "\x00").split("|")
+    ]
+
+
+def _таблица_markdown(строки: list[str], начало: int) -> tuple[str, int] | None:
+    """Таблица, начинающаяся на этой строке. `None`, если её здесь нет.
+
+    Возвращает готовый HTML и номер первой строки после таблицы.
+    """
+    шапка = _ячейки_строки(строки[начало])
+    if шапка is None or начало + 1 >= len(строки):
+        return None
+    разделитель = _ячейки_строки(строки[начало + 1])
+    if разделитель is None or not разделитель:
+        return None
+    if not all(set(ячейка) <= set("-: ") and "-" in ячейка for ячейка in разделитель):
+        return None
+
+    части = ["<tr>" + "".join(f"<th>{_inline(я)}</th>" for я in шапка) + "</tr>"]
+    номер = начало + 2
+    while номер < len(строки):
+        ячейки = _ячейки_строки(строки[номер])
+        if ячейки is None:
+            break
+        части.append("<tr>" + "".join(f"<td>{_inline(я)}</td>" for я in ячейки) + "</tr>")
+        номер += 1
+    return "<table>" + "".join(части) + "</table>", номер
+
+
+def render_markdown(text: str) -> str:
+    """Markdown из `render.py` в HTML — ровно то, что он порождает.
+
+    Вложенных списков в его выводе нет, поэтому и здесь их нет: разбирать то,
+    чего не бывает, значит держать код, который никто не проверяет. Замер
+    вывода: 308 пунктов списка, 296 фрагментов кода, 34 заголовка, 6 жирных,
+    2 цитаты.
+
+    Ограждённые блоки (```` ```bsl ````) печатались абзацами с самого начала:
+    сигнатуры и примеры теряли моноширинный вид и отступы, а карточка справки
+    из них и состоит. Внутри блока разметка не разбирается — решётка и дефис
+    там часть кода. Незакрытый блок доводится до конца текста, но остаток
+    страницы не теряется: он остаётся видимым внутри `<pre>`.
+
+    Таблицы появились вместе с разделением показа и поиска в справке языка
+    запросов: страница отдаёт их отдельным полем, и карточка печатает их
+    markdown-таблицей. Признаём таблицей только пару «строка с чертами плюс
+    строка-разделитель»: одиночная черта в строке — обычный знак, в лесенке
+    грамматики она стоит в каждой второй строке.
+    """
+    строки = text.splitlines()
+    куски: list[str] = []
+    список: list[str] = []
+    цитата: list[str] = []
+    номер = 0
+
+    def закрыть_список() -> None:
+        if список:
+            куски.append("<ul>" + "".join(f"<li>{i}</li>" for i in список) + "</ul>")
+            список.clear()
+
+    def закрыть_цитату() -> None:
+        if цитата:
+            куски.append("<blockquote>" + "<br>".join(цитата) + "</blockquote>")
+            цитата.clear()
+
+    while номер < len(строки):
+        строка = строки[номер]
+        номер += 1
+        голая = строка.rstrip()
+
+        if голая.startswith("```"):
+            закрыть_список()
+            закрыть_цитату()
+            разметка, номер = _блок_кода(строки, номер - 1)
+            куски.append(разметка)
+            continue
+
+        таблица = _таблица_markdown(строки, номер - 1)
+        if таблица is not None:
+            разметка, следующая = таблица
+            закрыть_список()
+            куски.append(разметка)
+            номер = следующая
+            continue
+
+        if голая.startswith("> ") or голая == ">":
+            # Пустая строка внутри цитаты пишется одним знаком `>` без пробела.
+            # Без этой ветки цитата разваливалась на куски с абзацами `&gt;`
+            # между ними — видно на оговорке про неограниченные строки.
+            закрыть_список()
+            цитата.append(_inline(голая[2:].lstrip("- ")))
+            continue
+        закрыть_цитату()
+
+        if голая.strip() == "---":
+            закрыть_список()
+            куски.append("<hr>")
+        elif голая.startswith("#"):
+            закрыть_список()
+            уровень = len(голая) - len(голая.lstrip("#"))
+            куски.append(f"<h{уровень}>{_inline(голая[уровень:].strip())}</h{уровень}>")
+        elif голая.startswith("- ") or голая.startswith("* "):
+            список.append(_inline(голая[2:]))
+        elif голая.strip():
+            закрыть_список()
+            куски.append(f"<p>{_inline(голая)}</p>")
+        else:
+            закрыть_список()
+
+    закрыть_список()
+    закрыть_цитату()
+    return "".join(куски)
+
+
+def _card_link(scope: str, config: str, hit) -> str:
+    """Куда ведёт имя в таблице результатов.
+
+    У реквизита своей карточки нет — ведём на объект-владелец. У элемента
+    справки идентификатор в индексе служебный (`objects/catalog63/…`), а
+    `get_syntax` принимает имя, поэтому берём `full_ru`.
+    """
+    if scope == "syntax":
+        # `address`, а не `full_ru`: у элемента языка запросов владельца нет,
+        # и голое имя ведёт на список одноимённых вместо карточки.
+        name = getattr(hit.doc.payload, "address", "") or hit.doc.id
+        page = "/syntax"
+    elif scope == "fields":
+        name = getattr(hit.doc.payload, "object_full_name", "") or hit.doc.id
+        page = "/object"
+    else:
+        name = hit.doc.id
+        page = "/object"
+    return f"{page}?config={quote(config)}&name={quote(name)}"
+
+
+# ------------------------------------------------------------- граф связей
+
+# Перетаскивание и зум. Сорок строк без библиотек: раскладку уже посчитал
+# сервер, клиенту остаётся двигать `viewBox`. Ради этого тянуть d3 (250 КБ) или
+# сборку React значило бы завести второй язык и шаг сборки в проекте, где
+# дашборд — 1 155 строк на голом HTML без единого внешнего файла.
+_GRAPH_JS = """
+(function(){
+  var svg=document.getElementById('graph'); if(!svg) return;
+  var vb=svg.getAttribute('viewBox').split(' ').map(Number), тащим=null;
+  function применить(){ svg.setAttribute('viewBox', vb.join(' ')); }
+  svg.addEventListener('pointerdown', function(e){
+    тащим={x:e.clientX, y:e.clientY}; svg.setPointerCapture(e.pointerId); });
+  svg.addEventListener('pointerup', function(){ тащим=null; });
+  svg.addEventListener('pointermove', function(e){
+    if(!тащим) return;
+    var k=vb[2]/svg.clientWidth;
+    vb[0]-=(e.clientX-тащим.x)*k; vb[1]-=(e.clientY-тащим.y)*k;
+    тащим={x:e.clientX, y:e.clientY}; применить(); });
+  svg.addEventListener('wheel', function(e){
+    e.preventDefault();
+    var k=e.deltaY>0?1.1:0.9, r=svg.getBoundingClientRect();
+    var mx=(e.clientX-r.left)/r.width, my=(e.clientY-r.top)/r.height;
+    vb[0]+=vb[2]*mx*(1-k); vb[1]+=vb[3]*my*(1-k);
+    vb[2]*=k; vb[3]*=k; применить(); }, {passive:false});
+})();
+"""
+
+
+def _graph_svg(область: Neighbourhood, config: str, limit: int) -> str:
+    """Окрестность в инлайновый SVG. Никаких файлов и никакой сборки."""
+    слева, сверху, ширина, высота = bounds(область)
+    части = [
+        f"<svg id=graph class=graph viewBox='{слева:.0f} {сверху:.0f} "
+        f"{ширина:.0f} {высота:.0f}' xmlns='http://www.w3.org/2000/svg'>",
+        # Стрелка показывает направление ссылки. Без неё «Склады — ЧекККМ»
+        # не отвечает, кто на кого ссылается, а это половина смысла ребра.
+        "<defs><marker id=arrow viewBox='0 0 8 8' refX=7 refY=4 markerWidth=6 "
+        "markerHeight=6 orient=auto-start-reverse>"
+        "<path d='M0 0 L8 4 L0 8 z' fill='#b9b9b9'/></marker></defs>",
+    ]
+
+    for узел, связь in zip(область.nodes, область.links):
+        наружу = связь.outgoing
+        класс = "edge" if наружу else "edge in"
+        # Стрелка всегда указывает на цель ссылки, а не на край линии.
+        x1, y1, x2, y2 = (
+            (область.subject.x, область.subject.y, узел.x, узел.y)
+            if наружу
+            else (узел.x, узел.y, область.subject.x, область.subject.y)
+        )
+        части.append(
+            f"<line class='{класс}' x1={x1:.0f} y1={y1:.0f} x2={x2:.0f} "
+            f"y2={y2:.0f} marker-end='url(#arrow)'><title>{escape(связь.title)}"
+            "</title></line>"
+        )
+
+    def кружок(узел, радиус: float, свой: bool = False) -> str:
+        цвет = KIND_COLORS.get(узел.kind, KIND_FALLBACK)
+        адрес = f"/graph?config={quote(config)}&name={quote(узел.name)}&limit={limit}"
+        подсказка = f"{узел.name} · связей {узел.degree}"
+        класс = " class=subject" if свой else ""
+        return (
+            f"<a href='{адрес}'><title>{escape(подсказка)}</title>"
+            f"<circle{класс} cx={узел.x:.0f} cy={узел.y:.0f} r={радиус} "
+            f"fill='{цвет}'/>"
+            f"<text x={узел.x:.0f} y={узел.y + радиус + 13:.0f} "
+            f"text-anchor=middle>{escape(узел.short[:26])}</text></a>"
+        )
+
+    for узел in область.nodes:
+        части.append(кружок(узел, 9.0))
+    части.append(кружок(область.subject, 15.0, свой=True))
+    части.append("</svg>")
+    return "".join(части)
+
+
+def _graph_page(registry: Registry, config: str, name: str, limit: int) -> HTMLResponse:
+    # Первая по алфавиту, если не выбрана: страница без выбранной конфигурации
+    # ничего показать не может, а отказ вместо картинки — тупик. Тот же приём,
+    # что на «Запросах» и «Словаре».
+    известные = sorted(registry.configurations)
+    if config not in известные:
+        config = известные[0] if известные else ""
+
+    if not config:
+        return _layout(
+            "Граф связей",
+            "<p>Не загружено ни одной конфигурации — граф строить не по чему. "
+            "Загрузите выгрузку структуры на странице "
+            "<a href=/sources>Источники</a>.</p>",
+        )
+
+    try:
+        context = registry.resolve(config)
+    except RegistryError as ошибка:
+        # Форма остаётся на странице всегда: отказ без неё не даёт исправить
+        # то, на что он жалуется.
+        return _layout(
+            "Граф связей",
+            _graph_form(registry, config, name, limit)
+            + f"<div class=error>{escape(str(ошибка))}</div>",
+        )
+
+    подпись = f"Граф связей — {context.name}"
+    if not name:
+        # Пустая форма без единого слова читается как «страница не доделана».
+        # Одна строка объясняет, что тут вообще происходит и что вводить.
+        return _layout(
+            подпись,
+            _graph_form(registry, context.name, "", limit)
+            + "<p>Окрестность объекта: кто на него ссылается и на что ссылается "
+            "он. Введите полное имя — <code>Документ.ЧекККМ</code>, "
+            "<code>Справочник.Номенклатура</code>, "
+            "<code>РегистрНакопления.ТоварыНаСкладах</code>. Имя можно взять "
+            "со страницы <a href=/queries>Запросы</a>.</p>",
+        )
+
+    if name not in context.configuration.config.objects:
+        # Похожие имена, как это делает `get_object`: имя объекта в 1С длинное
+        # и опечатка в нём — самый частый способ сюда попасть. Отказ без
+        # подсказки заставляет уходить на другую страницу за именем.
+        похожие = context.configuration.index.search(name, limit=5)
+        подсказка = "".join(
+            f"<li><a href='/graph?config={quote(context.name)}"
+            f"&name={quote(hit.doc.id)}&limit={limit}'>"
+            f"{escape(hit.doc.id)}</a></li>"
+            for hit in похожие
+        )
+        тело = _graph_form(registry, context.name, name, limit) + (
+            f"<div class=error>В конфигурации {escape(context.name)} нет объекта "
+            f"<code>{escape(name)}</code>.</div>"
+        )
+        if подсказка:
+            тело += f"<p>Возможно, имелось в виду:</p><ul>{подсказка}</ul>"
+        return _layout(подпись, тело)
+
+    область = neighbourhood(context.configuration.graph, name, limit=limit)
+    части = [_graph_form(registry, context.name, name, limit)]
+
+    if not область.total:
+        # Изолированный объект — не ошибка и не пустая страница: сказать об
+        # этом прямо полезнее, чем показать холст с одной точкой без пояснений.
+        части.append(
+            f"<p><code>{escape(name)}</code> ни на что не ссылается и на него "
+            "не ссылается никто. Так выглядят константы и объекты, связи "
+            "которых живут в формах и схемах компоновки — их выгрузка пока не "
+            "собирает.</p>"
+        )
+        return _layout(подпись, "".join(части))
+
+    показано = (
+        f"показано {область.shown} из {область.total}"
+        if область.truncated
+        else f"связей {область.total}"
+    )
+    части.append(
+        f"<p><b>{escape(name)}</b> · {показано} · "
+        f"<a href='/object?config={quote(context.name)}&name={quote(name)}'>"
+        "карточка объекта</a></p>"
+    )
+    if область.truncated:
+        части.append(
+            "<div class=note>Показаны самые связанные соседи. Остальные не "
+            "потерялись — поднимите предел, если нужны все.</div>"
+        )
+
+    части.append(_graph_svg(область, context.name, limit))
+    части.append(
+        "<p>Тянуть — перетаскиванием, масштаб — колесом. Клик по узлу строит "
+        "граф вокруг него, наведение показывает, через что идёт связь. "
+        "Сплошная стрелка — объект ссылается наружу, пунктир — ссылаются "
+        "на него.</p>"
+    )
+    части.append(_graph_legend(область))
+    части.append(f"<script>{_GRAPH_JS}</script>")
+    return _layout(подпись, "".join(части))
+
+
+def _graph_legend(область: Neighbourhood) -> str:
+    виды = sorted({узел.kind for узел in область.nodes} | {область.subject.kind})
+    метки = [
+        f"<span><i style='background:{KIND_COLORS.get(вид, KIND_FALLBACK)}'></i>"
+        f"{escape(вид or '—')}</span>"
+        for вид in виды
+    ]
+    return f"<p class=legend>{''.join(метки)}</p>"
+
+
+def _graph_form(
+    registry: Registry, config: str, name: str, limit: int = 0
+) -> str:
+    """Форма страницы: конфигурация, объект, предел.
+
+    Конфигурация выбирается здесь, а не приходит скрытым полем. Скрытым она и
+    была — и по ссылке из навигации, где `config` пустой, страница упиралась в
+    «укажите нужную явно» без единого способа её указать. Тупик нашёл владелец
+    на живом дашборде; тестами он не ловился, потому что все они ходили с уже
+    заданным именем конфигурации.
+
+    Предел не спрятан в коде, потому что правильного значения нет. Тридцать
+    читаются на экране целиком, сто пятьдесят требуют зума, но показывают всю
+    картину сразу — что нужнее, знает только человек перед экраном.
+    """
+    выбранный = limit or DEFAULT_GRAPH_LIMIT
+    пределы = "".join(
+        f"<option value={n}{' selected' if n == выбранный else ''}>{n}</option>"
+        for n in (15, 30, 60, 150, 400)
+    )
+    конфигурации = "".join(
+        f"<option{' selected' if имя == config else ''}>{escape(имя)}</option>"
+        for имя in sorted(registry.configurations)
+    )
+    return (
+        "<form method=get action=/graph>"
+        f"<p>конфигурация: <select name=config>{конфигурации}</select></p>"
+        f"<p><input name=name value='{escape(name)}' size=46 "
+        "placeholder='Документ.ЧекККМ'> "
+        f"<select name=limit>{пределы}</select> соседей "
+        "<button type=submit>Показать</button></p></form>"
+    )
+
+
+def _card_page(
+    registry: Registry,
+    kind: str,
+    config: str,
+    name: str,
+    detail: str,
+    raw: bool = False,
+) -> HTMLResponse:
+    """Карточка объекта или элемента платформы — та же, что видит агент.
+
+    Текст берётся у `tools` без изменений: это буквально тот ответ, который
+    уходит по MCP. Markdown разбирается только здесь — ни агенту, ни CLI это
+    не нужно, символы мешают лишь в HTML. Конвертер свой, на полсотни строк:
+    `render.py` порождает шесть конструкций, и тянуть ради них зависимость
+    незачем.
+
+    Переключатель «как есть» показывает исходный текст. Он не для красоты:
+    дашборд — инструмент проверки, и поехавшую разметку в разобранном виде
+    было бы не видно.
+    """
+    if detail not in DETAIL_LEVELS:
+        detail = "fields"
+    try:
+        if kind == "syntax":
+            text = tools.get_syntax(registry, name, config or None, detail)
+        else:
+            text = tools.get_object(registry, name, config or None, detail)
+    except RegistryError as error:
+        text = str(error)
+
+    levels = " ".join(
+        f"<a href='?config={quote(config)}&name={quote(name)}&detail={level}'>"
+        f"{'<b>' if level == detail else ''}{level}{'</b>' if level == detail else ''}</a>"
+        for level in DETAIL_LEVELS
+    )
+    # Разобранный markdown читается глазами, сырой показывает буквально то, что
+    # ушло агенту. Второе нужно не реже первого: дашборд — инструмент проверки,
+    # и поехавшая разметка в разобранном виде осталась бы незаметной.
+    адрес = f"?config={quote(config)}&name={quote(name)}&detail={detail}"
+    переключатель = (
+        f"<a href='{адрес}'>разобрать</a>"
+        if raw
+        else f"<a href='{адрес}&raw=1'>как есть</a>"
+    )
+    карточка = (
+        f"<pre class=card>{escape(text)}</pre>"
+        if raw
+        else f"<div class=card>{render_markdown(text)}</div>"
+    )
+    body = f"<p>подробность: {levels} · {переключатель}</p>{карточка}"
+    return _layout(name, body)
+
+
+def _kind_title(scope: str, kind: str) -> str:
+    """Подпись вида найденного элемента — той же таблицей, что видит агент.
+
+    Без вида таблица выдачи не отвечает на свой главный вопрос «почему
+    выдача такая»: платформенный элемент и статья по языку запросов делят
+    один индекс (`scope == "syntax"`) и неотличимы в списке результатов без
+    подписи, что здесь платформа, а что — язык запросов. Для `fields` берётся
+    та же подпись, что печатает CLI и MCP (`FIELD_KIND_TITLES`); для
+    `objects` вид уже человеческое слово («Справочник», «Документ») и не
+    нуждается в замене.
+    """
+    if scope == "syntax":
+        return KIND_TITLES.get(kind, kind)
+    if scope == "fields":
+        return FIELD_KIND_TITLES.get(kind, kind)
+    return kind
+
+
+def _queries_page(
+    registry: Registry,
+    *,
+    config: str = "",
+    scope: str = "objects",
+    phrases_text: str = "",
+    results: list[tuple[str, list, list]] | None = None,
+    error: str = "",
+) -> HTMLResponse:
+    options = "".join(
+        f"<option{' selected' if name == config else ''}>{escape(name)}</option>"
+        for name in sorted(registry.configurations)
+    )
+    scope_inputs = "".join(
+        f"<label><input type=radio name=scope value={key}"
+        f"{' checked' if key == scope else ''}> по {title}</label> "
+        for key, title in SCOPES.items()
+    )
+
+    parts = [
+        "<h2>Прогон запросов</h2>",
+        "<form method=post action=/queries>",
+        f"<p>конфигурация: <select name=config>{options}</select></p>",
+        f"<p>{scope_inputs}</p>",
+        "<p><textarea name=phrases rows=8 cols=70 "
+        f"placeholder='одна фраза на строку'>{escape(phrases_text)}</textarea></p>",
+        "<button>Прогнать</button></form>",
+    ]
+    if error:
+        parts.append(f"<div class=error>{escape(error)}</div>")
+
+    for phrase, hits, hidden in results or []:
+        parts.append(f"<h3>{escape(phrase)}</h3>")
+        if not hits and not hidden:
+            parts.append("<p>ничего не найдено</p>")
+            continue
+        if not hits:
+            parts.append("<p>в этой версии платформы — ничего</p>")
+        # Ссылка на словарь с предзаполненной фразой: от промаха до лечения
+        # один переход, ради этого страница и заводилась.
+        if scope != "syntax":
+            fix = f"/dictionary?config={quote(config)}&phrase={quote(phrase)}"
+            parts.append(
+                f"<p><a href='{escape(fix)}'>не то — завести псевдоним</a></p>"
+            )
+        parts.append("<table><tr><th>#<th>Что нашлось<th>Вид<th>Оценка<th>Почему</tr>")
+        for position, hit in enumerate(hits, start=1):
+            link = _card_link(scope, config, hit)
+            title = (
+                getattr(hit.doc.payload, "address", "") or hit.doc.id
+                if scope == "syntax"
+                else hit.doc.id
+            )
+            вид = _kind_title(scope, hit.doc.kind)
+            parts.append(
+                f"<tr><td>{position}"
+                f"<td><a href='{escape(link)}'>{escape(title)}</a>"
+                f"<td>{escape(вид)}"
+                f"<td>{hit.score:.1f}<td>{escape(hit.reason or '—')}</tr>"
+            )
+        parts.append("</table>")
+        parts.extend(_hidden_block(hidden))
+    return _layout("Запросы", "".join(parts))
+
+
+def _hidden_block(hidden: list) -> list[str]:
+    """Что отсеял фильтр версии и по какой причине.
+
+    Причины противоположные — элемент ещё не появился или его уже нет, — и
+    сливать их в одну строку нельзя: агенту в первом случае поможет
+    обновление платформы, во втором оно же всё сломает.
+    """
+    if not hidden:
+        return []
+
+    parts = ["<h4>Скрыто фильтром версии</h4><ul>"]
+    for hit in hidden:
+        item = hit.doc.payload
+        if item.until:
+            причина = f"описан по версию {escape(item.until)} включительно, дальше его нет"
+        elif item.since:
+            причина = f"появился в {escape(item.since)}"
+        else:
+            причина = "недоступен в этой версии"
+        имя = escape(getattr(item, "address", "") or hit.doc.id)
+        parts.append(f"<li><code>{имя}</code> — {причина}</li>")
+    parts.append("</ul>")
+    return parts
+
+
+def _login_form() -> str:
+    if not _admin_token() and not _api_token():
+        # Не «закрыто», а «не существует»: без токенов ручек записи нет вовсе.
+        return (
+            "<h2>Загрузка недоступна</h2>"
+            "<p>Не задан <code>ADMIN_TOKEN</code>. Задайте его в окружении "
+            "сервера — тогда появятся загрузка и удаление источников.</p>"
+        )
+    подсказка = (
+        "<p>Токен администратора открывает загрузку источников и правку "
+        "словаря. Токен чтения (<code>API_TOKEN</code>) — только просмотр.</p>"
+        if _api_token() and _admin_token()
+        else "<p>Изменение источников требует токена администратора.</p>"
+    )
+    return (
+        "<h2>Вход</h2>"
+        + подсказка
+        + "<form method=post action=/login>"
+        "<input type=password name=token required> <button>Войти</button></form>"
+    )
+
+
+# Виды остальных источников (`configuration`, `syntax`) показывались и
+# показываются сырым словом — это устоявшееся поведение, менять его не
+# просят. Язык запросов — новый вид, и его код (`query`) человеку ничего не
+# говорит, поэтому только для него заводим человеческую подпись.
+_SOURCE_KIND_TITLES = {KIND_QUERY: "Язык запросов"}
+
+
+def _sources_page(
+    registry: Registry, *, error: str = "", authorized: bool = False
+) -> HTMLResponse:
+    parts: list[str] = []
+    if error:
+        parts.append(f"<div class=error>{escape(error)}</div>")
+
+    parts.append(
+        "<h2>Загружено</h2><table><tr><th>Источник<th>Вид<th>Платформа"
+        "<th>Элементов<th></tr>"
+    )
+    for source in sorted(registry.sources.values(), key=lambda s: s.id):
+        button = (
+            f"<form method=post action=/sources/remove>"
+            f"<input type=hidden name=id value='{escape(source.id)}'>"
+            f"<button>удалить</button></form>"
+            if authorized
+            else ""
+        )
+        вид = _SOURCE_KIND_TITLES.get(source.kind, source.kind)
+        parts.append(
+            f"<tr><td>{escape(source.id)}<td>{escape(вид)}"
+            f"<td>{escape(source.platform or '—')}<td>{source.items_total}"
+            f"<td>{button}</tr>"
+        )
+        # Источник, разобравшийся не полностью, снаружи выглядит здоровым:
+        # счётчик элементов на месте, статус `ready`. Замечания печатались
+        # только строкой CLI при загрузке — она прокручивается и теряется, а
+        # человек смотрит сюда.
+        for предупреждение in source.warnings:
+            parts.append(
+                f"<tr><td colspan=5 class=warn>! {escape(предупреждение)}</tr>"
+            )
+    parts.append("</table>")
+
+    if authorized and _JOBS:
+        # Имя файла говорит, что за база, поэтому список виден только вошедшему.
+        # Журнал за время жизни процесса. Убирается кнопкой: записи копятся и
+        # мешают смотреть на то, что происходит сейчас.
+        закончены = any(j["state"] in (JOB_DONE, JOB_FAILED) for j in _JOBS)
+        очистка = (
+            "<form method=post action=/sources/jobs/clear style='display:inline'>"
+            "<button>очистить завершённые</button></form>"
+            if закончены
+            else ""
+        )
+        parts.append(f"<h2>Загрузка</h2>{очистка}<table>"
+                     "<tr><th>Файл<th>Принято<th>Состояние</tr>")
+        for job in reversed(_JOBS):
+            подробность = (
+                f" — {escape(job['error'])}" if job["state"] == JOB_FAILED else ""
+            )
+            parts.append(
+                f"<tr><td>{escape(job['name'])}"
+                f"<td>{job['size'] / 1024 / 1024:.1f} МБ"
+                f"<td>{escape(job['state'])}{подробность}</tr>"
+            )
+        parts.append("</table>")
+
+    orphans = registry.orphan_sources()
+    if orphans:
+        # Справка одна на процесс, и прежняя выбывает из реестра при замене —
+        # а файл остаётся лежать. Молча занятые сотни мегабайт человек не
+        # найдёт; удалять за него нельзя: справку от снятой с поддержки
+        # платформы взять заново негде.
+        весом = sum(size for _, size in orphans) / 1024 / 1024
+        parts.append(
+            f"<h2>Исходные файлы — {весом:.0f} МБ</h2>"
+            "<p>Сервер работает по разобранным индексам, поэтому для ответов "
+            "эти файлы не нужны: они понадобятся, только если индекс придётся "
+            "строить заново. Здесь и исходник действующей справки, и остатки "
+            "прежних загрузок — реестр их не различает.</p>"
+            "<p><b>Прежде чем удалять, убедитесь, что файл можно взять "
+            "снова.</b> Справку от снятой с поддержки платформы скачать уже "
+            "негде.</p>"
+            "<table><tr><th>Файл<th>Размер<th></tr>"
+        )
+        for path, size in orphans:
+            relative = path.relative_to(registry.data_dir).as_posix()
+            button = (
+                "<form method=post action=/sources/forget>"
+                f"<input type=hidden name=path value='{escape(relative)}'>"
+                "<button>удалить файл</button></form>"
+                if authorized
+                else ""
+            )
+            parts.append(
+                f"<tr><td>{escape(relative)}"
+                f"<td>{size / 1024 / 1024:.0f} МБ<td>{button}</tr>"
+            )
+        parts.append("</table>")
+
+    if authorized:
+        parts.append(
+            "<h2>Загрузить</h2>"
+            "<form method=post action=/sources enctype=multipart/form-data>"
+            "<input type=file name=file accept='.zip,.hbk' required> "
+            "<button>Загрузить</button>"
+            # Имя файла названо прямо: в каталоге установки платформы лежат
+            # 38 файлов `.hbk`, и без подсказки человек берёт наугад соседний.
+            "<p>Принимаются три вида файлов:</p>"
+            "<ul>"
+            "<li><b>Выгрузка структуры</b> — <code>.zip</code>, который "
+            "делает обработка <code>ВыгрузкаСтруктуры</code>.</li>"
+            "<li><b>Справка платформы</b> — файл <code>shcntx_ru.hbk</code> "
+            "из каталога установки 1С:<br>"
+            "<code>/opt/1cv8/&lt;версия&gt;/shcntx_ru.hbk</code><br>"
+            "<code>C:\\Program Files\\1cv8\\&lt;версия&gt;\\bin\\shcntx_ru.hbk</code>"
+            "<br>Имя должно совпадать целиком.</li>"
+            "<li><b>Язык запросов</b> — файл <code>shquery_ru.hbk</code> из "
+            "того же каталога установки. Версию платформы указывать не "
+            "нужно: эта справка на все версии одна.</li>"
+            "</ul>"
+            "<p>Рядом лежат сотни файлов <code>.hbk</code> (38 справок × "
+            "языки), и похожие есть: <code>shcntx_root.hbk</code> — та же "
+            "справка платформы без текстов, одни английские идентификаторы; "
+            "<code>shlang_ru.hbk</code> — справка по встроенному языку, "
+            "другой формат страниц, не подходит. По размеру их не "
+            "отличить.</p>"
+            "<p>Разбор идёт в фоне: страница ответит сразу, а состояние покажет "
+            "в разделе «Загрузка» выше.</p></form>"
+        )
+    else:
+        parts.append(_login_form())
+
+    # Пока работа идёт — страница обновляет себя сама. Обычный `meta refresh`,
+    # а не JS: дашборд обязан работать с выключенным JS. Работа кончилась —
+    # обновление прекращается, иначе страница дёргалась бы вечно.
+    работает = any(j["state"] in (JOB_READING, JOB_PARSING) for j in _JOBS)
+    return _layout("Источники", "".join(parts), refresh=2 if работает else 0)
+
+
+def _dictionary_page(
+    registry: Registry,
+    *,
+    config: str = "",
+    authorized: bool = False,
+    error: str = "",
+    phrase: str = "",
+    targets: str = "",
+) -> HTMLResponse:
+    """Словарь: что правило говорит и откуда оно взялось.
+
+    Происхождение показывается всегда, а не только в CLI: с него начинается
+    разбор «почему поиск так себя ведёт» — встроенное правило чинят в
+    `synonyms.py` через ревью, локальное правят здесь же.
+    """
+    names = sorted(registry.configurations)
+    if config not in names:
+        config = names[0] if names else ""
+
+    options = "".join(
+        f"<option{' selected' if name == config else ''}>{escape(name)}</option>"
+        for name in names
+    )
+    parts = [
+        "<h2>Словарь</h2>",
+        "<p>Слова человека против имён в конфигурации. Синонимы заменяют слово "
+        "на слово, псевдоним указывает на конкретный объект — им лечат промах, "
+        "который ранжированием не достать.</p>",
+        f"<form method=get action=/dictionary><p>конфигурация: "
+        f"<select name=config onchange='this.form.submit()'>{options}</select> "
+        f"<button>показать</button></p></form>",
+    ]
+    if error:
+        parts.append(f"<div class=error>{escape(error)}</div>")
+
+    parts.append("<h3>Псевдонимы</h3>")
+    parts.append("<table><tr><th>Фраза<th>Объекты<th>Происхождение<th></tr>")
+    for alias, (objects, source) in sorted(
+        registry.dictionary.aliases_with_source(config or None).items()
+    ):
+        # Встроенные правила лежат в коде и правятся через ревью — кнопки у
+        # них нет намеренно, иначе удаление тихо разошлось бы с поставкой.
+        local = source != DICT_BUILTIN
+        button = (
+            "<form method=post action=/dictionary/alias/remove>"
+            f"<input type=hidden name=phrase value='{escape(alias)}'>"
+            f"<input type=hidden name=config value='{escape(config)}'>"
+            "<button>удалить</button></form>"
+            if authorized and local
+            else ""
+        )
+        parts.append(
+            f"<tr><td>{escape(alias)}<td>{escape(', '.join(objects))}"
+            f"<td>{escape(source)}<td>{button}</tr>"
+        )
+    parts.append("</table>")
+
+    groups = registry.dictionary.synonym_groups
+    parts.append(f"<h3>Свои группы синонимов — {len(groups)}</h3>")
+    if groups:
+        parts.append("<table><tr><th>Слова одной группы<th></tr>")
+        for group in groups:
+            # Группа опознаётся по составу, а не по номеру: номер сдвинется от
+            # правки соседей, а состав — то, что человек видит в этой строке.
+            button = (
+                "<form method=post action=/dictionary/synonyms/remove>"
+                f"<input type=hidden name=words value='{escape(' '.join(group))}'>"
+                "<button>снять</button></form>"
+                if authorized
+                else ""
+            )
+            parts.append(f"<tr><td>{escape(', '.join(group))}<td>{button}</tr>")
+        parts.append("</table>")
+    stats = registry.dictionary.stats()
+    parts.append(
+        f"<p>Встроенных групп {stats['встроенных групп синонимов']}, "
+        f"встроенных псевдонимов {stats['встроенных псевдонимов']} — они в коде "
+        "и правятся через ревью, отсюда не видны как строки.</p>"
+    )
+
+    if authorized:
+        parts.append(
+            "<h3>Завести псевдоним</h3>"
+            "<form method=post action=/dictionary/alias>"
+            f"<p>фраза: <input name=phrase size=40 required value='{escape(phrase)}'></p>"
+            f"<p>объекты: <input name=targets size=60 required value='{escape(targets)}' "
+            "placeholder='Справочник.Контрагенты, через запятую или пробел'></p>"
+            f"<p>область: <select name=config>"
+            f"<option value='{escape(config)}'>только {escape(config) or '—'}</option>"
+            "<option value=''>все конфигурации</option></select></p>"
+            "<button>Завести</button>"
+            "<p>Область по умолчанию — эта конфигурация: то, что в одной базе "
+            "физлицами зовут пользователей, знание про эту базу, а не про 1С.</p>"
+            "</form>"
+            "<h3>Завести группу синонимов</h3>"
+            "<form method=post action=/dictionary/synonyms>"
+            "<p><input name=words size=60 required "
+            "placeholder='возчик перевозчик экспедитор'></p>"
+            "<button>Завести</button>"
+            "<p>Синонимы общие для всех конфигураций: слово заменяется словом "
+            "независимо от того, как названы объекты.</p></form>"
+        )
+    else:
+        parts.append(_login_form())
+    return _layout("Словарь", "".join(parts))
+
+
+def _apply_dictionary_change(registry: Registry) -> None:
+    """Записать словарь и подхватить его без перезапуска.
+
+    Пересборки индексов не требуется: ни синонимы, ни псевдонимы не участвуют
+    в построении постингов, они читаются в момент поиска.
+    """
+    registry.dictionary.save()
+    registry.reload_dictionary()
+
+
+def _read_denied() -> HTMLResponse:
+    """Отказ в чтении. Ни имён конфигураций, ни счётчиков — это уже сведения."""
+    page = _layout(
+        "Нужен токен",
+        "<h2>Доступ закрыт</h2>"
+        "<p>Сервер работает под <code>API_TOKEN</code>. Клиенты MCP передают "
+        "его заголовком <code>X-Api-Token</code> или "
+        "<code>Authorization: Bearer</code>; для браузера — "
+        "<a href=/login>вход по токену</a>.</p>",
+    )
+    return HTMLResponse(page.body, status_code=401)
+
+
+def routes(registry: Registry) -> list[Route]:
+    def guard_read(handler):
+        """Закрывает страницу, пока `API_TOKEN` задан и не предъявлен."""
+
+        async def wrapped(request: Request):
+            if not can_read(request):
+                return _read_denied()
+            return await handler(request)
+
+        wrapped.__name__ = handler.__name__
+        return wrapped
+
+    async def overview(request: Request) -> HTMLResponse:
+        return _overview_page(registry)
+
+    async def sources(request: Request) -> HTMLResponse:
+        return _sources_page(registry, authorized=_authorized(request))
+
+    async def dictionary_page(request: Request) -> HTMLResponse:
+        return _dictionary_page(
+            registry,
+            config=request.query_params.get("config", ""),
+            authorized=_authorized(request),
+            phrase=request.query_params.get("phrase", ""),
+            targets=request.query_params.get("target", ""),
+        )
+
+    def _write_guard(request: Request) -> HTMLResponse | None:
+        """Общая охрана правок словаря: без токена ручки не существует."""
+        if not _admin_token():
+            return PlainTextResponse("Правка словаря выключена: не задан ADMIN_TOKEN.", 404)
+        if not _authorized(request):
+            page = _dictionary_page(registry, error="Нужен вход администратора.")
+            return HTMLResponse(page.body, status_code=403)
+        return None
+
+    async def alias_add(request: Request) -> HTMLResponse:
+        denied = _write_guard(request)
+        if denied is not None:
+            return denied
+
+        form = await request.form()
+        config = str(form.get("config", "")).strip()
+        phrase = str(form.get("phrase", ""))
+        # Объекты разделяют запятой или пробелом — как удобнее человеку, а не
+        # как удобнее разбору.
+        targets = [t for t in str(form.get("targets", "")).replace(",", " ").split() if t]
+        try:
+            registry.dictionary.add_alias(phrase, targets, config or None)
+        except ValueError as error:
+            return _dictionary_page(
+                registry, config=config, authorized=True, error=str(error),
+                phrase=phrase, targets=str(form.get("targets", "")),
+            )
+        _apply_dictionary_change(registry)
+        return RedirectResponse(f"/dictionary?config={quote(config)}", status_code=303)
+
+    async def alias_remove(request: Request) -> HTMLResponse:
+        denied = _write_guard(request)
+        if denied is not None:
+            return denied
+
+        form = await request.form()
+        config = str(form.get("config", "")).strip()
+        phrase = str(form.get("phrase", ""))
+        # Псевдоним мог быть заведён и для всех конфигураций: снимаем там, где
+        # он на самом деле лежит, иначе кнопка «удалить» ничего не делает.
+        if not registry.dictionary.remove_alias(phrase, config or None):
+            registry.dictionary.remove_alias(phrase, None)
+        _apply_dictionary_change(registry)
+        return RedirectResponse(f"/dictionary?config={quote(config)}", status_code=303)
+
+    async def synonyms_add(request: Request) -> HTMLResponse:
+        denied = _write_guard(request)
+        if denied is not None:
+            return denied
+
+        form = await request.form()
+        words = str(form.get("words", "")).replace(",", " ").split()
+        try:
+            registry.dictionary.add_synonyms(words)
+        except ValueError as error:
+            return _dictionary_page(registry, authorized=True, error=str(error))
+        _apply_dictionary_change(registry)
+        return RedirectResponse("/dictionary", status_code=303)
+
+    async def synonyms_remove(request: Request):
+        denied = _write_guard(request)
+        if denied is not None:
+            return denied
+
+        form = await request.form()
+        words = str(form.get("words", "")).replace(",", " ").split()
+        if not registry.dictionary.remove_synonyms(words):
+            return _dictionary_page(
+                registry,
+                authorized=True,
+                error="Такой группы нет. Встроенные группы отсюда не снимаются: "
+                      "они в коде и правятся через ревью.",
+            )
+        _apply_dictionary_change(registry)
+        return RedirectResponse("/dictionary", status_code=303)
+
+    async def queries_form(request: Request) -> HTMLResponse:
+        names = sorted(registry.configurations)
+        return _queries_page(registry, config=names[0] if names else "")
+
+    async def queries_run(request: Request) -> HTMLResponse:
+        form = await request.form()
+        config = str(form.get("config", ""))
+        scope = str(form.get("scope", "objects"))
+        if scope not in SCOPES:
+            scope = "objects"
+        phrases_text = str(form.get("phrases", ""))
+        phrases = [line.strip() for line in phrases_text.splitlines() if line.strip()]
+
+        if not phrases:
+            return _queries_page(
+                registry, config=config, scope=scope,
+                error="Не указано ни одной фразы.",
+            )
+        try:
+            results = _run_queries(registry, config or None, scope, phrases)
+        except RegistryError as error:
+            return _queries_page(
+                registry, config=config, scope=scope,
+                phrases_text=phrases_text, error=str(error),
+            )
+        return _queries_page(
+            registry, config=config, scope=scope,
+            phrases_text=phrases_text, results=results,
+        )
+
+    async def object_card(request: Request) -> HTMLResponse:
+        params = request.query_params
+        return _card_page(
+            registry,
+            "object",
+            params.get("config", ""),
+            params.get("name", ""),
+            params.get("detail", "fields"),
+            raw=params.get("raw") == "1",
+        )
+
+    async def graph_page(request: Request) -> HTMLResponse:
+        params = request.query_params
+        try:
+            предел = int(params.get("limit") or 0)
+        except ValueError:
+            предел = 0
+        return _graph_page(
+            registry,
+            params.get("config", ""),
+            params.get("name", "").strip(),
+            limit=max(1, min(предел, 400)) if предел else DEFAULT_GRAPH_LIMIT,
+        )
+
+    async def syntax_card(request: Request) -> HTMLResponse:
+        params = request.query_params
+        return _card_page(
+            registry,
+            "syntax",
+            params.get("config", ""),
+            params.get("name", ""),
+            params.get("detail", "fields"),
+            raw=params.get("raw") == "1",
+        )
+
+    async def login_form(request: Request) -> HTMLResponse:
+        """Страница входа. Открыта всегда — иначе войти неоткуда."""
+        return _layout("Вход", _login_form())
+
+    async def login(request: Request):
+        if not _admin_token() and not _api_token():
+            return PlainTextResponse(
+                "Вход выключен: не задан ни ADMIN_TOKEN, ни API_TOKEN.", 404
+            )
+        form = await request.form()
+        given = str(form.get("token", ""))
+        # Админский токен проверяется первым: он же годится и для чтения, и
+        # порядок решает, какой уровень получит сессия при совпадающих
+        # значениях переменных.
+        if _same(given, _admin_token()):
+            level = LEVEL_ADMIN
+        elif _same(given, _api_token()):
+            level = LEVEL_READ
+        else:
+            page = _layout("Вход", "<div class=error>Неверный токен.</div>" + _login_form())
+            return HTMLResponse(page.body, status_code=403)
+
+        session = secrets.token_urlsafe(32)
+        _SESSIONS[session] = level
+        response = RedirectResponse("/sources" if level == LEVEL_ADMIN else "/", 303)
+        response.set_cookie(COOKIE, session, httponly=True, samesite="strict", path="/")
+        return response
+
+    async def logout(request: Request):
+        _SESSIONS.pop(request.cookies.get(COOKIE, ""), None)
+        response = RedirectResponse("/sources", status_code=303)
+        response.delete_cookie(COOKIE, path="/")
+        return response
+
+    async def upload(request: Request):
+        if not _admin_token():
+            return PlainTextResponse("Загрузка выключена: не задан ADMIN_TOKEN.", 404)
+        if not _authorized(request):
+            page = _sources_page(registry, error="Нужен вход администратора.")
+            return HTMLResponse(page.body, status_code=403)
+
+        form = await request.form()
+        uploaded = form.get("file")
+        if uploaded is None or not getattr(uploaded, "filename", ""):
+            return _sources_page(registry, error="Файл не выбран.", authorized=True)
+
+        # Имя приходит от клиента: берём только последний сегмент, иначе из
+        # «../../etc/passwd» сложится путь наружу временного каталога.
+        name = Path(uploaded.filename).name
+        suffix = Path(name).suffix.lower()
+        if suffix not in (".zip", ".hbk"):
+            return _sources_page(
+                registry, error="Принимаются только .zip и .hbk", authorized=True
+            )
+
+        # Каталог удаляется не здесь, а фоновой задачей: она переживёт этот
+        # ответ, и её файл нельзя убирать у неё из-под ног.
+        tmp = tempfile.mkdtemp()
+        target = Path(tmp) / name
+        job = _start_job(name, 0)
+        size = 0
+        with target.open("wb") as out:
+            while True:
+                chunk = await uploaded.read(CHUNK)
+                if not chunk:
+                    break
+                size += len(chunk)
+                job["size"] = size
+                if size > MAX_UPLOAD:
+                    shutil.rmtree(tmp, ignore_errors=True)
+                    _JOBS.remove(job)
+                    return _sources_page(
+                        registry,
+                        error=f"Файл больше {MAX_UPLOAD // 1024 // 1024} МБ.",
+                        authorized=True,
+                    )
+                out.write(chunk)
+
+        # Разбор уходит в фон, ответ отдаётся сразу. Справка разбирается около
+        # пяти секунд, и всё это время браузер стоял на белом экране, не
+        # показывая, идёт работа или всё зависло. Ошибку теперь возвращать
+        # некуда — она ложится в задание и видна на этой же странице.
+        asyncio.create_task(
+            run_in_threadpool(_run_job, registry, job, tmp, target, suffix)
+        )
+        return RedirectResponse("/sources", status_code=303)
+
+    async def clear_jobs(request: Request):
+        """Убрать из журнала завершённые записи.
+
+        Незавершённые не трогаем: фоновая задача ещё пишет в своё задание, и
+        выдёргивать его у неё из-под рук нечестно — состояние просто исчезло бы
+        с экрана, а работа продолжилась.
+        """
+        if not _admin_token():
+            return PlainTextResponse("Недоступно: не задан ADMIN_TOKEN.", 404)
+        if not _authorized(request):
+            page = _sources_page(registry, error="Нужен вход администратора.")
+            return HTMLResponse(page.body, status_code=403)
+
+        for job in [j for j in _JOBS if j["state"] in (JOB_DONE, JOB_FAILED)]:
+            _JOBS.remove(job)
+        return RedirectResponse("/sources", status_code=303)
+
+    async def forget(request: Request):
+        """Удалить файл, который не заявлен ни одним источником."""
+        if not _admin_token():
+            return PlainTextResponse("Удаление выключено: не задан ADMIN_TOKEN.", 404)
+        if not _authorized(request):
+            page = _sources_page(registry, error="Нужен вход администратора.")
+            return HTMLResponse(page.body, status_code=403)
+
+        form = await request.form()
+        given = str(form.get("path", ""))
+        # Путь приходит от клиента: сверяем не строку, а разрешённый список.
+        # Из «../../etc/passwd» иначе сложилась бы дорога наружу каталога.
+        allowed = {
+            path.relative_to(registry.data_dir).as_posix(): path
+            for path, _ in registry.orphan_sources()
+        }
+        target = allowed.get(given)
+        if target is None:
+            return _sources_page(
+                registry,
+                error="Такого неиспользуемого файла нет.",
+                authorized=True,
+            )
+        try:
+            target.unlink()
+        except OSError as error:
+            return _sources_page(registry, error=str(error), authorized=True)
+        return RedirectResponse("/sources", status_code=303)
+
+    async def remove(request: Request):
+        if not _admin_token():
+            return PlainTextResponse("Удаление выключено: не задан ADMIN_TOKEN.", 404)
+        if not _authorized(request):
+            page = _sources_page(registry, error="Нужен вход администратора.")
+            return HTMLResponse(page.body, status_code=403)
+
+        form = await request.form()
+        try:
+            registry.remove(str(form.get("id", "")))
+        except RegistryError as error:
+            return _sources_page(registry, error=str(error), authorized=True)
+        registry.save()
+        return RedirectResponse("/sources", status_code=303)
+
+    return [
+        # Чтение закрыто там, где показываются сведения о конфигурациях.
+        # Ручки записи проверяют право сами и отвечают 403 — им обёртка не
+        # нужна, а 401 вместо 403 сбивал бы с толку: там дело не в чтении.
+        Route("/", guard_read(overview), methods=["GET"]),
+        Route("/sources", guard_read(sources), methods=["GET"]),
+        Route("/sources", upload, methods=["POST"]),
+        Route("/sources/remove", remove, methods=["POST"]),
+        Route("/sources/forget", forget, methods=["POST"]),
+        Route("/sources/jobs/clear", clear_jobs, methods=["POST"]),
+        Route("/queries", guard_read(queries_form), methods=["GET"]),
+        Route("/queries", guard_read(queries_run), methods=["POST"]),
+        Route("/object", guard_read(object_card), methods=["GET"]),
+        Route("/graph", guard_read(graph_page), methods=["GET"]),
+        Route("/syntax", guard_read(syntax_card), methods=["GET"]),
+        Route("/dictionary", guard_read(dictionary_page), methods=["GET"]),
+        Route("/dictionary/alias", alias_add, methods=["POST"]),
+        Route("/dictionary/alias/remove", alias_remove, methods=["POST"]),
+        Route("/dictionary/synonyms", synonyms_add, methods=["POST"]),
+        Route("/dictionary/synonyms/remove", synonyms_remove, methods=["POST"]),
+        # Вход открыт всегда — иначе войти неоткуда.
+        Route("/login", login_form, methods=["GET"]),
+        Route("/login", login, methods=["POST"]),
+        Route("/logout", logout, methods=["POST"]),
+    ]

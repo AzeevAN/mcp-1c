@@ -1,0 +1,20 @@
+services:
+  mcp1c:
+    build: .
+    image: mcp1c:latest
+    container_name: mcp1c
+    restart: unless-stopped
+    ports:
+      - "5001:8000"
+    volumes:
+      # Всё, что положено в ./data/bootstrap, индексируется при старте:
+      # выгрузки конфигураций (*.zip) и справка платформы (*.hbk).
+      - ./data:/data
+    environment:
+      # Запись: загрузка и удаление источников, правка словаря,
+      # POST /admin/reload. Без токена этих ручек не существует.
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      # Чтение: инструменты MCP и страницы дашборда. Пока не задан, структура
+      # конфигураций открыта всем, кто дотянется до адреса. Оба берутся из
+      # `.env` рядом с этим файлом — шаблон в `.env.example`.
+      API_TOKEN: ${API_TOKEN:-}

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "1c": {
+      "type": "http",
+      "url": "http://localhost:5001/mcp",
+      "headers": {
+        "X-Api-Token": "${MCP1C_API_TOKEN}"
+      }
+    }
+  }
+}

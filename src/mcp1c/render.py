@@ -1,0 +1,591 @@
+"""Рендер объекта конфигурации в markdown с уровнями детализации.
+
+Три уровня — не украшение, а способ не жечь контекст агента:
+
+    brief   ~50 токенов   назначение объекта, счётчики
+    fields  основной      реквизиты, табличные части, измерения, значения
+    full    всё           + свойства, движения, связи, входящие ссылки
+
+Схлопывание составных типов происходит здесь, а не в выгрузке: у Регистратора
+типов бывают сотни, но в модели они сохранены полностью — граф строится по ним.
+"""
+
+from __future__ import annotations
+
+from .graph import Graph
+from .model import Configuration, Field, MetadataObject
+from .syntax_model import (
+    KIND_TITLES,
+    SyntaxItem,
+    МЕТКА_ТАБЛИЦЫ,
+    без_меток,
+)
+
+BRIEF, FIELDS, FULL = "brief", "fields", "full"
+DETAIL_LEVELS = (BRIEF, FIELDS, FULL)
+
+# Понятные подписи свойств объектов.
+_PROP_TITLES = {
+    "hierarchical": "Иерархический",
+    "hierarchy_type": "Вид иерархии",
+    "code_length": "Длина кода",
+    "description_length": "Длина наименования",
+    "posting": "Проведение",
+    "number_length": "Длина номера",
+    "number_periodicity": "Периодичность номера",
+    "periodicity": "Периодичность",
+    "write_mode": "Режим записи",
+    "register_kind": "Вид регистра",
+    "global": "Глобальный",
+    "server": "Сервер",
+    "client_managed": "Клиент (управляемое приложение)",
+    "server_call": "Вызов сервера",
+    "event": "Событие",
+    "handler": "Обработчик",
+    "method": "Метод",
+    "correspondence": "Корреспонденция",
+    "chart_of_accounts": "План счетов",
+    "ext_dimension_types": "Виды субконто",
+    "max_ext_dimension_count": "Максимум субконто",
+    "code_type": "Тип кода",
+    "number_type": "Тип номера",
+    "numerator": "Нумератор",
+    "real_time_posting": "Оперативное проведение",
+    "register_records_deletion": "Удаление движений",
+    "register_records_on_post": "Запись движений при проведении",
+    "action_period": "Период действия",
+    "base_period": "Базовый период",
+    "schedule": "График",
+    "chart_of_calculation_types": "План видов расчёта",
+    "addressing": "Регистр адресации",
+    "main_addressing_attribute": "Основной реквизит адресации",
+    "current_performer": "Текущий исполнитель",
+    "task": "Задача",
+    "privileged": "Привилегированный",
+    "external_connection": "Внешнее соединение",
+    "return_values_reuse": "Повторное использование возвращаемых значений",
+    "distributed_infobase": "Распределённая информационная база",
+    "is_predefined": "Предопределённое",
+    "use": "Использование",
+    "characteristic_ext_values": "Дополнительные значения характеристик",
+}
+
+# Свойства, от которых зависит, как писать код и запрос: есть ли у регистра
+# срезы, делится ли он на дебет и кредит, появится ли у справочника `Родитель`.
+# Печатаются на уровне `fields` — том самом, которым пользуются для написания
+# кода, — а не только в `full`, куда за ними никто не пойдёт.
+_CODE_RELEVANT_PROPS = (
+    "register_kind",
+    "periodicity",
+    "write_mode",
+    "correspondence",
+    "chart_of_accounts",
+    "ext_dimension_types",
+    "max_ext_dimension_count",
+    "hierarchical",
+    "hierarchy_type",
+    "posting",
+    "action_period",
+    "schedule",
+    "chart_of_calculation_types",
+    "addressing",
+)
+
+
+def _prop_value(value: object) -> str:
+    """`True` в ответе на русском читается хуже, чем «Да»."""
+    if isinstance(value, bool):
+        return "Да" if value else "Нет"
+    return str(value)
+
+
+def _field_line(item: Field, collapse_after: int) -> str:
+    line = f"- `{item.name}` — {item.type_spec(collapse_after)}"
+    if item.synonym and item.synonym != item.name:
+        line += f" // {item.synonym}"
+    if item.comment:
+        line += f" — {item.comment}"
+    if item.indexing:
+        line += f" [{item.indexing}]"
+    return line
+
+
+def _section(title: str, lines: list[str]) -> list[str]:
+    if not lines:
+        return []
+    return [f"## {title}", "", *lines, ""]
+
+
+def _fields_section(title: str, items: list[Field], collapse_after: int) -> list[str]:
+    return _section(title, [_field_line(i, collapse_after) for i in items])
+
+
+def _refs_section(title: str, refs: list[str]) -> list[str]:
+    return _section(title, [f"- `{r}`" for r in refs])
+
+
+def _virtual_tables_section(tables: list) -> list[str]:
+    """Таблицы запроса с уже подставленными именами полей.
+
+    Печатается там же, где реквизиты, а не в `full`: имена полей нужны
+    ровно в тот момент, когда агент пишет запрос, и это уровень `fields`.
+    """
+    if not tables:
+        return []
+
+    lines: list[str] = []
+    for table in tables:
+        lines.append(f"- `{table.name}`")
+        if table.dimensions:
+            lines.append(f"  измерения: {', '.join(table.dimensions)}")
+        if table.resources:
+            lines.append(f"  ресурсы: {', '.join(table.resources)}")
+        if table.attributes:
+            lines.append(f"  реквизиты: {', '.join(table.attributes)}")
+        if table.service:
+            lines.append(f"  служебные: {', '.join(table.service)}")
+
+    return _section("Таблицы запроса", lines) + [
+        "Имя ресурса в виртуальной таблице отличается от имени в конфигураторе:",
+        "берите его из списка выше, а не из раздела «Ресурсы».",
+        "",
+    ]
+
+
+def _unlimited_strings_notice(obj: MetadataObject) -> list[str]:
+    """Оговорка про строки неограниченной длины. Пусто, если таких полей нет.
+
+    Живой промах 2026-08-18: агент сгруппировал запрос по реквизиту-строке без
+    ограничения длины, и платформа такой запрос не выполнила. Отдали мы верное,
+    но разница читалась только по отсутствию числа в скобках — вывод, который
+    надо было сделать самому и знать, чем он грозит. Таких полей от 23% до 38%
+    строковых в живых конфигурациях, то есть промах повторится.
+
+    Печатается один раз, до списков полей. В первой редакции блок стоял в
+    конце карточки — аккуратнее, но бесполезно: 2026-08-18 живой агент вызвал
+    `get_object` с `detail=fields`, получил оговорку целиком и всё равно
+    сгруппировал по такому полю. Оговорка была предпоследним абзацем, на 721
+    токен позже строки поля, а решение принимается там, где имя копируют.
+    Сам рецепт с тех пор стоит и в типе поля (`Field.type_spec`), чтобы строка
+    была самодостаточной.
+
+    Имя поля в примере берётся с этой же карточки: по нему видно, о чём речь.
+    Псевдоним таблицы не подставляется — в запросе он свой, и наш пришлось бы
+    мысленно вычёркивать.
+
+    Каждый запрет в списке подтверждён: агрегатные — самой справкой, остальные
+    — прогонами владельца на живой базе 2026-08-18. Тексты ошибок платформы и
+    разбивка по происхождению — в `docs/data-sources.md`, раздел «Оговорки в
+    карточке». Осторожных формулировок здесь больше нет намеренно: пока запрет
+    не проверен, он либо называется предположением, либо не пишется вовсе.
+
+    «Сравнивать» стоит первым и без уточнения, потому что платформа говорит
+    именно так — «нельзя сравнивать поля неограниченной длины». Это шире
+    условия соединения: под запрет попадают и равенство в ГДЕ, и В (…).
+    """
+    if not any(поле.is_unlimited_string for _, поле in obj.all_fields()):
+        return []
+    пример = next(
+        поле.name for _, поле in obj.all_fields() if поле.is_unlimited_string
+    )
+    return [
+        "> **Строки неограниченной длины** помечены `(неогр.)`. Платформа не "
+        "даёт их сравнивать, группировать и упорядочивать и не пускает в "
+        "РАЗЛИЧНЫЕ, ОБЪЕДИНИТЬ и агрегатные КОЛИЧЕСТВО, МИНИМУМ, МАКСИМУМ. "
+        "Ограничивайте длину — одинаково в списке выборки и в группировке:",
+        ">",
+        f">     ПОДСТРОКА({пример}, 1, 100) КАК {пример}",
+        ">",
+        "> Длину подбирайте по смыслу поля: 100 — не универсальное число.",
+        "",
+    ]
+
+def render_object(
+    obj: MetadataObject,
+    detail: str = FIELDS,
+    *,
+    graph: Graph | None = None,
+    collapse_after: int = 5,
+    max_incoming: int = 20,
+    virtual_tables: list | None = None,
+) -> str:
+    """Markdown-описание объекта на заданном уровне детализации."""
+    if detail not in DETAIL_LEVELS:
+        raise ValueError(f"Неизвестный уровень детализации: {detail}")
+
+    out: list[str] = [f"# {obj.kind}: {obj.name}"]
+    if obj.synonym:
+        out.append(f"**{obj.synonym}**")
+    if obj.comment and obj.comment != obj.synonym:
+        out.append(obj.comment)
+    out.append("")
+    out.append(f"Полное имя: `{obj.full_name}` · в коде: `{obj.manager_path}`")
+    out.append("")
+
+    if detail == BRIEF:
+        out.append(_brief_summary(obj, graph))
+        return "\n".join(out).rstrip() + "\n"
+
+    if detail == FULL:
+        props = [
+            f"- {_PROP_TITLES.get(k, k)}: `{v}`"
+            for k, v in sorted(obj.props.items())
+            if v not in (None, "", False)
+        ]
+        out += _section("Свойства", props)
+    else:
+        # Булево здесь не отбрасывается по ложности: «Корреспонденция: Нет» —
+        # такой же ответ на вопрос, как «Да», и молчание читалось бы как
+        # «свойства нет».
+        существенные = [
+            f"- {_PROP_TITLES.get(k, k)}: `{_prop_value(obj.props[k])}`"
+            for k in _CODE_RELEVANT_PROPS
+            if obj.props.get(k) not in (None, "")
+        ]
+        out += _section("Свойства", существенные)
+
+    out += _unlimited_strings_notice(obj)
+    out += _fields_section("Реквизиты", obj.attributes, collapse_after)
+    out += _fields_section("Измерения", obj.dimensions, collapse_after)
+    out += _fields_section("Ресурсы", obj.resources, collapse_after)
+    out += _virtual_tables_section(virtual_tables or [])
+
+    if obj.value_type is not None:
+        out += _section(
+            "Тип значения", [f"- {obj.value_type.type_spec(collapse_after)}"]
+        )
+
+    if obj.tabular_parts:
+        out.append("## Табличные части")
+        out.append("")
+        for part in obj.tabular_parts:
+            heading = f"### {part.name}"
+            if part.synonym and part.synonym != part.name:
+                heading += f" — {part.synonym}"
+            out.append(heading)
+            out.append("")
+            for item in part.attributes:
+                out.append(_field_line(item, collapse_after))
+            out.append("")
+
+    if obj.enum_values:
+        out += _section(
+            "Значения",
+            [
+                f"- `{name}`" + (f" — {synonym}" if synonym and synonym != name else "")
+                for name, synonym in obj.enum_values
+            ],
+        )
+
+    if obj.predefined:
+        out += _section(
+            "Предопределённые",
+            [f"- `{obj.manager_path}.{name}`" for name in obj.predefined],
+        )
+
+    out += _refs_section("Движения", obj.movements)
+
+    if detail == FULL:
+        out += _refs_section("Вводится на основании", obj.based_on)
+        out += _refs_section("Владельцы", obj.owners)
+        if graph is not None:
+            out += _incoming_section(obj, graph, max_incoming)
+
+    return "\n".join(out).rstrip() + "\n"
+
+
+def _brief_summary(obj: MetadataObject, graph: Graph | None) -> str:
+    parts: list[str] = []
+    if obj.attributes:
+        parts.append(f"реквизитов: {len(obj.attributes)}")
+    if obj.dimensions:
+        parts.append(f"измерений: {len(obj.dimensions)}")
+    if obj.resources:
+        parts.append(f"ресурсов: {len(obj.resources)}")
+    if obj.tabular_parts:
+        names = ", ".join(p.name for p in obj.tabular_parts)
+        parts.append(f"табличных частей: {len(obj.tabular_parts)} ({names})")
+    if obj.enum_values:
+        parts.append(f"значений: {len(obj.enum_values)}")
+    if obj.predefined:
+        parts.append(f"предопределённых: {len(obj.predefined)}")
+    if obj.movements:
+        parts.append(f"движения: {len(obj.movements)}")
+    if graph is not None:
+        incoming = len(graph.incoming(obj.full_name))
+        if incoming:
+            parts.append(f"на объект ссылаются: {incoming}")
+    return ", ".join(parts) if parts else "нет состава"
+
+
+def _incoming_section(obj: MetadataObject, graph: Graph, limit: int) -> list[str]:
+    edges = graph.incoming(obj.full_name)
+    if not edges:
+        return []
+
+    grouped: dict[str, list[str]] = {}
+    for edge in edges:
+        grouped.setdefault(edge.source, []).append(edge.title)
+
+    lines = []
+    for source in sorted(grouped)[:limit]:
+        lines.append(f"- `{source}` — {', '.join(sorted(set(grouped[source])))}")
+    if len(grouped) > limit:
+        lines.append(f"- … ещё {len(grouped) - limit}")
+    return _section(f"На объект ссылаются ({len(grouped)})", lines)
+
+
+def render_configuration_summary(config: Configuration, graph: Graph | None = None) -> str:
+    """Карта конфигурации — то, с чего агент начинает работу."""
+    out = [
+        f"# Конфигурация: {config.synonym or config.name}",
+        "",
+        f"- Имя: `{config.name}`",
+        f"- Версия: {config.version}",
+        f"- Поставщик: {config.vendor}",
+        f"- Платформа: {config.platform}",
+        f"- Выгружено: {config.exported_at}",
+        f"- Объектов: {len(config)}",
+    ]
+    if graph is not None:
+        out.append(f"- Связей: {len(graph.edges)}")
+    out.append("")
+
+    if config.truncated:
+        out.append("> **Выгрузка неполная** — сделана с ограничением числа объектов.")
+        out.append("")
+    if not config.predefined_available:
+        out.append("> **Предопределённые элементы отсутствуют** в этой выгрузке.")
+        out.append("")
+    for warning in config.warnings:
+        out.append(f"> Предупреждение: {warning}")
+    if config.warnings:
+        out.append("")
+
+    out.append("## Состав")
+    out.append("")
+    for kind, count in config.kinds().items():
+        out.append(f"- {kind}: {count}")
+    out.append("")
+
+    if graph is not None:
+        hubs = graph.hubs(10)
+        if hubs:
+            out.append("## Наиболее используемые объекты")
+            out.append("")
+            for name, count in hubs:
+                obj = config.get(name)
+                title = f" — {obj.title}" if obj and obj.synonym else ""
+                out.append(f"- `{name}`{title}: ссылок {count}")
+            out.append("")
+
+    return "\n".join(out).rstrip() + "\n"
+
+
+# --------------------------------------------------------------- справка
+
+
+def _version_notice(item: SyntaxItem, resolution) -> list[str]:
+    """Оговорка о том, что для этой версии точных сведений нет.
+
+    Молчать нельзя, но и общий баннер на каждом ответе бесполезен: его
+    перестают читать. Поэтому оговорка появляется только у тех элементов,
+    которые между известными справками менялись, и называет оба состояния —
+    выбирать за агента сервер не должен.
+    """
+    if resolution is None or resolution.exact:
+        return []
+
+    if not resolution.alternatives:
+        # Сравнивать не с чем: все загруженные справки новее этой версии.
+        # Молчать всё равно нельзя — сведения взяты из чужой версии.
+        return [
+            f"> Точной справки для платформы **{resolution.asked}** нет: сведения "
+            f"ниже взяты из справки **{resolution.platform}**, а она новее. "
+            "Сигнатура и доступность могли отличаться — проверьте в "
+            "конфигураторе или загрузите справку своей версии.",
+            "",
+        ]
+
+    out = [
+        f"> Точной справки для платформы **{resolution.asked}** нет, "
+        "а между известными версиями элемент менялся:"
+    ]
+    for facts in resolution.alternatives:
+        описание = facts.signature or ", ".join(facts.availability) or facts.name_ru
+        out.append(f"> - **{facts.platform}**: `{описание}`")
+    out.append(
+        "> Какое состояние действует в вашей версии — проверьте в конфигураторе "
+        "или загрузите справку этой платформы. Не додумывайте."
+    )
+    out.append("")
+    return out
+
+
+def _table_markdown(table) -> str:
+    """Одна таблица страницы справки — markdown-таблицей.
+
+    До разделения показа и поиска таблицы лежали в описании: ячейки размечены
+    абзацами внутри `<TD>`, и карточка печатала таблицу столбцом значений —
+    «Товар / Количество / Сантехника / 104» подряд два десятка строк.
+
+    Черта в значении экранируется: неэкранированная разрывает строку на
+    лишние колонки, и таблица разъезжается у первого же значения со знаком.
+    """
+    ширина = max([len(table.header)] + [len(строка) for строка in table.rows])
+    if not ширина:
+        return ""
+
+    def строка_разметки(ячейки: list[str]) -> str:
+        выровненные = list(ячейки) + [""] * (ширина - len(ячейки))
+        границы = " | ".join(ячейка.replace("|", "\\|") for ячейка in выровненные)
+        return f"| {границы} |"
+
+    строки = [строка_разметки(table.header), "|" + " --- |" * ширина]
+    строки += [строка_разметки(строка) for строка in table.rows]
+    return "\n".join(строки)
+
+
+def _with_tables(описание: str, item: SyntaxItem, detail: str) -> str:
+    """Подставить таблицы на их места в описании.
+
+    Место — часть смысла: на странице с двумя примерами обе таблицы в хвосте
+    карточки не дают понять, какая к какому примеру относится. В `brief`
+    таблицы не показываются вовсе — это беглый взгляд, а таблица результата
+    запроса бывает и на двадцать строк.
+    """
+    for номер, table in enumerate(item.tables):
+        метка = МЕТКА_ТАБЛИЦЫ.format(номер=номер)
+        замена = "" if detail == BRIEF else _table_markdown(table)
+        описание = описание.replace(метка, замена)
+    return без_меток(описание)
+
+
+def render_syntax_item(
+    item: SyntaxItem, detail: str = FIELDS, resolution=None
+) -> str:
+    """Карточка элемента платформы.
+
+    Доступность выводится всегда и первой строкой после заголовка: это то,
+    из-за чего сгенерированный код чаще всего не компилируется.
+
+    `resolution` — что известно об элементе для версии конфигурации. Он же
+    решает, какую сигнатуру и какую доступность показывать: между версиями
+    менялись и та, и другая, а разница в один параметр — это ошибка
+    компиляции, а не мелочь.
+    """
+    title = KIND_TITLES.get(item.kind, item.kind)
+    out = [f"# {title}: {item.full_ru}"]
+    if item.full_en:
+        out.append(f"`{item.full_en}`")
+    out.append("")
+
+    if resolution is not None and resolution.name_ru and resolution.name_ru != item.name_ru:
+        out.append(
+            f"В платформе **{resolution.platform}** называется "
+            f"`{resolution.name_ru}` — переименован в более поздних версиях."
+        )
+        out.append("")
+
+    facts = []
+    if item.since:
+        facts.append(f"с версии платформы **{item.since}**")
+    if item.until:
+        facts.append(f"по версию **{item.until}** включительно")
+    if item.readonly:
+        facts.append("только чтение")
+    if facts:
+        out.append(" · ".join(facts))
+    availability = (
+        resolution.availability
+        if resolution is not None and resolution.availability
+        else item.availability
+    )
+    if availability:
+        out.append(f"Доступность: {', '.join(availability)}")
+    out.append("")
+
+    out += _version_notice(item, resolution)
+
+    if item.description:
+        out.append(_with_tables(item.description, item, detail))
+        out.append("")
+
+    base_signature = item.variants[0].signature if item.variants else ""
+    своя_сигнатура = (
+        resolution.signature
+        if resolution is not None and resolution.signature != base_signature
+        else ""
+    )
+
+    if detail == BRIEF:
+        показать = своя_сигнатура or base_signature
+        if показать:
+            out.append(f"```bsl\n{показать}\n```")
+        return "\n".join(out).rstrip() + "\n"
+
+    if своя_сигнатура:
+        # Сигнатура этой версии отличается от свежей. Показываем только её:
+        # описание параметров хранится по свежей справке, и вывести его рядом
+        # значит предложить агенту параметр, которого в его платформе нет.
+        out.append(f"Сигнатура в платформе **{resolution.platform}**:")
+        out.append("")
+        out.append("```bsl")
+        out.append(своя_сигнатура)
+        out.append("```")
+        out.append("")
+        out.append(
+            "> Разбор параметров сохранён только по самой свежей справке и здесь "
+            "не приводится — он описывает другой набор. Ориентируйтесь на "
+            "сигнатуру выше."
+        )
+        # Примечание относится к элементу, а не к разбору параметров: оно
+        # предупреждает о поведении метода и нужно в любой версии.
+        if item.note:
+            out.append("")
+            out.append(f"> {item.note}")
+        return "\n".join(out).rstrip() + "\n"
+
+    for variant in item.variants:
+        if variant.title:
+            out.append(f"## Вариант синтаксиса: {variant.title}")
+            out.append("")
+        if variant.signature:
+            out.append("```bsl")
+            out.append(variant.signature)
+            out.append("```")
+            out.append("")
+        if variant.params:
+            out.append("Параметры:")
+            for param in variant.params:
+                line = f"- `{param.name}` — {', '.join(param.types) or '?'}"
+                if not param.required:
+                    line += ", необязательный"
+                if param.default:
+                    line += f", по умолчанию {param.default}"
+                out.append(line)
+                if param.description:
+                    out.append(f"  {param.description}")
+            out.append("")
+        if variant.returns:
+            out.append(f"Возвращает: {', '.join(variant.returns)}")
+            out.append("")
+        if variant.description:
+            out.append(variant.description)
+            out.append("")
+
+    if item.values:
+        out += _section("Значения", [f"- `{v}`" for v in item.values])
+
+    if item.examples and detail == FULL:
+        out.append("## Пример")
+        out.append("")
+        out.append("```bsl")
+        out.append(item.examples[0])
+        out.append("```")
+        out.append("")
+
+    if item.note:
+        out.append(f"> {item.note}")
+
+    return "\n".join(out).rstrip() + "\n"

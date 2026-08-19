@@ -1,0 +1,11 @@
+# Только для разработки. В образ не идёт: Dockerfile ставит requirements.txt.
+#
+# Тесты не зависят от содержимого data/ — проприетарных выгрузок и справки в
+# репозитории нет, а тест, который без них не запускается, бесполезен. Всё
+# нужное собирается в tests/conftest.py.
+#
+#   .venv/bin/pip install -r requirements-dev.txt
+#   .venv/bin/python -m pytest
+
+-r requirements.txt
+pytest>=8

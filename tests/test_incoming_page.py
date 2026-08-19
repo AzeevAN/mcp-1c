@@ -90,6 +90,16 @@ def test_у_неудачи_есть_кнопка_разобрать(tmp_path, mo
     assert "<button>разобрать</button>" in хвост
 
 
+def test_копирующийся_файл_показан_без_кнопки(tmp_path, monkeypatch):
+    client = _клиент(tmp_path, monkeypatch)  # архив записан только что
+
+    страница = client.get("/sources").text
+
+    assert "копируется" in страница
+    хвост = страница.split("Входящие выгрузки")[1]
+    assert "<button>разобрать</button>" not in хвост
+
+
 def test_пустой_каталог_подсказывает_куда_класть(tmp_path, monkeypatch):
     """Без подсказки приём невидим: пустой каталог не рисовал блок вовсе."""
     monkeypatch.setenv("ADMIN_TOKEN", "секрет")

@@ -192,6 +192,26 @@ def test_ноль_отобранных_файлов_не_даёт_разобра
     assert "разбор не удался" in текст
 
 
+def test_копирующийся_файл_обработчик_не_берёт(tmp_path, monkeypatch):
+    monkeypatch.setenv("ADMIN_TOKEN", "секрет")
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    client, registry = _стенд(tmp_path)
+    client.post("/login", data={"token": "секрет"})
+    свежий = registry.incoming_dir / "свежий.zip"
+    with zipfile.ZipFile(свежий, "w") as zf:
+        zf.writestr("Catalogs/Т/Ext/ObjectModule.bsl", "Процедура А() КонецПроцедуры")
+    # `состарить` намеренно не зовём: файл только что записан.
+
+    ответ = client.post(
+        "/sources/incoming/parse", data={"name": "свежий.zip"}, follow_redirects=False
+    )
+
+    assert ответ.status_code == 303
+    текст = client.get("/sources").text
+    assert "копирование ещё" in текст
+    assert "Розница:modules" not in registry.sources
+
+
 def дождаться(client, условие, таймаут: float = 20.0) -> str:
     import time
 

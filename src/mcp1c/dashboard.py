@@ -1707,6 +1707,7 @@ def routes(registry: Registry) -> list[Route]:
             return HTMLResponse(page.body, status_code=403)
 
         from . import intake
+        from .incoming import SETTLE_SECONDS
 
         form = await request.form()
         имя = Path(str(form.get("name", ""))).name
@@ -1716,19 +1717,61 @@ def routes(registry: Registry) -> list[Route]:
             return RedirectResponse("/sources", status_code=303)
         if сканер.running:
             # Два разбора одновременно видели бы одно и то же свободное место
-            # и оба прошли бы проверку.
+            # и оба прошли бы проверку. Молчаливый редирект выглядел бы как
+            # «нажал, и ничего не произошло», поэтому причина ложится в журнал.
+            занятость = _start_job(имя, архив.stat().st_size)
+            занятость["state"] = JOB_FAILED
+            занятость["error"] = (
+                "уже идёт разбор другой выгрузки ("
+                + ", ".join(sorted(сканер.running))
+                + ") — одновременно разбирается не больше одной; "
+                "повторите, когда та закончится"
+            )
+            return RedirectResponse("/sources", status_code=303)
+        if сканер.дописывается(архив):
+            # Признак «файл ещё копируется» из постановки (§2): `cp` полутора
+            # гигабайт идёт минуты, а файл виден с первой секунды. Разбор
+            # недокопированного архива даёт `BadZipFile` и запись неудачи,
+            # которую потом надо снимать руками.
+            копируется = _start_job(имя, архив.stat().st_size)
+            копируется["state"] = JOB_FAILED
+            копируется["error"] = (
+                f"{имя}: файл изменялся только что — похоже, копирование ещё "
+                f"идёт. Повторите через {int(SETTLE_SECONDS)} с после того, "
+                "как оно закончится."
+            )
+            # `note_failure` здесь не зовём намеренно: запись неудачи привязана
+            # к хешу, а считать sha256 растущего файла — ровно то, чего этот
+            # признак и позволяет не делать.
             return RedirectResponse("/sources", status_code=303)
 
         job = _start_job(имя, архив.stat().st_size)
         try:
             нужно, _формат = intake.planned_size(архив)
-            хватает, свободно = intake.enough_space(нужно, registry.data_dir)
         except Exception as error:
             # Битый архив (не zip, обрезан, нечитаем) валит расчёт размера до
             # фоновой задачи. Без этой ветки задание висело бы в «принимается»
             # навсегда — `_start_job` вычищает только завершённые записи.
             job["state"] = JOB_FAILED
             job["error"] = f"{архив.name}: не похоже на zip-архив ({error})"
+            сканер.note_failure(архив, job["error"])
+            return RedirectResponse("/sources", status_code=303)
+        try:
+            хватает, свободно = intake.enough_space(нужно, registry.data_dir)
+        except Exception as error:
+            # Отдельный блок, а не общий с разбором архива: здесь падает не
+            # zip, а обращение к каталогу данных — нет прав, том отвалился,
+            # каталога нет вовсе. Постановка (§3) требует, чтобы случай прав
+            # был в тексте ошибки, а не оставался догадкой; заголовок «не
+            # похоже на zip-архив» на нём был бы прямой ложью.
+            job["state"] = JOB_FAILED
+            job["error"] = (
+                f"{архив.name}: не удалось проверить свободное место в "
+                f"{registry.data_dir} ({error}). Проверьте, что каталог "
+                "данных на месте и доступен процессу сервера: в контейнере он "
+                "работает от uid 10001, а `chown` из образа на bind-mount не "
+                "действует."
+            )
             сканер.note_failure(архив, job["error"])
             return RedirectResponse("/sources", status_code=303)
         if not хватает:

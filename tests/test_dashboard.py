@@ -14,7 +14,7 @@ from starlette.testclient import TestClient
 from mcp1c import dashboard
 from mcp1c.registry import Registry
 
-from conftest import build_configuration, write_export
+from conftest import build_configuration, write_export, живой_клиент
 
 
 def client_for(tmp_path) -> tuple[TestClient, Registry]:
@@ -25,19 +25,30 @@ def client_for(tmp_path) -> tuple[TestClient, Registry]:
     registry = Registry(data_dir)
     registry.add_configuration(write_export(incoming, build_configuration()))
     app = Starlette(routes=dashboard.routes(registry))
-    return TestClient(app), registry
+    return живой_клиент(app), registry
 
 
-def дождаться_разбора(client, признак: str, таймаут: float = 5.0) -> str:
-    """Разбор уходит в фон, поэтому результат ждём на странице источников."""
+def дождаться_разбора(client, *признаки: str, таймаут: float = 20.0) -> str:
+    """Разбор уходит в фон, поэтому результат ждём на странице источников.
+
+    Признаков может быть несколько, и ждём появления **всех**. Одного имени
+    файла недостаточно: `_start_job` кладёт его в журнал синхронно, ещё до
+    редиректа, — такое ожидание возвращается на первом же опросе, пока задание
+    только принимается. Ждать надо терминальное состояние («готово», «ошибка»)
+    либо имя конфигурации, которое появляется после разбора.
+    """
     предел = time.monotonic() + таймаут
     текст = ""
     while time.monotonic() < предел:
         текст = client.get("/sources").text
-        if признак in текст:
+        if all(признак in текст for признак in признаки):
             return текст
         time.sleep(0.05)
-    return текст
+    # Молча вернуть последнюю страницу — значит превратить «ожидание истекло»
+    # в невнятный провал следующего assert. Падаем здесь и называем причину.
+    raise AssertionError(
+        f"за {таймаут} с не дождались {признаки} на /sources; страница:\n{текст}"
+    )
 
 
 def test_обзор_показывает_загруженную_конфигурацию(tmp_path):
@@ -134,7 +145,7 @@ def test_битый_архив_не_меняет_реестр(tmp_path, monkeypa
 
     assert response.status_code == 303
     # Ошибку возвращать уже некуда — она ложится в задание.
-    страница = дождаться_разбора(client, "Плохая.zip")
+    страница = дождаться_разбора(client, "Плохая.zip", "ошибка")
     assert "ошибка" in страница.lower()
     assert sorted(registry.configurations) == ["ТестоваяКонфигурация"]
 
@@ -156,7 +167,7 @@ def test_чужой_hbk_объясняет_причину_а_не_падает(t
     )
 
     assert response.status_code == 303
-    страница = дождаться_разбора(client, "shlang_ru.hbk")
+    страница = дождаться_разбора(client, "shlang_ru.hbk", "ошибка")
     assert "ошибка" in страница.lower()
     assert registry.syntax is None
 
@@ -249,7 +260,7 @@ def test_справка_фильтруется_по_версии_платфор�
     registry = Registry(data_dir)
     registry.add_configuration(write_export(incoming, config))
     registry.add_syntax(write_syntax(data_dir / "index" / "syntax"))
-    client = TestClient(Starlette(routes=dashboard.routes(registry)))
+    client = живой_клиент(Starlette(routes=dashboard.routes(registry)))
 
     response = client.post(
         "/queries",
@@ -323,7 +334,7 @@ def test_карточка_справки_открывается(tmp_path):
     registry = Registry(data_dir)
     registry.add_configuration(write_export(incoming, build_configuration()))
     registry.add_syntax(write_syntax(data_dir / "index" / "syntax"))
-    client = TestClient(Starlette(routes=dashboard.routes(registry)))
+    client = живой_клиент(Starlette(routes=dashboard.routes(registry)))
 
     response = client.get(
         "/syntax",
@@ -358,7 +369,7 @@ def test_имя_конфигурации_не_исполняется_как_ра
     config = build_configuration(name="<script>alert(1)")
     registry = Registry(data_dir)
     registry.add_configuration(write_export(incoming, config))
-    client = TestClient(Starlette(routes=dashboard.routes(registry)))
+    client = живой_клиент(Starlette(routes=dashboard.routes(registry)))
 
     response = client.get("/")
 

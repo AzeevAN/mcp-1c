@@ -11,7 +11,6 @@ import math
 
 import pytest
 from starlette.applications import Starlette
-from starlette.testclient import TestClient
 
 from mcp1c import dashboard
 from mcp1c.graph import Graph
@@ -25,7 +24,7 @@ from mcp1c.graph_view import (
 from mcp1c.model import Configuration, Field, MetadataObject
 from mcp1c.registry import Registry
 
-from conftest import build_configuration, write_export
+from conftest import build_configuration, write_export, живой_клиент
 
 
 def _конфигурация_со_звездой(соседей: int) -> Configuration:
@@ -202,7 +201,7 @@ def клиент(tmp_path):
     incoming.mkdir()
     registry = Registry(data_dir)
     registry.add_configuration(write_export(incoming, build_configuration()))
-    return TestClient(Starlette(routes=dashboard.routes(registry)))
+    return живой_клиент(Starlette(routes=dashboard.routes(registry)))
 
 
 def test_страница_без_имени_показывает_форму(клиент):
@@ -267,7 +266,7 @@ def клиент_двух_конфигураций(tmp_path):
     registry.add_configuration(
         write_export(incoming, build_configuration("БетаКонфигурация"))
     )
-    return TestClient(Starlette(routes=dashboard.routes(registry)))
+    return живой_клиент(Starlette(routes=dashboard.routes(registry)))
 
 
 def test_форма_даёт_выбрать_конфигурацию(клиент_двух_конфигураций):
@@ -306,7 +305,7 @@ def test_пустой_реестр_объясняется_словами(tmp_pat
     """Ни одной конфигурации — не ошибка, а состояние, и оно называется."""
     data_dir = tmp_path / "data"
     data_dir.mkdir()
-    клиент = TestClient(Starlette(routes=dashboard.routes(Registry(data_dir))))
+    клиент = живой_клиент(Starlette(routes=dashboard.routes(Registry(data_dir))))
 
     ответ = клиент.get("/graph")
 

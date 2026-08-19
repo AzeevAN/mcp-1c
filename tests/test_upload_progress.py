@@ -19,7 +19,7 @@ from starlette.testclient import TestClient
 from mcp1c import dashboard
 from mcp1c.registry import Registry
 
-from conftest import build_configuration, write_export
+from conftest import build_configuration, write_export, живой_клиент
 
 
 def client_for(tmp_path) -> tuple[TestClient, Registry, bytes]:
@@ -29,12 +29,17 @@ def client_for(tmp_path) -> tuple[TestClient, Registry, bytes]:
     incoming.mkdir()
     registry = Registry(data_dir)
     выгрузка = write_export(incoming, build_configuration(name="ВтораяКонфигурация"))
-    client = TestClient(Starlette(routes=dashboard.routes(registry)))
+    client = живой_клиент(Starlette(routes=dashboard.routes(registry)))
     return client, registry, выгрузка.read_bytes()
 
 
-def дождаться(client, условие, таймаут: float = 5.0) -> str:
-    """Фоновая работа завершается не мгновенно — опрашиваем страницу."""
+def дождаться(client, условие, таймаут: float = 20.0) -> str:
+    """Фоновая работа завершается не мгновенно — опрашиваем страницу.
+
+    Таймаут щедрый намеренно: на быстрой машине он не стоит ничего, а на
+    загруженном раннере пяти секунд не хватало — и падали разные тесты от
+    прогона к прогону.
+    """
     предел = time.monotonic() + таймаут
     текст = ""
     while time.monotonic() < предел:
@@ -42,7 +47,9 @@ def дождаться(client, условие, таймаут: float = 5.0) -> s
         if условие(текст):
             return текст
         time.sleep(0.05)
-    return текст
+    raise AssertionError(
+        f"за {таймаут} с условие не выполнилось на /sources; страница:\n{текст}"
+    )
 
 
 def test_загрузка_отвечает_сразу_и_показывает_задание(tmp_path, monkeypatch):

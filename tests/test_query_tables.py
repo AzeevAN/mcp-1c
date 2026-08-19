@@ -377,6 +377,7 @@ def test_страница_источников_называет_битые_ст�
 
     from mcp1c import dashboard
     from mcp1c.registry import Registry
+    from conftest import живой_клиент
     from mcp1c.store import save_syntax
 
     входящее = tmp_path / "incoming"
@@ -386,7 +387,7 @@ def test_страница_источников_называет_битые_ст�
     )
     registry = Registry(tmp_path / "data")
     registry.add_syntax(входящее / "query-ru.json.gz")
-    client = TestClient(Starlette(routes=dashboard.routes(registry)))
+    client = живой_клиент(Starlette(routes=dashboard.routes(registry)))
 
     страница = client.get("/sources").text
 

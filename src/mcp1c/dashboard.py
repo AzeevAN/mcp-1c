@@ -181,6 +181,11 @@ JOB_PARSING = "разбирается"
 JOB_DONE = "готово"
 JOB_FAILED = "ошибка"
 _JOBS: list[dict] = []
+# Ссылки на фоновые задачи. `asyncio` держит только слабую ссылку, и задача
+# без сильной может быть собрана сборщиком мусора в любой момент до
+# завершения — с виду это «разбор молча не случился». Множество живёт ровно
+# столько, сколько сама задача: `add_done_callback` убирает запись.
+_ФОНОВЫЕ: set[asyncio.Task] = set()
 # Сколько завершённых заданий держать на экране. Нужны, чтобы человек увидел
 # результат, вернувшись через минуту; копить их незачем.
 JOBS_KEPT = 10
@@ -1438,9 +1443,11 @@ def routes(registry: Registry) -> list[Route]:
         # пяти секунд, и всё это время браузер стоял на белом экране, не
         # показывая, идёт работа или всё зависло. Ошибку теперь возвращать
         # некуда — она ложится в задание и видна на этой же странице.
-        asyncio.create_task(
+        задача = asyncio.create_task(
             run_in_threadpool(_run_job, registry, job, tmp, target, suffix)
         )
+        _ФОНОВЫЕ.add(задача)
+        задача.add_done_callback(_ФОНОВЫЕ.discard)
         return RedirectResponse("/sources", status_code=303)
 
     async def clear_jobs(request: Request):

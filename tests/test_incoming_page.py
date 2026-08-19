@@ -90,6 +90,21 @@ def test_у_неудачи_есть_кнопка_разобрать(tmp_path, mo
     assert "<button>разобрать</button>" in хвост
 
 
+def test_обновлённая_выгрузка_подписана_переразобрать(tmp_path, monkeypatch):
+    """Человек должен видеть, что перетирает уже разобранный код."""
+    from mcp1c.registry import KIND_MODULES, Source
+
+    client, registry, архив = _стенд_со_свежим_реестром(tmp_path, monkeypatch)
+    registry.sources["Т:modules"] = Source(
+        id="Т:modules", kind=KIND_MODULES, origin="модули.zip", sha256="другой"
+    )
+
+    страница = client.get("/sources").text
+
+    assert "обновлённая выгрузка" in страница
+    assert "<button>переразобрать</button>" in страница
+
+
 def test_копирующийся_файл_показан_без_кнопки(tmp_path, monkeypatch):
     client = _клиент(tmp_path, monkeypatch)  # архив записан только что
 

@@ -212,6 +212,28 @@ def test_копирующийся_файл_обработчик_не_берёт(
     assert "Розница:modules" not in registry.sources
 
 
+def test_занятость_объясняется(tmp_path, monkeypatch):
+    """Молчаливый редирект выглядел бы как «нажал, и ничего не произошло»."""
+    monkeypatch.setenv("ADMIN_TOKEN", "секрет")
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    client, registry = _стенд(tmp_path)
+    client.post("/login", data={"token": "секрет"})
+    dashboard._scanner(registry).running.add("другая.zip")
+    try:
+        ответ = client.post(
+            "/sources/incoming/parse",
+            data={"name": "модули.zip"},
+            follow_redirects=False,
+        )
+    finally:
+        dashboard._scanner(registry).running.discard("другая.zip")
+
+    assert ответ.status_code == 303
+    текст = client.get("/sources").text
+    assert "уже идёт разбор" in текст
+    assert "Розница:modules" not in registry.sources
+
+
 def дождаться(client, условие, таймаут: float = 20.0) -> str:
     import time
 

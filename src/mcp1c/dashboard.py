@@ -238,10 +238,12 @@ def _run_job(registry: Registry, job: dict, directory: str, path: Path, suffix: 
     else:
         job["state"] = JOB_DONE
     finally:
-        # Каталог сносится, только если он наш временный. Файл из `incoming/`
-        # принадлежит человеку: сервер его не удаляет.
-        if directory:
-            shutil.rmtree(directory, ignore_errors=True)
+        # `directory` — всегда наш временный каталог из `upload`: другой
+        # вызывающей стороны у `_run_job` нет. Разбор выгрузки из `incoming/`
+        # идёт отдельной функцией `_run_incoming`, и она не удаляет ничего
+        # вовсе — исходник принадлежит человеку, а каталог `incoming/` сервер
+        # трогать не вправе.
+        shutil.rmtree(directory, ignore_errors=True)
 
 
 _СКАНЕРЫ: dict[str, "IncomingScanner"] = {}
@@ -264,6 +266,15 @@ def _configuration_for(registry: Registry, архив: Path) -> str:
     имена = sorted(registry.configurations)
     if len(имена) == 1:
         return имена[0]
+    if not имена:
+        # Причина здесь другая, чем при нескольких: привязывать не к чему.
+        # Код ложится в каталог по имени конфигурации и учитывается ключом
+        # `<Имя>:modules` — без метаданных этого имени взять неоткуда.
+        raise RegistryError(
+            f"{архив.name}: не загружено ни одной конфигурации — сначала "
+            "загрузите выгрузку структуры (СтруктураКонфигурации_*.zip), "
+            "к ней и привязывается код."
+        )
     raise RegistryError(
         f"{архив.name}: загружено {len(имена)} конфигураций, "
         "привязка выгрузки в файлы к конкретной пока не реализована."

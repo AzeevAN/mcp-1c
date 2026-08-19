@@ -1,7 +1,7 @@
 """Выгрузка в файлы, положенная в bootstrap, объясняется, а не падает."""
 import zipfile
 
-from mcp1c.registry import Registry
+from mcp1c.registry import KIND_CONFIGURATION, Registry
 
 
 def test_выгрузка_в_файлы_в_bootstrap_объясняется(tmp_path):
@@ -50,3 +50,23 @@ def test_выгрузка_schema_v1_с_xml_манифестом_не_перех�
 
     # Не должно быть сообщения про incoming — файл ушёл в обычный путь разбора
     assert not any("incoming" in m for m in сообщения)
+
+
+def test_обычная_выгрузка_из_bootstrap_заводит_источник(tmp_path):
+    """Положительное покрытие нормального пути `bootstrap()`.
+
+    Ранний `continue` для выгрузки в файлы стоит до разбора и способен
+    проглотить любой `.zip`. Проверка «в сообщениях нет слова incoming» этого
+    не поймала бы: она зелена и когда источник не завёлся вовсе.
+    """
+    from conftest import build_configuration, write_export
+
+    registry = Registry(tmp_path / "data")
+    registry.bootstrap_dir.mkdir(parents=True)
+    write_export(registry.bootstrap_dir, build_configuration(name="Розница"))
+
+    сообщения = registry.bootstrap()
+
+    assert сообщения == ["Розница"]
+    assert registry.sources["Розница"].kind == KIND_CONFIGURATION
+    assert "Розница" in registry.configurations

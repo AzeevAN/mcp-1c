@@ -23,6 +23,7 @@ import json
 import re
 import shutil
 import threading
+import zipfile
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -54,6 +55,7 @@ REGISTRY_VERSION = 1
 KIND_CONFIGURATION = "configuration"
 KIND_SYNTAX = "syntax"
 KIND_QUERY = "query"
+KIND_MODULES = "modules"
 
 STATUS_LOADING = "loading"
 STATUS_READY = "ready"
@@ -82,6 +84,50 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: stream.read(1 << 20), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _похоже_на_выгрузку_в_файлы(path: Path) -> bool:
+    """Выгрузка в файлы против выгрузки schema v1.
+
+    Выгрузок в файлы две: иерархическая (модули в .bsl, .Form) и плоская
+    (модули в .txt). Смотрим только имена членов: тело не читается,
+    центрального каталога достаточно.
+    """
+    try:
+        with zipfile.ZipFile(path) as zf:
+            имена = zf.namelist()
+    except (OSError, zipfile.BadZipFile):
+        return False
+    есть_код = any(и.endswith((".bsl", ".Form", ".txt")) for и in имена)
+    есть_манифест = any(
+        и.endswith(("manifest.json", "manifest.xml")) for и in имена
+    )
+    return есть_код and not есть_манифест
+
+
+def _нет_модулей(архив: Path) -> "RegistryError":
+    """Отказ архиву, из которого нечего взять. Текст один на обе проверки."""
+    return RegistryError(
+        f"{архив.name}: в архиве не нашлось ни модулей, ни форм. "
+        "Похоже, это выгрузка структуры метаданных — её подают не "
+        "через data/incoming/, а формой «Загрузить» на странице "
+        "«Источники» (или командой reg-add)."
+    )
+
+
+def _отбираемых_членов(архив: Path) -> int:
+    """Сколько членов архива попадёт в отбор. Тело архива не читается.
+
+    Нужно, чтобы отвергнуть негодный архив до того, как `add_modules` снесёт
+    прежний разбор: центральный каталог zip знает имена всех членов, а правило
+    отбора живёт в `intake` — второго правила здесь не заводится.
+    """
+    from . import intake
+
+    with zipfile.ZipFile(архив) as zf:
+        записи = [i for i in zf.infolist() if not i.is_dir()]
+        формат = intake.detect_format([i.filename for i in записи])
+        return sum(1 for i in записи if intake.is_wanted(i.filename, формат))
 
 
 def _combined_sha256(sources: Iterable["Source"]) -> str:
@@ -383,6 +429,11 @@ class Registry:
         self.index_dir = self.data_dir / "index"
         self.cache_dir = self.index_dir / "cache"
         self.bootstrap_dir = self.data_dir / "bootstrap"
+        # Каталог, содержимое которого разбирается по команде, а не при
+        # старте: гигабайтную выгрузку так разбирать нельзя. Сервер его
+        # НЕ удаляет — исходник принадлежит человеку.
+        self.incoming_dir = self.data_dir / "incoming"
+        self.modules_dir = self.data_dir / "modules"
         self.registry_path = self.data_dir / "registry.json"
         self.dictionary_path = self.data_dir / "dictionary.json"
         self.dictionary = Dictionary.load(self.dictionary_path)
@@ -436,6 +487,7 @@ class Registry:
         KIND_CONFIGURATION: ("objects", "fields"),
         KIND_SYNTAX: ("syntax", "lookup"),
         KIND_QUERY: ("syntax", "lookup"),
+        KIND_MODULES: ("modules",),
     }
 
     def _cache_path(self, source_id: str, kind: str) -> Path:
@@ -586,6 +638,99 @@ class Registry:
             self.configurations[config.name] = loaded
             self.sources[source.id] = source
             self._relation_cache.pop(config.name, None)
+        return source
+
+    def _modules_root(self, configuration: str) -> Path:
+        """Каталог кода конфигурации внутри `modules_dir`.
+
+        Имя чистится тем же правилом, что и имена файлов кэша
+        (`index_cache.safe_name`): оно приходит из манифеста, а там встречается
+        и косая черта, и двоеточие.
+
+        Чистки мало: точку правило сохраняет, поэтому имя «..» проходит через
+        неё неизменным. Каталог мы теперь удаляем перед распаковкой и при
+        снятии источника — промах увёл бы удаление за пределы `modules_dir`,
+        вплоть до соседнего `incoming/`, который сервер трогать не вправе.
+        Поэтому путь проверяется, а не предполагается верным.
+        """
+        корень = (self.modules_dir / index_cache.safe_name(configuration)).resolve()
+        база = self.modules_dir.resolve()
+        if корень == база or база not in корень.parents:
+            raise RegistryError(
+                f"Имя конфигурации «{configuration}» не годится для каталога "
+                "кода: путь уходит за пределы data/modules."
+            )
+        return корень
+
+    def _drop_modules_root(self, корень: Path) -> None:
+        """Снести каталог кода. Только внутри `modules_dir` и только его.
+
+        Проверка повторяется здесь намеренно: путь может прийти из
+        `registry.json`, где его правил кто угодно, а рядом с `data/modules/`
+        лежит `data/incoming/` с исходником человека.
+        """
+        цель = корень.resolve()
+        база = self.modules_dir.resolve()
+        if цель == база or база not in цель.parents:
+            return
+        if цель.is_dir():
+            shutil.rmtree(цель, ignore_errors=True)
+
+    def add_modules(self, path: str | Path, *, configuration: str) -> Source:
+        """Выгрузка конфигурации в файлы: код на диск, учётная запись в реестр.
+
+        Ключ источника — не имя конфигурации: под ним уже лежат метаданные, и
+        присвоение по тому же ключу вытеснило бы их из `self.sources`, а
+        `save()` записал бы реестр уже без них.
+        """
+        from . import intake
+
+        архив = Path(path)
+        if configuration not in self.configurations:
+            raise RegistryError(
+                f"{архив.name}: конфигурация «{configuration}» не загружена."
+            )
+        корень = self._modules_root(configuration)
+        # Годность архива выясняется ДО того, как что-то удалено. Выгрузка
+        # метаданных (`СтруктураКонфигурации_*.zip`) — тоже .zip, и отбор не
+        # находит в ней ничего; ровно на эту ошибку человека и рассчитан текст
+        # отказа. Проверка после очистки означала бы, что ошибочное нажатие
+        # сносит уже разобранные 351 МБ кода, а взять их заново неоткуда, если
+        # гигабайтный архив из `incoming/` уже убран. Считаем по центральному
+        # каталогу zip: тело архива не читается.
+        if not _отбираемых_членов(архив):
+            raise _нет_модулей(архив)
+        # Хеш считается после проверки годности: это полный проход по файлу,
+        # и платить им за архив, который мы всё равно не возьмём, незачем.
+        digest = _sha256(архив)
+        # Корень чистится перед распаковкой: `extract` пишет поверх, и файлы,
+        # которых в новой выгрузке нет (удалённый объект, переименованный
+        # модуль), остались бы навсегда — переразбор молча смешивал бы две
+        # выгрузки в одном каталоге.
+        self._drop_modules_root(корень)
+        файлов, байт = intake.extract(архив, корень)
+        if not файлов:
+            # Предпроверка считает по именам из центрального каталога, а
+            # `extract` прогоняет каждый член ещё и через `intake.safe_target`
+            # — тот отвергает абсолютные пути и `..`. Архив, у которого все
+            # отбираемые члены такие, предпроверку проходит, а на диск не
+            # кладёт ничего: без этой проверки завёлся бы источник со
+            # `status=ready` при пустом каталоге. Обычным архиватором такое не
+            # собирается, но проверка стоит пять строк, а счётчик уже на руках.
+            self._drop_modules_root(корень)
+            raise _нет_модулей(архив)
+        source = Source(
+            id=f"{configuration}:modules",
+            kind=KIND_MODULES,
+            origin=архив.name,
+            sha256=digest,
+            loaded_at=_now(),
+            status=STATUS_READY,
+            items_total=файлов,
+            stored_path=self._relative(корень),
+        )
+        with self._lock:
+            self.sources[source.id] = source
         return source
 
     def add_syntax(
@@ -980,6 +1125,7 @@ class Registry:
                 preloaded_query = None
 
     def remove(self, source_id: str) -> None:
+        каталог_модулей: Path | None = None
         with self._lock:
             source = self.sources.pop(source_id, None)
             if source is None:
@@ -989,7 +1135,19 @@ class Registry:
                 self.configurations.pop(source_id, None)
                 self._relation_cache.pop(source_id, None)
                 return
-            if source.kind == KIND_QUERY:
+            if source.kind == KIND_MODULES:
+                # Каталог с кодом — всё, что этот источник занимает на диске
+                # (351 МБ на живой конфигурации). `orphan_sources` его не
+                # покажет: тот обходит только `sources_dir`. Не снести значит
+                # занять место невидимо и навсегда — вернуть его через
+                # интерфейс было бы нечем. Но сносится он ПОСЛЕ выхода из-под
+                # замка: это 11 072 файла, а тот же замок берут `resolve()` и
+                # все инструменты MCP — на время удаления встали бы и
+                # страницы, и `/health`, и ответы инструментов.
+                каталог_модулей = (
+                    self._absolute(source.stored_path) if source.stored_path else None
+                )
+            elif source.kind == KIND_QUERY:
                 # В `syntax_versions` источника нет, но его элементы сидят в
                 # поисковом индексе и таблице имён `self.syntax` — без
                 # пересборки они останутся там до перезапуска.
@@ -1001,6 +1159,11 @@ class Registry:
             else:
                 self._relation_cache.clear()
                 snapshot = dict(self.syntax_versions)
+
+        if source.kind == KIND_MODULES:
+            if каталог_модулей is not None:
+                self._drop_modules_root(каталог_модулей)
+            return
 
         self._apply_syntax(snapshot)
 
@@ -1221,6 +1384,17 @@ class Registry:
                     self.add_configuration(
                         stored, keep_source=False, known_sha256=source.sha256
                     )
+                elif source.kind == KIND_MODULES:
+                    # Код уже лежит на диске — его положил `add_modules` до
+                    # остановки, а индекс по модулям этот план не строит.
+                    # Перечитывать архив здесь нечем (человек мог его уже
+                    # убрать) и незачем: без этой ветки запись выпала бы из
+                    # `self.sources` молча, и после рестарта выглядело бы
+                    # так, будто выгрузку вообще не разбирали, — гоняли бы
+                    # заново гигабайтный архив там, где хватило бы записи из
+                    # `registry.json`.
+                    with self._lock:
+                        self.sources[source.id] = source
                 else:
                     # Слитый вид собирается один раз в конце: сборка на каждой
                     # справке дала бы квадрат работы, а видел бы её только
@@ -1268,6 +1442,15 @@ class Registry:
                 continue
             suffix = path.suffix.lower()
             if suffix not in (".zip", ".hbk"):
+                continue
+            if suffix == ".zip" and _похоже_на_выгрузку_в_файлы(path):
+                # Гигабайтную выгрузку нельзя разбирать при каждом старте,
+                # и падать на ней вечно — тоже: упавший файл в реестр не
+                # попадает, а `known` считается один раз до цикла.
+                added.append(
+                    f"{path.name}: это выгрузка конфигурации в файлы — "
+                    "её кладут в data/incoming/ и разбирают по кнопке."
+                )
                 continue
             if _sha256(path) in known:
                 continue
@@ -1356,6 +1539,12 @@ class Registry:
         return orphans
 
     def startup(self) -> list[str]:
+        # Каталог приёма создаёт сервер, как и каталог данных в `save()`.
+        # Пока каталога нет, `scan()` возвращает пустой список, блок
+        # «Входящие выгрузки» на странице не рисуется вовсе — и человек не
+        # видит даже подсказки, куда класть архив. В боевом `data/` каталога
+        # нет: `mkdir` из `Dockerfile` на bind-mount не действует.
+        self.incoming_dir.mkdir(parents=True, exist_ok=True)
         # Словарь перечитывается первым: правки в нём должны применяться
         # перезагрузкой, без пересборки образа и рестарта контейнера.
         self.dictionary = Dictionary.load(self.dictionary_path)

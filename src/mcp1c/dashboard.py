@@ -238,7 +238,78 @@ def _run_job(registry: Registry, job: dict, directory: str, path: Path, suffix: 
     else:
         job["state"] = JOB_DONE
     finally:
+        # `directory` — всегда наш временный каталог из `upload`: другой
+        # вызывающей стороны у `_run_job` нет. Разбор выгрузки из `incoming/`
+        # идёт отдельной функцией `_run_incoming`, и она не удаляет ничего
+        # вовсе — исходник принадлежит человеку, а каталог `incoming/` сервер
+        # трогать не вправе.
         shutil.rmtree(directory, ignore_errors=True)
+
+
+_СКАНЕРЫ: dict[str, "IncomingScanner"] = {}
+
+
+def _scanner(registry: Registry) -> "IncomingScanner":
+    """Сканер один на каталог данных: множество `running` живёт в памяти, и
+    страница обязана видеть то же самое, что обработчик разбора."""
+    from .incoming import IncomingScanner
+
+    ключ = str(registry.data_dir)
+    if ключ not in _СКАНЕРЫ:
+        _СКАНЕРЫ[ключ] = IncomingScanner(registry)
+    return _СКАНЕРЫ[ключ]
+
+
+def _configuration_for(registry: Registry, архив: Path) -> str:
+    """Определение конфигурации — по единственной загруженной, иначе отказ с
+    объяснением (привязка по манифесту — работа провайдера, разведка раздел 5)."""
+    имена = sorted(registry.configurations)
+    if len(имена) == 1:
+        return имена[0]
+    if not имена:
+        # Причина здесь другая, чем при нескольких: привязывать не к чему.
+        # Код ложится в каталог по имени конфигурации и учитывается ключом
+        # `<Имя>:modules` — без метаданных этого имени взять неоткуда.
+        raise RegistryError(
+            f"{архив.name}: не загружено ни одной конфигурации — сначала "
+            "загрузите выгрузку структуры (СтруктураКонфигурации_*.zip), "
+            "к ней и привязывается код."
+        )
+    raise RegistryError(
+        f"{архив.name}: загружено {len(имена)} конфигураций, "
+        "привязка выгрузки в файлы к конкретной пока не реализована."
+    )
+
+
+def _run_incoming(registry: Registry, сканер, job: dict, архив: Path) -> None:
+    """Разбор выгрузки из `incoming/`. Исходник остаётся на месте."""
+    job["state"] = JOB_PARSING
+    try:
+        имя_конфигурации = _configuration_for(registry, архив)
+        registry.add_modules(архив, configuration=имя_конфигурации)
+        # `add_modules` пишет только в `self.sources`, в память процесса.
+        # Без записи на диск разбор не переживал бы рестарт: код на месте,
+        # 351 МБ занято, а страница говорит «не разобрано» — и человек гонит
+        # гигабайтный архив заново. `_index_source` зовёт `save()` по той же
+        # причине.
+        registry.save()
+    except (ExportError, RegistryError, V8ContainerError, ValueError) as error:
+        # Известная ошибка проекта — это сообщение человеку, и имя класса ему
+        # ничего не добавляет: «загружено 2 конфигураций» он поймёт, а
+        # «RegistryError:» перед этим — нет. `_run_job` делит ошибки так же.
+        job["state"] = JOB_FAILED
+        job["error"] = str(error)
+        сканер.note_failure(архив, job["error"])
+    except Exception as error:
+        job["state"] = JOB_FAILED
+        job["error"] = f"{type(error).__name__}: {error}"
+        сканер.note_failure(архив, job["error"])
+        traceback.print_exc()
+    else:
+        job["state"] = JOB_DONE
+        сканер.clear_failure(архив)
+    finally:
+        сканер.running.discard(архив.name)
 
 
 def _layout(title: str, body: str, *, refresh: int = 0) -> HTMLResponse:
@@ -1055,8 +1126,20 @@ _SOURCE_KIND_TITLES = {KIND_QUERY: "Язык запросов"}
 
 
 def _sources_page(
-    registry: Registry, *, error: str = "", authorized: bool = False
+    registry: Registry,
+    *,
+    error: str = "",
+    authorized: bool = False,
+    входящие: list[dict] | None = None,
 ) -> HTMLResponse:
+    """Страница «Источники».
+
+    `входящие` — уже собранный список из `IncomingScanner.scan()`. Параметр
+    необязательный: сканирование считает sha256 файлов в `incoming/`, а это
+    секунды на архиве в полтора гигабайта, и в цикле событий такой счёт
+    останавливает весь процесс — включая `/health` и инструменты MCP. Поэтому
+    обработчик `GET /sources` считает его в потоке и передаёт готовым.
+    """
     parts: list[str] = []
     if error:
         parts.append(f"<div class=error>{escape(error)}</div>")
@@ -1145,6 +1228,68 @@ def _sources_page(
                 f"<td>{size / 1024 / 1024:.0f} МБ<td>{button}</tr>"
             )
         parts.append("</table>")
+
+    if authorized:
+        # Имя файла говорит, что за база, — блок виден только вошедшему, как
+        # и журнал заданий. В «Исходные файлы» эти файлы не подмешиваются: там
+        # заголовок «для ответов не нужны», а для неразобранной выгрузки это
+        # неправда.
+        from .incoming import (
+            STATE_FAILED,
+            STATE_NEW,
+            STATE_STALE,
+            STATE_UPDATED,
+        )
+
+        if входящие is None:
+            входящие = _scanner(registry).scan()
+        if входящие:
+            parts.append("<h2>Входящие выгрузки</h2><table>"
+                         "<tr><th>Файл<th>Размер<th>Состояние</tr>")
+            for строка in входящие:
+                # «Разбор не удался» — не тупик: постановка (§2) назначает ему
+                # то же действие. Без кнопки исправленный архив разобрать было
+                # бы нечем, кроме переименования файла.
+                можно = строка["state"] in (
+                    STATE_NEW,
+                    STATE_UPDATED,
+                    STATE_STALE,
+                    STATE_FAILED,
+                ) and not строка.get("settling")
+                # «Переразобрать» там, где прежний разбор перетирается: человек
+                # должен понимать, что делает с уже лежащим на диске кодом.
+                подпись = (
+                    "переразобрать"
+                    if строка["state"] in (STATE_UPDATED, STATE_STALE)
+                    else "разобрать"
+                )
+                кнопка = (
+                    "<form method=post action=/sources/incoming/parse "
+                    "style='display:inline'>"
+                    f"<input type=hidden name=name value='{escape(строка['name'])}'>"
+                    f"<button>{подпись}</button></form>"
+                    if можно
+                    else ""
+                )
+                подробность = (
+                    f" — {escape(строка['detail'])}" if строка["detail"] else ""
+                )
+                parts.append(
+                    f"<tr><td>{escape(строка['name'])}"
+                    f"<td>{_объём(строка['size'])}"
+                    f"<td>{escape(строка['state'])}{подробность} {кнопка}</tr>"
+                )
+            parts.append("</table>")
+        elif registry.incoming_dir.is_dir():
+            # Пустой каталог — тоже сведение: без этого блока человек не видит
+            # ни того, что приём есть, ни того, куда класть архив.
+            parts.append(
+                "<h2>Входящие выгрузки</h2>"
+                f"<p>Пусто. Положите выгрузку конфигурации в файлы (.zip) в "
+                f"<code>{escape(str(registry.incoming_dir))}</code> — она "
+                "появится здесь с кнопкой «разобрать». Сканируется только сам "
+                "каталог, без вложенных подкаталогов.</p>"
+            )
 
     if authorized:
         parts.append(
@@ -1343,7 +1488,16 @@ def routes(registry: Registry) -> list[Route]:
         return _overview_page(registry)
 
     async def sources(request: Request) -> HTMLResponse:
-        return _sources_page(registry, authorized=_authorized(request))
+        authorized = _authorized(request)
+        # Сканирование считает sha256 файлов из `incoming/`: на архиве в
+        # 1,4 ГБ это секунды, и в цикле событий они останавливают весь
+        # процесс — другие страницы, `/health`, инструменты MCP. Уходит в
+        # поток тем же способом, что и разбор. Невошедшему блок не рисуется,
+        # значит и считать нечего.
+        входящие = (
+            await run_in_threadpool(_scanner(registry).scan) if authorized else None
+        )
+        return _sources_page(registry, authorized=authorized, входящие=входящие)
 
     async def dictionary_page(request: Request) -> HTMLResponse:
         return _dictionary_page(
@@ -1584,6 +1738,103 @@ def routes(registry: Registry) -> list[Route]:
         задача.add_done_callback(_ФОНОВЫЕ.discard)
         return RedirectResponse("/sources", status_code=303)
 
+    async def parse_incoming(request: Request):
+        """Разобрать выгрузку из `incoming/`. Запись — значит `ADMIN_TOKEN`."""
+        if not _admin_token():
+            return PlainTextResponse("Разбор выключен: не задан ADMIN_TOKEN.", 404)
+        if not _authorized(request):
+            page = _sources_page(registry, error="Нужен вход администратора.")
+            return HTMLResponse(page.body, status_code=403)
+
+        from . import intake
+        from .incoming import SETTLE_SECONDS
+
+        form = await request.form()
+        имя = Path(str(form.get("name", ""))).name
+        сканер = _scanner(registry)
+        архив = registry.incoming_dir / имя
+        if not имя or not архив.is_file():
+            return RedirectResponse("/sources", status_code=303)
+        if сканер.running:
+            # Два разбора одновременно видели бы одно и то же свободное место
+            # и оба прошли бы проверку. Молчаливый редирект выглядел бы как
+            # «нажал, и ничего не произошло», поэтому причина ложится в журнал.
+            занятость = _start_job(имя, архив.stat().st_size)
+            занятость["state"] = JOB_FAILED
+            занятость["error"] = (
+                "уже идёт разбор другой выгрузки ("
+                + ", ".join(sorted(сканер.running))
+                + ") — одновременно разбирается не больше одной; "
+                "повторите, когда та закончится"
+            )
+            return RedirectResponse("/sources", status_code=303)
+        if сканер.дописывается(архив):
+            # Признак «файл ещё копируется» из постановки (§2): `cp` полутора
+            # гигабайт идёт минуты, а файл виден с первой секунды. Разбор
+            # недокопированного архива даёт `BadZipFile` и запись неудачи,
+            # которую потом надо снимать руками.
+            копируется = _start_job(имя, архив.stat().st_size)
+            копируется["state"] = JOB_FAILED
+            копируется["error"] = (
+                f"{имя}: файл изменялся только что — похоже, копирование ещё "
+                f"идёт. Повторите через {int(SETTLE_SECONDS)} с после того, "
+                "как оно закончится."
+            )
+            # `note_failure` здесь не зовём намеренно: запись неудачи привязана
+            # к хешу, а считать sha256 растущего файла — ровно то, чего этот
+            # признак и позволяет не делать.
+            return RedirectResponse("/sources", status_code=303)
+
+        job = _start_job(имя, архив.stat().st_size)
+        try:
+            нужно, _формат = intake.planned_size(архив)
+        except Exception as error:
+            # Битый архив (не zip, обрезан, нечитаем) валит расчёт размера до
+            # фоновой задачи. Без этой ветки задание висело бы в «принимается»
+            # навсегда — `_start_job` вычищает только завершённые записи.
+            job["state"] = JOB_FAILED
+            job["error"] = f"{архив.name}: не похоже на zip-архив ({error})"
+            # `note_failure` считает sha256 файла, чтобы привязать отказ к
+            # содержимому: на архиве в 1,4 ГБ это секунды, и в цикле событий
+            # они остановили бы весь процесс — ровно то, ради чего сканирование
+            # уводили в поток. Промах кэша достижим: человек положил
+            # исправленный архив и жмёт кнопку со старой страницы.
+            await run_in_threadpool(сканер.note_failure, архив, job["error"])
+            return RedirectResponse("/sources", status_code=303)
+        try:
+            хватает, свободно = intake.enough_space(нужно, registry.data_dir)
+        except Exception as error:
+            # Отдельный блок, а не общий с разбором архива: здесь падает не
+            # zip, а обращение к каталогу данных — нет прав, том отвалился,
+            # каталога нет вовсе. Постановка (§3) требует, чтобы случай прав
+            # был в тексте ошибки, а не оставался догадкой; заголовок «не
+            # похоже на zip-архив» на нём был бы прямой ложью.
+            job["state"] = JOB_FAILED
+            job["error"] = (
+                f"{архив.name}: не удалось проверить свободное место в "
+                f"{registry.data_dir} ({error}). Проверьте, что каталог "
+                "данных на месте и доступен процессу сервера: в контейнере он "
+                "работает от uid 10001, а `chown` из образа на bind-mount не "
+                "действует."
+            )
+            await run_in_threadpool(сканер.note_failure, архив, job["error"])
+            return RedirectResponse("/sources", status_code=303)
+        if not хватает:
+            job["state"] = JOB_FAILED
+            job["error"] = (
+                f"нужно {нужно // 2**20} МБ, свободно {свободно // 2**20} МБ"
+            )
+            await run_in_threadpool(сканер.note_failure, архив, job["error"])
+            return RedirectResponse("/sources", status_code=303)
+
+        сканер.running.add(имя)
+        задача = asyncio.create_task(
+            run_in_threadpool(_run_incoming, registry, сканер, job, архив)
+        )
+        _ФОНОВЫЕ.add(задача)
+        задача.add_done_callback(_ФОНОВЫЕ.discard)
+        return RedirectResponse("/sources", status_code=303)
+
     async def clear_jobs(request: Request):
         """Убрать из журнала завершённые записи.
 
@@ -1639,7 +1890,10 @@ def routes(registry: Registry) -> list[Route]:
 
         form = await request.form()
         try:
-            registry.remove(str(form.get("id", "")))
+            # У источника модулей снятие уносит каталог с кодом — 11 072 файла
+            # на живой конфигурации. В цикле событий это остановило бы все
+            # страницы и `/health`; словарной операцией `remove` быть перестал.
+            await run_in_threadpool(registry.remove, str(form.get("id", "")))
         except RegistryError as error:
             return _sources_page(registry, error=str(error), authorized=True)
         registry.save()
@@ -1655,6 +1909,7 @@ def routes(registry: Registry) -> list[Route]:
         Route("/sources/remove", remove, methods=["POST"]),
         Route("/sources/forget", forget, methods=["POST"]),
         Route("/sources/jobs/clear", clear_jobs, methods=["POST"]),
+        Route("/sources/incoming/parse", parse_incoming, methods=["POST"]),
         Route("/queries", guard_read(queries_form), methods=["GET"]),
         Route("/queries", guard_read(queries_run), methods=["POST"]),
         Route("/object", guard_read(object_card), methods=["GET"]),

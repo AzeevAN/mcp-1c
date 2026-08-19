@@ -75,3 +75,34 @@ def planned_size(архив: Path) -> tuple[int, str]:
 def enough_space(нужно: int, каталог: Path) -> tuple[bool, int]:
     свободно = shutil.disk_usage(каталог).free
     return свободно >= нужно, свободно
+
+
+# Версия правила отбора. Поднимается, когда меняется то, ЧТО мы достаём из
+# архива, — тогда и только тогда нужен переразбор zip. Правки, меняющие лишь
+# индекс, сервер переживает сам, пересобрав его из `data/modules/`.
+SELECTION_VERSION = 1
+
+
+def extract(архив: Path, корень: Path) -> tuple[int, int]:
+    """Достать из архива модули и формы. Возвращает (файлов, байт).
+
+    Читается членом за членом: развёрнутого архива на диске не возникает.
+    """
+    файлов = 0
+    байт = 0
+    корень.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(архив) as zf:
+        записи = [i for i in zf.infolist() if not i.is_dir()]
+        формат = detect_format([i.filename for i in записи])
+        for info in записи:
+            if not is_wanted(info.filename, формат):
+                continue
+            цель = safe_target(info.filename, корень)
+            if цель is None:
+                continue
+            цель.parent.mkdir(parents=True, exist_ok=True)
+            with zf.open(info) as входящий, цель.open("wb") as исходящий:
+                shutil.copyfileobj(входящий, исходящий, length=1 << 20)
+            файлов += 1
+            байт += info.file_size
+    return файлов, байт

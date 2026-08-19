@@ -131,3 +131,4 @@ worktrees/
 !/docs/data-sources.md
 !/docs/query-language-design.md
 !/docs/dashboard-design.md
+!/docs/modules-intake-design.md

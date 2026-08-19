@@ -1268,6 +1268,7 @@ PYTHONPATH=src .venv/bin/python -m mcp1c.bench \
 | [docs/data-sources.md](docs/data-sources.md) | что из какого источника берём |
 | [docs/query-language-design.md](docs/query-language-design.md) | устройство источника языка запросов |
 | [docs/dashboard-design.md](docs/dashboard-design.md) | устройство дашборда |
+| [docs/modules-intake-design.md](docs/modules-intake-design.md) | приём выгрузки конфигурации в файлы — постановка |
 | [exporter-1c/README.md](exporter-1c/README.md) | обработка выгрузки для 1С |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | как править проект: язык, коммиты, проверки |
 | [SECURITY.md](SECURITY.md) | как сообщить об уязвимости |

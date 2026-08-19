@@ -719,12 +719,21 @@ class Registry:
             # собирается, но проверка стоит пять строк, а счётчик уже на руках.
             self._drop_modules_root(корень)
             raise _нет_модулей(архив)
+        # Выгрузка в файлы точной сборки платформы не содержит: в
+        # Configuration.xml лежит только режим совместимости
+        # (CompatibilityMode), а это другое число — на Рознице 2.3.10.5 в
+        # выгрузке стоит Version8_3_21, тогда как фактическая платформа по
+        # выгрузке метаданных — 8.3.23.1997. Берём её у привязанной
+        # конфигурации — она знает свою точную сборку; пустая — оставляем
+        # пустой, ничего не выдумываем.
+        платформа = self.configurations[configuration].source.platform
         source = Source(
             id=f"{configuration}:modules",
             kind=KIND_MODULES,
             origin=архив.name,
             sha256=digest,
             loaded_at=_now(),
+            platform=платформа,
             status=STATUS_READY,
             items_total=файлов,
             stored_path=self._relative(корень),

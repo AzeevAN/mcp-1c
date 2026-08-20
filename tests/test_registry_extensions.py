@@ -280,9 +280,10 @@ def _выгрузка_расширения_в_папке(
 ) -> Path:
     """Раскладка `zip -r архив.zip папка`: `Configuration.xml` не в корне, а
     в единственном каталоге верхнего уровня. Так же устроена настоящая
-    плоская выгрузка 8.3.5 (`__data/utd/UtdConfig.zip`, проверено вручную:
-    единственная запись-каталог верхнего уровня, `Configuration.xml` внутри
-    неё, ни одного файла прямо в корне) — не гипотетический случай.
+    плоская выгрузка 8.3.5 отраслевой конфигурации (проверено вручную на
+    реальном архиве: единственная запись-каталог верхнего уровня,
+    `Configuration.xml` внутри неё, ни одного файла прямо в корне) — не
+    гипотетический случай.
     """
     путь = tmp_path / файл
     with zipfile.ZipFile(путь, "w") as zf:
@@ -932,3 +933,116 @@ def test_подметание_осиротевшего_tmp_не_трогает_o
     assert not осиротевший_tmp.exists()
     assert осиротевший_old.is_dir()
     assert (осиротевший_old / "прежний.bsl").is_file()
+
+
+# --------------------------------------------------------------- ре-ревью: обёртка
+
+
+def test_архив_из_абсолютных_путей_не_трогает_прежний_разбор(tmp_path):
+    """Ре-ревью, ВАЖНО 1: пустой первый компонент пути (у абсолютного члена
+    `str.split("/")` даёт `части[0] == ""`) не должен считаться именем
+    обёртки — иначе снятие обёртки срезает ведущий `/`, и абсолютный член,
+    которого `safe_target` обязан отвергать, тихо становится относительным
+    и пишется на диск.
+
+    Архив целиком из абсолютных путей: `Configuration.xml` не находится ни
+    в корне (строка `/Configuration.xml` не равна `Configuration.xml`), ни
+    в «обёртке» — обёртки нет вовсе, все члены абсолютные, распознавание
+    отказывает раньше `extract`. Прежний разбор не трогается."""
+    registry = _реестр_с_конфигурацией(tmp_path)
+    registry.add_modules(_выгрузка_конфигурации(tmp_path), configuration="Розница")
+    модуль_конфигурации = (
+        registry.modules_dir / "Розница" / "Catalogs/Т/Ext/ObjectModule.bsl"
+    )
+    assert модуль_конфигурации.is_file()
+
+    архив = tmp_path / "абсолютный.zip"
+    with zipfile.ZipFile(архив, "w") as zf:
+        zf.writestr(
+            "/Configuration.xml",
+            _configuration_xml(
+                name="Доп", prefix="Доп_", belonging="Adopted", purpose="AddOn"
+            ),
+        )
+        zf.writestr("/Catalogs/Р/Ext/ObjectModule.bsl", "Процедура Б() КонецПроцедуры")
+        zf.writestr("/../снаружи.bsl", "X")
+
+    with pytest.raises(RegistryError, match="Configuration.xml"):
+        registry.add_modules(архив, configuration="Розница")
+
+    # Прежний разбор конфигурации цел, новый источник расширения не завёлся.
+    assert модуль_конфигурации.is_file()
+    assert not (registry.extensions_dir / "Розница" / "Доп").exists()
+    assert "Розница:ext:Доп" not in registry.sources
+
+
+def test_двойной_слэш_под_обёрткой_не_теряет_файл(tmp_path):
+    """Ре-ревью, ВАЖНО 2: обёртка снимается покомпонентно
+    (`PurePosixPath.parts`), а не срезанием строкового префикса. Срез строки
+    оставлял бы у `"Доп//Catalogs/…"` один слэш из двух — результат
+    (`"/Catalogs/…"`) становился абсолютным путём и тихо отвергался
+    `safe_target`, хотя `planned_size` эти байты уже посчитал."""
+    registry = _реестр_с_конфигурацией(tmp_path)
+
+    архив = tmp_path / "двойной_слэш.zip"
+    with zipfile.ZipFile(архив, "w") as zf:
+        zf.writestr(
+            "Доп/Configuration.xml",
+            _configuration_xml(
+                name="Доп", prefix="Доп_", belonging="Adopted", purpose="AddOn"
+            ),
+        )
+        zf.writestr(
+            "Доп//Catalogs/Р/Ext/ObjectModule.bsl", "Процедура Б() КонецПроцедуры"
+        )
+
+    источник = registry.add_modules(архив, configuration="Розница")
+
+    assert источник.kind == KIND_EXTENSION
+    файл = (
+        registry.extensions_dir / "Розница" / "Доп" / "Catalogs/Р/Ext/ObjectModule.bsl"
+    )
+    assert файл.is_file()
+    assert файл.read_text() == "Процедура Б() КонецПроцедуры"
+
+
+def test_единственный_каталог_без_манифеста_отклоняется(tmp_path):
+    """Ре-ревью, ВАЖНО 4: инвариант, на котором держится всё правило обёртки
+    — настоящий единственный каталог верхнего уровня (не обёртка, а просто
+    единственная категория объектов) не может быть ошибочно раздет, потому
+    что архив без `Configuration.xml` (ни в корне, ни в этом самом каталоге)
+    отклоняется распознаванием раньше, чем дело доходит до `intake.extract`.
+    """
+    registry = _реестр_с_конфигурацией(tmp_path)
+    архив = tmp_path / "без_манифеста.zip"
+    with zipfile.ZipFile(архив, "w") as zf:
+        zf.writestr("Catalogs/Т/Ext/ObjectModule.bsl", "Процедура А() КонецПроцедуры")
+
+    with pytest.raises(RegistryError, match="Configuration.xml"):
+        registry.add_modules(архив, configuration="Розница")
+
+    assert not (registry.modules_dir / "Розница" / "Catalogs").exists()
+
+
+def test_отбираемых_членов_и_extract_сходятся_под_обёрткой_с_macosx(tmp_path):
+    """Ре-ревью, ВАЖНО 4: `registry._отбираемых_членов` — третий вызывающий
+    правила обёртки, наравне с `intake.extract`/`planned_size`. Без снятия
+    обёртки член `Обёртка/__MACOSX/x.bsl` считался бы отобранным по сырому
+    имени (первый компонент — `Обёртка`, не `__MACOSX`), а после снятия
+    обёртки `extract` correctly видит в нём мусор Finder и отбрасывает —
+    числа расходились бы."""
+    from mcp1c.registry import _отбираемых_членов
+    from mcp1c.intake import extract
+
+    архив = tmp_path / "обёртка_с_вложенным_macosx.zip"
+    with zipfile.ZipFile(архив, "w") as zf:
+        zf.writestr("Обёртка/Catalogs/Т/Ext/ObjectModule.bsl", "A" * 10)
+        # Синтетический случай: "__MACOSX" на один уровень глубже, чем
+        # кладёт настоящий Finder (у него он всегда рядом с обёрткой, а не
+        # внутри неё) — но именно на нём правило обёртки могло разойтись.
+        zf.writestr("Обёртка/__MACOSX/x.bsl", "B" * 5)
+
+    посчитано_заранее = _отбираемых_членов(архив)
+    файлов, _байт = extract(архив, tmp_path / "modules")
+
+    assert посчитано_заранее == файлов == 1

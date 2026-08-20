@@ -126,6 +126,44 @@ def sample_payloads() -> dict[str, str]:
     }
 
 
+@pytest.fixture
+def корень_кода(tmp_path):
+    """Выгрузка из четырёх модулей: общий, объект, форма, менеджер."""
+    общий = tmp_path / "CommonModules" / "ОбщийПример" / "Ext"
+    общий.mkdir(parents=True)
+    (общий / "Module.bsl").write_text(
+        "// Складывает два числа.\n"
+        "Функция Сложить(Первый, Второй) Экспорт\n"
+        "\tВозврат Первый + Второй;\n"
+        "КонецФункции\n"
+        "\n"
+        "Процедура Внутренняя()\n"
+        "\tСложить(1, 2);\n"
+        "КонецПроцедуры\n",
+        encoding="utf-8",
+    )
+    объект = tmp_path / "Documents" / "Пример" / "Ext"
+    объект.mkdir(parents=True)
+    (объект / "ObjectModule.bsl").write_text(
+        "Процедура ПриЗаписи(Отказ)\n"
+        "\tОбщийПример.Сложить(1, 2);\n"
+        "КонецПроцедуры\n",
+        encoding="utf-8",
+    )
+    форма = tmp_path / "Catalogs" / "Пример" / "Forms" / "ФормаЭлемента" / "Ext" / "Form"
+    форма.mkdir(parents=True)
+    (форма / "Module.bsl").write_text(
+        "&НаКлиенте\nПроцедура ПриОткрытии(Отказ)\nКонецПроцедуры\n", encoding="utf-8"
+    )
+    (форма.parent / "Form.xml").write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<Form><Events><Event name="OnOpen">ПриОткрытии</Event></Events>'
+        '<Attributes><Attribute name="Объект"/></Attributes></Form>\n',
+        encoding="utf-8",
+    )
+    return tmp_path
+
+
 def build_configuration(name: str = "ТестоваяКонфигурация") -> Configuration:
     """Конфигурация из двух объектов с реквизитами и табличной частью."""
     config = Configuration(name=name, synonym="Тестовая", version="1.0", platform="8.3.23.1997")

@@ -158,7 +158,13 @@ def корень_кода(tmp_path):
     (форма.parent / "Form.xml").write_text(
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<Form><Events><Event name="OnOpen">ПриОткрытии</Event></Events>'
-        '<Attributes><Attribute name="Объект"/></Attributes></Form>\n',
+        '<Attributes><Attribute name="Объект"/></Attributes>'
+        # Элемент формы — для задачи 7 (индекс форм). Не заводит новую
+        # процедуру: Module.bsl этой формы намеренно не тронут, иначе
+        # test_оглавление_видит_все_процедуры пришлось бы менять ради
+        # случая, который к оглавлению не относится.
+        '<ChildItems><UsualGroup name="ГруппаРеквизитов" id="1"/></ChildItems>'
+        "</Form>\n",
         encoding="utf-8",
     )
     return tmp_path

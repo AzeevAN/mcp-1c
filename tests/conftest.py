@@ -170,9 +170,11 @@ def корень_кода(tmp_path):
     return tmp_path
 
 
-def build_configuration(name: str = "ТестоваяКонфигурация") -> Configuration:
+def build_configuration(
+    name: str = "ТестоваяКонфигурация", *, version: str = "1.0"
+) -> Configuration:
     """Конфигурация из двух объектов с реквизитами и табличной частью."""
-    config = Configuration(name=name, synonym="Тестовая", version="1.0", platform="8.3.23.1997")
+    config = Configuration(name=name, synonym="Тестовая", version=version, platform="8.3.23.1997")
     catalog = MetadataObject(
         full_name="Справочник.Контрагенты",
         kind="Справочник",
@@ -257,7 +259,10 @@ _NS_MDCLASSES = "http://v8.1c.ru/8.3/MDClasses"
 
 
 def modules_configuration_xml(
-    *, name: str = "Конфигурация", compatibility: str = "Version8_3_21"
+    *,
+    name: str = "Конфигурация",
+    compatibility: str = "Version8_3_21",
+    version: str = "",
 ) -> str:
     """`Configuration.xml` минимальной выгрузки в файлы — с непустым
     `CompatibilityMode`.
@@ -269,11 +274,16 @@ def modules_configuration_xml(
     при положительном правиле она не конфигурация и не расширение, а отказ.
     Единый помощник — чтобы восьмая копия `<x/>` не завелась снова в другом
     файле теста.
+
+    `version` — тег `Version`: версия конфигурации (или расширения) из
+    конфигуратора, не версия платформы. Пустая строка по умолчанию — тега
+    вовсе нет в разметке, как у реальной выгрузки без проставленной версии.
     """
+    версия = f"<Version>{version}</Version>" if version else ""
     return (
         f'<MetaDataObject xmlns="{_NS_MDCLASSES}">'
         '<Configuration uuid="00000000-0000-0000-0000-000000000000">'
-        f"<Properties><Name>{name}</Name><NamePrefix/>"
+        f"<Properties><Name>{name}</Name><NamePrefix/>{версия}"
         f"<CompatibilityMode>{compatibility}</CompatibilityMode></Properties>"
         "</Configuration></MetaDataObject>"
     )

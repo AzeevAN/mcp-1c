@@ -2,13 +2,14 @@
 import zipfile
 from pathlib import Path
 
+from conftest import modules_configuration_xml
 from mcp1c.intake import FORMAT_TREE, enough_space, planned_size
 
 
 def _архив(tmp_path: Path) -> Path:
     путь = tmp_path / "выгрузка.zip"
     with zipfile.ZipFile(путь, "w") as zf:
-        zf.writestr("Configuration.xml", "<x/>")
+        zf.writestr("Configuration.xml", modules_configuration_xml())
         zf.writestr("Catalogs/Товары/Ext/ObjectModule.bsl", "A" * 1000)
         zf.writestr("Catalogs/Товары/Forms/Ф/Ext/Form.xml", "B" * 500)
         zf.writestr("Ext/ParentConfigurations/Поставка.cf", "C" * 100_000)

@@ -34,7 +34,7 @@ from .dictionary import SOURCE_BUILTIN as DICT_BUILTIN
 from .graph_view import DEFAULT_LIMIT as DEFAULT_GRAPH_LIMIT
 from .graph_view import Neighbourhood, bounds, neighbourhood
 from .loader import ExportError
-from .registry import KIND_QUERY, Registry, RegistryError
+from .registry import KIND_EXTENSION, KIND_MODULES, KIND_QUERY, Registry, RegistryError
 from .render import DETAIL_LEVELS
 from .search import FIELD_KIND_TITLES
 from .syntax_model import KIND_TITLES
@@ -1132,9 +1132,15 @@ def _login_form() -> str:
 
 # Виды остальных источников (`configuration`, `syntax`) показывались и
 # показываются сырым словом — это устоявшееся поведение, менять его не
-# просят. Язык запросов — новый вид, и его код (`query`) человеку ничего не
-# говорит, поэтому только для него заводим человеческую подпись.
-_SOURCE_KIND_TITLES = {KIND_QUERY: "Язык запросов"}
+# просят. `modules` и `extension` печатались латиницей и человеку ничего не
+# говорили — особенно важно для расширения: без подписи строка
+# `<Конфигурация>:ext:<Имя>` выглядит как ещё один модульный источник, а не
+# как отдельная сущность.
+_SOURCE_KIND_TITLES = {
+    KIND_QUERY: "Язык запросов",
+    KIND_MODULES: "Модули",
+    KIND_EXTENSION: "Расширение",
+}
 
 
 def _sources_page(

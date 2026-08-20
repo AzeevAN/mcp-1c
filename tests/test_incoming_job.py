@@ -2,7 +2,7 @@
 import zipfile
 from pathlib import Path
 
-from conftest import build_configuration, состарить, write_export, живой_клиент
+from conftest import build_configuration, modules_configuration_xml, состарить, write_export, живой_клиент
 from starlette.applications import Starlette
 
 from mcp1c import dashboard
@@ -25,7 +25,7 @@ def _стенд(tmp_path):
 def _выгрузка(путь: Path, модуль: str = "Процедура А() КонецПроцедуры") -> Path:
     """Выгрузка в файлы из одного модуля. Возраст — «копирование закончено»."""
     with zipfile.ZipFile(путь, "w") as zf:
-        zf.writestr("Configuration.xml", "<x/>")
+        zf.writestr("Configuration.xml", modules_configuration_xml())
         zf.writestr("Catalogs/Т/Ext/ObjectModule.bsl", модуль)
     return состарить(путь)
 

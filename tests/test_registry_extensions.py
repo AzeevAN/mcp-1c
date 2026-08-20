@@ -216,13 +216,20 @@ def test_имя_расширения_с_необычными_символами_
 
 
 def test_sweep_не_сносит_кэш_нового_вида(tmp_path):
-    """`KIND_EXTENSION` обязан быть в `CACHE_KINDS` — иначе кэш сочли бы ничьим."""
+    """`KIND_EXTENSION` обязан быть в `CACHE_KINDS` — иначе кэш сочли бы ничьим.
+
+    Один вид из четырёх (`modules-toc`) — не полная проверка: она ловит
+    отсутствие записи для `KIND_EXTENSION` вообще, а не снос трёх видов из
+    четырёх при одном общем имени. Это отдельная находка задачи 9 —
+    `tests/test_index_cache_modules.py::test_sweep_не_сносит_ни_один_
+    индекс_модулей`.
+    """
     from mcp1c import index_cache
 
     registry = _реестр_с_конфигурацией(tmp_path)
     источник = registry.add_modules(_выгрузка_расширения(tmp_path), configuration="Розница")
     registry.cache_dir.mkdir(parents=True, exist_ok=True)
-    кэш = registry._cache_path(источник.id, "modules")
+    кэш = registry._cache_path(источник.id, "modules-toc")
     кэш.write_bytes(b"stop")
 
     убрано = index_cache.sweep(registry.cache_dir, registry._cached_names())

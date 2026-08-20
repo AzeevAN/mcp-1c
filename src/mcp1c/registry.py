@@ -698,12 +698,17 @@ class Registry:
         KIND_CONFIGURATION: ("objects", "fields"),
         KIND_SYNTAX: ("syntax", "lookup"),
         KIND_QUERY: ("syntax", "lookup"),
-        KIND_MODULES: ("modules",),
-        # Тот же вид кэша, что у модулей конфигурации: провайдер поиска по
-        # коду, когда появится, не должен различать их источники. Без этой
-        # записи `sweep` счёл бы кэш расширения ничьим на первом же старте —
-        # ровно то, от чего предупреждает комментарий выше для KIND_QUERY.
-        KIND_EXTENSION: ("modules",),
+        # Четыре структуры — четыре имени, не одно общее. `sweep` считает
+        # своим только то, что названо здесь; одно общее имя на все четыре
+        # (как было до задачи 9) значило бы, что три индекса из четырёх
+        # сносятся на первом же старте, молча, и пересобираются заново
+        # каждый раз (`tests/test_index_cache_modules.py`).
+        KIND_MODULES: ("modules-toc", "modules-calls", "modules-forms", "modules-search"),
+        # Тот же набор видов, что у модулей конфигурации: провайдер поиска
+        # по коду не должен различать их источники. Без этой записи `sweep`
+        # счёл бы кэш расширения ничьим на первом же старте — ровно то, от
+        # чего предупреждает комментарий выше для KIND_QUERY.
+        KIND_EXTENSION: ("modules-toc", "modules-calls", "modules-forms", "modules-search"),
     }
 
     def _cache_path(self, source_id: str, kind: str) -> Path:

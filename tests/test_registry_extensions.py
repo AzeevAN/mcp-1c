@@ -788,3 +788,147 @@ def test_режим_каталога_не_сужается_после_перер
     )
 
     assert oct(корень.stat().st_mode & 0o777) == "0o750"
+
+
+def test_провал_первого_переименования_прежний_разбор_цел(tmp_path, monkeypatch):
+    """ВАЖНО, ре-ревью: `корень.rename(отставленный)` — первое
+    переименование рокировки — тоже должно быть внутри общего try/finally:
+    провал оставляет прежний разбор нетронутым и не роняет временный
+    каталог рядом."""
+    from pathlib import Path
+
+    registry = _реестр_с_конфигурацией(tmp_path)
+    registry.add_modules(_выгрузка_конфигурации(tmp_path), configuration="Розница")
+    прежний_модуль = registry.modules_dir / "Розница" / "Catalogs/Т/Ext/ObjectModule.bsl"
+    assert прежний_модуль.is_file()
+
+    настоящий_rename = Path.rename
+
+    def подмена(self, цель):
+        # Перехватываем именно переименование самого корня («Розница» —
+        # без ".tmp-" и без ".old-" в имени) — не временный каталог, не
+        # откат.
+        if self.name == "Розница":
+            raise OSError("нет прав (симуляция)")
+        return настоящий_rename(self, цель)
+
+    monkeypatch.setattr(Path, "rename", подмена)
+
+    новая = tmp_path / "новая.zip"
+    with zipfile.ZipFile(новая, "w") as zf:
+        zf.writestr(
+            "Configuration.xml",
+            _configuration_xml(name="Розница", compatibility="Version8_3_21"),
+        )
+        zf.writestr("Catalogs/Д/Ext/ObjectModule.bsl", "Процедура Р() КонецПроцедуры")
+
+    with pytest.raises(OSError):
+        registry.add_modules(новая, configuration="Розница")
+
+    assert прежний_модуль.is_file()
+    остатки = sorted(p.name for p in registry.modules_dir.iterdir())
+    assert остатки == ["Розница"]
+
+
+def test_провал_переименования_при_первом_разборе_не_оставляет_мусора(
+    tmp_path, monkeypatch
+):
+    """ВАЖНО, ре-ревью: ветка первого разбора (`корень` ещё не
+    существовал) тоже под защитой — провал переименования не оставляет
+    временный каталог висеть навсегда."""
+    from pathlib import Path
+
+    registry = _реестр_с_конфигурацией(tmp_path)
+    assert not (registry.modules_dir / "Розница").exists()
+
+    настоящий_rename = Path.rename
+
+    def подмена(self, цель):
+        if ".tmp-" in self.name:
+            raise OSError("нет места (симуляция)")
+        return настоящий_rename(self, цель)
+
+    monkeypatch.setattr(Path, "rename", подмена)
+
+    with pytest.raises(OSError):
+        registry.add_modules(_выгрузка_конфигурации(tmp_path), configuration="Розница")
+
+    assert not (registry.modules_dir / "Розница").exists()
+    if registry.modules_dir.is_dir():
+        assert list(registry.modules_dir.iterdir()) == []
+
+
+def test_провал_отката_даёт_registryerror_с_обоими_путями(tmp_path, monkeypatch):
+    """КРИТИЧНО, ре-ревью: если второе переименование (`временный ->
+    корень`) не удалось, а следом не удался и откат (`отставленный ->
+    корень`) — природа отказа у обоих одна, «два подряд» не выдумка —
+    наверх обязан лететь `RegistryError`, называющий ОБА пути: где лежит
+    прежний разбор и где новый. Молча оставлять реестр указывающим в
+    пустоту нельзя — это и есть тот дефект, ради которого шли все круги."""
+    from pathlib import Path
+
+    registry = _реестр_с_конфигурацией(tmp_path)
+    registry.add_modules(_выгрузка_конфигурации(tmp_path), configuration="Розница")
+    прежний_модуль = registry.modules_dir / "Розница" / "Catalogs/Т/Ext/ObjectModule.bsl"
+    assert прежний_модуль.is_file()
+
+    настоящий_rename = Path.rename
+
+    def подмена(self, цель):
+        # Валит и второе переименование (временный -> корень), и откат
+        # (отставленный -> корень) — оба целятся в корень.
+        if ".tmp-" in self.name or ".old-" in self.name:
+            raise OSError("нет прав (симуляция)")
+        return настоящий_rename(self, цель)
+
+    monkeypatch.setattr(Path, "rename", подмена)
+
+    новая = tmp_path / "новая.zip"
+    with zipfile.ZipFile(новая, "w") as zf:
+        zf.writestr(
+            "Configuration.xml",
+            _configuration_xml(name="Розница", compatibility="Version8_3_21"),
+        )
+        zf.writestr("Catalogs/Д/Ext/ObjectModule.bsl", "Процедура С() КонецПроцедуры")
+
+    with pytest.raises(RegistryError) as инфо:
+        registry.add_modules(новая, configuration="Розница")
+
+    текст = str(инфо.value)
+    корень = registry.modules_dir / "Розница"
+    assert str(корень) in текст
+
+    остатки = sorted(p.name for p in registry.modules_dir.iterdir())
+    отставленные = [имя for имя in остатки if ".old-" in имя]
+    assert len(отставленные) == 1, остатки
+    отставленный_путь = registry.modules_dir / отставленные[0]
+    # Отставленный каталог держит прежний разбор физически целым...
+    assert (отставленный_путь / "Catalogs/Т/Ext/ObjectModule.bsl").is_file()
+    # ...и путь к нему назван в тексте ошибки, чтобы вернуть руками.
+    assert str(отставленный_путь) in текст
+    # Временного каталога рядом не осталось.
+    assert not any(".tmp-" in имя for имя in остатки)
+
+
+def test_подметание_осиротевшего_tmp_не_трогает_old(tmp_path):
+    """Подметание, ре-ревью: осиротевший `.tmp-` от прежнего неудачного
+    (убитого) процесса убирается перед новым разбором той же
+    конфигурации. `.old-` не трогается: в нём может лежать единственная
+    копия прежнего разбора, и решение о ней — за человеком."""
+    registry = _реестр_с_конфигурацией(tmp_path)
+    registry.add_modules(_выгрузка_конфигурации(tmp_path), configuration="Розница")
+
+    осиротевший_tmp = registry.modules_dir / ".Розница.tmp-старый"
+    осиротевший_tmp.mkdir()
+    (осиротевший_tmp / "мусор.bsl").write_text("огрызок")
+    осиротевший_old = registry.modules_dir / ".Розница.old-старый"
+    осиротевший_old.mkdir()
+    (осиротевший_old / "прежний.bsl").write_text("единственная копия")
+
+    registry.add_modules(
+        _выгрузка_конфигурации(tmp_path, файл="модули2.zip"), configuration="Розница"
+    )
+
+    assert not осиротевший_tmp.exists()
+    assert осиротевший_old.is_dir()
+    assert (осиротевший_old / "прежний.bsl").is_file()

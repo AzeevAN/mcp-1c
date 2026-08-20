@@ -139,3 +139,4 @@ worktrees/
 !/docs/query-language-design.md
 !/docs/dashboard-design.md
 !/docs/modules-intake-design.md
+!/docs/modules-provider-design.md

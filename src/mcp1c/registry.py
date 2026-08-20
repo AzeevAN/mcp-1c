@@ -400,6 +400,12 @@ class Source:
     warnings: list[str] = field(default_factory=list)
     items_total: int = 0
     stored_path: str = ""
+    # Версия правила отбора (`intake.SELECTION_VERSION`), под которой код
+    # был разобран. 0 — «неизвестно»: так выглядят и записи, сделанные до
+    # появления этого поля, и любой источник, для которого версию никто не
+    # проставил явно. `intake._состояние` (incoming.py) считает ноль
+    # устаревшим, а не свежим — см. комментарий там же.
+    selection_version: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -414,6 +420,7 @@ class Source:
             "warnings": list(self.warnings),
             "items_total": self.items_total,
             "stored_path": self.stored_path,
+            "selection_version": self.selection_version,
         }
 
     @classmethod
@@ -430,6 +437,13 @@ class Source:
             warnings=list(raw.get("warnings") or []),
             items_total=raw.get("items_total", 0),
             stored_path=raw.get("stored_path", ""),
+            # Отсутствующий ключ — 0, а не текущая SELECTION_VERSION: запись
+            # без поля пришла из кода, который его ещё не писал, и о её
+            # фактической версии отбора ничего не известно. Подставить
+            # текущую версию значило бы соврать «отбор свежий» про запись, о
+            # которой мы ничего не знаем, — человек никогда не увидел бы
+            # «отбор устарел» для такого источника.
+            selection_version=raw.get("selection_version", 0),
         )
 
 
@@ -1140,6 +1154,8 @@ class Registry:
                 архив, configuration=configuration, extension=имя_расширения
             )
 
+        from . import intake
+
         корень = self._modules_root(configuration)
         digest, файлов = self._extract_code(архив, корень, self._drop_modules_root)
         # Выгрузка в файлы точной сборки платформы не содержит: в
@@ -1165,6 +1181,7 @@ class Registry:
             status=STATUS_READY,
             items_total=файлов,
             stored_path=self._relative(корень),
+            selection_version=intake.SELECTION_VERSION,
         )
         with self._lock:
             self.sources[source.id] = source
@@ -1196,6 +1213,8 @@ class Registry:
         (например, `a/b` и `a:b`), схлопнутся в один источник — принято
         осознанно, см. README.
         """
+        from . import intake
+
         имя_чисто = index_cache.safe_name(extension)
         корень = self._extension_root(configuration, extension)
         digest, файлов = self._extract_code(архив, корень, self._drop_extension_root)
@@ -1213,6 +1232,7 @@ class Registry:
             status=STATUS_READY,
             items_total=файлов,
             stored_path=self._relative(корень),
+            selection_version=intake.SELECTION_VERSION,
         )
         with self._lock:
             self.sources[source.id] = source

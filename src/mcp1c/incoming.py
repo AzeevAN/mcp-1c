@@ -229,8 +229,19 @@ class IncomingScanner:
         хеш = self.digest(путь)
         источник = по_хешу.get(хеш)
         if источник is not None:
-            устарел = getattr(источник, "selection_version", SELECTION_VERSION)
-            состояние = STATE_STALE if устарел < SELECTION_VERSION else STATE_READY
+            # `selection_version` читается напрямую, без запасного значения:
+            # раньше поля у `Source` не было вовсе, и `getattr(..., SELECTION_
+            # VERSION)` всегда подставлял текущую версию — STATE_STALE не
+            # достигался ни при каких данных. Ноль (значение по умолчанию у
+            # поля и то, что ставит `from_dict` для записи без него) обязан
+            # считаться устаревшим, а не свежим: запись без известной версии
+            # отбора — это ровно та запись, для которой человек должен увидеть
+            # «переразобрать», а не «разобрано».
+            состояние = (
+                STATE_STALE
+                if источник.selection_version < SELECTION_VERSION
+                else STATE_READY
+            )
             return состояние, источник.id
         with self._замок:
             запись = self._state["failures"].get(путь.name)

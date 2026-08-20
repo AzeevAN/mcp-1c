@@ -1,16 +1,20 @@
 """Шесть состояний файла и кэш хеша."""
+import json
+import zipfile
 from pathlib import Path
 
 import pytest
 
-from conftest import состарить
+from conftest import build_configuration, modules_configuration_xml, состарить, write_export
 from mcp1c.incoming import (
     STATE_FAILED,
     STATE_NEW,
     STATE_READY,
+    STATE_STALE,
     STATE_UPDATED,
     IncomingScanner,
 )
+from mcp1c.intake import SELECTION_VERSION
 from mcp1c.registry import KIND_MODULES, Registry, Source
 
 
@@ -37,17 +41,91 @@ def test_незнакомый_файл_не_разобран(tmp_path):
 
 
 def test_знакомый_хеш_даёт_разобрано(tmp_path):
+    """Источник, разобранный нынешним правилом отбора (`selection_version`
+    равен текущей `SELECTION_VERSION`), — «разобрано», а не «отбор устарел»."""
     registry = _реестр(tmp_path)
     файл = состарить(_архив(registry, "в.zip"))
     сканер = IncomingScanner(registry)
     хеш = сканер.digest(файл)
     registry.sources["Р:modules"] = Source(
-        id="Р:modules", kind=KIND_MODULES, origin="в.zip", sha256=хеш
+        id="Р:modules",
+        kind=KIND_MODULES,
+        origin="в.zip",
+        sha256=хеш,
+        selection_version=SELECTION_VERSION,
     )
 
     строки = сканер.scan()
 
     assert строки[0]["state"] == STATE_READY
+
+
+def test_версия_отбора_меньше_текущей_даёт_устарел(tmp_path):
+    """Источник, разобранный более старым правилом отбора, — «отбор устарел»,
+    а не «разобрано»: `_состояние` сравнивает `selection_version` источника
+    с текущей `SELECTION_VERSION` напрямую, без запасного значения."""
+    registry = _реестр(tmp_path)
+    файл = состарить(_архив(registry, "в.zip"))
+    сканер = IncomingScanner(registry)
+    хеш = сканер.digest(файл)
+    registry.sources["Р:modules"] = Source(
+        id="Р:modules",
+        kind=KIND_MODULES,
+        origin="в.zip",
+        sha256=хеш,
+        selection_version=SELECTION_VERSION - 1,
+    )
+
+    строки = сканер.scan()
+
+    assert строки[0]["state"] == STATE_STALE
+    assert строки[0]["detail"] == "Р:modules"
+
+
+def test_запись_без_selection_version_из_registry_json_после_restore_устарела(
+    tmp_path,
+):
+    """Запись, сделанная до появления поля `selection_version` (обычный
+    `registry.json` тех версий кода), при чтении не должна выглядеть свежей.
+
+    `from_dict` для отсутствующего ключа обязан поставить 0, а не текущую
+    `SELECTION_VERSION` — соврать «отбор свежий» про запись, о которой ничего
+    не известно, означало бы, что человек никогда не увидит «переразобрать»
+    для кода, который никогда не проходил через нынешнее правило отбора.
+    """
+    входящее = tmp_path / "in"
+    входящее.mkdir()
+    данные = tmp_path / "data"
+    registry = Registry(данные)
+    registry.add_configuration(write_export(входящее, build_configuration(name="Розница")))
+    архив = tmp_path / "модули.zip"
+    with zipfile.ZipFile(архив, "w") as zf:
+        zf.writestr("Configuration.xml", modules_configuration_xml())
+        zf.writestr("Catalogs/Т/Ext/ObjectModule.bsl", "Процедура А() КонецПроцедуры")
+    registry.add_modules(архив, configuration="Розница")
+    registry.save()
+
+    # Имитируем старую запись: убираем ключ selection_version из sources —
+    # так выглядит registry.json, сделанный до появления этого поля.
+    сырое = json.loads(registry.registry_path.read_text(encoding="utf-8"))
+    for источник in сырое["sources"]:
+        if источник["id"] == "Розница:modules":
+            assert "selection_version" in источник
+            del источник["selection_version"]
+    registry.registry_path.write_text(json.dumps(сырое), encoding="utf-8")
+
+    заново = Registry(данные)
+    assert заново.restore() == []
+    assert заново.sources["Розница:modules"].selection_version == 0
+
+    заново.incoming_dir.mkdir(parents=True, exist_ok=True)
+    копия = заново.incoming_dir / "модули.zip"
+    копия.write_bytes(архив.read_bytes())
+    состарить(копия)
+
+    строки = IncomingScanner(заново).scan()
+
+    assert строки[0]["state"] == STATE_STALE
 
 
 def test_то_же_имя_другой_хеш_даёт_обновлённую(tmp_path):

@@ -119,58 +119,24 @@ _NS_MDCLASSES = "http://v8.1c.ru/8.3/MDClasses"
 _MAX_CONFIGURATION_XML_SIZE = 8 * 1024 * 1024
 
 
-def _единственный_верхний_каталог(zf: zipfile.ZipFile) -> str | None:
-    """Имя каталога, в который целиком упакован архив — если оно одно.
+def _найти_configuration_xml(zf: zipfile.ZipFile) -> zipfile.ZipInfo | None:
+    """`Configuration.xml` архива — в корне или в единственном каталоге
+    верхнего уровня (см. `intake._единственный_верхний_каталог`). `None`,
+    если расположение неоднозначно или файла нет вовсе ни там, ни там.
 
     Архив расширения нередко собирают командой вида `zip -r архив.zip папка`:
     тогда `Configuration.xml` лежит не в корне, а внутри единственного
-    каталога верхнего уровня. `intake.extract`/`safe_target` такую раскладку
-    уже поддерживают (вложенность им не мешает), а различитель — нет,
-    и архив в такой упаковке ошибочно читался бы как «Configuration.xml
-    отсутствует».
-
-    Finder на macOS («Сжать объекты») добавляет свой служебный каталог
-    `__MACOSX/` (копии ресурсных вилок, `._Имя` на каждый файл) и может
-    положить `.DS_Store` прямо в корень архива. Оба игнорируются: это мусор
-    конкретного архиватора, а не второй каталог верхнего уровня и не файл
-    содержимого — без исключения обычный для macOS способ упаковки давал бы
-    «каталогов несколько» или «файл в корне», хотя `Configuration.xml` на
-    месте.
-
-    `None`, если однозначного каталога всё равно нет: в корне лежит файл,
-    отличный от `.DS_Store`, или содержательных каталогов верхнего уровня
-    несколько. Это не наш случай — гадать, какой из них «тот самый»,
-    рискованнее отказа.
+    каталога верхнего уровня. Признак обёртки живёт в `intake` одной
+    функцией на два вызывающих — этот и `intake.extract`/`planned_size`:
+    разойдись он на два независимых правила, распознавание вида выгрузки
+    перестало бы совпадать с тем, что реально легло на диск.
     """
-    каталоги: set[str] = set()
-    for info in zf.infolist():
-        части = info.filename.rstrip("/").split("/")
-        if части[0] == "__MACOSX":
-            continue
-        if len(части) == 1:
-            if not info.is_dir():
-                if части[0] == ".DS_Store":
-                    continue
-                # Файл прямо в корне архива — раскладки «всё внутри одной
-                # папки» нет, даже если рядом лежит и подходящий каталог.
-                return None
-            if части[0]:
-                каталоги.add(части[0])
-            continue
-        каталоги.add(части[0])
-    if len(каталоги) != 1:
-        return None
-    return next(iter(каталоги))
+    from . import intake
 
-
-def _найти_configuration_xml(zf: zipfile.ZipFile) -> zipfile.ZipInfo | None:
-    """`Configuration.xml` архива — в корне или в единственном каталоге
-    верхнего уровня (см. `_единственный_верхний_каталог`). `None`, если
-    расположение неоднозначно или файла нет вовсе ни там, ни там."""
     имена = set(zf.namelist())
     if "Configuration.xml" in имена:
         return zf.getinfo("Configuration.xml")
-    верхний = _единственный_верхний_каталог(zf)
+    верхний = intake._единственный_верхний_каталог(zf)
     if верхний is None:
         return None
     кандидат = f"{верхний}/Configuration.xml"
@@ -312,14 +278,28 @@ def _отбираемых_членов(архив: Path) -> int:
 
     Нужно, чтобы отвергнуть негодный архив до того, как `add_modules` снесёт
     прежний разбор: центральный каталог zip знает имена всех членов, а правило
-    отбора живёт в `intake` — второго правила здесь не заводится.
+    отбора живёт в `intake` — второго правила здесь не заводится. Обёртка
+    архива (`intake._единственный_верхний_каталог`) снимается тем же
+    способом, что и в `intake.extract`/`planned_size`: без этого предпроверка
+    считала бы по сырым именам, а `extract` — по именам без обёртки, и на
+    члене вроде `Обёртка/__MACOSX/x.bsl` (после снятия обёртки распознаётся
+    как мусор Finder и отбрасывается, а по сырому имени — нет) числа
+    разошлись бы. Расхождение само по себе не роняло архив — вторая проверка
+    в `_extract_code` (`if not файлов`) ловит пустой результат уже после
+    попытки распаковки, — но три вызывающих одного правила обязаны считать
+    одно и то же, а не полагаться на подстраховку следующего слоя.
     """
     from . import intake
 
     with zipfile.ZipFile(архив) as zf:
         записи = [i for i in zf.infolist() if not i.is_dir()]
         формат = intake.detect_format([i.filename for i in записи])
-        return sum(1 for i in записи if intake.is_wanted(i.filename, формат))
+        обёртка = intake._единственный_верхний_каталог(zf)
+        return sum(
+            1
+            for i in записи
+            if intake.is_wanted(intake._без_обёртки(i.filename, обёртка), формат)
+        )
 
 
 def _sweep_stale_extract_tmp(родитель: Path, имя: str) -> None:
@@ -400,6 +380,12 @@ class Source:
     warnings: list[str] = field(default_factory=list)
     items_total: int = 0
     stored_path: str = ""
+    # Версия правила отбора (`intake.SELECTION_VERSION`), под которой код
+    # был разобран. 0 — «неизвестно»: так выглядят и записи, сделанные до
+    # появления этого поля, и любой источник, для которого версию никто не
+    # проставил явно. `intake._состояние` (incoming.py) считает ноль
+    # устаревшим, а не свежим — см. комментарий там же.
+    selection_version: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -414,6 +400,7 @@ class Source:
             "warnings": list(self.warnings),
             "items_total": self.items_total,
             "stored_path": self.stored_path,
+            "selection_version": self.selection_version,
         }
 
     @classmethod
@@ -430,6 +417,13 @@ class Source:
             warnings=list(raw.get("warnings") or []),
             items_total=raw.get("items_total", 0),
             stored_path=raw.get("stored_path", ""),
+            # Отсутствующий ключ — 0, а не текущая SELECTION_VERSION: запись
+            # без поля пришла из кода, который его ещё не писал, и о её
+            # фактической версии отбора ничего не известно. Подставить
+            # текущую версию значило бы соврать «отбор свежий» про запись, о
+            # которой мы ничего не знаем, — человек никогда не увидел бы
+            # «отбор устарел» для такого источника.
+            selection_version=raw.get("selection_version", 0),
         )
 
 
@@ -1140,6 +1134,8 @@ class Registry:
                 архив, configuration=configuration, extension=имя_расширения
             )
 
+        from . import intake
+
         корень = self._modules_root(configuration)
         digest, файлов = self._extract_code(архив, корень, self._drop_modules_root)
         # Выгрузка в файлы точной сборки платформы не содержит: в
@@ -1165,6 +1161,7 @@ class Registry:
             status=STATUS_READY,
             items_total=файлов,
             stored_path=self._relative(корень),
+            selection_version=intake.SELECTION_VERSION,
         )
         with self._lock:
             self.sources[source.id] = source
@@ -1196,6 +1193,8 @@ class Registry:
         (например, `a/b` и `a:b`), схлопнутся в один источник — принято
         осознанно, см. README.
         """
+        from . import intake
+
         имя_чисто = index_cache.safe_name(extension)
         корень = self._extension_root(configuration, extension)
         digest, файлов = self._extract_code(архив, корень, self._drop_extension_root)
@@ -1213,6 +1212,7 @@ class Registry:
             status=STATUS_READY,
             items_total=файлов,
             stored_path=self._relative(корень),
+            selection_version=intake.SELECTION_VERSION,
         )
         with self._lock:
             self.sources[source.id] = source

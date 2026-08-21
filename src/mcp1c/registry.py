@@ -624,7 +624,27 @@ class ResolvedContext:
             return lambda item: True
         return lambda item: item.available_in_tuple(target)
 
-    def notes(self, *, critical_only: bool = False) -> list[str]:
+    def code_notes(self) -> list[str]:
+        """Оговорки, относящиеся только к ответам по коду."""
+        if self.configuration is None or self.modules is None:
+            return []
+        config = self.configuration.config
+        if (
+            self.modules.версия_кода
+            and config.version
+            and self.modules.версия_кода != config.version
+        ):
+            return [
+                f"Код модулей выгружен для версии {self.modules.версия_кода}, "
+                f"загруженные метаданные — версии {config.version}: "
+                "конфигурация и код разошлись, номера строк и состав "
+                "процедур могут не совпадать с тем, что видит платформа."
+            ]
+        return []
+
+    def notes(
+        self, *, critical_only: bool = False, include_code: bool = True
+    ) -> list[str]:
         """Оговорки, которые сервер обязан передать агенту.
 
         `critical_only` — только то, что влияет на достоверность ответа.
@@ -670,22 +690,12 @@ class ResolvedContext:
             )
         notes.extend(config.warnings)
 
-        if (
-            self.modules is not None
-            and self.modules.версия_кода
-            and config.version
-            and self.modules.версия_кода != config.version
-        ):
+        if include_code:
             # Загрузка новой выгрузки метаданных под тем же именем подменяет
             # конфигурацию (`add_configuration`), а индекс кода остаётся
             # прежним — они молча расходятся, если не сказать вслух (решение
             # координатора, docs/modules-provider-design.md, раздел 9).
-            notes.append(
-                f"Код модулей выгружен для версии {self.modules.версия_кода}, "
-                f"загруженные метаданные — версии {config.version}: "
-                "конфигурация и код разошлись, номера строк и состав "
-                "процедур могут не совпадать с тем, что видит платформа."
-            )
+            notes.extend(self.code_notes())
 
         if self.syntax is None:
             notes.append(
@@ -2571,7 +2581,7 @@ class Registry:
                     "providers": {
                         "metadata": True,
                         "syntax": context.syntax is not None,
-                        "modules": False,
+                        "modules": context.modules is not None,
                     },
                     "syntax_platform": context.syntax_platform,
                     "syntax_relation": context.syntax_relation,

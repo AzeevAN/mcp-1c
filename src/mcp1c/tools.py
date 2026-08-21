@@ -29,9 +29,11 @@ from .registry import (
     RegistryError,
 )
 from .render import (
+    BRIEF,
     CallerSite,
     DETAIL_LEVELS,
     FIELDS,
+    FULL,
     FormHandlerBinding,
     MetadataBinding,
     ProcedureMatch,
@@ -86,13 +88,27 @@ MAX_LIMIT = 50
 SNIPPET_CHARS = 400
 
 
-def _notes_block(context, *, critical_only: bool = True) -> str:
-    notes = context.notes(critical_only=critical_only)
+def _render_notes(notes: list[str]) -> str:
     if not notes:
         return ""
     lines = ["", "---", "> **Оговорки по источнику данных**"]
     lines += [f"> - {note}" for note in notes]
     return "\n".join(lines) + "\n"
+
+
+def _notes_block(
+    context, *, critical_only: bool = True, include_code: bool = True
+) -> str:
+    return _render_notes(
+        context.notes(
+            critical_only=critical_only,
+            include_code=include_code,
+        )
+    )
+
+
+def _code_notes_block(context) -> str:
+    return _render_notes(context.code_notes())
 
 
 def _clamp(limit: int) -> int:
@@ -102,12 +118,339 @@ def _clamp(limit: int) -> int:
 # --------------------------------------------------------------- обзор
 
 
+@dataclass(frozen=True, slots=True)
+class _CodeCapture:
+    source: object | None
+    loaded: LoadedModules | None
+    ready: bool
+    status: str
+    error: str
+    stage: tuple[int, int]
+    stage_title: str
+    progress: tuple[int, int]
+
+
+@dataclass(frozen=True, slots=True)
+class _CodeSummary:
+    modules: tuple[str, ...]
+    forms: tuple[str, ...]
+    procedures: int
+    own_procedures: int
+    overrides: tuple[tuple[str, int], ...]
+    overridden_modules: frozenset[str]
+
+
+@dataclass(frozen=True, slots=True)
+class _CodeView:
+    capture: _CodeCapture
+    summary: _CodeSummary | None
+
+
+@dataclass(frozen=True, slots=True)
+class _ConfigurationCodeSnapshot:
+    context: object
+    modules: _CodeView
+    extensions: tuple[tuple[str, _CodeView], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _ListConfigurationsCapture:
+    configurations: tuple[tuple[str, object], ...]
+    syntax: object | None
+    query_source: object | None
+    syntax_versions: tuple[tuple[str, object], ...]
+    rows: tuple[_ConfigurationCodeSnapshot, ...]
+
+
+_OVERRIDE_KINDS = ("Вместо", "После", "Перед", "ИзменениеИКонтроль")
+
+
+def _capture_code_locked(registry: Registry, source_id: str) -> _CodeCapture:
+    source = registry.sources.get(source_id)
+    loaded = registry.modules.get(source_id)
+    if loaded is None:
+        return _CodeCapture(
+            source=source,
+            loaded=None,
+            ready=False,
+            status=source.status if source is not None else "",
+            error=source.error if source is not None else "",
+            stage=(0, 0),
+            stage_title="",
+            progress=(0, 0),
+        )
+    return _CodeCapture(
+        source=source,
+        loaded=loaded,
+        ready=loaded.готов,
+        status=loaded.source.status,
+        error=loaded.source.error,
+        stage=loaded.этап,
+        stage_title=loaded.название_этапа,
+        progress=loaded.прогресс,
+    )
+
+
+def _capture_is_current(
+    registry: Registry, source_id: str, capture: _CodeCapture
+) -> bool:
+    if registry.sources.get(source_id) is not capture.source:
+        return False
+    if registry.modules.get(source_id) is not capture.loaded:
+        return False
+    current = _capture_code_locked(registry, source_id)
+    return (
+        current.ready,
+        current.status,
+        current.error,
+        current.stage,
+        current.stage_title,
+        current.progress,
+    ) == (
+        capture.ready,
+        capture.status,
+        capture.error,
+        capture.stage,
+        capture.stage_title,
+        capture.progress,
+    )
+
+
+def _summarize_code(loaded: LoadedModules) -> _CodeSummary:
+    """Агрегаты готового пакета без чтения модулей и списка ``Запись``."""
+    if loaded.оглавление is None or loaded.формы is None:
+        raise RegistryError("Готовый индекс кода неполон; перезагрузите источник.")
+    toc = loaded.оглавление.сводка()
+    порядок = lambda value: (value.casefold(), value)
+    return _CodeSummary(
+        modules=tuple(sorted(loaded.оглавление.модули, key=порядок)),
+        forms=tuple(sorted(loaded.формы.модули, key=порядок)),
+        procedures=toc.процедур,
+        own_procedures=toc.собственных,
+        overrides=tuple((kind, toc.перекрытия[kind]) for kind in _OVERRIDE_KINDS),
+        overridden_modules=toc.перекрытые_модули,
+    )
+
+
+def _configuration_code_snapshot(
+    registry: Registry, name: str
+) -> _ConfigurationCodeSnapshot:
+    """Согласованный снимок конфигурации и всех её корпусов кода.
+
+    Агрегаты считаются вне замка. Перед публикацией проверяются личности всех
+    источников и скалярные поля прогресса; при reparse/remove весь снимок
+    собирается заново, а не смешивает поколения.
+    """
+    prefix = f"{name}:ext:"
+    base_id = f"{name}:modules"
+    for _ in range(2):
+        context = registry.resolve(name)
+        with registry._lock:
+            if (
+                registry.configurations.get(name) is not context.configuration
+                or registry.syntax is not context.syntax
+            ):
+                continue
+            base = _capture_code_locked(registry, base_id)
+            if base.loaded is not context.modules:
+                continue
+            extension_ids = sorted(
+                (
+                    source_id
+                    for source_id, source in registry.sources.items()
+                    if source.kind == KIND_EXTENSION and source_id.startswith(prefix)
+                ),
+                key=lambda value: (value.casefold(), value),
+            )
+            extensions = tuple(
+                (source_id, _capture_code_locked(registry, source_id))
+                for source_id in extension_ids
+            )
+
+        base_summary = (
+            _summarize_code(base.loaded)
+            if base.loaded is not None and base.ready
+            else None
+        )
+        extension_views = tuple(
+            (
+                source_id[len(prefix):],
+                _CodeView(
+                    capture,
+                    _summarize_code(capture.loaded)
+                    if capture.loaded is not None and capture.ready
+                    else None,
+                ),
+            )
+            for source_id, capture in extensions
+        )
+
+        with registry._lock:
+            current_extension_ids = sorted(
+                (
+                    source_id
+                    for source_id, source in registry.sources.items()
+                    if source.kind == KIND_EXTENSION and source_id.startswith(prefix)
+                ),
+                key=lambda value: (value.casefold(), value),
+            )
+            if (
+                registry.configurations.get(name) is not context.configuration
+                or registry.syntax is not context.syntax
+                or current_extension_ids != extension_ids
+                or not _capture_is_current(registry, base_id, base)
+                or not all(
+                    _capture_is_current(registry, source_id, capture)
+                    for source_id, capture in extensions
+                )
+            ):
+                continue
+        return _ConfigurationCodeSnapshot(
+            context=context,
+            modules=_CodeView(base, base_summary),
+            extensions=extension_views,
+        )
+    raise RegistryError(
+        "Источники кода изменились дважды; повторите запрос после завершения "
+        "загрузки."
+    )
+
+
+def _list_capture_is_current_locked(
+    registry: Registry, capture: _ListConfigurationsCapture
+) -> bool:
+    current_configurations = tuple(
+        sorted(registry.configurations.items(), key=lambda item: item[0])
+    )
+    if len(current_configurations) != len(capture.configurations) or any(
+        name != old_name or loaded is not old_loaded
+        for (name, loaded), (old_name, old_loaded) in zip(
+            current_configurations, capture.configurations
+        )
+    ):
+        return False
+    if (
+        registry.syntax is not capture.syntax
+        or registry.query_source is not capture.query_source
+    ):
+        return False
+    current_versions = tuple(
+        sorted(registry.syntax_versions.items(), key=lambda item: item[0])
+    )
+    if len(current_versions) != len(capture.syntax_versions) or any(
+        key != old_key or source is not old_source
+        for (key, source), (old_key, old_source) in zip(
+            current_versions, capture.syntax_versions
+        )
+    ):
+        return False
+
+    for row in capture.rows:
+        name = row.context.name
+        if (
+            registry.configurations.get(name) is not row.context.configuration
+            or registry.syntax is not row.context.syntax
+            or not _capture_is_current(registry, f"{name}:modules", row.modules.capture)
+        ):
+            return False
+        prefix = f"{name}:ext:"
+        current_extension_ids = sorted(
+            (
+                source_id
+                for source_id, source in registry.sources.items()
+                if source.kind == KIND_EXTENSION and source_id.startswith(prefix)
+            ),
+            key=lambda value: (value.casefold(), value),
+        )
+        captured_extension_ids = [
+            prefix + extension_name for extension_name, _ in row.extensions
+        ]
+        if current_extension_ids != captured_extension_ids:
+            return False
+        if not all(
+            _capture_is_current(registry, prefix + extension_name, view.capture)
+            for extension_name, view in row.extensions
+        ):
+            return False
+    return True
+
+
+def _capture_configurations_list(
+    registry: Registry,
+) -> _ListConfigurationsCapture | None:
+    with registry._lock:
+        configurations = tuple(
+            sorted(registry.configurations.items(), key=lambda item: item[0])
+        )
+        syntax = registry.syntax
+        query_source = registry.query_source
+        syntax_versions = tuple(
+            sorted(registry.syntax_versions.items(), key=lambda item: item[0])
+        )
+    try:
+        rows = tuple(
+            _configuration_code_snapshot(registry, name)
+            for name, _ in configurations
+        )
+    except RegistryError:
+        return None
+    return _ListConfigurationsCapture(
+        configurations=configurations,
+        syntax=syntax,
+        query_source=query_source,
+        syntax_versions=syntax_versions,
+        rows=rows,
+    )
+
+
+def _safe_code_error(error: str) -> str:
+    if not error:
+        return "причина не записана"
+    if "/" in error or "\\" in error:
+        return "подробности ошибки доступны в журнале сервера"
+    return error
+
+
+def _code_state_text(view: _CodeView) -> str:
+    capture = view.capture
+    if capture.source is None or capture.loaded is None:
+        return "не загружен"
+    if capture.ready and view.summary is not None:
+        summary = view.summary
+        return (
+            f"готов — модулей {len(summary.modules)}, процедур "
+            f"{summary.procedures}, форм {len(summary.forms)}"
+        )
+    if capture.status == STATUS_ERROR:
+        return f"ошибка — {_safe_code_error(capture.error)}"
+    stage, stages = capture.stage
+    done, total = capture.progress
+    return (
+        f"строится: этап {stage}/{stages} «{capture.stage_title}», "
+        f"обработано {done} из {total} элементов этапа"
+    )
+
+
 def list_configurations(registry: Registry) -> str:
     """Какие конфигурации загружены и что по ним доступно."""
-    rows = registry.overview()
-    if not rows:
-        if registry.syntax is not None:
-            return _syntax_only_overview(registry)
+    for _ in range(2):
+        capture = _capture_configurations_list(registry)
+        if capture is None:
+            continue
+        answer = _render_configurations_list(capture)
+        with registry._lock:
+            if _list_capture_is_current_locked(registry, capture):
+                return answer
+    raise RegistryError(
+        "Источники списка конфигураций изменились дважды; повторите запрос "
+        "после завершения загрузки."
+    )
+
+
+def _render_configurations_list(capture: _ListConfigurationsCapture) -> str:
+    if not capture.rows:
+        if capture.syntax is not None:
+            return _syntax_only_overview(capture.syntax, capture.query_source)
         return (
             "Не загружено ни одной конфигурации, нет ни справки платформы, ни "
             "справки по языку запросов.\n\n"
@@ -115,44 +458,80 @@ def list_configurations(registry: Registry) -> str:
         )
 
     out = ["# Загруженные конфигурации", ""]
-    for row in rows:
-        out.append(f"## {row['name']}")
-        if row["synonym"]:
-            out.append(f"*{row['synonym']}*")
+    for snapshot in capture.rows:
+        context = snapshot.context
+        config = context.configuration.config
+        out.append(f"## {config.name}")
+        if config.synonym:
+            out.append(f"*{config.synonym}*")
         out.append("")
         out.append(
-            f"- Версия: {row['version']} · платформа **{row['platform']}**\n"
-            f"- Объектов: {row['objects']}, связей: {row['edges']}"
+            f"- Версия: {config.version} · платформа **{config.platform}**\n"
+            f"- Объектов: {len(config)}, связей: "
+            f"{len(context.configuration.graph.edges)}"
         )
-        providers = row["providers"]
         out.append(f"- Метаданные: да")
         # `providers['syntax']` истинно и когда подключён только язык
         # запросов (`LoadedSyntax` в registry.py собирает их в один объект):
         # у языка запросов платформы нет, `syntax_platform` тогда пуст, а
         # прежний текст на этом месте показывал «справка  — none».
-        if providers["syntax"] and row["syntax_platform"]:
+        if context.syntax is not None and context.syntax_platform:
             relation = {
                 "exact": "версия совпадает с конфигурацией",
-                "newer": f"новее конфигурации, скрыто {row['syntax_hidden']} элементов",
+                "newer": (
+                    f"новее конфигурации, скрыто {context.syntax_hidden} элементов"
+                ),
                 "older": "**старее конфигурации**",
-            }.get(row["syntax_relation"], row["syntax_relation"])
-            out.append(f"- Синтаксис платформы: справка {row['syntax_platform']} — {relation}")
+            }.get(context.syntax_relation, context.syntax_relation)
+            out.append(
+                f"- Синтаксис платформы: справка {context.syntax_platform} — "
+                f"{relation}"
+            )
         else:
             out.append("- Синтаксис платформы: не подключён")
-        if registry.query_source is not None:
+        if context.syntax is not None and context.syntax.query is not None:
             out.append(
-                f"- Язык запросов: подключён, {registry.query_source.items_total} страниц"
+                f"- Язык запросов: подключён, {len(context.syntax.query)} страниц"
             )
         else:
             out.append("- Язык запросов: не подключён")
-        out.append("- Индекс модулей: не подключён")
-        for note in row["notes"]:
+        out.append(f"- Индекс кода: {_code_state_text(snapshot.modules)}")
+        for note in context.notes():
             out.append(f"- ⚠ {note}")
+        for extension_name, extension in snapshot.extensions:
+            out.extend(
+                [
+                    "",
+                    f"### Расширение `{extension_name}`",
+                    "",
+                    f"- Индекс кода: {_code_state_text(extension)}",
+                ]
+            )
+            summary = extension.summary
+            if summary is not None:
+                overrides = sum(count for _, count in summary.overrides)
+                out.append(
+                    f"- Перекрытий: {overrides} в "
+                    f"{len(summary.overridden_modules)} модулях"
+                )
+                out.append(
+                    "- По видам: "
+                    + ", ".join(
+                        f"{kind}: {count}" for kind, count in summary.overrides
+                    )
+                )
+                out.append(
+                    f"- Собственных процедур: {summary.own_procedures}"
+                )
+                out.append(
+                    "- Адресация: укажите "
+                    f"`extension=\"{extension_name}\"` в инструментах кода."
+                )
         out.append("")
 
-    out += _coverage_section(registry)
+    out += _coverage_section(capture)
 
-    if len(rows) > 1:
+    if len(capture.rows) > 1:
         out.append(
             "> В запросах указывайте `config` явно — конфигурация по умолчанию "
             "не подставляется."
@@ -160,7 +539,7 @@ def list_configurations(registry: Registry) -> str:
     return "\n".join(out).rstrip() + "\n"
 
 
-def _syntax_only_overview(registry: Registry) -> str:
+def _syntax_only_overview(syntax, query_source) -> str:
     """Что доступно без единой загруженной конфигурации.
 
     Справка платформы и язык запросов — самостоятельные источники (см.
@@ -171,15 +550,15 @@ def _syntax_only_overview(registry: Registry) -> str:
     по слитому виду одной только платформы, который в этом сценарии пуст.
     """
     доступно = []
-    if registry.syntax.syntax.platforms:
-        total = f"{len(registry.syntax.syntax):,}".replace(",", "\u00a0")
+    if syntax.syntax.platforms:
+        total = f"{len(syntax.syntax):,}".replace(",", "\u00a0")
         доступно.append(
-            f"справка платформы **{registry.syntax.source.platform}** "
+            f"справка платформы **{syntax.source.platform}** "
             f"({total} элементов)"
         )
-    if registry.query_source is not None:
+    if query_source is not None:
         доступно.append(
-            f"язык запросов ({registry.query_source.items_total} страниц)"
+            f"язык запросов ({query_source.items_total} страниц)"
         )
 
     return (
@@ -192,14 +571,36 @@ def _syntax_only_overview(registry: Registry) -> str:
     )
 
 
-def _coverage_section(registry: Registry) -> list[str]:
+def _coverage_section(capture: _ListConfigurationsCapture) -> list[str]:
     """Каких справок не хватает и какие лишние.
 
     Знает об этом только сервер: он один видит и платформы конфигураций, и
     версии справок. Расхождение в один релиз стоит примерно 10–15 сигнатур и
     35–45 контекстов доступности — молчать об этом нельзя.
     """
-    покрытие = registry.syntax_coverage()
+    платформы_справок = {
+        release(parse_version(source.platform)): source.platform
+        for _, source in capture.syntax_versions
+    }
+    нужные: dict[tuple[int, ...], tuple[str, list[str]]] = {}
+    for row in capture.rows:
+        platform = row.context.configuration.config.platform
+        key = release(parse_version(platform))
+        if key:
+            нужные.setdefault(key, (platform, []))[1].append(row.context.name)
+    покрытие = {
+        "loaded": [platform for _, platform in sorted(платформы_справок.items())],
+        "missing": [
+            {"platform": platform, "configurations": names}
+            for key, (platform, names) in sorted(нужные.items())
+            if key not in платформы_справок
+        ],
+        "unused": [
+            platform
+            for key, platform in sorted(платформы_справок.items())
+            if key not in нужные
+        ],
+    }
     if not покрытие["loaded"] and not покрытие["missing"]:
         return []
 
@@ -308,7 +709,13 @@ def get_object(
     if detail not in DETAIL_LEVELS:
         detail = FIELDS
 
-    context = registry.resolve(config)
+    snapshot = None
+    if detail == FIELDS or detail == FULL:
+        name = registry.resolve(config).name
+        snapshot = _configuration_code_snapshot(registry, name)
+        context = snapshot.context
+    else:
+        context = registry.resolve(config)
     obj = context.configuration.config.get(full_name)
 
     if obj is None:
@@ -317,7 +724,7 @@ def get_object(
         return (
             f"В конфигурации {context.name} нет объекта `{full_name}`.\n\n"
             + (f"Возможно, имелось в виду:\n{suggestion}\n" if suggestion else "")
-            + _notes_block(context)
+            + _notes_block(context, include_code=False)
         )
 
     # Виртуальные таблицы собираются здесь, а не в рендере: они соединяют
@@ -342,7 +749,99 @@ def get_object(
     body = render_object(
         obj, detail, graph=context.configuration.graph, virtual_tables=tables
     )
-    return body + _notes_block(context)
+    code = (
+        _object_code_block(snapshot.modules, obj.full_name, detail)
+        if snapshot is not None
+        else ""
+    )
+    if snapshot is None:
+        return body + _notes_block(context, include_code=False)
+    return (
+        body
+        + _code_notes_block(context)
+        + code
+        + _notes_block(context, include_code=False)
+    )
+
+
+def _belongs_to_object(module: str, full_name: str) -> bool:
+    lower_module = module.casefold()
+    lower_name = full_name.casefold()
+    return lower_module == lower_name or lower_module.startswith(lower_name + ".")
+
+
+def _object_code_details(
+    view: _CodeView, full_name: str
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    summary = view.summary
+    if summary is None:
+        return (), ()
+    form_addresses = set(summary.forms)
+    form_addresses.update(
+        module for module in summary.modules if _is_form_module(module)
+    )
+    forms = tuple(
+        sorted(
+            (
+                form
+                for form in form_addresses
+                if _belongs_to_object(form, full_name)
+            ),
+            key=lambda value: (value.casefold(), value),
+        )
+    )
+    form_keys = {form.casefold() for form in forms}
+    modules = tuple(
+        module
+        for module in summary.modules
+        if _belongs_to_object(module, full_name)
+        and module.casefold() not in form_keys
+    )
+    return modules, forms
+
+
+def _is_form_module(address: str) -> bool:
+    """Форма по канонической грамматике адреса, без догадки по подстроке."""
+    try:
+        path = путь_модуля(address)
+    except ValueError:
+        return False
+    return (
+        "/Forms/" in path or path.startswith("CommonForms/")
+    ) and path.endswith("/Ext/Form/Module.bsl")
+
+
+def _object_code_block(view: _CodeView, full_name: str, detail: str) -> str:
+    if detail == BRIEF:
+        return ""
+    state = _code_state_text(view)
+    if view.capture.source is None or view.capture.loaded is None:
+        state = "код не загружен"
+    if view.summary is None:
+        return (
+            f"\nКод объекта: {state}.\n"
+            if detail == FIELDS
+            else f"\n## Код объекта\n\nИндекс кода: {state}.\n"
+        )
+
+    modules, forms = _object_code_details(view, full_name)
+    if detail == FIELDS:
+        return f"\nКод объекта: модулей {len(modules)}, форм {len(forms)}.\n"
+
+    out: list[str] = []
+    if modules:
+        out.extend(
+            ["", "## Модули объекта", "", *(f"- `{item}`" for item in modules)]
+        )
+    else:
+        out.extend(["", "## Модули объекта", "", "Модулей нет."])
+    if forms:
+        out.extend(
+            ["", "## Формы объекта", "", *(f"- `{item}`" for item in forms)]
+        )
+    else:
+        out.extend(["", "## Формы объекта", "", "Форм нет."])
+    return "\n".join(out).rstrip() + "\n"
 
 
 def get_related(
@@ -366,20 +865,37 @@ def get_related(
     информацию несёт ребро, а не узел. Отвечать «через что» должны пути, а не
     окрестность; разбор и условия возврата — в «Отложено».
     """
-    context = registry.resolve(config)
+    name = registry.resolve(config).name
+    snapshot = _configuration_code_snapshot(registry, name)
+    context = snapshot.context
     graph = context.configuration.graph
 
     if full_name not in context.configuration.config.objects:
         return f"В конфигурации {context.name} нет объекта `{full_name}`." + _notes_block(context)
 
+    overrides, unavailable = _extension_overrides(snapshot)
     out = [f"# Связи `{full_name}` в {context.name}", ""]
+    for extension_name, state in unavailable:
+        out.append(
+            f"> Перекрытия расширения `{extension_name}` недоступны: {state}."
+        )
+    if unavailable:
+        out.append("")
+
+    def related_name(value: str) -> str:
+        extensions = overrides.get(value.casefold(), ())
+        if not extensions:
+            return f"`{value}`"
+        label = "расширением" if len(extensions) == 1 else "расширениями"
+        names = ", ".join(f"`{item}`" for item in extensions)
+        return f"`{value}` *(перекрыто {label} {names})*"
 
     outgoing = graph.outgoing(full_name, include_weak=False)
     if outgoing:
         out.append(f"## Ссылается на ({len(outgoing)})")
         out.append("")
         for edge in outgoing[: _clamp(limit)]:
-            out.append(f"- `{edge.target}` — {edge.title}")
+            out.append(f"- {related_name(edge.target)} — {edge.title}")
         if len(outgoing) > limit:
             out.append(f"- … ещё {len(outgoing) - limit}")
         out.append("")
@@ -389,12 +905,44 @@ def get_related(
         out.append(f"## Ссылаются на него ({len(incoming)})")
         out.append("")
         for edge in incoming[: _clamp(limit)]:
-            out.append(f"- `{edge.source}` — {edge.title}")
+            out.append(f"- {related_name(edge.source)} — {edge.title}")
         if len(incoming) > limit:
             out.append(f"- … ещё {len(incoming) - limit}")
         out.append("")
 
     return "\n".join(out) + "\n" + _notes_block(context)
+
+
+def _extension_overrides(
+    snapshot: _ConfigurationCodeSnapshot,
+) -> tuple[dict[str, tuple[str, ...]], list[tuple[str, str]]]:
+    config = snapshot.context.configuration.config
+    objects = sorted(
+        config.objects,
+        key=lambda value: (-len(value), value.casefold(), value),
+    )
+    found: dict[str, list[str]] = {}
+    unavailable: list[tuple[str, str]] = []
+    for extension_name, view in snapshot.extensions:
+        if view.summary is None:
+            unavailable.append((extension_name, _code_state_text(view)))
+            continue
+        for module in view.summary.overridden_modules:
+            owner = next(
+                (
+                    full_name
+                    for full_name in objects
+                    if _belongs_to_object(module, full_name)
+                ),
+                None,
+            )
+            if owner is not None:
+                found.setdefault(owner.casefold(), []).append(extension_name)
+    result = {
+        owner: tuple(sorted(set(names), key=lambda value: (value.casefold(), value)))
+        for owner, names in found.items()
+    }
+    return result, unavailable
 
 
 def compare_configurations(

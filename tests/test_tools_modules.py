@@ -14,10 +14,10 @@ import pytest
 
 from mcp1c import modules_index, tools
 from mcp1c.module_address import путь_модуля
-from mcp1c.model import MetadataObject
+from mcp1c.model import Field, MetadataObject
 from mcp1c.registry import STATUS_ERROR, Registry, RegistryError
 
-from conftest import build_configuration, write_export
+from conftest import build_configuration, write_export, write_syntax
 
 
 def _добавить_одноимённые(корень, *, имя="Одинаковая", экспорт=False, количество=1):
@@ -1537,3 +1537,862 @@ def test_ранжирование_стабильно(корень_кода, ре
 
     assert ответы[0] == ответы[1] == ответы[2]
     assert ответы[0].count("::Проверить") == 3
+
+
+# --- Блоки кода в существующих ответах (задача 15) ----------------------
+
+
+def _конфигурация_для_блоков() -> object:
+    конфигурация = build_configuration(name="Пример")
+    документ = MetadataObject(
+        full_name="Документ.Пример",
+        kind="Документ",
+        name="Пример",
+        synonym="Пример",
+        attributes=[Field(name="Ссылка")],
+    )
+    связанный = MetadataObject(
+        full_name="Справочник.Связанный",
+        kind="Справочник",
+        name="Связанный",
+        synonym="Связанный",
+    )
+    документ.attributes[0].types = [связанный.full_name]
+    конфигурация.objects = {
+        документ.full_name: документ,
+        связанный.full_name: связанный,
+    }
+    return конфигурация
+
+
+def _код_объекта(корень, *, module="ObjectModule.bsl", marker="Текущая"):
+    каталог = корень / "Documents" / "Пример" / "Ext"
+    каталог.mkdir(parents=True, exist_ok=True)
+    (каталог / module).write_text(
+        f"Процедура {marker}()\nКонецПроцедуры\n", encoding="utf-8"
+    )
+
+
+def _форма_объекта(корень):
+    каталог = корень / "Documents" / "Пример" / "Forms" / "Основная" / "Ext"
+    (каталог / "Form").mkdir(parents=True, exist_ok=True)
+    (каталог / "Form" / "Module.bsl").write_text(
+        "Процедура СобытиеФормы()\nКонецПроцедуры\n", encoding="utf-8"
+    )
+    (каталог / "Form.xml").write_text("<Form/>", encoding="utf-8")
+
+
+def _форма_без_модуля(корень):
+    каталог = корень / "Documents" / "Пример" / "Forms" / "БезКода" / "Ext"
+    каталог.mkdir(parents=True, exist_ok=True)
+    (каталог / "Form.xml").write_text("<Form/>", encoding="utf-8")
+
+
+def _код_расширения(корень, *, variant="full"):
+    первый = корень / "Documents" / "Пример" / "Ext"
+    первый.mkdir(parents=True, exist_ok=True)
+    тексты = {
+        "full": (
+            '&Вместо("Старая")\nПроцедура ВместоСтарой()\nКонецПроцедуры\n'
+            '&После("ПослеСтарой")\nПроцедура ПослеСтарой()\nКонецПроцедуры\n'
+            "Процедура Собственная() Экспорт\nКонецПроцедуры\n"
+        ),
+        "new": (
+            '&Перед("Новая")\nПроцедура ПередНовой()\nКонецПроцедуры\n'
+            "Процедура НоваяСобственная() Экспорт\nКонецПроцедуры\n"
+        ),
+        "related": (
+            '&Вместо("Получить")\nПроцедура Получить()\nКонецПроцедуры\n'
+        ),
+        "unrelated": (
+            '&Вместо("Получить")\nПроцедура Получить()\nКонецПроцедуры\n'
+        ),
+    }
+    (первый / "ObjectModule.bsl").write_text(тексты[variant], encoding="utf-8")
+    if variant == "full":
+        второй = корень / "Catalogs" / "Связанный" / "Ext"
+        второй.mkdir(parents=True, exist_ok=True)
+        (второй / "ManagerModule.bsl").write_text(
+            '&ИзменениеИКонтроль("Проверить")\n'
+            "Процедура ИзменитьПроверку()\nКонецПроцедуры\n"
+            '&Перед("Записать")\nПроцедура ПередЗаписью()\nКонецПроцедуры\n',
+            encoding="utf-8",
+        )
+    elif variant == "related":
+        путь = корень / "Catalogs" / "Связанный" / "Ext"
+        путь.mkdir(parents=True, exist_ok=True)
+        (путь / "ManagerModule.bsl").write_text(
+            (первый / "ObjectModule.bsl").read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        (первый / "ObjectModule.bsl").unlink()
+
+
+@pytest.mark.parametrize("state", ["ready", "building", "error", "missing"])
+def test_list_configurations_показывает_реальное_состояние_индекса_кода(
+    tmp_path, корень_кода, реестр_из_кода, state
+):
+    if state == "missing":
+        incoming = tmp_path / "incoming"
+        incoming.mkdir()
+        реестр = Registry(tmp_path / "data")
+        реестр.add_configuration(
+            write_export(incoming, build_configuration(name="Пример"))
+        )
+    else:
+        реестр = реестр_из_кода(корень_кода)
+        loaded = реестр.resolve("Пример").modules
+        if state != "ready":
+            with реестр._lock:
+                loaded.готов = False
+                loaded.этап = (2, 4)
+                loaded.название_этапа = "вызовы"
+                loaded.прогресс = (1, 3)
+                if state == "error":
+                    loaded.source.status = STATUS_ERROR
+                    loaded.source.error = "отказ сборки"
+
+    ответ = tools.list_configurations(реестр)
+
+    if state == "ready":
+        assert "Индекс кода: готов" in ответ
+        assert "процедур" in ответ and "модулей" in ответ and "форм" in ответ
+    elif state == "building":
+        assert "Индекс кода: строится" in ответ
+        assert "этап 2/4" in ответ and "1 из 3" in ответ
+    elif state == "error":
+        assert "Индекс кода: ошибка" in ответ and "отказ сборки" in ответ
+    else:
+        assert "Индекс кода: не загружен" in ответ
+
+
+def test_overview_показывает_подключённый_провайдер_модулей(реестр_с_кодом):
+    строка = реестр_с_кодом.overview()[0]
+
+    assert строка["providers"]["modules"] is True
+
+
+def test_list_configurations_не_раскрывает_путь_из_ошибки(
+    реестр_с_кодом,
+):
+    loaded = реестр_с_кодом.resolve("Пример").modules
+    with реестр_с_кодом._lock:
+        loaded.готов = False
+        loaded.source.status = STATUS_ERROR
+        loaded.source.error = "сбой /private/tmp/secret/Module.bsl"
+
+    ответ = tools.list_configurations(реестр_с_кодом)
+
+    assert "Индекс кода: ошибка" in ответ
+    assert "/private/" not in ответ and "Module.bsl" not in ответ
+
+
+def test_list_configurations_даёт_полную_сводку_расширения(
+    tmp_path, корень_кода, реестр_из_кода, архив_кода
+):
+    реестр = реестр_из_кода(
+        корень_кода, configuration=_конфигурация_для_блоков()
+    )
+    расширение = tmp_path / "extension"
+    _код_расширения(расширение)
+    реестр.add_modules(
+        архив_кода(расширение, extension="Доп"), configuration="Пример"
+    )
+
+    ответ = tools.list_configurations(реестр)
+
+    assert "Расширение `Доп`" in ответ
+    assert "перекрытий: 4 в 2 модулях" in ответ.lower()
+    for вид in ("Вместо: 1", "После: 1", "Перед: 1", "ИзменениеИКонтроль: 1"):
+        assert вид in ответ
+    assert "собственных процедур: 1" in ответ.lower()
+    assert 'extension="Доп"' in ответ
+
+
+def test_расширения_в_сводке_упорядочены_стабильно(
+    tmp_path, корень_кода, реестр_из_кода, архив_кода
+):
+    реестр = реестр_из_кода(корень_кода)
+    for имя in ("Бета", "Альфа"):
+        корень = tmp_path / имя
+        _код_расширения(корень, variant="new")
+        реестр.add_modules(
+            архив_кода(корень, extension=имя), configuration="Пример"
+        )
+
+    ответы = [tools.list_configurations(реестр) for _ in range(3)]
+
+    assert ответы[0] == ответы[1] == ответы[2]
+    assert ответы[0].index("Расширение `Альфа`") < ответы[0].index(
+        "Расширение `Бета`"
+    )
+
+
+@pytest.mark.parametrize("state", ["building", "error"])
+def test_list_configurations_показывает_состояние_расширения(
+    tmp_path, корень_кода, реестр_из_кода, архив_кода, state
+):
+    реестр = реестр_из_кода(корень_кода)
+    расширение = tmp_path / "extension"
+    _код_расширения(расширение, variant="new")
+    реестр.add_modules(
+        архив_кода(расширение, extension="Доп"), configuration="Пример"
+    )
+    loaded = реестр.resolve("Пример", extension="Доп").extension
+    with реестр._lock:
+        loaded.готов = False
+        loaded.этап = (1, 4)
+        loaded.название_этапа = "оглавление"
+        loaded.прогресс = (7, 11)
+        if state == "error":
+            loaded.source.status = STATUS_ERROR
+            loaded.source.error = "ошибка расширения"
+
+    ответ = tools.list_configurations(реестр)
+
+    assert "Расширение `Доп`" in ответ
+    if state == "building":
+        assert "строится" in ответ and "этап 1/4" in ответ and "7 из 11" in ответ
+    else:
+        assert "ошибка" in ответ and "ошибка расширения" in ответ
+
+
+def test_сводка_расширения_не_материализует_все_записи(
+    tmp_path, корень_кода, реестр_из_кода, архив_кода, monkeypatch
+):
+    реестр = реестр_из_кода(корень_кода)
+    расширение = tmp_path / "extension"
+    _код_расширения(расширение, variant="full")
+    реестр.add_modules(
+        архив_кода(расширение, extension="Доп"), configuration="Пример"
+    )
+    monkeypatch.setattr(
+        modules_index.Оглавление,
+        "_запись",
+        lambda *_: pytest.fail("полный корпус не должен материализоваться"),
+    )
+
+    ответ = tools.list_configurations(реестр)
+
+    assert "Расширение `Доп`" in ответ and "перекрытий" in ответ.lower()
+
+
+def test_get_object_показывает_код_по_уровню_детализации(
+    tmp_path, реестр_из_кода
+):
+    корень = tmp_path / "code"
+    _код_объекта(корень)
+    _форма_объекта(корень)
+    _форма_без_модуля(корень)
+    реестр = реестр_из_кода(
+        корень, configuration=_конфигурация_для_блоков()
+    )
+
+    brief = tools.get_object(реестр, "Документ.Пример", config="Пример", detail="brief")
+    fields = tools.get_object(реестр, "Документ.Пример", config="Пример", detail="fields")
+    full = tools.get_object(реестр, "Документ.Пример", config="Пример", detail="full")
+
+    assert "Код объекта" not in brief and "Модули объекта" not in brief
+    строки = [line for line in fields.splitlines() if line.startswith("Код объекта:")]
+    assert строки == ["Код объекта: модулей 1, форм 2."]
+    assert "МодульОбъекта" not in fields and "Форма.Основная" not in fields
+    assert "## Модули объекта" in full and "Документ.Пример.МодульОбъекта" in full
+    assert "## Формы объекта" in full and "Документ.Пример.Форма.Основная" in full
+    assert "Документ.Пример.Форма.БезКода" in full
+    assert "Текущая" not in full and "СобытиеФормы" not in full
+
+
+def test_get_object_brief_вообще_не_обращается_к_провайдеру(
+    tmp_path, реестр_из_кода, monkeypatch
+):
+    корень = tmp_path / "code"
+    _код_объекта(корень)
+    реестр = реестр_из_кода(
+        корень, configuration=_конфигурация_для_блоков()
+    )
+    monkeypatch.setattr(
+        tools,
+        "_configuration_code_snapshot",
+        lambda *_: pytest.fail("brief не должен обращаться к индексу кода"),
+        raising=False,
+    )
+
+    ответ = tools.get_object(
+        реестр, "Документ.Пример", config="Пример", detail="brief"
+    )
+
+    assert "Код объекта" not in ответ
+
+
+@pytest.mark.parametrize("state", ["missing", "building", "error"])
+def test_get_object_честно_показывает_недоступный_индекс_кода(
+    tmp_path, реестр_из_кода, state
+):
+    корень = tmp_path / "code"
+    _код_объекта(корень)
+    конфигурация = _конфигурация_для_блоков()
+    if state == "missing":
+        incoming = tmp_path / "incoming"
+        incoming.mkdir()
+        реестр = Registry(tmp_path / "data")
+        реестр.add_configuration(write_export(incoming, конфигурация))
+    else:
+        реестр = реестр_из_кода(корень, configuration=конфигурация)
+        loaded = реестр.resolve("Пример").modules
+        with реестр._lock:
+            loaded.готов = False
+            loaded.этап = (3, 4)
+            loaded.название_этапа = "формы"
+            loaded.прогресс = (2, 5)
+            if state == "error":
+                loaded.source.status = STATUS_ERROR
+                loaded.source.error = "отказ сборки"
+
+    ответ = tools.get_object(
+        реестр, "Документ.Пример", config="Пример", detail="fields"
+    )
+
+    assert ответ.count("Код объекта:") == 1
+    if state == "missing":
+        assert "код не загружен" in ответ.lower()
+    elif state == "building":
+        assert "строится" in ответ and "этап 3/4" in ответ and "2 из 5" in ответ
+    else:
+        assert "ошибка" in ответ and "отказ сборки" in ответ
+
+
+def test_get_related_помечает_перекрытый_объект_расширением(
+    tmp_path, реестр_из_кода, архив_кода
+):
+    база = tmp_path / "base"
+    _код_объекта(база)
+    реестр = реестр_из_кода(
+        база, configuration=_конфигурация_для_блоков()
+    )
+    расширение = tmp_path / "extension"
+    _код_расширения(расширение, variant="related")
+    реестр.add_modules(
+        архив_кода(расширение, extension="Доп"), configuration="Пример"
+    )
+    второе = tmp_path / "second-extension"
+    _код_расширения(второе, variant="related")
+    реестр.add_modules(
+        архив_кода(второе, extension="Второе"), configuration="Пример"
+    )
+    своё = tmp_path / "own-extension"
+    каталог = своё / "Catalogs" / "Связанный" / "Ext"
+    каталог.mkdir(parents=True)
+    (каталог / "ManagerModule.bsl").write_text(
+        "Процедура Собственная()\nКонецПроцедуры\n", encoding="utf-8"
+    )
+    реестр.add_modules(
+        архив_кода(своё, extension="ТолькоСвоя"), configuration="Пример"
+    )
+
+    ответ = tools.get_related(реестр, "Документ.Пример", config="Пример")
+
+    строка = next(line for line in ответ.splitlines() if "Справочник.Связанный" in line)
+    assert "перекрыто расширениями `Второе`, `Доп`" in строка
+    assert "ТолькоСвоя" not in строка
+
+
+def test_существующие_блоки_не_читают_тела_с_диска(
+    tmp_path, реестр_из_кода, архив_кода, monkeypatch
+):
+    база = tmp_path / "base"
+    _код_объекта(база)
+    реестр = реестр_из_кода(
+        база, configuration=_конфигурация_для_блоков()
+    )
+    расширение = tmp_path / "extension"
+    _код_расширения(расширение, variant="related")
+    реестр.add_modules(
+        архив_кода(расширение, extension="Доп"), configuration="Пример"
+    )
+    monkeypatch.setattr(
+        tools,
+        "прочитать_модуль",
+        lambda *_: pytest.fail("тело модуля не должно читаться"),
+    )
+
+    tools.list_configurations(реестр)
+    tools.get_object(реестр, "Документ.Пример", config="Пример", detail="full")
+    tools.get_related(реестр, "Документ.Пример", config="Пример")
+
+
+@pytest.mark.parametrize("action", ["reparse", "remove"])
+def test_get_object_не_смешивает_поколения_модулей(
+    tmp_path, реестр_из_кода, архив_кода, monkeypatch, action
+):
+    старый = tmp_path / "old-base"
+    _код_объекта(старый, module="ObjectModule.bsl", marker="Старый")
+    реестр = реестр_из_кода(
+        старый, configuration=_конфигурация_для_блоков()
+    )
+    новый = tmp_path / "new-base"
+    _код_объекта(новый, module="ManagerModule.bsl", marker="Новый")
+    новый_архив = архив_кода(новый)
+
+    начато = threading.Event()
+    отпустить = threading.Event()
+    настоящее = tools._summarize_code
+    первый = True
+
+    def задержать(loaded):
+        nonlocal первый
+        результат = настоящее(loaded)
+        if первый and loaded.source.id == "Пример:modules":
+            первый = False
+            начато.set()
+            отпустить.wait(timeout=3)
+        return результат
+
+    monkeypatch.setattr(tools, "_summarize_code", задержать)
+    ответы: list[str] = []
+    ошибки: list[BaseException] = []
+    поток = threading.Thread(
+        target=lambda: _собрать_ответ(
+            ответы,
+            ошибки,
+            lambda: tools.get_object(
+                реестр, "Документ.Пример", config="Пример", detail="full"
+            ),
+        )
+    )
+    поток.start()
+    try:
+        assert начато.wait(timeout=1)
+        if action == "reparse":
+            реестр.add_modules(новый_архив, configuration="Пример")
+        else:
+            реестр.remove("Пример:modules")
+    finally:
+        отпустить.set()
+        поток.join(timeout=3)
+
+    assert not поток.is_alive() and not ошибки
+    if action == "reparse":
+        assert "МодульМенеджера" in ответы[0]
+        assert "МодульОбъекта" not in ответы[0]
+    else:
+        assert "код не загружен" in ответы[0].lower()
+
+
+@pytest.mark.parametrize("action", ["reparse", "remove"])
+def test_list_configurations_не_смешивает_поколения_расширения(
+    tmp_path, корень_кода, реестр_из_кода, архив_кода, monkeypatch, action
+):
+    реестр = реестр_из_кода(
+        корень_кода, configuration=_конфигурация_для_блоков()
+    )
+    старый = tmp_path / "old-extension"
+    _код_расширения(старый, variant="full")
+    реестр.add_modules(
+        архив_кода(старый, extension="Доп"), configuration="Пример"
+    )
+    новый = tmp_path / "new-extension"
+    _код_расширения(новый, variant="new")
+    новый_архив = архив_кода(новый, extension="Доп")
+
+    начато = threading.Event()
+    отпустить = threading.Event()
+    настоящее = tools._summarize_code
+    первый = True
+
+    def задержать(loaded):
+        nonlocal первый
+        результат = настоящее(loaded)
+        if первый and ":ext:" in loaded.source.id:
+            первый = False
+            начато.set()
+            отпустить.wait(timeout=3)
+        return результат
+
+    monkeypatch.setattr(tools, "_summarize_code", задержать)
+    ответы: list[str] = []
+    ошибки: list[BaseException] = []
+    поток = threading.Thread(
+        target=lambda: _собрать_ответ(
+            ответы, ошибки, lambda: tools.list_configurations(реестр)
+        )
+    )
+    поток.start()
+    try:
+        assert начато.wait(timeout=1)
+        if action == "reparse":
+            реестр.add_modules(новый_архив, configuration="Пример")
+        else:
+            реестр.remove("Пример:ext:Доп")
+    finally:
+        отпустить.set()
+        поток.join(timeout=3)
+
+    assert not поток.is_alive() and not ошибки
+    if action == "reparse":
+        assert "Перед: 1" in ответы[0]
+        assert "Вместо: 1" not in ответы[0]
+    else:
+        assert "Расширение `Доп`" not in ответы[0]
+
+
+@pytest.mark.parametrize("action", ["reparse", "remove"])
+def test_get_related_не_показывает_устаревшее_перекрытие(
+    tmp_path, реестр_из_кода, архив_кода, monkeypatch, action
+):
+    база = tmp_path / "base"
+    _код_объекта(база)
+    реестр = реестр_из_кода(
+        база, configuration=_конфигурация_для_блоков()
+    )
+    старое = tmp_path / "old-extension"
+    _код_расширения(старое, variant="related")
+    реестр.add_modules(
+        архив_кода(старое, extension="Доп"), configuration="Пример"
+    )
+    новое = tmp_path / "new-extension"
+    _код_расширения(новое, variant="new")
+    новый_архив = архив_кода(новое, extension="Доп")
+
+    начато = threading.Event()
+    отпустить = threading.Event()
+    настоящее = tools._summarize_code
+    первый = True
+
+    def задержать(loaded):
+        nonlocal первый
+        результат = настоящее(loaded)
+        if первый and ":ext:" in loaded.source.id:
+            первый = False
+            начато.set()
+            отпустить.wait(timeout=3)
+        return результат
+
+    monkeypatch.setattr(tools, "_summarize_code", задержать)
+    ответы: list[str] = []
+    ошибки: list[BaseException] = []
+    поток = threading.Thread(
+        target=lambda: _собрать_ответ(
+            ответы,
+            ошибки,
+            lambda: tools.get_related(
+                реестр, "Документ.Пример", config="Пример"
+            ),
+        )
+    )
+    поток.start()
+    try:
+        assert начато.wait(timeout=1)
+        if action == "reparse":
+            реестр.add_modules(новый_архив, configuration="Пример")
+        else:
+            реестр.remove("Пример:ext:Доп")
+    finally:
+        отпустить.set()
+        поток.join(timeout=3)
+
+    assert not поток.is_alive() and not ошибки
+    строка = next(
+        line for line in ответы[0].splitlines() if "Справочник.Связанный" in line
+    )
+    assert "перекрыто расшир" not in строка
+
+
+def _собрать_ответ(ответы, ошибки, вызов):
+    try:
+        ответы.append(вызов())
+    except BaseException as error:
+        ошибки.append(error)
+
+
+# --- Ревью задачи 15: согласованность списка и классификация форм --------
+
+
+def _добавить_конфигурацию(реестр, каталог, *, name, version="1.0", platform="8.3.21"):
+    каталог.mkdir(parents=True, exist_ok=True)
+    конфигурация = build_configuration(name=name, version=version)
+    конфигурация.platform = platform
+    return реестр.add_configuration(
+        write_export(каталог, конфигурация)
+    )
+
+
+def test_list_configurations_повторяет_весь_снимок_при_удалении_второй_конфигурации(
+    tmp_path, monkeypatch
+):
+    реестр = Registry(tmp_path / "data")
+    _добавить_конфигурацию(реестр, tmp_path / "а", name="А")
+    _добавить_конфигурацию(реестр, tmp_path / "б", name="Б")
+    настоящее = tools._configuration_code_snapshot
+    дошли_до_а = threading.Event()
+    продолжить = threading.Event()
+    первый = True
+
+    def задержать(registry, name):
+        nonlocal первый
+        результат = настоящее(registry, name)
+        if name == "А" and первый:
+            первый = False
+            дошли_до_а.set()
+            продолжить.wait(timeout=3)
+        return результат
+
+    monkeypatch.setattr(tools, "_configuration_code_snapshot", задержать)
+    ответы: list[str] = []
+    ошибки: list[BaseException] = []
+    поток = threading.Thread(
+        target=lambda: _собрать_ответ(
+            ответы, ошибки, lambda: tools.list_configurations(реестр)
+        )
+    )
+    поток.start()
+    try:
+        assert дошли_до_а.wait(timeout=1)
+        реестр.remove("Б")
+    finally:
+        продолжить.set()
+        поток.join(timeout=3)
+
+    assert not поток.is_alive() and not ошибки
+    assert "## А" in ответы[0] and "## Б" not in ответы[0]
+    assert "config` явно" not in ответы[0]
+
+
+def test_list_configurations_при_двух_сменах_возвращает_стабильную_ошибку(
+    tmp_path, monkeypatch
+):
+    реестр = Registry(tmp_path / "data")
+    _добавить_конфигурацию(реестр, tmp_path / "а", name="А")
+    _добавить_конфигурацию(реестр, tmp_path / "б-0", name="Б", version="0")
+    настоящее = tools._configuration_code_snapshot
+    поколение = 0
+
+    def менять_после_а(registry, name):
+        nonlocal поколение
+        результат = настоящее(registry, name)
+        if name == "А":
+            поколение += 1
+            registry.remove("Б")
+            _добавить_конфигурацию(
+                registry,
+                tmp_path / f"б-{поколение}",
+                name="Б",
+                version=str(поколение),
+            )
+        return результат
+
+    monkeypatch.setattr(tools, "_configuration_code_snapshot", менять_после_а)
+
+    with pytest.raises(RegistryError, match="изменились дважды; повторите") as caught:
+        tools.list_configurations(реестр)
+
+    assert "/" not in str(caught.value) and "\\" not in str(caught.value)
+
+
+def test_list_configurations_не_смешивает_старое_отношение_справки_с_новым_покрытием(
+    tmp_path, monkeypatch
+):
+    реестр = Registry(tmp_path / "data")
+    _добавить_конфигурацию(
+        реестр, tmp_path / "config", name="А", platform="8.3.21.1"
+    )
+    источник = реестр.add_syntax(
+        write_syntax(tmp_path / "syntax", platform="8.3.21.1")
+    )
+    настоящее = tools._configuration_code_snapshot
+    дошли_до_строки = threading.Event()
+    продолжить = threading.Event()
+    первый = True
+
+    def задержать(registry, name):
+        nonlocal первый
+        результат = настоящее(registry, name)
+        if первый:
+            первый = False
+            дошли_до_строки.set()
+            продолжить.wait(timeout=3)
+        return результат
+
+    monkeypatch.setattr(tools, "_configuration_code_snapshot", задержать)
+    ответы: list[str] = []
+    ошибки: list[BaseException] = []
+    поток = threading.Thread(
+        target=lambda: _собрать_ответ(
+            ответы, ошибки, lambda: tools.list_configurations(реестр)
+        )
+    )
+    поток.start()
+    try:
+        assert дошли_до_строки.wait(timeout=1)
+        реестр.remove(источник.id)
+    finally:
+        продолжить.set()
+        поток.join(timeout=3)
+
+    assert not поток.is_alive() and not ошибки
+    assert "Синтаксис платформы: не подключён" in ответы[0]
+    assert "Не загружено ни одной справки" in ответы[0]
+    assert "версия совпадает" not in ответы[0]
+
+
+def test_list_configurations_не_перечитывает_удалённую_справку_без_конфигураций(
+    tmp_path, monkeypatch
+):
+    реестр = Registry(tmp_path / "data")
+    источник = реестр.add_syntax(
+        write_syntax(tmp_path / "syntax", platform="8.3.21.1")
+    )
+    настоящее = tools._syntax_only_overview
+    начали = threading.Event()
+    продолжить = threading.Event()
+    первый = True
+
+    def задержать(*args):
+        nonlocal первый
+        if первый:
+            первый = False
+            начали.set()
+            продолжить.wait(timeout=3)
+        return настоящее(*args)
+
+    monkeypatch.setattr(tools, "_syntax_only_overview", задержать)
+    ответы: list[str] = []
+    ошибки: list[BaseException] = []
+    поток = threading.Thread(
+        target=lambda: _собрать_ответ(
+            ответы, ошибки, lambda: tools.list_configurations(реестр)
+        )
+    )
+    поток.start()
+    try:
+        assert начали.wait(timeout=1)
+        реестр.remove(источник.id)
+    finally:
+        продолжить.set()
+        поток.join(timeout=3)
+
+    assert not поток.is_alive() and not ошибки
+    assert ответы == [
+        "Не загружено ни одной конфигурации, нет ни справки платформы, ни "
+        "справки по языку запросов.\n\n"
+        "Выгрузите структуру обработкой из `exporter-1c/` и загрузите архив."
+    ]
+
+
+def test_get_object_ставит_расхождение_версий_только_над_блоком_кода(
+    tmp_path, реестр_из_кода
+):
+    корень = tmp_path / "code"
+    _код_объекта(корень)
+    конфигурация = _конфигурация_для_блоков()
+    конфигурация.version = "2.0"
+    реестр = реестр_из_кода(
+        корень, configuration=конфигурация, code_version="1.0"
+    )
+    with реестр._lock:
+        реестр.configurations["Пример"].config.warnings.append(
+            "Обычная оговорка метаданных."
+        )
+
+    brief = tools.get_object(
+        реестр, "Документ.Пример", config="Пример", detail="brief"
+    )
+    fields = tools.get_object(
+        реестр, "Документ.Пример", config="Пример", detail="fields"
+    )
+    full = tools.get_object(
+        реестр, "Документ.Пример", config="Пример", detail="full"
+    )
+
+    assert "Обычная оговорка метаданных" in brief
+    assert "Код модулей выгружен для версии" not in brief
+    assert fields.index("Код модулей выгружен для версии") < fields.index(
+        "Код объекта:"
+    )
+    assert full.index("Код модулей выгружен для версии") < full.index(
+        "## Модули объекта"
+    )
+    for ответ in (fields, full):
+        assert ответ.count("Код модулей выгружен для версии") == 1
+        assert ответ.index("Обычная оговорка метаданных") > ответ.index(
+            "Код объекта" if ответ is fields else "## Модули объекта"
+        )
+
+
+def _модуль_формы(корень, *, object_name, form_name, common=False):
+    if common:
+        каталог = корень / "CommonForms" / object_name / "Ext" / "Form"
+    else:
+        каталог = (
+            корень / "Documents" / object_name / "Forms" / form_name / "Ext" / "Form"
+        )
+    каталог.mkdir(parents=True, exist_ok=True)
+    (каталог / "Module.bsl").write_text(
+        "Процедура Обработчик()\nКонецПроцедуры\n", encoding="utf-8"
+    )
+
+
+def _xml_формы(корень, *, object_name, form_name, broken=False):
+    каталог = корень / "Documents" / object_name / "Forms" / form_name / "Ext"
+    каталог.mkdir(parents=True, exist_ok=True)
+    (каталог / "Form.xml").write_text(
+        "<Form>" if broken else "<Form/>", encoding="utf-8"
+    )
+
+
+def test_get_object_объединяет_формы_из_оглавления_и_form_xml_после_кэша(
+    tmp_path, реестр_из_кода
+):
+    корень = tmp_path / "forms"
+    _модуль_формы(корень, object_name="А", form_name="ТолькоМодуль")
+    _xml_формы(корень, object_name="А", form_name="ТолькоXML")
+    _модуль_формы(корень, object_name="А", form_name="Обе")
+    _xml_формы(корень, object_name="А", form_name="Обе")
+    _xml_формы(корень, object_name="А", form_name="Битая", broken=True)
+    _модуль_формы(корень, object_name="АБ", form_name="Чужая")
+    конфигурация = build_configuration(name="Пример")
+    конфигурация.objects = {
+        name: MetadataObject(full_name=name, kind="Документ", name=name.split(".")[1])
+        for name in ("Документ.А", "Документ.АБ")
+    }
+    реестр = реестр_из_кода(корень, configuration=конфигурация)
+    реестр.save()
+    заново = Registry(реестр.data_dir)
+    заново.startup()
+
+    ответ = tools.get_object(
+        заново, "Документ.А", config="Пример", detail="full"
+    )
+
+    for форма in ("ТолькоМодуль", "ТолькоXML", "Обе", "Битая"):
+        assert f"Документ.А.Форма.{форма}" in ответ
+    assert "Документ.АБ.Форма.Чужая" not in ответ
+    блок_модулей = ответ.split("## Модули объекта", 1)[1].split(
+        "## Формы объекта", 1
+    )[0]
+    assert "ТолькоМодуль" not in блок_модулей
+
+
+def test_get_object_считает_модуль_общей_формы_формой(tmp_path, реестр_из_кода):
+    корень = tmp_path / "common-form"
+    _модуль_формы(
+        корень, object_name="Панель", form_name="", common=True
+    )
+    конфигурация = build_configuration(name="Пример")
+    конфигурация.objects = {
+        "ОбщаяФорма.Панель": MetadataObject(
+            full_name="ОбщаяФорма.Панель",
+            kind="ОбщаяФорма",
+            name="Панель",
+        )
+    }
+    реестр = реестр_из_кода(корень, configuration=конфигурация)
+
+    fields = tools.get_object(
+        реестр, "ОбщаяФорма.Панель", config="Пример", detail="fields"
+    )
+    full = tools.get_object(
+        реестр, "ОбщаяФорма.Панель", config="Пример", detail="full"
+    )
+
+    assert "Код объекта: модулей 0, форм 1." in fields
+    assert "ОбщаяФорма.Панель" in full.split("## Формы объекта", 1)[1]

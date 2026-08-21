@@ -36,3 +36,12 @@ def test_источник_кода_называет_обратный_поиск_
     assert "места вызовов" in строка
     assert "события форм" in строка
     assert "get_callers" in строка
+
+
+def test_публичный_дизайн_языка_запросов_не_обещает_заглушку_индекса_кода():
+    текст = (
+        Path(__file__).parents[1] / "docs" / "query-language-design.md"
+    ).read_text(encoding="utf-8")
+
+    assert "Индекс модулей: не подключён" not in текст
+    assert "состояние индекса кода" in текст

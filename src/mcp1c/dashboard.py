@@ -1305,6 +1305,11 @@ def _sources_page(
                     f"<td>{escape(строка.corpus)}"
                     f"<td>{escape(строка.state)}</tr>"
                 )
+                for line in tools.code_coverage_lines(строка.coverage):
+                    style = " class=warn" if line.startswith("ВНИМАНИЕ:") else ""
+                    parts.append(
+                        f"<tr{style}><td colspan=3>{escape(line)}</tr>"
+                    )
         else:
             parts.append("<tr><td colspan=3>Конфигурации не загружены.</tr>")
         parts.append("</table>")

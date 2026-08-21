@@ -218,6 +218,8 @@ def _cmd_reg_list(args: argparse.Namespace) -> int:
                 else "расширение " + state.corpus.removeprefix("Расширение ")
             )
             print(f"  {label:<11}: {state.state}")
+            for line in tools.code_coverage_lines(state.coverage):
+                print(f"    {line}")
         # Язык запросов — самостоятельный источник, не версия справки
         # платформы. Берём счётчик из того же снимка, а не перечитываем
         # `registry.query_source` после долгой подготовки строк.

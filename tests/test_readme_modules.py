@@ -65,6 +65,18 @@ def test_readme_имеет_отдельный_раздел_границ_пров
     assert "не разреш" in lowered and "модул" in lowered
 
 
+def test_readme_объясняет_единую_диагностику_покрытия_кода():
+    text = _text().lower()
+
+    assert "готов с ограничениями" in text
+    assert "полностью, частично и не прочитаны" in text
+    assert "первые 20" in text and "число оставшихся" in text
+    assert "list_configurations" in text
+    assert "reg-list" in text
+    assert "`/sources`" in text
+    assert "нулевой счётчик" in text and "не доказывает отсутствие" in text
+
+
 def test_readme_фиксирует_холодный_и_тёплый_замер_памяти_контейнера():
     text = _text()
 

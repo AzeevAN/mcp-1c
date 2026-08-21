@@ -21,6 +21,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import json
+import logging
 import re
 import shutil
 import tempfile
@@ -29,6 +30,7 @@ import time
 import uuid
 import xml.etree.ElementTree as ET
 import zipfile
+from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -58,6 +60,8 @@ from .syntax_parser import open_file_storage, parse_hbk
 from .virtual_tables import TableTemplate, build_table_index
 
 REGISTRY_VERSION = 1
+
+logger = logging.getLogger(__name__)
 
 KIND_CONFIGURATION = "configuration"
 KIND_SYNTAX = "syntax"
@@ -827,6 +831,9 @@ class Registry:
         # удаляется вместе с Source: иначе remove -> add того же ZIP дал бы
         # прежнее поколение и создал ABA для уже начатого чтения.
         self._locator_generation: dict[str, int] = {}
+        # Диагностика пишется при публикации поколения, а не на каждом запросе.
+        # Множество также страхует повторный путь публикации от дубля строки.
+        self._logged_module_limitations: set[tuple[str, int, str]] = set()
         self._module_recovery_blocked = False
         # Один постоянный lock на source_id защищает весь foreground
         # lifecycle: sweep -> extract -> build -> publish/cleanup. Записи не
@@ -1646,6 +1653,39 @@ class Registry:
             прогресс=(всего, всего),
         )
 
+    def _журналировать_ограничения_кода(
+        self, source: Source, индексы: modules_index.Индексы
+    ) -> None:
+        """По одной обезличенной строке на категорию нового поколения."""
+        catalog_counts = Counter(
+            problem.category for problem in индексы.каталог.problems
+        )
+        form_counts = Counter(
+            problem.категория for problem in индексы.формы.проблемы
+        )
+        counts = {
+            category: max(catalog_counts[category], form_counts[category])
+            for category in catalog_counts.keys() | form_counts.keys()
+        }
+        if индексы.каталог.coverage.compiled:
+            counts["compiled_without_source"] = индексы.каталог.coverage.compiled
+
+        for category, count in sorted(counts.items()):
+            if count <= 0:
+                continue
+            key = (source.id, source.locator_generation, category)
+            with self._lock:
+                if key in self._logged_module_limitations:
+                    continue
+                self._logged_module_limitations.add(key)
+            logger.warning(
+                "Ограничение корпуса кода: категория=%s; количество=%d; "
+                "поколение=%d.",
+                category,
+                count,
+                source.locator_generation,
+            )
+
     def _следующее_поколение_модулей(self, source_id: str) -> int:
         """Вызывается под `_lock`; возвращает новый монотонный номер."""
         поколение = self._modules_generation.get(source_id, 0) + 1
@@ -1846,6 +1886,7 @@ class Registry:
                 self._module_swap_path.unlink(missing_ok=True)
             except OSError:
                 pass
+            self._журналировать_ограничения_кода(source, индексы)
             return source
         finally:
             # До swap это убирает отменённый разбор; после swap пути
@@ -2030,6 +2071,7 @@ class Registry:
     ) -> None:
         """Собирает четыре структуры и публикует их только единым пакетом."""
         source_id = source.id
+        опубликовано = False
 
         def отметить(
             номер: int, название: str, обработано: int, всего: int
@@ -2072,6 +2114,9 @@ class Registry:
                         source.status = STATUS_READY
                         source.error = ""
                         self.modules[source_id] = готовые
+                        опубликовано = True
+            if опубликовано:
+                self._журналировать_ограничения_кода(source, индексы)
         except Exception as error:
             with self._lock:
                 if self._поколение_актуально(source, поколение, строится):
@@ -2170,6 +2215,7 @@ class Registry:
             selection_version=source.selection_version,
         )
         if индексы is not None:
+            опубликовано = False
             with self._lock:
                 if not self._поколение_актуально(source, поколение):
                     return
@@ -2178,6 +2224,9 @@ class Registry:
                 self.modules[source.id] = self._готовые_модули(
                     source, корень, индексы
                 )
+                опубликовано = True
+            if опубликовано:
+                self._журналировать_ограничения_кода(source, индексы)
             return
 
         файлы_каталога = modules_index.catalog_files(корень)

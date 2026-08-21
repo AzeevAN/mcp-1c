@@ -7,18 +7,31 @@
 
 Правило набора инструментов: их мало и список фиксирован. Каждый инструмент
 висит в контексте агента постоянно, независимо от того, пользуется он им или
-нет. Поэтому новый источник данных (модули, вторая справка) не добавляет
-инструментов, а обогащает ответы существующих.
+нет. Поэтому инструмент добавляется только под отдельную пользовательскую
+задачу, а не под каждый новый внутренний индекс. Код конфигурации — отдельная
+область поиска, для которой служит `search_procedures`.
 """
 
 from __future__ import annotations
 
+import re
+
 from . import replacements
-from .registry import Registry, RegistryError
+from .bsl_lex import _СЛОВО, прочитать_модуль
+from .module_address import путь_модуля
+from .registry import (
+    KIND_EXTENSION,
+    STATUS_ERROR,
+    LoadedModules,
+    Registry,
+    RegistryError,
+)
 from .render import (
     DETAIL_LEVELS,
     FIELDS,
+    ProcedureMatch,
     render_object,
+    render_procedure_search,
     render_syntax_item,
 )
 from .search import FIELD_KIND_TITLES
@@ -426,6 +439,397 @@ def compare_configurations(
         out.append("Состав реквизитов совпадает.")
 
     return "\n".join(out) + "\n"
+
+
+# --------------------------------------------------------------- код модулей
+
+
+def _procedure_limit(limit: int) -> int:
+    """У поиска по коду предел — часть контракта, не молчаливый clamp."""
+    if (
+        isinstance(limit, bool)
+        or not isinstance(limit, int)
+        or not 1 <= limit <= MAX_LIMIT
+    ):
+        raise RegistryError(f"limit должен быть целым числом от 1 до {MAX_LIMIT}.")
+    return limit
+
+
+def _selected_modules(
+    registry: Registry,
+    config: str | None,
+    extension: str | None,
+) -> tuple[object, LoadedModules | None]:
+    context = registry.resolve(config, extension=extension)
+    if extension is None:
+        return context, context.modules
+    if context.extension is not None:
+        return context, context.extension
+
+    prefix = f"{context.name}:ext:"
+    with registry._lock:
+        доступные = sorted(
+            source.id[len(prefix):]
+            for source in registry.sources.values()
+            if source.kind == KIND_EXTENSION and source.id.startswith(prefix)
+        )
+    хвост = (
+        f" Доступны: {', '.join(доступные)}."
+        if доступные
+        else " Загруженных расширений нет."
+    )
+    raise RegistryError(
+        f"Расширение {extension} с кодом для конфигурации {context.name} "
+        f"не загружено.{хвост}"
+    )
+
+
+def _scope_modules(loaded: LoadedModules, scope: str | None) -> frozenset[str]:
+    if scope is None:
+        return frozenset()
+    область = scope.strip()
+    if not область or "::" in область:
+        raise RegistryError(
+            "Область поиска scope должна быть именем объекта или точным "
+            "адресом модуля без имени процедуры."
+        )
+
+    модули = loaded.оглавление.модули
+    низкое = область.casefold()
+    точные = [модуль for модуль in модули if модуль.casefold() == низкое]
+    if точные:
+        return frozenset(точные)
+
+    начало = низкое + "."
+    объектные = [
+        модуль for модуль in модули if модуль.casefold().startswith(начало)
+    ]
+    if объектные:
+        return frozenset(объектные)
+    raise RegistryError(
+        f"Область поиска `{scope}` не найдена в загруженном коде. "
+        "Укажите имя объекта метаданных или точный адрес модуля из выдачи."
+    )
+
+
+def _сигнатура(loaded: LoadedModules, запись) -> str:
+    """Дочитывает только декларацию по сохранённому номеру строки.
+
+    В `LoadedModules` сигнатуры и тела не появляются: текст существует лишь
+    на время одного ответа. `split("\\n")`, не `splitlines()`, сохраняет ту
+    же нумерацию, по которой строилось оглавление.
+    """
+    путь = loaded.корень / путь_модуля(запись.модуль)
+    строки = прочитать_модуль(путь).split("\n")
+    начало = запись.строка - 1
+    if not 0 <= начало < len(строки):
+        raise _SignatureError
+
+    виды = r"Функция|Function" if запись.функция else r"Процедура|Procedure"
+    объявление = re.search(
+        rf"(?:\b(?:Асинх|Async)\s+)?\b(?:{виды})\s+"
+        rf"{re.escape(запись.имя)}\s*\(",
+        строки[начало],
+        flags=re.IGNORECASE,
+    )
+    if объявление is None:
+        raise _SignatureError
+    начало_объявления = объявление.start()
+    открывающая = объявление.end() - 1
+
+    глубина = 0
+    открыта = False
+    в_строке = False
+    конец: tuple[int, int] | None = None
+    for номер, строка in enumerate(строки[начало:], начало):
+        i = открывающая if номер == начало else 0
+        while i < len(строка):
+            символ = строка[i]
+            if в_строке:
+                if символ == '"':
+                    if i + 1 < len(строка) and строка[i + 1] == '"':
+                        i += 2
+                        continue
+                    в_строке = False
+                i += 1
+                continue
+            if символ == '"':
+                в_строке = True
+            elif символ == "/" and i + 1 < len(строка) and строка[i + 1] == "/":
+                break
+            elif символ == "(":
+                открыта = True
+                глубина += 1
+            elif символ == ")" and открыта:
+                глубина -= 1
+                if глубина == 0:
+                    конец = (номер, i + 1)
+                    break
+            i += 1
+        if конец is not None:
+            break
+    if конец is None:
+        raise _SignatureError
+
+    номер_конца, позиция = конец
+    последняя = строки[номер_конца]
+    хвост = последняя[позиция:]
+    пробелы = len(хвост) - len(хвост.lstrip())
+    после = хвост[пробелы:]
+    # `split()` считал `Экспорт//...` и `Экспорт;...` одним
+    # словом и терял признак экспорта. Берём ровно первый
+    # BSL-идентификатор тем же лексическим правилом, что и основной
+    # разбор, а в ответ не пропускаем ни комментарий, ни тело.
+    слово = _СЛОВО.match(после)
+    if слово is not None and слово.group().casefold() in (
+        "экспорт",
+        "export",
+    ):
+        позиция += пробелы + слово.end()
+
+    if номер_конца == начало:
+        части = [последняя[начало_объявления:позиция].strip()]
+    else:
+        части = [строки[начало][начало_объявления:].strip()]
+        части.extend(
+            строка.strip() for строка in строки[начало + 1:номер_конца]
+        )
+        части.append(последняя[:позиция].strip())
+    return " ".join(часть for часть in части if часть)
+
+
+class _SignatureError(Exception):
+    """Граница декларации не совпала с текущим файлом модуля."""
+
+
+class _StaleModules(Exception):
+    """LoadedModules сменился, пока инструмент читал canonical root."""
+
+
+def _modules_are_current(registry: Registry, loaded: LoadedModules) -> bool:
+    """Короткий CAS без дискового I/O под замком реестра."""
+    with registry._lock:
+        return registry.modules.get(loaded.source.id) is loaded
+
+
+def _modules_state_snapshot(
+    registry: Registry,
+    loaded: LoadedModules,
+) -> tuple[
+    bool,
+    str,
+    str,
+    tuple[int, int],
+    str,
+    tuple[int, int],
+]:
+    """Снимок готовности и прогресса одного поколения.
+
+    Фоновый поток меняет эти поля последовательными
+    присваиваниями под `_lock`. Читатель берёт их под тем же замком,
+    иначе видимы невозможные сочетания вроде «этап 2,
+    оглавление» или `status=error` без уже записанной причины. Диск под
+    замком не читается.
+    """
+    with registry._lock:
+        if registry.modules.get(loaded.source.id) is not loaded:
+            raise _StaleModules
+        return (
+            loaded.готов,
+            loaded.source.status,
+            loaded.source.error,
+            loaded.этап,
+            loaded.название_этапа,
+            loaded.прогресс,
+        )
+
+
+def _procedure_matches(
+    loaded: LoadedModules,
+    записи: list,
+) -> list[ProcedureMatch]:
+    счётчики: dict[str, tuple[dict[str, int], int]] = {}
+    результат: list[ProcedureMatch] = []
+    for запись in записи:
+        ключ_имени = запись.имя.casefold()
+        сведения = счётчики.get(ключ_имени)
+        if сведения is None:
+            по_модулям = {}
+            неразрешённых = 0
+            for место in loaded.вызовы.места(запись.имя):
+                if место.цель is None:
+                    неразрешённых += 1
+                else:
+                    по_модулям[место.цель] = по_модулям.get(место.цель, 0) + 1
+            сведения = по_модулям, неразрешённых
+            счётчики[ключ_имени] = сведения
+        по_модулям, неразрешённых = сведения
+        результат.append(
+            ProcedureMatch(
+                address=f"{запись.модуль}::{запись.имя}",
+                signature=_сигнатура(loaded, запись),
+                exported=запись.экспорт,
+                function=запись.функция,
+                line=запись.строка,
+                calls=по_модулям.get(запись.модуль, 0),
+                unresolved_calls=неразрешённых,
+                annotated=запись.перекрыта,
+            )
+        )
+    return результат
+
+
+def _search_procedures_once(
+    registry: Registry,
+    query: str,
+    config: str | None = None,
+    extension: str | None = None,
+    scope: str | None = None,
+    limit: int = 10,
+) -> str:
+    """Точное имя и поиск словами по коду конфигурации или расширения."""
+    limit = _procedure_limit(limit)
+    запрос = query.strip()
+    if not запрос:
+        raise RegistryError("Запрос query не может быть пустым.")
+
+    context, loaded = _selected_modules(registry, config, extension)
+    if loaded is None:
+        return (
+            f"Для конфигурации {context.name} выгрузка в файлы не загружена. "
+            "Инструменты про код ответить не могут."
+        )
+    готов, status, error, этап, название_этапа, прогресс = (
+        _modules_state_snapshot(registry, loaded)
+    )
+    if not готов:
+        if status == STATUS_ERROR:
+            причина = error or "причина не записана"
+            return f"Индекс кода не построен: {причина}"
+        этап, этапов = этап
+        обработано, всего = прогресс
+        return (
+            f"Индекс кода строится: этап {этап}/{этапов} "
+            f"«{название_этапа}», обработано {обработано} из {всего} "
+            "элементов этапа. Ответы про код пока недоступны."
+        )
+    if any(
+        индекс is None
+        for индекс in (loaded.оглавление, loaded.вызовы, loaded.поиск)
+    ):
+        raise RegistryError("Готовый индекс кода неполон; перезагрузите источник.")
+
+    приоритетные = _scope_modules(loaded, scope)
+    точные_все = loaded.оглавление.по_имени(запрос)
+
+    def категория(запись) -> int:
+        if приоритетные and запись.модуль in приоритетные:
+            return 0
+        сдвиг = 1 if приоритетные else 0
+        if запись.модуль.startswith("ОбщийМодуль."):
+            return сдвиг
+        return сдвиг + 1
+
+    точные_все = sorted(точные_все, key=категория)
+    точные = точные_все[:limit]
+    точные_ключи = {
+        (запись.модуль.casefold(), запись.имя.casefold())
+        for запись in точные_все
+    }
+
+    def не_точная(doc) -> bool:
+        запись = doc.payload
+        return (запись.модуль.casefold(), запись.имя.casefold()) not in точные_ключи
+
+    # Категории ищутся отдельно: scope не может потеряться за глобальным
+    # top-N, а ради счётчика не материализуются десятки тысяч Hit. Берётся
+    # ровно limit+1 — последний нужен только для честного «есть ещё».
+    hits = []
+    категорий = 3 if приоритетные else 2
+    for номер_категории in range(категорий):
+        осталось = limit + 1 - len(hits)
+        if осталось <= 0:
+            break
+        hits.extend(
+            loaded.поиск.search(
+                запрос,
+                limit=осталось,
+                predicate=lambda doc, номер=номер_категории: (
+                    не_точная(doc) and категория(doc.payload) == номер
+                ),
+            )
+        )
+
+    слова_все = [hit.doc.payload for hit in hits]
+    слова = слова_все[:limit]
+    if not точные and not слова:
+        выбранное = (
+            f"расширении {extension} конфигурации {context.name}"
+            if extension
+            else f"конфигурации {context.name}"
+        )
+        return (
+            f"По запросу «{query}» в {выбранное} процедур не найдено. "
+            "Поиск по словам выполняется только по экспортным процедурам; "
+            "неэкспортная находится по точному имени. Если известен точный "
+            "адрес, используйте `get_procedure(address=\"Модуль::Имя\")`."
+        )
+
+    try:
+        точные_совпадения = _procedure_matches(loaded, точные)
+        словесные_совпадения = _procedure_matches(loaded, слова)
+    except (OSError, _SignatureError) as ошибка:
+        # Canonical root мог смениться или исчезнуть между resolve и чтением.
+        # Сначала identity CAS: ошибка старого поколения — повод повторить,
+        # а не показывать путь или файловую причину пользователю.
+        if not _modules_are_current(registry, loaded):
+            raise _StaleModules from ошибка
+        raise RegistryError(
+            "Не удалось прочитать сигнатуру из текущей выгрузки кода: "
+            "файл модуля недоступен."
+        ) from ошибка
+
+    # Последняя проверка непосредственно перед render: оглавление, вызовы,
+    # номера строк и прочитанные сигнатуры обязаны принадлежать одному
+    # объекту LoadedModules. Дискового I/O под `_lock` здесь нет.
+    if not _modules_are_current(registry, loaded):
+        raise _StaleModules
+
+    return render_procedure_search(
+        context.name,
+        query,
+        exact=точные_совпадения,
+        exact_total=len(точные_все),
+        exact_more_modules=len(
+            {запись.модуль for запись in точные_все[len(точные):]}
+        ),
+        words=словесные_совпадения,
+        words_more=len(слова_все) > limit,
+        limit=limit,
+        extension=extension,
+    )
+
+
+def search_procedures(
+    registry: Registry,
+    query: str,
+    config: str | None = None,
+    extension: str | None = None,
+    scope: str | None = None,
+    limit: int = 10,
+) -> str:
+    """Поиск с одним полным повтором при смене поколения кода."""
+    for _ in range(2):
+        try:
+            return _search_procedures_once(
+                registry, query, config, extension, scope, limit
+            )
+        except _StaleModules:
+            continue
+    raise RegistryError(
+        "Код изменился во время поиска дважды; повторите запрос после "
+        "завершения загрузки."
+    )
 
 
 # --------------------------------------------------------------- справка

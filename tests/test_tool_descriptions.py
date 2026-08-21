@@ -27,12 +27,7 @@ def anyio_backend():
 
 @pytest.fixture
 def инструменты(tmp_path):
-    """Полный набор: реестр наполняется, иначе набора не будет вовсе.
-
-    Инструмент публикуется, когда есть чем ответить (`available_tools`), и на
-    пустом реестре остаётся один `list_configurations`. Проверять контракт
-    описаний на нём бессмысленно — нужны обе конфигурации и справка.
-    """
+    """Полный набор регистрируется независимо от состава источников."""
 
     async def получить():
         registry = Registry(tmp_path / "data")
@@ -113,3 +108,25 @@ async def test_поиск_отправляет_к_подробностям(ин�
 
     assert "get_object" in по_имени["search_objects"]
     assert "get_syntax" in по_имени["search_syntax"]
+
+
+async def test_поиск_процедур_зарегистрирован_с_полным_контрактом(инструменты):
+    """Клиент видит явный scope и выбор расширения, а не угадывает их."""
+    (поиск,) = [
+        tool for tool in await инструменты() if tool.name == "search_procedures"
+    ]
+
+    свойства = (поиск.input_schema or {}).get("properties") or {}
+    assert set(свойства) == {
+        "query",
+        "config",
+        "extension",
+        "scope",
+        "limit",
+    }
+    assert set((поиск.input_schema or {}).get("required") or []) == {"query"}
+    assert "экспорт" in (поиск.description or "").lower()
+    assert "scope" in свойства["scope"]["description"]
+    assert "list_configurations" in свойства["config"]["description"]
+    assert свойства["limit"]["minimum"] == 1
+    assert свойства["limit"]["maximum"] == 50

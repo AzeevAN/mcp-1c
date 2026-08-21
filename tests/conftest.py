@@ -17,6 +17,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from mcp1c.model import Configuration, Field, MetadataObject, TabularPart
+from mcp1c.registry import Registry
 from mcp1c.search import Doc, SearchIndex
 from mcp1c.store import save_syntax
 from mcp1c.syntax_model import SyntaxIndex, SyntaxItem, SyntaxVariant
@@ -287,6 +288,82 @@ def modules_configuration_xml(
         f"<CompatibilityMode>{compatibility}</CompatibilityMode></Properties>"
         "</Configuration></MetaDataObject>"
     )
+
+
+def extension_configuration_xml(name: str = "Доп") -> str:
+    """`Configuration.xml` минимального расширения для боевого `add_modules`."""
+    return (
+        f'<MetaDataObject xmlns="{_NS_MDCLASSES}">'
+        '<Configuration uuid="00000000-0000-0000-0000-000000000000">'
+        f"<Properties><Name>{name}</Name><NamePrefix>{name}_</NamePrefix>"
+        "<ObjectBelonging>Adopted</ObjectBelonging>"
+        "<ConfigurationExtensionPurpose>AddOn</ConfigurationExtensionPurpose>"
+        "</Properties></Configuration></MetaDataObject>"
+    )
+
+
+@pytest.fixture
+def архив_кода(tmp_path_factory):
+    """Пакует синтетическое дерево тем же форматом, что принимает Registry."""
+    счётчик = 0
+
+    def собрать(
+        корень: Path,
+        *,
+        version: str = "",
+        extension: str | None = None,
+    ) -> Path:
+        nonlocal счётчик
+        счётчик += 1
+        каталог = tmp_path_factory.mktemp(f"архив-кода-{счётчик}")
+        путь = каталог / ("расширение.zip" if extension else "модули.zip")
+        файлы = [файл for файл in sorted(корень.rglob("*")) if файл.is_file()]
+        with zipfile.ZipFile(путь, "w") as zf:
+            разметка = (
+                extension_configuration_xml(extension)
+                if extension
+                else modules_configuration_xml(version=version)
+            )
+            zf.writestr("Configuration.xml", разметка)
+            for файл in файлы:
+                zf.write(файл, файл.relative_to(корень).as_posix())
+        return путь
+
+    return собрать
+
+
+@pytest.fixture
+def реестр_из_кода(tmp_path_factory, архив_кода):
+    """Создаёт реестр только публичными путями загрузки конфигурации и кода."""
+    счётчик = 0
+
+    def собрать(
+        корень: Path,
+        *,
+        name: str = "Пример",
+        extension: str | None = None,
+    ) -> Registry:
+        nonlocal счётчик
+        счётчик += 1
+        рабочий = tmp_path_factory.mktemp(f"tools-modules-{счётчик}")
+        входящее = рабочий / "incoming"
+        входящее.mkdir()
+        реестр = Registry(рабочий / "data")
+        реестр.add_configuration(
+            write_export(входящее, build_configuration(name=name))
+        )
+        реестр.add_modules(
+            архив_кода(корень, extension=extension), configuration=name
+        )
+        return реестр
+
+    return собрать
+
+
+@pytest.fixture
+def реестр_с_кодом(корень_кода, реестр_из_кода):
+    """Минимальная конфигурация с четырьмя реально разобранными модулями."""
+    return реестр_из_кода(корень_кода)
 
 
 def build_syntax(platform: str = "8.3.99.1") -> SyntaxIndex:

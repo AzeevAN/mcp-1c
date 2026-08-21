@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from .graph import Graph
 from .model import Configuration, Field, MetadataObject
 from .syntax_model import (
@@ -23,6 +25,99 @@ from .syntax_model import (
 
 BRIEF, FIELDS, FULL = "brief", "fields", "full"
 DETAIL_LEVELS = (BRIEF, FIELDS, FULL)
+
+
+@dataclass(frozen=True, slots=True)
+class ProcedureMatch:
+    """Одна строка поиска по коду, уже дочитанная с диска для ответа."""
+
+    address: str
+    signature: str
+    exported: bool
+    function: bool
+    line: int
+    calls: int
+    unresolved_calls: int
+    annotated: bool
+
+
+def render_procedure_search(
+    configuration: str,
+    query: str,
+    *,
+    exact: list[ProcedureMatch],
+    exact_total: int,
+    exact_more_modules: int,
+    words: list[ProcedureMatch],
+    words_more: bool,
+    limit: int,
+    extension: str | None = None,
+) -> str:
+    """Два уровня поиска не смешиваются: точное имя и поиск по словам."""
+    источник = (
+        f"расширении {extension} конфигурации {configuration}"
+        if extension
+        else f"конфигурации {configuration}"
+    )
+    out = [f"# Процедуры в {источник}: «{query}»", ""]
+
+    неразрешённые: dict[str, int] = {}
+    for совпадение in [*exact, *words]:
+        имя = совпадение.address.rpartition("::")[2]
+        if совпадение.unresolved_calls:
+            неразрешённые[имя] = совпадение.unresolved_calls
+    for имя, количество in неразрешённые.items():
+        out.append(
+            f"> Для имени `{имя}` цель части вызовов не удалось разрешить: "
+            f"{количество}. Счётчики ниже показывают только подтверждённые "
+            "места вызова конкретного модуля."
+        )
+    if неразрешённые:
+        out.append("")
+
+    def раздел(заголовок: str, совпадения: list[ProcedureMatch]) -> None:
+        out.extend([f"## {заголовок} ({len(совпадения)})", ""])
+        for совпадение in совпадения:
+            вид = "функция" if совпадение.function else "процедура"
+            доступ = "экспортная" if совпадение.exported else "неэкспортная"
+            свойства = [вид, доступ, f"строка {совпадение.line}"]
+            свойства.append(
+                f"подтверждённых мест вызова: {совпадение.calls}"
+            )
+            if совпадение.unresolved_calls:
+                свойства.append(
+                    f"одноимённых без разрешённой цели: "
+                    f"{совпадение.unresolved_calls}"
+                )
+            if совпадение.annotated:
+                свойства.append("есть аннотация расширения")
+            out.append(f"- `{совпадение.address}` — {' · '.join(свойства)}")
+            out.append(f"  Сигнатура: `{совпадение.signature}`")
+        out.append("")
+
+    if exact:
+        раздел("Точное имя", exact)
+        осталось = exact_total - len(exact)
+        if осталось:
+            out.extend(
+                [
+                    f"Показан предел; есть ещё {осталось} в "
+                    f"{exact_more_modules} модулях.",
+                    "",
+                ]
+            )
+    if words:
+        раздел("По словам (только экспортные)", words)
+        if words_more:
+            подсказка = (
+                "Достигнут максимум `limit=50`; уточните `query` или `scope`."
+                if limit >= 50
+                else "Есть ещё результаты; увеличьте `limit`."
+            )
+            out.extend([подсказка, ""])
+
+    return "\n".join(out).rstrip() + "\n"
+
 
 # Понятные подписи свойств объектов.
 _PROP_TITLES = {

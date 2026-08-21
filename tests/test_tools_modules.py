@@ -791,17 +791,17 @@ def test_строящийся_индекс_показывает_этап_и_фа
     второй_файл = threading.Event()
     отпустить = threading.Event()
     прочитано = 0
-    настоящее_чтение = modules_index.прочитать_модуль
+    настоящее_чтение = modules_index.read_bsl
 
-    def прочитать(путь):
+    def прочитать(корень, адрес, локатор):
         nonlocal прочитано
         прочитано += 1
         if прочитано == 2:
             второй_файл.set()
             отпустить.wait(timeout=3)
-        return настоящее_чтение(путь)
+        return настоящее_чтение(корень, адрес, локатор)
 
-    monkeypatch.setattr(modules_index, "прочитать_модуль", прочитать)
+    monkeypatch.setattr(modules_index, "read_bsl", прочитать)
     заново = Registry(реестр_с_кодом.data_dir)
     try:
         assert not заново.startup()

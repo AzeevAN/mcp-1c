@@ -303,7 +303,7 @@ def test_индекс_строится_из_временного_каталог�
     исходное_построить = modules_index.Оглавление.построить
     снимок: dict[str, object] = {}
 
-    def перехват(путь_сборки: Path):
+    def перехват(путь_сборки: Path, **kwargs):
         # `путь_сборки` — временный каталог `_extract_to_temp`, а не `корень`:
         # если бы сборка шла ПОСЛЕ рокировки, оба пути совпали бы.
         снимок["путь_сборки_это_не_корень"] = путь_сборки != корень
@@ -313,7 +313,7 @@ def test_индекс_строится_из_временного_каталог�
         снимок["на_корне_есть_старый_код"] = (
             корень / "CommonModules" / "ОбщийПример" / "Ext" / "Module.bsl"
         ).exists()
-        return исходное_построить(путь_сборки)
+        return исходное_построить(путь_сборки, **kwargs)
 
     monkeypatch.setattr(modules_index.Оглавление, "построить", staticmethod(перехват))
 
@@ -463,17 +463,17 @@ def test_прогресс_показывает_фактический_прохо
     второй_файл = threading.Event()
     отпустить = threading.Event()
     прочитано = 0
-    настоящее_чтение = modules_index.прочитать_модуль
+    настоящее_чтение = modules_index.read_bsl
 
-    def прочитать(путь):
+    def прочитать(корень, адрес, локатор):
         nonlocal прочитано
         прочитано += 1
         if прочитано == 2:
             второй_файл.set()
             отпустить.wait(timeout=2)
-        return настоящее_чтение(путь)
+        return настоящее_чтение(корень, адрес, локатор)
 
-    monkeypatch.setattr(modules_index, "прочитать_модуль", прочитать)
+    monkeypatch.setattr(modules_index, "read_bsl", прочитать)
     заново = Registry(реестр.data_dir)
     try:
         assert not заново.startup()
@@ -517,10 +517,10 @@ def test_холодный_старт_считает_скомпилированн
     release = threading.Event()
     original = modules_index.Оглавление.построить
 
-    def blocked(root, *, прогресс=None):
+    def blocked(root, *, каталог=None, прогресс=None):
         started.set()
         release.wait(timeout=2)
-        return original(root, прогресс=прогресс)
+        return original(root, каталог=каталог, прогресс=прогресс)
 
     monkeypatch.setattr(modules_index.Оглавление, "построить", staticmethod(blocked))
     fresh = Registry(реестр.data_dir)
@@ -790,11 +790,15 @@ def test_фон_не_сохраняет_частичный_registry_во_вре�
             первая_строка_кода.set()
             отпустить_restore.wait(timeout=3)
 
-    def собрать(метка, корень, прогресс=None):
+    def собрать(
+        метка, корень, identity=None, прогресс=None, файлы_каталога=None
+    ):
         try:
             if метка == "modules.zip" and первый_исход == "error":
                 raise MemoryError("не влезло")
-            return настоящая_сборка(метка, корень, прогресс)
+            return настоящая_сборка(
+                метка, корень, identity, прогресс, файлы_каталога
+            )
         finally:
             if метка == "modules.zip":
                 первая_сборка_закончена.set()

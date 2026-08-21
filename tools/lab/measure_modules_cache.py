@@ -23,6 +23,7 @@ from pathlib import Path
 sys.path.insert(0, "src")
 
 from mcp1c import index_cache, modules_index
+from mcp1c.module_content import LocatorIdentity
 from mcp1c.registry import KIND_MODULES, Registry, STATUS_READY, Source
 
 
@@ -54,27 +55,40 @@ shutil.rmtree(СКРАТЧ, ignore_errors=True)
     sha256="lab-sha256",  # штамп важен только для сверки промаха ниже
     status=STATUS_READY,
     stored_path=str(КОРЕНЬ),
+    locator_generation=1,
 )
 реестр.sources[источник.id] = источник
 
 # ---- сборка всех четырёх структур + запись в кэш -----------------------
+каталог = modules_index.build_catalog(
+    КОРЕНЬ,
+    LocatorIdentity(источник.id, источник.sha256, источник.locator_generation),
+)
 начало = time.monotonic()
-оглавление = modules_index.Оглавление.построить(КОРЕНЬ)
+оглавление = modules_index.Оглавление.построить(КОРЕНЬ, каталог=каталог)
 t_оглавление = time.monotonic() - начало
 
 начало = time.monotonic()
-вызовы = modules_index.Вызовы.построить(КОРЕНЬ, оглавление)
+вызовы = modules_index.Вызовы.построить(КОРЕНЬ, оглавление, каталог=каталог)
 t_вызовы = time.monotonic() - начало
 
 начало = time.monotonic()
-формы = modules_index.Формы.построить(КОРЕНЬ)
+формы = modules_index.Формы.построить(КОРЕНЬ, каталог=каталог)
 t_формы = time.monotonic() - начало
 
 начало = time.monotonic()
-поиск = modules_index.построить_поиск(оглавление, КОРЕНЬ)
+поиск = modules_index.построить_поиск(
+    оглавление, КОРЕНЬ, каталог=каталог
+)
 t_поиск = time.monotonic() - начало
 
-индексы = modules_index.Индексы(оглавление=оглавление, вызовы=вызовы, формы=формы, поиск=поиск)
+индексы = modules_index.Индексы(
+    оглавление=оглавление,
+    вызовы=вызовы,
+    формы=формы,
+    поиск=поиск,
+    каталог=каталог,
+)
 
 начало = time.monotonic()
 modules_index.сохранить_индексы(реестр, источник.id, индексы)

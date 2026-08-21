@@ -111,6 +111,88 @@ def test_selection_version_входит_в_штамп_кэша_при_том_ж�
     assert modules_index.поднять_индексы(реестр, источник.id) is None
 
 
+def test_каталог_локаторов_переживает_warm_roundtrip_того_же_поколения(
+    tmp_path, корень_кода
+):
+    реестр, источник = _реестр_с_модулями(tmp_path, корень_кода)
+    исходный = реестр.modules[источник.id].каталог
+
+    поднятые = modules_index.поднять_индексы(реестр, источник.id)
+
+    assert исходный is not None
+    assert поднятые is not None and поднятые.каталог is not None
+    assert поднятые.каталог.identity == исходный.identity
+    assert поднятые.каталог.coverage == исходный.coverage
+    assert list(поднятые.каталог.entries) == list(исходный.entries)
+    assert all(
+        entry.locator is None or not hasattr(entry.locator, "body")
+        for entry in поднятые.каталог.entries.values()
+    )
+
+
+def test_warm_restart_после_reparse_принимает_сохраненное_поколение(
+    tmp_path, корень_кода, monkeypatch
+):
+    реестр, источник = _реестр_с_модулями(tmp_path, корень_кода)
+    архив = tmp_path / "модули.zip"
+
+    источник = реестр.add_modules(архив, configuration="Пример")
+    assert источник.locator_generation > 1
+    сохраненное_поколение = источник.locator_generation
+    реестр.save()
+
+    заново = Registry(реестр.data_dir)
+    настоящая_сборка = заново._построить_индекс_кода
+
+    def нельзя_перестраивать(*_args, **_kwargs):
+        raise AssertionError("warm-кэш не должен перестраиваться")
+
+    monkeypatch.setattr(заново, "_построить_индекс_кода", нельзя_перестраивать)
+    проблемы = заново.startup()
+
+    assert проблемы == []
+    loaded = заново.modules[источник.id]
+    assert loaded.готов
+    assert loaded.каталог is not None
+    assert loaded.каталог.identity.generation == сохраненное_поколение
+
+    monkeypatch.setattr(заново, "_построить_индекс_кода", настоящая_сборка)
+    следующий = заново.add_modules(архив, configuration="Пример")
+    assert следующий.sha256 == источник.sha256
+    assert следующий.locator_generation > сохраненное_поколение
+    заново.save()
+
+    финальный = Registry(реестр.data_dir)
+    monkeypatch.setattr(
+        финальный, "_построить_индекс_кода", нельзя_перестраивать
+    )
+    assert финальный.startup() == []
+    assert (
+        финальный.modules[источник.id].каталог.identity.generation
+        == следующий.locator_generation
+    )
+
+
+def test_remove_readd_не_повторяет_identity_локаторов(
+    tmp_path, корень_кода
+):
+    реестр, первый = _реестр_с_модулями(tmp_path, корень_кода)
+    первая_identity = реестр.modules[первый.id].каталог.identity
+    архив = tmp_path / "модули.zip"
+    реестр.save()
+
+    после_restart = Registry(реестр.data_dir)
+    assert после_restart.startup() == []
+
+    после_restart.remove(первый.id)
+    второй = после_restart.add_modules(архив, configuration="Пример")
+    вторая_identity = после_restart.modules[второй.id].каталог.identity
+
+    assert второй.sha256 == первый.sha256
+    assert вторая_identity != первая_identity
+    assert вторая_identity.generation > первая_identity.generation
+
+
 def test_поднятые_индексы_отвечают_как_построенные(tmp_path, корень_кода):
     """Круг «построить -> сохранить -> поднять» не должен терять данные.
 

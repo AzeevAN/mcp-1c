@@ -678,7 +678,7 @@ def test_tracked_procedure_set_работает_на_синтетическом_
     def body_read_forbidden(*_args, **_kwargs):
         raise AssertionError("стенд не читает тела и сигнатуры")
 
-    monkeypatch.setattr(modules_index, "прочитать_модуль", body_read_forbidden)
+    monkeypatch.setattr(modules_index, "read_bsl", body_read_forbidden)
 
     report = bench.run_procedures(registry, suite, config="Пример")
 

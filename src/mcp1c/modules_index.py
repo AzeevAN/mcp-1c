@@ -52,11 +52,26 @@ from pathlib import Path
 from typing import Callable
 
 from . import index_cache
-from .bsl_lex import прочитать_модуль, разобрать
-from .module_address import адрес_модуля, адрес_скомпилированного_модуля
+from .bsl_lex import разобрать
+from .module_catalog import ModuleCatalog, build_catalog, catalog_files
+from .module_content import (
+    ContentReadError,
+    LocatorIdentity,
+    read_bsl,
+    read_content_bytes,
+)
 from .search import Doc, SearchIndex
 
 Прогресс = Callable[[int, int], None]
+
+
+def _единый_каталог(
+    корень: Path, каталог: ModuleCatalog | None
+) -> ModuleCatalog:
+    """Совместимый прямой вход тестов; production всегда передаёт снимок."""
+    if каталог is not None:
+        return каталог
+    return build_catalog(корень, LocatorIdentity("direct", "direct", 0))
 
 
 def файлы_оглавления(корень: Path) -> tuple[Path, ...]:
@@ -206,7 +221,11 @@ class Оглавление:
 
     @classmethod
     def построить(
-        cls, корень: Path, *, прогресс: Прогресс | None = None
+        cls,
+        корень: Path,
+        *,
+        каталог: ModuleCatalog | None = None,
+        прогресс: Прогресс | None = None,
     ) -> "Оглавление":
         """Проход по выгрузке: адрес модуля из пути, процедуры — из текста.
 
@@ -226,18 +245,21 @@ class Оглавление:
         _конец = array("i")
         _флаги = array("i")
 
-        файлы = файлы_оглавления(корень)
+        снимок = _единый_каталог(корень, каталог)
+        модули_каталога = tuple(
+            entry for entry in снимок.entries.values() if entry.locator is not None
+        )
         исходные_модули: set[str] = set()
         скомпилированные: set[str] = set()
-        _сообщить_прогресс(прогресс, 0, len(файлы))
-        for обработано, файл in enumerate(файлы, 1):
-            относительный = файл.relative_to(корень).as_posix()
-            if файл.suffix == ".Module":
-                адрес = адрес_скомпилированного_модуля(относительный)
+        _сообщить_прогресс(прогресс, 0, len(модули_каталога))
+        for обработано, entry in enumerate(модули_каталога, 1):
+            адрес = entry.address
+            locator = entry.locator
+            assert locator is not None
+            if locator.kind == "compiled":
                 if адрес not in исходные_модули:
                     скомпилированные.add(адрес)
             else:
-                адрес = адрес_модуля(относительный)
                 исходные_модули.add(адрес)
                 скомпилированные.discard(адрес)
             индекс = индекс_модуля.get(адрес)
@@ -246,11 +268,13 @@ class Оглавление:
                 модули.append(адрес)
                 индекс_модуля[адрес] = индекс
 
-            if файл.suffix == ".Module":
-                _сообщить_прогресс(прогресс, обработано, len(файлы))
+            if locator.kind == "compiled":
+                _сообщить_прогресс(
+                    прогресс, обработано, len(модули_каталога)
+                )
                 continue
 
-            for процедура in разобрать(прочитать_модуль(файл)):
+            for процедура in разобрать(read_bsl(корень, адрес, locator)):
                 # Интернируем на записи, не на чтении: одно и то же имя
                 # («ПриСозданииНаСервере» — 3 003 раза на живом корпусе)
                 # иначе заводило бы отдельный строковый объект на каждое
@@ -273,7 +297,7 @@ class Оглавление:
                 if процедура.вид == "функция":
                     флаги |= cls.ФУНКЦИЯ
                 _флаги.append(флаги)
-            _сообщить_прогресс(прогресс, обработано, len(файлы))
+            _сообщить_прогресс(прогресс, обработано, len(модули_каталога))
 
         по_имени, по_модулю = cls._индексы(имена, _модуль, модули)
         return cls(
@@ -533,6 +557,7 @@ class Вызовы:
         корень: Path,
         оглавление: "Оглавление",
         *,
+        каталог: ModuleCatalog | None = None,
         прогресс: Прогресс | None = None,
     ) -> "Вызовы":
         """Второй проход по выгрузке: места вызова из `Процедура.вызовы`,
@@ -551,11 +576,17 @@ class Вызовы:
         рёбер = 0
         разрешённых = 0
 
-        файлы = sorted(корень.rglob("*.bsl"))
-        _сообщить_прогресс(прогресс, 0, len(файлы))
-        for обработано, файл in enumerate(файлы, 1):
-            относительный = файл.relative_to(корень).as_posix()
-            адрес = адрес_модуля(относительный)
+        снимок = _единый_каталог(корень, каталог)
+        модули_каталога = tuple(
+            entry
+            for entry in снимок.entries.values()
+            if entry.locator is not None
+            and entry.locator.kind != "compiled"
+            and entry.address in адрес_к_индексу
+        )
+        _сообщить_прогресс(прогресс, 0, len(модули_каталога))
+        for обработано, entry in enumerate(модули_каталога, 1):
+            адрес = entry.address
             индекс_модуля = адрес_к_индексу[адрес]
             # Имена, объявленные в ЭТОМ модуле — для неквалифицированных
             # вызовов (`_разрешить`). Не только имя самой вызывающей
@@ -566,7 +597,10 @@ class Вызовы:
                 for i in оглавление._по_модулю.get(адрес, ())
             }
 
-            for процедура in разобрать(прочитать_модуль(файл)):
+            assert entry.locator is not None
+            for процедура in разобрать(
+                read_bsl(корень, адрес, entry.locator)
+            ):
                 for квалификатор, имя, строка in процедура.вызовы:
                     # Платформенный метод корпусом не объявлен нигде — не
                     # индексируем вовсе (докстрока класса, 63%).
@@ -586,7 +620,7 @@ class Вызовы:
                     рёбер += 1
                     if цель != -1:
                         разрешённых += 1
-            _сообщить_прогресс(прогресс, обработано, len(файлы))
+            _сообщить_прогресс(прогресс, обработано, len(модули_каталога))
 
         return cls(оглавление.модули, _по_имени, рёбер, разрешённых)
 
@@ -882,6 +916,7 @@ class Форма:
     элементы: list[str]
     события: dict[str, tuple[str, ...]]
     битая: bool
+    структура_доступна: bool = True
 
 
 class Формы:
@@ -939,6 +974,7 @@ class Формы:
     )
 
     БИТАЯ = 1
+    НЕТ_СТРУКТУРЫ = 2
 
     def __init__(
         self,
@@ -982,7 +1018,11 @@ class Формы:
 
     @classmethod
     def построить(
-        cls, корень: Path, *, прогресс: Прогресс | None = None
+        cls,
+        корень: Path,
+        *,
+        каталог: ModuleCatalog | None = None,
+        прогресс: Прогресс | None = None,
     ) -> "Формы":
         """Проход по всем `Form.xml` выгрузки: адрес формы из пути,
         реквизиты/элементы/события — из XML.
@@ -1014,15 +1054,13 @@ class Формы:
                 индекс_строки[строка] = позиция
             return позиция
 
-        файлы = sorted(корень.rglob("Form.xml"))
-        _сообщить_прогресс(прогресс, 0, len(файлы))
-        for обработано, файл in enumerate(файлы, 1):
-            относительный = файл.relative_to(корень).as_posix()
-            # Form.xml лежит на файл выше Module.bsl той же формы —
-            # достраиваем путь до вида, который уже понимает адрес_модуля,
-            # вместо того чтобы заново разбирать пять форм пути здесь.
-            псевдо_путь = относительный[: -len("Form.xml")] + "Form/Module.bsl"
-            адрес = адрес_модуля(псевдо_путь)
+        снимок = _единый_каталог(корень, каталог)
+        формы_каталога = tuple(
+            entry for entry in снимок.entries.values() if entry.is_form
+        )
+        _сообщить_прогресс(прогресс, 0, len(формы_каталога))
+        for обработано, entry in enumerate(формы_каталога, 1):
+            адрес = entry.address
             модули.append(адрес)
 
             _реквизиты_начало.append(len(_реквизиты))
@@ -1030,25 +1068,51 @@ class Формы:
             _события_начало.append(len(_события_проц))
 
             битая = False
+            form_xml = next(
+                (
+                    source
+                    for source in entry.form_sources
+                    if source.kind == "form_xml"
+                ),
+                None,
+            )
+            if entry.address_collision:
+                # При casefold-коллизии нельзя выбрать структуру одного из
+                # двух физически разных адресов и выдать её как общую.
+                form_xml = None
             try:
-                корень_xml = ET.fromstring(файл.read_bytes())
-            except ET.ParseError:
+                корень_xml = (
+                    ET.fromstring(
+                        read_content_bytes(корень, адрес, form_xml.locator)
+                    )
+                    if form_xml is not None
+                    else None
+                )
+            except (ET.ParseError, ContentReadError):
                 # Индекс расходный: одна повреждённая форма помечается и
                 # не роняет сборку по всей выгрузке.
                 битая = True
                 битых += 1
             else:
-                for имя in _реквизиты_формы(корень_xml):
-                    _реквизиты.append(интерн(имя))
-                for имя in _элементы_формы(корень_xml):
-                    _элементы.append(интерн(имя))
-                for имя_процедуры, имя_события, элемент in _события_формы(корень_xml):
-                    _события_проц.append(интерн(имя_процедуры))
-                    _события_имя.append(интерн(имя_события))
-                    _события_элемент.append(-1 if элемент is None else интерн(элемент))
+                if корень_xml is not None:
+                    for имя in _реквизиты_формы(корень_xml):
+                        _реквизиты.append(интерн(имя))
+                    for имя in _элементы_формы(корень_xml):
+                        _элементы.append(интерн(имя))
+                    for имя_процедуры, имя_события, элемент in _события_формы(
+                        корень_xml
+                    ):
+                        _события_проц.append(интерн(имя_процедуры))
+                        _события_имя.append(интерн(имя_события))
+                        _события_элемент.append(
+                            -1 if элемент is None else интерн(элемент)
+                        )
 
-            _флаги.append(cls.БИТАЯ if битая else 0)
-            _сообщить_прогресс(прогресс, обработано, len(файлы))
+            флаги = cls.БИТАЯ if битая else 0
+            if form_xml is None:
+                флаги |= cls.НЕТ_СТРУКТУРЫ
+            _флаги.append(флаги)
+            _сообщить_прогресс(прогресс, обработано, len(формы_каталога))
 
         # Сентинел CSR: конец последнего диапазона — общая длина массива.
         _реквизиты_начало.append(len(_реквизиты))
@@ -1173,6 +1237,9 @@ class Формы:
             элементы=элементы,
             события=self._события_формы_из_индекса(i),
             битая=bool(self._флаги[i] & self.БИТАЯ),
+            структура_доступна=not bool(
+                self._флаги[i] & self.НЕТ_СТРУКТУРЫ
+            ),
         )
 
     def состав(self, адрес: str) -> Форма | None:
@@ -1268,6 +1335,7 @@ def построить_поиск(
     оглавление: Оглавление,
     корень: Path,
     *,
+    каталог: ModuleCatalog | None = None,
     прогресс: Прогресс | None = None,
 ) -> SearchIndex:
     """Поиск словами — только по экспортным: 173 МБ против 473 МБ на живой
@@ -1311,16 +1379,21 @@ def построить_поиск(
     попаданию поиска».
     """
     индекс = SearchIndex(field_weights={"name": 1.0, "module": 0.4, "header": 0.6})
-    файлы = sorted(корень.rglob("*.bsl"))
-    _сообщить_прогресс(прогресс, 0, len(файлы))
-    for обработано, файл in enumerate(файлы, 1):
-        относительный = файл.relative_to(корень).as_posix()
-        адрес = адрес_модуля(относительный)
+    снимок = _единый_каталог(корень, каталог)
+    модули_каталога = tuple(
+        entry
+        for entry in снимок.entries.values()
+        if entry.locator is not None and entry.locator.kind != "compiled"
+    )
+    _сообщить_прогресс(прогресс, 0, len(модули_каталога))
+    for обработано, entry in enumerate(модули_каталога, 1):
+        адрес = entry.address
         if not any(запись.экспорт for запись in оглавление.модуля(адрес)):
-            _сообщить_прогресс(прогресс, обработано, len(файлы))
+            _сообщить_прогресс(прогресс, обработано, len(модули_каталога))
             continue
         записи = оглавление.модуля(адрес)
-        процедуры = разобрать(прочитать_модуль(файл))
+        assert entry.locator is not None
+        процедуры = разобрать(read_bsl(корень, адрес, entry.locator))
         if len(записи) != len(процедуры):
             raise ValueError(
                 f"Оглавление и повторный разбор модуля {адрес} разошлись."
@@ -1344,7 +1417,7 @@ def построить_поиск(
                     },
                 )
             )
-        _сообщить_прогресс(прогресс, обработано, len(файлы))
+        _сообщить_прогресс(прогресс, обработано, len(модули_каталога))
     return индекс
 
 
@@ -1374,6 +1447,7 @@ class Индексы:
     вызовы: Вызовы
     формы: Формы
     поиск: SearchIndex
+    каталог: ModuleCatalog | None = None
 
 
 def сохранить_индексы(
@@ -1411,9 +1485,25 @@ def сохранить_индексы(
             return
         selection_version = источник.selection_version
     сигнатура = f"{source_sha256}:selection={selection_version}"
+    каталог_локаторов = индексы.каталог
+    if каталог_локаторов is None:
+        загруженные = registry.modules.get(source_id)
+        каталог_локаторов = (
+            None if загруженные is None else загруженные.каталог
+        )
+    if каталог_локаторов is None:
+        return
+    if (
+        каталог_локаторов.identity.source_id != source_id
+        or каталог_локаторов.identity.source_sha256 != source_sha256
+    ):
+        return
     каталог = registry.cache_dir if cache_dir is None else cache_dir
     index_cache.save_blob(
-        индексы.оглавление._состояние(),
+        {
+            "toc": индексы.оглавление._состояние(),
+            "catalog": каталог_локаторов.to_state(),
+        },
         index_cache.path_for(каталог, source_id, _КЭШ_ОГЛАВЛЕНИЯ),
         source_sha256=сигнатура,
         kind=_КЭШ_ОГЛАВЛЕНИЯ,
@@ -1482,13 +1572,23 @@ def поднять_индексы(
             return None
         selection_version = источник.selection_version
     сигнатура = f"{source_sha256}:selection={selection_version}"
+    generation = 0 if источник is None else источник.locator_generation
+    if type(generation) is not int or generation <= 0:
+        return None
+    expected_identity = LocatorIdentity(source_id, source_sha256, generation)
 
     данные_оглавления = index_cache.load_blob(
         index_cache.path_for(registry.cache_dir, source_id, _КЭШ_ОГЛАВЛЕНИЯ),
         source_sha256=сигнатура,
         kind=_КЭШ_ОГЛАВЛЕНИЯ,
     )
-    if данные_оглавления is None:
+    if not isinstance(данные_оглавления, dict):
+        return None
+    каталог_локаторов = ModuleCatalog.from_state(
+        данные_оглавления.get("catalog"), expected_identity
+    )
+    данные_toc = данные_оглавления.get("toc")
+    if каталог_локаторов is None or данные_toc is None:
         return None
 
     данные_вызовов = index_cache.load_blob(
@@ -1516,7 +1616,7 @@ def поднять_индексы(
         return None
 
     try:
-        оглавление = Оглавление._из_состояния(данные_оглавления)
+        оглавление = Оглавление._из_состояния(данные_toc)
         вызовы = Вызовы._из_состояния(данные_вызовов)
         формы = Формы._из_состояния(данные_форм)
         поиск = SearchIndex.from_state(
@@ -1531,4 +1631,10 @@ def поднять_индексы(
         # кэша, а не повод падать.
         return None
 
-    return Индексы(оглавление=оглавление, вызовы=вызовы, формы=формы, поиск=поиск)
+    return Индексы(
+        оглавление=оглавление,
+        вызовы=вызовы,
+        формы=формы,
+        поиск=поиск,
+        каталог=каталог_локаторов,
+    )

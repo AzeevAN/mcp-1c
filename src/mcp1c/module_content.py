@@ -249,7 +249,7 @@ def read_bsl(
 ) -> str:
     """Прочитать обычный файл или запись контейнера одним нормализатором."""
 
-    raw = _read_bytes(root, address, locator)
+    raw = read_content_bytes(root, address, locator)
     try:
         text = raw.decode("utf-8-sig")
     except UnicodeDecodeError as error:
@@ -257,3 +257,12 @@ def read_bsl(
             "module_invalid_utf8", address, "текст модуля не является UTF-8"
         ) from error
     return нормализовать(text)
+
+
+def read_content_bytes(
+    root: Path,
+    address: str,
+    locator: ModuleLocator,
+) -> bytes:
+    """Прочитать файл или запись контейнера без текстовой интерпретации."""
+    return _read_bytes(root, address, locator)

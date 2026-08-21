@@ -40,6 +40,7 @@ from .dictionary import Dictionary
 from .graph import Graph
 from .loader import ExportError, load
 from .model import Configuration
+from .module_content import LocatorIdentity
 from .query_parser import looks_like_query_help
 from .query_parser import parse_hbk as parse_query_hbk
 from .search_keys import coverage as key_coverage
@@ -418,6 +419,10 @@ class Source:
     # проставил явно. `intake._состояние` (incoming.py) считает ноль
     # устаревшим, а не свежим — см. комментарий там же.
     selection_version: int = 0
+    # Стабильное поколение каталога локаторов. В отличие от внутреннего
+    # `_modules_generation`, оно переживает restart и потому позволяет
+    # доказать, что warm-кэш и Source относятся к одному снимку кода.
+    locator_generation: int = 0
     # Версия конфигурации (или расширения) из Configuration.xml выгрузки в
     # файлы — только у KIND_MODULES/KIND_EXTENSION. Пустая строка везде
     # больше нигде не значит ошибку: у остальных родов источника поля попросту
@@ -441,11 +446,15 @@ class Source:
             "items_total": self.items_total,
             "stored_path": self.stored_path,
             "selection_version": self.selection_version,
+            "locator_generation": self.locator_generation,
             "code_version": self.code_version,
         }
 
     @classmethod
     def from_dict(cls, raw: dict) -> "Source":
+        locator_generation = raw.get("locator_generation", 0)
+        if type(locator_generation) is not int or locator_generation < 0:
+            locator_generation = 0
         return cls(
             id=raw["id"],
             kind=raw["kind"],
@@ -465,6 +474,7 @@ class Source:
             # которой мы ничего не знаем, — человек никогда не увидел бы
             # «отбор устарел» для такого источника.
             selection_version=raw.get("selection_version", 0),
+            locator_generation=locator_generation,
             code_version=raw.get("code_version", ""),
         )
 
@@ -554,6 +564,7 @@ class LoadedModules:
     # провайдера. Сверяется в `ResolvedContext.notes()` с
     # версией загруженных метаданных.
     версия_кода: str
+    каталог: modules_index.ModuleCatalog | None = None
     готов: bool = True
     прогресс: tuple[int, int] = (0, 0)
     этап: tuple[int, int] = (4, 4)
@@ -576,6 +587,7 @@ class _ModuleOperation:
     configuration: str
     configuration_source: Source
     generation: int
+    locator_generation: int
     lifecycle_lock: threading.Lock
 
 
@@ -811,6 +823,10 @@ class Registry:
         # запускать второй разбор того же корпуса и удваивать расход памяти.
         self._module_builds: dict[str, threading.Thread] = {}
         self._modules_generation: dict[str, int] = {}
+        # Stable locator identity тоже монотонна в пределах процесса и не
+        # удаляется вместе с Source: иначе remove -> add того же ZIP дал бы
+        # прежнее поколение и создал ABA для уже начатого чтения.
+        self._locator_generation: dict[str, int] = {}
         self._module_recovery_blocked = False
         # Один постоянный lock на source_id защищает весь foreground
         # lifecycle: sweep -> extract -> build -> publish/cleanup. Записи не
@@ -1514,7 +1530,9 @@ class Registry:
     def _построить_индекс_кода(
         метка: str,
         корень: Path,
+        identity: LocatorIdentity | None = None,
         прогресс: Callable[[int, str, int, int], None] | None = None,
+        файлы_каталога: tuple[Path, ...] | None = None,
     ) -> modules_index.Индексы:
         """Все четыре структуры провайдера `modules` по коду на `корень`.
 
@@ -1538,28 +1556,59 @@ class Registry:
                 )
 
             p = этап(1, "оглавление")
+            каталог = modules_index.build_catalog(
+                корень,
+                identity or LocatorIdentity("direct", "direct", 0),
+                files=файлы_каталога,
+                progress=p,
+            )
+            if прогресс is not None:
+                прогресс(
+                    1,
+                    "оглавление",
+                    0,
+                    sum(
+                        entry.locator is not None
+                        for entry in каталог.entries.values()
+                    ),
+                )
+            p = этап(1, "оглавление")
             оглавление = (
-                modules_index.Оглавление.построить(корень, прогресс=p)
+                modules_index.Оглавление.построить(
+                    корень, каталог=каталог, прогресс=p
+                )
                 if p is not None
-                else modules_index.Оглавление.построить(корень)
+                else modules_index.Оглавление.построить(
+                    корень, каталог=каталог
+                )
             )
             p = этап(2, "вызовы")
             вызовы = (
-                modules_index.Вызовы.построить(корень, оглавление, прогресс=p)
+                modules_index.Вызовы.построить(
+                    корень, оглавление, каталог=каталог, прогресс=p
+                )
                 if p is not None
-                else modules_index.Вызовы.построить(корень, оглавление)
+                else modules_index.Вызовы.построить(
+                    корень, оглавление, каталог=каталог
+                )
             )
             p = этап(3, "формы")
             формы = (
-                modules_index.Формы.построить(корень, прогресс=p)
+                modules_index.Формы.построить(
+                    корень, каталог=каталог, прогресс=p
+                )
                 if p is not None
-                else modules_index.Формы.построить(корень)
+                else modules_index.Формы.построить(корень, каталог=каталог)
             )
             p = этап(4, "поиск")
             поиск = (
-                modules_index.построить_поиск(оглавление, корень, прогресс=p)
+                modules_index.построить_поиск(
+                    оглавление, корень, каталог=каталог, прогресс=p
+                )
                 if p is not None
-                else modules_index.построить_поиск(оглавление, корень)
+                else modules_index.построить_поиск(
+                    оглавление, корень, каталог=каталог
+                )
             )
         except OSError as error:
             raise RegistryError(
@@ -1571,7 +1620,11 @@ class Registry:
                 f"{метка}: индекс кода не построился — {error}"
             ) from error
         return modules_index.Индексы(
-            оглавление=оглавление, вызовы=вызовы, формы=формы, поиск=поиск
+            оглавление=оглавление,
+            вызовы=вызовы,
+            формы=формы,
+            поиск=поиск,
+            каталог=каталог,
         )
 
     @staticmethod
@@ -1588,6 +1641,7 @@ class Registry:
             формы=индексы.формы,
             поиск=индексы.поиск,
             версия_кода=source.code_version,
+            каталог=индексы.каталог,
             готов=True,
             прогресс=(всего, всего),
         )
@@ -1612,11 +1666,24 @@ class Registry:
                 lifecycle_lock = self._module_operation_locks.setdefault(
                     source_id, threading.Lock()
                 )
+                прежний = self.sources.get(source_id)
+                сохраненное = (
+                    прежний.locator_generation
+                    if прежний is not None
+                    and type(прежний.locator_generation) is int
+                    and прежний.locator_generation > 0
+                    else 0
+                )
+                поколение_локаторов = max(
+                    self._locator_generation.get(source_id, 0), сохраненное
+                ) + 1
+                self._locator_generation[source_id] = поколение_локаторов
                 операция = _ModuleOperation(
                     source_id=source_id,
                     configuration=configuration,
                     configuration_source=конфигурация.source,
                     generation=self._следующее_поколение_модулей(source_id),
+                    locator_generation=поколение_локаторов,
                     lifecycle_lock=lifecycle_lock,
                 )
                 self._module_operations[source_id] = операция
@@ -1863,7 +1930,15 @@ class Registry:
                         f"{архив.name}: архив изменился во время распаковки; "
                         "разбор отменён."
                     )
-                индексы = self._построить_индекс_кода(архив.name, временный)
+                индексы = self._построить_индекс_кода(
+                    архив.name,
+                    временный,
+                    LocatorIdentity(
+                        операция.source_id,
+                        digest,
+                        операция.locator_generation,
+                    ),
+                )
             except BaseException as error:
                 shutil.rmtree(временный, ignore_errors=True)
                 if isinstance(error, RegistryError):
@@ -1887,6 +1962,7 @@ class Registry:
                 items_total=файлов,
                 stored_path=self._relative(корень),
                 selection_version=intake.SELECTION_VERSION,
+                locator_generation=операция.locator_generation,
                 code_version=версия_кода,
             )
             loaded = LoadedModules(
@@ -1897,6 +1973,7 @@ class Registry:
                 формы=индексы.формы,
                 поиск=индексы.поиск,
                 версия_кода=версия_кода,
+                каталог=индексы.каталог,
             )
             try:
                 return self._опубликовать_операцию_модулей(
@@ -1949,6 +2026,7 @@ class Registry:
         корень: Path,
         строится: LoadedModules,
         поколение: int,
+        файлы_каталога: tuple[Path, ...],
     ) -> None:
         """Собирает четыре структуры и публикует их только единым пакетом."""
         source_id = source.id
@@ -1964,7 +2042,13 @@ class Registry:
 
         try:
             индексы = self._построить_индекс_кода(
-                source.origin, корень, отметить
+                source.origin,
+                корень,
+                LocatorIdentity(
+                    source.id, source.sha256, source.locator_generation
+                ),
+                отметить,
+                файлы_каталога,
             )
             готовые = self._готовые_модули(source, корень, индексы)
             # Writer и смена поколения сериализованы одним mutex. CAS
@@ -2069,6 +2153,15 @@ class Registry:
                 return
             self.sources[source.id] = source
             поколение = self._следующее_поколение_модулей(source.id)
+            if source.locator_generation <= 0:
+                # Старые registry.json не знали стабильного поколения. Их
+                # прежний кэш всё равно не содержит каталог и будет промахом;
+                # новое значение сохранится после фоновой пересборки.
+                source.locator_generation = поколение
+            self._locator_generation[source.id] = max(
+                self._locator_generation.get(source.id, 0),
+                source.locator_generation,
+            )
 
         индексы = modules_index.поднять_индексы(
             self,
@@ -2087,10 +2180,7 @@ class Registry:
                 )
             return
 
-        # Подсчёт имён каталог не разбирает и на живых 7 878 файлах занимает
-        # доли секунды. Он нужен до запуска потока: первый же ответ обязан
-        # назвать не только N, но и M.
-        всего = len(modules_index.файлы_оглавления(корень))
+        файлы_каталога = modules_index.catalog_files(корень)
         строится = LoadedModules(
             source=source,
             корень=корень,
@@ -2100,7 +2190,7 @@ class Registry:
             поиск=None,
             версия_кода=source.code_version,
             готов=False,
-            прогресс=(0, всего),
+            прогресс=(0, len(файлы_каталога)),
             этап=(1, 4),
             название_этапа="оглавление",
         )
@@ -2108,7 +2198,7 @@ class Registry:
         source.error = ""
         поток = threading.Thread(
             target=self._собрать_индексы_фоном,
-            args=(source, корень, строится, поколение),
+            args=(source, корень, строится, поколение, файлы_каталога),
             daemon=True,
             name=f"modules:{source.id}",
         )

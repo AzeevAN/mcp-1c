@@ -2255,6 +2255,8 @@ def _form_bindings(loaded: LoadedModules, module: str, name: str):
     форма = loaded.формы.состав(module)
     if форма is None:
         return [], "missing"
+    if not форма.структура_доступна:
+        return [], "missing"
     if форма.битая:
         return [], "broken"
     привязки = [

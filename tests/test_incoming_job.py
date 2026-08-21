@@ -118,7 +118,9 @@ def test_нет_места_отражается_в_задании(tmp_path, monk
     )
 
     assert ответ.status_code == 303
-    текст = client.get("/sources").text
+    текст = дождаться(
+        client, lambda t: "недостаточно свободного места" in t
+    )
     assert "нужно" in текст and "свободно" in текст
 
 
@@ -317,7 +319,7 @@ def test_падение_проверки_места_названо_своей_п
         "/sources/incoming/parse", data={"name": "модули.zip"}, follow_redirects=False
     )
 
-    текст = client.get("/sources").text
+    текст = дождаться(client, lambda t: "свободное место" in t)
     assert "свободное место" in текст
     assert "uid 10001" in текст
     assert "не похоже на zip-архив" not in текст

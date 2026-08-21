@@ -2,6 +2,7 @@
 import zipfile
 
 from conftest import modules_configuration_xml
+from mcp1c import intake
 from mcp1c.registry import KIND_CONFIGURATION, Registry
 
 
@@ -71,3 +72,48 @@ def test_обычная_выгрузка_из_bootstrap_заводит_исто�
     assert сообщения == ["Розница"]
     assert registry.sources["Розница"].kind == KIND_CONFIGURATION
     assert "Розница" in registry.configurations
+
+
+def test_опасный_манифест_не_переключает_выгрузку_кода_в_schema_v1(tmp_path):
+    registry = Registry(tmp_path / "data")
+    registry.bootstrap_dir.mkdir(parents=True)
+    архив = registry.bootstrap_dir / "модули-с-мусором.zip"
+    with zipfile.ZipFile(архив, "w") as zf:
+        zf.writestr("Configuration.xml", modules_configuration_xml())
+        zf.writestr("Catalogs/Т/Ext/ObjectModule.bsl", "Процедура А()\nКонецПроцедуры")
+        zf.writestr("../manifest.xml", "небезопасный мусор")
+        zf.writestr("__MACOSX/manifest.json", "мусор Finder")
+
+    сообщения = registry.bootstrap()
+
+    assert any("incoming" in message for message in сообщения)
+    assert not registry.sources
+    with zipfile.ZipFile(архив) as zf:
+        assert set(intake.карта_архива(zf)) == {
+            "Configuration.xml",
+            "Catalogs/Т/Ext/ObjectModule.bsl",
+        }
+
+
+def test_bootstrap_использует_нормализованную_карту_обёртки(tmp_path):
+    registry = Registry(tmp_path / "data")
+    registry.bootstrap_dir.mkdir(parents=True)
+    архив = registry.bootstrap_dir / "wrapped-normalized.zip"
+    with zipfile.ZipFile(архив, "w") as zf:
+        zf.writestr("._Wrap", "ресурсная вилка")
+        zf.writestr("Wrap//Configuration.xml", modules_configuration_xml())
+        zf.writestr(
+            "Wrap/./Catalogs/Т/Ext/ObjectModule.bsl",
+            "Процедура А()\nКонецПроцедуры",
+        )
+        zf.writestr("Wrap/../manifest.xml", "небезопасный манифест")
+
+    сообщения = registry.bootstrap()
+
+    assert any("incoming" in message for message in сообщения)
+    assert not registry.sources
+    with zipfile.ZipFile(архив) as zf:
+        assert set(intake.карта_архива(zf)) == {
+            "Configuration.xml",
+            "Catalogs/Т/Ext/ObjectModule.bsl",
+        }

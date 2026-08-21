@@ -133,6 +133,7 @@ class _CodeCapture:
 @dataclass(frozen=True, slots=True)
 class _CodeSummary:
     modules: tuple[str, ...]
+    compiled_modules: tuple[str, ...]
     forms: tuple[str, ...]
     procedures: int
     own_procedures: int
@@ -224,6 +225,16 @@ def _summarize_code(loaded: LoadedModules) -> _CodeSummary:
     порядок = lambda value: (value.casefold(), value)
     return _CodeSummary(
         modules=tuple(sorted(loaded.оглавление.модули, key=порядок)),
+        compiled_modules=tuple(
+            sorted(
+                (
+                    module
+                    for module in loaded.оглавление.модули
+                    if loaded.оглавление.скомпилирован(module)
+                ),
+                key=порядок,
+            )
+        ),
         forms=tuple(sorted(loaded.формы.модули, key=порядок)),
         procedures=toc.процедур,
         own_procedures=toc.собственных,
@@ -411,15 +422,49 @@ def _safe_code_error(error: str) -> str:
     return error
 
 
+def _compiled_partial_warning(
+    count: int, *, corpus: str = "корпусе кода"
+) -> str | None:
+    """Единая оговорка для выводов, которым нужен исходный текст."""
+    if not count:
+        return None
+    return (
+        f"В {corpus} скомпилированных общих модулей: {count}. "
+        "Каждый поставлен скомпилированным: у них нет исходного текста и "
+        "перечня процедур, поэтому сведения "
+        "о процедурах, вызовах и перекрытиях приведены только по доступным "
+        "исходникам; дополнительные процедуры, вызовы и перекрытия могут "
+        "быть скрыты."
+    )
+
+
+def _loaded_partial_warning(loaded: LoadedModules) -> str | None:
+    if loaded.оглавление is None:
+        return None
+    return _compiled_partial_warning(
+        sum(
+            1
+            for module in loaded.оглавление.модули
+            if loaded.оглавление.скомпилирован(module)
+        )
+    )
+
+
 def _code_state_text(view: _CodeView) -> str:
     capture = view.capture
     if capture.source is None or capture.loaded is None:
         return "не загружен"
     if capture.ready and view.summary is not None:
         summary = view.summary
+        procedures_label = (
+            f"процедур {summary.procedures} по доступным исходникам"
+            if summary.compiled_modules
+            else f"процедур {summary.procedures}"
+        )
         return (
-            f"готов — модулей {len(summary.modules)}, процедур "
-            f"{summary.procedures}, форм {len(summary.forms)}"
+            f"готов — модулей {len(summary.modules)}, {procedures_label}, "
+            f"форм {len(summary.forms)}, "
+            f"скомпилированных без исходника {len(summary.compiled_modules)}"
         )
     if capture.status == STATUS_ERROR:
         return f"ошибка — {_safe_code_error(capture.error)}"
@@ -510,18 +555,24 @@ def _render_configurations_list(capture: _ListConfigurationsCapture) -> str:
             summary = extension.summary
             if summary is not None:
                 overrides = sum(count for _, count in summary.overrides)
+                доступность = (
+                    " по доступным исходникам"
+                    if summary.compiled_modules
+                    else ""
+                )
                 out.append(
-                    f"- Перекрытий: {overrides} в "
+                    f"- Перекрытий{доступность}: {overrides} в "
                     f"{len(summary.overridden_modules)} модулях"
                 )
                 out.append(
-                    "- По видам: "
+                    f"- По видам{доступность}: "
                     + ", ".join(
                         f"{kind}: {count}" for kind, count in summary.overrides
                     )
                 )
                 out.append(
-                    f"- Собственных процедур: {summary.own_procedures}"
+                    f"- Собственных процедур{доступность}: "
+                    f"{summary.own_procedures}"
                 )
                 out.append(
                     "- Адресация: укажите "
@@ -825,13 +876,40 @@ def _object_code_block(view: _CodeView, full_name: str, detail: str) -> str:
         )
 
     modules, forms = _object_code_details(view, full_name)
+    compiled = {
+        module.casefold() for module in view.summary.compiled_modules
+    }
     if detail == FIELDS:
-        return f"\nКод объекта: модулей {len(modules)}, форм {len(forms)}.\n"
+        compiled_count = sum(
+            1 for module in modules if module.casefold() in compiled
+        )
+        suffix = (
+            f", скомпилированных без исходника {compiled_count}"
+            if compiled_count
+            else ""
+        )
+        return (
+            f"\nКод объекта: модулей {len(modules)}, форм {len(forms)}"
+            f"{suffix}.\n"
+        )
 
     out: list[str] = []
     if modules:
         out.extend(
-            ["", "## Модули объекта", "", *(f"- `{item}`" for item in modules)]
+            [
+                "",
+                "## Модули объекта",
+                "",
+                *(
+                    f"- `{item}`"
+                    + (
+                        " — поставлен скомпилированным, исходного текста нет"
+                        if item.casefold() in compiled
+                        else ""
+                    )
+                    for item in modules
+                ),
+            ]
         )
     else:
         out.extend(["", "## Модули объекта", "", "Модулей нет."])
@@ -875,11 +953,23 @@ def get_related(
 
     overrides, unavailable = _extension_overrides(snapshot)
     out = [f"# Связи `{full_name}` в {context.name}", ""]
+    for extension_name, view in snapshot.extensions:
+        if view.summary is None:
+            continue
+        warning = _compiled_partial_warning(
+            len(view.summary.compiled_modules),
+            corpus=f"расширении `{extension_name}`",
+        )
+        if warning:
+            out.append(f"> {warning}")
     for extension_name, state in unavailable:
         out.append(
             f"> Перекрытия расширения `{extension_name}` недоступны: {state}."
         )
-    if unavailable:
+    if unavailable or any(
+        view.summary is not None and view.summary.compiled_modules
+        for _name, view in snapshot.extensions
+    ):
         out.append("")
 
     def related_name(value: str) -> str:
@@ -1267,6 +1357,10 @@ def _search_procedures_once(
         raise RegistryError("Готовый индекс кода неполон; перезагрузите источник.")
 
     приоритетные = _scope_modules(loaded, scope)
+    предупреждение = _loaded_partial_warning(loaded)
+    предупреждение_скомпилированных = (
+        f"> {предупреждение}\n\n" if предупреждение else ""
+    )
     точные_все = loaded.оглавление.по_имени(запрос)
 
     def категория(запись) -> int:
@@ -1315,8 +1409,11 @@ def _search_procedures_once(
             if extension
             else f"конфигурации {context.name}"
         )
-        return (
-            f"По запросу «{query}» в {выбранное} процедур не найдено. "
+        if not _modules_are_current(registry, loaded):
+            raise _StaleModules
+        return предупреждение_скомпилированных + (
+            f"По исходным текстам по запросу «{query}» в {выбранное} "
+            "совпадений нет. "
             "Поиск по словам выполняется только по экспортным процедурам; "
             "неэкспортная находится по точному имени. Если известен точный "
             "адрес, используйте `get_procedure(address=\"Модуль::Имя\")`."
@@ -1343,7 +1440,7 @@ def _search_procedures_once(
     if not _modules_are_current(registry, loaded):
         raise _StaleModules
 
-    return render_procedure_search(
+    ответ = render_procedure_search(
         context.name,
         query,
         exact=точные_совпадения,
@@ -1356,6 +1453,7 @@ def _search_procedures_once(
         limit=limit,
         extension=extension,
     )
+    return предупреждение_скомпилированных + ответ
 
 
 def search_procedures(
@@ -1646,10 +1744,27 @@ def _get_procedure_once(
     модуль = канонический_модуль
     записи = loaded.оглавление.модуля(модуль)
 
+    if loaded.оглавление.скомпилирован(модуль):
+        if not _modules_are_current(registry, loaded):
+            raise _StaleModules
+        хвост = (
+            f" Процедуру `{имя}` проверить невозможно."
+            if разделитель
+            else ""
+        )
+        return (
+            f"Модуль `{модуль}` поставлен скомпилированным — исходного "
+            "текста и оглавления процедур в выгрузке нет. Не считайте, что "
+            f"процедуры отсутствуют: их нельзя увидеть.{хвост}\n"
+        )
+
     текст = _read_module_snapshot(registry, loaded, модуль)
     разбор = _parsed_procedures(записи, текст)
     observed = [loaded]
     warnings = _module_warnings(context, loaded, записи)
+    partial_warning = _loaded_partial_warning(loaded)
+    if partial_warning:
+        warnings.insert(0, partial_warning)
 
     if not разделитель:
         outlines: list[ProcedureOutline] = []
@@ -1951,6 +2066,14 @@ def _get_callers_once(
             raise _StaleModules
         return f"Модуль `{module}` в загруженном коде не найден.{хвост}\n"
     module = canonical_module
+    if loaded.оглавление.скомпилирован(module):
+        if not _modules_are_current(registry, loaded):
+            raise _StaleModules
+        return (
+            f"Модуль `{module}` поставлен скомпилированным — исходного "
+            "текста и оглавления процедур нет. Поэтому подтвердить или "
+            f"опровергнуть вызовы `{name}` по этому адресу невозможно.\n"
+        )
     записи_модуля = loaded.оглавление.модуля(module)
     совпадения = [
         запись for запись in записи_модуля if запись.имя.casefold() == name.casefold()
@@ -1986,6 +2109,9 @@ def _get_callers_once(
     metadata = _metadata_bindings(context, module, canonical_name)
     form_bindings, form_state = _form_bindings(loaded, module, canonical_name)
     warnings = _module_warnings(context, loaded, записи_модуля)
+    partial_warning = _loaded_partial_warning(loaded)
+    if partial_warning:
+        warnings.insert(0, partial_warning)
 
     # Все структуры ответа принадлежат одному объекту LoadedModules. Между
     # чтением массивов и этой проверкой reparse/remove может заменить пакет;

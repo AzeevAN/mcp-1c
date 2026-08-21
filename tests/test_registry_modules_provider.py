@@ -223,7 +223,7 @@ def test_отказ_сборки_оставляет_источник_в_ошиб
     assert источник.status == "ready"
 
 
-def test_ошибка_fs_актуального_reparse_сохраняет_исходную_причину(
+def test_ошибка_fs_актуального_reparse_санитизирована_и_сохраняет_cause(
     tmp_path_factory, корень_кода, monkeypatch
 ):
     рабочий = tmp_path_factory.mktemp("реестр")
@@ -235,10 +235,11 @@ def test_ошибка_fs_актуального_reparse_сохраняет_ис�
         raise OSError("нет места")
 
     monkeypatch.setattr(intake, "extract", падает)
-    with pytest.raises(OSError, match="нет места") as ошибка:
+    with pytest.raises(RegistryError) as ошибка:
         реестр.add_modules(архив, configuration="Пример")
 
-    assert ошибка.value.__cause__ is None
+    assert "нет места" not in str(ошибка.value)
+    assert isinstance(ошибка.value.__cause__, OSError)
     assert not list(реестр.modules_dir.glob(".Пример.tmp-*"))
 
     # Ошибка актуальной операции не превращается в отмену и не оставляет
@@ -486,6 +487,53 @@ def test_прогресс_показывает_фактический_прохо
         отпустить.set()
 
     _дождаться(lambda: заново.resolve("Пример").modules.готов)
+
+
+@pytest.mark.parametrize(
+    "compiled_name",
+    ["CommonModules/Закрытый.Module", "CommonModule.Плоский.Module"],
+)
+def test_холодный_старт_считает_скомпилированный_модуль_в_первом_этапе(
+    tmp_path, monkeypatch, compiled_name
+):
+    рабочий = tmp_path / "cold-compiled"
+    корень = рабочий / "code"
+    корень.mkdir(parents=True)
+    compiled = корень / compiled_name
+    compiled.parent.mkdir(parents=True, exist_ok=True)
+    compiled.write_bytes(b"compiled")
+    реестр = _реестр_с_конфигурацией(рабочий)
+    реестр.add_modules(_архив_кода(корень, рабочий / "modules.zip"), configuration="Пример")
+    # Холодный builder обязан считать фактический canonical root. Добавляем
+    # исходный модуль уже туда: отбор архива выбирает один формат, тогда как
+    # этот regression проверяет именно mixed root, оставшийся после обновления.
+    обычный = реестр.modules_dir / "Пример/CommonModules/Открытый/Ext/Module.bsl"
+    обычный.parent.mkdir(parents=True)
+    обычный.write_text("Процедура А() Экспорт\nКонецПроцедуры\n", encoding="utf-8")
+    реестр.save()
+    _снести_кэш_модулей(реестр)
+
+    started = threading.Event()
+    release = threading.Event()
+    original = modules_index.Оглавление.построить
+
+    def blocked(root, *, прогресс=None):
+        started.set()
+        release.wait(timeout=2)
+        return original(root, прогресс=прогресс)
+
+    monkeypatch.setattr(modules_index.Оглавление, "построить", staticmethod(blocked))
+    fresh = Registry(реестр.data_dir)
+    try:
+        assert not fresh.startup()
+        assert started.wait(timeout=1)
+        loaded = fresh.resolve("Пример").modules
+        assert loaded.этап == (1, 4)
+        assert loaded.прогресс == (0, 2)
+    finally:
+        release.set()
+
+    _дождаться(lambda: fresh.resolve("Пример").modules.готов)
 
 
 def test_без_выгрузки_кода_состояния_модулей_нет(tmp_path_factory):
@@ -1699,6 +1747,7 @@ def test_remove_инвалидирует_ожидающий_reparse_до_extract
     настоящая_резервация = реестр._зарезервировать_операцию_модулей
     настоящий_extract = intake.extract
     extract_calls = 0
+    space_calls = 0
 
     def зарезервировать(*args, **kwargs):
         операция = настоящая_резервация(*args, **kwargs)
@@ -1710,12 +1759,18 @@ def test_remove_инвалидирует_ожидающий_reparse_до_extract
         extract_calls += 1
         return настоящий_extract(*args, **kwargs)
 
+    def считать_место(нужно, каталог):
+        nonlocal space_calls
+        space_calls += 1
+        return True, нужно
+
     monkeypatch.setattr(
         реестр,
         "_зарезервировать_операцию_модулей",
         зарезервировать,
     )
     monkeypatch.setattr(intake, "extract", считать_extract)
+    monkeypatch.setattr(intake, "enough_space", считать_место)
     ошибки: list[Exception] = []
     поток = threading.Thread(
         target=lambda: _вызвать_с_ошибкой(
@@ -1738,6 +1793,7 @@ def test_remove_инвалидирует_ожидающий_reparse_до_extract
     assert isinstance(ошибки[0], RegistryError)
     assert "отмен" in str(ошибки[0])
     assert extract_calls == 0
+    assert space_calls == 0
     assert not реестр.sources
     assert not реестр.modules
     assert not list(реестр.modules_dir.glob(".Пример.tmp-*"))
@@ -1773,6 +1829,7 @@ def test_из_трёх_ожидающих_reparse_извлекается_тол�
     вызовов_резервации = 0
     настоящий_extract = intake.extract
     extract_calls = 0
+    space_calls = 0
 
     def зарезервировать(*args, **kwargs):
         nonlocal вызовов_резервации
@@ -1786,12 +1843,18 @@ def test_из_трёх_ожидающих_reparse_извлекается_тол�
         extract_calls += 1
         return настоящий_extract(*args, **kwargs)
 
+    def проверить_место(нужно, каталог):
+        nonlocal space_calls
+        space_calls += 1
+        return True, нужно
+
     monkeypatch.setattr(
         реестр,
         "_зарезервировать_операцию_модулей",
         зарезервировать,
     )
     monkeypatch.setattr(intake, "extract", извлечь)
+    monkeypatch.setattr(intake, "enough_space", проверить_место)
     ошибки = [[], [], []]
     потоки = [
         threading.Thread(
@@ -1820,6 +1883,7 @@ def test_из_трёх_ожидающих_reparse_извлекается_тол�
     )
     assert not ошибки[2]
     assert extract_calls == 1
+    assert space_calls == 1
     source = реестр.sources[source_id]
     assert source.origin == архивы[2].name
     assert реестр.modules[source_id].оглавление.по_имени("Третья")

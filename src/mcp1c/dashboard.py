@@ -1842,31 +1842,12 @@ def routes(registry: Registry) -> list[Route]:
             # исправленный архив и жмёт кнопку со старой страницы.
             await run_in_threadpool(сканер.note_failure, архив, job["error"])
             return RedirectResponse("/sources", status_code=303)
-        try:
-            хватает, свободно = intake.enough_space(нужно, registry.data_dir)
-        except Exception as error:
-            # Отдельный блок, а не общий с разбором архива: здесь падает не
-            # zip, а обращение к каталогу данных — нет прав, том отвалился,
-            # каталога нет вовсе. Постановка (§3) требует, чтобы случай прав
-            # был в тексте ошибки, а не оставался догадкой; заголовок «не
-            # похоже на zip-архив» на нём был бы прямой ложью.
-            job["state"] = JOB_FAILED
-            job["error"] = (
-                f"{архив.name}: не удалось проверить свободное место в "
-                f"{registry.data_dir} ({error}). Проверьте, что каталог "
-                "данных на месте и доступен процессу сервера: в контейнере он "
-                "работает от uid 10001, а `chown` из образа на bind-mount не "
-                "действует."
-            )
-            await run_in_threadpool(сканер.note_failure, архив, job["error"])
-            return RedirectResponse("/sources", status_code=303)
-        if not хватает:
-            job["state"] = JOB_FAILED
-            job["error"] = (
-                f"нужно {нужно // 2**20} МБ, свободно {свободно // 2**20} МБ"
-            )
-            await run_in_threadpool(сканер.note_failure, архив, job["error"])
-            return RedirectResponse("/sources", status_code=303)
+        # `planned_size` выше проверяет только целостность центрального
+        # каталога для немедленного ответа формы. Авторитетная проверка места
+        # живёт внутри `Registry.add_modules`: там уже выбраны конфигурация,
+        # вид источника и точный корень, зарезервировано поколение, поэтому
+        # прямой вызов реестра и фоновый путь не могут её обойти.
+        del нужно
 
         # Конфигурацию выбирает человек в форме рядом с кнопкой (поле не
         # обязательно — пустое отдаёт решение `_configuration_for`). Форму

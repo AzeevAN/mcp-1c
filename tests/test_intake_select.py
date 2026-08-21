@@ -26,6 +26,19 @@ def test_плоская_выгрузка_узнаётся_по_контейне�
     assert detect_format(имена) == FORMAT_FLAT
 
 
+def test_плоская_выгрузка_узнаётся_по_скомпилированному_общему_модулю():
+    имена = ["Configuration.xml", "CommonModules/Пример.Module"]
+
+    assert detect_format(имена) == FORMAT_FLAT
+
+
+def test_плоское_имя_скомпилированного_модуля_узнаётся_после_снятия_обёртки():
+    # `detect_format` получает ключи единой карты: обёртка уже снята.
+    имена = ["Configuration.xml", "CommonModule.Пример.Module"]
+
+    assert detect_format(имена) == FORMAT_FLAT
+
+
 def test_в_иерархической_берём_модули_и_формы():
     assert is_wanted("Catalogs/Товары/Ext/ObjectModule.bsl", FORMAT_TREE)
     assert is_wanted("Catalogs/Товары/Forms/Форма/Ext/Form.xml", FORMAT_TREE)
@@ -38,6 +51,39 @@ def test_балласт_не_берём():
         "Catalogs/Товары.xml",
     ):
         assert not is_wanted(имя, FORMAT_TREE), имя
+
+
+def test_скомпилированный_общий_модуль_берётся_только_в_плоском_формате():
+    assert is_wanted("CommonModules/Пример.Module", FORMAT_FLAT)
+    assert not is_wanted("CommonModules/Пример.Module", FORMAT_TREE)
+    assert not is_wanted("Catalogs/Пример.Module", FORMAT_FLAT)
+    assert is_wanted("CommonModule.Пример.Module", FORMAT_FLAT)
+
+
+def test_канонический_регистр_скомпилированного_модуля_строгий():
+    assert not is_wanted("CommonModules/Пример.module", FORMAT_FLAT)
+    assert not is_wanted("CommonModules/Пример.MODULE", FORMAT_FLAT)
+    assert not is_wanted("commonmodules/Пример.Module", FORMAT_FLAT)
+    assert not is_wanted("commonModule.Пример.Module", FORMAT_FLAT)
+    assert not is_wanted("CommonModule.Пример.module", FORMAT_FLAT)
+    assert not is_wanted("CommonModules/Лишний/Пример.Module", FORMAT_FLAT)
+    assert not is_wanted("CommonModules/Пример.Лишний.Module", FORMAT_FLAT)
+
+
+@pytest.mark.parametrize(
+    "junk",
+    ["Junk/CommonModule.False.Module", "Junk/CommonModules/False.Module"],
+)
+def test_вложенный_неканонический_module_не_переключает_tree_в_flat(junk):
+    имена = ["Catalogs/Т/Ext/ObjectModule.bsl", junk]
+
+    assert detect_format(имена) == FORMAT_TREE
+
+
+def test_канонический_макет_исключён_но_настоящие_txt_остаются():
+    assert not is_wanted("Catalogs/Пример.Template.txt", FORMAT_FLAT)
+    assert is_wanted("Catalogs/Пример.template.txt", FORMAT_FLAT)
+    assert is_wanted("Catalogs/Пример.Module.txt", FORMAT_FLAT)
 
 
 def test_член_с_выходом_наружу_отвергается(tmp_path):

@@ -761,8 +761,9 @@ def test_второе_переименование_не_удалось_преж�
         )
         zf.writestr("Catalogs/Д/Ext/ObjectModule.bsl", "Процедура П() КонецПроцедуры")
 
-    with pytest.raises(OSError):
+    with pytest.raises(RegistryError) as ошибка:
         registry.add_modules(новая, configuration="Розница")
+    assert "нет места" not in str(ошибка.value)
 
     # Прежний разбор на месте — рокировка откатилась.
     assert прежний_модуль.is_file()
@@ -830,8 +831,9 @@ def test_провал_первого_переименования_прежний
         )
         zf.writestr("Catalogs/Д/Ext/ObjectModule.bsl", "Процедура Р() КонецПроцедуры")
 
-    with pytest.raises(OSError):
+    with pytest.raises(RegistryError) as ошибка:
         registry.add_modules(новая, configuration="Розница")
+    assert "нет прав" not in str(ошибка.value)
 
     assert прежний_модуль.is_file()
     остатки = sorted(p.name for p in registry.modules_dir.iterdir())
@@ -858,8 +860,9 @@ def test_провал_переименования_при_первом_разб�
 
     monkeypatch.setattr(Path, "rename", подмена)
 
-    with pytest.raises(OSError):
+    with pytest.raises(RegistryError) as ошибка:
         registry.add_modules(_выгрузка_конфигурации(tmp_path), configuration="Розница")
+    assert "нет места" not in str(ошибка.value)
 
     assert not (registry.modules_dir / "Розница").exists()
     if registry.modules_dir.is_dir():
@@ -870,9 +873,9 @@ def test_провал_отката_даёт_registryerror_с_обоими_пут
     """КРИТИЧНО, ре-ревью: если второе переименование (`временный ->
     корень`) не удалось, а следом не удался и откат (`отставленный ->
     корень`) — природа отказа у обоих одна, «два подряд» не выдумка —
-    наверх обязан лететь `RegistryError`, называющий ОБА пути: где лежит
-    прежний разбор и где новый. Молча оставлять реестр указывающим в
-    пустоту нельзя — это и есть тот дефект, ради которого шли все круги."""
+    наверх обязан лететь `RegistryError`, называющий ОБА безопасных пути
+    относительно `data/`: где лежит прежний разбор и где новый. Абсолютный
+    путь хоста и сырой текст ОС наружу не выходят."""
     from pathlib import Path
 
     registry = _реестр_с_конфигурацией(tmp_path)
@@ -904,7 +907,9 @@ def test_провал_отката_даёт_registryerror_с_обоими_пут
 
     текст = str(инфо.value)
     корень = registry.modules_dir / "Розница"
-    assert str(корень) in текст
+    assert "data/modules/Розница" in текст
+    assert str(корень.parent) not in текст
+    assert "нет прав" not in текст
 
     остатки = sorted(p.name for p in registry.modules_dir.iterdir())
     отставленные = [имя for имя in остатки if ".old-" in имя]
@@ -912,8 +917,8 @@ def test_провал_отката_даёт_registryerror_с_обоими_пут
     отставленный_путь = registry.modules_dir / отставленные[0]
     # Отставленный каталог держит прежний разбор физически целым...
     assert (отставленный_путь / "Catalogs/Т/Ext/ObjectModule.bsl").is_file()
-    # ...и путь к нему назван в тексте ошибки, чтобы вернуть руками.
-    assert str(отставленный_путь) in текст
+    # ...и безопасный относительный путь назван, чтобы вернуть руками.
+    assert f"data/modules/{отставленный_путь.name}" in текст
     # Временного каталога рядом не осталось.
     assert not any(".tmp-" in имя for имя in остатки)
 
@@ -952,10 +957,9 @@ def test_архив_из_абсолютных_путей_не_трогает_п�
     которого `safe_target` обязан отвергать, тихо становится относительным
     и пишется на диск.
 
-    Архив целиком из абсолютных путей: `Configuration.xml` не находится ни
-    в корне (строка `/Configuration.xml` не равна `Configuration.xml`), ни
-    в «обёртке» — обёртки нет вовсе, все члены абсолютные, распознавание
-    отказывает раньше `extract`. Прежний разбор не трогается."""
+    Архив целиком из абсолютных путей: единый безопасный отбор не считает ни
+    `/Configuration.xml`, ни модули кандидатами на распаковку и отказывает
+    раньше `extract`. Прежний разбор не трогается."""
     registry = _реестр_с_конфигурацией(tmp_path)
     registry.add_modules(_выгрузка_конфигурации(tmp_path), configuration="Розница")
     модуль_конфигурации = (
@@ -974,7 +978,7 @@ def test_архив_из_абсолютных_путей_не_трогает_п�
         zf.writestr("/Catalogs/Р/Ext/ObjectModule.bsl", "Процедура Б() КонецПроцедуры")
         zf.writestr("/../снаружи.bsl", "X")
 
-    with pytest.raises(RegistryError, match="Configuration.xml"):
+    with pytest.raises(RegistryError, match="не нашлось ни модулей, ни форм"):
         registry.add_modules(архив, configuration="Розница")
 
     # Прежний разбор конфигурации цел, новый источник расширения не завёлся.

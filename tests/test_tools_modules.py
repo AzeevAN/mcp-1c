@@ -69,6 +69,139 @@ def test_пустая_выдача_объясняет_отбор(реестр_с
     assert "get_procedure(" in ответ
 
 
+def test_скомпилированный_модуль_виден_но_процедуры_не_объявляются(
+    tmp_path, реестр_из_кода
+):
+    корень = tmp_path / "compiled"
+    каталог = корень / "CommonModules"
+    каталог.mkdir(parents=True)
+    (каталог / "Закрытый.Module").write_bytes(b"compiled")
+    configuration = build_configuration(name="Пример")
+    configuration.objects["ОбщийМодуль.Закрытый"] = MetadataObject(
+        full_name="ОбщийМодуль.Закрытый",
+        kind="ОбщийМодуль",
+        name="Закрытый",
+    )
+    реестр = реестр_из_кода(
+        корень, configuration=configuration, code_version="1.0"
+    )
+
+    список = tools.list_configurations(реестр)
+    объект = tools.get_object(
+        реестр, "ОбщийМодуль.Закрытый", config="Пример", detail="full"
+    )
+    модуль = tools.get_procedure(
+        реестр, "ОбщийМодуль.Закрытый", config="Пример"
+    )
+    процедура = tools.get_procedure(
+        реестр, "ОбщийМодуль.Закрытый::Найти", config="Пример"
+    )
+    поиск = tools.search_procedures(
+        реестр, "Найти", config="Пример"
+    )
+    вызовы = tools.get_callers(
+        реестр, "ОбщийМодуль.Закрытый::Найти", config="Пример"
+    )
+
+    assert "модулей 1" in список and "скомпилирован" in список
+    assert "ОбщийМодуль.Закрытый" in объект and "скомпилирован" in объект
+    assert "поставлен скомпилированным" in модуль
+    assert "поставлен скомпилированным" in процедура
+    assert "поставлен скомпилированным" in поиск
+    assert "поставлен скомпилированным" in вызовы
+    assert "процедур не найдено" not in поиск
+
+    реестр.save()
+    восстановленный = Registry(реестр.data_dir)
+    восстановленный.startup()
+    поднятое = восстановленный.resolve("Пример").modules
+    assert поднятое.готов is True
+    assert поднятое.оглавление.скомпилирован("ОбщийМодуль.Закрытый") is True
+
+
+def test_скомпилированный_модуль_расширения_остаётся_отдельным_корпусом(
+    tmp_path, реестр_из_кода
+):
+    корень = tmp_path / "compiled-extension"
+    каталог = корень / "CommonModules"
+    каталог.mkdir(parents=True)
+    (каталог / "ЗакрытыйДоп.Module").write_bytes(b"compiled")
+    реестр = реестр_из_кода(корень, extension="Доп")
+
+    ответ = tools.get_procedure(
+        реестр,
+        "ОбщийМодуль.ЗакрытыйДоп::Найти",
+        config="Пример",
+        extension="Доп",
+    )
+
+    assert "поставлен скомпилированным" in ответ
+    assert "Пример:modules" not in реестр.sources
+    assert "Пример:ext:Доп" in реестр.sources
+
+
+def test_смешанный_корпус_предупреждает_над_оглавлением_и_обратными_вызовами(
+    tmp_path, корень_кода, реестр_из_кода
+):
+    реестр = реестр_из_кода(корень_кода)
+    loaded = реестр.resolve("Пример").modules
+    compiled = loaded.корень / "CommonModules" / "Закрытый.Module"
+    compiled.parent.mkdir(parents=True, exist_ok=True)
+    compiled.write_bytes(b"compiled")
+    индексы = реестр._построить_индекс_кода("mixed", loaded.корень)
+    with реестр._lock:
+        реестр.modules[loaded.source.id] = реестр._готовые_модули(
+            loaded.source, loaded.корень, индексы
+        )
+
+    оглавление = tools.get_procedure(
+        реестр, "ОбщийМодуль.ОбщийПример", config="Пример"
+    )
+    вызовы = tools.get_callers(
+        реестр, "ОбщийМодуль.ОбщийПример::Сложить", config="Пример"
+    )
+
+    for ответ in (оглавление, вызовы):
+        assert ответ.startswith(">")
+        assert "скомпилирован" in ответ
+        assert "по доступным исходникам" in ответ
+
+
+def test_скомпилированная_часть_расширения_делает_сводку_и_перекрытия_частичными(
+    tmp_path, реестр_из_кода, архив_кода
+):
+    база = tmp_path / "base-partial-extension"
+    _код_объекта(база)
+    реестр = реестр_из_кода(
+        база, configuration=_конфигурация_для_блоков()
+    )
+    расширение = tmp_path / "extension-partial"
+    _код_расширения(расширение, variant="related")
+    реестр.add_modules(
+        архив_кода(расширение, extension="Доп"), configuration="Пример"
+    )
+    loaded = реестр.resolve("Пример", extension="Доп").extension
+    compiled = loaded.корень / "CommonModules" / "ЗакрытыйДоп.Module"
+    compiled.parent.mkdir(parents=True, exist_ok=True)
+    compiled.write_bytes(b"compiled")
+    индексы = реестр._построить_индекс_кода("mixed-extension", loaded.корень)
+    with реестр._lock:
+        реестр.modules[loaded.source.id] = реестр._готовые_модули(
+            loaded.source, loaded.корень, индексы
+        )
+
+    список = tools.list_configurations(реестр)
+    связи = tools.get_related(реестр, "Документ.Пример", config="Пример")
+
+    assert "Расширение `Доп`" in список
+    assert "по доступным исходникам" in список
+    assert связи.startswith("#")
+    assert "скомпилирован" in связи and "могут быть скрыты" in связи
+    assert связи.index("скомпилирован") < связи.index("## Ссылается")
+    строка = next(line for line in связи.splitlines() if "Справочник.Связанный" in line)
+    assert "перекрыто расширением `Доп`" in строка
+
+
 def test_limit_ограничивает_уровень_точного_имени(
     корень_кода, реестр_из_кода
 ):

@@ -82,6 +82,25 @@ def test_версия_отбора_меньше_текущей_даёт_уста
     assert строки[0]["detail"] == "Р:modules"
 
 
+def test_предыдущее_правило_отбора_помечено_устаревшим(tmp_path):
+    registry = _реестр(tmp_path)
+    файл = состарить(_архив(registry, "в.zip"))
+    сканер = IncomingScanner(registry)
+    хеш = сканер.digest(файл)
+    registry.sources["Р:modules"] = Source(
+        id="Р:modules",
+        kind=KIND_MODULES,
+        origin="в.zip",
+        sha256=хеш,
+        selection_version=2,
+    )
+
+    строки = сканер.scan()
+
+    assert SELECTION_VERSION == 3
+    assert строки[0]["state"] == STATE_STALE
+
+
 def test_запись_без_selection_version_из_registry_json_после_restore_устарела(
     tmp_path,
 ):

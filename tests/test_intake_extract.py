@@ -135,3 +135,50 @@ def test_planned_size_и_extract_совпадают_на_обёрнутом_ар
 
     assert файлов == 2
     assert нужно - INDEX_RESERVE == байт
+
+
+def test_planned_size_совпадает_с_extract_для_дублей_и_опасных_путей(
+    tmp_path, monkeypatch
+):
+    from mcp1c import intake
+
+    monkeypatch.setattr(intake, "INDEX_RESERVE_MIN", 0)
+    архив = tmp_path / "точный.zip"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        with zipfile.ZipFile(архив, "w") as zf:
+            zf.writestr("Catalogs/Т/Ext/ObjectModule.bsl", "A" * 100)
+            zf.writestr("Catalogs/Т/Ext/ObjectModule.bsl", "B" * 999)
+            zf.writestr("../наружу.bsl", "X" * 500)
+            zf.writestr("Ext/ParentConfigurations/П.cf", "C" * 1000)
+    корень = tmp_path / "modules"
+
+    нужно, _ = planned_size(архив)
+    файлов, байт = extract(архив, корень)
+
+    assert файлов == 1 and байт == 999
+    assert нужно == байт + 150
+
+
+def test_опасный_и_finder_мусор_не_переключают_формат_и_не_ломают_обёртку(
+    tmp_path, monkeypatch
+):
+    from mcp1c import intake
+
+    monkeypatch.setattr(intake, "INDEX_RESERVE_MIN", 0)
+    архив = tmp_path / "безопасный-формат.zip"
+    with zipfile.ZipFile(архив, "w") as zf:
+        zf.writestr("Обёртка/Catalogs/Т/Ext/ObjectModule.bsl", "A" * 10)
+        zf.writestr("../escape.Form", "B" * 100)
+        zf.writestr("__MACOSX/junk.Form", "C" * 100)
+        zf.writestr("../CommonModule.Ложный.Module", "D" * 100)
+    корень = tmp_path / "modules-safe"
+
+    нужно, формат = planned_size(архив)
+    файлов, байт = extract(архив, корень)
+
+    assert формат == "tree"
+    assert файлов == 1 and байт == 10
+    assert нужно == 12
+    assert (корень / "Catalogs/Т/Ext/ObjectModule.bsl").read_text() == "A" * 10
+    assert not (корень / "Обёртка").exists()

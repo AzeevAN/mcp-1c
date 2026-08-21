@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import re
@@ -95,6 +96,34 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _отпечаток_архива(path: Path) -> tuple[int, int, int, int]:
+    """Личность файла на время выбора вида, расчёта места и распаковки."""
+    stat = path.stat()
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
+
+
+def _архив_не_изменился(
+    path: Path, ожидался: tuple[int, int, int, int]
+) -> bool:
+    try:
+        return _отпечаток_архива(path) == ожидался
+    except OSError:
+        return False
+
+
+def _ошибка_файловой_системы(error: BaseException) -> OSError | None:
+    """Первый ``OSError`` в цепочке причин, без показа его текста наружу."""
+    текущая: BaseException | None = error
+    просмотрено: set[int] = set()
+    while текущая is not None and id(текущая) not in просмотрено:
+        просмотрено.add(id(текущая))
+        if isinstance(текущая, OSError):
+            return текущая
+        следующая = текущая.__cause__ or текущая.__context__
+        текущая = следующая if isinstance(следующая, BaseException) else None
+    return None
+
+
 def _похоже_на_выгрузку_в_файлы(path: Path) -> bool:
     """Выгрузка в файлы против выгрузки schema v1.
 
@@ -102,12 +131,16 @@ def _похоже_на_выгрузку_в_файлы(path: Path) -> bool:
     (модули в .txt). Смотрим только имена членов: тело не читается,
     центрального каталога достаточно.
     """
+    from . import intake
+
     try:
         with zipfile.ZipFile(path) as zf:
-            имена = zf.namelist()
+            карта = intake.карта_архива(zf)
+            имена = tuple(карта)
+            записи, _ = intake._отобранные_записи(zf, карта=карта)
+            есть_код = bool(записи)
     except (OSError, zipfile.BadZipFile):
         return False
-    есть_код = any(и.endswith((".bsl", ".Form", ".txt")) for и in имена)
     есть_манифест = any(
         и.endswith(("manifest.json", "manifest.xml")) for и in имена
     )
@@ -126,29 +159,10 @@ _MAX_CONFIGURATION_XML_SIZE = 8 * 1024 * 1024
 
 
 def _найти_configuration_xml(zf: zipfile.ZipFile) -> zipfile.ZipInfo | None:
-    """`Configuration.xml` архива — в корне или в единственном каталоге
-    верхнего уровня (см. `intake._единственный_верхний_каталог`). `None`,
-    если расположение неоднозначно или файла нет вовсе ни там, ни там.
-
-    Архив расширения нередко собирают командой вида `zip -r архив.zip папка`:
-    тогда `Configuration.xml` лежит не в корне, а внутри единственного
-    каталога верхнего уровня. Признак обёртки живёт в `intake` одной
-    функцией на два вызывающих — этот и `intake.extract`/`planned_size`:
-    разойдись он на два независимых правила, распознавание вида выгрузки
-    перестало бы совпадать с тем, что реально легло на диск.
-    """
+    """`Configuration.xml` из единой нормализованной карты архива."""
     from . import intake
 
-    имена = set(zf.namelist())
-    if "Configuration.xml" in имена:
-        return zf.getinfo("Configuration.xml")
-    верхний = intake._единственный_верхний_каталог(zf)
-    if верхний is None:
-        return None
-    кандидат = f"{верхний}/Configuration.xml"
-    if кандидат not in имена:
-        return None
-    return zf.getinfo(кандидат)
+    return intake.карта_архива(zf).get("Configuration.xml")
 
 
 def _сведения_о_выгрузке(path: Path) -> tuple[bool, str, str]:
@@ -222,11 +236,18 @@ def _сведения_о_выгрузке(path: Path) -> tuple[bool, str, str]:
                     "или поддельный архив."
                 )
             содержимое = zf.read(сведения)
-    except (OSError, zipfile.BadZipFile) as ошибка:
+    except zipfile.BadZipFile as ошибка:
+        raise отказ(
+            "Архив ZIP повреждён или его центральный каталог не читается."
+        ) from ошибка
+    except OSError as ошибка:
         # Валидный центральный каталог, но битый CRC именно у Configuration.xml
         # (обрезанная на записи выгрузка) — тоже сюда: без перехвата человек
         # увидел бы голое исключение вместо объяснения.
-        raise отказ(f"Configuration.xml не читается ({ошибка}).") from ошибка
+        raise отказ(
+            "Configuration.xml или архив недоступны для чтения; проверьте "
+            "файл и права процесса."
+        ) from ошибка
 
     try:
         корень = ET.fromstring(содержимое)
@@ -292,8 +313,8 @@ def _отбираемых_членов(архив: Path) -> int:
     Нужно, чтобы отвергнуть негодный архив до того, как `add_modules` снесёт
     прежний разбор: центральный каталог zip знает имена всех членов, а правило
     отбора живёт в `intake` — второго правила здесь не заводится. Обёртка
-    архива (`intake._единственный_верхний_каталог`) снимается тем же
-    способом, что и в `intake.extract`/`planned_size`: без этого предпроверка
+    архива снимается той же единой картой `intake.карта_архива`, что и в
+    `intake.extract`/`planned_size`: без этого предпроверка
     считала бы по сырым именам, а `extract` — по именам без обёртки, и на
     члене вроде `Обёртка/__MACOSX/x.bsl` (после снятия обёртки распознаётся
     как мусор Finder и отбрасывается, а по сырому имени — нет) числа
@@ -305,14 +326,8 @@ def _отбираемых_членов(архив: Path) -> int:
     from . import intake
 
     with zipfile.ZipFile(архив) as zf:
-        записи = [i for i in zf.infolist() if not i.is_dir()]
-        формат = intake.detect_format([i.filename for i in записи])
-        обёртка = intake._единственный_верхний_каталог(zf)
-        return sum(
-            1
-            for i in записи
-            if intake.is_wanted(intake._без_обёртки(i.filename, обёртка), формат)
-        )
+        записи, _формат = intake._отобранные_записи(zf)
+        return len(записи)
 
 
 def _sweep_stale_extract_tmp(родитель: Path, имя: str) -> None:
@@ -1160,25 +1175,26 @@ class Registry:
         # Хеш считается после проверки годности архива (она — на вызывающей
         # стороне, до этого метода): полный проход по файлу, и платить им за
         # архив, который мы всё равно не возьмём, незачем.
-        digest = _sha256(архив)
-        корень.parent.mkdir(parents=True, exist_ok=True)
-        _sweep_stale_extract_tmp(корень.parent, корень.name)
-        временный = Path(
-            tempfile.mkdtemp(dir=корень.parent, prefix=f".{корень.name}.tmp-")
-        )
+        временный: Path | None = None
+        try:
+            digest = _sha256(архив)
+            корень.parent.mkdir(parents=True, exist_ok=True)
+            _sweep_stale_extract_tmp(корень.parent, корень.name)
+            временный = Path(
+                tempfile.mkdtemp(dir=корень.parent, prefix=f".{корень.name}.tmp-")
+            )
         # Права — как у прежнего разбора, а не 0700, которые ставит
         # `mkdtemp`: без этой строки человек на хосте (bind-mount, контейнер
         # под uid 10001) после переразбора вдруг перестал бы заходить в
         # каталог, который до этого читался свободно. Прежнего разбора нет
         # — обычные 0755, как у каталога, который раньше создавала сама
         # распаковка через `mkdir`.
-        try:
-            режим = корень.stat().st_mode & 0o777 if корень.exists() else 0o755
-        except OSError:
-            режим = 0o755
-        временный.chmod(режим)
+            try:
+                режим = корень.stat().st_mode & 0o777 if корень.exists() else 0o755
+            except OSError:
+                режим = 0o755
+            временный.chmod(режим)
 
-        try:
             файлов, _байт = intake.extract(архив, временный)
             if not файлов:
                 # Предпроверка считает по именам из центрального каталога, а
@@ -1189,9 +1205,17 @@ class Registry:
                 # этой проверки завёлся бы источник со `status=ready` при
                 # пустом каталоге.
                 raise _нет_модулей(архив)
-        except BaseException:
-            shutil.rmtree(временный, ignore_errors=True)
+        except BaseException as error:
+            if временный is not None:
+                shutil.rmtree(временный, ignore_errors=True)
+            if isinstance(error, OSError) and error.errno == errno.ENOSPC:
+                raise RegistryError(
+                    f"{архив.name}: свободное место закончилось во время "
+                    "распаковки; прежний разбор сохранён. Освободите место "
+                    "и повторите."
+                ) from error
             raise
+        assert временный is not None
         return временный, digest, файлов
 
     def _swap_code(
@@ -1218,7 +1242,8 @@ class Registry:
         прежний разбор физически цел, но лежит не там, где его ждёт реестр
         (`отставленный`), а на месте `корня` — пустота или частичная
         распаковка. Молчать здесь нельзя: наверх летит `RegistryError` с
-        обоими путями в тексте, чтобы человек мог вернуть каталог руками.
+        обоими безопасными путями относительно `data/`, чтобы человек мог
+        вернуть каталог руками, но без абсолютного пути хоста и текста ОС.
         Это единственный путь рокировки, который не восстанавливает состояние
         сам, — и единственный, где это явно названо (исключением с текстом),
         а не подразумевается докстрочной оговоркой.
@@ -1262,14 +1287,25 @@ class Registry:
                         # рестарта не найдёт `stored_path` и тихо выкинет
                         # источник — а данные всё это время были на месте,
                         # просто под другим именем.
+                        if корень.parent == self.modules_dir:
+                            безопасный_каталог = "data/modules"
+                        elif корень.parent.parent == self.extensions_dir:
+                            безопасный_каталог = (
+                                f"data/extensions/{корень.parent.name}"
+                            )
+                        else:
+                            безопасный_каталог = "каталог кода"
+                        прежний_путь = (
+                            f"{безопасный_каталог}/{отставленный.name}"
+                        )
+                        новый_путь = f"{безопасный_каталог}/{корень.name}"
                         raise RegistryError(
                             f"{архив.name}: переразбор не удался, и откат "
-                            f"тоже. Прежний разбор остался в «{отставленный}»"
-                            f", в «{корень}» — пустой или частично "
+                            f"тоже. Прежний разбор остался в «{прежний_путь}»"
+                            f", в «{новый_путь}» — пустой или частично "
                             "распакованный новый. Разберитесь руками: "
                             f"который из каталогов верный, переименуйте в "
-                            f"«{корень.name}», лишний удалите. Ошибка "
-                            f"отката: {ошибка_отката}"
+                            f"«{корень.name}», лишний удалите."
                         ) from ошибка_отката
                     raise
                 else:
@@ -1330,6 +1366,11 @@ class Registry:
                 if p is not None
                 else modules_index.построить_поиск(оглавление, корень)
             )
+        except OSError as error:
+            raise RegistryError(
+                f"{метка}: индекс кода не построился — файл текущей "
+                "выгрузки недоступен."
+            ) from error
         except Exception as error:
             raise RegistryError(
                 f"{метка}: индекс кода не построился — {error}"
@@ -1477,16 +1518,84 @@ class Registry:
         kind: str,
         версия_кода: str,
         снести: Callable[[Path], None],
+        отпечаток_архива: tuple[int, int, int, int],
     ) -> Source:
         """Общий foreground lifecycle модулей и расширения."""
         from . import intake
 
         with self._lifecycle_операции_модулей(операция, архив):
-            временный, digest, файлов = self._extract_to_temp(архив, корень)
             try:
+                if not _архив_не_изменился(архив, отпечаток_архива):
+                    raise RegistryError(
+                        f"{архив.name}: архив изменился после выбора вида "
+                        "выгрузки; повторите разбор после завершения копирования."
+                    )
+                нужно, _формат = intake.planned_size(
+                    архив, existing=корень.exists()
+                )
+                хватает, свободно = intake.enough_space(нужно, self.data_dir)
+            except RegistryError:
+                raise
+            except (OSError, zipfile.BadZipFile) as error:
+                raise RegistryError(
+                    f"{архив.name}: не удалось проверить архив и свободное "
+                    "место. Проверьте доступность каталога данных и права: "
+                    "процесс контейнера работает от uid 10001."
+                ) from error
+            if not _архив_не_изменился(архив, отпечаток_архива):
+                raise RegistryError(
+                    f"{архив.name}: архив изменился во время проверки места; "
+                    "повторите разбор после завершения копирования."
+                )
+            if not хватает:
+                mib = 1 << 20
+                нужно_мб = (нужно + mib - 1) // mib
+                свободно_мб = свободно // mib
+                raise RegistryError(
+                    f"{архив.name}: недостаточно свободного места: нужно "
+                    f"{нужно_мб} МБ, свободно {свободно_мб} МБ."
+                )
+            # Проверка места сама обращается к файловой системе и может
+            # задержаться. За это время remove/reparse способен инвалидировать
+            # token: повторный короткий CAS не даёт устаревшей операции даже
+            # начать распаковку после уже принятого отказа владельца.
+            with self._lock:
+                if not self._операция_модулей_актуальна(операция):
+                    raise self._отмена_операции_модулей(операция, архив)
+            try:
+                временный, digest, файлов = self._extract_to_temp(архив, корень)
+            except BaseException as error:
+                файловая = _ошибка_файловой_системы(error)
+                if файловая is None:
+                    raise
+                if файловая.errno == errno.ENOSPC:
+                    raise RegistryError(
+                        f"{архив.name}: свободное место закончилось во время "
+                        "распаковки; прежний разбор сохранён. Освободите место "
+                        "и повторите."
+                    ) from error
+                raise RegistryError(
+                    f"{архив.name}: не удалось подготовить текущую выгрузку "
+                    "кода; прежний разбор сохранён. Проверьте доступность "
+                    "архива, каталога данных и права процесса."
+                ) from error
+            try:
+                if not _архив_не_изменился(архив, отпечаток_архива):
+                    raise RegistryError(
+                        f"{архив.name}: архив изменился во время распаковки; "
+                        "разбор отменён."
+                    )
                 индексы = self._построить_индекс_кода(архив.name, временный)
-            except BaseException:
+            except BaseException as error:
                 shutil.rmtree(временный, ignore_errors=True)
+                if isinstance(error, RegistryError):
+                    raise
+                if _ошибка_файловой_системы(error) is not None:
+                    raise RegistryError(
+                        f"{архив.name}: не удалось построить индекс текущей "
+                        "выгрузки кода; прежний разбор сохранён. Проверьте "
+                        "доступность каталога данных и права процесса."
+                    ) from error
                 raise
 
             source = Source(
@@ -1511,16 +1620,36 @@ class Registry:
                 поиск=индексы.поиск,
                 версия_кода=версия_кода,
             )
-            return self._опубликовать_операцию_модулей(
-                операция,
-                архив,
-                корень,
-                временный,
-                снести,
-                source,
-                loaded,
-                индексы,
-            )
+            try:
+                return self._опубликовать_операцию_модулей(
+                    операция,
+                    архив,
+                    корень,
+                    временный,
+                    снести,
+                    source,
+                    loaded,
+                    индексы,
+                )
+            except BaseException as error:
+                if isinstance(error, RegistryError):
+                    raise
+                файловая = _ошибка_файловой_системы(error)
+                if файловая is None:
+                    raise
+                if файловая.errno == errno.ENOSPC:
+                    текст = (
+                        f"{архив.name}: свободное место закончилось во время "
+                        "публикации кода; прежний разбор сохранён. Освободите "
+                        "место и повторите."
+                    )
+                else:
+                    текст = (
+                        f"{архив.name}: не удалось опубликовать текущую "
+                        "выгрузку кода; прежний разбор сохранён. Проверьте "
+                        "доступность каталога данных и права процесса."
+                    )
+                raise RegistryError(текст) from error
 
     def _поколение_актуально(
         self,
@@ -1679,7 +1808,7 @@ class Registry:
         # Подсчёт имён каталог не разбирает и на живых 7 878 файлах занимает
         # доли секунды. Он нужен до запуска потока: первый же ответ обязан
         # назвать не только N, но и M.
-        всего = sum(1 for _ in корень.rglob("*.bsl"))
+        всего = len(modules_index.файлы_оглавления(корень))
         строится = LoadedModules(
             source=source,
             корень=корень,
@@ -1743,6 +1872,12 @@ class Registry:
             raise RegistryError(
                 f"{архив.name}: конфигурация «{configuration}» не загружена."
             )
+        try:
+            отпечаток_архива = _отпечаток_архива(архив)
+        except OSError as error:
+            raise RegistryError(
+                f"{архив.name}: архив недоступен; проверьте файл и повторите."
+            ) from error
 
         # Годность архива выясняется ПЕРВЫМ делом — до распознавания вида и
         # до удаления чего-либо. Выгрузка метаданных (`СтруктураКонфигурации_
@@ -1753,8 +1888,21 @@ class Registry:
         # взять их заново неоткуда, если гигабайтный архив из `incoming/` уже
         # убран. Считаем по центральному каталогу zip: тело архива не
         # читается.
-        if not _отбираемых_членов(архив):
-            raise _нет_модулей(архив)
+        try:
+            if not _отбираемых_членов(архив):
+                raise _нет_модулей(архив)
+        except RegistryError:
+            raise
+        except zipfile.BadZipFile as error:
+            raise RegistryError(
+                f"{архив.name}: архив ZIP повреждён или его центральный "
+                "каталог не читается."
+            ) from error
+        except OSError as error:
+            raise RegistryError(
+                f"{архив.name}: архив недоступен во время предпроверки; "
+                "проверьте файл и права процесса."
+            ) from error
 
         # Распознавание — только теперь, когда известно, что в архиве есть
         # что брать: `_сведения_о_выгрузке` сама отказывает («Configuration.xml
@@ -1777,6 +1925,7 @@ class Registry:
                 configuration=configuration,
                 extension=имя_расширения,
                 версия_кода=версия_кода,
+                отпечаток_архива=отпечаток_архива,
             )
 
         корень = self._modules_root(configuration)
@@ -1790,10 +1939,17 @@ class Registry:
             kind=KIND_MODULES,
             версия_кода=версия_кода,
             снести=self._drop_modules_root,
+            отпечаток_архива=отпечаток_архива,
         )
 
     def _add_extension(
-        self, архив: Path, *, configuration: str, extension: str, версия_кода: str = ""
+        self,
+        архив: Path,
+        *,
+        configuration: str,
+        extension: str,
+        версия_кода: str = "",
+        отпечаток_архива: tuple[int, int, int, int],
     ) -> Source:
         """Выгрузка расширения: код в свой каталог, источник `:ext:<Имя>`.
 
@@ -1832,6 +1988,7 @@ class Registry:
             kind=KIND_EXTENSION,
             версия_кода=версия_кода,
             снести=self._drop_extension_root,
+            отпечаток_архива=отпечаток_архива,
         )
 
     def add_syntax(

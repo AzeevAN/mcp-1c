@@ -1425,12 +1425,22 @@ def _сигнатура_из_текста(текст: str, процедура: �
 
 def _прочитать_тело_модуля(loaded: LoadedModules, модуль: str) -> str:
     """Единая граница чтения; каталог подменяет файловый fallback-локатор."""
-    locator_for = getattr(loaded.оглавление, "локатор", None)
-    locator = (
-        locator_for(модуль)
-        if locator_for is not None
-        else ModuleLocator.file(путь_модуля(модуль))
-    )
+    if loaded.каталог is not None:
+        identity = loaded.каталог.identity
+        if (
+            identity.source_id != loaded.source.id
+            or identity.source_sha256 != loaded.source.sha256
+            or identity.generation != loaded.source.locator_generation
+        ):
+            raise OSError("каталог локаторов принадлежит другому поколению")
+        entry = loaded.каталог.entries.get(модуль)
+        if entry is None or entry.locator is None:
+            raise OSError("для адреса нет читаемого локатора")
+        locator = entry.locator
+    else:
+        # Совместимость только для вручную собранных старых тестовых пакетов;
+        # production LoadedModules всегда публикуется вместе с каталогом.
+        locator = ModuleLocator.file(путь_модуля(модуль))
     # Старые проверки подменяют этот символ, чтобы синхронизировать смену
     # поколения посреди чтения. В рабочем процессе всегда действует
     # защищённый reader локатора; подмена остаётся узким тестовым seam.
@@ -1600,7 +1610,12 @@ def _search_procedures_once(
     ):
         raise RegistryError("Готовый индекс кода неполон; перезагрузите источник.")
 
-    приоритетные = _scope_modules(loaded, scope)
+    try:
+        приоритетные = _scope_modules(loaded, scope)
+    except RegistryError as error:
+        if not _modules_are_current(registry, loaded):
+            raise _StaleModules from error
+        raise
     предупреждение = _loaded_partial_warning(loaded)
     предупреждение_скомпилированных = (
         f"> {предупреждение}\n\n" if предупреждение else ""
@@ -1982,6 +1997,8 @@ def _get_procedure_once(
     )
     if канонический_модуль is None:
         похожие = _similar_address(loaded, модуль, None)
+        if not _modules_are_current(registry, loaded):
+            raise _StaleModules
         хвост = "" if not похожие else "\n\nВозможно, имелось в виду:\n" + "\n".join(f"- `{item}`" for item in похожие)
         return f"Модуль `{модуль}` в загруженном коде не найден.{хвост}\n"
     модуль = канонический_модуль
@@ -2039,6 +2056,8 @@ def _get_procedure_once(
     совпадения = [запись for запись in записи if запись.имя.casefold() == имя.casefold()]
     if not совпадения:
         похожие = _similar_address(loaded, модуль, имя)
+        if not _modules_are_current(registry, loaded):
+            raise _StaleModules
         хвост = "" if not похожие else "\n\nВозможно, имелось в виду:\n" + "\n".join(f"- `{item}`" for item in похожие)
         return f"В модуле `{модуль}` нет процедуры `{имя}`.{хвост}\n"
     запись = совпадения[0]

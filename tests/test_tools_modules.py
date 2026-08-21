@@ -18,6 +18,7 @@ from mcp1c.model import Field, MetadataObject
 from mcp1c.registry import STATUS_ERROR, Registry, RegistryError
 
 from conftest import build_configuration, write_export, write_syntax
+from module_samples import v8_container_bytes
 
 
 def _добавить_одноимённые(корень, *, имя="Одинаковая", экспорт=False, количество=1):
@@ -28,6 +29,290 @@ def _добавить_одноимённые(корень, *, имя="Одина
         (каталог / "Module.bsl").write_text(
             f"Процедура {имя}(){окончание}\nКонецПроцедуры\n", encoding="utf-8"
         )
+
+
+@pytest.mark.parametrize(
+    ("relative", "address", "procedure"),
+    [
+        (
+            "CommonModule.Плоский.Module.txt",
+            "ОбщийМодуль.Плоский",
+            "ИзТекста",
+        ),
+        (
+            "Document.Объект.Form.Плоская.Form",
+            "Документ.Объект.Форма.Плоская",
+            "ИзПлоскогоКонтейнера",
+        ),
+        (
+            "Documents/Объект/Forms/Бинарная/Ext/Form.bin",
+            "Документ.Объект.Форма.Бинарная",
+            "ИзFormBin",
+        ),
+    ],
+)
+def test_mcp_поиск_и_карточка_читают_тело_по_локатору(
+    tmp_path, реестр_из_кода, relative, address, procedure
+):
+    path = tmp_path / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = (
+        f"Функция {procedure}(Параметр = 1) Экспорт\r\n"
+        "    Возврат Параметр;\r\n"
+        "КонецФункции\r\n"
+    )
+    if relative.endswith(".txt"):
+        path.write_bytes(("\ufeff" + text).encode("utf-8"))
+    else:
+        path.write_bytes(
+            v8_container_bytes(
+                [("module", text.encode("utf-8")), ("form", b"{19}")]
+            )
+        )
+    if relative.endswith("Form.bin"):
+        descriptor = tmp_path / "Documents/Объект/Forms/Бинарная.xml"
+        descriptor.parent.mkdir(parents=True, exist_ok=True)
+        descriptor.write_text("<MetaDataObject/>", encoding="utf-8")
+
+    registry = реестр_из_кода(tmp_path)
+
+    search = tools.search_procedures(registry, procedure, config="Пример")
+    card = tools.get_procedure(
+        registry, f"{address}::{procedure}", config="Пример"
+    )
+
+    assert f"{address}::{procedure}" in search
+    assert f"Функция {procedure}(Параметр = 1) Экспорт" in search
+    assert "Возврат Параметр;" not in search
+    assert "Возврат Параметр;" in card
+
+
+def test_warm_cache_сохраняет_scope_вызовы_и_неразрешенные_из_container(
+    tmp_path, реестр_из_кода
+):
+    target = tmp_path / "CommonModule.Цель.Module.txt"
+    target.write_text(
+        '&После("Старая")\n'
+        "Функция Рассчитать(Параметр) Экспорт\n"
+        "    Возврат Параметр;\n"
+        "КонецФункции\n",
+        encoding="utf-8",
+    )
+    caller = tmp_path / "Document.Объект.Form.Основная.Form"
+    caller.write_bytes(
+        v8_container_bytes(
+            [
+                (
+                    "module",
+                    (
+                        "Процедура Обработать() Экспорт\n"
+                        "    Цель.Рассчитать(1);\n"
+                        "    Неизвестный.Рассчитать(2);\n"
+                        "КонецПроцедуры\n"
+                    ).encode("utf-8"),
+                ),
+                ("form", b"{19}"),
+            ]
+        )
+    )
+    registry = реестр_из_кода(tmp_path)
+    registry.save()
+
+    warm = Registry(registry.data_dir)
+    assert warm.startup() == []
+
+    scoped = tools.search_procedures(
+        warm,
+        "Обработать",
+        config="Пример",
+        scope="Документ.Объект",
+    )
+    callers = tools.get_callers(
+        warm,
+        "ОбщийМодуль.Цель::Рассчитать",
+        config="Пример",
+    )
+    target_search = tools.search_procedures(
+        warm, "Рассчитать", config="Пример"
+    )
+
+    assert "Документ.Объект.Форма.Основная::Обработать" in scoped
+    assert "Документ.Объект.Форма.Основная" in callers
+    assert "Подтверждённых мест: 1" in callers
+    assert "цель не удалось разрешить" in callers
+    assert "есть аннотация расширения" in target_search
+
+
+def test_смена_поколения_container_повторяет_чтение_по_новому_локатору(
+    tmp_path, реестр_из_кода, архив_кода, monkeypatch
+):
+    path = tmp_path / "CommonForm.Гонка.Form"
+
+    def записать(parameter: str) -> None:
+        path.write_bytes(
+            v8_container_bytes(
+                [
+                    (
+                        "module",
+                        (
+                            f"Процедура Сменить({parameter}) Экспорт\n"
+                            "КонецПроцедуры\n"
+                        ).encode("utf-8"),
+                    ),
+                    ("form", b"{19}"),
+                ]
+            )
+        )
+
+    записать("СтарыйПараметр")
+    registry = реестр_из_кода(tmp_path)
+    записать("НовыйПараметр")
+    новый = архив_кода(tmp_path)
+
+    чтение_начато = threading.Event()
+    отпустить = threading.Event()
+    настоящее_чтение = tools.read_bsl
+    первый = True
+
+    def задержать(root, address, locator):
+        nonlocal первый
+        if первый and locator.kind == "container":
+            первый = False
+            чтение_начато.set()
+            отпустить.wait(timeout=3)
+        return настоящее_чтение(root, address, locator)
+
+    monkeypatch.setattr(tools, "read_bsl", задержать)
+    ответы: list[str] = []
+    поток = threading.Thread(
+        target=lambda: ответы.append(
+            tools.search_procedures(registry, "Сменить", config="Пример")
+        )
+    )
+    поток.start()
+    try:
+        assert чтение_начато.wait(timeout=1)
+        registry.add_modules(новый, configuration="Пример")
+    finally:
+        отпустить.set()
+        поток.join(timeout=3)
+
+    assert not поток.is_alive()
+    assert "НовыйПараметр" in ответы[0]
+    assert "СтарыйПараметр" not in ответы[0]
+
+
+@pytest.mark.parametrize("missing", ["module", "procedure"])
+def test_get_procedure_не_возвращает_устаревший_промах_после_reparse(
+    tmp_path, реестр_из_кода, архив_кода, monkeypatch, missing
+):
+    base = tmp_path / "CommonModule.База.Module.txt"
+    base.write_text(
+        "Процедура Старая() Экспорт\nКонецПроцедуры\n", encoding="utf-8"
+    )
+    registry = реестр_из_кода(tmp_path)
+    if missing == "module":
+        target = tmp_path / "CommonModule.Новый.Module.txt"
+        address = "ОбщийМодуль.Новый::Появилась"
+    else:
+        target = base
+        address = "ОбщийМодуль.База::Появилась"
+    target.write_text(
+        "Процедура Появилась() Экспорт\n"
+        "    НовоеЗначение = 1;\n"
+        "КонецПроцедуры\n",
+        encoding="utf-8",
+    )
+    новый = архив_кода(tmp_path)
+
+    промах_начат = threading.Event()
+    отпустить = threading.Event()
+    настоящее_сходство = tools._similar_address
+    первый = True
+
+    def задержать(*args, **kwargs):
+        nonlocal первый
+        if первый:
+            первый = False
+            промах_начат.set()
+            отпустить.wait(timeout=3)
+        return настоящее_сходство(*args, **kwargs)
+
+    monkeypatch.setattr(tools, "_similar_address", задержать)
+    ответы: list[str] = []
+    поток = threading.Thread(
+        target=lambda: ответы.append(
+            tools.get_procedure(registry, address, config="Пример")
+        )
+    )
+    поток.start()
+    try:
+        assert промах_начат.wait(timeout=1)
+        registry.add_modules(новый, configuration="Пример")
+    finally:
+        отпустить.set()
+        поток.join(timeout=3)
+
+    assert not поток.is_alive()
+    assert "НовоеЗначение = 1;" in ответы[0]
+    assert "не найден" not in ответы[0] and "нет процедуры" not in ответы[0]
+
+
+def test_search_scope_miss_старого_поколения_повторяется_после_reparse(
+    tmp_path, реестр_из_кода, архив_кода, monkeypatch
+):
+    base = tmp_path / "CommonModule.База.Module.txt"
+    base.write_text(
+        "Процедура Найти() Экспорт\nКонецПроцедуры\n", encoding="utf-8"
+    )
+    registry = реестр_из_кода(tmp_path)
+    scoped = tmp_path / "Document.Объект.ObjectModule.txt"
+    scoped.write_text(
+        "Процедура Найти() Экспорт\nКонецПроцедуры\n", encoding="utf-8"
+    )
+    новый = архив_кода(tmp_path)
+
+    scope_начат = threading.Event()
+    отпустить = threading.Event()
+    настоящий_scope = tools._scope_modules
+    первый = True
+
+    def задержать(loaded, scope):
+        nonlocal первый
+        if первый:
+            первый = False
+            scope_начат.set()
+            отпустить.wait(timeout=3)
+        return настоящий_scope(loaded, scope)
+
+    monkeypatch.setattr(tools, "_scope_modules", задержать)
+    ответы: list[str] = []
+    ошибки: list[BaseException] = []
+
+    def искать():
+        try:
+            ответы.append(
+                tools.search_procedures(
+                    registry,
+                    "Найти",
+                    config="Пример",
+                    scope="Документ.Объект",
+                )
+            )
+        except BaseException as error:
+            ошибки.append(error)
+
+    поток = threading.Thread(target=искать)
+    поток.start()
+    try:
+        assert scope_начат.wait(timeout=1)
+        registry.add_modules(новый, configuration="Пример")
+    finally:
+        отпустить.set()
+        поток.join(timeout=3)
+
+    assert not поток.is_alive() and not ошибки
+    assert "Документ.Объект.МодульОбъекта::Найти" in ответы[0]
 
 
 def test_точное_имя_находит_неэкспортную_и_читает_сигнатуру_с_диска(
@@ -148,7 +433,9 @@ def test_смешанный_корпус_предупреждает_над_ог�
     compiled = loaded.корень / "CommonModules" / "Закрытый.Module"
     compiled.parent.mkdir(parents=True, exist_ok=True)
     compiled.write_bytes(b"compiled")
-    индексы = реестр._построить_индекс_кода("mixed", loaded.корень)
+    индексы = реестр._построить_индекс_кода(
+        "mixed", loaded.корень, loaded.каталог.identity
+    )
     with реестр._lock:
         реестр.modules[loaded.source.id] = реестр._готовые_модули(
             loaded.source, loaded.корень, индексы
@@ -184,7 +471,9 @@ def test_скомпилированная_часть_расширения_дел
     compiled = loaded.корень / "CommonModules" / "ЗакрытыйДоп.Module"
     compiled.parent.mkdir(parents=True, exist_ok=True)
     compiled.write_bytes(b"compiled")
-    индексы = реестр._построить_индекс_кода("mixed-extension", loaded.корень)
+    индексы = реестр._построить_индекс_кода(
+        "mixed-extension", loaded.корень, loaded.каталог.identity
+    )
     with реестр._lock:
         реестр.modules[loaded.source.id] = реестр._готовые_модули(
             loaded.source, loaded.корень, индексы

@@ -132,7 +132,7 @@ def test_неизвестная_запись_не_мешает_прочитат�
     ).startswith("Процедура А")
 
 
-def test_дочитывание_сигнатур_и_тел_использует_локатор_оглавления(
+def test_дочитывание_сигнатур_и_тел_использует_локатор_каталога(
     tmp_path, monkeypatch
 ):
     address = "Документ.Пример.Форма.Основная.Модуль"
@@ -140,9 +140,18 @@ def test_дочитывание_сигнатур_и_тел_использует_
     (tmp_path / "Form.bin").write_bytes(
         v8_container_bytes([("module", "Процедура А()\nКонецПроцедуры".encode())])
     )
+    identity = LocatorIdentity("Пример:modules", "a" * 64, 7)
     loaded = SimpleNamespace(
         корень=tmp_path,
-        оглавление=SimpleNamespace(локатор=lambda module: locator),
+        source=SimpleNamespace(
+            id=identity.source_id,
+            sha256=identity.source_sha256,
+            locator_generation=identity.generation,
+        ),
+        каталог=SimpleNamespace(
+            identity=identity,
+            entries={address: SimpleNamespace(locator=locator)},
+        ),
     )
     monkeypatch.setattr(
         tools,

@@ -769,6 +769,9 @@ class Registry:
         # у расширения свой ключ и своя жизнь, а не подкаталог конфигурации.
         self.extensions_dir = self.data_dir / "extensions"
         self.registry_path = self.data_dir / "registry.json"
+        # Малый write-ahead marker делает рокировку каталога кода
+        # восстанавливаемой после SIGKILL между rename и registry.json.
+        self._module_swap_path = self.data_dir / ".modules-swap.json"
         self.dictionary_path = self.data_dir / "dictionary.json"
         self.dictionary = Dictionary.load(self.dictionary_path)
 
@@ -808,6 +811,7 @@ class Registry:
         # запускать второй разбор того же корпуса и удваивать расход памяти.
         self._module_builds: dict[str, threading.Thread] = {}
         self._modules_generation: dict[str, int] = {}
+        self._module_recovery_blocked = False
         # Один постоянный lock на source_id защищает весь foreground
         # lifecycle: sweep -> extract -> build -> publish/cleanup. Записи не
         # удаляются: удаление и новый setdefault между двумя waiter
@@ -1220,8 +1224,8 @@ class Registry:
         return временный, digest, файлов
 
     def _swap_code(
-        self, архив: Path, корень: Path, временный: Path, drop: Callable[[Path], None]
-    ) -> None:
+        self, архив: Path, корень: Path, временный: Path
+    ) -> Path | None:
         """Рокировка: уже проверенный `временный` (индекс над ним, если он
         строится, к этому моменту уже построен вызывающим) встаёт на место
         `корень`.
@@ -1229,7 +1233,8 @@ class Registry:
         Не снос на месте, а рокировка: если `корень` уже существует, он
         сначала отставляется в сторону (`корень -> отставленный`), затем
         распакованное встаёт на его место (`временный -> корень`), и только
-        потом отставленное сносится через переданный `drop`. Это не
+        потом отставленное возвращается вызывающему и сносится только после
+        успешной записи кэша и `registry.json`. Это не
         гипотетика: `_drop_modules_root`/`_drop_extension_root` зовут
         `rmtree(..., ignore_errors=True)`, и частичный отказ по правам
         (bind-mount, контейнер под uid 10001 — то, о чём предупреждает форма
@@ -1249,15 +1254,11 @@ class Registry:
         сам, — и единственный, где это явно названо (исключением с текстом),
         а не подразумевается докстрочной оговоркой.
 
-        Что НЕ гарантируется вовсе: рокировка — отдельные системные вызовы, а
-        не одна атомарная операция. Убийство процесса ровно между двумя
-        `rename` оставило бы временный или отставленный каталог осиротевшим:
-        `finally` в такой момент не выполняется, это не забытый случай, а
-        предел модели «переименование, а не журналируемая транзакция».
-        Осиротевший `.tmp-*` подметает следующий вызов `_extract_to_temp`
-        (`_sweep_stale_extract_tmp`); `.old-*` — нет, там может лежать
-        единственная копия прежнего разбора, и его удаление — решение
-        человека.
+        Сами два `rename` не атомарны вместе. Поэтому вызывающий до первого
+        из них пишет `.modules-swap.json`; startup сравнивает записанное там
+        новое поколение с `registry.json` и либо завершает публикацию, либо
+        возвращает `.old-*` на canonical path. Маркер удаляется только после
+        успешной записи реестра и уборки отставленного корня.
 
         Вызывающий держит эту функцию под `self._lock` (`add_modules`/
         `_add_extension`) вместе с обновлением `self.sources`/`self.modules`
@@ -1310,11 +1311,204 @@ class Registry:
                         ) from ошибка_отката
                     raise
                 else:
-                    drop(отставленный)
+                    return отставленный
             else:
                 временный.rename(корень)
+                return None
         finally:
             shutil.rmtree(временный, ignore_errors=True)
+
+    def _начать_рокировку_кода(
+        self, source: Source, корень: Path, временный: Path
+    ) -> Path | None:
+        """Записать намерение до первого rename и вернуть путь старого root."""
+        отставленный: Path | None = None
+        if корень.exists():
+            случайное = временный.name.rsplit("-", 1)[-1]
+            отставленный = корень.parent / f".{корень.name}.old-{случайное}"
+        payload = {
+            "version": 1,
+            "source_id": source.id,
+            "new_sha256": source.sha256,
+            "new_selection_version": source.selection_version,
+            "root": self._relative(корень),
+            "temporary": self._relative(временный),
+            "detached": (
+                self._relative(отставленный) if отставленный is not None else None
+            ),
+        }
+        try:
+            self.data_dir.mkdir(parents=True, exist_ok=True)
+            tmp = self._module_swap_path.with_suffix(".tmp")
+            tmp.write_text(
+                json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+            )
+            tmp.replace(self._module_swap_path)
+        except OSError as error:
+            raise RegistryError(
+                "Не удалось записать журнал рокировки кода; прежний "
+                "источник сохранён. Проверьте каталог данных и права процесса."
+            ) from error
+        return отставленный
+
+    def _путь_из_журнала_рокировки(self, raw: object) -> Path:
+        if not isinstance(raw, str) or not raw:
+            raise ValueError("invalid transaction path")
+        path = self._absolute(raw).resolve()
+        path.relative_to(self.data_dir.resolve())
+        return path
+
+    def _восстановить_рокировку_кода(self) -> list[str]:
+        """Завершить или откатить пережившую процесс рокировку по registry."""
+        if not self._module_swap_path.exists():
+            return []
+        try:
+            marker = json.loads(
+                self._module_swap_path.read_text(encoding="utf-8")
+            )
+            if not isinstance(marker, dict):
+                raise ValueError("transaction marker is not an object")
+            if marker.get("version") != 1:
+                raise ValueError("invalid transaction version")
+            source_id = marker["source_id"]
+            new_sha256 = marker["new_sha256"]
+            selection_version = marker["new_selection_version"]
+            if (
+                not isinstance(source_id, str)
+                or not isinstance(new_sha256, str)
+                or isinstance(selection_version, bool)
+                or not isinstance(selection_version, int)
+            ):
+                raise ValueError("invalid transaction identity")
+            корень = self._путь_из_журнала_рокировки(marker["root"])
+            временный = self._путь_из_журнала_рокировки(marker["temporary"])
+            raw_detached = marker.get("detached")
+            отставленный = (
+                self._путь_из_журнала_рокировки(raw_detached)
+                if raw_detached is not None
+                else None
+            )
+            try:
+                if source_id.endswith(":modules"):
+                    configuration = source_id[: -len(":modules")]
+                    if not configuration:
+                        raise ValueError("empty configuration")
+                    ожидаемый_корень = self._modules_root(configuration)
+                else:
+                    configuration, separator, extension = source_id.partition(
+                        ":ext:"
+                    )
+                    if not separator or not configuration or not extension:
+                        raise ValueError("invalid source id")
+                    ожидаемый_корень = self._extension_root(
+                        configuration, extension
+                    )
+            except RegistryError as error:
+                raise ValueError("invalid source root") from error
+            if корень != ожидаемый_корень:
+                raise ValueError("root does not match source")
+            prefix = f".{корень.name}.tmp-"
+            if временный.parent != корень.parent or not временный.name.startswith(
+                prefix
+            ):
+                raise ValueError("invalid temporary path")
+            token = временный.name[len(prefix) :]
+            if not token or временный == корень:
+                raise ValueError("invalid temporary token")
+            if отставленный is not None and (
+                отставленный.parent != корень.parent
+                or отставленный.name != f".{корень.name}.old-{token}"
+                or отставленный in (корень, временный)
+            ):
+                raise ValueError("invalid detached path")
+
+            registry_payload = {}
+            if self.registry_path.exists():
+                registry_payload = json.loads(
+                    self.registry_path.read_text(encoding="utf-8")
+                )
+            if not isinstance(registry_payload, dict):
+                raise ValueError("registry is not an object")
+            raw_sources = registry_payload.get("sources") or []
+            if not isinstance(raw_sources, list):
+                raise ValueError("registry sources are not a list")
+            записанный_источник = next(
+                (
+                    raw
+                    for raw in raw_sources
+                    if isinstance(raw, dict) and raw.get("id") == source_id
+                ),
+                None,
+            )
+            новое_записано = (
+                записанный_источник is not None
+                and записанный_источник.get("sha256") == new_sha256
+                and записанный_источник.get("selection_version")
+                == selection_version
+            )
+
+            if новое_записано:
+                if not корень.exists() and временный.exists():
+                    временный.rename(корень)
+                if not корень.exists():
+                    raise OSError("published root is missing")
+                if отставленный is not None:
+                    shutil.rmtree(отставленный, ignore_errors=True)
+                shutil.rmtree(временный, ignore_errors=True)
+            else:
+                if (отставленный is None) != (записанный_источник is None):
+                    raise ValueError("root history does not match registry")
+                if отставленный is not None and отставленный.exists():
+                    shutil.rmtree(корень, ignore_errors=True)
+                    отставленный.rename(корень)
+                elif отставленный is not None and not корень.exists():
+                    raise OSError("previous root is missing")
+                elif отставленный is None:
+                    shutil.rmtree(корень, ignore_errors=True)
+                shutil.rmtree(временный, ignore_errors=True)
+
+            self._module_swap_path.unlink(missing_ok=True)
+            self._module_swap_path.with_suffix(".tmp").unlink(missing_ok=True)
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+            return [
+                "Незавершённую рокировку кода не удалось восстановить; "
+                "источник кода не следует использовать до проверки каталога данных."
+            ]
+        return []
+
+    def _заблокировать_источники_кода_после_ошибки_рокировки(self) -> None:
+        """Не публиковать ни один code root, пока WAL не исправлен."""
+        with self._lock:
+            code_ids = {
+                source_id
+                for source_id, source in self.sources.items()
+                if source.kind in (KIND_MODULES, KIND_EXTENSION)
+            } | set(self.modules)
+            for source_id in code_ids:
+                self.sources.pop(source_id, None)
+                self.modules.pop(source_id, None)
+                self._modules_generation[source_id] = (
+                    self._modules_generation.get(source_id, 0) + 1
+                )
+
+    def _rollback_code_swap(
+        self,
+        корень: Path,
+        временный: Path,
+        отставленный: Path | None,
+    ) -> None:
+        """Вернуть прежний canonical root после отказа записи реестра."""
+        try:
+            if корень.exists():
+                корень.rename(временный)
+            if отставленный is not None:
+                отставленный.rename(корень)
+            shutil.rmtree(временный, ignore_errors=True)
+        except OSError as error:
+            raise RegistryError(
+                "Не удалось вернуть прежний каталог кода после отказа "
+                "публикации; проверьте каталог данных вручную."
+            ) from error
 
     @staticmethod
     def _построить_индекс_кода(
@@ -1490,25 +1684,108 @@ class Registry:
         индексы: modules_index.Индексы,
     ) -> Source:
         """Единая CAS-публикация для конфигурации и расширения."""
+        отставленный: Path | None = None
+        временный_кэш: Path | None = None
         try:
             with self._modules_cache_lock:
+                # Тяжёлое I/O кэша идёт до основного замка, но в отдельный
+                # каталог. До успешных root + registry.json канонические
+                # файлы кэша остаются прежними: отказ рокировки не оставляет
+                # рядом индекс неопубликованного поколения.
+                try:
+                    self.cache_dir.mkdir(parents=True, exist_ok=True)
+                    временный_кэш = Path(
+                        tempfile.mkdtemp(
+                            dir=self.cache_dir, prefix=".modules-cache.tmp-"
+                        )
+                    )
+                except OSError:
+                    # Кэш расходный: недоступный каталог не мешает принять
+                    # источник, следующий старт просто построит индекс снова.
+                    временный_кэш = None
+                if временный_кэш is not None:
+                    modules_index.сохранить_индексы(
+                        self,
+                        source.id,
+                        индексы,
+                        source_sha256=source.sha256,
+                        selection_version=source.selection_version,
+                        cache_dir=временный_кэш,
+                    )
                 with self._lock:
                     if not self._операция_модулей_актуальна(операция):
                         raise RegistryError(
                             f"{архив.name}: разбор отменён — источник "
                             "или привязанная конфигурация уже изменены."
                         )
-                    self._swap_code(архив, корень, временный, снести)
+                    прежний_source = self.sources.get(source.id)
+                    прежние_modules = self.modules.get(source.id)
+                    отставленный = self._начать_рокировку_кода(
+                        source, корень, временный
+                    )
+                    try:
+                        отставленный = self._swap_code(
+                            архив, корень, временный
+                        )
+                    except BaseException:
+                        # registry.json ещё прежний: recovery либо уже
+                        # ничего не сделает после внутреннего rollback, либо
+                        # вернёт .old-* на canonical path.
+                        self._восстановить_рокировку_кода()
+                        raise
                     self.sources[source.id] = source
                     self.modules[source.id] = loaded
-                modules_index.сохранить_индексы(
-                    self, source.id, индексы, source_sha256=source.sha256
-                )
+                    try:
+                        # JSON заменяется атомарно своим tmp-файлом. Пока он
+                        # не записан, прежний root сохранён рядом и может быть
+                        # возвращён без повторного extract/build.
+                        self.save()
+                    except BaseException:
+                        if прежний_source is None:
+                            self.sources.pop(source.id, None)
+                        else:
+                            self.sources[source.id] = прежний_source
+                        if прежние_modules is None:
+                            self.modules.pop(source.id, None)
+                        else:
+                            self.modules[source.id] = прежние_modules
+                        self._rollback_code_swap(
+                            корень, временный, отставленный
+                        )
+                        отставленный = None
+                        try:
+                            self._module_swap_path.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                        raise
+                if временный_кэш is not None:
+                    try:
+                        файлы_кэша = tuple(временный_кэш.iterdir())
+                    except OSError:
+                        файлы_кэша = ()
+                    for файл in файлы_кэша:
+                        if not файл.is_file():
+                            continue
+                        try:
+                            файл.replace(self.cache_dir / файл.name)
+                        except OSError:
+                            # Уже опубликованный источник корректен без кэша.
+                            continue
+            if отставленный is not None:
+                снести(отставленный)
+            # Если unlink не удался, следующий startup увидит уже новое
+            # поколение в registry.json и безопасно завершит уборку.
+            try:
+                self._module_swap_path.unlink(missing_ok=True)
+            except OSError:
+                pass
             return source
         finally:
             # До swap это убирает отменённый разбор; после swap пути
             # уже нет, и `ignore_errors` ничего не трогает.
             shutil.rmtree(временный, ignore_errors=True)
+            if временный_кэш is not None:
+                shutil.rmtree(временный_кэш, ignore_errors=True)
 
     def _выполнить_операцию_модулей(
         self,
@@ -1704,6 +1981,7 @@ class Registry:
                     source_id,
                     индексы,
                     source_sha256=source.sha256,
+                    selection_version=source.selection_version,
                 )
                 with self._lock:
                     if self._поколение_актуально(source, поколение, строится):
@@ -1793,7 +2071,10 @@ class Registry:
             поколение = self._следующее_поколение_модулей(source.id)
 
         индексы = modules_index.поднять_индексы(
-            self, source.id, source_sha256=source.sha256
+            self,
+            source.id,
+            source_sha256=source.sha256,
+            selection_version=source.selection_version,
         )
         if индексы is not None:
             with self._lock:
@@ -2804,6 +3085,7 @@ class Registry:
                 (source, self._modules_generation.get(source.id, 0))
                 for source in все_источники
                 if source.kind in (KIND_MODULES, KIND_EXTENSION)
+                and not self._module_recovery_blocked
             ]
         конфигурации_этого_restore: dict[str, Source] = {}
 
@@ -3023,6 +3305,16 @@ class Registry:
             self._last_successful_startup_generation = поколение
             return результат
 
+    def _подмести_временный_кэш_модулей(self) -> None:
+        """Удалить staging-каталоги, пережившие аварийную остановку."""
+        try:
+            кандидаты = tuple(self.cache_dir.glob(".modules-cache.tmp-*"))
+        except OSError:
+            return
+        for path in кандидаты:
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+
     def wait_for_module_builds(self, timeout: float = 90.0) -> bool:
         """Дождаться фоновых индексов кода, но не дольше ``timeout`` секунд.
 
@@ -3071,7 +3363,29 @@ class Registry:
         # Словарь перечитывается первым: правки в нём должны применяться
         # перезагрузкой, без пересборки образа и рестарта контейнера.
         self.dictionary = Dictionary.load(self.dictionary_path)
-        messages = self.restore()
+        # Foreground-публикация держит тот же lock от staging кэша до
+        # registry.json. Startup либо ждёт её завершения в живом процессе,
+        # либо восстанавливает journal, оставшийся после SIGKILL.
+        messages: list[str] = []
+        # Живой foreground writer уже сам завершит или откатит операцию;
+        # startup не ждёт его тяжёлую запись кэша. После SIGKILL mutex
+        # свободен, и новый процесс забирает journal без ожидания.
+        if self._modules_cache_lock.acquire(blocking=False):
+            try:
+                messages = self._восстановить_рокировку_кода()
+                self._подмести_временный_кэш_модулей()
+            finally:
+                self._modules_cache_lock.release()
+        self._module_recovery_blocked = bool(messages)
+        if self._module_recovery_blocked:
+            self._заблокировать_источники_кода_после_ошибки_рокировки()
+        messages += self.restore()
+        if self._module_recovery_blocked:
+            # Сохраняем исходный registry.json и code-cache дословно: после
+            # ручного исправления/удаления WAL следующий startup должен
+            # суметь поднять прежнее готовое поколение, а не обнаружить, что
+            # fail-closed проверка сама его забыла и подмела.
+            return messages
         messages += [f"добавлено из bootstrap: {name}" for name in self.bootstrap()]
         # Уборка после загрузки, а не до: снести нужно то, что не заявил ни
         # один источник, а список источников известен только теперь.

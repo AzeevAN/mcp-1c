@@ -14,7 +14,13 @@ FORMAT_FLAT = "flat"
 
 # Иерархическая: модуль — отдельный файл, форма — разбираемый XML.
 _TREE_SUFFIXES = {".bsl"}
-_TREE_NAMES = {"Form.xml"}
+_TREE_FORM_FOLDERS = {
+    "AccumulationRegisters", "BusinessProcesses", "Catalogs",
+    "ChartsOfAccounts", "ChartsOfCharacteristicTypes", "CommonForms",
+    "DataProcessors", "DocumentJournals", "Documents", "Enums",
+    "ExchangePlans", "FilterCriteria", "InformationRegisters", "Reports",
+    "Tasks",
+}
 # Плоская: модуль в `.txt`, код формы — записью внутри контейнера `.Form`.
 _FLAT_SUFFIXES = {".txt", ".Form"}
 
@@ -85,7 +91,32 @@ def is_wanted(name: str, формат: str) -> bool:
             путь.suffix in _FLAT_SUFFIXES
             or _скомпилированный_общий_модуль(name)
         )
-    return путь.suffix in _TREE_SUFFIXES or путь.name in _TREE_NAMES
+    if путь.suffix in _TREE_SUFFIXES:
+        return True
+    части = путь.parts
+    if not части or части[0] not in _TREE_FORM_FOLDERS:
+        return False
+    if части[0] == "CommonForms":
+        descriptor = len(части) == 2 and путь.suffix == ".xml" and bool(путь.stem)
+        body = (
+            len(части) == 4
+            and части[2] == "Ext"
+            and части[3] in {"Form.xml", "Form.bin"}
+        )
+        return descriptor or body
+    descriptor = (
+        len(части) == 4
+        and части[2] == "Forms"
+        and путь.suffix == ".xml"
+        and bool(путь.stem)
+    )
+    body = (
+        len(части) == 6
+        and части[2] == "Forms"
+        and части[4] == "Ext"
+        and части[5] in {"Form.xml", "Form.bin"}
+    )
+    return descriptor or body
 
 
 def _безопасное_относительное_имя(name: str) -> str | None:
@@ -266,7 +297,10 @@ def enough_space(нужно: int, каталог: Path) -> tuple[bool, int]:
 #
 # 3: добавлены канонические `CommonModules/<Имя>.Module`, исключены
 # `*.Template.txt`; план и распаковка используют один безопасный набор.
-SELECTION_VERSION = 3
+#
+# 4: иерархическая выгрузка сохраняет XML-дескриптор формы и `Form.bin`;
+# без повторного разбора старый корень физически не содержит этих файлов.
+SELECTION_VERSION = 4
 
 
 def extract(архив: Path, корень: Path) -> tuple[int, int]:

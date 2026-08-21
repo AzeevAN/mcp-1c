@@ -21,6 +21,35 @@ def test_ложится_только_код(tmp_path):
     assert not (корень / "Ext").exists()
 
 
+def test_план_и_extract_одинаково_берут_дескриптор_и_form_bin(tmp_path):
+    archive = tmp_path / "forms.zip"
+    members = {
+        "Documents/Заказ/Forms/Основная.xml": b"descriptor",
+        "Documents/Заказ/Forms/Основная/Ext/Form.bin": b"container",
+        "Documents/Заказ/Ext/Other.bin": b"ballast",
+        "Documents/Заказ.xml": b"metadata",
+        "Configuration.xml": b"configuration",
+    }
+    with zipfile.ZipFile(archive, "w") as opened:
+        for name, payload in members.items():
+            opened.writestr(name, payload)
+
+    planned, format_name = planned_size(archive)
+    root = tmp_path / "modules"
+    files, written = extract(archive, root)
+
+    selected = len(members["Documents/Заказ/Forms/Основная.xml"]) + len(
+        members["Documents/Заказ/Forms/Основная/Ext/Form.bin"]
+    )
+    assert format_name == "tree"
+    assert files == 2
+    assert written == selected
+    assert planned == selected + INDEX_RESERVE
+    assert (root / "Documents/Заказ/Forms/Основная.xml").is_file()
+    assert (root / "Documents/Заказ/Forms/Основная/Ext/Form.bin").is_file()
+    assert not (root / "Documents/Заказ/Ext/Other.bin").exists()
+
+
 def test_член_наружу_не_записывается(tmp_path):
     архив = tmp_path / "злой.zip"
     with zipfile.ZipFile(архив, "w") as zf:

@@ -1382,6 +1382,8 @@ def сохранить_индексы(
     индексы: Индексы,
     *,
     source_sha256: str | None = None,
+    selection_version: int | None = None,
+    cache_dir: Path | None = None,
 ) -> None:
     """Записать все четыре структуры в кэш проекта — под четырьмя именами.
 
@@ -1399,30 +1401,39 @@ def сохранить_индексы(
     # Фоновая сборка держит снимок Source своего поколения. Брать sha256
     # заново из живого реестра здесь нельзя: пока writer ждал диск, источник
     # мог быть переразобран, и старые данные получили бы штамп нового кода.
+    источник = registry.sources.get(source_id)
     if source_sha256 is None:
-        source_sha256 = registry.sources[source_id].sha256
+        if источник is None:
+            return
+        source_sha256 = источник.sha256
+    if selection_version is None:
+        if источник is None:
+            return
+        selection_version = источник.selection_version
+    сигнатура = f"{source_sha256}:selection={selection_version}"
+    каталог = registry.cache_dir if cache_dir is None else cache_dir
     index_cache.save_blob(
         индексы.оглавление._состояние(),
-        index_cache.path_for(registry.cache_dir, source_id, _КЭШ_ОГЛАВЛЕНИЯ),
-        source_sha256=source_sha256,
+        index_cache.path_for(каталог, source_id, _КЭШ_ОГЛАВЛЕНИЯ),
+        source_sha256=сигнатура,
         kind=_КЭШ_ОГЛАВЛЕНИЯ,
     )
     index_cache.save_blob(
         индексы.вызовы._состояние(),
-        index_cache.path_for(registry.cache_dir, source_id, _КЭШ_ВЫЗОВОВ),
-        source_sha256=source_sha256,
+        index_cache.path_for(каталог, source_id, _КЭШ_ВЫЗОВОВ),
+        source_sha256=сигнатура,
         kind=_КЭШ_ВЫЗОВОВ,
     )
     index_cache.save_blob(
         индексы.формы._состояние(),
-        index_cache.path_for(registry.cache_dir, source_id, _КЭШ_ФОРМ),
-        source_sha256=source_sha256,
+        index_cache.path_for(каталог, source_id, _КЭШ_ФОРМ),
+        source_sha256=сигнатура,
         kind=_КЭШ_ФОРМ,
     )
     index_cache.save(
         индексы.поиск,
-        index_cache.path_for(registry.cache_dir, source_id, _КЭШ_ПОИСКА),
-        source_sha256=source_sha256,
+        index_cache.path_for(каталог, source_id, _КЭШ_ПОИСКА),
+        source_sha256=сигнатура,
         kind=_КЭШ_ПОИСКА,
     )
 
@@ -1442,7 +1453,11 @@ def _полезная_нагрузка(оглавление: Оглавлени�
 
 
 def поднять_индексы(
-    registry, source_id: str, *, source_sha256: str | None = None
+    registry,
+    source_id: str,
+    *,
+    source_sha256: str | None = None,
+    selection_version: int | None = None,
 ) -> "Индексы | None":
     """Поднять все четыре структуры из кэша проекта. `None` — кэш не годится
     хотя бы для одной из них, тогда собирать нужно все четыре заново:
@@ -1457,12 +1472,16 @@ def поднять_индексы(
     """
     # Как и writer выше, reader работает по неизменяемому снимку поколения.
     # Публикацию после чтения отдельно защищает CAS в Registry.
+    источник = registry.sources.get(source_id)
     if source_sha256 is None:
-        источник = registry.sources.get(source_id)
         if источник is None:
             return None
         source_sha256 = источник.sha256
-    сигнатура = source_sha256
+    if selection_version is None:
+        if источник is None:
+            return None
+        selection_version = источник.selection_version
+    сигнатура = f"{source_sha256}:selection={selection_version}"
 
     данные_оглавления = index_cache.load_blob(
         index_cache.path_for(registry.cache_dir, source_id, _КЭШ_ОГЛАВЛЕНИЯ),

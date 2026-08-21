@@ -300,12 +300,6 @@ def _run_incoming(
     try:
         имя_конфигурации = конфигурация or _configuration_for(registry, архив)
         registry.add_modules(архив, configuration=имя_конфигурации)
-        # `add_modules` пишет только в `self.sources`, в память процесса.
-        # Без записи на диск разбор не переживал бы рестарт: код на месте,
-        # 351 МБ занято, а страница говорит «не разобрано» — и человек гонит
-        # гигабайтный архив заново. `_index_source` зовёт `save()` по той же
-        # причине.
-        registry.save()
     except (ExportError, RegistryError, V8ContainerError, ValueError) as error:
         # Известная ошибка проекта — это сообщение человеку, и имя класса ему
         # ничего не добавляет: «загружено 2 конфигураций» он поймёт, а

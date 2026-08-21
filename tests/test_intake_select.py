@@ -13,6 +13,7 @@ from mcp1c.intake import (
     detect_format,
     is_wanted,
     safe_target,
+    SELECTION_VERSION,
 )
 
 
@@ -42,6 +43,38 @@ def test_плоское_имя_скомпилированного_модуля_�
 def test_в_иерархической_берём_модули_и_формы():
     assert is_wanted("Catalogs/Товары/Ext/ObjectModule.bsl", FORMAT_TREE)
     assert is_wanted("Catalogs/Товары/Forms/Форма/Ext/Form.xml", FORMAT_TREE)
+
+
+def test_иерархический_отбор_сохраняет_доказательства_контейнерных_форм():
+    assert SELECTION_VERSION == 4
+    for name in (
+        "Documents/Заказ/Forms/Основная.xml",
+        "Documents/Заказ/Forms/Основная/Ext/Form.bin",
+        "CommonForms/Общая.xml",
+        "CommonForms/Общая/Ext/Form.bin",
+    ):
+        assert is_wanted(name, FORMAT_TREE), name
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Documents/Заказ.xml",
+        "Documents/Заказ/Ext/Form.bin",
+        "Documents/Заказ/Forms/Основная/Ext/Other.bin",
+        "Documents/Заказ/Forms/Основная/Form.bin",
+        "Unknown/Заказ/Forms/Основная.xml",
+        "CommonForms/Общая/Other/Form.bin",
+        "CommonCommands/Команда/Forms/Ложная.xml",
+        "HTTPServices/Сервис/Forms/Ложная/Ext/Form.bin",
+        "WebServices/Сервис/Forms/Ложная.xml",
+        "Sequences/Порядок/Forms/Ложная/Ext/Form.bin",
+        "SettingsStorages/Настройки/Forms/Ложная.xml",
+        "Other/Form.xml",
+    ],
+)
+def test_посторонние_xml_и_bin_не_проходят_иерархический_отбор(name):
+    assert not is_wanted(name, FORMAT_TREE)
 
 
 def test_балласт_не_берём():

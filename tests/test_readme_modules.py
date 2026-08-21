@@ -77,6 +77,20 @@ def test_readme_объясняет_единую_диагностику_покр�
     assert "нулевой счётчик" in text and "не доказывает отсутствие" in text
 
 
+def test_readme_описывает_строгий_roundtrip_кэша_кода():
+    text = _text().lower()
+    section = text.split("## выгрузка конфигурации в файлы", 1)[1]
+    section = section.split("\n## ", 1)[0]
+
+    assert "локаторы, агрегаты покрытия" in section
+    assert "тела модулей" in section and "сырая запись формы" in section
+    assert "семантически повреждён" in section
+    assert "read-only" in section and "пересбор" in section
+    assert "cold" in section and "warm" in section and "совпада" in section
+    assert "256 миб" in section and "512 миб" in section
+    assert "локальные причины каждой формы" in section
+
+
 def test_readme_фиксирует_холодный_и_тёплый_замер_памяти_контейнера():
     text = _text()
 

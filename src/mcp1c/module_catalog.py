@@ -104,9 +104,28 @@ class ModuleCatalog:
     outcomes: tuple[CandidateOutcome, ...]
     problems: tuple[CatalogProblem, ...]
     coverage: CatalogCoverage
+    problem_counts: tuple[tuple[str, int], ...] = ()
+    object_problems: Mapping[str, tuple[CatalogProblem, ...]] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "entries", MappingProxyType(dict(self.entries)))
+        if not self.problem_counts:
+            counts: dict[str, int] = {}
+            for problem in self.problems:
+                counts[problem.category] = counts.get(problem.category, 0) + 1
+            object.__setattr__(self, "problem_counts", tuple(sorted(counts.items())))
+        grouped = self.object_problems
+        if grouped is None:
+            mutable: dict[str, list[CatalogProblem]] = {}
+            for problem in self.problems:
+                if problem.address is not None:
+                    mutable.setdefault(problem.address, []).append(problem)
+            grouped = {key: tuple(value) for key, value in mutable.items()}
+        object.__setattr__(
+            self,
+            "object_problems",
+            MappingProxyType(dict(grouped)),
+        )
 
     def to_state(self) -> dict:
         """Состояние без тел и физических корней для cache-roundtrip."""
@@ -140,7 +159,30 @@ class ModuleCatalog:
                     problem.ordinal,
                     problem.reason,
                 )
-                for problem in self.problems
+                for problem in sorted(
+                    self.problems,
+                    key=lambda item: (
+                        item.address is None,
+                        item.address.casefold() if item.address else "",
+                        item.address or "",
+                        item.category,
+                        item.ordinal,
+                        item.reason,
+                    ),
+                )[:20]
+            ],
+            "problem_counts": list(self.problem_counts),
+            "object_problems": [
+                (
+                    problem.category,
+                    problem.address,
+                    problem.ordinal,
+                    problem.reason,
+                )
+                for address in sorted(
+                    self.object_problems or {}, key=lambda item: (item.casefold(), item)
+                )
+                for problem in (self.object_problems or {})[address]
             ],
             "coverage": (
                 self.coverage.total_candidates,
@@ -168,12 +210,18 @@ class ModuleCatalog:
             raw_entries = state["entries"]
             raw_outcomes = state["outcomes"]
             raw_problems = state["problems"]
+            raw_problem_counts = state["problem_counts"]
+            raw_object_problems = state["object_problems"]
             raw_coverage = state["coverage"]
             if not isinstance(raw_entries, list):
                 return None
             if not isinstance(raw_outcomes, list):
                 return None
             if not isinstance(raw_problems, list):
+                return None
+            if not isinstance(raw_problem_counts, list):
+                return None
+            if not isinstance(raw_object_problems, list):
                 return None
             if not isinstance(raw_coverage, tuple) or len(raw_coverage) != 10:
                 return None
@@ -253,8 +301,7 @@ class ModuleCatalog:
                     return None
                 outcomes.append(CandidateOutcome(ordinal, category, address))
 
-            problems: list[CatalogProblem] = []
-            for raw in raw_problems:
+            def parse_problem(raw: object) -> CatalogProblem | None:
                 if not isinstance(raw, tuple) or len(raw) != 4:
                     return None
                 category, address, ordinal, reason = raw
@@ -266,7 +313,32 @@ class ModuleCatalog:
                     return None
                 if not isinstance(reason, str):
                     return None
-                problems.append(CatalogProblem(category, address, ordinal, reason))
+                return CatalogProblem(category, address, ordinal, reason)
+
+            problems: list[CatalogProblem] = []
+            for raw in raw_problems:
+                problem = parse_problem(raw)
+                if problem is None:
+                    return None
+                problems.append(problem)
+            object_problem_rows: list[CatalogProblem] = []
+            for raw in raw_object_problems:
+                problem = parse_problem(raw)
+                if problem is None or problem.address is None:
+                    return None
+                object_problem_rows.append(problem)
+            problem_counts: dict[str, int] = {}
+            for raw in raw_problem_counts:
+                if (
+                    not isinstance(raw, tuple)
+                    or len(raw) != 2
+                    or raw[0] not in _CATEGORIES
+                    or type(raw[1]) is not int
+                    or raw[1] <= 0
+                    or raw[0] in problem_counts
+                ):
+                    return None
+                problem_counts[raw[0]] = raw[1]
 
             coverage = CatalogCoverage(
                 raw_coverage[0],
@@ -344,10 +416,13 @@ class ModuleCatalog:
                 if ключ_адреса(outcome.address) not in entries_by_key:
                     return None
 
-            problem_keys = {
-                (problem.category, problem.ordinal) for problem in problems
+            addressed_problem_keys = {
+                (problem.category, problem.ordinal, problem.address)
+                for problem in object_problem_rows
             }
-            for problem in problems:
+            if len(addressed_problem_keys) != len(object_problem_rows):
+                return None
+            for problem in object_problem_rows:
                 matching = next(
                     (
                         outcome
@@ -364,10 +439,13 @@ class ModuleCatalog:
             for outcome in outcomes:
                 if outcome.category in {
                     "missing_body",
-                    "unknown_address",
                     "broken_container",
                     "unreadable_body",
-                } and (outcome.category, outcome.ordinal) not in problem_keys:
+                } and (
+                    outcome.category,
+                    outcome.ordinal,
+                    outcome.address,
+                ) not in addressed_problem_keys:
                     return None
             conflict_entries = {
                 ключ_адреса(entry.address)
@@ -376,16 +454,69 @@ class ModuleCatalog:
             }
             conflict_problems = {
                 ключ_адреса(problem.address)
-                for problem in problems
+                for problem in object_problem_rows
                 if problem.category == "conflict" and problem.address is not None
             }
             if conflict_entries != conflict_problems:
                 return None
+            expected_problem_counts = {
+                category: sum(
+                    outcome.category == category for outcome in outcomes
+                )
+                for category in (
+                    "missing_body",
+                    "unknown_address",
+                    "broken_container",
+                    "unreadable_body",
+                )
+            }
+            expected_problem_counts["conflict"] = len(conflict_entries)
+            expected_problem_counts = {
+                key: value for key, value in expected_problem_counts.items() if value
+            }
+            if problem_counts != expected_problem_counts:
+                return None
+            reconstructed = list(object_problem_rows)
+            reconstructed.extend(
+                CatalogProblem(
+                    "unknown_address",
+                    None,
+                    outcome.ordinal,
+                    "канонический адрес не доказан",
+                )
+                for outcome in outcomes
+                if outcome.category == "unknown_address"
+            )
+            bounded = sorted(
+                reconstructed,
+                key=lambda item: (
+                    item.address is None,
+                    item.address.casefold() if item.address else "",
+                    item.address or "",
+                    item.category,
+                    item.ordinal,
+                    item.reason,
+                ),
+            )[:20]
+            if problems != bounded:
+                return None
+            grouped_problems: dict[str, list[CatalogProblem]] = {}
+            for problem in object_problem_rows:
+                assert problem.address is not None
+                grouped_problems.setdefault(problem.address, []).append(problem)
             ordered = {
                 entry.address: entry
                 for entry in sorted(entries.values(), key=lambda item: item.sort_key)
             }
-            return cls(identity, ordered, tuple(outcomes), tuple(problems), coverage)
+            return cls(
+                identity,
+                ordered,
+                tuple(outcomes),
+                tuple(problems),
+                coverage,
+                tuple(sorted(problem_counts.items())),
+                {key: tuple(value) for key, value in grouped_problems.items()},
+            )
         except (KeyError, TypeError, ValueError):
             return None
 

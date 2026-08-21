@@ -74,6 +74,26 @@ def test_обрезанный_файл_не_роняет_старт(tmp_path, sa
     assert index_cache.load(path, sample_payloads, source_sha256="abc", kind="objects") is None
 
 
+def test_распакованный_кэш_не_может_превысить_бюджет(tmp_path, monkeypatch):
+    path = tmp_path / "blob"
+    index_cache.save_blob(
+        {"payload": "x" * 4096}, path, source_sha256="abc", kind="blob"
+    )
+    monkeypatch.setattr(index_cache, "MAX_CACHE_PAYLOAD_BYTES", 64, raising=False)
+
+    assert index_cache.load_blob(path, source_sha256="abc", kind="blob") is None
+
+
+def test_файл_кэша_не_читается_за_пределом_бюджета(tmp_path, monkeypatch):
+    path = tmp_path / "blob"
+    index_cache.save_blob(
+        {"payload": "x" * 4096}, path, source_sha256="abc", kind="blob"
+    )
+    monkeypatch.setattr(index_cache, "MAX_CACHE_FILE_BYTES", 32, raising=False)
+
+    assert index_cache.load_blob(path, source_sha256="abc", kind="blob") is None
+
+
 def test_файл_без_заголовка_не_поднимается(tmp_path, sample_payloads):
     path = tmp_path / "objects"
     path.write_bytes("ни заголовка, ни блоба".encode("utf-8"))

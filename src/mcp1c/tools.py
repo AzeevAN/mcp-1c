@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import difflib
+import heapq
 from bisect import bisect_right
 from dataclasses import dataclass
 
@@ -356,7 +357,8 @@ def _iter_code_problems(loaded: LoadedModules):
     # добавляет знания. Для module-only формы без иной причины он остаётся.
     точные_причины_форм = {
         problem.адрес.casefold()
-        for problem in loaded.формы.проблемы
+        for problems in loaded.формы.object_problems.values()
+        for problem in problems
         if problem.категория != "form_structure_missing"
     }
     seen: set[tuple[str, str | None, int, str]] = set()
@@ -404,9 +406,10 @@ def _iter_code_problems(loaded: LoadedModules):
 
 
 def _all_code_problems(loaded: LoadedModules) -> tuple[CodeProblemRow, ...]:
-    """Полный список для first20 и всех проблем форм одного объекта."""
+    """Первые 20 строк без материализации полного корпуса проблем."""
     return tuple(
-        sorted(
+        heapq.nsmallest(
+            20,
             _iter_code_problems(loaded),
             key=lambda item: (
                 item.address is None,
@@ -454,19 +457,20 @@ def _code_coverage(
             модулей_нет += 1
 
     проблемы = _all_code_problems(loaded) if include_problem_rows else ()
-    поток_проблем = проблемы if include_problem_rows else _iter_code_problems(loaded)
-    категории_проблем: dict[str, int] = {}
-    проблем_всего = 0
-    for problem in поток_проблем:
-        проблем_всего += 1
-        категории_проблем[problem.category] = (
-            категории_проблем.get(problem.category, 0) + 1
+    категории_проблем = dict(каталог.problem_counts)
+    for category, count in формы.problem_counts:
+        категории_проблем[category] = категории_проблем.get(category, 0) + count
+    if каталог.coverage.compiled:
+        категории_проблем["compiled_without_source"] = (
+            категории_проблем.get("compiled_without_source", 0)
+            + каталог.coverage.compiled
         )
+    проблем_всего = sum(категории_проблем.values())
     конфликты = len(
         {
-            problem.address.casefold()
-            for problem in каталог.problems
-            if problem.category == "conflict" and problem.address is not None
+            entry.address.casefold()
+            for entry in каталог.entries.values()
+            if entry.conflict
         }
     )
     return CodeCoverage(
@@ -488,7 +492,7 @@ def _code_coverage(
         compiled_without_source=каталог.coverage.compiled,
         problem_categories=tuple(sorted(категории_проблем.items())),
         problems_total=проблем_всего,
-        problems=проблемы[:20] if include_problem_rows else (),
+        problems=проблемы if include_problem_rows else (),
     )
 
 
@@ -1444,10 +1448,55 @@ def _object_code_block(view: _CodeView, full_name: str, detail: str) -> str:
     if loaded is None:
         raise RegistryError("Готовый индекс кода неполон; перезагрузите источник.")
     form_keys = {form.casefold() for form in forms}
+    object_rows: list[CodeProblemRow] = []
+    for address, problems in (loaded.каталог.object_problems or {}).items():
+        if address.casefold() not in form_keys:
+            continue
+        object_rows.extend(
+            CodeProblemRow(
+                problem.category,
+                problem.address,
+                problem.ordinal,
+                _safe_problem_reason(problem.reason),
+            )
+            for problem in problems
+        )
+    for address, problems in loaded.формы.object_problems.items():
+        if address.casefold() not in form_keys:
+            continue
+        object_rows.extend(
+            CodeProblemRow(
+                problem.категория,
+                problem.адрес,
+                0,
+                _safe_problem_reason(problem.причина),
+            )
+            for problem in problems
+        )
+    object_rows.extend(
+        CodeProblemRow(
+            "compiled_without_source",
+            entry.address,
+            0,
+            "исходный текст модуля поставлен скомпилированным",
+        )
+        for entry in loaded.каталог.entries.values()
+        if entry.compiled and entry.address.casefold() in form_keys
+    )
     проблемы_форм = tuple(
-        problem
-        for problem in _all_code_problems(loaded)
-        if problem.address is not None and problem.address.casefold() in form_keys
+        sorted(
+            {
+                (item.category, item.address, item.ordinal, item.reason): item
+                for item in object_rows
+            }.values(),
+            key=lambda item: (
+                item.address.casefold() if item.address else "",
+                item.address or "",
+                item.category,
+                item.ordinal,
+                item.reason,
+            ),
+        )
     )
     предупреждения: list[str] = []
     if проблемы_форм:

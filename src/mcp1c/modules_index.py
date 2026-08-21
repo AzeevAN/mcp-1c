@@ -353,11 +353,52 @@ class Оглавление:
 
         модули = данные["модули"]
         имена = данные["имена"]
+        if (
+            not isinstance(модули, list)
+            or not isinstance(имена, list)
+            or any(not isinstance(item, str) or not item for item in модули)
+            or any(not isinstance(item, str) or not item for item in имена)
+            or len(set(модули)) != len(модули)
+            or len({_key.casefold() for _key in модули}) != len(модули)
+        ):
+            raise ValueError("некорректная таблица модулей оглавления")
+        записей = len(имена)
+        if any(
+            len(values) != записей
+            for values in (_модуль, _строка, _конец, _флаги)
+        ):
+            raise ValueError("параллельные массивы оглавления расходятся")
+        if any(index < 0 or index >= len(модули) for index in _модуль):
+            raise ValueError("индекс модуля оглавления вне таблицы")
+        if any(line < 1 for line in _строка) or any(
+            end < line for line, end in zip(_строка, _конец)
+        ):
+            raise ValueError("границы процедуры оглавления некорректны")
+        допустимые_младшие = (
+            cls.ЭКСПОРТ | cls.ПЕРЕКРЫТА | cls.ЧАСТИЧНЫЙ | cls.ФУНКЦИЯ
+        )
+        допустимая_маска = допустимые_младшие | (0b111 << cls._ПЕРЕКРЫТИЕ_СДВИГ)
+        for флаг in _флаги:
+            код_перекрытия = флаг >> cls._ПЕРЕКРЫТИЕ_СДВИГ & 0b111
+            if (
+                флаг < 0
+                or флаг & ~допустимая_маска
+                or код_перекрытия not in {0, *cls._ВИДЫ_ПЕРЕКРЫТИЯ}
+                or bool(флаг & cls.ПЕРЕКРЫТА) != bool(код_перекрытия)
+            ):
+                raise ValueError("флаги процедуры оглавления некорректны")
+        скомпилированные = данные.get("скомпилированные", ())
+        if (
+            not isinstance(скомпилированные, (list, tuple))
+            or any(not isinstance(item, str) for item in скомпилированные)
+            or not set(скомпилированные).issubset(модули)
+        ):
+            raise ValueError("таблица скомпилированных модулей некорректна")
         по_имени, по_модулю = cls._индексы(имена, _модуль, модули)
         return cls(
             модули, имена, _модуль, _строка, _конец, _флаги,
             по_имени, по_модулю,
-            frozenset(данные.get("скомпилированные", ())),
+            frozenset(скомпилированные),
         )
 
     @classmethod
@@ -654,16 +695,44 @@ class Вызовы:
         _по_имени: dict[str, array] = {}
         рёбер = 0
         разрешённых = 0
-        for имя, байты in данные["по_имени"].items():
+        модули = данные["модули"]
+        по_имени = данные["по_имени"]
+        if (
+            not isinstance(модули, list)
+            or any(not isinstance(item, str) or not item for item in модули)
+            or len(set(модули)) != len(модули)
+            or not isinstance(по_имени, dict)
+            or any(
+                not isinstance(key, str) or not key or key != key.lower()
+                for key in по_имени
+            )
+            or len({key.casefold() for key in по_имени}) != len(по_имени)
+        ):
+            raise ValueError("таблица модулей вызовов некорректна")
+        for имя, байты in по_имени.items():
+            if not isinstance(имя, str) or not имя or not isinstance(байты, bytes):
+                raise ValueError("постинг вызовов имеет неверный тип")
             массив = array("i")
             массив.frombytes(байты)
+            if len(массив) % 3:
+                raise ValueError("постинг вызовов не разбивается на тройки")
+            for i in range(0, len(массив), 3):
+                модуль, строка, цель = массив[i : i + 3]
+                if (
+                    модуль < 0
+                    or модуль >= len(модули)
+                    or строка < 1
+                    or цель < -1
+                    or цель >= len(модули)
+                ):
+                    raise ValueError("постинг вызовов ссылается вне таблицы")
             _по_имени[имя] = массив
             for i in range(2, len(массив), 3):
                 рёбер += 1
                 if массив[i] != -1:
                     разрешённых += 1
 
-        return cls(данные["модули"], _по_имени, рёбер, разрешённых)
+        return cls(модули, _по_имени, рёбер, разрешённых)
 
     @classmethod
     def прочитать(cls, путь: Path) -> "Вызовы":
@@ -993,6 +1062,59 @@ class ПроблемаФормы:
     маркер: int | None = None
 
 
+_КАТЕГОРИИ_ПРОБЛЕМ_ФОРМ = frozenset(
+    {
+        "budget_exceeded",
+        "descriptor_only",
+        "extra_closing_brace",
+        "form_container_unreadable",
+        "form_descriptor_unreadable",
+        "form_marker_conflict",
+        "form_structure_missing",
+        "form_xml_unreadable",
+        "invalid_marker",
+        "invalid_root",
+        "invalid_syntax",
+        "invalid_token",
+        "invalid_utf8",
+        "known_marker_semantics_incomplete",
+        "trailing_data",
+        "truncated",
+        "unknown_marker",
+    }
+)
+
+
+def _ключ_проблемы_формы(problem: ПроблемаФормы) -> tuple:
+    return (
+        problem.адрес.casefold(),
+        problem.адрес,
+        problem.категория,
+        problem.причина,
+        -1 if problem.маркер is None else problem.маркер,
+    )
+
+
+def _публичные_проблемы_форм(
+    problems: tuple[ПроблемаФормы, ...] | list[ПроблемаФормы],
+) -> tuple[ПроблемаФормы, ...]:
+    """Убрать общий ``form_structure_missing`` при наличии точной причины."""
+    точные = {
+        problem.адрес.casefold()
+        for problem in problems
+        if problem.категория != "form_structure_missing"
+    }
+    unique = {
+        (problem.категория, problem.адрес, problem.причина, problem.маркер): problem
+        for problem in problems
+        if not (
+            problem.категория == "form_structure_missing"
+            and problem.адрес.casefold() in точные
+        )
+    }
+    return tuple(sorted(unique.values(), key=_ключ_проблемы_формы))
+
+
 class Формы:
     """Индекс форм из XML-дескрипторов, ``Form.xml`` и записи ``form``.
 
@@ -1047,7 +1169,7 @@ class Формы:
         "_флаги", "_маркеры", "_состояния_xml", "_идентификаторы", "_имена",
         "_синонимы", "_типы", "битых", "полных", "частичных",
         "непрочитанных", "неизвестных_маркеров", "известных_неполных",
-        "превышений_бюджета", "проблемы",
+        "превышений_бюджета", "проблемы", "problem_counts", "object_problems",
     )
 
     БИТАЯ = 1
@@ -1085,6 +1207,8 @@ class Формы:
         известных_неполных: int = 0,
         превышений_бюджета: int = 0,
         проблемы: tuple[ПроблемаФормы, ...] = (),
+        problem_counts: tuple[tuple[str, int], ...] = (),
+        object_problems: dict[str, tuple[ПроблемаФормы, ...]] | None = None,
     ) -> None:
         # Приватный конструктор, как у Оглавление и Вызовы: собирает
         # готовые данные, ничего не вычисляет. Публичный вход —
@@ -1115,6 +1239,22 @@ class Формы:
         self.известных_неполных = известных_неполных
         self.превышений_бюджета = превышений_бюджета
         self.проблемы = проблемы
+        public = _публичные_проблемы_форм(проблемы)
+        if problem_counts:
+            self.problem_counts = problem_counts
+        else:
+            counts: dict[str, int] = {}
+            for problem in public:
+                counts[problem.категория] = counts.get(problem.категория, 0) + 1
+            self.problem_counts = tuple(sorted(counts.items()))
+        if object_problems is None:
+            grouped: dict[str, list[ПроблемаФормы]] = {}
+            for problem in public:
+                grouped.setdefault(problem.адрес, []).append(problem)
+            object_problems = {
+                key: tuple(value) for key, value in grouped.items()
+            }
+        self.object_problems = object_problems
 
     @staticmethod
     def _по_модулю_из(модули: list[str]) -> dict[str, int]:
@@ -1447,7 +1587,15 @@ class Формы:
             "превышений_бюджета": self.превышений_бюджета,
             "проблемы": [
                 (item.категория, item.адрес, item.причина, item.маркер)
-                for item in self.проблемы
+                for item in _публичные_проблемы_форм(self.проблемы)[:20]
+            ],
+            "problem_counts": list(self.problem_counts),
+            "object_problems": [
+                (item.категория, item.адрес, item.причина, item.маркер)
+                for address in sorted(
+                    self.object_problems, key=lambda item: (item.casefold(), item)
+                )
+                for item in self.object_problems[address]
             ],
         }
 
@@ -1471,19 +1619,193 @@ class Формы:
             return восстановленный
 
         модули = данные["модули"]
-        return cls(
-            модули, cls._по_модулю_из(модули), данные["пул"],
-            массив("реквизиты_начало"), массив("реквизиты"),
-            массив("элементы_начало"), массив("элементы"),
-            массив("события_начало"), массив("события_проц"), массив("события_имя"),
-            массив("события_элемент"),
-            массив("флаги"), массив("маркеры"), массив("состояния_xml"),
-            массив("идентификаторы"), массив("имена"),
-            массив("синонимы"), массив("типы"), данные["битых"],
-            данные["полных"], данные["частичных"], данные["непрочитанных"],
-            данные["неизвестных_маркеров"], данные["известных_неполных"],
+        пул = данные["пул"]
+        реквизиты_начало = массив("реквизиты_начало")
+        реквизиты = массив("реквизиты")
+        элементы_начало = массив("элементы_начало")
+        элементы = массив("элементы")
+        события_начало = массив("события_начало")
+        события_проц = массив("события_проц")
+        события_имя = массив("события_имя")
+        события_элемент = массив("события_элемент")
+        флаги = массив("флаги")
+        маркеры = массив("маркеры")
+        состояния_xml = массив("состояния_xml")
+        идентификаторы = массив("идентификаторы")
+        имена = массив("имена")
+        синонимы = массив("синонимы")
+        типы = массив("типы")
+        if (
+            not isinstance(модули, list)
+            or any(not isinstance(item, str) or not item for item in модули)
+            or len(set(модули)) != len(модули)
+            or not isinstance(пул, list)
+            or any(not isinstance(item, str) for item in пул)
+            or len(set(пул)) != len(пул)
+        ):
+            raise ValueError("таблицы строк индекса форм некорректны")
+        форм = len(модули)
+        if any(
+            len(values) != форм
+            for values in (
+                флаги,
+                маркеры,
+                состояния_xml,
+                идентификаторы,
+                имена,
+                синонимы,
+                типы,
+            )
+        ):
+            raise ValueError("параллельные массивы форм расходятся")
+
+        def проверить_диапазоны(начала: array, values: array) -> None:
+            if (
+                len(начала) != форм + 1
+                or not начала
+                or начала[0] != 0
+                or начала[-1] != len(values)
+                or any(left > right for left, right in zip(начала, начала[1:]))
+            ):
+                raise ValueError("CSR-диапазоны индекса форм некорректны")
+
+        проверить_диапазоны(реквизиты_начало, реквизиты)
+        проверить_диапазоны(элементы_начало, элементы)
+        проверить_диапазоны(события_начало, события_проц)
+        if not (
+            len(события_проц) == len(события_имя) == len(события_элемент)
+        ):
+            raise ValueError("параллельные массивы событий форм расходятся")
+        предел_пула = len(пул)
+        if any(
+            index < 0 or index >= предел_пула
+            for values in (реквизиты, элементы, события_проц, события_имя)
+            for index in values
+        ) or any(
+            index < -1 or index >= предел_пула
+            for values in (
+                события_элемент,
+                идентификаторы,
+                имена,
+                синонимы,
+                типы,
+            )
+            for index in values
+        ):
+            raise ValueError("индекс формы ссылается вне пула строк")
+        if any(value not in (0, 1, 2) for value in состояния_xml):
+            raise ValueError("состояние Form.xml в кэше неизвестно")
+        допустимые_флаги = cls.БИТАЯ | cls.НЕТ_СТРУКТУРЫ | cls.ЧАСТИЧНАЯ
+        if any(value < 0 or value & ~допустимые_флаги for value in флаги):
+            raise ValueError("флаги формы в кэше неизвестны")
+        if any(value < -1 for value in маркеры):
+            raise ValueError("маркер формы в кэше некорректен")
+        счётчики = (
+            данные["битых"],
+            данные["полных"],
+            данные["частичных"],
+            данные["непрочитанных"],
+            данные["неизвестных_маркеров"],
+            данные["известных_неполных"],
             данные["превышений_бюджета"],
-            tuple(ПроблемаФормы(*item) for item in данные["проблемы"]),
+        )
+        if any(type(value) is not int or value < 0 for value in счётчики):
+            raise ValueError("счётчики индекса форм некорректны")
+        if sum(счётчики[1:4]) != форм or any(
+            value > форм for value in (счётчики[0], *счётчики[4:])
+        ):
+            raise ValueError("счётчики покрытия форм не согласованы")
+        битых = sum(bool(value & cls.БИТАЯ) for value in флаги)
+        непрочитанных = sum(bool(value & cls.НЕТ_СТРУКТУРЫ) for value in флаги)
+        частичных = sum(
+            bool(value & cls.ЧАСТИЧНАЯ) and not bool(value & cls.НЕТ_СТРУКТУРЫ)
+            for value in флаги
+        )
+        полных = форм - частичных - непрочитанных
+        if счётчики[:4] != (битых, полных, частичных, непрочитанных):
+            raise ValueError("счётчики покрытия форм расходятся с флагами")
+        raw_problems = данные["проблемы"]
+        raw_problem_counts = данные["problem_counts"]
+        raw_object_problems = данные["object_problems"]
+        if not isinstance(raw_problems, list) or not isinstance(
+            raw_object_problems, list
+        ):
+            raise ValueError("список проблем форм некорректен")
+
+        def разобрать_проблемы(raw: list) -> list[ПроблемаФормы]:
+            result: list[ПроблемаФормы] = []
+            seen: set[tuple[str, str, str, int | None]] = set()
+            for item in raw:
+                if not isinstance(item, (list, tuple)) or len(item) != 4:
+                    raise ValueError("запись проблемы формы некорректна")
+                категория, адрес, причина, маркер = item
+                if (
+                    категория not in _КАТЕГОРИИ_ПРОБЛЕМ_ФОРМ
+                    or not isinstance(адрес, str)
+                    or адрес not in модули
+                    or not isinstance(причина, str)
+                    or (маркер is not None and type(маркер) is not int)
+                ):
+                    raise ValueError("запись проблемы формы некорректна")
+                key = (категория, адрес, причина, маркер)
+                if key in seen:
+                    raise ValueError("список проблем форм содержит дубликат")
+                seen.add(key)
+                result.append(ПроблемаФормы(*item))
+            return result
+
+        проблемы = разобрать_проблемы(raw_problems)
+        object_rows = разобрать_проблемы(raw_object_problems)
+        if _публичные_проблемы_форм(object_rows) != tuple(
+            sorted(object_rows, key=_ключ_проблемы_формы)
+        ):
+            raise ValueError("локальные проблемы форм не нормализованы")
+        if tuple(проблемы) != tuple(object_rows[:20]):
+            raise ValueError("ограниченный список проблем форм некорректен")
+        if not isinstance(raw_problem_counts, list):
+            raise ValueError("агрегаты проблем форм некорректны")
+        problem_counts: dict[str, int] = {}
+        for item in raw_problem_counts:
+            if not isinstance(item, (list, tuple)) or len(item) != 2:
+                raise ValueError("агрегат проблем форм некорректен")
+            категория, count = item
+            if (
+                категория not in _КАТЕГОРИИ_ПРОБЛЕМ_ФОРМ
+                or type(count) is not int
+                or count <= 0
+                or категория in problem_counts
+            ):
+                raise ValueError("агрегат проблем форм некорректен")
+            problem_counts[категория] = count
+        counted: dict[str, int] = {}
+        for problem in object_rows:
+            counted[problem.категория] = counted.get(problem.категория, 0) + 1
+        if problem_counts != counted:
+            raise ValueError("агрегаты проблем форм расходятся с деталями")
+        special = (
+            len({p.адрес for p in object_rows if p.категория == "unknown_marker"}),
+            len(
+                {
+                    p.адрес
+                    for p in object_rows
+                    if p.категория == "known_marker_semantics_incomplete"
+                }
+            ),
+            len({p.адрес for p in object_rows if p.категория == "budget_exceeded"}),
+        )
+        if счётчики[4:] != special:
+            raise ValueError("счётчики причин форм расходятся с деталями")
+        grouped: dict[str, list[ПроблемаФормы]] = {}
+        for problem in object_rows:
+            grouped.setdefault(problem.адрес, []).append(problem)
+        return cls(
+            модули, cls._по_модулю_из(модули), пул,
+            реквизиты_начало, реквизиты, элементы_начало, элементы,
+            события_начало, события_проц, события_имя, события_элемент,
+            флаги, маркеры, состояния_xml, идентификаторы, имена,
+            синонимы, типы, *счётчики, tuple(проблемы),
+            tuple(sorted(problem_counts.items())),
+            {key: tuple(value) for key, value in grouped.items()},
         )
 
     @classmethod
@@ -1950,12 +2272,81 @@ def поднять_индексы(
         оглавление = Оглавление._из_состояния(данные_toc)
         вызовы = Вызовы._из_состояния(данные_вызовов)
         формы = Формы._из_состояния(данные_форм)
+        ожидаемые_модули = [
+            entry.address
+            for entry in каталог_локаторов.entries.values()
+            if entry.locator is not None
+        ]
+        ожидаемые_формы = [
+            entry.address
+            for entry in каталог_локаторов.entries.values()
+            if entry.is_form
+        ]
+        if (
+            оглавление.модули != ожидаемые_модули
+            or вызовы.модули != оглавление.модули
+            or формы.модули != ожидаемые_формы
+        ):
+            raise ValueError("индексы кэша относятся к разным каталогам")
+        известные_имена = {name.lower() for name in оглавление.имена}
+        if not set(вызовы._по_имени).issubset(известные_имена):
+            raise ValueError("вызовы ссылаются на неизвестную процедуру")
+        expected_compiled = {
+            entry.address
+            for entry in каталог_локаторов.entries.values()
+            if entry.compiled
+        }
+        if оглавление._скомпилированные != expected_compiled:
+            raise ValueError("скомпилированные модули расходятся с каталогом")
+        compiled_indexes = {
+            index
+            for index, address in enumerate(оглавление.модули)
+            if оглавление.скомпилирован(address)
+        }
+        if any(index in compiled_indexes for index in оглавление._модуль):
+            raise ValueError("скомпилированный модуль содержит процедуры")
+        declared_by_module = {
+            index: {
+                оглавление.имена[position].lower()
+                for position in оглавление._по_модулю.get(address, ())
+            }
+            for index, address in enumerate(оглавление.модули)
+        }
+        for key, posting in вызовы._по_имени.items():
+            for offset in range(0, len(posting), 3):
+                caller, _line, target = posting[offset : offset + 3]
+                if caller in compiled_indexes:
+                    raise ValueError("скомпилированный модуль содержит вызов")
+                if target == caller and key not in declared_by_module[caller]:
+                    raise ValueError("локальная цель вызова не объявлена")
+                if target != -1 and target != caller:
+                    target_address = оглавление.модули[target]
+                    if (
+                        target in compiled_indexes
+                        or not target_address.startswith("ОбщийМодуль.")
+                    ):
+                        raise ValueError("цель вызова не доказана оглавлением")
+        полезная_нагрузка = _полезная_нагрузка(оглавление)
+        if not isinstance(состояние_поиска, dict):
+            raise ValueError("состояние поискового индекса некорректно")
+        if (
+            состояние_поиска.get("doc_ids") != list(полезная_нагрузка)
+            or состояние_поиска.get("kinds") != [""] * len(полезная_нагрузка)
+        ):
+            raise ValueError("поиск и оглавление содержат разные документы")
         поиск = SearchIndex.from_state(
             состояние_поиска,
-            _полезная_нагрузка(оглавление),
+            полезная_нагрузка,
             synonyms=registry.dictionary.synonyms(),
         )
-    except (KeyError, TypeError, ValueError):
+        if (
+            list(поиск.docs) != list(полезная_нагрузка)
+            or any(value != 1.0 for value in поиск._boost)
+            or поиск.weights != {"name": 1.0, "module": 0.4, "header": 0.6}
+            or поиск.exact_fields != {"name", "synonym"}
+        ):
+            raise ValueError("поиск и оглавление содержат разные документы")
+    except (IndexError, KeyError, OverflowError, TypeError, ValueError):
         # Штампы совпали у всех четырёх файлов, но форма содержимого не та
         # (например, кэш от другой версии индекса, которую штамп почему-то
         # не отсёк) — тот же принцип, что в `index_cache.load`: промах

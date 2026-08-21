@@ -25,10 +25,14 @@
 from __future__ import annotations
 
 import zipfile
+from array import array
 from pathlib import Path
 
+import pytest
+
 from conftest import build_configuration, modules_configuration_xml, write_export
-from mcp1c import index_cache, modules_index
+from module_samples import v8_container_bytes
+from mcp1c import index_cache, modules_index, tools
 from mcp1c.registry import Registry
 
 
@@ -69,6 +73,90 @@ def _построить_индексы(корень: Path) -> modules_index.Ин
         формы=modules_index.Формы.построить(корень),
         поиск=modules_index.построить_поиск(оглавление, корень),
     )
+
+
+def _испортить_оглавление(state: dict) -> None:
+    toc = state["toc"]
+    toc["модуль"] = array("i", [999] * len(toc["имена"])).tobytes()
+
+
+def _испортить_вызовы(state: dict) -> None:
+    key = next(iter(state["по_имени"]))
+    state["по_имени"][key] = array("i", [0, 1]).tobytes()
+
+
+def _испортить_формы(state: dict) -> None:
+    state["флаги"] = b""
+
+
+def _подменить_модули_оглавления(state: dict) -> None:
+    state["toc"]["модули"][0] = "ОбщийМодуль.Чужой"
+
+
+def _подменить_модули_вызовов(state: dict) -> None:
+    state["модули"][0] = "ОбщийМодуль.Чужой"
+
+
+def _подменить_модули_форм(state: dict) -> None:
+    state["модули"][0] = "Справочник.Чужой.Форма.Чужая"
+
+
+def _добавить_неизвестный_флаг_формы(state: dict) -> None:
+    флаги = array("i")
+    флаги.frombytes(state["флаги"])
+    флаги[0] |= 8
+    state["флаги"] = флаги.tobytes()
+
+
+def _добавить_неизвестный_флаг_оглавления(state: dict) -> None:
+    флаги = array("i")
+    флаги.frombytes(state["toc"]["флаги"])
+    флаги[0] |= 1 << 8
+    state["toc"]["флаги"] = флаги.tobytes()
+
+
+def _добавить_отрицательный_маркер_формы(state: dict) -> None:
+    маркеры = array("i")
+    маркеры.frombytes(state["маркеры"])
+    маркеры[0] = -2
+    state["маркеры"] = маркеры.tobytes()
+
+
+def _испортить_поиск(state: dict) -> None:
+    документы = array("i")
+    документы.frombytes(state["token_docs"])
+    документы[0] = 999
+    state["token_docs"] = документы.tobytes()
+
+
+def _подменить_документ_поиска(state: dict) -> None:
+    state["doc_ids"][0] = "ОбщийМодуль.Чужой::Чужая"
+
+
+def _рассогласовать_счётчик_форм(state: dict) -> None:
+    state["неизвестных_маркеров"] = 1
+
+
+def _подменить_имя_вызова(state: dict) -> None:
+    прежнее = next(iter(state["по_имени"]))
+    state["по_имени"]["чужаяпроцедура"] = state["по_имени"].pop(прежнее)
+
+
+def _объявить_обычный_модуль_скомпилированным(state: dict) -> None:
+    state["toc"]["скомпилированные"].append(state["toc"]["модули"][0])
+
+
+def _подменить_цель_вызова_на_недоказанный_self(state: dict) -> None:
+    for key, raw in state["по_имени"].items():
+        posting = array("i")
+        posting.frombytes(raw)
+        for offset in range(0, len(posting), 3):
+            caller, _line, target = posting[offset : offset + 3]
+            if target not in (-1, caller):
+                posting[offset + 2] = caller
+                state["по_имени"][key] = posting.tobytes()
+                return
+    raise AssertionError("в синтетическом корпусе нет разрешённого внешнего вызова")
 
 
 def test_sweep_не_сносит_ни_один_индекс_модулей(tmp_path, корень_кода):
@@ -171,6 +259,219 @@ def test_warm_restart_после_reparse_принимает_сохраненно
         финальный.modules[источник.id].каталог.identity.generation
         == следующий.locator_generation
     )
+
+
+@pytest.mark.parametrize(
+    ("kind", "mutate"),
+    [
+        ("modules-toc", _испортить_оглавление),
+        ("modules-calls", _испортить_вызовы),
+        ("modules-forms", _испортить_формы),
+        ("modules-toc", _подменить_модули_оглавления),
+        ("modules-calls", _подменить_модули_вызовов),
+        ("modules-forms", _подменить_модули_форм),
+        ("modules-forms", _добавить_неизвестный_флаг_формы),
+        ("modules-toc", _добавить_неизвестный_флаг_оглавления),
+        ("modules-forms", _добавить_отрицательный_маркер_формы),
+        ("modules-search", _испортить_поиск),
+        ("modules-search", _подменить_документ_поиска),
+        ("modules-forms", _рассогласовать_счётчик_форм),
+        ("modules-calls", _подменить_имя_вызова),
+        ("modules-toc", _объявить_обычный_модуль_скомпилированным),
+        ("modules-calls", _подменить_цель_вызова_на_недоказанный_self),
+    ],
+)
+def test_семантически_битый_кэш_индекса_становится_промахом(
+    tmp_path, корень_кода, kind, mutate
+):
+    реестр, источник = _реестр_с_модулями(tmp_path, корень_кода)
+    signature = (
+        f"{источник.sha256}:selection={источник.selection_version}"
+    )
+    path = реестр._cache_path(источник.id, kind)
+    state = index_cache.load_blob(
+        path, source_sha256=signature, kind=kind
+    )
+    assert isinstance(state, dict)
+    mutate(state)
+    index_cache.save_blob(
+        state, path, source_sha256=signature, kind=kind
+    )
+
+    assert modules_index.поднять_индексы(реестр, источник.id) is None
+
+
+def test_поисковый_кэш_с_неверным_top_level_становится_промахом(
+    tmp_path, корень_кода
+):
+    реестр, источник = _реестр_с_модулями(tmp_path, корень_кода)
+    signature = f"{источник.sha256}:selection={источник.selection_version}"
+    path = реестр._cache_path(источник.id, "modules-search")
+    index_cache.save_blob(
+        [], path, source_sha256=signature, kind="modules-search"
+    )
+
+    assert modules_index.поднять_индексы(реестр, источник.id) is None
+
+
+def test_cold_warm_и_пересборка_битого_кэша_сохраняют_всё_покрытие(
+    tmp_path, корень_кода, monkeypatch
+):
+    for index in range(25):
+        form = (
+            корень_кода
+            / "CommonForms"
+            / f"Форма{index:02d}"
+            / "Ext"
+            / "Form.xml"
+        )
+        form.parent.mkdir(parents=True)
+        form.write_text("<Form>", encoding="utf-8")
+    реестр, источник = _реестр_с_модулями(tmp_path, корень_кода)
+    реестр.save()
+    ожидаемое = tools.sources_snapshot(реестр).code
+    signature = f"{источник.sha256}:selection={источник.selection_version}"
+    cached_forms = index_cache.load_blob(
+        реестр._cache_path(источник.id, "modules-forms"),
+        source_sha256=signature,
+        kind="modules-forms",
+    )
+    assert len(cached_forms["проблемы"]) == 20
+    assert dict(cached_forms["problem_counts"])["form_xml_unreadable"] == 25
+    assert len(cached_forms["object_problems"]) == 25
+
+    warm = Registry(реестр.data_dir)
+
+    def нельзя_строить(*_args, **_kwargs):
+        raise AssertionError("warm-кэш не должен перестраиваться")
+
+    monkeypatch.setattr(warm, "_построить_индекс_кода", нельзя_строить)
+    assert warm.startup() == []
+    assert tools.sources_snapshot(warm).code == ожидаемое
+
+    forms_cache = реестр._cache_path(источник.id, "modules-forms")
+    forms_cache.write_bytes("повреждено".encode())
+    cold = Registry(реестр.data_dir)
+    assert cold.startup() == []
+    assert cold.wait_for_module_builds(timeout=10)
+    assert tools.sources_snapshot(cold).code == ожидаемое
+    coverage = tools.sources_snapshot(cold).code[0].coverage
+    assert dict(coverage.problem_categories)["form_xml_unreadable"] == 25
+    assert len(coverage.problems) == 20
+    assert coverage.problems_omitted == 5
+
+
+def test_кэш_каталога_хранит_агрегат_и_не_больше_двадцати_строк(
+    tmp_path, корень_кода
+):
+    container = v8_container_bytes([("module", b""), ("form", b"{19}")])
+    for index in range(25):
+        (корень_кода / f"Unknown.Форма{index:02d}.Form").write_bytes(container)
+    реестр, источник = _реестр_с_модулями(tmp_path, корень_кода)
+    signature = f"{источник.sha256}:selection={источник.selection_version}"
+
+    toc = index_cache.load_blob(
+        реестр._cache_path(источник.id, "modules-toc"),
+        source_sha256=signature,
+        kind="modules-toc",
+    )
+    catalog = toc["catalog"]
+
+    assert len(catalog["problems"]) == 20
+    assert dict(catalog["problem_counts"])["unknown_address"] == 25
+    assert catalog["object_problems"] == []
+
+
+def test_warm_get_object_видит_все_локальные_причины_за_общим_лимитом(
+    tmp_path, корень_кода, monkeypatch
+):
+    container = v8_container_bytes([("module", b""), ("form", b"{,19}")])
+    for index in range(25):
+        (корень_кода / f"Catalog.Контрагенты.Form.Форма{index:02d}.Form").write_bytes(
+            container
+        )
+    реестр, _источник = _реестр_с_модулями(tmp_path, корень_кода)
+    реестр.save()
+    warm = Registry(реестр.data_dir)
+
+    def нельзя_строить(*_args, **_kwargs):
+        raise AssertionError("warm-кэш не должен перестраиваться")
+
+    monkeypatch.setattr(warm, "_построить_индекс_кода", нельзя_строить)
+    assert warm.startup() == []
+
+    answer = tools.get_object(
+        warm, "Справочник.Контрагенты", config="Пример", detail="full"
+    )
+    assert answer.count("[invalid_syntax]") == 25
+    assert "Справочник.Контрагенты.Форма.Форма24" in answer
+
+
+def test_read_only_кэш_не_мешает_холодной_диагностике(
+    tmp_path, корень_кода, monkeypatch
+):
+    broken = корень_кода / "CommonForms" / "Ограниченная" / "Ext" / "Form.xml"
+    broken.parent.mkdir(parents=True)
+    broken.write_text("<Form>", encoding="utf-8")
+    реестр, источник = _реестр_с_модулями(tmp_path, корень_кода)
+    реестр.save()
+    ожидаемое = tools.sources_snapshot(реестр).code
+    for kind in реестр.CACHE_KINDS[источник.kind]:
+        реестр._cache_path(источник.id, kind).unlink(missing_ok=True)
+
+    monkeypatch.setattr(index_cache, "save_blob", lambda *_args, **_kwargs: None)
+    cold = Registry(реестр.data_dir)
+    assert cold.startup() == []
+    assert cold.wait_for_module_builds(timeout=10)
+
+    assert tools.sources_snapshot(cold).code == ожидаемое
+    assert not any(
+        path.is_file()
+        for path in (
+            cold._cache_path(источник.id, kind)
+            for kind in cold.CACHE_KINDS[источник.kind]
+        )
+    )
+
+
+def test_кэш_не_содержит_тела_сигнатуры_или_сырой_form_xml(
+    tmp_path, корень_кода
+):
+    module = (
+        корень_кода
+        / "CommonModules"
+        / "ОбщийПример"
+        / "Ext"
+        / "Module.bsl"
+    )
+    module.write_text(
+        "Процедура Проверить(ПарамСекрет) Экспорт\n"
+        "// BODY_SENTINEL\n"
+        "КонецПроцедуры\n",
+        encoding="utf-8",
+    )
+    form = корень_кода / "CommonForms" / "БезСырья" / "Ext" / "Form.xml"
+    form.parent.mkdir(parents=True)
+    form.write_text(
+        "<Form><Unused>RAW_FORM_SENTINEL</Unused></Form>", encoding="utf-8"
+    )
+    реестр, источник = _реестр_с_модулями(tmp_path, корень_кода)
+    signature = f"{источник.sha256}:selection={источник.selection_version}"
+
+    states = [
+        index_cache.load_blob(
+            реестр._cache_path(источник.id, kind),
+            source_sha256=signature,
+            kind=kind,
+        )
+        for kind in реестр.CACHE_KINDS[источник.kind]
+    ]
+    cached = repr(states)
+
+    assert "BODY_SENTINEL" not in cached
+    assert "ПарамСекрет" not in cached
+    assert "RAW_FORM_SENTINEL" not in cached
+    assert str(корень_кода) not in cached
 
 
 def test_remove_readd_не_повторяет_identity_локаторов(

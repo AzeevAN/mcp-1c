@@ -1657,16 +1657,8 @@ class Registry:
         self, source: Source, индексы: modules_index.Индексы
     ) -> None:
         """По одной обезличенной строке на категорию нового поколения."""
-        catalog_counts = Counter(
-            problem.category for problem in индексы.каталог.problems
-        )
-        form_counts = Counter(
-            problem.категория for problem in индексы.формы.проблемы
-        )
-        counts = {
-            category: max(catalog_counts[category], form_counts[category])
-            for category in catalog_counts.keys() | form_counts.keys()
-        }
+        counts = Counter(dict(индексы.каталог.problem_counts))
+        counts.update(dict(индексы.формы.problem_counts))
         if индексы.каталог.coverage.compiled:
             counts["compiled_without_source"] = индексы.каталог.coverage.compiled
 

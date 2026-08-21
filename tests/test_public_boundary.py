@@ -35,7 +35,7 @@ FORBIDDEN = re.compile(
     r"(?:^|[/_.-])hand" r"off(?=$|[/_.-])|"
     r"(?:^|[/_.-])super" r"powers(?=$|[/_.-])|"
     r"(?<!к)лю" r"ч_|лок_(?:Скуп" r"ка|Про" r"бы)|"
-    r"Мир" r"Музыка|"
+    r"\bмир(?:а|у|е|ом)?\s*музык(?:а|и|е|у|ой)\b|"
     + PROCESS_LABEL,
     re.IGNORECASE,
 )
@@ -351,6 +351,11 @@ def test_дизайн_языка_запросов_не_выдаёт_реализ
         "кандидат ра" + "унда",
         "мелочь " + "3",
         "Документ.лок_" + "Скупка",
+        "Мир " + "Музыки",
+        "в Мире " + "музыки",
+        "из Мира " + "музыки",
+        "к Миру\n# " + "музыки",
+        "Миром" + "Музыки",
     ],
 )
 def test_запрещённые_примеры_распознаются(example: str):
@@ -378,6 +383,9 @@ def test_запрещённые_примеры_распознаются(example:
         "Agents have no super " + "powers.",
         "The server can hand\n# " + "off work safely.",
         "Agents have no super\n# " + "powers.",
+        "Музыка объединяет мир.",
+        "В мире много хорошей музыки.",
+        "История мировой музыки.",
     ],
 )
 def test_публичные_термины_не_дают_ложного_срабатывания(example: str):
@@ -426,3 +434,55 @@ def test_ignored_reference_style_ссылка_отвергается(tmp_path):
 )
 def test_markdown_uri_схемы_не_считаются_путями_репозитория(target: str):
     assert _relative_markdown_targets(f"[внешняя]({target})", "README.md") == []
+
+
+def test_источник_b_описывает_доступную_структуру_форм():
+    text = (ROOT / "docs/data-sources.md").read_text(encoding="utf-8")
+
+    assert "тексты модулей и доступная структура `Form.xml`" in text
+    assert "элементы и события форм" in text
+    assert "Команды, макеты и недостающие в schema v1 данные форм" in text
+
+
+def test_текущие_агрегаты_провайдера_отделены_от_исторических():
+    expected = ("137 116", "619 029", "3 194", "89 528", "24 202")
+    for relative in ("README.md", "docs/modules-provider-design.md"):
+        text = (ROOT / relative).read_text(encoding="utf-8")
+        start = text.index("Текущий производственный срез")
+        end = text.index("Исторический снимок прототипа", start)
+        current = text[start:end]
+
+        assert all(value in current for value in expected)
+        assert "2026-08-21" in current
+        assert "Исторический снимок прототипа" in text
+
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    start = readme.index("Текущий производственный срез")
+    end = readme.index("Исторический снимок прототипа", start)
+    assert (
+        '.venv/bin/python tools/lab/measure_modules_cache.py "$MODULES_ROOT"'
+        in readme[start:end]
+    )
+
+    design = (ROOT / "docs/modules-provider-design.md").read_text(encoding="utf-8")
+    assert "## 1. Цена — исторический замер прототипа" in design
+
+
+def test_дизайн_не_выдаёт_готовые_возможности_за_будущие():
+    text = (ROOT / "docs/modules-provider-design.md").read_text(encoding="utf-8")
+
+    assert "показывается `get_procedure`" in text
+    assert "будущей карточкой процедуры" not in text
+    assert "Деградация ответов во время сборки" not in text
+
+
+def test_readme_фиксирует_отображаемый_docker_размер_воспроизводимо():
+    text = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "2026-08-21" in text
+    assert "docker image ls mcp1c:latest --format '{{.Size}}'" in text
+    assert "`357MB`" in text
+    assert "Docker CLI" in text
+    assert "`77950901`" in text
+    assert "docker image inspect mcp1c:latest --format '{{.Size}}'" in text
+    assert "354 МБ" not in text

@@ -14,6 +14,7 @@
 
     .venv/bin/python tools/lab/measure_modules_cache.py data/modules/<Конфигурация>
 """
+import json
 import shutil
 import sys
 import time
@@ -23,6 +24,21 @@ sys.path.insert(0, "src")
 
 from mcp1c import index_cache, modules_index
 from mcp1c.registry import KIND_MODULES, Registry, STATUS_READY, Source
+
+
+def агрегаты(индексы: modules_index.Индексы) -> dict[str, int]:
+    """Пять счётчиков без имён источника и локальных путей.
+
+    `event_rows` — именно сырые строки `<Event>` в плоском индексе,
+    до группировки и удаления дублей в публичных привязках.
+    """
+    return {
+        "procedures": len(индексы.оглавление.имена),
+        "calls": индексы.вызовы.рёбер,
+        "forms": len(индексы.формы.модули),
+        "elements": len(индексы.формы._элементы),
+        "event_rows": len(индексы.формы._события_проц),
+    }
 
 КОРЕНЬ = Path(sys.argv[1]).resolve()
 ИМЯ = КОРЕНЬ.name
@@ -68,7 +84,6 @@ t_запись = time.monotonic() - начало
 
 файлы = sorted(реестр.cache_dir.glob(f"{index_cache.safe_name(источник.id)}.*"))
 итого_байт = 0
-print(f"источник: {источник.id}")
 print(f"оглавление : {t_оглавление:5.1f} с")
 print(f"вызовы     : {t_вызовы:5.1f} с")
 print(f"формы      : {t_формы:5.1f} с")
@@ -77,10 +92,10 @@ print(f"запись     : {t_запись:5.1f} с")
 print(f"итого      : {сборка_и_запись:5.1f} с")
 print()
 print("файлы кэша:")
-for путь in файлы:
+for номер, путь in enumerate(файлы, 1):
     размер = путь.stat().st_size
     итого_байт += размер
-    print(f"  {путь.name:45s} {размер / 1024 / 1024:7.2f} МБ")
+    print(f"  файл {номер:<39d} {размер / 1024 / 1024:7.2f} МБ")
 print(f"  {'итого':45s} {итого_байт / 1024 / 1024:7.2f} МБ")
 
 # ---- подъём из годного кэша -------------------------------------------
@@ -89,6 +104,7 @@ print(f"  {'итого':45s} {итого_байт / 1024 / 1024:7.2f} МБ")
 подъём = time.monotonic() - начало
 assert поднятое is not None, "кэш только что записан, обязан подняться"
 print()
+print(json.dumps({"aggregates": агрегаты(поднятое)}, ensure_ascii=False, sort_keys=True))
 print(f"подъём из кэша: {подъём * 1000:.1f} мс")
 print(f"  оглавление: {len(поднятое.оглавление.все())} процедур")
 print(f"  вызовы: {поднятое.вызовы.рёбер} рёбер, {поднятое.вызовы.разрешённых} разрешено")

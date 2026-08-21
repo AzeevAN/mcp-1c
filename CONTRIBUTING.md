@@ -22,7 +22,7 @@
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest          # 1087 тестов (прогон 2026-08-21)
+.venv/bin/python -m pytest          # 1100 тестов (прогон 2026-08-21)
 ```
 
 Тесты **не зависят от содержимого `data/`**: проприетарных выгрузок и справки

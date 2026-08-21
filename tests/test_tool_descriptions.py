@@ -130,3 +130,27 @@ async def test_поиск_процедур_зарегистрирован_с_п�
     assert "list_configurations" in свойства["config"]["description"]
     assert свойства["limit"]["minimum"] == 1
     assert свойства["limit"]["maximum"] == 50
+
+
+async def test_карточка_процедуры_зарегистрирована_с_английскими_параметрами(
+    инструменты,
+):
+    все = await инструменты()
+    assert len(все) == 9
+    (карточка,) = [tool for tool in все if tool.name == "get_procedure"]
+
+    schema = карточка.input_schema or {}
+    свойства = schema.get("properties") or {}
+    assert set(свойства) == {
+        "address",
+        "config",
+        "extension",
+        "start_line",
+        "lines",
+    }
+    assert set(schema.get("required") or []) == {"address"}
+    assert свойства["start_line"]["minimum"] == 0
+    assert свойства["lines"]["minimum"] == 1
+    assert свойства["lines"]["maximum"] == 200
+    assert "оглавлен" in (карточка.description or "").lower()
+    assert "тел" in (карточка.description or "").lower()

@@ -14,6 +14,7 @@ import pytest
 
 from mcp1c import modules_index, tools
 from mcp1c.module_address import путь_модуля
+from mcp1c.model import MetadataObject
 from mcp1c.registry import STATUS_ERROR, Registry, RegistryError
 
 from conftest import build_configuration, write_export
@@ -790,6 +791,731 @@ def test_устаревший_снимок_состояния_повторяет
 
     assert "::Сложить" in ответ
     assert "индекс кода строится" not in ответ.lower()
+
+
+# ------------------------------------------------------ карточка процедуры
+
+
+def test_get_procedure_адрес_модуля_отдаёт_только_оглавление(
+    реестр_с_кодом,
+):
+    ответ = tools.get_procedure(
+        реестр_с_кодом, "ОбщийМодуль.ОбщийПример", config="Пример"
+    )
+
+    assert "::Сложить" in ответ
+    assert "::Внутренняя" in ответ
+    assert "Сигнатура" in ответ
+    assert "Возврат Первый + Второй" not in ответ
+
+
+def test_get_procedure_оглавление_разбирает_текст_модуля_один_раз(
+    реестр_с_кодом, monkeypatch
+):
+    настоящий_разбор = tools.разобрать
+    разборов = 0
+
+    def считать(текст):
+        nonlocal разборов
+        разборов += 1
+        return настоящий_разбор(текст)
+
+    monkeypatch.setattr(tools, "разобрать", считать)
+
+    tools.get_procedure(
+        реестр_с_кодом, "ОбщийМодуль.ОбщийПример", config="Пример"
+    )
+
+    assert разборов == 1
+
+
+def test_get_procedure_пустой_модуль_отличается_от_промаха(
+    корень_кода, реестр_из_кода
+):
+    каталог = корень_кода / "CommonModules" / "Пустой" / "Ext"
+    каталог.mkdir(parents=True)
+    (каталог / "Module.bsl").write_text(
+        "// В модуле намеренно нет процедур.\n", encoding="utf-8"
+    )
+    реестр = реестр_из_кода(корень_кода)
+
+    ответ = tools.get_procedure(
+        реестр, "ОбщийМодуль.Пустой", config="Пример"
+    )
+
+    assert "В модуле нет разобранных процедур" in ответ
+    assert "не найден" not in ответ
+
+
+def test_get_procedure_две_процедуры_на_одной_строке_не_смешивают_тела(
+    корень_кода, реестр_из_кода
+):
+    файл = корень_кода / "CommonModules" / "ОбщийПример" / "Ext" / "Module.bsl"
+    файл.write_text(
+        "Процедура Первая(Первый) Экспорт МаркерПервой = 1; КонецПроцедуры "
+        "Процедура Вторая(Второй) Экспорт МаркерВторой = 2; КонецПроцедуры\n",
+        encoding="utf-8",
+    )
+    реестр = реестр_из_кода(корень_кода)
+
+    первая = tools.get_procedure(
+        реестр, "ОбщийМодуль.ОбщийПример::Первая", config="Пример"
+    )
+    вторая = tools.get_procedure(
+        реестр, "ОбщийМодуль.ОбщийПример::Вторая", config="Пример"
+    )
+
+    assert "Первая(Первый) Экспорт" in первая
+    assert "МаркерПервой" in первая and "МаркерВторой" not in первая
+    assert "Вторая(Второй) Экспорт" in вторая
+    assert "МаркерВторой" in вторая and "МаркерПервой" not in вторая
+
+
+def test_get_procedure_одноимённые_на_одной_строке_сопоставляются_по_порядку(
+    корень_кода, реестр_из_кода
+):
+    файл = корень_кода / "CommonModules" / "ОбщийПример" / "Ext" / "Module.bsl"
+    файл.write_text(
+        "Процедура Дубль(Первый) Экспорт ПервыйМаркер = 1; КонецПроцедуры "
+        "Процедура дУбЛь(Второй) Экспорт ВторойМаркер = 2; КонецПроцедуры\n",
+        encoding="utf-8",
+    )
+    реестр = реестр_из_кода(корень_кода)
+
+    оглавление = tools.get_procedure(
+        реестр, "ОбщийМодуль.ОбщийПример", config="Пример"
+    )
+    карточка = tools.get_procedure(
+        реестр, "ОбщийМодуль.ОбщийПример::ДУБЛЬ", config="Пример"
+    )
+
+    assert оглавление.count("Процедура Дубль(Первый) Экспорт") == 1
+    assert оглавление.count("Процедура дУбЛь(Второй) Экспорт") == 1
+    assert "ПервыйМаркер" in карточка and "ВторойМаркер" not in карточка
+
+
+def test_get_procedure_точные_границы_не_путают_аннотацию_и_строки_с_кодом(
+    корень_кода, реестр_из_кода
+):
+    файл = корень_кода / "CommonModules" / "ОбщийПример" / "Ext" / "Module.bsl"
+    файл.write_text(
+        '&НаСервере Процедура Первая(Текст = "Процедура Ложная()") Экспорт '
+        'Сообщить("// КонецПроцедуры Процедура Ложная()"); КонецПроцедуры '
+        "Процедура Вторая() Экспорт МаркерВторой = 2; КонецПроцедуры\n",
+        encoding="utf-8",
+    )
+    реестр = реестр_из_кода(корень_кода)
+
+    первая = tools.get_procedure(
+        реестр, "ОбщийМодуль.ОбщийПример::Первая", config="Пример"
+    )
+
+    assert '&НаСервере' in первая
+    assert 'Текст = "Процедура Ложная()"' in первая
+    assert 'Сообщить("// КонецПроцедуры Процедура Ложная()")' in первая
+    assert "МаркерВторой" not in первая
+
+
+def test_get_procedure_комментарий_с_ложными_границами_остаётся_в_своём_теле(
+    корень_кода, реестр_из_кода
+):
+    файл = корень_кода / "CommonModules" / "ОбщийПример" / "Ext" / "Module.bsl"
+    файл.write_text(
+        "Процедура Первая() Экспорт\n"
+        "    // Процедура Ложная() КонецПроцедуры\n"
+        "    МаркерПервой = 1;\n"
+        "КонецПроцедуры Процедура Вторая() Экспорт "
+        "МаркерВторой = 2; КонецПроцедуры\n",
+        encoding="utf-8",
+    )
+    реестр = реестр_из_кода(корень_кода)
+
+    первая = tools.get_procedure(
+        реестр, "ОбщийМодуль.ОбщийПример::Первая", config="Пример"
+    )
+    вторая = tools.get_procedure(
+        реестр, "ОбщийМодуль.ОбщийПример::Вторая", config="Пример"
+    )
+
+    assert "Процедура Ложная() КонецПроцедуры" in первая
+    assert "МаркерПервой" in первая and "МаркерВторой" not in первая
+    assert "МаркерВторой" in вторая and "МаркерПервой" not in вторая
+
+
+def test_get_procedure_многострочная_и_частичная_границы_остаются_точными(
+    корень_кода, реестр_из_кода
+):
+    файл = корень_кода / "CommonModules" / "ОбщийПример" / "Ext" / "Module.bsl"
+    файл.write_text(
+        "Процедура Закрытая(\n    Первый,\n    Второй) Экспорт\n"
+        "    МаркерЗакрытой = 1;\n"
+        "КонецПроцедуры Процедура Обрыв()\n"
+        "    МаркерОбрыва = 2;\n",
+        encoding="utf-8",
+    )
+    реестр = реестр_из_кода(корень_кода)
+
+    закрытая = tools.get_procedure(
+        реестр, "ОбщийМодуль.ОбщийПример::Закрытая", config="Пример"
+    )
+    обрыв = tools.get_procedure(
+        реестр, "ОбщийМодуль.ОбщийПример::Обрыв", config="Пример"
+    )
+
+    assert "Первый, Второй) Экспорт" in закрытая
+    assert "МаркерЗакрытой" in закрытая and "МаркерОбрыва" not in закрытая
+    assert "Процедура Обрыв" not in закрытая
+    assert "разобран не до конца" in обрыв
+    assert "МаркерОбрыва" in обрыв and "МаркерЗакрытой" not in обрыв
+    тело_обрыва = обрыв.split("```bsl\n", 1)[1].split("\n```", 1)[0]
+    assert тело_обрыва.startswith("Процедура Обрыв()")
+
+
+def test_get_procedure_адрес_процедуры_отдаёт_тело_и_контекст(
+    корень_кода, реестр_из_кода
+):
+    configuration = build_configuration(name="Пример")
+    configuration.objects["ОбщийМодуль.ОбщийПример"] = MetadataObject(
+        full_name="ОбщийМодуль.ОбщийПример",
+        kind="ОбщийМодуль",
+        name="ОбщийПример",
+        props={
+            "server": True,
+            "client_managed": False,
+            "server_call": True,
+            "global": False,
+            "privileged": True,
+            "external_connection": True,
+            "return_values_reuse": "DuringCall",
+        },
+    )
+    реестр = реестр_из_кода(
+        корень_кода, configuration=configuration
+    )
+
+    ответ = tools.get_procedure(
+        реестр,
+        "ОбщийМодуль.ОбщийПример::Сложить",
+        config="Пример",
+    )
+
+    до_тела = ответ.split("Возврат", 1)[0]
+    assert "Сигнатура" in до_тела
+    assert "Сервер" in до_тела
+    assert "Вызов сервера" in до_тела
+    assert "Привилегированный" in до_тела
+    assert "Внешнее соединение" not in до_тела
+    assert "Повторное использование" not in до_тела
+    assert "DuringCall" not in до_тела
+    assert "Возврат Первый + Второй" in ответ
+
+
+def test_get_procedure_директива_формы_и_событие_рядом(реестр_с_кодом):
+    адрес = "Справочник.Пример.Форма.ФормаЭлемента"
+
+    оглавление = tools.get_procedure(
+        реестр_с_кодом, адрес, config="Пример"
+    )
+    карточка = tools.get_procedure(
+        реестр_с_кодом, f"{адрес}::ПриОткрытии", config="Пример"
+    )
+
+    assert "ПриОткрытии" in оглавление
+    assert "OnOpen" in оглавление
+    до_тела = карточка.split("КонецПроцедуры", 1)[0]
+    assert "&НаКлиенте" in до_тела
+    assert "OnOpen" in до_тела
+
+
+def test_get_procedure_длинное_тело_даёт_окно_и_готовое_продолжение(
+    корень_кода, реестр_из_кода
+):
+    каталог = корень_кода / "CommonModules" / "Длинный" / "Ext"
+    каталог.mkdir(parents=True)
+    строки = ["Процедура Огромная() Экспорт"]
+    строки += [f"    Маркер{n:03d} = {n};" for n in range(240)]
+    строки += ["КонецПроцедуры"]
+    (каталог / "Module.bsl").write_text("\n".join(строки) + "\n", encoding="utf-8")
+    реестр = реестр_из_кода(корень_кода)
+    адрес = "ОбщийМодуль.Длинный::Огромная"
+
+    первая = tools.get_procedure(реестр, адрес, config="Пример")
+    вторая = tools.get_procedure(
+        реестр, адрес, config="Пример", start_line=200, lines=200
+    )
+
+    assert "Маркер000" in первая
+    assert "Маркер239" not in первая
+    assert 'start_line=200, lines=200' in первая
+    assert "Маркер239" in вторая
+
+
+def test_get_procedure_окна_используют_одни_нормализованные_строки_без_разрыва(
+    корень_кода, реестр_из_кода
+):
+    файл = корень_кода / "CommonModules" / "ОбщийПример" / "Ext" / "Module.bsl"
+    файл.write_bytes(
+        "Процедура Окна() Экспорт\r\n"
+        "    Маркер0 = 0; // одиночный CR\rостаётся внутри строки\r\n"
+        "    Маркер1 = 1;\r\n"
+        "    Маркер2 = 2;\r\n"
+        "КонецПроцедуры\r\n".encode("utf-8")
+    )
+    реестр = реестр_из_кода(корень_кода)
+    адрес = "ОбщийМодуль.ОбщийПример::Окна"
+
+    первое = tools.get_procedure(
+        реестр, адрес, config="Пример", start_line=0, lines=3
+    )
+    второе = tools.get_procedure(
+        реестр, адрес, config="Пример", start_line=3, lines=3
+    )
+
+    assert "Маркер0" in первое and "Маркер1" in первое
+    assert "Маркер2" not in первое
+    assert "Маркер1" not in второе and "Маркер2" in второе
+    assert "start_line=3, lines=3" in первое
+
+
+def test_get_procedure_граница_markdown_длиннее_кавычек_в_теле(
+    корень_кода, реестр_из_кода
+):
+    файл = корень_кода / "CommonModules" / "ОбщийПример" / "Ext" / "Module.bsl"
+    файл.write_text(
+        "Процедура Разметка() Экспорт\n"
+        "    // ``` не должна закрыть блок кода\n"
+        "КонецПроцедуры\n",
+        encoding="utf-8",
+    )
+    реестр = реестр_из_кода(корень_кода)
+
+    ответ = tools.get_procedure(
+        реестр, "ОбщийМодуль.ОбщийПример::Разметка", config="Пример"
+    )
+
+    assert "````bsl\n" in ответ
+    assert "\n````\n" in ответ
+    assert "// ``` не должна закрыть блок кода" in ответ
+
+
+@pytest.mark.parametrize(
+    ("start_line", "lines"),
+    [(-1, 200), (0, 0), (0, 201), (True, 20), (0, True), ("0", 20)],
+)
+def test_get_procedure_неверное_окно_отклоняется(
+    реестр_с_кодом, start_line, lines
+):
+    with pytest.raises(RegistryError, match="start_line|lines"):
+        tools.get_procedure(
+            реестр_с_кодом,
+            "ОбщийМодуль.ОбщийПример::Сложить",
+            config="Пример",
+            start_line=start_line,
+            lines=lines,
+        )
+
+
+def test_get_procedure_промах_предлагает_похожий_адрес(реестр_с_кодом):
+    ответ = tools.get_procedure(
+        реестр_с_кодом,
+        "ОбщийМодуль.ОбщийПример::Слжить",
+        config="Пример",
+    )
+
+    assert "возможно, имелось в виду" in ответ.lower()
+    assert "ОбщийМодуль.ОбщийПример::Сложить" in ответ
+
+
+def test_get_procedure_частичный_разбор_и_расхождение_версий_над_телом(
+    корень_кода, реестр_из_кода
+):
+    файл = корень_кода / "CommonModules" / "ОбщийПример" / "Ext" / "Module.bsl"
+    файл.write_text(
+        "Процедура Оборванная()\n    МаркерТела = 1;\n", encoding="utf-8"
+    )
+    configuration = build_configuration(name="Пример", version="2.0")
+    реестр = реестр_из_кода(
+        корень_кода, configuration=configuration, code_version="1.0"
+    )
+
+    ответ = tools.get_procedure(
+        реестр,
+        "ОбщийМодуль.ОбщийПример::Оборванная",
+        config="Пример",
+    )
+
+    позиция_тела = ответ.index("МаркерТела")
+    assert ответ.index("разобран не до конца") < позиция_тела
+    assert ответ.index("версии 1.0") < позиция_тела
+    assert "версии 2.0" in ответ
+
+
+@pytest.mark.parametrize("state", ["missing", "building", "error"])
+def test_get_procedure_честно_показывает_состояние_кода(
+    tmp_path, корень_кода, реестр_из_кода, state
+):
+    if state == "missing":
+        incoming = tmp_path / "incoming"
+        incoming.mkdir()
+        реестр = Registry(tmp_path / "data")
+        реестр.add_configuration(
+            write_export(incoming, build_configuration(name="Пример"))
+        )
+    else:
+        реестр = реестр_из_кода(корень_кода)
+        loaded = реестр.resolve("Пример").modules
+        with реестр._lock:
+            loaded.готов = False
+            loaded.этап = (2, 4)
+            loaded.название_этапа = "вызовы"
+            loaded.прогресс = (1, 3)
+            if state == "error":
+                loaded.source.status = STATUS_ERROR
+                loaded.source.error = "отказ сборки"
+
+    ответ = tools.get_procedure(
+        реестр, "ОбщийМодуль.ОбщийПример", config="Пример"
+    )
+
+    if state == "missing":
+        assert "выгрузка в файлы не загружена" in ответ
+    elif state == "building":
+        assert "этап 2/4" in ответ and "1 из 3" in ответ
+    else:
+        assert "отказ сборки" in ответ
+
+
+@pytest.mark.parametrize(
+    ("annotation", "procedure_name", "base_expected"),
+    [
+        ("ИзменениеИКонтроль", "Правка", True),
+        ("После", "Цель", False),
+        ("Перед", "Цель", False),
+        ("Вместо", "Цель", False),
+    ],
+)
+def test_get_procedure_четыре_семантики_аннотаций_расширения(
+    корень_кода,
+    реестр_из_кода,
+    архив_кода,
+    annotation,
+    procedure_name,
+    base_expected,
+):
+    файл = корень_кода / "CommonModules" / "ОбщийПример" / "Ext" / "Module.bsl"
+    файл.write_text(
+        "Процедура Цель() Экспорт\n"
+        "    БазоваяСтрока = 1;\n"
+        "КонецПроцедуры\n",
+        encoding="utf-8",
+    )
+    реестр = реестр_из_кода(корень_кода)
+
+    if annotation == "ИзменениеИКонтроль":
+        extension_text = (
+            '&ИзменениеИКонтроль("Цель")\n'
+            "Процедура Правка()\n"
+            "#Удаление\n    УдаляемаяСтрока = 1;\n#КонецУдаления\n"
+            "#Вставка\n    ВставленнаяСтрока = 2;\n#КонецВставки\n"
+            "    ВнеДельты = 3;\n"
+            "КонецПроцедуры\n"
+        )
+    else:
+        extension_text = (
+            f'&{annotation}("Цель")\n'
+            "Процедура Цель() Экспорт\n"
+            f"    Тело{annotation} = 1;\n"
+            "КонецПроцедуры\n"
+        )
+    файл.write_text(extension_text, encoding="utf-8")
+    реестр.add_modules(
+        архив_кода(корень_кода, extension="Доп"), configuration="Пример"
+    )
+
+    ответ = tools.get_procedure(
+        реестр,
+        f"ОбщийМодуль.ОбщийПример::{procedure_name}",
+        config="Пример",
+        extension="Доп",
+    )
+
+    assert f"&{annotation}" in ответ
+    if base_expected:
+        assert "БазоваяСтрока" in ответ
+        assert "#Удаление" in ответ
+        assert "УдаляемаяСтрока" in ответ
+        assert "#Вставка" in ответ
+        assert "ВставленнаяСтрока" in ответ
+        assert "ВнеДельты" not in ответ
+    else:
+        assert f"Тело{annotation}" in ответ
+        assert "БазоваяСтрока" not in ответ
+    if annotation == "Вместо":
+        assert "основной конфигурации" in ответ.lower()
+
+
+def test_get_procedure_чужое_расширение_предупреждает_над_телом_без_текста(
+    корень_кода, реестр_из_кода, архив_кода
+):
+    файл = корень_кода / "CommonModules" / "ОбщийПример" / "Ext" / "Module.bsl"
+    файл.write_text(
+        "Процедура Цель() Экспорт\n    БазовоеТело = 1;\nКонецПроцедуры\n",
+        encoding="utf-8",
+    )
+    реестр = реестр_из_кода(корень_кода)
+    for extension, annotation in (("ДопА", "После"), ("ДопБ", "Вместо")):
+        файл.write_text(
+            f'&{annotation}("Цель")\nПроцедура Цель()\n'
+            f"    СекретноеТело{extension} = 1;\nКонецПроцедуры\n",
+            encoding="utf-8",
+        )
+        реестр.add_modules(
+            архив_кода(корень_кода, extension=extension),
+            configuration="Пример",
+        )
+
+    ответ = tools.get_procedure(
+        реестр, "ОбщийМодуль.ОбщийПример::Цель", config="Пример"
+    )
+
+    позиция_тела = ответ.index("БазовоеТело")
+    assert ответ.index("ДопА") < позиция_тела
+    assert ответ.index("ДопБ") < позиция_тела
+    assert "&После" in ответ and "&Вместо" in ответ
+    assert "СекретноеТело" not in ответ
+
+
+@pytest.mark.parametrize(
+    "annotation", ["ИзменениеИКонтроль", "ChangeAndValidate"]
+)
+def test_get_procedure_чужое_изменение_и_контроль_не_названо_отдельным_вызовом(
+    корень_кода, реестр_из_кода, архив_кода, annotation
+):
+    файл = корень_кода / "CommonModules" / "ОбщийПример" / "Ext" / "Module.bsl"
+    файл.write_text(
+        "Процедура Цель() Экспорт\n    БазовоеТело = 1;\nКонецПроцедуры\n",
+        encoding="utf-8",
+    )
+    реестр = реестр_из_кода(корень_кода)
+    файл.write_text(
+        f'&{annotation}("Цель")\nПроцедура Правка()\n'
+        "#Вставка\n    ЧужаяДельта = 1;\n#КонецВставки\n"
+        "КонецПроцедуры\n",
+        encoding="utf-8",
+    )
+    реестр.add_modules(
+        архив_кода(корень_кода, extension="Доп"), configuration="Пример"
+    )
+
+    ответ = tools.get_procedure(
+        реестр, "ОбщийМодуль.ОбщийПример::Цель", config="Пример"
+    )
+
+    позиция_тела = ответ.index("БазовоеТело")
+    assert ответ.index("меняет типовое тело блоками") < позиция_тела
+    assert "тоже выполняется" not in ответ
+    assert "ЧужаяДельта" not in ответ
+
+
+@pytest.mark.parametrize("extension", [None, "Доп"], ids=["modules", "extension"])
+@pytest.mark.parametrize("action", ["reparse", "remove"])
+def test_get_procedure_смена_поколения_не_смешивает_тело(
+    корень_кода,
+    реестр_из_кода,
+    архив_кода,
+    monkeypatch,
+    extension,
+    action,
+):
+    каталог = корень_кода / "CommonModules" / "ГонкаКарточки" / "Ext"
+    каталог.mkdir(parents=True)
+    файл = каталог / "Module.bsl"
+    файл.write_text(
+        "Процедура Сменить(Старый) Экспорт\n    СтароеТело = 1;\nКонецПроцедуры\n",
+        encoding="utf-8",
+    )
+    реестр = реестр_из_кода(корень_кода, extension=extension)
+    файл.write_text(
+        "// новое\nПроцедура Сменить(Новый) Экспорт\n    НовоеТело = 2;\nКонецПроцедуры\n",
+        encoding="utf-8",
+    )
+    новый = архив_кода(корень_кода, extension=extension)
+    начато = threading.Event()
+    отпустить = threading.Event()
+    настоящее_чтение = tools.прочитать_модуль
+    первый = True
+
+    def задержать(путь):
+        nonlocal первый
+        if первый and "ГонкаКарточки" in путь.parts:
+            первый = False
+            начато.set()
+            отпустить.wait(timeout=3)
+        return настоящее_чтение(путь)
+
+    monkeypatch.setattr(tools, "прочитать_модуль", задержать)
+    ответы: list[str] = []
+    ошибки: list[BaseException] = []
+
+    def читать():
+        try:
+            ответы.append(
+                tools.get_procedure(
+                    реестр,
+                    "ОбщийМодуль.ГонкаКарточки::Сменить",
+                    config="Пример",
+                    extension=extension,
+                )
+            )
+        except BaseException as error:
+            ошибки.append(error)
+
+    поток = threading.Thread(target=читать)
+    поток.start()
+    try:
+        assert начато.wait(timeout=1)
+        source_id = "Пример:ext:Доп" if extension else "Пример:modules"
+        if action == "reparse":
+            реестр.add_modules(новый, configuration="Пример")
+        else:
+            реестр.remove(source_id)
+    finally:
+        отпустить.set()
+        поток.join(timeout=3)
+
+    assert not поток.is_alive()
+    if action == "reparse":
+        assert not ошибки
+        assert "Новый" in ответы[0] and "НовоеТело" in ответы[0]
+        assert "Старый" not in ответы[0] and "СтароеТело" not in ответы[0]
+    elif extension:
+        assert len(ошибки) == 1 and "не загружено" in str(ошибки[0])
+    else:
+        assert not ошибки
+        assert "выгрузка в файлы не загружена" in ответы[0]
+
+
+@pytest.mark.parametrize("extension", [None, "Доп"], ids=["modules", "extension"])
+def test_get_procedure_не_раскрывает_путь_при_ошибке_текущего_файла(
+    корень_кода, реестр_из_кода, monkeypatch, extension
+):
+    реестр = реестр_из_кода(корень_кода, extension=extension)
+
+    def отказ(_путь):
+        raise PermissionError(13, "Permission denied", "/private/secret/Module.bsl")
+
+    monkeypatch.setattr(tools, "прочитать_модуль", отказ)
+
+    with pytest.raises(RegistryError) as ошибка:
+        tools.get_procedure(
+            реестр,
+            "ОбщийМодуль.ОбщийПример::Сложить",
+            config="Пример",
+            extension=extension,
+        )
+
+    assert "файл недоступен" in str(ошибка.value)
+    assert "/private/" not in str(ошибка.value)
+    assert "Permission denied" not in str(ошибка.value)
+
+
+@pytest.mark.parametrize(
+    "changed", ["base", "extension"], ids=["base-changed", "extension-changed"]
+)
+def test_get_procedure_все_части_двух_корпусов_проходят_единый_cas(
+    корень_кода,
+    реестр_из_кода,
+    архив_кода,
+    monkeypatch,
+    changed,
+):
+    файл = корень_кода / "CommonModules" / "ОбщийПример" / "Ext" / "Module.bsl"
+    файл.write_text(
+        "Процедура Цель() Экспорт\n"
+        "    СтараяБаза = 1;\n"
+        "КонецПроцедуры\n",
+        encoding="utf-8",
+    )
+    реестр = реестр_из_кода(корень_кода)
+    файл.write_text(
+        '&ИзменениеИКонтроль("Цель")\n'
+        "Процедура Правка()\n"
+        "#Вставка\n    СтараяДельта = 1;\n#КонецВставки\n"
+        "КонецПроцедуры\n",
+        encoding="utf-8",
+    )
+    реестр.add_modules(
+        архив_кода(корень_кода, extension="Доп"), configuration="Пример"
+    )
+
+    if changed == "base":
+        файл.write_text(
+            "Процедура Цель() Экспорт\n"
+            "    НоваяБаза = 2;\n"
+            "КонецПроцедуры\n",
+            encoding="utf-8",
+        )
+        новый = архив_кода(корень_кода)
+    else:
+        файл.write_text(
+            '&ИзменениеИКонтроль("Цель")\n'
+            "Процедура Правка()\n"
+            "#Вставка\n    НоваяДельта = 2;\n#КонецВставки\n"
+            "КонецПроцедуры\n",
+            encoding="utf-8",
+        )
+        новый = архив_кода(корень_кода, extension="Доп")
+
+    дошли_до_cas = threading.Event()
+    отпустить = threading.Event()
+    настоящий_cas = tools._modules_package_is_current
+    первый = True
+
+    def задержать_cas(registry, loaded_modules):
+        nonlocal первый
+        if первый:
+            первый = False
+            дошли_до_cas.set()
+            отпустить.wait(timeout=3)
+        return настоящий_cas(registry, loaded_modules)
+
+    monkeypatch.setattr(tools, "_modules_package_is_current", задержать_cas)
+    ответы: list[str] = []
+    ошибки: list[BaseException] = []
+
+    def читать():
+        try:
+            ответы.append(
+                tools.get_procedure(
+                    реестр,
+                    "ОбщийМодуль.ОбщийПример::Правка",
+                    config="Пример",
+                    extension="Доп",
+                    start_line=0,
+                    lines=50,
+                )
+            )
+        except BaseException as error:
+            ошибки.append(error)
+
+    поток = threading.Thread(target=читать)
+    поток.start()
+    try:
+        assert дошли_до_cas.wait(timeout=1)
+        реестр.add_modules(новый, configuration="Пример")
+    finally:
+        отпустить.set()
+        поток.join(timeout=3)
+
+    assert not поток.is_alive()
+    assert not ошибки
+    assert len(ответы) == 1
+    if changed == "base":
+        assert "НоваяБаза" in ответы[0] and "СтараяБаза" not in ответы[0]
+        assert "СтараяДельта" in ответы[0]
+    else:
+        assert "НоваяДельта" in ответы[0] and "СтараяДельта" not in ответы[0]
+        assert "СтараяБаза" in ответы[0]
 
 
 def test_ранжирование_стабильно(корень_кода, реестр_из_кода):

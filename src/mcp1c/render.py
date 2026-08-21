@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass
 
 from .graph import Graph
@@ -39,6 +41,134 @@ class ProcedureMatch:
     calls: int
     unresolved_calls: int
     annotated: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ProcedureOutline:
+    """Строка оглавления модуля, дочитанная с диска."""
+
+    address: str
+    signature: str
+    exported: bool
+    function: bool
+    line: int
+    calls: int
+    directive: str = ""
+    events: tuple[str, ...] = ()
+
+
+def _code_warnings(warnings: list[str]) -> list[str]:
+    """Предупреждения стоят над кодом, достоверность которого меняют."""
+    if not warnings:
+        return []
+    return [*(f"> ⚠ {warning}" for warning in warnings), ""]
+
+
+def _code_fence(body: list[str]) -> str:
+    """Граница Markdown длиннее любой последовательности обратных кавычек."""
+    longest = max(
+        (
+            len(match.group())
+            for line in body
+            for match in re.finditer(r"`+", line)
+        ),
+        default=0,
+    )
+    return "`" * max(3, longest + 1)
+
+
+def render_module_toc(
+    configuration: str,
+    module: str,
+    procedures: list[ProcedureOutline],
+    *,
+    warnings: list[str],
+    extension: str | None = None,
+) -> str:
+    """Оглавление без тела: модуль может занимать десятки килобайт."""
+    источник = (
+        f"расширение {extension} конфигурации {configuration}"
+        if extension
+        else f"конфигурация {configuration}"
+    )
+    out = _code_warnings(warnings)
+    out.extend([f"# Оглавление `{module}`", "", f"Источник: {источник}.", ""])
+    if not procedures:
+        out.append("В модуле нет разобранных процедур и функций.")
+    for item in procedures:
+        вид = "функция" if item.function else "процедура"
+        доступ = "экспортная" if item.exported else "неэкспортная"
+        дополнения = []
+        if item.directive:
+            дополнения.append(f"&{item.directive}")
+        if item.events:
+            дополнения.append("обработчик: " + ", ".join(item.events))
+        хвост = f" · {' · '.join(дополнения)}" if дополнения else ""
+        out.append(
+            f"- `{item.address}` — {вид} · {доступ} · строка {item.line} "
+            f"· подтверждённых мест вызова: {item.calls}{хвост}"
+        )
+        out.append(f"  Сигнатура: `{item.signature}`")
+    return "\n".join(out).rstrip() + "\n"
+
+
+def render_procedure_card(
+    configuration: str,
+    address: str,
+    *,
+    signature: str,
+    compilation: list[str],
+    body: list[str],
+    start_line: int,
+    lines: int,
+    warnings: list[str],
+    annotation: tuple[str, str] | tuple[()] = (),
+    extension: str | None = None,
+) -> str:
+    """Карточка и окно тела с готовым следующим вызовом."""
+    out = _code_warnings(warnings)
+    out.extend([f"# `{address}`", "", f"Сигнатура: `{signature}`"])
+    if annotation:
+        вид, цель = annotation
+        цель_текст = f'("{цель}")' if цель else ""
+        out.append(f"Аннотация расширения: `&{вид}{цель_текст}`.")
+    if compilation:
+        out.append("Контекст компиляции: " + ", ".join(compilation) + ".")
+    out.extend(["", "## Тело", ""])
+
+    конец = min(len(body), start_line + lines)
+    окно = body[start_line:конец]
+    if окно:
+        граница = _code_fence(окно)
+        out.extend([f"{граница}bsl", *окно, граница])
+    else:
+        out.append(
+            f"Запрошено start_line={start_line}, но в теле всего "
+            f"{len(body)} строк."
+        )
+
+    if конец < len(body):
+        аргументы = [
+            f"address={json.dumps(address, ensure_ascii=False)}"
+        ]
+        if configuration:
+            аргументы.append(
+                f"config={json.dumps(configuration, ensure_ascii=False)}"
+            )
+        if extension:
+            аргументы.append(
+                f"extension={json.dumps(extension, ensure_ascii=False)}"
+            )
+        аргументы.extend([f"start_line={конец}", f"lines={lines}"])
+        out.extend(
+            [
+                "",
+                f"Показаны строки {start_line}–{конец - 1} из {len(body)}. "
+                "Продолжение:",
+                f"`get_procedure({', '.join(аргументы)})`",
+            ]
+        )
+    return "\n".join(out).rstrip() + "\n"
 
 
 def render_procedure_search(

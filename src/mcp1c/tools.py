@@ -14,10 +14,10 @@
 
 from __future__ import annotations
 
-import re
+import difflib
 
 from . import replacements
-from .bsl_lex import _СЛОВО, прочитать_модуль
+from .bsl_lex import Процедура, прочитать_модуль, разобрать
 from .module_address import путь_модуля
 from .registry import (
     KIND_EXTENSION,
@@ -30,7 +30,10 @@ from .render import (
     DETAIL_LEVELS,
     FIELDS,
     ProcedureMatch,
+    ProcedureOutline,
+    render_module_toc,
     render_object,
+    render_procedure_card,
     render_procedure_search,
     render_syntax_item,
 )
@@ -512,90 +515,67 @@ def _scope_modules(loaded: LoadedModules, scope: str | None) -> frozenset[str]:
     )
 
 
-def _сигнатура(loaded: LoadedModules, запись) -> str:
+def _отрезок_процедуры(
+    текст: str,
+    *,
+    начало_строка: int,
+    начало_столбец: int,
+    конец_строка: int,
+    конец_столбец: int,
+) -> list[str]:
+    """Физические строки между точными позициями одноразового разбора."""
+    строки = текст.split("\n")
+    начало = начало_строка - 1
+    конец = конец_строка - 1
+    if not (0 <= начало <= конец < len(строки)):
+        raise _SignatureError
+    if начало == конец:
+        return [строки[начало][начало_столбец:конец_столбец]]
+    return [
+        строки[начало][начало_столбец:],
+        *строки[начало + 1:конец],
+        строки[конец][:конец_столбец],
+    ]
+
+
+def _сигнатура_из_текста(текст: str, процедура: Процедура) -> str:
+    """Декларация точного вхождения из уже дочитанного снимка модуля."""
+    части = _отрезок_процедуры(
+        текст,
+        начало_строка=процедура.строка,
+        начало_столбец=процедура.начало_столбец,
+        конец_строка=процедура.конец_сигнатуры_строка,
+        конец_столбец=процедура.конец_сигнатуры_столбец,
+    )
+    return " ".join(часть.strip() for часть in части if часть.strip())
+
+
+def _сигнатура(
+    loaded: LoadedModules,
+    запись,
+    снимки: dict[str, tuple[str, dict[int, Процедура]]] | None = None,
+) -> str:
     """Дочитывает только декларацию по сохранённому номеру строки.
 
     В `LoadedModules` сигнатуры и тела не появляются: текст существует лишь
-    на время одного ответа. `split("\\n")`, не `splitlines()`, сохраняет ту
-    же нумерацию, по которой строилось оглавление.
+    на время одного ответа. Снимок позволяет не читать и не разбирать один
+    файл по разу на каждую строку оглавления.
     """
-    путь = loaded.корень / путь_модуля(запись.модуль)
-    строки = прочитать_модуль(путь).split("\n")
-    начало = запись.строка - 1
-    if not 0 <= начало < len(строки):
-        raise _SignatureError
-
-    виды = r"Функция|Function" if запись.функция else r"Процедура|Procedure"
-    объявление = re.search(
-        rf"(?:\b(?:Асинх|Async)\s+)?\b(?:{виды})\s+"
-        rf"{re.escape(запись.имя)}\s*\(",
-        строки[начало],
-        flags=re.IGNORECASE,
-    )
-    if объявление is None:
-        raise _SignatureError
-    начало_объявления = объявление.start()
-    открывающая = объявление.end() - 1
-
-    глубина = 0
-    открыта = False
-    в_строке = False
-    конец: tuple[int, int] | None = None
-    for номер, строка in enumerate(строки[начало:], начало):
-        i = открывающая if номер == начало else 0
-        while i < len(строка):
-            символ = строка[i]
-            if в_строке:
-                if символ == '"':
-                    if i + 1 < len(строка) and строка[i + 1] == '"':
-                        i += 2
-                        continue
-                    в_строке = False
-                i += 1
-                continue
-            if символ == '"':
-                в_строке = True
-            elif символ == "/" and i + 1 < len(строка) and строка[i + 1] == "/":
-                break
-            elif символ == "(":
-                открыта = True
-                глубина += 1
-            elif символ == ")" and открыта:
-                глубина -= 1
-                if глубина == 0:
-                    конец = (номер, i + 1)
-                    break
-            i += 1
-        if конец is not None:
-            break
-    if конец is None:
-        raise _SignatureError
-
-    номер_конца, позиция = конец
-    последняя = строки[номер_конца]
-    хвост = последняя[позиция:]
-    пробелы = len(хвост) - len(хвост.lstrip())
-    после = хвост[пробелы:]
-    # `split()` считал `Экспорт//...` и `Экспорт;...` одним
-    # словом и терял признак экспорта. Берём ровно первый
-    # BSL-идентификатор тем же лексическим правилом, что и основной
-    # разбор, а в ответ не пропускаем ни комментарий, ни тело.
-    слово = _СЛОВО.match(после)
-    if слово is not None and слово.group().casefold() in (
-        "экспорт",
-        "export",
-    ):
-        позиция += пробелы + слово.end()
-
-    if номер_конца == начало:
-        части = [последняя[начало_объявления:позиция].strip()]
-    else:
-        части = [строки[начало][начало_объявления:].strip()]
-        части.extend(
-            строка.strip() for строка in строки[начало + 1:номер_конца]
+    if снимки is None:
+        снимки = {}
+    снимок = снимки.get(запись.модуль)
+    if снимок is None:
+        путь = loaded.корень / путь_модуля(запись.модуль)
+        текст = прочитать_модуль(путь)
+        разбор = _parsed_procedures(
+            loaded.оглавление.модуля(запись.модуль), текст
         )
-        части.append(последняя[:позиция].strip())
-    return " ".join(часть for часть in части if часть)
+        снимки[запись.модуль] = (текст, разбор)
+    else:
+        текст, разбор = снимок
+    return _сигнатура_из_текста(
+        текст, _parsed_procedure(разбор, запись)
+    )
 
 
 class _SignatureError(Exception):
@@ -644,9 +624,38 @@ def _modules_state_snapshot(
         )
 
 
+def _modules_availability_message(
+    registry: Registry,
+    context,
+    loaded: LoadedModules | None,
+) -> str | None:
+    """Одинаковый контракт состояния для всех инструментов по коду."""
+    if loaded is None:
+        return (
+            f"Для конфигурации {context.name} выгрузка в файлы не загружена. "
+            "Инструменты про код ответить не могут."
+        )
+    готов, status, error, этап, название_этапа, прогресс = (
+        _modules_state_snapshot(registry, loaded)
+    )
+    if готов:
+        return None
+    if status == STATUS_ERROR:
+        причина = error or "причина не записана"
+        return f"Индекс кода не построен: {причина}"
+    номер_этапа, этапов = этап
+    обработано, всего = прогресс
+    return (
+        f"Индекс кода строится: этап {номер_этапа}/{этапов} "
+        f"«{название_этапа}», обработано {обработано} из {всего} "
+        "элементов этапа. Ответы про код пока недоступны."
+    )
+
+
 def _procedure_matches(
     loaded: LoadedModules,
     записи: list,
+    снимки: dict[str, tuple[str, dict[int, Процедура]]] | None = None,
 ) -> list[ProcedureMatch]:
     счётчики: dict[str, tuple[dict[str, int], int]] = {}
     результат: list[ProcedureMatch] = []
@@ -667,7 +676,7 @@ def _procedure_matches(
         результат.append(
             ProcedureMatch(
                 address=f"{запись.модуль}::{запись.имя}",
-                signature=_сигнатура(loaded, запись),
+                signature=_сигнатура(loaded, запись, снимки),
                 exported=запись.экспорт,
                 function=запись.функция,
                 line=запись.строка,
@@ -694,25 +703,9 @@ def _search_procedures_once(
         raise RegistryError("Запрос query не может быть пустым.")
 
     context, loaded = _selected_modules(registry, config, extension)
-    if loaded is None:
-        return (
-            f"Для конфигурации {context.name} выгрузка в файлы не загружена. "
-            "Инструменты про код ответить не могут."
-        )
-    готов, status, error, этап, название_этапа, прогресс = (
-        _modules_state_snapshot(registry, loaded)
-    )
-    if not готов:
-        if status == STATUS_ERROR:
-            причина = error or "причина не записана"
-            return f"Индекс кода не построен: {причина}"
-        этап, этапов = этап
-        обработано, всего = прогресс
-        return (
-            f"Индекс кода строится: этап {этап}/{этапов} "
-            f"«{название_этапа}», обработано {обработано} из {всего} "
-            "элементов этапа. Ответы про код пока недоступны."
-        )
+    состояние = _modules_availability_message(registry, context, loaded)
+    if состояние is not None:
+        return состояние
     if any(
         индекс is None
         for индекс in (loaded.оглавление, loaded.вызовы, loaded.поиск)
@@ -776,8 +769,9 @@ def _search_procedures_once(
         )
 
     try:
-        точные_совпадения = _procedure_matches(loaded, точные)
-        словесные_совпадения = _procedure_matches(loaded, слова)
+        снимки: dict[str, tuple[str, dict[int, Процедура]]] = {}
+        точные_совпадения = _procedure_matches(loaded, точные, снимки)
+        словесные_совпадения = _procedure_matches(loaded, слова, снимки)
     except (OSError, _SignatureError) as ошибка:
         # Canonical root мог смениться или исчезнуть между resolve и чтением.
         # Сначала identity CAS: ошибка старого поколения — повод повторить,
@@ -828,6 +822,411 @@ def search_procedures(
             continue
     raise RegistryError(
         "Код изменился во время поиска дважды; повторите запрос после "
+        "завершения загрузки."
+    )
+
+
+def _procedure_window(start_line: int, lines: int) -> tuple[int, int]:
+    """Строгая граница окна: ошибка вызова не маскируется обрезкой."""
+    if (
+        isinstance(start_line, bool)
+        or not isinstance(start_line, int)
+        or start_line < 0
+    ):
+        raise RegistryError("start_line должен быть целым числом от 0.")
+    if (
+        isinstance(lines, bool)
+        or not isinstance(lines, int)
+        or not 1 <= lines <= 200
+    ):
+        raise RegistryError("lines должен быть целым числом от 1 до 200.")
+    return start_line, lines
+
+
+def _modules_package_is_current(
+    registry: Registry, loaded_modules: list[LoadedModules]
+) -> bool:
+    """Один CAS для всех корпусов, чьи части попадут в один ответ."""
+    уникальные = {item.source.id: item for item in loaded_modules}
+    with registry._lock:
+        return all(
+            registry.modules.get(source_id) is item
+            for source_id, item in уникальные.items()
+        )
+
+
+def _read_module_snapshot(
+    registry: Registry,
+    loaded: LoadedModules,
+    module: str,
+) -> str:
+    """Текст одного поколения, без раскрытия локального пути при отказе."""
+    путь = loaded.корень / путь_модуля(module)
+    try:
+        текст = прочитать_модуль(путь)
+    except OSError as error:
+        if not _modules_are_current(registry, loaded):
+            raise _StaleModules from error
+        raise RegistryError(
+            "Не удалось прочитать текущий файл модуля: файл недоступен."
+        ) from error
+    if not _modules_are_current(registry, loaded):
+        raise _StaleModules
+    return текст
+
+
+def _parsed_procedures(
+    записи: list, текст: str
+) -> dict[int, Процедура]:
+    """Сопоставляет оглавление с последовательностью одноразового разбора."""
+    процедуры = разобрать(текст)
+    if len(записи) != len(процедуры):
+        raise _SignatureError
+    результат: dict[int, Процедура] = {}
+    for запись, процедура in zip(записи, процедуры, strict=True):
+        if (
+            запись.строка != процедура.строка
+            or запись.имя.casefold() != процедура.имя.casefold()
+        ):
+            raise _SignatureError
+        результат[запись.позиция] = процедура
+    return результат
+
+
+def _parsed_procedure(разбор: dict[int, Процедура], запись) -> Процедура:
+    try:
+        return разбор[запись.позиция]
+    except KeyError as error:
+        raise _SignatureError from error
+
+
+def _procedure_body(текст: str, процедура: Процедура) -> list[str]:
+    """Физические строки точного вхождения без соседей на граничных строках."""
+    строки = текст.split("\n")
+    конец_строка = процедура.конец or len(строки)
+    return _отрезок_процедуры(
+        текст,
+        начало_строка=процедура.строка,
+        начало_столбец=процедура.начало_столбец,
+        конец_строка=конец_строка,
+        конец_столбец=процедура.конец_столбец,
+    )
+
+
+def _extension_delta(текст: str, процедура: Процедура) -> list[str]:
+    """Блоки правки дословно, включая сами граничные директивы."""
+    результат: list[str] = []
+    внутри: str | None = None
+    концы = {
+        "#удаление": "#конецудаления",
+        "#вставка": "#конецвставки",
+    }
+    for строка in _procedure_body(текст, процедура):
+        голая = строка.strip().casefold()
+        if внутри is None and голая in концы:
+            внутри = концы[голая]
+        if внутри is not None:
+            результат.append(строка)
+            if голая == внутри:
+                внутри = None
+    return результат
+
+
+_MODULE_CONTEXT_TITLES = {
+    "global": "Глобальный",
+    "server": "Сервер",
+    "client_managed": "Клиент (управляемое приложение)",
+    "server_call": "Вызов сервера",
+    "privileged": "Привилегированный",
+}
+
+
+def _compilation_context(context, module: str, parsed) -> list[str]:
+    результат: list[str] = []
+    if parsed.директива:
+        результат.append(f"&{parsed.директива}")
+    if module.startswith("ОбщийМодуль.") and context.configuration is not None:
+        объект = context.configuration.config.get(module)
+        if объект is not None:
+            for ключ, подпись in _MODULE_CONTEXT_TITLES.items():
+                if ключ in объект.props:
+                    значение = "да" if объект.props[ключ] is True else "нет"
+                    результат.append(f"{подпись}: {значение}")
+    return результат
+
+
+def _module_warnings(context, loaded: LoadedModules, записи: list) -> list[str]:
+    warnings: list[str] = []
+    частичные = [запись for запись in записи if запись.частичный]
+    if частичные:
+        первая = min(item.строка for item in частичные)
+        warnings.append(
+            f"Модуль разобран не до конца: с процедуры на строке {первая} "
+            "граница конца не найдена; оглавление может быть неполным."
+        )
+    if (
+        loaded.source.kind != KIND_EXTENSION
+        and context.configuration is not None
+        and loaded.версия_кода
+        and context.configuration.config.version
+        and loaded.версия_кода != context.configuration.config.version
+    ):
+        warnings.append(
+            f"Код модулей выгружен для версии {loaded.версия_кода}, "
+            f"загруженные метаданные — версии {context.configuration.config.version}. "
+            "Строить правку на этом ответе нельзя без сверки."
+        )
+    return warnings
+
+
+def _similar_address(loaded: LoadedModules, module: str, name: str | None) -> list[str]:
+    if name is None:
+        return difflib.get_close_matches(module, loaded.оглавление.модули, n=5, cutoff=0.45)
+    кандидаты = [
+        f"{module}::{item.имя}" for item in loaded.оглавление.модуля(module)
+    ]
+    return difflib.get_close_matches(f"{module}::{name}", кандидаты, n=5, cutoff=0.45)
+
+
+def _foreign_extension_warnings(
+    registry: Registry,
+    configuration: str,
+    module: str,
+    target_name: str,
+    selected: LoadedModules,
+    observed: list[LoadedModules],
+) -> list[str]:
+    prefix = f"{configuration}:ext:"
+    with registry._lock:
+        кандидаты = sorted(
+            (
+                (source_id[len(prefix):], loaded)
+                for source_id, loaded in registry.modules.items()
+                if source_id.startswith(prefix) and loaded is not selected
+            ),
+            key=lambda item: item[0],
+        )
+    warnings: list[str] = []
+    for extension_name, foreign in кандидаты:
+        try:
+            готов, *_ = _modules_state_snapshot(registry, foreign)
+        except _StaleModules:
+            continue
+        if not готов:
+            continue
+        записи = foreign.оглавление.модуля(module)
+        if not записи:
+            continue
+        текст = _read_module_snapshot(registry, foreign, module)
+        observed.append(foreign)
+        разбор = _parsed_procedures(записи, текст)
+        for запись in записи:
+            parsed = _parsed_procedure(разбор, запись)
+            if not parsed.перекрытие:
+                continue
+            вид, цель = parsed.перекрытие
+            if (цель or parsed.имя).casefold() != target_name.casefold():
+                continue
+            вид_низкое = вид.casefold()
+            if вид_низкое in ("вместо", "around"):
+                warnings.append(
+                    f"Процедуру уже перекрывает расширение `{extension_name}` "
+                    f"аннотацией `&{вид}`. Какое расширение выиграет, зависит от "
+                    "порядка расширений; текст чужого расширения не показан."
+                )
+            elif вид_низкое in (
+                "изменениеиконтроль",
+                "changeandvalidate",
+            ):
+                warnings.append(
+                    f"Расширение `{extension_name}` аннотацией `&{вид}` "
+                    "меняет типовое тело блоками вставки/удаления; текст "
+                    "чужого расширения не показан."
+                )
+            else:
+                warnings.append(
+                    f"Расширение `{extension_name}` добавляет `&{вид}` для этой "
+                    "процедуры; его код тоже выполняется, но текст чужого расширения "
+                    "не показан."
+                )
+    return warnings
+
+
+def _get_procedure_once(
+    registry: Registry,
+    address: str,
+    config: str | None,
+    extension: str | None,
+    start_line: int,
+    lines: int,
+) -> str:
+    context, loaded = _selected_modules(registry, config, extension)
+    состояние = _modules_availability_message(registry, context, loaded)
+    if состояние is not None:
+        return состояние
+    if any(
+        индекс is None
+        for индекс in (loaded.оглавление, loaded.вызовы, loaded.формы)
+    ):
+        raise RegistryError("Готовый индекс кода неполон; перезагрузите источник.")
+
+    модуль, разделитель, имя = address.partition("::")
+    модуль = модуль.strip()
+    имя = имя.strip()
+    if not модуль or (разделитель and (not имя or "::" in имя)):
+        raise RegistryError(
+            "address должен быть адресом модуля или парой `Модуль::Имя`."
+        )
+    канонический_модуль = next(
+        (
+            item
+            for item in loaded.оглавление.модули
+            if item.casefold() == модуль.casefold()
+        ),
+        None,
+    )
+    if канонический_модуль is None:
+        похожие = _similar_address(loaded, модуль, None)
+        хвост = "" if not похожие else "\n\nВозможно, имелось в виду:\n" + "\n".join(f"- `{item}`" for item in похожие)
+        return f"Модуль `{модуль}` в загруженном коде не найден.{хвост}\n"
+    модуль = канонический_модуль
+    записи = loaded.оглавление.модуля(модуль)
+
+    текст = _read_module_snapshot(registry, loaded, модуль)
+    разбор = _parsed_procedures(записи, текст)
+    observed = [loaded]
+    warnings = _module_warnings(context, loaded, записи)
+
+    if not разделитель:
+        outlines: list[ProcedureOutline] = []
+        for запись in записи:
+            parsed = _parsed_procedure(разбор, запись)
+            calls = sum(
+                1
+                for место in loaded.вызовы.места(запись.имя)
+                if место.цель == модуль
+            )
+            outlines.append(
+                ProcedureOutline(
+                    address=f"{модуль}::{запись.имя}",
+                    signature=_сигнатура_из_текста(текст, parsed),
+                    exported=запись.экспорт,
+                    function=запись.функция,
+                    line=запись.строка,
+                    calls=calls,
+                    directive=parsed.директива,
+                    events=loaded.формы.обработчик(модуль, запись.имя) or (),
+                )
+            )
+        if not _modules_package_is_current(registry, observed):
+            raise _StaleModules
+        return render_module_toc(
+            context.name, модуль, outlines, warnings=warnings, extension=extension
+        )
+
+    совпадения = [запись for запись in записи if запись.имя.casefold() == имя.casefold()]
+    if not совпадения:
+        похожие = _similar_address(loaded, модуль, имя)
+        хвост = "" if not похожие else "\n\nВозможно, имелось в виду:\n" + "\n".join(f"- `{item}`" for item in похожие)
+        return f"В модуле `{модуль}` нет процедуры `{имя}`.{хвост}\n"
+    запись = совпадения[0]
+    parsed = _parsed_procedure(разбор, запись)
+    body = _procedure_body(текст, parsed)
+    target_name = (
+        parsed.перекрытие[1] or parsed.имя
+        if parsed.перекрытие
+        else parsed.имя
+    )
+
+    if extension and parsed.перекрытие and parsed.перекрытие[0].casefold() in (
+        "изменениеиконтроль",
+        "changeandvalidate",
+    ):
+        base = context.modules
+        base_state = _modules_availability_message(registry, context, base)
+        if base_state is not None:
+            return base_state
+        base_records = [
+            item
+            for item in base.оглавление.модуля(модуль)
+            if item.имя.casefold() == target_name.casefold()
+        ]
+        if not base_records:
+            raise RegistryError(
+                f"Аннотация `&{parsed.перекрытие[0]}` ссылается на "
+                f"`{модуль}::{target_name}`, но в коде основной конфигурации её нет."
+            )
+        base_text = _read_module_snapshot(registry, base, модуль)
+        observed.append(base)
+        base_parsed = _parsed_procedures(
+            base.оглавление.модуля(модуль), base_text
+        )
+        body = [
+            "// Тело основной конфигурации",
+            *_procedure_body(
+                base_text, _parsed_procedure(base_parsed, base_records[0])
+            ),
+            "",
+            f"// Дельта расширения {extension}",
+            *_extension_delta(текст, parsed),
+        ]
+    elif extension and parsed.перекрытие and parsed.перекрытие[0].casefold() in ("вместо", "around"):
+        warnings.append(
+            "Показано тело `&Вместо`; типовое тело читайте отдельным запросом "
+            "к основной конфигурации без `extension`."
+        )
+
+    warnings.extend(
+        _foreign_extension_warnings(
+            registry, context.name, модуль, target_name, loaded, observed
+        )
+    )
+    events = loaded.формы.обработчик(модуль, запись.имя) or ()
+    compilation = _compilation_context(context, модуль, parsed)
+    if events:
+        compilation.append("события формы: " + ", ".join(events))
+    if not _modules_package_is_current(registry, observed):
+        raise _StaleModules
+    return render_procedure_card(
+        context.name,
+        f"{модуль}::{запись.имя}",
+        signature=_сигнатура_из_текста(текст, parsed),
+        compilation=compilation,
+        body=body,
+        start_line=start_line,
+        lines=lines,
+        warnings=warnings,
+        annotation=parsed.перекрытие,
+        extension=extension,
+    )
+
+
+def get_procedure(
+    registry: Registry,
+    address: str,
+    config: str | None = None,
+    extension: str | None = None,
+    start_line: int = 0,
+    lines: int = 200,
+) -> str:
+    """Оглавление модуля или карточка процедуры с дисковым телом."""
+    start_line, lines = _procedure_window(start_line, lines)
+    if not isinstance(address, str) or not address.strip():
+        raise RegistryError("address не может быть пустым.")
+    for _ in range(2):
+        try:
+            return _get_procedure_once(
+                registry, address, config, extension, start_line, lines
+            )
+        except _StaleModules:
+            continue
+        except _SignatureError as error:
+            raise RegistryError(
+                "Не удалось сопоставить оглавление с текущим текстом модуля; "
+                "перезагрузите источник кода."
+            ) from error
+    raise RegistryError(
+        "Код изменился во время чтения дважды; повторите запрос после "
         "завершения загрузки."
     )
 

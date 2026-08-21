@@ -210,6 +210,7 @@ def write_export(directory: Path, config: Configuration) -> Path:
     for obj in config.objects.values():
         objects.append(
             {
+                **obj.props,
                 "full_name": obj.full_name,
                 "type": obj.kind,
                 "name": obj.name,
@@ -342,6 +343,8 @@ def реестр_из_кода(tmp_path_factory, архив_кода):
         *,
         name: str = "Пример",
         extension: str | None = None,
+        configuration: Configuration | None = None,
+        code_version: str = "",
     ) -> Registry:
         nonlocal счётчик
         счётчик += 1
@@ -349,11 +352,15 @@ def реестр_из_кода(tmp_path_factory, архив_кода):
         входящее = рабочий / "incoming"
         входящее.mkdir()
         реестр = Registry(рабочий / "data")
+        configuration = configuration or build_configuration(name=name)
         реестр.add_configuration(
-            write_export(входящее, build_configuration(name=name))
+            write_export(входящее, configuration)
         )
         реестр.add_modules(
-            архив_кода(корень, extension=extension), configuration=name
+            архив_кода(
+                корень, version=code_version, extension=extension
+            ),
+            configuration=configuration.name,
         )
         return реестр
 

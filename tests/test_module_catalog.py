@@ -320,3 +320,182 @@ def test_четыре_индекса_не_обходят_диск_после_с�
     assert calls is not None
     assert forms.состав("ОбщаяФорма.Форма") is not None
     assert search.search("вызвать")
+
+
+@pytest.mark.parametrize("marker", [19, 20, 23, 25, 26, 27])
+def test_контейнерная_форма_с_известным_маркером_остаётся_частичной(
+    tmp_path, marker
+):
+    _write(
+        tmp_path,
+        f"CommonForm.Маркер{marker}.Form",
+        v8_container_bytes(
+            [("module", b""), ("form", f'{{{marker},"значение"}}'.encode())]
+        ),
+    )
+    catalog = build_catalog(tmp_path, _identity())
+
+    forms = modules_index.Формы.построить(tmp_path, каталог=catalog)
+    form = forms.состав(f"ОбщаяФорма.Маркер{marker}")
+
+    assert form is not None
+    assert form.структура_доступна
+    assert form.структура_частична
+    assert form.маркер == marker
+    assert form.реквизиты == []
+    assert form.элементы == []
+    assert form.события == {}
+    assert forms.частичных == 1
+
+    assert forms.известных_неполных == 1
+    assert forms.неизвестных_маркеров == 0
+
+
+def test_неизвестный_маркер_имеет_отдельную_диагностику(tmp_path):
+    _write(
+        tmp_path,
+        "CommonForm.Новая.Form",
+        v8_container_bytes([("module", b""), ("form", b"{99}")]),
+    )
+    catalog = build_catalog(tmp_path, _identity())
+
+    forms = modules_index.Формы.построить(tmp_path, каталог=catalog)
+
+    assert forms.частичных == 1
+    assert forms.неизвестных_маркеров == 1
+    assert [(problem.категория, problem.маркер) for problem in forms.проблемы] == [
+        ("unknown_marker", 99)
+    ]
+
+
+def test_два_контейнерных_доказательства_считают_форму_а_не_файлы(tmp_path):
+    payload = v8_container_bytes([("module", b""), ("form", b"{19}")])
+    _write(tmp_path, "Catalogs/Объект/Forms/Основная/Ext/Form.bin", payload)
+    _write(tmp_path, "Catalog.Объект.Form.Основная.Form", payload)
+    catalog = build_catalog(tmp_path, _identity())
+
+    forms = modules_index.Формы.построить(tmp_path, каталог=catalog)
+
+    assert forms.частичных == 1
+    assert forms.известных_неполных == 1
+    assert [
+        problem.категория
+        for problem in forms.проблемы
+        if problem.категория == "known_marker_semantics_incomplete"
+    ] == ["known_marker_semantics_incomplete"]
+
+
+def test_самостоятельный_дескриптор_публикует_только_доказанные_свойства(
+    tmp_path,
+):
+    _write(
+        tmp_path,
+        "CommonForms/Самостоятельная.xml",
+        '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" '
+        'xmlns:v8="http://v8.1c.ru/8.1/data/core">'
+        '<CommonForm uuid="00000000-0000-0000-0000-000000000001">'
+        "<Properties><Name>Самостоятельная</Name>"
+        "<Synonym><v8:item><v8:lang>ru</v8:lang>"
+        "<v8:content>Самостоятельная форма</v8:content></v8:item></Synonym>"
+        "<FormType>Managed</FormType></Properties>"
+        "</CommonForm></MetaDataObject>",
+    )
+    catalog = build_catalog(tmp_path, _identity())
+
+    forms = modules_index.Формы.построить(tmp_path, каталог=catalog)
+    form = forms.состав("ОбщаяФорма.Самостоятельная")
+
+    assert form is not None
+    assert form.структура_доступна
+    assert form.структура_частична
+    assert form.идентификатор == "00000000-0000-0000-0000-000000000001"
+    assert form.имя == "Самостоятельная"
+    assert form.синоним == "Самостоятельная форма"
+    assert form.тип == "Managed"
+    assert form.реквизиты == []
+    assert form.элементы == []
+    assert form.события == {}
+    assert forms.частичных == 1
+
+    cache = tmp_path / "descriptor-forms.marshal"
+    forms.записать(cache)
+    restored = modules_index.Формы.прочитать(cache).состав(
+        "ОбщаяФорма.Самостоятельная"
+    )
+    assert restored is not None
+    assert (
+        restored.идентификатор,
+        restored.имя,
+        restored.синоним,
+        restored.тип,
+    ) == (
+        "00000000-0000-0000-0000-000000000001",
+        "Самостоятельная",
+        "Самостоятельная форма",
+        "Managed",
+    )
+
+
+def test_модуль_формы_без_структуры_не_называется_полностью_прочитанным(
+    tmp_path,
+):
+    _write(
+        tmp_path,
+        "CommonForm.ТолькоМодуль.Form.Module.txt",
+        "Процедура Открыть()\nКонецПроцедуры",
+    )
+    catalog = build_catalog(tmp_path, _identity())
+
+    forms = modules_index.Формы.построить(tmp_path, каталог=catalog)
+    form = forms.состав("ОбщаяФорма.ТолькоМодуль")
+
+    assert form is not None
+    assert not form.структура_доступна
+    assert forms.непрочитанных == 1
+    assert [problem.категория for problem in forms.проблемы] == [
+        "form_structure_missing"
+    ]
+
+
+def test_битый_контейнер_не_роняет_соседнюю_форму_и_считается_один_раз(
+    tmp_path,
+):
+    _write(tmp_path, "CommonForm.Битая.Form", b"broken")
+    _write(
+        tmp_path,
+        "CommonForm.Целая.Form",
+        v8_container_bytes([("module", b""), ("form", b"{19}")]),
+    )
+    catalog = build_catalog(tmp_path, _identity())
+
+    forms = modules_index.Формы.построить(tmp_path, каталог=catalog)
+
+    assert forms.состав("ОбщаяФорма.Битая") is not None
+    assert forms.состав("ОбщаяФорма.Целая").структура_частична
+    assert forms.битых == 1
+    assert forms.непрочитанных == 1
+    assert forms.частичных == 1
+
+
+def test_диагностика_формы_переживает_локальный_cache_roundtrip(tmp_path):
+    _write(
+        tmp_path,
+        "CommonForm.Новая.Form",
+        v8_container_bytes([("module", b""), ("form", b"{99}")]),
+    )
+    catalog = build_catalog(tmp_path, _identity())
+    cache = tmp_path / "forms.marshal"
+    modules_index.Формы.построить(tmp_path, каталог=catalog).записать(cache)
+
+    restored = modules_index.Формы.прочитать(cache)
+    form = restored.состав("ОбщаяФорма.Новая")
+
+    assert form is not None and form.маркер == 99
+    assert form.структура_частична
+    assert restored.частичных == 1
+    assert restored.неизвестных_маркеров == 1
+    assert restored.проблемы == (
+        modules_index.ПроблемаФормы(
+            "unknown_marker", "ОбщаяФорма.Новая", "маркер form не поддержан", 99
+        ),
+    )

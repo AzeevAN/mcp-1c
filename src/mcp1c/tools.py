@@ -2274,15 +2274,21 @@ def _form_bindings(loaded: LoadedModules, module: str, name: str):
     форма = loaded.формы.состав(module)
     if форма is None:
         return [], "missing"
+    if форма.состояние_xml == "broken":
+        return [], "broken"
+    if форма.состояние_xml == "ready":
+        привязки = [
+            FormHandlerBinding(element=item.элемент, event=item.событие)
+            for item in loaded.формы.привязки(module, name)
+        ]
+        return привязки, "ready"
+    if форма.битая:
+        return [], "partial_broken"
+    if форма.структура_частична:
+        return [], "partial"
     if not форма.структура_доступна:
         return [], "missing"
-    if форма.битая:
-        return [], "broken"
-    привязки = [
-        FormHandlerBinding(element=item.элемент, event=item.событие)
-        for item in loaded.формы.привязки(module, name)
-    ]
-    return привязки, "ready"
+    return [], "partial"
 
 
 def _get_callers_once(

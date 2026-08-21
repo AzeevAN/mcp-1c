@@ -15,6 +15,7 @@ from mcp1c.model import MetadataObject
 from mcp1c.registry import STATUS_ERROR, Registry, RegistryError
 
 from conftest import build_configuration, write_export
+from module_samples import v8_container_bytes
 
 
 TARGET = "ОбщийМодуль.Цель::Обработать"
@@ -326,6 +327,76 @@ def test_get_callers_общая_форма_различает_состояние
     else:
         assert "повреждена" in ответ.lower()
         assert "это не значит" not in ответ.lower()
+
+
+@pytest.mark.parametrize("evidence", ["descriptor", "container"])
+def test_get_callers_частичная_структура_не_доказывает_отсутствие_handler(
+    корень_кода, реестр_из_кода, evidence
+):
+    ext = корень_кода / "CommonForms" / "Общая" / "Ext" / "Form"
+    ext.mkdir(parents=True)
+    body = "Процедура Обработать()\nКонецПроцедуры\n"
+    (ext / "Module.bsl").write_text(body, encoding="utf-8")
+    if evidence == "descriptor":
+        (корень_кода / "CommonForms" / "Общая.xml").write_text(
+            "<MetaDataObject><CommonForm><Properties>"
+            "<Name>Общая</Name></Properties></CommonForm></MetaDataObject>",
+            encoding="utf-8",
+        )
+    else:
+        (корень_кода / "CommonForm.Общая.Form").write_bytes(
+            v8_container_bytes(
+                [("module", body.encode()), ("form", b"{19}")]
+            )
+        )
+    реестр = реестр_из_кода(корень_кода)
+
+    ответ = tools.get_callers(
+        реестр, "ОбщаяФорма.Общая::Обработать", config="Пример"
+    )
+
+    assert "семантика привязок событий не доказана" in ответ.lower()
+    assert "не назначена обработчиком" not in ответ.lower()
+
+
+def test_get_callers_битый_контейнер_не_называется_битым_form_xml(
+    корень_кода, реестр_из_кода
+):
+    (корень_кода / "CommonForm.Общая.Form").write_bytes(b"broken")
+    (корень_кода / "CommonForm.Общая.Form.Module.txt").write_text(
+        "Процедура Обработать()\nКонецПроцедуры\n", encoding="utf-8"
+    )
+    реестр = реестр_из_кода(корень_кода)
+
+    ответ = tools.get_callers(
+        реестр, "ОбщаяФорма.Общая::Обработать", config="Пример"
+    )
+
+    assert "доказательство структуры формы повреждено" in ответ.lower()
+    assert "form.xml повреждена" not in ответ.lower()
+
+
+def test_get_callers_валидный_form_xml_не_теряется_из_за_битого_контейнера(
+    корень_кода, реестр_из_кода
+):
+    ext = корень_кода / "CommonForms" / "Общая" / "Ext"
+    (ext / "Form").mkdir(parents=True)
+    (ext / "Form" / "Module.bsl").write_text(
+        "Процедура Обработать()\nКонецПроцедуры\n", encoding="utf-8"
+    )
+    (ext / "Form.xml").write_text(
+        '<Form><Events><Event name="OnOpen">Обработать</Event></Events></Form>',
+        encoding="utf-8",
+    )
+    (ext / "Form.bin").write_bytes(b"broken")
+    реестр = реестр_из_кода(корень_кода)
+
+    ответ = tools.get_callers(
+        реестр, "ОбщаяФорма.Общая::Обработать", config="Пример"
+    )
+
+    assert "OnOpen" in ответ
+    assert "повреждена" not in ответ.lower()
 
 
 def test_get_callers_частичная_граница_не_выдаётся_за_точного_владельца(

@@ -45,6 +45,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 # Каталог выгрузки -> вид объекта метаданных на русском.
 _ВИДЫ = {
     "CommonModules": "ОбщийМодуль", "Documents": "Документ",
@@ -97,6 +99,252 @@ _МОДУЛИ_КОНФИГУРАЦИИ = {
 _МОДУЛИ_КОНФИГУРАЦИИ_ОБРАТНО = {
     суффикс: файл for файл, суффикс in _МОДУЛИ_КОНФИГУРАЦИИ.items()
 }
+
+
+# Имя вида в плоской выгрузке -> публичный вид метаданных. Таблица отдельна
+# от иерархических каталогов: формы множественного числа там являются частью
+# физической раскладки, а здесь единственное число — часть грамматики имени.
+_ПЛОСКИЕ_ВИДЫ = {
+    "AccumulationRegister": "РегистрНакопления",
+    "Catalog": "Справочник",
+    "ChartOfCharacteristicTypes": "ПланВидовХарактеристик",
+    "CommonCommand": "ОбщаяКоманда",
+    "CommonForm": "ОбщаяФорма",
+    "CommonModule": "ОбщийМодуль",
+    "Configuration": "Конфигурация",
+    "Constant": "Константа",
+    "DataProcessor": "Обработка",
+    "Document": "Документ",
+    "DocumentJournal": "ЖурналДокументов",
+    "Enum": "Перечисление",
+    "ExchangePlan": "ПланОбмена",
+    "FilterCriterion": "КритерийОтбора",
+    "HTTPService": "HTTPСервис",
+    "InformationRegister": "РегистрСведений",
+    "Report": "Отчет",
+    "WebService": "WebСервис",
+}
+
+_ПЛОСКИЕ_СУФФИКСЫ = {
+    "Module": "",
+    "ObjectModule": "МодульОбъекта",
+    "ManagerModule": "МодульМенеджера",
+    "RecordSetModule": "МодульНабораЗаписей",
+    "ValueManagerModule": "МодульМенеджераЗначения",
+}
+
+# 18 видов и 13 синтаксических pattern дают не декартов продукт, а ровно 49
+# подтверждённых сочетаний. Например, `CommonForm.X.Module.txt` синтаксически
+# похож на общий модуль, но в измеренном формате форма имеет только `.Form`
+# и `.Form.Module.txt`; принять похожее имя значило бы создать ложный адрес.
+_ПЛОСКИЕ_PATTERN_BY_KIND = {
+    "AccumulationRegister": {"manager_module", "object_form_container", "recordset_module"},
+    "Catalog": {"manager_module", "object_command", "object_form_container", "object_form_text", "object_module"},
+    "ChartOfCharacteristicTypes": {"object_form_container", "object_form_text", "object_module"},
+    "CommonCommand": {"common_command"},
+    "CommonForm": {"common_form_container", "common_form_text"},
+    "CommonModule": {"compiled", "module"},
+    "Configuration": {"configuration"},
+    "Constant": {"value_manager_module"},
+    "DataProcessor": {"manager_module", "object_command", "object_form_container", "object_form_text", "object_module"},
+    "Document": {"manager_module", "object_form_container", "object_form_text", "object_module"},
+    "DocumentJournal": {"object_form_container", "object_form_text"},
+    "Enum": {"manager_module", "object_form_container"},
+    "ExchangePlan": {"manager_module", "object_command", "object_form_container", "object_form_text", "object_module"},
+    "FilterCriterion": {"object_form_container"},
+    "HTTPService": {"module"},
+    "InformationRegister": {"manager_module", "object_command", "object_form_container", "object_form_text", "recordset_module"},
+    "Report": {"manager_module", "object_command", "object_form_container", "object_form_text", "object_module"},
+    "WebService": {"module"},
+}
+
+
+class FlatNameError(ValueError):
+    """Имя плоской выгрузки не входит в доказанную грамматику."""
+
+    def __init__(self, category: str, reason: str):
+        self.category = category
+        self.reason = reason
+        super().__init__(reason)
+
+
+@dataclass(frozen=True, slots=True)
+class FlatAddress:
+    """Разобранное имя с достаточными полями для обратной сборки."""
+
+    flat_kind: str
+    public_kind: str
+    name: str
+    pattern: str
+    nested_name: str = ""
+
+    @property
+    def address(self) -> str:
+        if self.pattern == "configuration":
+            return "Конфигурация.МодульУправляемогоПриложения"
+        if self.pattern in ("object_form_container", "object_form_text"):
+            return f"{self.public_kind}.{self.name}.Форма.{self.nested_name}"
+        if self.pattern in ("common_form_container", "common_form_text"):
+            return f"ОбщаяФорма.{self.name}"
+        if self.pattern == "object_command":
+            return f"{self.public_kind}.{self.name}.Команда.{self.nested_name}"
+        if self.pattern == "common_command":
+            return f"ОбщаяКоманда.{self.name}"
+        suffix_by_pattern = {
+            "module": "",
+            "compiled": "",
+            "object_module": "МодульОбъекта",
+            "manager_module": "МодульМенеджера",
+            "recordset_module": "МодульНабораЗаписей",
+            "value_manager_module": "МодульМенеджераЗначения",
+        }
+        suffix = suffix_by_pattern[self.pattern]
+        base = f"{self.public_kind}.{self.name}"
+        return f"{base}.{suffix}" if suffix else base
+
+    @property
+    def compiled(self) -> bool:
+        return self.pattern == "compiled"
+
+    @property
+    def is_form(self) -> bool:
+        return self.pattern in {
+            "object_form_container",
+            "object_form_text",
+            "common_form_container",
+            "common_form_text",
+        }
+
+    @property
+    def representation(self) -> str:
+        if self.pattern in ("object_form_container", "common_form_container"):
+            return "container"
+        if self.pattern == "compiled":
+            return "compiled"
+        return "text"
+
+    def filename(self) -> str:
+        if self.pattern == "configuration":
+            return "Configuration.ManagedApplicationModule.txt"
+        if self.pattern == "compiled":
+            return f"CommonModule.{self.name}.Module"
+        if self.pattern == "object_form_container":
+            return f"{self.flat_kind}.{self.name}.Form.{self.nested_name}.Form"
+        if self.pattern == "object_form_text":
+            return f"{self.flat_kind}.{self.name}.Form.{self.nested_name}.Form.Module.txt"
+        if self.pattern == "common_form_container":
+            return f"CommonForm.{self.name}.Form"
+        if self.pattern == "common_form_text":
+            return f"CommonForm.{self.name}.Form.Module.txt"
+        if self.pattern == "common_command":
+            return f"CommonCommand.{self.name}.CommandModule.txt"
+        if self.pattern == "object_command":
+            return f"{self.flat_kind}.{self.name}.Command.{self.nested_name}.CommandModule.txt"
+        suffix_by_pattern = {
+            "module": "Module",
+            "object_module": "ObjectModule",
+            "manager_module": "ManagerModule",
+            "recordset_module": "RecordSetModule",
+            "value_manager_module": "ValueManagerModule",
+        }
+        return f"{self.flat_kind}.{self.name}.{suffix_by_pattern[self.pattern]}.txt"
+
+
+def ключ_адреса(address: str) -> str:
+    """Детерминированный ключ для обнаружения регистровых коллизий."""
+    return address.casefold()
+
+
+def _flat_error(category: str, reason: str) -> FlatNameError:
+    # Физическое имя намеренно не включается: неадресуемый кандидат наружу
+    # представляется категорией и порядковым номером внутри источника.
+    return FlatNameError(category, reason)
+
+
+def _flat_address(
+    kind: str,
+    public_kind: str,
+    name: str,
+    pattern: str,
+    nested_name: str = "",
+) -> FlatAddress:
+    if pattern not in _ПЛОСКИЕ_PATTERN_BY_KIND[kind]:
+        raise _flat_error(
+            "unsupported_flat_name", "неподдержанное сочетание вида и формы имени"
+        )
+    return FlatAddress(kind, public_kind, name, pattern, nested_name)
+
+
+def разобрать_плоское_имя(filename: str) -> FlatAddress:
+    """Разобрать только одну из доказанных форм плоского имени.
+
+    Похожие хвосты, лишние компоненты и неизвестный вид не угадываются.
+    Регистр всех служебных компонентов является частью формата.
+    """
+    if not filename or "/" in filename or "\\" in filename or "\x00" in filename:
+        raise _flat_error("unsupported_flat_name", "неподдержанная форма плоского имени")
+    parts = filename.split(".")
+    kind = parts[0]
+    public_kind = _ПЛОСКИЕ_ВИДЫ.get(kind)
+    if public_kind is None:
+        raise _flat_error("unsupported_flat_kind", "неподдержанный вид плоской выгрузки")
+    if any(not part for part in parts):
+        raise _flat_error("unsupported_flat_name", "неподдержанная форма плоского имени")
+
+    if parts == ["Configuration", "ManagedApplicationModule", "txt"]:
+        return _flat_address(kind, public_kind, "", "configuration")
+    if kind == "Configuration":
+        raise _flat_error("unsupported_flat_name", "неподдержанная форма плоского имени")
+
+    if len(parts) == 3 and parts[2] == "Module" and kind == "CommonModule":
+        return _flat_address(kind, public_kind, parts[1], "compiled")
+
+    if len(parts) == 5 and parts[2:] == ["Form", "Module", "txt"]:
+        if kind != "CommonForm":
+            raise _flat_error("unsupported_flat_name", "неподдержанная форма плоского имени")
+        return _flat_address(kind, public_kind, parts[1], "common_form_text")
+    if len(parts) == 3 and parts[2] == "Form":
+        if kind != "CommonForm":
+            raise _flat_error("unsupported_flat_name", "неподдержанная форма плоского имени")
+        return _flat_address(kind, public_kind, parts[1], "common_form_container")
+
+    if len(parts) == 7 and parts[2] == "Form" and parts[4:] == ["Form", "Module", "txt"]:
+        if kind in {"CommonForm", "CommonModule", "CommonCommand"}:
+            raise _flat_error("unsupported_flat_name", "неподдержанная форма плоского имени")
+        return _flat_address(kind, public_kind, parts[1], "object_form_text", parts[3])
+    if len(parts) == 5 and parts[2] == "Form" and parts[4] == "Form":
+        if kind in {"CommonForm", "CommonModule", "CommonCommand"}:
+            raise _flat_error("unsupported_flat_name", "неподдержанная форма плоского имени")
+        return _flat_address(
+            kind, public_kind, parts[1], "object_form_container", parts[3]
+        )
+
+    if len(parts) == 4 and parts[2:] == ["CommandModule", "txt"]:
+        if kind != "CommonCommand":
+            raise _flat_error("unsupported_flat_name", "неподдержанная форма плоского имени")
+        return _flat_address(kind, public_kind, parts[1], "common_command")
+    if (
+        len(parts) == 6
+        and parts[2] == "Command"
+        and parts[4:] == ["CommandModule", "txt"]
+    ):
+        if kind in {"CommonForm", "CommonModule", "CommonCommand"}:
+            raise _flat_error("unsupported_flat_name", "неподдержанная форма плоского имени")
+        return _flat_address(kind, public_kind, parts[1], "object_command", parts[3])
+
+    if len(parts) == 4 and parts[3] == "txt" and parts[2] in _ПЛОСКИЕ_СУФФИКСЫ:
+        pattern_by_suffix = {
+            "Module": "module",
+            "ObjectModule": "object_module",
+            "ManagerModule": "manager_module",
+            "RecordSetModule": "recordset_module",
+            "ValueManagerModule": "value_manager_module",
+        }
+        return _flat_address(
+            kind, public_kind, parts[1], pattern_by_suffix[parts[2]]
+        )
+
+    raise _flat_error("unsupported_flat_name", "неподдержанная форма плоского имени")
 
 
 def адрес_скомпилированного_модуля(относительный_путь: str) -> str:

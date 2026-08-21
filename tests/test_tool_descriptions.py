@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from mcp1c.registry import Registry
-from mcp1c.server import build_server
+from mcp1c.server import INSTRUCTIONS, build_server
 from mcp1c.store import save_syntax
 from mcp1c.syntax_model import SyntaxIndex, SyntaxItem
 
@@ -27,12 +27,7 @@ def anyio_backend():
 
 @pytest.fixture
 def инструменты(tmp_path):
-    """Полный набор: реестр наполняется, иначе набора не будет вовсе.
-
-    Инструмент публикуется, когда есть чем ответить (`available_tools`), и на
-    пустом реестре остаётся один `list_configurations`. Проверять контракт
-    описаний на нём бессмысленно — нужны обе конфигурации и справка.
-    """
+    """Полный набор регистрируется независимо от состава источников."""
 
     async def получить():
         registry = Registry(tmp_path / "data")
@@ -101,7 +96,7 @@ async def test_у_связей_нет_параметра_глубины(инст
 
 
 async def test_поиск_отправляет_к_подробностям(инструменты):
-    """Ключевая связка задачи «порядок вызовов»: поиск -> подробности.
+    """Ключевая связка публичного порядка вызовов: поиск -> подробности.
 
     Периодичность регистра и имена полей виртуальных таблиц приходят только
     через `get_object`/`get_syntax`. Агент, пишущий запрос сразу после поиска,
@@ -113,3 +108,93 @@ async def test_поиск_отправляет_к_подробностям(ин�
 
     assert "get_object" in по_имени["search_objects"]
     assert "get_syntax" in по_имени["search_syntax"]
+
+
+async def test_поиск_процедур_зарегистрирован_с_полным_контрактом(инструменты):
+    """Клиент видит явный scope и выбор расширения, а не угадывает их."""
+    (поиск,) = [
+        tool for tool in await инструменты() if tool.name == "search_procedures"
+    ]
+
+    свойства = (поиск.input_schema or {}).get("properties") or {}
+    assert set(свойства) == {
+        "query",
+        "config",
+        "extension",
+        "scope",
+        "limit",
+    }
+    assert set((поиск.input_schema or {}).get("required") or []) == {"query"}
+    assert "экспорт" in (поиск.description or "").lower()
+    assert "scope" in свойства["scope"]["description"]
+    assert "list_configurations" in свойства["config"]["description"]
+    assert свойства["limit"]["minimum"] == 1
+    assert свойства["limit"]["maximum"] == 50
+
+
+async def test_карточка_процедуры_зарегистрирована_с_английскими_параметрами(
+    инструменты,
+):
+    все = await инструменты()
+    assert len(все) == 10
+    (карточка,) = [tool for tool in все if tool.name == "get_procedure"]
+
+    schema = карточка.input_schema or {}
+    свойства = schema.get("properties") or {}
+    assert set(свойства) == {
+        "address",
+        "config",
+        "extension",
+        "start_line",
+        "lines",
+    }
+    assert set(schema.get("required") or []) == {"address"}
+    assert свойства["start_line"]["minimum"] == 0
+    assert свойства["lines"]["minimum"] == 1
+    assert свойства["lines"]["maximum"] == 200
+    assert "оглавлен" in (карточка.description or "").lower()
+    assert "тел" in (карточка.description or "").lower()
+
+
+async def test_обратный_поиск_вызовов_зарегистрирован_десятым_инструментом(
+    инструменты,
+):
+    все = await инструменты()
+    assert [tool.name for tool in все][2:5] == [
+        "search_procedures",
+        "get_procedure",
+        "get_callers",
+    ]
+    (вызовы,) = [tool for tool in все if tool.name == "get_callers"]
+
+    schema = вызовы.input_schema or {}
+    свойства = schema.get("properties") or {}
+    assert set(свойства) == {"address", "config", "extension", "limit"}
+    assert set(schema.get("required") or []) == {"address"}
+    assert свойства["limit"]["minimum"] == 1
+    assert свойства["limit"]["maximum"] == 50
+    assert "мест" in (вызовы.description or "").lower()
+    assert "привяз" in (вызовы.description or "").lower()
+
+
+async def test_tools_list_сохраняет_полный_порядок_десяти_инструментов(
+    инструменты,
+):
+    assert [tool.name for tool in await инструменты()] == [
+        "list_configurations",
+        "search_objects",
+        "search_procedures",
+        "get_procedure",
+        "get_callers",
+        "get_object",
+        "get_related",
+        "compare_configurations",
+        "search_syntax",
+        "get_syntax",
+    ]
+
+
+def test_instructions_называет_get_object_шестым_шагом():
+    assert "6. `get_object`" in INSTRUCTIONS
+    assert "Не пропускайте шаг 6" in INSTRUCTIONS
+    assert "Не пропускайте шаг 5" not in INSTRUCTIONS

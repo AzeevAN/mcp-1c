@@ -118,7 +118,9 @@ def test_нет_места_отражается_в_задании(tmp_path, monk
     )
 
     assert ответ.status_code == 303
-    текст = client.get("/sources").text
+    текст = дождаться(
+        client, lambda t: "недостаточно свободного места" in t
+    )
     assert "нужно" in текст and "свободно" in текст
 
 
@@ -203,9 +205,8 @@ def test_неизвестная_конфигурация_отклоняется_
 def test_разбор_записан_в_registry_json(tmp_path, monkeypatch):
     """Память процесса — не результат работы: рестарт её не переживает.
 
-    `add_modules` пишет только в `self.sources`; без `registry.save()` после
-    разбора страница после рестарта говорила бы «не разобрано» при 351 МБ кода
-    на диске, и человек гонял бы гигабайтный архив заново.
+    `add_modules` обязан записать Source вместе с рокировкой корня; отдельный
+    `registry.save()` после возврата оставлял окно несогласованных поколений.
     """
     monkeypatch.setenv("ADMIN_TOKEN", "секрет")
     monkeypatch.delenv("API_TOKEN", raising=False)
@@ -215,9 +216,8 @@ def test_разбор_записан_в_registry_json(tmp_path, monkeypatch):
     client.post(
         "/sources/incoming/parse", data={"name": "модули.zip"}, follow_redirects=False
     )
-    # Ждём «готово» у задания, а не появления источника на странице: источник
-    # виден из памяти сразу после `add_modules`, а `save()` идёт следом —
-    # ожидание по нему попадало бы в это окно и давало флейк.
+    # Ждём «готово» у задания: публикация памяти, корня и registry.json теперь
+    # завершается до возврата `add_modules`.
     дождаться(client, lambda t: dashboard.JOB_DONE in t)
 
     # Смотрим в файл, а не в память: проверка по `registry.sources` зелена и
@@ -317,7 +317,7 @@ def test_падение_проверки_места_названо_своей_п
         "/sources/incoming/parse", data={"name": "модули.zip"}, follow_redirects=False
     )
 
-    текст = client.get("/sources").text
+    текст = дождаться(client, lambda t: "свободное место" in t)
     assert "свободное место" in текст
     assert "uid 10001" in текст
     assert "не похоже на zip-архив" not in текст

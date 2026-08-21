@@ -20,6 +20,7 @@ import secrets
 import shutil
 import tempfile
 import traceback
+from dataclasses import dataclass
 from html import escape
 from pathlib import Path
 from urllib.parse import quote
@@ -299,12 +300,6 @@ def _run_incoming(
     try:
         имя_конфигурации = конфигурация or _configuration_for(registry, архив)
         registry.add_modules(архив, configuration=имя_конфигурации)
-        # `add_modules` пишет только в `self.sources`, в память процесса.
-        # Без записи на диск разбор не переживал бы рестарт: код на месте,
-        # 351 МБ занято, а страница говорит «не разобрано» — и человек гонит
-        # гигабайтный архив заново. `_index_source` зовёт `save()` по той же
-        # причине.
-        registry.save()
     except (ExportError, RegistryError, V8ContainerError, ValueError) as error:
         # Известная ошибка проекта — это сообщение человеку, и имя класса ему
         # ничего не добавляет: «загружено 2 конфигураций» он поймёт, а
@@ -393,8 +388,8 @@ def _coverage_block(registry: Registry) -> list[str]:
 SCOPES = {
     "objects": "объектам",
     "fields": "реквизитам",
-    # Прежняя подпись «справке платформы» врала: индекс этого режима с
-    # задачи query-ranking общий для справки платформы и языка запросов
+    # Прежняя подпись «справке платформы» врала: индекс этого режима общий
+    # для справки платформы и языка запросов
     # (`shquery_ru.hbk`), и элементы языка запросов участвуют в выдаче
     # наравне с методами и свойствами.
     "syntax": "справке платформы и языку запросов",
@@ -1143,21 +1138,125 @@ _SOURCE_KIND_TITLES = {
 }
 
 
-def _sources_page(
+@dataclass(frozen=True, slots=True)
+class _OrphanRow:
+    relative: str
+    size: int
+
+
+@dataclass(frozen=True, slots=True)
+class _IncomingRow:
+    name: str
+    size: int
+    state: str
+    detail: str
+    settling: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _JobRow:
+    name: str
+    size: int
+    state: str
+    error: str
+
+
+@dataclass(frozen=True, slots=True)
+class _SourcesPageData:
+    sources: tools.SourcesSnapshot
+    sources_error: str
+    orphans: tuple[_OrphanRow, ...]
+    incoming: tuple[_IncomingRow, ...]
+    incoming_exists: bool
+    incoming_dir: str
+    jobs: tuple[_JobRow, ...]
+    authorized: bool
+
+
+def _prepare_sources_page(
     registry: Registry,
     *,
-    error: str = "",
-    authorized: bool = False,
-    входящие: list[dict] | None = None,
-) -> HTMLResponse:
-    """Страница «Источники».
+    authorized: bool,
+) -> _SourcesPageData:
+    """Снять данные, пройти диск и только затем подтвердить поколение."""
 
-    `входящие` — уже собранный список из `IncomingScanner.scan()`. Параметр
-    необязательный: сканирование считает sha256 файлов в `incoming/`, а это
-    секунды на архиве в полтора гигабайта, и в цикле событий такой счёт
-    останавливает весь процесс — включая `/health` и инструменты MCP. Поэтому
-    обработчик `GET /sources` считает его в потоке и передаёт готовым.
-    """
+    def collect(
+        sources: tools.SourcesSnapshot, sources_error: str = ""
+    ) -> _SourcesPageData:
+        orphans = tuple(
+            _OrphanRow(path.relative_to(registry.data_dir).as_posix(), size)
+            for path, size in registry.orphan_sources()
+        )
+        if authorized:
+            incoming = tuple(
+                _IncomingRow(
+                    name=str(row["name"]),
+                    size=int(row["size"]),
+                    state=str(row["state"]),
+                    detail=str(row["detail"]),
+                    settling=bool(row.get("settling")),
+                )
+                for row in _scanner(registry).scan()
+            )
+            incoming_exists = registry.incoming_dir.is_dir()
+        else:
+            incoming = ()
+            incoming_exists = False
+        jobs = tuple(
+            _JobRow(
+                name=str(job["name"]),
+                size=int(job["size"]),
+                state=str(job["state"]),
+                error=str(job["error"]),
+            )
+            for job in _JOBS
+        )
+        return _SourcesPageData(
+            sources=sources,
+            sources_error=sources_error,
+            orphans=orphans,
+            incoming=incoming,
+            incoming_exists=incoming_exists,
+            incoming_dir=str(registry.incoming_dir),
+            jobs=jobs,
+            authorized=authorized,
+        )
+
+    last: _SourcesPageData | None = None
+    for _ in range(2):
+        prepared = tools._capture_sources_snapshot(registry)
+        if prepared is None:
+            continue
+        sources, capture = prepared
+        last = collect(sources)
+        if tools._sources_snapshot_is_current(registry, capture):
+            return last
+
+    error = (
+        "Источники изменились дважды; повторите запрос после завершения загрузки."
+    )
+    empty = tools.SourcesSnapshot((), (), ())
+    if last is None:
+        return collect(empty, error)
+    return _SourcesPageData(
+        sources=empty,
+        sources_error=error,
+        orphans=last.orphans,
+        incoming=last.incoming,
+        incoming_exists=last.incoming_exists,
+        incoming_dir=last.incoming_dir,
+        jobs=last.jobs,
+        authorized=last.authorized,
+    )
+
+
+def _sources_page(
+    data: _SourcesPageData,
+    *,
+    error: str = "",
+) -> HTMLResponse:
+    """Чистая отрисовка заранее собранного снимка страницы «Источники»."""
+    authorized = data.authorized
     parts: list[str] = []
     if error:
         parts.append(f"<div class=error>{escape(error)}</div>")
@@ -1166,7 +1265,7 @@ def _sources_page(
         "<h2>Загружено</h2><table><tr><th>Источник<th>Вид<th>Платформа"
         "<th>Элементов<th></tr>"
     )
-    for source in sorted(registry.sources.values(), key=lambda s: s.id):
+    for source in data.sources.sources:
         button = (
             f"<form method=post action=/sources/remove>"
             f"<input type=hidden name=id value='{escape(source.id)}'>"
@@ -1190,11 +1289,36 @@ def _sources_page(
             )
     parts.append("</table>")
 
-    if authorized and _JOBS:
+    if data.sources.code or data.sources_error or data.sources.configuration_names:
+        parts.append(
+            "<h2>Индексы кода</h2>"
+            "<table><tr><th>Конфигурация<th>Корпус<th>Состояние</tr>"
+        )
+        if data.sources_error:
+            parts.append(
+                f"<tr><td colspan=3 class=warn>! {escape(data.sources_error)}</tr>"
+            )
+        elif data.sources.code:
+            for строка in data.sources.code:
+                parts.append(
+                    f"<tr><td>{escape(строка.configuration)}"
+                    f"<td>{escape(строка.corpus)}"
+                    f"<td>{escape(строка.state)}</tr>"
+                )
+                for line in tools.code_coverage_lines(строка.coverage):
+                    style = " class=warn" if line.startswith("ВНИМАНИЕ:") else ""
+                    parts.append(
+                        f"<tr{style}><td colspan=3>{escape(line)}</tr>"
+                    )
+        else:
+            parts.append("<tr><td colspan=3>Конфигурации не загружены.</tr>")
+        parts.append("</table>")
+
+    if authorized and data.jobs:
         # Имя файла говорит, что за база, поэтому список виден только вошедшему.
         # Журнал за время жизни процесса. Убирается кнопкой: записи копятся и
         # мешают смотреть на то, что происходит сейчас.
-        закончены = any(j["state"] in (JOB_DONE, JOB_FAILED) for j in _JOBS)
+        закончены = any(j.state in (JOB_DONE, JOB_FAILED) for j in data.jobs)
         очистка = (
             "<form method=post action=/sources/jobs/clear style='display:inline'>"
             "<button>очистить завершённые</button></form>"
@@ -1203,24 +1327,24 @@ def _sources_page(
         )
         parts.append(f"<h2>Загрузка</h2>{очистка}<table>"
                      "<tr><th>Файл<th>Размер<th>Состояние</tr>")
-        for job in reversed(_JOBS):
+        for job in reversed(data.jobs):
             подробность = (
-                f" — {escape(job['error'])}" if job["state"] == JOB_FAILED else ""
+                f" — {escape(job.error)}" if job.state == JOB_FAILED else ""
             )
             parts.append(
-                f"<tr><td>{escape(job['name'])}"
-                f"<td>{_объём(job['size'])}"
-                f"<td>{escape(job['state'])}{подробность}</tr>"
+                f"<tr><td>{escape(job.name)}"
+                f"<td>{_объём(job.size)}"
+                f"<td>{escape(job.state)}{подробность}</tr>"
             )
         parts.append("</table>")
 
-    orphans = registry.orphan_sources()
+    orphans = data.orphans
     if orphans:
         # Справка одна на процесс, и прежняя выбывает из реестра при замене —
         # а файл остаётся лежать. Молча занятые сотни мегабайт человек не
         # найдёт; удалять за него нельзя: справку от снятой с поддержки
         # платформы взять заново негде.
-        весом = sum(size for _, size in orphans) / 1024 / 1024
+        весом = sum(orphan.size for orphan in orphans) / 1024 / 1024
         parts.append(
             f"<h2>Исходные файлы — {весом:.0f} МБ</h2>"
             "<p>Сервер работает по разобранным индексам, поэтому для ответов "
@@ -1232,8 +1356,9 @@ def _sources_page(
             "негде.</p>"
             "<table><tr><th>Файл<th>Размер<th></tr>"
         )
-        for path, size in orphans:
-            relative = path.relative_to(registry.data_dir).as_posix()
+        for orphan in orphans:
+            relative = orphan.relative
+            size = orphan.size
             button = (
                 "<form method=post action=/sources/forget>"
                 f"<input type=hidden name=path value='{escape(relative)}'>"
@@ -1259,36 +1384,34 @@ def _sources_page(
             STATE_UPDATED,
         )
 
-        if входящие is None:
-            входящие = _scanner(registry).scan()
         # Список тот же, что в таблице «Загружено»: у источника конфигурации
         # `id` — это её имя (`add_configuration`), сортировка по `id` там и
         # сортировка имён здесь совпадают.
-        имена_конфигураций = sorted(registry.configurations)
-        if входящие:
+        имена_конфигураций = data.sources.configuration_names
+        if data.incoming:
             parts.append("<h2>Входящие выгрузки</h2><table>"
                          "<tr><th>Файл<th>Размер<th>Состояние</tr>")
-            for строка in входящие:
+            for строка in data.incoming:
                 # «Разбор не удался» — не тупик: постановка (§2) назначает ему
                 # то же действие. Без кнопки исправленный архив разобрать было
                 # бы нечем, кроме переименования файла.
                 # Конфигураций ноль — привязывать код не к чему, кнопки нет
                 # вовсе (нынешний отказ человек увидел бы только после нажатия).
                 можно = (
-                    строка["state"] in (
+                    строка.state in (
                         STATE_NEW,
                         STATE_UPDATED,
                         STATE_STALE,
                         STATE_FAILED,
                     )
-                    and not строка.get("settling")
+                    and not строка.settling
                     and bool(имена_конфигураций)
                 )
                 # «Переразобрать» там, где прежний разбор перетирается: человек
                 # должен понимать, что делает с уже лежащим на диске кодом.
                 подпись = (
                     "переразобрать"
-                    if строка["state"] in (STATE_UPDATED, STATE_STALE)
+                    if строка.state in (STATE_UPDATED, STATE_STALE)
                     else "разобрать"
                 )
                 # Выбор конфигурации — только когда есть из чего выбирать:
@@ -1306,28 +1429,28 @@ def _sources_page(
                 кнопка = (
                     "<form method=post action=/sources/incoming/parse "
                     "style='display:inline'>"
-                    f"<input type=hidden name=name value='{escape(строка['name'])}'>"
+                    f"<input type=hidden name=name value='{escape(строка.name)}'>"
                     f"{выбор}"
                     f"<button>{подпись}</button></form>"
                     if можно
                     else ""
                 )
                 подробность = (
-                    f" — {escape(строка['detail'])}" if строка["detail"] else ""
+                    f" — {escape(строка.detail)}" if строка.detail else ""
                 )
                 parts.append(
-                    f"<tr><td>{escape(строка['name'])}"
-                    f"<td>{_объём(строка['size'])}"
-                    f"<td>{escape(строка['state'])}{подробность} {кнопка}</tr>"
+                    f"<tr><td>{escape(строка.name)}"
+                    f"<td>{_объём(строка.size)}"
+                    f"<td>{escape(строка.state)}{подробность} {кнопка}</tr>"
                 )
             parts.append("</table>")
-        elif registry.incoming_dir.is_dir():
+        elif data.incoming_exists:
             # Пустой каталог — тоже сведение: без этого блока человек не видит
             # ни того, что приём есть, ни того, куда класть архив.
             parts.append(
                 "<h2>Входящие выгрузки</h2>"
                 f"<p>Пусто. Положите выгрузку конфигурации в файлы (.zip) в "
-                f"<code>{escape(str(registry.incoming_dir))}</code> — она "
+                f"<code>{escape(data.incoming_dir)}</code> — она "
                 "появится здесь с кнопкой «разобрать». Сканируется только сам "
                 "каталог, без вложенных подкаталогов.</p>"
             )
@@ -1379,7 +1502,7 @@ def _sources_page(
     # Пока работа идёт — страница обновляет себя сама. Обычный `meta refresh`,
     # а не JS: дашборд обязан работать с выключенным JS. Работа кончилась —
     # обновление прекращается, иначе страница дёргалась бы вечно.
-    работает = any(j["state"] in (JOB_READING, JOB_PARSING) for j in _JOBS)
+    работает = any(j.state in (JOB_READING, JOB_PARSING) for j in data.jobs)
     return _layout("Источники", "".join(parts), refresh=2 if работает else 0)
 
 
@@ -1396,7 +1519,7 @@ def _dictionary_page(
 
     Происхождение показывается всегда, а не только в CLI: с него начинается
     разбор «почему поиск так себя ведёт» — встроенное правило чинят в
-    `synonyms.py` через ревью, локальное правят здесь же.
+    `synonyms.py` через обычную проверку кода, локальное правят здесь же.
     """
     names = sorted(registry.configurations)
     if config not in names:
@@ -1423,7 +1546,7 @@ def _dictionary_page(
     for alias, (objects, source) in sorted(
         registry.dictionary.aliases_with_source(config or None).items()
     ):
-        # Встроенные правила лежат в коде и правятся через ревью — кнопки у
+        # Встроенные правила лежат в коде и меняются вместе с поставкой — кнопки у
         # них нет намеренно, иначе удаление тихо разошлось бы с поставкой.
         local = source != DICT_BUILTIN
         button = (
@@ -1460,7 +1583,7 @@ def _dictionary_page(
     parts.append(
         f"<p>Встроенных групп {stats['встроенных групп синонимов']}, "
         f"встроенных псевдонимов {stats['встроенных псевдонимов']} — они в коде "
-        "и правятся через ревью, отсюда не видны как строки.</p>"
+        "и меняются вместе с поставкой, отсюда не видны как строки.</p>"
     )
 
     if authorized:
@@ -1528,17 +1651,20 @@ def routes(registry: Registry) -> list[Route]:
     async def overview(request: Request) -> HTMLResponse:
         return _overview_page(registry)
 
+    async def render_sources(
+        *, error: str = "", authorized: bool = False, status_code: int = 200
+    ) -> HTMLResponse:
+        data = await run_in_threadpool(
+            _prepare_sources_page, registry, authorized=authorized
+        )
+        page = _sources_page(data, error=error)
+        if status_code == 200:
+            return page
+        return HTMLResponse(page.body, status_code=status_code)
+
     async def sources(request: Request) -> HTMLResponse:
         authorized = _authorized(request)
-        # Сканирование считает sha256 файлов из `incoming/`: на архиве в
-        # 1,4 ГБ это секунды, и в цикле событий они останавливают весь
-        # процесс — другие страницы, `/health`, инструменты MCP. Уходит в
-        # поток тем же способом, что и разбор. Невошедшему блок не рисуется,
-        # значит и считать нечего.
-        входящие = (
-            await run_in_threadpool(_scanner(registry).scan) if authorized else None
-        )
-        return _sources_page(registry, authorized=authorized, входящие=входящие)
+        return await render_sources(authorized=authorized)
 
     async def dictionary_page(request: Request) -> HTMLResponse:
         return _dictionary_page(
@@ -1620,7 +1746,7 @@ def routes(registry: Registry) -> list[Route]:
                 registry,
                 authorized=True,
                 error="Такой группы нет. Встроенные группы отсюда не снимаются: "
-                      "они в коде и правятся через ревью.",
+                      "они в коде и меняются вместе с поставкой.",
             )
         _apply_dictionary_change(registry)
         return RedirectResponse("/dictionary", status_code=303)
@@ -1728,21 +1854,22 @@ def routes(registry: Registry) -> list[Route]:
         if not _admin_token():
             return PlainTextResponse("Загрузка выключена: не задан ADMIN_TOKEN.", 404)
         if not _authorized(request):
-            page = _sources_page(registry, error="Нужен вход администратора.")
-            return HTMLResponse(page.body, status_code=403)
+            return await render_sources(
+                error="Нужен вход администратора.", status_code=403
+            )
 
         form = await request.form()
         uploaded = form.get("file")
         if uploaded is None or not getattr(uploaded, "filename", ""):
-            return _sources_page(registry, error="Файл не выбран.", authorized=True)
+            return await render_sources(error="Файл не выбран.", authorized=True)
 
         # Имя приходит от клиента: берём только последний сегмент, иначе из
         # «../../etc/passwd» сложится путь наружу временного каталога.
         name = Path(uploaded.filename).name
         suffix = Path(name).suffix.lower()
         if suffix not in (".zip", ".hbk"):
-            return _sources_page(
-                registry, error="Принимаются только .zip и .hbk", authorized=True
+            return await render_sources(
+                error="Принимаются только .zip и .hbk", authorized=True
             )
 
         # Каталог удаляется не здесь, а фоновой задачей: она переживёт этот
@@ -1761,8 +1888,7 @@ def routes(registry: Registry) -> list[Route]:
                 if size > MAX_UPLOAD:
                     shutil.rmtree(tmp, ignore_errors=True)
                     _JOBS.remove(job)
-                    return _sources_page(
-                        registry,
+                    return await render_sources(
                         error=f"Файл больше {MAX_UPLOAD // 1024 // 1024} МБ.",
                         authorized=True,
                     )
@@ -1784,8 +1910,9 @@ def routes(registry: Registry) -> list[Route]:
         if not _admin_token():
             return PlainTextResponse("Разбор выключен: не задан ADMIN_TOKEN.", 404)
         if not _authorized(request):
-            page = _sources_page(registry, error="Нужен вход администратора.")
-            return HTMLResponse(page.body, status_code=403)
+            return await render_sources(
+                error="Нужен вход администратора.", status_code=403
+            )
 
         from . import intake
         from .incoming import SETTLE_SECONDS
@@ -1842,31 +1969,12 @@ def routes(registry: Registry) -> list[Route]:
             # исправленный архив и жмёт кнопку со старой страницы.
             await run_in_threadpool(сканер.note_failure, архив, job["error"])
             return RedirectResponse("/sources", status_code=303)
-        try:
-            хватает, свободно = intake.enough_space(нужно, registry.data_dir)
-        except Exception as error:
-            # Отдельный блок, а не общий с разбором архива: здесь падает не
-            # zip, а обращение к каталогу данных — нет прав, том отвалился,
-            # каталога нет вовсе. Постановка (§3) требует, чтобы случай прав
-            # был в тексте ошибки, а не оставался догадкой; заголовок «не
-            # похоже на zip-архив» на нём был бы прямой ложью.
-            job["state"] = JOB_FAILED
-            job["error"] = (
-                f"{архив.name}: не удалось проверить свободное место в "
-                f"{registry.data_dir} ({error}). Проверьте, что каталог "
-                "данных на месте и доступен процессу сервера: в контейнере он "
-                "работает от uid 10001, а `chown` из образа на bind-mount не "
-                "действует."
-            )
-            await run_in_threadpool(сканер.note_failure, архив, job["error"])
-            return RedirectResponse("/sources", status_code=303)
-        if not хватает:
-            job["state"] = JOB_FAILED
-            job["error"] = (
-                f"нужно {нужно // 2**20} МБ, свободно {свободно // 2**20} МБ"
-            )
-            await run_in_threadpool(сканер.note_failure, архив, job["error"])
-            return RedirectResponse("/sources", status_code=303)
+        # `planned_size` выше проверяет только целостность центрального
+        # каталога для немедленного ответа формы. Авторитетная проверка места
+        # живёт внутри `Registry.add_modules`: там уже выбраны конфигурация,
+        # вид источника и точный корень, зарезервировано поколение, поэтому
+        # прямой вызов реестра и фоновый путь не могут её обойти.
+        del нужно
 
         # Конфигурацию выбирает человек в форме рядом с кнопкой (поле не
         # обязательно — пустое отдаёт решение `_configuration_for`). Форму
@@ -1904,8 +2012,9 @@ def routes(registry: Registry) -> list[Route]:
         if not _admin_token():
             return PlainTextResponse("Недоступно: не задан ADMIN_TOKEN.", 404)
         if not _authorized(request):
-            page = _sources_page(registry, error="Нужен вход администратора.")
-            return HTMLResponse(page.body, status_code=403)
+            return await render_sources(
+                error="Нужен вход администратора.", status_code=403
+            )
 
         for job in [j for j in _JOBS if j["state"] in (JOB_DONE, JOB_FAILED)]:
             _JOBS.remove(job)
@@ -1916,36 +2025,38 @@ def routes(registry: Registry) -> list[Route]:
         if not _admin_token():
             return PlainTextResponse("Удаление выключено: не задан ADMIN_TOKEN.", 404)
         if not _authorized(request):
-            page = _sources_page(registry, error="Нужен вход администратора.")
-            return HTMLResponse(page.body, status_code=403)
+            return await render_sources(
+                error="Нужен вход администратора.", status_code=403
+            )
 
         form = await request.form()
         given = str(form.get("path", ""))
         # Путь приходит от клиента: сверяем не строку, а разрешённый список.
         # Из «../../etc/passwd» иначе сложилась бы дорога наружу каталога.
+        orphan_sources = await run_in_threadpool(registry.orphan_sources)
         allowed = {
             path.relative_to(registry.data_dir).as_posix(): path
-            for path, _ in registry.orphan_sources()
+            for path, _ in orphan_sources
         }
         target = allowed.get(given)
         if target is None:
-            return _sources_page(
-                registry,
+            return await render_sources(
                 error="Такого неиспользуемого файла нет.",
                 authorized=True,
             )
         try:
-            target.unlink()
+            await run_in_threadpool(target.unlink)
         except OSError as error:
-            return _sources_page(registry, error=str(error), authorized=True)
+            return await render_sources(error=str(error), authorized=True)
         return RedirectResponse("/sources", status_code=303)
 
     async def remove(request: Request):
         if not _admin_token():
             return PlainTextResponse("Удаление выключено: не задан ADMIN_TOKEN.", 404)
         if not _authorized(request):
-            page = _sources_page(registry, error="Нужен вход администратора.")
-            return HTMLResponse(page.body, status_code=403)
+            return await render_sources(
+                error="Нужен вход администратора.", status_code=403
+            )
 
         form = await request.form()
         try:
@@ -1954,8 +2065,8 @@ def routes(registry: Registry) -> list[Route]:
             # страницы и `/health`; словарной операцией `remove` быть перестал.
             await run_in_threadpool(registry.remove, str(form.get("id", "")))
         except RegistryError as error:
-            return _sources_page(registry, error=str(error), authorized=True)
-        registry.save()
+            return await render_sources(error=str(error), authorized=True)
+        await run_in_threadpool(registry.save)
         return RedirectResponse("/sources", status_code=303)
 
     return [

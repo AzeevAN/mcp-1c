@@ -33,6 +33,7 @@ import hashlib
 import json
 import marshal
 import sys
+import zlib
 from pathlib import Path
 from typing import Iterable
 
@@ -46,6 +47,13 @@ CACHE_VERSION = 1
 COMPRESS_LEVEL = 1
 
 _MARSHAL_VERSION = 4
+
+# Один файл индекса на измеренном корпусе заметно меньше этих границ. Пределы
+# защищают расходный reader от gzip bomb и от файла, который подменили уже
+# после проверки штампа: cache miss дешевле попытки выделить всю память.
+MAX_CACHE_FILE_BYTES = 256 * 1024 * 1024
+MAX_CACHE_PAYLOAD_BYTES = 512 * 1024 * 1024
+_MAX_HEADER_BYTES = 16 * 1024
 
 
 class _Miss(Exception):
@@ -137,7 +145,12 @@ def save_blob(payload, path: str | Path, *, source_sha256: str, kind: str) -> Pa
     """
     target = Path(path)
     header = json.dumps(_stamp(source_sha256, kind), ensure_ascii=False).encode("utf-8")
-    blob = gzip.compress(marshal.dumps(payload, _MARSHAL_VERSION), COMPRESS_LEVEL)
+    encoded = marshal.dumps(payload, _MARSHAL_VERSION)
+    if len(encoded) > MAX_CACHE_PAYLOAD_BYTES:
+        return None
+    blob = gzip.compress(encoded, COMPRESS_LEVEL)
+    if len(header) + 1 + len(blob) > MAX_CACHE_FILE_BYTES:
+        return None
 
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -171,13 +184,18 @@ def _read_verified(path: Path, source_sha256: str, kind: str) -> dict:
     не доходит — сначала заголовок обычным JSON, и только потом всё остальное.
     """
     try:
-        raw = path.read_bytes()
+        with path.open("rb") as stream:
+            raw = stream.read(MAX_CACHE_FILE_BYTES + 1)
     except OSError as error:
         raise _Miss(str(error)) from error
+    if len(raw) > MAX_CACHE_FILE_BYTES:
+        raise _Miss("файл превышает предел размера")
 
-    head, sep, blob = raw.partition(b"\n")
-    if not sep:
+    separator = raw.find(b"\n", 0, _MAX_HEADER_BYTES + 1)
+    if separator < 0:
         raise _Miss("нет заголовка")
+    head = raw[:separator]
+    blob = raw[separator + 1 :]
 
     try:
         stamp = json.loads(head.decode("utf-8"))
@@ -188,7 +206,20 @@ def _read_verified(path: Path, source_sha256: str, kind: str) -> dict:
         raise _Miss("штамп не совпал")
 
     try:
-        return marshal.loads(gzip.decompress(blob))
+        decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        decoded = decoder.decompress(blob, MAX_CACHE_PAYLOAD_BYTES + 1)
+        if len(decoded) > MAX_CACHE_PAYLOAD_BYTES or decoder.unconsumed_tail:
+            raise _Miss("распакованный кэш превышает предел размера")
+        decoded += decoder.flush(MAX_CACHE_PAYLOAD_BYTES + 1 - len(decoded))
+        if (
+            len(decoded) > MAX_CACHE_PAYLOAD_BYTES
+            or not decoder.eof
+            or decoder.unused_data
+        ):
+            raise _Miss("gzip-поток кэша некорректен")
+        return marshal.loads(decoded)
+    except _Miss:
+        raise
     except Exception as error:  # обрезанный или подменённый блоб
         raise _Miss(f"содержимое не читается: {error}") from error
 

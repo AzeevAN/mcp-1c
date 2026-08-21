@@ -2,7 +2,7 @@
 
 Проверяется сам стенд, а не качество поиска. Качество меряется цифрами для
 человека и в assert не выносится — пороги в процентах ломались бы от каждой
-правки словаря (`AGENTS.md`). Здесь наоборот: цифры задаются вручную, и
+правки словаря и не доказывали бы качество. Здесь наоборот: цифры задаются вручную, и
 проверяется, что стенд считает и показывает именно то, что произошло.
 """
 
@@ -18,6 +18,8 @@ from mcp1c.bench import (
     Report,
     check_notes,
     compare,
+    load_cases,
+    load_curated,
     load_report,
     run,
     save_report,
@@ -29,7 +31,13 @@ from mcp1c.syntax_model import KIND_QUERY_ARTICLE
 def _отчёт(*места: int | None) -> Report:
     return Report(
         results=[
-            CaseResult(query=f"запрос {n}", expected=["цель"], rank=место)
+            CaseResult(
+                query=f"запрос {n}",
+                expected=["цель"],
+                rank=место,
+                suite="набор",
+                domain="syntax",
+            )
             for n, место in enumerate(места)
         ]
     )
@@ -135,14 +143,63 @@ def test_свой_домен_первым_чужим_не_считается():
 
 
 def test_прогон_переживает_запись_и_чтение(tmp_path):
-    исходный = run(_справка(), [Case(query="РАЗЛИЧНЫЕ", expected=["query/DISTINCT"])])
+    исходный = run(
+        _справка(),
+        [Case(query="РАЗЛИЧНЫЕ", expected=["query/DISTINCT"])],
+        suite="язык-запросов",
+        domain="syntax",
+    )
 
     путь = save_report(исходный, tmp_path / "прогон.json", title="проба")
     поднятый = load_report(путь)
 
     assert [r.query for r in поднятый.results] == [r.query for r in исходный.results]
     assert [r.rank for r in поднятый.results] == [r.rank for r in исходный.results]
+    assert [r.suite for r in поднятый.results] == ["язык-запросов"]
+    assert [r.domain for r in поднятый.results] == ["syntax"]
     assert поднятый.hit1 == исходный.hit1
+
+    payload = json.loads(путь.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == 1
+    assert payload["results"][0]["suite"] == "язык-запросов"
+    assert payload["results"][0]["domain"] == "syntax"
+
+
+def test_старый_отчёт_без_версии_явно_отклоняется(tmp_path):
+    путь = tmp_path / "старый.json"
+    путь.write_text(json.dumps({"results": []}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="schema_version.*перезапустите"):
+        load_report(путь)
+
+
+def test_отчёт_без_suite_и_domain_не_сохраняется(tmp_path):
+    report = Report(results=[CaseResult(query="A", expected=["B"], rank=0)])
+
+    with pytest.raises(ValueError, match="suite.*domain"):
+        save_report(report, tmp_path / "invalid.json")
+
+
+def test_наборы_имеют_единую_явную_схему():
+    язык = load_curated("query-language")
+    метаданные = load_curated("roznica-metadata")
+
+    assert язык.domain == "syntax"
+    assert метаданные.domain == "metadata"
+    assert язык.cases and метаданные.cases
+
+
+def test_старый_list_root_набор_явно_отклоняется(tmp_path, monkeypatch):
+    каталог = tmp_path / "queries"
+    каталог.mkdir()
+    (каталог / "old.json").write_text(
+        json.dumps([{"query": "A", "expected": ["B"]}]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("mcp1c.bench.QUERIES_DIR", каталог)
+
+    with pytest.raises(ValueError, match="schema_version.*domain.*cases"):
+        load_curated("old")
 
 
 def test_сравнение_называет_сдвинувшиеся_запросы():
@@ -171,13 +228,21 @@ def test_запросы_сверяются_по_тексту_а_не_по_пор
     движение там, где его нет.
     """
     было = Report(results=[
-        CaseResult(query="первый", expected=[], rank=0),
-        CaseResult(query="второй", expected=[], rank=3),
+        CaseResult(
+            query="первый", expected=[], rank=0, suite="a", domain="syntax"
+        ),
+        CaseResult(
+            query="второй", expected=[], rank=3, suite="a", domain="syntax"
+        ),
     ])
     # Тот же результат, но строки переставлены местами.
     стало = Report(results=[
-        CaseResult(query="второй", expected=[], rank=3),
-        CaseResult(query="первый", expected=[], rank=0),
+        CaseResult(
+            query="второй", expected=[], rank=3, suite="a", domain="syntax"
+        ),
+        CaseResult(
+            query="первый", expected=[], rank=0, suite="a", domain="syntax"
+        ),
     ])
 
     assert compare(было, стало) == []
@@ -185,13 +250,41 @@ def test_запросы_сверяются_по_тексту_а_не_по_пор
 
 def test_новый_запрос_ходом_не_считается():
     """Он не сдвинулся — его раньше не было, и сравнивать не с чем."""
-    было = Report(results=[CaseResult(query="старый", expected=[], rank=0)])
+    было = Report(results=[
+        CaseResult(
+            query="старый", expected=[], rank=0, suite="a", domain="syntax"
+        )
+    ])
     стало = Report(results=[
-        CaseResult(query="старый", expected=[], rank=0),
-        CaseResult(query="новый", expected=[], rank=2),
+        CaseResult(
+            query="старый", expected=[], rank=0, suite="a", domain="syntax"
+        ),
+        CaseResult(
+            query="новый", expected=[], rank=2, suite="a", domain="syntax"
+        ),
     ])
 
     assert compare(было, стало) == []
+
+
+def test_сравнение_не_склеивает_один_текст_между_доменами_и_наборами():
+    было = Report(results=[
+        CaseResult(query="Найти", expected=[], rank=0, suite="a", domain="syntax"),
+        CaseResult(query="Найти", expected=[], rank=1, suite="b", domain="metadata"),
+        CaseResult(query="Найти", expected=[], rank=2, suite="c", domain="procedures"),
+    ])
+    стало = Report(results=[
+        CaseResult(query="Найти", expected=[], rank=3, suite="a", domain="syntax"),
+        CaseResult(query="Найти", expected=[], rank=1, suite="b", domain="metadata"),
+        CaseResult(query="Найти", expected=[], rank=0, suite="c", domain="procedures"),
+    ])
+
+    ходы = compare(было, стало)
+
+    assert {(ход.suite, ход.domain, ход.before, ход.after) for ход in ходы} == {
+        ("a", "syntax", 0, 3),
+        ("c", "procedures", 2, 0),
+    }
 
 
 # --------------------------------------------------------------- пометки
@@ -229,3 +322,56 @@ def test_совпавшая_пометка_молчит():
     ])
 
     assert check_notes(отчёт) == []
+
+
+def test_машинные_ожидания_промаха_и_точного_места_сверяются():
+    отчёт = Report(results=[
+        CaseResult(
+            query="ожидали промах",
+            expected=[],
+            rank=2,
+            expected_miss=True,
+        ),
+        CaseResult(
+            query="ожидали седьмое",
+            expected=[],
+            rank=4,
+            expected_rank=6,
+        ),
+    ])
+
+    расхождения = check_notes(отчёт)
+
+    assert len(расхождения) == 2
+    assert "ожидали промах" in расхождения[0]
+    assert "место 3" in расхождения[0]
+    assert "ожидали седьмое" in расхождения[1]
+    assert "ожидалось 7" in расхождения[1]
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"expected_miss": "да"},
+        {"expected_rank": True},
+        {"expected_rank": -1},
+        {"expected_miss": True, "expected_rank": 6},
+    ],
+)
+def test_машинное_ожидание_места_валидируется(tmp_path, extra):
+    payload = {
+        "schema_version": 1,
+        "domain": "procedures",
+        "cases": [
+            {
+                "query": "проверка",
+                "expected": ["Проверить"],
+                **extra,
+            }
+        ],
+    }
+    path = tmp_path / "invalid-rank.json"
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="expected_(?:miss|rank)"):
+        load_cases(path)

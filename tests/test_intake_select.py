@@ -13,6 +13,7 @@ from mcp1c.intake import (
     detect_format,
     is_wanted,
     safe_target,
+    SELECTION_VERSION,
 )
 
 
@@ -26,9 +27,54 @@ def test_плоская_выгрузка_узнаётся_по_контейне�
     assert detect_format(имена) == FORMAT_FLAT
 
 
+def test_плоская_выгрузка_узнаётся_по_скомпилированному_общему_модулю():
+    имена = ["Configuration.xml", "CommonModules/Пример.Module"]
+
+    assert detect_format(имена) == FORMAT_FLAT
+
+
+def test_плоское_имя_скомпилированного_модуля_узнаётся_после_снятия_обёртки():
+    # `detect_format` получает ключи единой карты: обёртка уже снята.
+    имена = ["Configuration.xml", "CommonModule.Пример.Module"]
+
+    assert detect_format(имена) == FORMAT_FLAT
+
+
 def test_в_иерархической_берём_модули_и_формы():
     assert is_wanted("Catalogs/Товары/Ext/ObjectModule.bsl", FORMAT_TREE)
     assert is_wanted("Catalogs/Товары/Forms/Форма/Ext/Form.xml", FORMAT_TREE)
+
+
+def test_иерархический_отбор_сохраняет_доказательства_контейнерных_форм():
+    assert SELECTION_VERSION == 4
+    for name in (
+        "Documents/Заказ/Forms/Основная.xml",
+        "Documents/Заказ/Forms/Основная/Ext/Form.bin",
+        "CommonForms/Общая.xml",
+        "CommonForms/Общая/Ext/Form.bin",
+    ):
+        assert is_wanted(name, FORMAT_TREE), name
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Documents/Заказ.xml",
+        "Documents/Заказ/Ext/Form.bin",
+        "Documents/Заказ/Forms/Основная/Ext/Other.bin",
+        "Documents/Заказ/Forms/Основная/Form.bin",
+        "Unknown/Заказ/Forms/Основная.xml",
+        "CommonForms/Общая/Other/Form.bin",
+        "CommonCommands/Команда/Forms/Ложная.xml",
+        "HTTPServices/Сервис/Forms/Ложная/Ext/Form.bin",
+        "WebServices/Сервис/Forms/Ложная.xml",
+        "Sequences/Порядок/Forms/Ложная/Ext/Form.bin",
+        "SettingsStorages/Настройки/Forms/Ложная.xml",
+        "Other/Form.xml",
+    ],
+)
+def test_посторонние_xml_и_bin_не_проходят_иерархический_отбор(name):
+    assert not is_wanted(name, FORMAT_TREE)
 
 
 def test_балласт_не_берём():
@@ -38,6 +84,39 @@ def test_балласт_не_берём():
         "Catalogs/Товары.xml",
     ):
         assert not is_wanted(имя, FORMAT_TREE), имя
+
+
+def test_скомпилированный_общий_модуль_берётся_только_в_плоском_формате():
+    assert is_wanted("CommonModules/Пример.Module", FORMAT_FLAT)
+    assert not is_wanted("CommonModules/Пример.Module", FORMAT_TREE)
+    assert not is_wanted("Catalogs/Пример.Module", FORMAT_FLAT)
+    assert is_wanted("CommonModule.Пример.Module", FORMAT_FLAT)
+
+
+def test_канонический_регистр_скомпилированного_модуля_строгий():
+    assert not is_wanted("CommonModules/Пример.module", FORMAT_FLAT)
+    assert not is_wanted("CommonModules/Пример.MODULE", FORMAT_FLAT)
+    assert not is_wanted("commonmodules/Пример.Module", FORMAT_FLAT)
+    assert not is_wanted("commonModule.Пример.Module", FORMAT_FLAT)
+    assert not is_wanted("CommonModule.Пример.module", FORMAT_FLAT)
+    assert not is_wanted("CommonModules/Лишний/Пример.Module", FORMAT_FLAT)
+    assert not is_wanted("CommonModules/Пример.Лишний.Module", FORMAT_FLAT)
+
+
+@pytest.mark.parametrize(
+    "junk",
+    ["Junk/CommonModule.False.Module", "Junk/CommonModules/False.Module"],
+)
+def test_вложенный_неканонический_module_не_переключает_tree_в_flat(junk):
+    имена = ["Catalogs/Т/Ext/ObjectModule.bsl", junk]
+
+    assert detect_format(имена) == FORMAT_TREE
+
+
+def test_канонический_макет_исключён_но_настоящие_txt_остаются():
+    assert not is_wanted("Catalogs/Пример.Template.txt", FORMAT_FLAT)
+    assert is_wanted("Catalogs/Пример.template.txt", FORMAT_FLAT)
+    assert is_wanted("Catalogs/Пример.Module.txt", FORMAT_FLAT)
 
 
 def test_член_с_выходом_наружу_отвергается(tmp_path):
@@ -52,7 +131,7 @@ def test_обычный_член_ложится_внутрь_корня(tmp_path
 
 
 def test_ресурсная_вилка_finder_отвергается():
-    """Мелочь 3, ре-ревью: правило про `__MACOSX/` и правило про `._` —
+    """Регрессия совместного применения правил про `__MACOSX/` и `._`:
     два разных условия, и тест на архив «как Finder» бьёт сразу по обоим
     сразу (`__MACOSX/.../._ObjectModule.bsl`). Здесь — по одному отдельно:
     имя, начинающееся на `._`, отвергается вне `__MACOSX/` тоже."""

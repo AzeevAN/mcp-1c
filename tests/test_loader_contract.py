@@ -16,6 +16,9 @@ import zipfile
 import pytest
 
 from mcp1c.loader import ExportError, load
+from mcp1c.model import MetadataObject
+
+from conftest import build_configuration, write_export
 
 
 def _write_export(directory, objects: list[dict]):
@@ -143,3 +146,49 @@ def test_правильная_выгрузка_плана_видов_харак�
     assert obj.kind == "ПланВидовХарактеристик"
     assert obj.value_type is not None
     assert obj.value_type.types == ["Строка", "Число"]
+
+
+@pytest.mark.parametrize(
+    ("reuse", "expected"),
+    [("DuringCall", "DuringCall"), ("DontUse", "DontUse")],
+)
+def test_xml_свойства_общего_модуля_сохраняют_типы(tmp_path, reuse, expected):
+    """Булевы строки приводятся, а строковое перечисление не теряется."""
+    manifest = (
+        '<manifest schema_version="1" format="xml" name="Пример" version="1.0" '
+        'platform="8.3.23.1997" objects_total="1">'
+        '<files><item path="objects/common.xml" type="ОбщийМодуль" count="1"/></files>'
+        "</manifest>"
+    )
+    objects = (
+        '<objects><object full_name="ОбщийМодуль.Пример" type="ОбщийМодуль" '
+        'name="Пример" privileged="false" external_connection="false" '
+        f'return_values_reuse="{reuse}" server="true"/></objects>'
+    )
+    архив = tmp_path / "структура.zip"
+    with zipfile.ZipFile(архив, "w") as zf:
+        zf.writestr("manifest.xml", manifest)
+        zf.writestr("objects/common.xml", objects)
+
+    config = load(архив)
+    props = config.objects["ОбщийМодуль.Пример"].props
+
+    assert props["server"] is True
+    assert props["privileged"] is False
+    assert props["external_connection"] is False
+    assert props["return_values_reuse"] == expected
+
+
+@pytest.mark.parametrize("reuse", ["DuringCall", "DontUse"])
+def test_json_return_values_reuse_остаётся_строковым_enum(tmp_path, reuse):
+    config = build_configuration(name="Пример")
+    config.objects["ОбщийМодуль.Пример"] = MetadataObject(
+        full_name="ОбщийМодуль.Пример",
+        kind="ОбщийМодуль",
+        name="Пример",
+        props={"return_values_reuse": reuse},
+    )
+
+    loaded = load(write_export(tmp_path, config))
+
+    assert loaded.objects["ОбщийМодуль.Пример"].props["return_values_reuse"] == reuse

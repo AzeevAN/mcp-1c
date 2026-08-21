@@ -17,6 +17,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from mcp1c.model import Configuration, Field, MetadataObject, TabularPart
+from mcp1c.registry import Registry
 from mcp1c.search import Doc, SearchIndex
 from mcp1c.store import save_syntax
 from mcp1c.syntax_model import SyntaxIndex, SyntaxItem, SyntaxVariant
@@ -126,9 +127,55 @@ def sample_payloads() -> dict[str, str]:
     }
 
 
-def build_configuration(name: str = "ТестоваяКонфигурация") -> Configuration:
+@pytest.fixture
+def корень_кода(tmp_path):
+    """Выгрузка из четырёх модулей: общий, объект, форма, менеджер."""
+    общий = tmp_path / "CommonModules" / "ОбщийПример" / "Ext"
+    общий.mkdir(parents=True)
+    (общий / "Module.bsl").write_text(
+        "// Складывает два числа.\n"
+        "Функция Сложить(Первый, Второй) Экспорт\n"
+        "\tВозврат Первый + Второй;\n"
+        "КонецФункции\n"
+        "\n"
+        "Процедура Внутренняя()\n"
+        "\tСложить(1, 2);\n"
+        "КонецПроцедуры\n",
+        encoding="utf-8",
+    )
+    объект = tmp_path / "Documents" / "Пример" / "Ext"
+    объект.mkdir(parents=True)
+    (объект / "ObjectModule.bsl").write_text(
+        "Процедура ПриЗаписи(Отказ)\n"
+        "\tОбщийПример.Сложить(1, 2);\n"
+        "КонецПроцедуры\n",
+        encoding="utf-8",
+    )
+    форма = tmp_path / "Catalogs" / "Пример" / "Forms" / "ФормаЭлемента" / "Ext" / "Form"
+    форма.mkdir(parents=True)
+    (форма / "Module.bsl").write_text(
+        "&НаКлиенте\nПроцедура ПриОткрытии(Отказ)\nКонецПроцедуры\n", encoding="utf-8"
+    )
+    (форма.parent / "Form.xml").write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<Form><Events><Event name="OnOpen">ПриОткрытии</Event></Events>'
+        '<Attributes><Attribute name="Объект"/></Attributes>'
+        # Элемент формы нужен индексу форм. Не заводит новую
+        # процедуру: Module.bsl этой формы намеренно не тронут, иначе
+        # test_оглавление_видит_все_процедуры пришлось бы менять ради
+        # случая, который к оглавлению не относится.
+        '<ChildItems><UsualGroup name="ГруппаРеквизитов" id="1"/></ChildItems>'
+        "</Form>\n",
+        encoding="utf-8",
+    )
+    return tmp_path
+
+
+def build_configuration(
+    name: str = "ТестоваяКонфигурация", *, version: str = "1.0"
+) -> Configuration:
     """Конфигурация из двух объектов с реквизитами и табличной частью."""
-    config = Configuration(name=name, synonym="Тестовая", version="1.0", platform="8.3.23.1997")
+    config = Configuration(name=name, synonym="Тестовая", version=version, platform="8.3.23.1997")
     catalog = MetadataObject(
         full_name="Справочник.Контрагенты",
         kind="Справочник",
@@ -163,6 +210,7 @@ def write_export(directory: Path, config: Configuration) -> Path:
     for obj in config.objects.values():
         objects.append(
             {
+                **obj.props,
                 "full_name": obj.full_name,
                 "type": obj.kind,
                 "name": obj.name,
@@ -213,7 +261,10 @@ _NS_MDCLASSES = "http://v8.1c.ru/8.3/MDClasses"
 
 
 def modules_configuration_xml(
-    *, name: str = "Конфигурация", compatibility: str = "Version8_3_21"
+    *,
+    name: str = "Конфигурация",
+    compatibility: str = "Version8_3_21",
+    version: str = "",
 ) -> str:
     """`Configuration.xml` минимальной выгрузки в файлы — с непустым
     `CompatibilityMode`.
@@ -225,14 +276,101 @@ def modules_configuration_xml(
     при положительном правиле она не конфигурация и не расширение, а отказ.
     Единый помощник — чтобы восьмая копия `<x/>` не завелась снова в другом
     файле теста.
+
+    `version` — тег `Version`: версия конфигурации (или расширения) из
+    конфигуратора, не версия платформы. Пустая строка по умолчанию — тега
+    вовсе нет в разметке, как у реальной выгрузки без проставленной версии.
     """
+    версия = f"<Version>{version}</Version>" if version else ""
     return (
         f'<MetaDataObject xmlns="{_NS_MDCLASSES}">'
         '<Configuration uuid="00000000-0000-0000-0000-000000000000">'
-        f"<Properties><Name>{name}</Name><NamePrefix/>"
+        f"<Properties><Name>{name}</Name><NamePrefix/>{версия}"
         f"<CompatibilityMode>{compatibility}</CompatibilityMode></Properties>"
         "</Configuration></MetaDataObject>"
     )
+
+
+def extension_configuration_xml(name: str = "Доп") -> str:
+    """`Configuration.xml` минимального расширения для боевого `add_modules`."""
+    return (
+        f'<MetaDataObject xmlns="{_NS_MDCLASSES}">'
+        '<Configuration uuid="00000000-0000-0000-0000-000000000000">'
+        f"<Properties><Name>{name}</Name><NamePrefix>{name}_</NamePrefix>"
+        "<ObjectBelonging>Adopted</ObjectBelonging>"
+        "<ConfigurationExtensionPurpose>AddOn</ConfigurationExtensionPurpose>"
+        "</Properties></Configuration></MetaDataObject>"
+    )
+
+
+@pytest.fixture
+def архив_кода(tmp_path_factory):
+    """Пакует синтетическое дерево тем же форматом, что принимает Registry."""
+    счётчик = 0
+
+    def собрать(
+        корень: Path,
+        *,
+        version: str = "",
+        extension: str | None = None,
+    ) -> Path:
+        nonlocal счётчик
+        счётчик += 1
+        каталог = tmp_path_factory.mktemp(f"архив-кода-{счётчик}")
+        путь = каталог / ("расширение.zip" if extension else "модули.zip")
+        файлы = [файл for файл in sorted(корень.rglob("*")) if файл.is_file()]
+        with zipfile.ZipFile(путь, "w") as zf:
+            разметка = (
+                extension_configuration_xml(extension)
+                if extension
+                else modules_configuration_xml(version=version)
+            )
+            zf.writestr("Configuration.xml", разметка)
+            for файл in файлы:
+                zf.write(файл, файл.relative_to(корень).as_posix())
+        return путь
+
+    return собрать
+
+
+@pytest.fixture
+def реестр_из_кода(tmp_path_factory, архив_кода):
+    """Создаёт реестр только публичными путями загрузки конфигурации и кода."""
+    счётчик = 0
+
+    def собрать(
+        корень: Path,
+        *,
+        name: str = "Пример",
+        extension: str | None = None,
+        configuration: Configuration | None = None,
+        code_version: str = "",
+    ) -> Registry:
+        nonlocal счётчик
+        счётчик += 1
+        рабочий = tmp_path_factory.mktemp(f"tools-modules-{счётчик}")
+        входящее = рабочий / "incoming"
+        входящее.mkdir()
+        реестр = Registry(рабочий / "data")
+        configuration = configuration or build_configuration(name=name)
+        реестр.add_configuration(
+            write_export(входящее, configuration)
+        )
+        реестр.add_modules(
+            архив_кода(
+                корень, version=code_version, extension=extension
+            ),
+            configuration=configuration.name,
+        )
+        return реестр
+
+    return собрать
+
+
+@pytest.fixture
+def реестр_с_кодом(корень_кода, реестр_из_кода):
+    """Минимальная конфигурация с четырьмя реально разобранными модулями."""
+    return реестр_из_кода(корень_кода)
 
 
 def build_syntax(platform: str = "8.3.99.1") -> SyntaxIndex:

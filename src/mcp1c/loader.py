@@ -46,6 +46,8 @@ _BOOL_KEYS = frozenset(
         "server",
         "client_managed",
         "server_call",
+        "privileged",
+        "external_connection",
     }
 )
 

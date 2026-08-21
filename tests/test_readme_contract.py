@@ -1,0 +1,89 @@
+"""Проверки самосогласованности публичного README."""
+
+import re
+from pathlib import Path
+
+
+def test_счётчики_pytest_в_readme_совпадают():
+    текст = (Path(__file__).parents[1] / "README.md").read_text(encoding="utf-8")
+    статус = re.search(r"\| Тесты \|[^\n]*?, (\d+) \|", текст)
+    раздел = re.search(r"python -m pytest\s+# (\d+) тест(?:а|ов)?", текст)
+
+    assert статус is not None and раздел is not None
+    assert статус.group(1) == раздел.group(1)
+
+
+def test_список_исходников_называет_индексы_вызовов_и_форм():
+    текст = (Path(__file__).parents[1] / "README.md").read_text(encoding="utf-8")
+    дерево = текст.split("# 5. Как устроено", 1)[1].split("```", 2)[1]
+
+    assert "modules_index.py" in дерево
+    строка = next(line for line in дерево.splitlines() if "modules_index.py" in line)
+    assert "вызов" in строка.lower()
+    assert "форм" in строка.lower()
+    assert "get_callers" in строка
+
+
+def test_источник_кода_называет_обратный_поиск_и_события_форм():
+    текст = (Path(__file__).parents[1] / "README.md").read_text(encoding="utf-8")
+    раздел = текст.split("## Источники независимы", 1)[1].split("\n## ", 1)[0]
+    строки = [
+        line.lower()
+        for line in раздел.splitlines()
+        if line.startswith(("| Код конфигурации |", "| Код расширения |"))
+    ]
+
+    assert len(строки) == 2
+    assert "места вызовов" in строки[0]
+    assert "события форм" in строки[0]
+    assert "get_callers" in строки[0]
+    assert "места вызовов" in строки[1]
+
+
+def test_публичный_дизайн_языка_запросов_не_обещает_заглушку_индекса_кода():
+    текст = (
+        Path(__file__).parents[1] / "docs" / "query-language-design.md"
+    ).read_text(encoding="utf-8")
+
+    assert "Индекс модулей: не подключён" not in текст
+    assert "состояние индекса кода" in текст
+
+
+def test_readme_описывает_все_ключи_и_домены_стенда():
+    текст = (Path(__file__).parents[1] / "README.md").read_text(encoding="utf-8")
+    раздел = текст.split("## Замер качества поиска — `mcp1c.bench`", 1)[1]
+    раздел = раздел.split("\n## ", 1)[0]
+
+    for key in (
+        "--data",
+        "--sets",
+        "--auto",
+        "--config",
+        "--extension",
+        "--limit",
+        "--save",
+        "--baseline",
+        "--check-notes",
+    ):
+        assert key in раздел
+    assert "modules-procedures" in раздел
+    assert all(domain in раздел for domain in ("syntax", "metadata", "procedures"))
+
+
+def test_readme_фиксирует_воспроизводимый_baseline_трёх_процедурных_запросов():
+    текст = (Path(__file__).parents[1] / "README.md").read_text(encoding="utf-8")
+    раздел = текст.split("### Качество поиска", 1)[1].split("\n## ", 1)[0]
+    строка = next(
+        line for line in раздел.splitlines() if line.startswith("| Процедуры модулей |")
+    )
+
+    assert "| 3 | 0% | 0% | 0% | 33,3% | 0,047619 | 0% |" in строка
+    assert "2026-08-21" in раздел
+    assert "--sets modules-procedures" in раздел
+    assert "три ручных" in раздел.lower()
+    assert re.search(
+        r"вся таблица\s+снята.*точной командой выше",
+        раздел.lower(),
+        re.DOTALL,
+    )
+    assert "предваритель" not in раздел.lower()

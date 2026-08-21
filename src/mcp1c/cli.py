@@ -15,6 +15,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from . import tools
 from .graph import Graph
 from .loader import ExportError, inspect, load
 from .registry import Registry, RegistryError
@@ -133,6 +134,17 @@ def _registry(args: argparse.Namespace) -> Registry:
     return registry
 
 
+def _registry_for_code(args: argparse.Namespace) -> Registry:
+    """Холодный одноразовый CLI ждёт кэш, сервер продолжает отвечать фоном."""
+    registry = _registry(args)
+    if not registry.wait_for_module_builds(timeout=90.0):
+        raise RegistryError(
+            "Индекс кода не успел построиться за 90 секунд. "
+            "Повторите команду: готовый кэш будет поднят при следующем запуске."
+        )
+    return registry
+
+
 def _cmd_reg_add(args: argparse.Namespace) -> int:
     registry = Registry(args.data)
     registry.restore()
@@ -152,22 +164,22 @@ def _cmd_reg_add(args: argparse.Namespace) -> int:
 
 def _cmd_reg_list(args: argparse.Namespace) -> int:
     registry = _registry(args)
-    rows = registry.overview()
-    if not rows:
+    snapshot = tools.configurations_snapshot(registry)
+    if not snapshot.rows:
         # Конфигураций нет — но справки могут быть загружены, и тогда сервер
         # работает: `search_syntax` и `get_syntax` отвечают. Тот же класс
         # дефекта уже чинили в `list_configurations`; здесь ветка «ничего не
         # загружено» срабатывала раньше проверки источников и возвращала ещё
         # и код 1, то есть скрипт вокруг считал бы это отказом.
         источники = []
-        if registry.syntax is not None and registry.syntax.syntax.platforms:
+        if snapshot.syntax_platforms:
             источники.append(
-                f"справка платформы {registry.syntax.source.platform}, "
-                f"{len(registry.syntax.syntax)} элементов"
+                f"справка платформы {snapshot.syntax_source_platform}, "
+                f"{snapshot.syntax_items} элементов"
             )
-        if registry.query_source is not None:
+        if snapshot.query_pages is not None:
             источники.append(
-                f"язык запросов, {registry.query_source.items_total} страниц"
+                f"язык запросов, {snapshot.query_pages} страниц"
             )
         if not источники:
             print("Ничего не загружено.")
@@ -178,38 +190,48 @@ def _cmd_reg_list(args: argparse.Namespace) -> int:
         print("Работают search_syntax и get_syntax, без фильтра по версии.")
         return 0
 
-    for row in rows:
-        print(f"{row['name']}  {row['version']}  платформа {row['platform']}")
-        print(f"  объектов {row['objects']}, связей {row['edges']}, загружено {row['loaded_at']}")
-        syntax = row["providers"]["syntax"]
+    for row in snapshot.rows:
+        print(f"{row.name}  {row.version}  платформа {row.platform}")
+        print(
+            f"  объектов {row.objects}, связей {row.edges}, "
+            f"загружено {row.loaded_at}"
+        )
         print(f"  метаданные : да")
         # `providers['syntax']` истинно и когда подключён только язык
         # запросов: `LoadedSyntax` собирает оба источника в один объект. У
         # языка запросов платформы нет, `syntax_platform` тогда пуст, и строка
         # выходила противоречивой — «справка , не подключён». Тот же баг-паттерн
         # чинили в `list_configurations`, в CLI он оставался.
-        if syntax and row["syntax_platform"]:
+        if row.syntax_present and row.syntax_platform:
             отношение = _RELATION_TITLES.get(
-                row["syntax_relation"], row["syntax_relation"]
+                row.syntax_relation, row.syntax_relation
             )
-            скрыто = f", скрыто {row['syntax_hidden']}" if row["syntax_hidden"] else ""
-            состояние = f"справка {row['syntax_platform']}, {отношение}{скрыто}"
+            скрыто = f", скрыто {row.syntax_hidden}" if row.syntax_hidden else ""
+            состояние = f"справка {row.syntax_platform}, {отношение}{скрыто}"
         else:
             состояние = "не подключён"
         print(f"  синтаксис  : {состояние}")
-        print(f"  модули     : {'да' if row['providers']['modules'] else 'не подключены'}")
+        for state in row.code:
+            label = (
+                "модули"
+                if state.corpus == "Основная конфигурация"
+                else "расширение " + state.corpus.removeprefix("Расширение ")
+            )
+            print(f"  {label:<11}: {state.state}")
+            for line in tools.code_coverage_lines(state.coverage):
+                print(f"    {line}")
         # Язык запросов — самостоятельный источник, не версия справки
-        # платформы (`registry.query_source`, а не `row['providers']`), и
-        # без отдельной строки в общем списке был не виден вовсе.
+        # платформы. Берём счётчик из того же снимка, а не перечитываем
+        # `registry.query_source` после долгой подготовки строк.
         print(
             "  язык запросов: "
             + (
-                f"подключён, {registry.query_source.items_total} страниц"
-                if registry.query_source is not None
+                f"подключён, {snapshot.query_pages} страниц"
+                if snapshot.query_pages is not None
                 else "не подключён"
             )
         )
-        for note in row["notes"]:
+        for note in row.notes:
             print(f"  ! {note}")
         print()
     return 0
@@ -263,6 +285,53 @@ def _cmd_reg_search(args: argparse.Namespace) -> int:
 
     for note in context.notes():
         print(f"! {note}", file=sys.stderr)
+    return 0
+
+
+def _cmd_reg_search_procedures(args: argparse.Namespace) -> int:
+    """CLI-зеркало MCP `search_procedures` без второго пути рендера."""
+    registry = _registry_for_code(args)
+    print(
+        tools.search_procedures(
+            registry,
+            args.query,
+            args.config,
+            args.extension,
+            args.scope,
+            args.limit,
+        )
+    )
+    return 0
+
+
+def _cmd_reg_get_procedure(args: argparse.Namespace) -> int:
+    """CLI-зеркало MCP `get_procedure` с теми же границами окна."""
+    registry = _registry_for_code(args)
+    print(
+        tools.get_procedure(
+            registry,
+            args.address,
+            args.config,
+            args.extension,
+            args.start_line,
+            args.lines,
+        )
+    )
+    return 0
+
+
+def _cmd_reg_get_callers(args: argparse.Namespace) -> int:
+    """CLI-зеркало MCP `get_callers`, включая честные предупреждения."""
+    registry = _registry_for_code(args)
+    print(
+        tools.get_callers(
+            registry,
+            args.address,
+            args.config,
+            args.extension,
+            args.limit,
+        )
+    )
     return 0
 
 
@@ -418,6 +487,41 @@ def main(argv: list[str] | None = None) -> int:
             sp.add_argument("--syntax", action="store_true", help="искать в справке")
             sp.add_argument("--limit", type=int, default=10)
         sp.set_defaults(handler=handler)
+
+    search_procedures = sub.add_parser(
+        "reg-search-procedures",
+        help="найти процедуры в загруженном коде",
+    )
+    search_procedures.add_argument("query", help="имя или слова о назначении")
+    search_procedures.add_argument("--data", default="data")
+    search_procedures.add_argument("--config", default=None)
+    search_procedures.add_argument("--extension", default=None)
+    search_procedures.add_argument("--scope", default=None)
+    search_procedures.add_argument("--limit", type=int, default=10)
+    search_procedures.set_defaults(handler=_cmd_reg_search_procedures)
+
+    get_procedure = sub.add_parser(
+        "reg-get-procedure",
+        help="показать оглавление модуля или тело процедуры",
+    )
+    get_procedure.add_argument("address", help="адрес модуля или Модуль::Имя")
+    get_procedure.add_argument("--data", default="data")
+    get_procedure.add_argument("--config", default=None)
+    get_procedure.add_argument("--extension", default=None)
+    get_procedure.add_argument("--start-line", type=int, default=0)
+    get_procedure.add_argument("--lines", type=int, default=200)
+    get_procedure.set_defaults(handler=_cmd_reg_get_procedure)
+
+    get_callers = sub.add_parser(
+        "reg-get-callers",
+        help="показать места вызова точной процедуры",
+    )
+    get_callers.add_argument("address", help="точный адрес Модуль::Имя")
+    get_callers.add_argument("--data", default="data")
+    get_callers.add_argument("--config", default=None)
+    get_callers.add_argument("--extension", default=None)
+    get_callers.add_argument("--limit", type=int, default=20)
+    get_callers.set_defaults(handler=_cmd_reg_get_callers)
 
     args = parser.parse_args(argv)
     try:

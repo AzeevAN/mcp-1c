@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from conftest import build_configuration, modules_configuration_xml, write_export
-from mcp1c.registry import KIND_CONFIGURATION, KIND_MODULES, Registry
+from mcp1c.registry import KIND_CONFIGURATION, KIND_MODULES, Registry, RegistryError
 
 
 def _выгрузка_в_файлы(tmp_path: Path) -> Path:
@@ -233,10 +233,10 @@ def test_архив_с_членами_наружу_не_даёт_пустой_и
     на диск не ложится ничего. Без проверки после распаковки завёлся бы
     источник со `status=ready` при пустом каталоге.
 
-    Распаковка идёт во временный каталог и меняется местами со старым только
-    после успеха (`_extract_code`) — пустой результат до замены не доходит
-    вовсе, поэтому прежний разбор остаётся на месте, а не сносится вслед за
-    неудачной попыткой.
+    Распаковка идёт во временный каталог (`_extract_to_temp`) и меняется
+    местами со старым только после успеха (`_swap_code`) — пустой результат
+    до замены не доходит вовсе, поэтому прежний разбор остаётся на месте, а
+    не сносится вслед за неудачной попыткой.
     """
     from mcp1c.registry import RegistryError
 
@@ -307,9 +307,8 @@ def test_платформа_модулей_пустая_если_у_конфиг
     assert модули.platform == ""
 
 
-def test_гонка_снятия_конфигурации_не_роняет_разбор(tmp_path, monkeypatch):
-    """Между `extract` (секунды в отдельном потоке) и записью источника
-    конфигурацию мог снять параллельный запрос — не голый `KeyError`."""
+def test_гонка_снятия_конфигурации_отменяет_разбор(tmp_path, monkeypatch):
+    """Снятие во время extract не оставляет код без конфигурации."""
     from mcp1c import intake
 
     registry = _реестр_с_конфигурацией(tmp_path)
@@ -322,8 +321,11 @@ def test_гонка_снятия_конфигурации_не_роняет_ра
 
     monkeypatch.setattr(intake, "extract", подмена)
 
-    модули = registry.add_modules(_выгрузка_в_файлы(tmp_path), configuration="Розница")
+    with pytest.raises(RegistryError, match="разбор отменён"):
+        registry.add_modules(
+            _выгрузка_в_файлы(tmp_path), configuration="Розница"
+        )
 
-    assert модули.platform == ""
-    assert "Розница:modules" in registry.sources
+    assert "Розница:modules" not in registry.sources
     assert "Розница" not in registry.configurations
+    assert not registry._modules_root("Розница").exists()

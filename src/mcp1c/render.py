@@ -12,6 +12,10 @@
 
 from __future__ import annotations
 
+import json
+import re
+from dataclasses import dataclass
+
 from .graph import Graph
 from .model import Configuration, Field, MetadataObject
 from .syntax_model import (
@@ -23,6 +27,434 @@ from .syntax_model import (
 
 BRIEF, FIELDS, FULL = "brief", "fields", "full"
 DETAIL_LEVELS = (BRIEF, FIELDS, FULL)
+
+
+@dataclass(frozen=True, slots=True)
+class ProcedureMatch:
+    """Одна строка поиска по коду, уже дочитанная с диска для ответа."""
+
+    address: str
+    signature: str
+    exported: bool
+    function: bool
+    line: int
+    calls: int
+    unresolved_calls: int
+    annotated: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ProcedureOutline:
+    """Строка оглавления модуля, дочитанная с диска."""
+
+    address: str
+    signature: str
+    exported: bool
+    function: bool
+    line: int
+    calls: int
+    directive: str = ""
+    events: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class CallerSite:
+    """Одно место вызова с владельцем, выведенным из оглавления."""
+
+    module: str
+    line: int
+    owner: str | None
+    partial_owner: bool = False
+    ambiguous_owner: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class MetadataBinding:
+    """Привязка процедуры подпиской или регламентным заданием."""
+
+    kind: str
+    source: str
+
+
+@dataclass(frozen=True, slots=True)
+class FormHandlerBinding:
+    """Событие формы и элемент; ``element=None`` означает саму форму."""
+
+    element: str | None
+    event: str
+
+
+def _code_warnings(warnings: list[str]) -> list[str]:
+    """Предупреждения стоят над кодом, достоверность которого меняют."""
+    if not warnings:
+        return []
+    return [*(f"> ⚠ {warning}" for warning in warnings), ""]
+
+
+def _code_fence(body: list[str]) -> str:
+    """Граница Markdown длиннее любой последовательности обратных кавычек."""
+    longest = max(
+        (
+            len(match.group())
+            for line in body
+            for match in re.finditer(r"`+", line)
+        ),
+        default=0,
+    )
+    return "`" * max(3, longest + 1)
+
+
+def render_module_toc(
+    configuration: str,
+    module: str,
+    procedures: list[ProcedureOutline],
+    *,
+    warnings: list[str],
+    extension: str | None = None,
+) -> str:
+    """Оглавление без тела: модуль может занимать десятки килобайт."""
+    источник = (
+        f"расширение {extension} конфигурации {configuration}"
+        if extension
+        else f"конфигурация {configuration}"
+    )
+    out = _code_warnings(warnings)
+    out.extend([f"# Оглавление `{module}`", "", f"Источник: {источник}.", ""])
+    if not procedures:
+        out.append("В модуле нет разобранных процедур и функций.")
+    for item in procedures:
+        вид = "функция" if item.function else "процедура"
+        доступ = "экспортная" if item.exported else "неэкспортная"
+        дополнения = []
+        if item.directive:
+            дополнения.append(f"&{item.directive}")
+        if item.events:
+            дополнения.append("обработчик: " + ", ".join(item.events))
+        хвост = f" · {' · '.join(дополнения)}" if дополнения else ""
+        out.append(
+            f"- `{item.address}` — {вид} · {доступ} · строка {item.line} "
+            f"· подтверждённых мест вызова: {item.calls}{хвост}"
+        )
+        out.append(f"  Сигнатура: `{item.signature}`")
+    return "\n".join(out).rstrip() + "\n"
+
+
+def render_procedure_card(
+    configuration: str,
+    address: str,
+    *,
+    signature: str,
+    compilation: list[str],
+    body: list[str],
+    start_line: int,
+    lines: int,
+    warnings: list[str],
+    annotation: tuple[str, str] | tuple[()] = (),
+    extension: str | None = None,
+) -> str:
+    """Карточка и окно тела с готовым следующим вызовом."""
+    out = _code_warnings(warnings)
+    out.extend([f"# `{address}`", "", f"Сигнатура: `{signature}`"])
+    if annotation:
+        вид, цель = annotation
+        цель_текст = f'("{цель}")' if цель else ""
+        out.append(f"Аннотация расширения: `&{вид}{цель_текст}`.")
+    if compilation:
+        out.append("Контекст компиляции: " + ", ".join(compilation) + ".")
+    out.extend(["", "## Тело", ""])
+
+    конец = min(len(body), start_line + lines)
+    окно = body[start_line:конец]
+    if окно:
+        граница = _code_fence(окно)
+        out.extend([f"{граница}bsl", *окно, граница])
+    else:
+        out.append(
+            f"Запрошено start_line={start_line}, но в теле всего "
+            f"{len(body)} строк."
+        )
+
+    if конец < len(body):
+        аргументы = [
+            f"address={json.dumps(address, ensure_ascii=False)}"
+        ]
+        if configuration:
+            аргументы.append(
+                f"config={json.dumps(configuration, ensure_ascii=False)}"
+            )
+        if extension:
+            аргументы.append(
+                f"extension={json.dumps(extension, ensure_ascii=False)}"
+            )
+        аргументы.extend([f"start_line={конец}", f"lines={lines}"])
+        out.extend(
+            [
+                "",
+                f"Показаны строки {start_line}–{конец - 1} из {len(body)}. "
+                "Продолжение:",
+                f"`get_procedure({', '.join(аргументы)})`",
+            ]
+        )
+    return "\n".join(out).rstrip() + "\n"
+
+
+def render_procedure_search(
+    configuration: str,
+    query: str,
+    *,
+    exact: list[ProcedureMatch],
+    exact_total: int,
+    exact_more_modules: int,
+    words: list[ProcedureMatch],
+    words_more: bool,
+    limit: int,
+    extension: str | None = None,
+) -> str:
+    """Два уровня поиска не смешиваются: точное имя и поиск по словам."""
+    источник = (
+        f"расширении {extension} конфигурации {configuration}"
+        if extension
+        else f"конфигурации {configuration}"
+    )
+    out = [f"# Процедуры в {источник}: «{query}»", ""]
+
+    неразрешённые: dict[str, int] = {}
+    for совпадение in [*exact, *words]:
+        имя = совпадение.address.rpartition("::")[2]
+        if совпадение.unresolved_calls:
+            неразрешённые[имя] = совпадение.unresolved_calls
+    for имя, количество in неразрешённые.items():
+        out.append(
+            f"> Для имени `{имя}` цель части вызовов не удалось разрешить: "
+            f"{количество}. Счётчики ниже показывают только подтверждённые "
+            "места вызова конкретного модуля."
+        )
+    if неразрешённые:
+        out.append("")
+
+    def раздел(заголовок: str, совпадения: list[ProcedureMatch]) -> None:
+        out.extend([f"## {заголовок} ({len(совпадения)})", ""])
+        for совпадение in совпадения:
+            вид = "функция" if совпадение.function else "процедура"
+            доступ = "экспортная" if совпадение.exported else "неэкспортная"
+            свойства = [вид, доступ, f"строка {совпадение.line}"]
+            свойства.append(
+                f"подтверждённых мест вызова: {совпадение.calls}"
+            )
+            if совпадение.unresolved_calls:
+                свойства.append(
+                    f"одноимённых без разрешённой цели: "
+                    f"{совпадение.unresolved_calls}"
+                )
+            if совпадение.annotated:
+                свойства.append("есть аннотация расширения")
+            out.append(f"- `{совпадение.address}` — {' · '.join(свойства)}")
+            out.append(f"  Сигнатура: `{совпадение.signature}`")
+        out.append("")
+
+    if exact:
+        раздел("Точное имя", exact)
+        осталось = exact_total - len(exact)
+        if осталось:
+            out.extend(
+                [
+                    f"Показан предел; есть ещё {осталось} в "
+                    f"{exact_more_modules} модулях.",
+                    "",
+                ]
+            )
+    if words:
+        раздел("По словам (только экспортные)", words)
+        if words_more:
+            подсказка = (
+                "Достигнут максимум `limit=50`; уточните `query` или `scope`."
+                if limit >= 50
+                else "Есть ещё результаты; увеличьте `limit`."
+            )
+            out.extend([подсказка, ""])
+
+    return "\n".join(out).rstrip() + "\n"
+
+
+def render_callers(
+    configuration: str,
+    address: str,
+    *,
+    code_sites: list[CallerSite],
+    confirmed_total: int,
+    omitted_modules: int,
+    unresolved_sites: list[CallerSite],
+    unresolved_total: int,
+    metadata: list[MetadataBinding],
+    form_bindings: list[FormHandlerBinding],
+    form_state: str,
+    warnings: list[str],
+    extension: str | None = None,
+) -> str:
+    """Три независимых источника обратных связей, без ложного объединения."""
+    источник = (
+        f"расширение {extension} конфигурации {configuration}"
+        if extension
+        else f"конфигурация {configuration}"
+    )
+    out = _code_warnings(warnings)
+    out.extend([f"# Кто вызывает `{address}`", "", f"Источник кода: {источник}.", ""])
+
+    def владелец(site: CallerSite) -> str:
+        if site.ambiguous_owner:
+            return "владелец не разрешён по границам строки"
+        if site.owner is not None:
+            return f"`{site.owner}`"
+        if site.partial_owner:
+            return (
+                "точный владелец неизвестен: граница частично "
+                "разобранной процедуры не найдена"
+            )
+        return "вне тел разобранных процедур"
+
+    out.extend(["## Места вызова в коде", ""])
+    if unresolved_sites:
+        out.append(
+            f"> Для одноимённой процедуры найдено мест, где цель не удалось "
+            f"разрешить до модуля: {unresolved_total}. Они не входят в число "
+            "подтверждённых мест и не приписаны запрошенному адресу."
+        )
+        out.append("")
+    elif unresolved_total:
+        out.extend(
+            [
+                f"> Для одноимённой процедуры найдено мест без разрешённой "
+                f"цели: {unresolved_total}. Предел занят подтверждёнными "
+                "местами, поэтому ниже показан только этот счётчик.",
+                "",
+            ]
+        )
+
+    if code_sites:
+        out.extend([f"Подтверждённых мест: {confirmed_total}.", ""])
+        текущий = None
+        for site in code_sites:
+            if site.module != текущий:
+                текущий = site.module
+                out.extend([f"### `{site.module}`", ""])
+            out.append(f"- строка {site.line} — {владелец(site)}")
+        out.append("")
+    elif unresolved_total:
+        out.extend(
+            [
+                "Подтверждённых мест именно для запрошенного модуля нет; "
+                "есть только одноимённые места без разрешённой цели.",
+                "",
+            ]
+        )
+    else:
+        out.extend(["Мест вызова в коде нет.", ""])
+
+    if confirmed_total > len(code_sites):
+        out.extend(
+            [
+                f"Показан предел; есть ещё {confirmed_total - len(code_sites)} "
+                f"в {omitted_modules} модулях.",
+                "",
+            ]
+        )
+
+    if unresolved_total:
+        out.extend(["Одноимённые места без подтверждённой цели:", ""])
+        for site in unresolved_sites:
+            out.append(
+                f"- `{site.module}`: строка {site.line} — {владелец(site)}"
+            )
+        if unresolved_sites:
+            out.append("")
+        if unresolved_total > len(unresolved_sites):
+            out.extend(
+                [
+                    f"Есть ещё {unresolved_total - len(unresolved_sites)} "
+                    "одноимённых мест без подтверждённой цели.",
+                    "",
+                ]
+            )
+
+    out.extend(["## Привязки из метаданных", ""])
+    if metadata:
+        if extension:
+            out.extend(
+                [
+                    "Привязки ниже взяты из метаданных основной конфигурации; "
+                    "сама привязка не доказывает, что тело выбранного "
+                    "расширения выполняется. Это зависит от состава "
+                    "заимствования и аннотации; код других расширений в "
+                    "ответ не добавлен.",
+                    "",
+                ]
+            )
+        подписи = {
+            "handler": "подписка на событие",
+            "method": "регламентное задание",
+        }
+        for binding in metadata:
+            out.append(
+                f"- {подписи[binding.kind]} `{binding.source}` → `{address}`"
+            )
+        out.append("")
+    else:
+        out.extend(["Привязок в метаданных нет.", ""])
+
+    out.extend(["## Обработчик формы", ""])
+    if form_bindings:
+        for binding in form_bindings:
+            владелец = "форма" if binding.element is None else f"элемент `{binding.element}`"
+            out.append(f"- {владелец}: событие `{binding.event}`")
+        out.append("")
+    elif form_state == "not_form":
+        out.extend(["Запрошенный модуль не является модулем формы.", ""])
+    elif form_state == "missing":
+        out.extend(
+            [
+                "Для модуля формы нет структуры Form.xml; доступен только его код.",
+                "",
+            ]
+        )
+    elif form_state == "broken":
+        out.extend(["Структура Form.xml повреждена; привязки прочитать нельзя.", ""])
+    elif form_state == "partial_broken":
+        out.extend(
+            [
+                "Доказательство структуры формы повреждено; привязки событий "
+                "не доказаны.",
+                "",
+            ]
+        )
+    elif form_state == "partial":
+        out.extend(
+            [
+                "Форма прочитана частично; семантика привязок событий не "
+                "доказана.",
+                "",
+            ]
+        )
+    else:
+        out.extend(["Процедура не назначена обработчиком события формы.", ""])
+
+    if (
+        confirmed_total == 0
+        and unresolved_total == 0
+        and not metadata
+        and not form_bindings
+        and form_state in ("ready", "not_form")
+    ):
+        out.extend(
+            [
+                "Мест вызова и привязок нет. Это не значит, что процедуру не "
+                "вызывают: динамические вызовы строкой (`Выполнить`, "
+                "`ОписаниеОповещения`, `ПодключитьОбработчикОжидания`) не "
+                "индексируются.",
+                "",
+            ]
+        )
+    return "\n".join(out).rstrip() + "\n"
+
 
 # Понятные подписи свойств объектов.
 _PROP_TITLES = {

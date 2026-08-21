@@ -3,7 +3,7 @@
 Домен специфический, и это определяет устройство движка.
 
 **Имена — склеенные слова.** `РеализацияТоваровУслуг`, `ЗаписьJSON`,
-`люч_Скупка`. Поэтому идентификаторы режутся по границам регистра, и запрос
+`лок_ОбъектА`. Поэтому идентификаторы режутся по границам регистра, и запрос
 «реализация товаров» находит объект, в имени которого нет ни одного пробела.
 
 **Русская морфология.** «накладная» и «накладной» — одно слово. Полноценный
@@ -517,13 +517,100 @@ class SearchIndex:
         Словарь (`synonyms`, `aliases`) в выгрузке не участвует: он читается
         только в момент поиска, на постинги не влияет и меняется чаще индекса.
         """
+        if not isinstance(state, dict) or not isinstance(payloads, dict):
+            raise ValueError("состояние поискового индекса некорректно")
+        doc_ids = state["doc_ids"]
+        kinds = state["kinds"]
+        if (
+            not isinstance(doc_ids, list)
+            or any(not isinstance(item, str) or not item for item in doc_ids)
+            or len(set(doc_ids)) != len(doc_ids)
+            or not isinstance(kinds, list)
+            or len(kinds) != len(doc_ids)
+            or any(not isinstance(item, str) for item in kinds)
+            or len(set(kinds)) > 256
+        ):
+            raise ValueError("таблица документов поискового индекса некорректна")
+        count = len(doc_ids)
+
+        def байты(ключ: str) -> bytes:
+            value = state[ключ]
+            if not isinstance(value, bytes):
+                raise ValueError("массив поискового индекса имеет неверный тип")
+            return value
+
+        boost = np.frombuffer(байты("boost"), dtype=np.float64)
+        length = np.frombuffer(байты("length"), dtype=np.int32)
+        if (
+            boost.size != count
+            or length.size != count
+            or not np.all(np.isfinite(boost))
+            or np.any(length <= 0)
+        ):
+            raise ValueError("массивы документов поискового индекса расходятся")
+
+        def постинги(prefix: str):
+            keys = state[f"{prefix}_keys"]
+            if (
+                not isinstance(keys, list)
+                or any(not isinstance(key, str) or not key for key in keys)
+                or len(set(keys)) != len(keys)
+            ):
+                raise ValueError("ключи постингов поискового индекса некорректны")
+            edges = np.frombuffer(байты(f"{prefix}_bounds"), dtype=np.int64)
+            docs = np.frombuffer(байты(f"{prefix}_docs"), dtype=np.int32)
+            posting_weights = np.frombuffer(
+                байты(f"{prefix}_weights"), dtype=np.float64
+            )
+            if (
+                edges.size != len(keys) + 1
+                or edges[0] != 0
+                or edges[-1] != docs.size
+                or np.any(edges[1:] < edges[:-1])
+                or docs.size != posting_weights.size
+                or np.any(docs < 0)
+                or np.any(docs >= count)
+                or not np.all(np.isfinite(posting_weights))
+            ):
+                raise ValueError("постинги поискового индекса некорректны")
+            return keys, edges, docs, posting_weights
+
+        token_keys, token_edges, token_docs, token_weights = постинги("token")
+        stem_keys, stem_edges, stem_docs, stem_weights = постинги("stem")
+        exact = state["exact"]
+        if not isinstance(exact, dict):
+            raise ValueError("точный индекс имеет неверный тип")
+        for key, positions in exact.items():
+            if (
+                not isinstance(key, str)
+                or not key
+                or not isinstance(positions, list)
+                or any(type(position) is not int for position in positions)
+                or len(set(positions)) != len(positions)
+                or any(position < 0 or position >= count for position in positions)
+            ):
+                raise ValueError("точный индекс содержит неверную ссылку")
+        weights = state["weights"]
+        exact_fields = state["exact_fields"]
+        if (
+            not isinstance(weights, dict)
+            or any(
+                not isinstance(key, str)
+                or type(value) not in (int, float)
+                or not np.isfinite(value)
+                for key, value in weights.items()
+            )
+            or not isinstance(exact_fields, list)
+            or any(not isinstance(item, str) for item in exact_fields)
+            or len(set(exact_fields)) != len(exact_fields)
+        ):
+            raise ValueError("настройки поискового индекса некорректны")
+
         index = cls.__new__(cls)
-        index.weights = dict(state["weights"])
-        index.exact_fields = set(state["exact_fields"])
+        index.weights = dict(weights)
+        index.exact_fields = set(exact_fields)
         index.synonyms = SYNONYMS if synonyms is None else synonyms
         index.aliases = aliases or {}
-
-        doc_ids = list(state["doc_ids"])
         index._doc_ids = doc_ids
         index._position = {doc_id: i for i, doc_id in enumerate(doc_ids)}
         index.docs = {
@@ -532,37 +619,38 @@ class SearchIndex:
             doc_id: Doc(
                 id=doc_id,
                 kind=kind,
-                boost=float(boost),
+                boost=float(doc_boost),
                 payload=payloads.get(doc_id),
                 fields=_NO_FIELDS,
                 exact_keys=_NO_KEYS,
             )
-            for doc_id, kind, boost in zip(
-                doc_ids,
-                state["kinds"],
-                np.frombuffer(state["boost"], dtype=np.float64),
-            )
+            for doc_id, kind, doc_boost in zip(doc_ids, kinds, boost, strict=True)
         }
 
-        index._boost = np.frombuffer(state["boost"], dtype=np.float64)
-        index._length = np.frombuffer(state["length"], dtype=np.int32)
-        index._token_docs = np.frombuffer(state["token_docs"], dtype=np.int32)
-        index._token_weights = np.frombuffer(state["token_weights"], dtype=np.float64)
-        index._stem_docs = np.frombuffer(state["stem_docs"], dtype=np.int32)
-        index._stem_weights = np.frombuffer(state["stem_weights"], dtype=np.float64)
-        index._token_span = _spans(state["token_keys"], state["token_bounds"])
-        index._stem_span = _spans(state["stem_keys"], state["stem_bounds"])
+        index._boost = boost
+        index._length = length
+        index._token_docs = token_docs
+        index._token_weights = token_weights
+        index._stem_docs = stem_docs
+        index._stem_weights = stem_weights
+        index._token_span = {
+            key: (int(token_edges[i]), int(token_edges[i + 1]))
+            for i, key in enumerate(token_keys)
+        }
+        index._stem_span = {
+            key: (int(stem_edges[i]), int(stem_edges[i + 1]))
+            for i, key in enumerate(stem_keys)
+        }
         index._stems = sorted(index._stem_span)
-        index._exact = {key: list(ids) for key, ids in state["exact"].items()}
+        index._exact = {key: list(ids) for key, ids in exact.items()}
 
-        count = len(doc_ids)
         ranks = np.empty(count, dtype=np.int32)
         for rank, position in enumerate(sorted(range(count), key=doc_ids.__getitem__)):
             ranks[position] = rank
         index._lex_rank = ranks
 
         index._kind_masks = {}
-        for position, kind in enumerate(state["kinds"]):
+        for position, kind in enumerate(kinds):
             mask = index._kind_masks.get(kind)
             if mask is None:
                 mask = index._kind_masks[kind] = np.zeros(count, dtype=bool)

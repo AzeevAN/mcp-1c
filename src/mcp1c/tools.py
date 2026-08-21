@@ -20,6 +20,7 @@ from dataclasses import dataclass
 
 from . import replacements
 from .bsl_lex import Процедура, прочитать_модуль, разобрать
+from .module_content import ModuleLocator, read_bsl
 from .module_address import путь_модуля
 from .registry import (
     KIND_EXTENSION,
@@ -55,6 +56,10 @@ from .syntax_model import (
     release,
 )
 from .virtual_tables import virtual_tables
+
+
+_ИСХОДНЫЙ_ЧИТАТЕЛЬ_МОДУЛЯ = прочитать_модуль
+
 
 def health(registry: Registry, *, detailed: bool) -> dict:
     """Тело ответа `/health`: живость и состав источников.
@@ -1418,6 +1423,22 @@ def _сигнатура_из_текста(текст: str, процедура: �
     return " ".join(часть.strip() for часть in части if часть.strip())
 
 
+def _прочитать_тело_модуля(loaded: LoadedModules, модуль: str) -> str:
+    """Единая граница чтения; каталог подменяет файловый fallback-локатор."""
+    locator_for = getattr(loaded.оглавление, "локатор", None)
+    locator = (
+        locator_for(модуль)
+        if locator_for is not None
+        else ModuleLocator.file(путь_модуля(модуль))
+    )
+    # Старые проверки подменяют этот символ, чтобы синхронизировать смену
+    # поколения посреди чтения. В рабочем процессе всегда действует
+    # защищённый reader локатора; подмена остаётся узким тестовым seam.
+    if locator.kind == "file" and прочитать_модуль is not _ИСХОДНЫЙ_ЧИТАТЕЛЬ_МОДУЛЯ:
+        return прочитать_модуль(loaded.корень / locator.relative_path)
+    return read_bsl(loaded.корень, модуль, locator)
+
+
 def _сигнатура(
     loaded: LoadedModules,
     запись,
@@ -1433,8 +1454,7 @@ def _сигнатура(
         снимки = {}
     снимок = снимки.get(запись.модуль)
     if снимок is None:
-        путь = loaded.корень / путь_модуля(запись.модуль)
-        текст = прочитать_модуль(путь)
+        текст = _прочитать_тело_модуля(loaded, запись.модуль)
         разбор = _parsed_procedures(
             loaded.оглавление.модуля(запись.модуль), текст
         )
@@ -1737,9 +1757,8 @@ def _read_module_snapshot(
     module: str,
 ) -> str:
     """Текст одного поколения, без раскрытия локального пути при отказе."""
-    путь = loaded.корень / путь_модуля(module)
     try:
-        текст = прочитать_модуль(путь)
+        текст = _прочитать_тело_модуля(loaded, module)
     except OSError as error:
         if not _modules_are_current(registry, loaded):
             raise _StaleModules from error

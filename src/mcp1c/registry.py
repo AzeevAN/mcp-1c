@@ -24,8 +24,10 @@ import re
 import shutil
 import tempfile
 import threading
+import uuid
 import xml.etree.ElementTree as ET
 import zipfile
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -75,6 +77,10 @@ _RE_PLATFORM = re.compile(r"\b(\d+\.\d+\.\d+(?:\.\d+)?)\b")
 
 class RegistryError(Exception):
     """Источник не загружается или запрошено то, чего нет."""
+
+
+class _ModuleOperationCancelled(RegistryError):
+    """Устаревший foreground add/reparse отменён новым поколением."""
 
 
 def _now() -> str:
@@ -319,16 +325,19 @@ def _sweep_stale_extract_tmp(родитель: Path, имя: str) -> None:
     поймать). Следующий разбор той же конфигурации или расширения — первый
     момент, когда есть возможность прибраться.
 
-    `.<имя>.old-*` этой чисткой НЕ трогается: это отставленная копия
+    `.<имя>.retired-*` уже отвязан от реестра операцией `remove`,
+    поэтому его можно дочистить после аварийной остановки. `.<имя>.old-*`
+    этой чисткой НЕ трогается: это отставленная копия
     прежнего разбора, уцелевшая после отказа отката (см. `_swap_code`,
     ветку с `RegistryError`), и её удаление — решение человека, а не
     молчаливое действие сервера при следующем нажатии кнопки.
     """
     if not родитель.is_dir():
         return
-    for путь in родитель.glob(f".{имя}.tmp-*"):
-        if путь.is_dir():
-            shutil.rmtree(путь, ignore_errors=True)
+    for шаблон in (f".{имя}.tmp-*", f".{имя}.retired-*"):
+        for путь in родитель.glob(шаблон):
+            if путь.is_dir():
+                shutil.rmtree(путь, ignore_errors=True)
 
 
 def _combined_sha256(sources: Iterable["Source"]) -> str:
@@ -516,15 +525,42 @@ class LoadedModules:
 
     source: Source
     корень: Path
-    оглавление: modules_index.Оглавление
-    вызовы: modules_index.Вызовы
-    формы: modules_index.Формы
-    поиск: SearchIndex
+    # При холодном старте запись появляется раньше самих структур: так
+    # инструменты отличают «код не загружен» от «индекс строится». Ни одна
+    # частичная структура наружу не публикуется — готовый комплект заменяет
+    # эту запись целиком под замком.
+    оглавление: modules_index.Оглавление | None
+    вызовы: modules_index.Вызовы | None
+    формы: modules_index.Формы | None
+    поиск: SearchIndex | None
     # Версия конфигурации/расширения из Configuration.xml выгрузки в файлы —
     # то же значение, что и `source.code_version`, но под тем именем, что
     # называет интерфейс задачи. Сверяется в `ResolvedContext.notes()` с
     # версией загруженных метаданных.
     версия_кода: str
+    готов: bool = True
+    прогресс: tuple[int, int] = (0, 0)
+    этап: tuple[int, int] = (4, 4)
+    название_этапа: str = "готово"
+
+    def __post_init__(self) -> None:
+        # Обычная загрузка и подъём из кэша создают уже готовый комплект.
+        # Число модулей берётся из оглавления, а не `Source.items_total`:
+        # последнее включает Form.xml и служебные файлы выгрузки.
+        if self.готов and self.оглавление is not None and self.прогресс == (0, 0):
+            всего = len(self.оглавление.модули)
+            self.прогресс = (всего, всего)
+
+
+@dataclass(frozen=True, slots=True)
+class _ModuleOperation:
+    """Ранняя reservation живого add/reparse источника кода."""
+
+    source_id: str
+    configuration: str
+    configuration_source: Source
+    generation: int
+    lifecycle_lock: threading.Lock
 
 
 @dataclass(slots=True)
@@ -711,6 +747,19 @@ class Registry:
         self.dictionary = Dictionary.load(self.dictionary_path)
 
         self._lock = threading.RLock()
+        # Повторные startup/reload сериализуются отдельно: долгий reload не
+        # держит основной замок и не мешает `resolve()`, но два восстановления
+        # не могут одновременно резервировать одну фоновую сборку.
+        self._startup_lock = threading.Lock()
+        # Фоновая сборка может закончиться раньше последовательного restore.
+        # Поколения различают успешно завершённый полный startup и аварийно
+        # оборванный частичный снимок: второй нельзя писать в registry.json.
+        self._startup_generation = 0
+        self._last_successful_startup_generation = 0
+        # Все writers кэша модулей и смена поколения источника идут через
+        # один порядок `cache -> registry`. Так старый writer не успевает
+        # записать свой пакет после рокировки нового кода.
+        self._modules_cache_lock = threading.Lock()
         self.configurations: dict[str, LoadedConfiguration] = {}
         # Справки версий — учётными записями, а не содержимым: разобранная
         # справка весит около 60 МБ, и держать их все ради редких пересборок
@@ -728,6 +777,20 @@ class Registry:
         # выгрузка кода, у расширений их может быть несколько, и `resolve()`
         # достаёт нужную запись напрямую по составленному ключу.
         self.modules: dict[str, LoadedModules] = {}
+        # Сильная ссылка нужна не потоку (он живёт сам), а повторному
+        # `startup()`: пока предыдущая сборка ещё идёт, reload не должен
+        # запускать второй разбор того же корпуса и удваивать расход памяти.
+        self._module_builds: dict[str, threading.Thread] = {}
+        self._modules_generation: dict[str, int] = {}
+        # Один постоянный lock на source_id защищает весь foreground
+        # lifecycle: sweep -> extract -> build -> publish/cleanup. Записи не
+        # удаляются: удаление и новый setdefault между двумя waiter
+        # создали бы ABA и снова два одновременных tmp.
+        self._module_operation_locks: dict[str, threading.Lock] = {}
+        # Foreground add/reparse резервирует source_id до долгой
+        # распаковки. Restore видит reservation и не публикует поверх
+        # неё старую запись из registry.json.
+        self._module_operations: dict[str, _ModuleOperation] = {}
         # Соотношение версий не меняется, пока не сменились источники, а его
         # вычисление — перебор всех элементов справки. Без кэша это давало
         # 16 мс на каждый вызов любого инструмента.
@@ -789,8 +852,17 @@ class Registry:
         }
 
     def _drop_cache(self, source_id: str, kind: str) -> None:
+        """Снести все файлы расходного кэша, какие позволяет том.
+
+        Ни один отказ `unlink` не прерывает снятие Source: кэш можно
+        пересобрать, а оставшийся файл без Source никто не поднимет.
+        Ошибка одного файла не мешает попробовать удалить остальные.
+        """
         for index_kind in self.CACHE_KINDS.get(kind, ()):
-            self._cache_path(source_id, index_kind).unlink(missing_ok=True)
+            try:
+                self._cache_path(source_id, index_kind).unlink(missing_ok=True)
+            except OSError:
+                continue
 
     def _configuration_index(self, config: Configuration, source: Source) -> SearchIndex:
         path = self._cache_path(source.id, "objects")
@@ -1024,6 +1096,31 @@ class Registry:
         if цель.is_dir():
             shutil.rmtree(цель, ignore_errors=True)
 
+    def _retire_code_root(self, корень: Path, kind: str) -> Path | None:
+        """Быстро отвязать старое поколение от canonical path.
+
+        Вызывается под `cache -> registry` до снятия Source. Долгий
+        `rmtree` потом работает только по возвращённому уникальному пути и
+        физически не может задеть новое поколение на `корень`.
+        """
+        цель = корень.resolve()
+        база = (
+            self.modules_dir.resolve()
+            if kind == KIND_MODULES
+            else self.extensions_dir.resolve()
+        )
+        if цель == база or база not in цель.parents or not цель.is_dir():
+            return None
+        отставленный = цель.parent / f".{цель.name}.retired-{uuid.uuid4().hex}"
+        try:
+            цель.rename(отставленный)
+        except OSError as error:
+            raise RegistryError(
+                f"Каталог кода «{цель}» не снят: не удалось "
+                f"отставить его в «{отставленный}»: {error}"
+            ) from error
+        return отставленный
+
     def _extract_to_temp(self, архив: Path, корень: Path) -> tuple[Path, str, int]:
         """Хеш и распаковка кода — во временный каталог рядом с `корень`, без
         рокировки: та — отдельно, в `_swap_code`.
@@ -1170,7 +1267,11 @@ class Registry:
             shutil.rmtree(временный, ignore_errors=True)
 
     @staticmethod
-    def _построить_индекс_кода(метка: str, корень: Path) -> modules_index.Индексы:
+    def _построить_индекс_кода(
+        метка: str,
+        корень: Path,
+        прогресс: Callable[[int, str, int, int], None] | None = None,
+    ) -> modules_index.Индексы:
         """Все четыре структуры провайдера `modules` по коду на `корень`.
 
         Общее тело для `add_modules`/`_add_extension` (`корень` — временный
@@ -1185,10 +1286,37 @@ class Registry:
         оставляет молчаливое расхождение.
         """
         try:
-            оглавление = modules_index.Оглавление.построить(корень)
-            вызовы = modules_index.Вызовы.построить(корень, оглавление)
-            формы = modules_index.Формы.построить(корень)
-            поиск = modules_index.построить_поиск(оглавление, корень)
+            def этап(номер: int, название: str):
+                if прогресс is None:
+                    return None
+                return lambda обработано, всего: прогресс(
+                    номер, название, обработано, всего
+                )
+
+            p = этап(1, "оглавление")
+            оглавление = (
+                modules_index.Оглавление.построить(корень, прогресс=p)
+                if p is not None
+                else modules_index.Оглавление.построить(корень)
+            )
+            p = этап(2, "вызовы")
+            вызовы = (
+                modules_index.Вызовы.построить(корень, оглавление, прогресс=p)
+                if p is not None
+                else modules_index.Вызовы.построить(корень, оглавление)
+            )
+            p = этап(3, "формы")
+            формы = (
+                modules_index.Формы.построить(корень, прогресс=p)
+                if p is not None
+                else modules_index.Формы.построить(корень)
+            )
+            p = этап(4, "поиск")
+            поиск = (
+                modules_index.построить_поиск(оглавление, корень, прогресс=p)
+                if p is not None
+                else modules_index.построить_поиск(оглавление, корень)
+            )
         except Exception as error:
             raise RegistryError(
                 f"{метка}: индекс кода не построился — {error}"
@@ -1197,8 +1325,287 @@ class Registry:
             оглавление=оглавление, вызовы=вызовы, формы=формы, поиск=поиск
         )
 
-    def _поднять_или_построить_модули(self, source: Source, корень: Path) -> None:
-        """Индекс кода источника `source`, уже стоящего в `self.sources`.
+    @staticmethod
+    def _готовые_модули(
+        source: Source, корень: Path, индексы: modules_index.Индексы
+    ) -> LoadedModules:
+        """Один готовый пакет — общий путь для кэша, сборки и живой загрузки."""
+        всего = len(индексы.оглавление.модули)
+        return LoadedModules(
+            source=source,
+            корень=корень,
+            оглавление=индексы.оглавление,
+            вызовы=индексы.вызовы,
+            формы=индексы.формы,
+            поиск=индексы.поиск,
+            версия_кода=source.code_version,
+            готов=True,
+            прогресс=(всего, всего),
+        )
+
+    def _следующее_поколение_модулей(self, source_id: str) -> int:
+        """Вызывается под `_lock`; возвращает новый монотонный номер."""
+        поколение = self._modules_generation.get(source_id, 0) + 1
+        self._modules_generation[source_id] = поколение
+        return поколение
+
+    def _зарезервировать_операцию_модулей(
+        self, configuration: str, source_id: str
+    ) -> _ModuleOperation:
+        """CAS-token создаётся до extract/build, но без долгого lock."""
+        with self._modules_cache_lock:
+            with self._lock:
+                конфигурация = self.configurations.get(configuration)
+                if конфигурация is None:
+                    raise RegistryError(
+                        f"Конфигурация «{configuration}» не загружена."
+                    )
+                lifecycle_lock = self._module_operation_locks.setdefault(
+                    source_id, threading.Lock()
+                )
+                операция = _ModuleOperation(
+                    source_id=source_id,
+                    configuration=configuration,
+                    configuration_source=конфигурация.source,
+                    generation=self._следующее_поколение_модулей(source_id),
+                    lifecycle_lock=lifecycle_lock,
+                )
+                self._module_operations[source_id] = операция
+                return операция
+
+    def _операция_модулей_актуальна(self, операция: _ModuleOperation) -> bool:
+        """CAS по token, generation и identity привязанной конфигурации."""
+        конфигурация = self.configurations.get(операция.configuration)
+        return (
+            self._module_operations.get(операция.source_id) is операция
+            and self._modules_generation.get(операция.source_id)
+            == операция.generation
+            and конфигурация is not None
+            and конфигурация.source is операция.configuration_source
+        )
+
+    def _завершить_операцию_модулей(self, операция: _ModuleOperation) -> None:
+        with self._lock:
+            if self._module_operations.get(операция.source_id) is операция:
+                self._module_operations.pop(операция.source_id, None)
+
+    @staticmethod
+    def _отмена_операции_модулей(
+        операция: _ModuleOperation, архив: Path
+    ) -> _ModuleOperationCancelled:
+        return _ModuleOperationCancelled(
+            f"{архив.name}: разбор отменён — источник "
+            f"{операция.source_id} или привязанная конфигурация "
+            "уже изменены."
+        )
+
+    @contextmanager
+    def _lifecycle_операции_модулей(
+        self, операция: _ModuleOperation, архив: Path
+    ):
+        """Один цикл на источник; новая заявка отменяет старую в очереди."""
+        with операция.lifecycle_lock:
+            try:
+                with self._lock:
+                    if not self._операция_модулей_актуальна(операция):
+                        raise self._отмена_операции_модулей(операция, архив)
+                yield
+            except BaseException as error:
+                with self._lock:
+                    устарела = not self._операция_модулей_актуальна(
+                        операция
+                    )
+                if устарела and not isinstance(
+                    error, _ModuleOperationCancelled
+                ):
+                    raise self._отмена_операции_модулей(операция, архив) from error
+                raise
+            finally:
+                self._завершить_операцию_модулей(операция)
+
+    def _опубликовать_операцию_модулей(
+        self,
+        операция: _ModuleOperation,
+        архив: Path,
+        корень: Path,
+        временный: Path,
+        снести: Callable[[Path], None],
+        source: Source,
+        loaded: LoadedModules,
+        индексы: modules_index.Индексы,
+    ) -> Source:
+        """Единая CAS-публикация для конфигурации и расширения."""
+        try:
+            with self._modules_cache_lock:
+                with self._lock:
+                    if not self._операция_модулей_актуальна(операция):
+                        raise RegistryError(
+                            f"{архив.name}: разбор отменён — источник "
+                            "или привязанная конфигурация уже изменены."
+                        )
+                    self._swap_code(архив, корень, временный, снести)
+                    self.sources[source.id] = source
+                    self.modules[source.id] = loaded
+                modules_index.сохранить_индексы(
+                    self, source.id, индексы, source_sha256=source.sha256
+                )
+            return source
+        finally:
+            # До swap это убирает отменённый разбор; после swap пути
+            # уже нет, и `ignore_errors` ничего не трогает.
+            shutil.rmtree(временный, ignore_errors=True)
+
+    def _выполнить_операцию_модулей(
+        self,
+        операция: _ModuleOperation,
+        архив: Path,
+        корень: Path,
+        *,
+        kind: str,
+        версия_кода: str,
+        снести: Callable[[Path], None],
+    ) -> Source:
+        """Общий foreground lifecycle модулей и расширения."""
+        from . import intake
+
+        with self._lifecycle_операции_модулей(операция, архив):
+            временный, digest, файлов = self._extract_to_temp(архив, корень)
+            try:
+                индексы = self._построить_индекс_кода(архив.name, временный)
+            except BaseException:
+                shutil.rmtree(временный, ignore_errors=True)
+                raise
+
+            source = Source(
+                id=операция.source_id,
+                kind=kind,
+                origin=архив.name,
+                sha256=digest,
+                loaded_at=_now(),
+                platform=операция.configuration_source.platform,
+                status=STATUS_READY,
+                items_total=файлов,
+                stored_path=self._relative(корень),
+                selection_version=intake.SELECTION_VERSION,
+                code_version=версия_кода,
+            )
+            loaded = LoadedModules(
+                source=source,
+                корень=корень,
+                оглавление=индексы.оглавление,
+                вызовы=индексы.вызовы,
+                формы=индексы.формы,
+                поиск=индексы.поиск,
+                версия_кода=версия_кода,
+            )
+            return self._опубликовать_операцию_модулей(
+                операция,
+                архив,
+                корень,
+                временный,
+                снести,
+                source,
+                loaded,
+                индексы,
+            )
+
+    def _поколение_актуально(
+        self,
+        source: Source,
+        поколение: int,
+        loaded: LoadedModules | None = None,
+    ) -> bool:
+        """CAS-предикат; вызывается под `_lock`."""
+        if (
+            self.sources.get(source.id) is not source
+            or self._modules_generation.get(source.id) != поколение
+        ):
+            return False
+        return loaded is None or self.modules.get(source.id) is loaded
+
+    def _собрать_индексы_фоном(
+        self,
+        source: Source,
+        корень: Path,
+        строится: LoadedModules,
+        поколение: int,
+    ) -> None:
+        """Собирает четыре структуры и публикует их только единым пакетом."""
+        source_id = source.id
+
+        def отметить(
+            номер: int, название: str, обработано: int, всего: int
+        ) -> None:
+            with self._lock:
+                if self._поколение_актуально(source, поколение, строится):
+                    строится.этап = (номер, 4)
+                    строится.название_этапа = название
+                    строится.прогресс = (обработано, всего)
+
+        try:
+            индексы = self._построить_индекс_кода(
+                source.origin, корень, отметить
+            )
+            готовые = self._готовые_модули(source, корень, индексы)
+            # Writer и смена поколения сериализованы одним mutex. CAS
+            # проверяется внутри него до записи, поэтому после проверки новый
+            # reparse/remove не может вклиниться и сменить Source под ногами.
+            with self._modules_cache_lock:
+                with self._lock:
+                    if not self._поколение_актуально(
+                        source, поколение, строится
+                    ):
+                        return
+                modules_index.сохранить_индексы(
+                    self,
+                    source_id,
+                    индексы,
+                    source_sha256=source.sha256,
+                )
+                with self._lock:
+                    if self._поколение_актуально(source, поколение, строится):
+                        source.status = STATUS_READY
+                        source.error = ""
+                        self.modules[source_id] = готовые
+        except Exception as error:
+            with self._lock:
+                if self._поколение_актуально(source, поколение, строится):
+                    source.status = STATUS_ERROR
+                    source.error = str(error)
+        finally:
+            with self._lock:
+                if self._module_builds.get(source_id) is threading.current_thread():
+                    self._module_builds.pop(source_id, None)
+            # Статус готовности/ошибки переживает следующий restart. Пока
+            # `startup()` восстанавливает строки registry.json по очереди,
+            # его снимок в памяти заведомо неполон: быстрый фоновый поток не
+            # должен успеть заменить файл таким промежуточным списком и
+            # потерять ещё не обработанный источник при аварийной остановке.
+            # Порядок замков совпадает со startup: startup -> registry;
+            # `_lock` выше уже отпущен, поэтому взаимного ожидания нет.
+            self._сохранить_результат_фоновой_сборки()
+
+    def _сохранить_результат_фоновой_сборки(self) -> bool:
+        """Записать статус, только если последний startup завершился целиком."""
+        with self._startup_lock:
+            if (
+                self._last_successful_startup_generation
+                != self._startup_generation
+            ):
+                return False
+            self.save()
+            return True
+
+    def _поднять_или_построить_модули(
+        self,
+        source: Source,
+        корень: Path,
+        *,
+        configuration: str,
+        expected_configuration_source: Source,
+        expected_generation: int,
+    ) -> None:
+        """Восстановить индекс кода из строки `source`.
 
         Только для `restore()`: код к этому моменту уже лежит на `корень` —
         никакой рокировки тут нет, `add_modules`/`_add_extension` её уже
@@ -1213,21 +1620,97 @@ class Registry:
         `restore()` заносит причину в список проблем и продолжает поднимать
         остальные источники, как и для всех прочих родов.
         """
-        индексы = modules_index.поднять_индексы(self, source.id)
-        if индексы is None:
-            индексы = self._построить_индекс_кода(source.origin, корень)
-            modules_index.сохранить_индексы(self, source.id, индексы)
-        loaded = LoadedModules(
+        with self._lock:
+            владелец = self.configurations.get(configuration)
+            if (
+                владелец is None
+                or владелец.source is not expected_configuration_source
+                or source.id in self._module_operations
+                or self._modules_generation.get(source.id, 0)
+                != expected_generation
+            ):
+                raise RegistryError(
+                    "восстановление кода отменено — "
+                    f"конфигурация «{configuration}» снята, "
+                    "заменена или её код уже переразбирается."
+                )
+            прежний_поток = self._module_builds.get(source.id)
+            прежние = self.modules.get(source.id)
+            if прежний_поток is not None and прежний_поток.is_alive() and прежние:
+                # Текущая сборка владеет своим Source. Подмена его
+                # объектом из JSON обесценила бы её CAS-публикацию.
+                self.sources[source.id] = прежние.source
+                return
+            if self.sources.get(source.id) is not None and прежние is not None:
+                # Живой reparse мог успеть завершиться до второго
+                # прохода restore. Его Source/индекс уже опубликованы;
+                # старая строка registry не имеет права их откатывать.
+                return
+            self.sources[source.id] = source
+            поколение = self._следующее_поколение_модулей(source.id)
+
+        индексы = modules_index.поднять_индексы(
+            self, source.id, source_sha256=source.sha256
+        )
+        if индексы is not None:
+            with self._lock:
+                if not self._поколение_актуально(source, поколение):
+                    return
+                source.status = STATUS_READY
+                source.error = ""
+                self.modules[source.id] = self._готовые_модули(
+                    source, корень, индексы
+                )
+            return
+
+        # Подсчёт имён каталог не разбирает и на живых 7 878 файлах занимает
+        # доли секунды. Он нужен до запуска потока: первый же ответ обязан
+        # назвать не только N, но и M.
+        всего = sum(1 for _ in корень.rglob("*.bsl"))
+        строится = LoadedModules(
             source=source,
             корень=корень,
-            оглавление=индексы.оглавление,
-            вызовы=индексы.вызовы,
-            формы=индексы.формы,
-            поиск=индексы.поиск,
+            оглавление=None,
+            вызовы=None,
+            формы=None,
+            поиск=None,
             версия_кода=source.code_version,
+            готов=False,
+            прогресс=(0, всего),
+            этап=(1, 4),
+            название_этапа="оглавление",
         )
+        source.status = STATUS_LOADING
+        source.error = ""
+        поток = threading.Thread(
+            target=self._собрать_индексы_фоном,
+            args=(source, корень, строится, поколение),
+            daemon=True,
+            name=f"modules:{source.id}",
+        )
+        # Generation снимается до первой долгой загрузки. Если
+        # живой reparse начнётся и даже завершится до второго
+        # прохода, монотонный номер всё равно выдаст старую строку.
         with self._lock:
-            self.modules[source.id] = loaded
+            if not self._поколение_актуально(source, поколение):
+                return
+            self.modules[source.id] = строится
+            self._module_builds[source.id] = поток
+        поток.start()
+
+    @staticmethod
+    def _владелец_источника_кода(source: Source) -> str | None:
+        """Имя конфигурации из стабильной схемы id источника кода."""
+        if source.kind == KIND_MODULES:
+            суффикс = ":modules"
+            if source.id.endswith(суффикс):
+                return source.id[: -len(суффикс)] or None
+            return None
+        if source.kind == KIND_EXTENSION:
+            configuration, разделитель, extension = source.id.partition(":ext:")
+            if разделитель and configuration and extension:
+                return configuration
+        return None
 
     def add_modules(self, path: str | Path, *, configuration: str) -> Source:
         """Выгрузка конфигурации в файлы: код на диск, учётная запись в реестр.
@@ -1283,75 +1766,18 @@ class Registry:
                 версия_кода=версия_кода,
             )
 
-        from . import intake
-
         корень = self._modules_root(configuration)
-
-        # Распаковка — во временный каталог, БЕЗ рокировки: она в `_swap_code`
-        # ниже, вместе с обновлением реестра, под замком. Индекс строится
-        # здесь же, по `временный`, пока `корень` (если уже был) ещё несёт
-        # прежний код (решение координатора, docs/modules-provider-design.md,
-        # раздел 9) — и всё это ВНЕ замка: сборка — секунды на живой
-        # выгрузке, а замок держат `resolve()` и все инструменты MCP.
-        временный, digest, файлов = self._extract_to_temp(архив, корень)
-        try:
-            индексы = self._построить_индекс_кода(архив.name, временный)
-        except BaseException:
-            shutil.rmtree(временный, ignore_errors=True)
-            raise
-
-        # Выгрузка в файлы точной сборки платформы не содержит: в
-        # Configuration.xml лежит только режим совместимости
-        # (CompatibilityMode), а это другое число — на Рознице 2.3.10.5 в
-        # выгрузке стоит Version8_3_21, тогда как фактическая платформа по
-        # выгрузке метаданных — 8.3.23.1997. Берём её у привязанной
-        # конфигурации — она знает свою точную сборку; пустая — оставляем
-        # пустой, ничего не выдумываем. Между первичной проверкой членства
-        # выше и этой строкой прошли секунды распаковки и сборки индекса в
-        # отдельном потоке — конфигурацию могли снять параллельным запросом.
-        # `.get(...)` вместо `[...]` не роняет разбор голым `KeyError`:
-        # пропавшая конфигурация даёт тот же результат, что и отсутствие
-        # платформы у неё.
-        привязанная = self.configurations.get(configuration)
-        платформа = привязанная.source.platform if привязанная else ""
-        source = Source(
-            id=f"{configuration}:modules",
+        операция = self._зарезервировать_операцию_модулей(
+            configuration, f"{configuration}:modules"
+        )
+        return self._выполнить_операцию_модулей(
+            операция,
+            архив,
+            корень,
             kind=KIND_MODULES,
-            origin=архив.name,
-            sha256=digest,
-            loaded_at=_now(),
-            platform=платформа,
-            status=STATUS_READY,
-            items_total=файлов,
-            stored_path=self._relative(корень),
-            selection_version=intake.SELECTION_VERSION,
-            code_version=версия_кода,
-        )
-        loaded = LoadedModules(
-            source=source,
-            корень=корень,
-            оглавление=индексы.оглавление,
-            вызовы=индексы.вызовы,
-            формы=индексы.формы,
-            поиск=индексы.поиск,
             версия_кода=версия_кода,
+            снести=self._drop_modules_root,
         )
-        # Рокировка на диске и подмена в реестре — вместе, под одним замком:
-        # наружу не должно попасть ни полусобранное (старый каталог при новом
-        # индексе или наоборот), ни промежуточное состояние диска без записи
-        # в реестре. Сама рокировка быстрая (переименования, не копирование),
-        # долгая часть (сборка индекса) уже позади и прошла без замка — тем
-        # же приёмом, что и в `add_configuration` («индексы строятся до
-        # подмены»).
-        with self._lock:
-            self._swap_code(архив, корень, временный, self._drop_modules_root)
-            self.sources[source.id] = source
-            self.modules[source.id] = loaded
-        # Запись в кэш — расходная операция, после того как источник уже
-        # виден инструментам: не сошлось (том только на чтение) — молча
-        # переживём, следующий подъём просто пересоберёт.
-        modules_index.сохранить_индексы(self, source.id, индексы)
-        return source
 
     def _add_extension(
         self, архив: Path, *, configuration: str, extension: str, версия_кода: str = ""
@@ -1379,56 +1805,21 @@ class Registry:
         (например, `a/b` и `a:b`), схлопнутся в один источник — принято
         осознанно, см. README.
         """
-        from . import intake
-
         имя_чисто = index_cache.safe_name(extension)
         корень = self._extension_root(configuration, extension)
+        source_id = f"{configuration}:ext:{имя_чисто}"
+        операция = self._зарезервировать_операцию_модулей(
+            configuration, source_id
+        )
 
-        # Тот же приём, что в `add_modules`: распаковка и сборка индекса — вне
-        # замка, по временному каталогу; рокировка и подмена в реестре —
-        # вместе, под замком (докстрока `_swap_code`).
-        временный, digest, файлов = self._extract_to_temp(архив, корень)
-        try:
-            индексы = self._построить_индекс_кода(архив.name, временный)
-        except BaseException:
-            shutil.rmtree(временный, ignore_errors=True)
-            raise
-
-        # Платформа — как у модулей: точной сборки платформы в Configuration.
-        # xml расширения нет, там только CompatibilityMode (см. `add_modules`)
-        # — берём у привязанной конфигурации. `Version` там тоже встречается,
-        # но это версия САМОГО расширения (`версия_кода` выше), а не платформы.
-
-        привязанная = self.configurations.get(configuration)
-        платформа = привязанная.source.platform if привязанная else ""
-        source = Source(
-            id=f"{configuration}:ext:{имя_чисто}",
+        return self._выполнить_операцию_модулей(
+            операция,
+            архив,
+            корень,
             kind=KIND_EXTENSION,
-            origin=архив.name,
-            sha256=digest,
-            loaded_at=_now(),
-            platform=платформа,
-            status=STATUS_READY,
-            items_total=файлов,
-            stored_path=self._relative(корень),
-            selection_version=intake.SELECTION_VERSION,
-            code_version=версия_кода,
-        )
-        loaded = LoadedModules(
-            source=source,
-            корень=корень,
-            оглавление=индексы.оглавление,
-            вызовы=индексы.вызовы,
-            формы=индексы.формы,
-            поиск=индексы.поиск,
             версия_кода=версия_кода,
+            снести=self._drop_extension_root,
         )
-        with self._lock:
-            self._swap_code(архив, корень, временный, self._drop_extension_root)
-            self.sources[source.id] = source
-            self.modules[source.id] = loaded
-        modules_index.сохранить_индексы(self, source.id, индексы)
-        return source
 
     def add_syntax(
         self,
@@ -1842,7 +2233,9 @@ class Registry:
         отложенные_сносы: list[tuple[Callable[[Path], None], Path]] = []
         отложенная_справка: dict[str, Source] | None = None
 
-        with self._lock:
+        # Тот же порядок, что у writers: cache -> registry. После CAS старый
+        # writer не может записать файл между `_drop_cache` и снятием Source.
+        with self._modules_cache_lock, self._lock:
             source = self.sources.get(source_id)
             if source is None:
                 raise RegistryError(f"Источник не зарегистрирован: {source_id}")
@@ -1861,29 +2254,87 @@ class Registry:
                     if sid == модули_id or sid.startswith(префикс_расширений)
                 )
 
+            # Canonical root отставляется ДО изменения реестра. Это
+            # быстрый rename под тем же `cache -> registry`, а не rmtree.
+            # Если один из rename не удался, все уже отставленные каталоги
+            # возвращаются, а Source/индексы остаются нетронутыми.
+            отставленные: list[
+                tuple[Callable[[Path], None], Path, Path]
+            ] = []
+            try:
+                for sid in цепочка:
+                    текущий = self.sources.get(sid)
+                    if текущий is None or текущий.kind not in (
+                        KIND_MODULES,
+                        KIND_EXTENSION,
+                    ):
+                        continue
+                    канонический = (
+                        self._absolute(текущий.stored_path)
+                        if текущий.stored_path
+                        else None
+                    )
+                    if канонический is None:
+                        continue
+                    снести = (
+                        self._drop_modules_root
+                        if текущий.kind == KIND_MODULES
+                        else self._drop_extension_root
+                    )
+                    отставленный = self._retire_code_root(
+                        канонический, текущий.kind
+                    )
+                    if отставленный is not None:
+                        отставленные.append(
+                            (снести, отставленный, канонический)
+                        )
+            except BaseException as error:
+                ошибки_отката: list[str] = []
+                for _, отставленный, канонический in reversed(отставленные):
+                    try:
+                        отставленный.rename(канонический)
+                    except OSError as ошибка_возврата:
+                        ошибки_отката.append(
+                            f"{отставленный} -> {канонический}: {ошибка_возврата}"
+                        )
+                if ошибки_отката:
+                    raise RegistryError(
+                        "Каталоги кода не сняты, и откат отставленных "
+                        f"каталогов не удался: {'; '.join(ошибки_отката)}"
+                    ) from error
+                raise
+            отложенные_сносы.extend(
+                (снести, отставленный)
+                for снести, отставленный, _ in отставленные
+            )
+
+            # Foreground reparse может ещё не иметь Source: token уже
+            # зарезервирован, а extract/build идут вне замка. Каскад
+            # конфигурации обязан увидеть и такую операцию.
+            инвалидировать = {
+                sid
+                for sid, операция in self._module_operations.items()
+                if sid == source_id
+                or (
+                    source.kind == KIND_CONFIGURATION
+                    and операция.configuration == source_id
+                )
+            }
+
             for sid in цепочка:
                 текущий = self.sources.pop(sid, None)
                 if текущий is None:
                     continue
                 self._drop_cache(sid, текущий.kind)
                 self.modules.pop(sid, None)
+                if текущий.kind in (KIND_MODULES, KIND_EXTENSION):
+                    инвалидировать.add(sid)
 
                 if текущий.kind == KIND_CONFIGURATION:
                     self.configurations.pop(sid, None)
                     self._relation_cache.pop(sid, None)
                 elif текущий.kind in (KIND_MODULES, KIND_EXTENSION):
-                    каталог_кода = (
-                        self._absolute(текущий.stored_path)
-                        if текущий.stored_path
-                        else None
-                    )
-                    if каталог_кода is not None:
-                        снести = (
-                            self._drop_modules_root
-                            if текущий.kind == KIND_MODULES
-                            else self._drop_extension_root
-                        )
-                        отложенные_сносы.append((снести, каталог_кода))
+                    pass
                 elif текущий.kind == KIND_QUERY:
                     # В `syntax_versions` источника нет, но его элементы сидят
                     # в поисковом индексе и таблице имён `self.syntax` — без
@@ -1894,6 +2345,12 @@ class Registry:
                 elif self.syntax_versions.pop(sid, None) is not None:
                     self._relation_cache.clear()
                     отложенная_справка = dict(self.syntax_versions)
+
+            for sid in инвалидировать:
+                # Номер не сбрасывается: иначе remove -> add даст
+                # тот же generation и ABA вернёт старому writer право голоса.
+                self._следующее_поколение_модулей(sid)
+                self._module_operations.pop(sid, None)
 
         for снести, каталог_кода in отложенные_сносы:
             снести(каталог_кода)
@@ -2083,17 +2540,18 @@ class Registry:
     # ------------------------------------------------------------- диск
 
     def save(self) -> None:
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "registry_version": REGISTRY_VERSION,
-            "saved_at": _now(),
-            "sources": [s.to_dict() for s in self.sources.values()],
-        }
-        tmp = self.registry_path.with_suffix(".tmp")
-        tmp.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8"
-        )
-        tmp.replace(self.registry_path)
+        with self._lock:
+            self.data_dir.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "registry_version": REGISTRY_VERSION,
+                "saved_at": _now(),
+                "sources": [s.to_dict() for s in self.sources.values()],
+            }
+            tmp = self.registry_path.with_suffix(".tmp")
+            tmp.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8"
+            )
+            tmp.replace(self.registry_path)
 
     def reload_dictionary(self) -> None:
         """Перечитать словарь. Индексы при этом не перестраиваются.
@@ -2124,39 +2582,45 @@ class Registry:
                 f"ожидается {REGISTRY_VERSION} — источники будут перечитаны заново."
             ]
 
-        for raw in payload.get("sources") or []:
-            source = Source.from_dict(raw)
+        # Код восстанавливается вторым проходом: порядок строк в
+        # registry.json не является контрактом, а модули/расширение
+        # без уже восстановленной конфигурации не имеют владельца.
+        все_источники = [
+            Source.from_dict(raw) for raw in (payload.get("sources") or [])
+        ]
+        with self._lock:
+            отложенный_код = [
+                (source, self._modules_generation.get(source.id, 0))
+                for source in все_источники
+                if source.kind in (KIND_MODULES, KIND_EXTENSION)
+            ]
+        конфигурации_этого_restore: dict[str, Source] = {}
+
+        for source in все_источники:
+            if source.kind in (KIND_MODULES, KIND_EXTENSION):
+                continue
             stored = self._absolute(source.stored_path)
             if not stored.exists():
                 problems.append(f"{source.id}: файл источника пропал ({stored})")
                 continue
             try:
                 if source.kind == KIND_CONFIGURATION:
-                    self.add_configuration(
+                    with self._lock:
+                        живой_reparse = any(
+                            операция.configuration == source.id
+                            for операция in self._module_operations.values()
+                        )
+                    if живой_reparse:
+                        # Foreground add/reparse привязан к identity
+                        # текущей конфигурации. Не подменяем её заново
+                        # созданным Source из старого registry.json.
+                        continue
+                    восстановленный_source = self.add_configuration(
                         stored, keep_source=False, known_sha256=source.sha256
                     )
-                elif source.kind in (KIND_MODULES, KIND_EXTENSION):
-                    # Код уже лежит на диске — его положил `add_modules`
-                    # (или `_add_extension`) до остановки. Перечитывать архив
-                    # здесь нечем (человек мог его уже убрать) и незачем: без
-                    # этой ветки запись выпала бы из `self.sources` молча, и
-                    # после рестарта выглядело бы так, будто выгрузку вообще
-                    # не разбирали, — гоняли бы заново гигабайтный архив там,
-                    # где хватило бы записи из `registry.json`.
-                    with self._lock:
-                        self.sources[source.id] = source
-                    # Индекс — отдельным шагом, ПОСЛЕ регистрации источника:
-                    # `поднять_индексы` сверяет штамп кэша с `self.sources
-                    # [source.id].sha256`. Провал не должен стоить источника
-                    # целиком (код на диске цел) — попадает в `problems`, а
-                    # не в общий `except` ниже, который снёс бы саму запись.
-                    try:
-                        self._поднять_или_построить_модули(source, stored)
-                    except Exception as error:
-                        problems.append(
-                            f"{source.id}: индекс кода не поднят и не "
-                            f"построен — {error}"
-                        )
+                    конфигурации_этого_restore[
+                        source.id
+                    ] = восстановленный_source
                 else:
                     # Слитый вид собирается один раз в конце: сборка на каждой
                     # справке дала бы квадрат работы, а видел бы её только
@@ -2174,6 +2638,40 @@ class Registry:
                     )
             except Exception as error:  # источник не должен ронять запуск
                 problems.append(f"{source.id}: {error}")
+
+        for source, expected_generation in отложенный_код:
+            stored = self._absolute(source.stored_path)
+            if not stored.exists():
+                problems.append(f"{source.id}: файл источника пропал ({stored})")
+                continue
+            configuration = self._владелец_источника_кода(source)
+            expected = (
+                конфигурации_этого_restore.get(configuration)
+                if configuration is not None
+                else None
+            )
+            if configuration is None or expected is None:
+                problems.append(
+                    f"{source.id}: индекс кода не поднят — "
+                    "в этом восстановлении нет его конфигурации."
+                )
+                continue
+            # Код уже лежит на диске; архив могли убрать. Source
+            # и generation публикуются атомарно только пока identity
+            # владельца совпадает с этим проходом restore.
+            try:
+                self._поднять_или_построить_модули(
+                    source,
+                    stored,
+                    configuration=configuration,
+                    expected_configuration_source=expected,
+                    expected_generation=expected_generation,
+                )
+            except Exception as error:
+                problems.append(
+                    f"{source.id}: индекс кода не поднят и не "
+                    f"построен — {error}"
+                )
 
         if self.syntax_versions or self.query_source is not None:
             # Сборка не должна ронять запуск: испорченная справка версии
@@ -2301,6 +2799,15 @@ class Registry:
         return orphans
 
     def startup(self) -> list[str]:
+        """Восстановить реестр один раз, не мешая параллельным `resolve()`."""
+        with self._startup_lock:
+            self._startup_generation += 1
+            поколение = self._startup_generation
+            результат = self._startup_once()
+            self._last_successful_startup_generation = поколение
+            return результат
+
+    def _startup_once(self) -> list[str]:
         # Каталог приёма создаёт сервер, как и каталог данных в `save()`.
         # Пока каталога нет, `scan()` возвращает пустой список, блок
         # «Входящие выгрузки» на странице не рисуется вовсе — и человек не

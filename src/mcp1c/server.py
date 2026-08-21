@@ -23,6 +23,7 @@ import sys
 
 from mcp.server import MCPServer
 from pydantic import Field
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse
 from typing import Annotated
@@ -304,7 +305,11 @@ def _add_http_routes(server: MCPServer, registry: Registry) -> None:
         if request.headers.get("x-admin-token") != token:
             return JSONResponse({"error": "Неверный токен."}, status_code=403)
 
-        messages = registry.startup()
+        # Восстановление обычных источников и подъём валидного кэша остаются
+        # синхронными операциями. Уводим их с event loop: иначе ручной reload
+        # на это время останавливает и `/health`, и MCP-запросы. Холодная
+        # сборка индексов модулей внутри `startup()` уже запускается фоном.
+        messages = await run_in_threadpool(registry.startup)
         # Состав источников называется тем же способом, что в `/health`:
         # иначе два ответа про одно и то же расходятся, и первым же
         # расхождением стала пустая строка вместо «справки платформы нет».

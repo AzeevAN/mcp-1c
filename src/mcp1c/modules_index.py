@@ -2317,7 +2317,20 @@ def поднять_индексы(
                 caller, _line, target = posting[offset : offset + 3]
                 if caller in compiled_indexes:
                     raise ValueError("скомпилированный модуль содержит вызов")
-                if target == caller and key not in declared_by_module[caller]:
+                # У общего модуля `target == caller` получается двумя
+                # доказанными путями: неквалифицированным локальным вызовом
+                # и квалифицированным `ИмяОбщего.Метод()`. В компактном
+                # posting квалификатор намеренно не хранится, поэтому второй
+                # случай нельзя отвергать только из-за отсутствия объявления
+                # в самом вызывающем модуле. Для остальных видов self-цель
+                # по-прежнему обязана подтверждаться локальным объявлением.
+                if (
+                    target == caller
+                    and key not in declared_by_module[caller]
+                    and not оглавление.модули[caller].startswith(
+                        "ОбщийМодуль."
+                    )
+                ):
                     raise ValueError("локальная цель вызова не объявлена")
                 if target != -1 and target != caller:
                     target_address = оглавление.модули[target]

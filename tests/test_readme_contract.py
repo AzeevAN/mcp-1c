@@ -27,15 +27,17 @@ def test_список_исходников_называет_индексы_вы�
 def test_источник_кода_называет_обратный_поиск_и_события_форм():
     текст = (Path(__file__).parents[1] / "README.md").read_text(encoding="utf-8")
     раздел = текст.split("## Источники независимы", 1)[1].split("\n## ", 1)[0]
-    строка = next(
-        line
+    строки = [
+        line.lower()
         for line in раздел.splitlines()
-        if line.startswith("| Код конфигурации или расширения |")
-    ).lower()
+        if line.startswith(("| Код конфигурации |", "| Код расширения |"))
+    ]
 
-    assert "места вызовов" in строка
-    assert "события форм" in строка
-    assert "get_callers" in строка
+    assert len(строки) == 2
+    assert "места вызовов" in строки[0]
+    assert "события форм" in строки[0]
+    assert "get_callers" in строки[0]
+    assert "места вызовов" in строки[1]
 
 
 def test_публичный_дизайн_языка_запросов_не_обещает_заглушку_индекса_кода():

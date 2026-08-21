@@ -25,6 +25,7 @@ import re
 import shutil
 import tempfile
 import threading
+import time
 import uuid
 import xml.etree.ElementTree as ET
 import zipfile
@@ -2995,11 +2996,16 @@ class Registry:
         взять заново негде, и молчаливое удаление стоило бы дороже занятого
         места. Но место они занимают, и человек должен об этом знать.
         """
-        used = {
-            self._absolute(source.stored_path).resolve()
-            for source in self.sources.values()
-            if source.stored_path
-        }
+        # Словарь меняется при remove/readd. Под замком копируем только строки;
+        # `resolve`, `rglob`, `is_file` и `stat` остаются снаружи, потому что
+        # могут обратиться к файловой системе и надолго задержаться.
+        with self._lock:
+            stored_paths = tuple(
+                source.stored_path
+                for source in self.sources.values()
+                if source.stored_path
+            )
+        used = {self._absolute(path).resolve() for path in stored_paths}
         orphans: list[tuple[Path, int]] = []
         if not self.sources_dir.is_dir():
             return orphans
@@ -3017,6 +3023,44 @@ class Registry:
             результат = self._startup_once()
             self._last_successful_startup_generation = поколение
             return результат
+
+    def wait_for_module_builds(self, timeout: float = 90.0) -> bool:
+        """Дождаться фоновых индексов кода, но не дольше ``timeout`` секунд.
+
+        Серверу ждать не нужно: во время холодной сборки он показывает
+        прогресс. Одноразовый CLI-процесс иначе завершился бы вместе с
+        daemon-потоками до результата и до записи четырёх файлов кэша.
+        Ожидание публичное и ограниченное; замок реестра на ``join`` не
+        удерживается.
+        """
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+            raise ValueError("timeout должен быть неотрицательным числом")
+        if timeout < 0:
+            raise ValueError("timeout должен быть неотрицательным числом")
+        deadline = time.monotonic() + timeout
+        while True:
+            with self._lock:
+                for source_id, thread in tuple(self._module_builds.items()):
+                    if thread.ident is not None and not thread.is_alive():
+                        if self._module_builds.get(source_id) is thread:
+                            self._module_builds.pop(source_id, None)
+                threads = tuple(dict.fromkeys(self._module_builds.values()))
+            if not threads:
+                return True
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            for thread in threads:
+                if thread is threading.current_thread():
+                    return False
+                # Между регистрацией и `start()` есть несколько инструкций.
+                # `join()` на ещё не запущенном потоке бросает RuntimeError;
+                # коротко уступаем процессор и перечитываем registry.
+                if thread.ident is None:
+                    time.sleep(min(0.001, remaining))
+                    break
+                thread.join(timeout=max(0.0, deadline - time.monotonic()))
 
     def _startup_once(self) -> list[str]:
         # Каталог приёма создаёт сервер, как и каталог данных в `save()`.

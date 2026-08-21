@@ -160,7 +160,66 @@ class _ListConfigurationsCapture:
     syntax: object | None
     query_source: object | None
     syntax_versions: tuple[tuple[str, object], ...]
+    sources: tuple[tuple[object, "SourceStateRow", str], ...]
     rows: tuple[_ConfigurationCodeSnapshot, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CodeStateRow:
+    """Одна атомарная строка состояния кода для человеческих оболочек."""
+
+    configuration: str
+    corpus: str
+    state: str
+
+
+@dataclass(frozen=True, slots=True)
+class SourceStateRow:
+    """Учётная строка источника, скопированная под замком реестра."""
+
+    id: str
+    kind: str
+    platform: str
+    items_total: int
+    warnings: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SourcesSnapshot:
+    """Единый неизменяемый снимок таблицы источников и состояний кода."""
+
+    configuration_names: tuple[str, ...]
+    sources: tuple[SourceStateRow, ...]
+    code: tuple[CodeStateRow, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigurationStateRow:
+    """Структурированная строка ``reg-list`` одного поколения."""
+
+    name: str
+    version: str
+    platform: str
+    objects: int
+    edges: int
+    loaded_at: str
+    syntax_present: bool
+    syntax_platform: str
+    syntax_relation: str
+    syntax_hidden: int
+    notes: tuple[str, ...]
+    code: tuple[CodeStateRow, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigurationsSnapshot:
+    """Всё, что печатает ``reg-list``, после одного финального CAS."""
+
+    rows: tuple[ConfigurationStateRow, ...]
+    syntax_platforms: tuple[str, ...]
+    syntax_source_platform: str
+    syntax_items: int
+    query_pages: int | None
 
 
 _OVERRIDE_KINDS = ("Вместо", "После", "Перед", "ИзменениеИКонтроль")
@@ -345,6 +404,18 @@ def _list_capture_is_current_locked(
         or registry.query_source is not capture.query_source
     ):
         return False
+    current_sources = tuple(
+        sorted(registry.sources.values(), key=lambda source: source.id)
+    )
+    if len(current_sources) != len(capture.sources) or any(
+        source is not captured_source
+        or _source_state_row(source) != captured_row
+        or source.stored_path != captured_stored_path
+        for source, (captured_source, captured_row, captured_stored_path) in zip(
+            current_sources, capture.sources
+        )
+    ):
+        return False
     current_versions = tuple(
         sorted(registry.syntax_versions.items(), key=lambda item: item[0])
     )
@@ -386,6 +457,17 @@ def _list_capture_is_current_locked(
     return True
 
 
+def _source_state_row(source) -> SourceStateRow:
+    """Скопировать изменяемую ``Source`` в значение для публикации."""
+    return SourceStateRow(
+        id=source.id,
+        kind=source.kind,
+        platform=source.platform,
+        items_total=source.items_total,
+        warnings=tuple(source.warnings),
+    )
+
+
 def _capture_configurations_list(
     registry: Registry,
 ) -> _ListConfigurationsCapture | None:
@@ -397,6 +479,12 @@ def _capture_configurations_list(
         query_source = registry.query_source
         syntax_versions = tuple(
             sorted(registry.syntax_versions.items(), key=lambda item: item[0])
+        )
+        sources = tuple(
+            (source, _source_state_row(source), source.stored_path)
+            for source in sorted(
+                registry.sources.values(), key=lambda source: source.id
+            )
         )
     try:
         rows = tuple(
@@ -410,6 +498,7 @@ def _capture_configurations_list(
         syntax=syntax,
         query_source=query_source,
         syntax_versions=syntax_versions,
+        sources=sources,
         rows=rows,
     )
 
@@ -490,6 +579,141 @@ def list_configurations(registry: Registry) -> str:
         "Источники списка конфигураций изменились дважды; повторите запрос "
         "после завершения загрузки."
     )
+
+
+def _code_state_rows(
+    capture: _ListConfigurationsCapture,
+) -> tuple[CodeStateRow, ...]:
+    rows: list[CodeStateRow] = []
+    for snapshot in capture.rows:
+        rows.append(
+            CodeStateRow(
+                snapshot.context.name,
+                "Основная конфигурация",
+                _code_state_text(snapshot.modules),
+            )
+        )
+        rows.extend(
+            CodeStateRow(
+                snapshot.context.name,
+                f"Расширение {extension_name}",
+                _code_state_text(view),
+            )
+            for extension_name, view in snapshot.extensions
+        )
+    return tuple(rows)
+
+
+def _configurations_result(
+    capture: _ListConfigurationsCapture,
+) -> ConfigurationsSnapshot:
+    code = _code_state_rows(capture)
+    rows = []
+    for snapshot in capture.rows:
+        context = snapshot.context
+        configuration = context.configuration
+        config = configuration.config
+        rows.append(
+            ConfigurationStateRow(
+                name=config.name,
+                version=config.version,
+                platform=config.platform,
+                objects=len(config),
+                edges=len(configuration.graph.edges),
+                loaded_at=configuration.source.loaded_at,
+                syntax_present=context.syntax is not None,
+                syntax_platform=context.syntax_platform,
+                syntax_relation=context.syntax_relation,
+                syntax_hidden=context.syntax_hidden,
+                notes=tuple(context.notes()),
+                code=tuple(
+                    state for state in code if state.configuration == config.name
+                ),
+            )
+        )
+    syntax = capture.syntax
+    return ConfigurationsSnapshot(
+        rows=tuple(rows),
+        syntax_platforms=(
+            tuple(syntax.syntax.platforms) if syntax is not None else ()
+        ),
+        syntax_source_platform=(
+            syntax.source.platform if syntax is not None else ""
+        ),
+        syntax_items=len(syntax.syntax) if syntax is not None else 0,
+        query_pages=(
+            capture.query_source.items_total
+            if capture.query_source is not None
+            else None
+        ),
+    )
+
+
+def configurations_snapshot(registry: Registry) -> ConfigurationsSnapshot:
+    """Метаданные, справки и все корпуса кода одним снимком для CLI."""
+    for _ in range(2):
+        capture = _capture_configurations_list(registry)
+        if capture is None:
+            continue
+        result = _configurations_result(capture)
+        with registry._lock:
+            if _list_capture_is_current_locked(registry, capture):
+                return result
+    raise RegistryError(
+        "Источники списка конфигураций изменились дважды; повторите запрос "
+        "после завершения загрузки."
+    )
+
+
+def sources_snapshot(registry: Registry) -> SourcesSnapshot:
+    """Источники и состояния основной конфигурации/расширений одним поколением.
+
+    Тяжёлые агрегаты считаются снаружи ``_lock``. Финальный CAS проверяет
+    личности и скалярные поля всех Source, конфигураций и корпусов кода, так
+    что таблица источников не может показать новое поколение рядом со старыми
+    счётчиками.
+    """
+    for _ in range(2):
+        prepared = _capture_sources_snapshot(registry)
+        if prepared is None:
+            continue
+        result, capture = prepared
+        if _sources_snapshot_is_current(registry, capture):
+            return result
+    raise RegistryError(
+        "Источники изменились дважды; повторите запрос после завершения "
+        "загрузки."
+    )
+
+
+def _capture_sources_snapshot(
+    registry: Registry,
+) -> tuple[SourcesSnapshot, _ListConfigurationsCapture] | None:
+    """Подготовить снимок и маркер для позднего CAS после файловых обходов."""
+    capture = _capture_configurations_list(registry)
+    if capture is None:
+        return None
+    return (
+        SourcesSnapshot(
+            configuration_names=tuple(name for name, _ in capture.configurations),
+            sources=tuple(row for _, row, _ in capture.sources),
+            code=_code_state_rows(capture),
+        ),
+        capture,
+    )
+
+
+def _sources_snapshot_is_current(
+    registry: Registry, capture: _ListConfigurationsCapture
+) -> bool:
+    """Финальный CAS подготовленного снимка; тяжёлой работы внутри нет."""
+    with registry._lock:
+        return _list_capture_is_current_locked(registry, capture)
+
+
+def configuration_code_states(registry: Registry) -> tuple[CodeStateRow, ...]:
+    """Состояния основной конфигурации и расширений из общего снимка."""
+    return sources_snapshot(registry).code
 
 
 def _render_configurations_list(capture: _ListConfigurationsCapture) -> str:

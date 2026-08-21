@@ -45,3 +45,43 @@ def test_публичный_дизайн_языка_запросов_не_обе
 
     assert "Индекс модулей: не подключён" not in текст
     assert "состояние индекса кода" in текст
+
+
+def test_readme_описывает_все_ключи_и_домены_стенда():
+    текст = (Path(__file__).parents[1] / "README.md").read_text(encoding="utf-8")
+    раздел = текст.split("## Замер качества поиска — `mcp1c.bench`", 1)[1]
+    раздел = раздел.split("\n## ", 1)[0]
+
+    for key in (
+        "--data",
+        "--sets",
+        "--auto",
+        "--config",
+        "--extension",
+        "--limit",
+        "--save",
+        "--baseline",
+        "--check-notes",
+    ):
+        assert key in раздел
+    assert "modules-procedures" in раздел
+    assert all(domain in раздел for domain in ("syntax", "metadata", "procedures"))
+
+
+def test_readme_фиксирует_воспроизводимый_baseline_трёх_процедурных_запросов():
+    текст = (Path(__file__).parents[1] / "README.md").read_text(encoding="utf-8")
+    раздел = текст.split("### Качество поиска", 1)[1].split("\n## ", 1)[0]
+    строка = next(
+        line for line in раздел.splitlines() if line.startswith("| Процедуры модулей |")
+    )
+
+    assert "| 3 | 0% | 0% | 0% | 33,3% | 0,047619 | 0% |" in строка
+    assert "2026-08-21" in раздел
+    assert "--sets modules-procedures" in раздел
+    assert "три ручных" in раздел.lower()
+    assert re.search(
+        r"вся таблица\s+снята.*точной командой выше",
+        раздел.lower(),
+        re.DOTALL,
+    )
+    assert "предваритель" not in раздел.lower()

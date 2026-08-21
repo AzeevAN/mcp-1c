@@ -34,18 +34,26 @@
 
     PYTHONPATH=src .venv/bin/python -m mcp1c.bench \\
         --data data --config РозницаДляКазахстана \\
-        --auto --sets query-language --check-notes
+        --auto --sets query-language,roznica-metadata,modules-procedures \\
+        --check-notes
+
+Все ручные наборы используют schema v1 с явным ``domain``: ``syntax``,
+``metadata`` или ``procedures``. Имя файла не выбирает индекс. Для процедур
+публичный ``expected`` содержит bare-имя BSL без имени модуля; стенд
+разворачивает его во все точные адреса выбранного корпуса без учёта регистра.
 
 Порогов в assert здесь нет намеренно: наборы запросов — не тесты. Проценты
 ломались бы от каждой правки словаря, поэтому стенд печатает цифры, а решение
-принимает человек. Ненулевой код возврата — только на расхождении пометок:
-это не качество поиска, а враньё в файле.
+принимает человек. Код 1 означает расхождение пометок, код 2 — что замер
+целиком не состоялся: набор, выбранный корпус или индекс негодны. Качество
+поиска остаётся цифрой, а не порогом CI.
 """
 
 from __future__ import annotations
 
 import json
 import random
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -59,12 +67,30 @@ from .syntax_model import QUERY_LANGUAGE_KINDS
 # наступали — стенд отчитался «0 запросов, 0% первым», и ноль уехал в доску
 # задач как настоящий результат.
 QUERIES_DIR = Path(__file__).resolve().parents[2] / "tests" / "queries"
+SET_SCHEMA_VERSION = 1
+REPORT_SCHEMA_VERSION = 1
+DOMAINS = frozenset({"syntax", "metadata", "procedures"})
+
 
 @dataclass(slots=True)
 class Case:
     query: str
     expected: list[str]
     note: str = ""
+    # Машинная фиксация текущего baseline используется только вместе с
+    # --check-notes. Это не порог качества pytest: изменение места требует
+    # человека обновить объяснение в публичном наборе.
+    expected_miss: bool = False
+    expected_rank: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Suite:
+    """Один именованный набор запросов с явно заданным поисковым доменом."""
+
+    name: str
+    domain: str
+    cases: list[Case]
 
 
 @dataclass(slots=True)
@@ -78,6 +104,10 @@ class CaseResult:
 
     query: str
     expected: list[str]
+    # Имя набора и домен входят в устойчивый ключ baseline. Один и тот же
+    # текст запроса закономерно встречается в справке, метаданных и коде.
+    suite: str = ""
+    domain: str = ""
     got: list[str] = field(default_factory=list)
     # Место правильного ответа, 0 — первое. `None` — не нашёлся в пределах
     # `limit`.
@@ -91,6 +121,8 @@ class CaseResult:
     # выигрывает 5 вопросов из 27».
     foreign_first: bool = False
     note: str = ""
+    expected_miss: bool = False
+    expected_rank: int | None = None
 
     def to_dict(self) -> dict:
         # Выдача сохраняется только там, где она о чём-то говорит: у запроса,
@@ -98,7 +130,9 @@ class CaseResult:
         # автоматических наборах это разница между 74 МБ и полутора: 61 тысяча
         # запросов по десять идентификаторов в каждом.
         got = [] if self.rank == 0 else self.got[:3]
-        return {
+        payload = {
+            "suite": self.suite,
+            "domain": self.domain,
             "query": self.query,
             "expected": list(self.expected),
             "got": got,
@@ -107,10 +141,19 @@ class CaseResult:
             "foreign_first": self.foreign_first,
             "note": self.note,
         }
+        # Автоматические наборы дают десятки тысяч строк. Пустые ожидания
+        # baseline не должны раздувать каждый сохранённый результат.
+        if self.expected_miss:
+            payload["expected_miss"] = True
+        if self.expected_rank is not None:
+            payload["expected_rank"] = self.expected_rank
+        return payload
 
     @classmethod
     def from_dict(cls, raw: dict) -> "CaseResult":
         return cls(
+            suite=raw["suite"],
+            domain=raw["domain"],
             query=raw["query"],
             expected=list(raw.get("expected") or []),
             got=list(raw.get("got") or []),
@@ -118,6 +161,8 @@ class CaseResult:
             separation=raw.get("separation", 0.0),
             foreign_first=raw.get("foreign_first", False),
             note=raw.get("note", ""),
+            expected_miss=raw.get("expected_miss", False),
+            expected_rank=raw.get("expected_rank"),
         )
 
 
@@ -215,7 +260,14 @@ def _domain(kind: str) -> str:
     return "query" if kind in QUERY_LANGUAGE_KINDS else "platform"
 
 
-def run(index: SearchIndex, cases: list[Case], limit: int = 10) -> Report:
+def run(
+    index: SearchIndex,
+    cases: list[Case],
+    limit: int = 10,
+    *,
+    suite: str = "",
+    domain: str = "",
+) -> Report:
     report = Report()
     started = time.perf_counter()
 
@@ -242,6 +294,8 @@ def run(index: SearchIndex, cases: list[Case], limit: int = 10) -> Report:
 
         report.results.append(
             CaseResult(
+                suite=suite,
+                domain=domain,
                 query=case.query,
                 expected=list(case.expected),
                 got=got,
@@ -249,6 +303,8 @@ def run(index: SearchIndex, cases: list[Case], limit: int = 10) -> Report:
                 separation=separation,
                 foreign_first=foreign,
                 note=case.note,
+                expected_miss=case.expected_miss,
+                expected_rank=case.expected_rank,
             )
         )
 
@@ -323,19 +379,105 @@ def cases_from_syntax_ambiguous(syntax, sample: int = 0, seed: int = 1) -> list[
     return cases
 
 
-def load_cases(path: str | Path) -> list[Case]:
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
-    return [
-        Case(
-            query=item["query"],
-            expected=list(item["expected"]),
-            note=item.get("note", ""),
+def load_cases(path: str | Path) -> Suite:
+    """Читает единственную явную схему набора запросов.
+
+    Старый корневой JSON-массив намеренно не поддерживается: домен из имени
+    файла угадывался и мог незаметно направить запросы не в тот индекс.
+    """
+    path = Path(path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(
+            f"Набор {path.name} использует старый формат. Требуются поля "
+            "schema_version, domain и cases."
         )
-        for item in payload
-    ]
+    if (
+        type(payload.get("schema_version")) is not int
+        or payload.get("schema_version") != SET_SCHEMA_VERSION
+    ):
+        raise ValueError(
+            f"Набор {path.name}: schema_version должна быть "
+            f"{SET_SCHEMA_VERSION}."
+        )
+    domain = payload.get("domain")
+    if domain not in DOMAINS:
+        raise ValueError(
+            f"Набор {path.name}: domain должна быть одной из "
+            f"{', '.join(sorted(DOMAINS))}."
+        )
+    raw_cases = payload.get("cases")
+    if not isinstance(raw_cases, list) or not raw_cases:
+        raise ValueError(f"Набор {path.name} не содержит запросов в cases.")
+
+    cases: list[Case] = []
+    запросы: set[str] = set()
+    for номер, item in enumerate(raw_cases, 1):
+        if not isinstance(item, dict):
+            raise ValueError(f"Набор {path.name}, cases[{номер}]: нужна запись.")
+        query = item.get("query")
+        if not isinstance(query, str) or not query.strip():
+            raise ValueError(
+                f"Набор {path.name}, cases[{номер}]: query должна быть "
+                "непустой строкой."
+            )
+        ключ = query.strip().casefold()
+        if ключ in запросы:
+            raise ValueError(
+                f"Набор {path.name}: запрос «{query}» повторяется без учёта "
+                "регистра."
+            )
+        запросы.add(ключ)
+        expected = item.get("expected")
+        if (
+            not isinstance(expected, list)
+            or not expected
+            or any(
+                not isinstance(value, str) or not value.strip()
+                for value in expected
+            )
+        ):
+            raise ValueError(
+                f"Набор {path.name}, cases[{номер}]: expected должен быть "
+                "непустым массивом строк."
+            )
+        note = item.get("note", "")
+        if not isinstance(note, str):
+            raise ValueError(
+                f"Набор {path.name}, cases[{номер}]: note должна быть строкой."
+            )
+        expected_miss = item.get("expected_miss", False)
+        expected_rank = item.get("expected_rank")
+        if type(expected_miss) is not bool:
+            raise ValueError(
+                f"Набор {path.name}, cases[{номер}]: expected_miss должен "
+                "быть true или false."
+            )
+        if expected_rank is not None and (
+            type(expected_rank) is not int or expected_rank < 0
+        ):
+            raise ValueError(
+                f"Набор {path.name}, cases[{номер}]: expected_rank должен "
+                "быть целым числом от нуля."
+            )
+        if expected_miss and expected_rank is not None:
+            raise ValueError(
+                f"Набор {path.name}, cases[{номер}]: expected_miss и "
+                "expected_rank взаимоисключающие."
+            )
+        cases.append(
+            Case(
+                query=query.strip(),
+                expected=list(dict.fromkeys(value.strip() for value in expected)),
+                note=note,
+                expected_miss=expected_miss,
+                expected_rank=expected_rank,
+            )
+        )
+    return Suite(name=path.stem, domain=domain, cases=cases)
 
 
-def load_curated(name: str) -> list[Case]:
+def load_curated(name: str) -> Suite:
     """Живой набор запросов по имени без расширения: `query-language`.
 
     Отсутствие файла — ошибка, а не пустой набор. Молчаливый ноль здесь хуже
@@ -350,7 +492,7 @@ def load_curated(name: str) -> list[Case]:
             if QUERIES_DIR.exists()
             else "каталога нет — наборы не входят в образ, мерить нужно из репозитория"
         )
-        raise FileNotFoundError(f"Набор `{name}` не найден. Есть: {доступные}")
+        raise ValueError(f"Набор `{name}` не найден. Есть: {доступные}")
     return load_cases(path)
 
 
@@ -363,31 +505,76 @@ def save_report(report: Report, path: str | Path, *, title: str = "") -> Path:
     Дата в имя файла не зашивается: её кладёт вызывающий. Здесь — только
     содержимое, иначе тесты пришлось бы привязывать ко времени.
     """
+    if any(
+        result.domain not in DOMAINS or not result.suite
+        for result in report.results
+    ):
+        raise ValueError(
+            "Каждый результат отчёта должен содержать suite и корректный domain."
+        )
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
+        "schema_version": REPORT_SCHEMA_VERSION,
         "title": title,
         "elapsed": report.elapsed,
         "results": [r.to_dict() for r in report.results],
     }
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    временный: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as stream:
+            временный = Path(stream.name)
+            stream.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+        временный.replace(path)
+        временный = None
+    finally:
+        if временный is not None:
+            try:
+                временный.unlink(missing_ok=True)
+            except OSError:
+                # Исходный отчёт не подменён. Ошибку записи выше вернёт CLI;
+                # расходный временный файл не должен скрывать её второй.
+                pass
     return path
 
 
 def load_report(path: str | Path) -> Report:
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
-    return Report(
-        results=[CaseResult.from_dict(r) for r in payload.get("results") or []],
-        elapsed=payload.get("elapsed", 0.0),
-    )
+    if (
+        not isinstance(payload, dict)
+        or type(payload.get("schema_version")) is not int
+        or payload.get("schema_version") != REPORT_SCHEMA_VERSION
+    ):
+        raise ValueError(
+            "Отчёт имеет неподдерживаемую schema_version; перезапустите стенд "
+            "и сохраните новый baseline."
+        )
+    try:
+        results = [CaseResult.from_dict(r) for r in payload.get("results") or []]
+    except (KeyError, TypeError) as error:
+        raise ValueError(
+            "Отчёт schema v1 повреждён: нет identity результата."
+        ) from error
+    if any(result.domain not in DOMAINS or not result.suite for result in results):
+        raise ValueError(
+            "Отчёт schema v1 содержит неизвестный domain или пустой suite."
+        )
+    return Report(results=results, elapsed=payload.get("elapsed", 0.0))
 
 
 @dataclass(slots=True)
 class Move:
     """Один запрос, сменивший место между прогонами."""
 
+    suite: str
+    domain: str
     query: str
     before: int | None
     after: int | None
@@ -404,7 +591,10 @@ class Move:
             return "промах" if rank is None else str(rank + 1)
 
         знак = "+" if self.better else "-"
-        return f"  {знак} «{self.query}»: {место(self.before)} -> {место(self.after)}"
+        return (
+            f"  {знак} [{self.domain}/{self.suite}] «{self.query}»: "
+            f"{место(self.before)} -> {место(self.after)}"
+        )
 
 
 def compare(before: Report, after: Report) -> list[Move]:
@@ -414,14 +604,21 @@ def compare(before: Report, after: Report) -> list[Move]:
     молча сравнивала бы разные запросы — и показывала бы движение там, где
     его нет.
     """
-    старые = {r.query: r.rank for r in before.results}
+    старые = {(r.suite, r.domain, r.query): r.rank for r in before.results}
     ходы = [
-        Move(query=r.query, before=старые[r.query], after=r.rank)
+        Move(
+            suite=r.suite,
+            domain=r.domain,
+            query=r.query,
+            before=старые[(r.suite, r.domain, r.query)],
+            after=r.rank,
+        )
         for r in after.results
-        if r.query in старые and старые[r.query] != r.rank
+        if (r.suite, r.domain, r.query) in старые
+        and старые[(r.suite, r.domain, r.query)] != r.rank
     ]
     # Сначала ухудшения: регресс важнее прочитать, чем выигрыш.
-    return sorted(ходы, key=lambda m: (m.better, m.query))
+    return sorted(ходы, key=lambda m: (m.better, m.domain, m.suite, m.query))
 
 
 # ------------------------------------------------------------ сверка пометок
@@ -443,10 +640,17 @@ def check_notes(report: Report) -> list[str]:
     расхождения = []
     for r in report.results:
         note = r.note.strip()
-        if not note:
-            continue
         место = "промах" if r.rank is None else str(r.rank + 1)
-        if note.startswith(_ПОМЕТКА_ПРОМАХ) and r.rank == 0:
+        if r.expected_miss and r.rank is not None:
+            расхождения.append(
+                f"«{r.query}»: ожидался промах, а место {место}"
+            )
+        elif r.expected_rank is not None and r.rank != r.expected_rank:
+            ожидалось = r.expected_rank + 1
+            расхождения.append(
+                f"«{r.query}»: ожидалось {ожидалось}, а место {место}"
+            )
+        elif note.startswith(_ПОМЕТКА_ПРОМАХ) and r.rank == 0:
             расхождения.append(
                 f"«{r.query}»: пометка говорит «{_ПОМЕТКА_ПРОМАХ}», "
                 f"а запрос первый"
@@ -476,7 +680,148 @@ def build_index(data_dir: str | Path, config: str | None = None):
     return registry, context
 
 
-def _наборы(имена: list[str]) -> dict[str, list[Case]]:
+def _procedure_cases(loaded, suite: Suite) -> list[Case]:
+    """Разворачивает bare-имена BSL в точные адреса текущего корпуса.
+
+    BSL нечувствителен к регистру, а имя не уникально между модулями. Поэтому
+    публичный набор хранит безопасное имя процедуры, а стенд считает верным
+    любой точный адрес с этим именем. Строка с ``::`` — точный адрес для
+    синтетических и локальных наборов.
+    """
+    результат: list[Case] = []
+    for case in suite.cases:
+        addresses: list[str] = []
+        for expected in case.expected:
+            if "::" in expected:
+                # Канонический точный адрес — обычный O(1) lookup. Fallback
+                # нужен только синтетическому case-insensitive адресу и
+                # ограничен одноимёнными записями оглавления, а не всем
+                # 49-тысячным SearchIndex.
+                найден = loaded.поиск.docs.get(expected)
+                if найден is not None:
+                    найденные = [найден.id]
+                else:
+                    модуль, _, имя = expected.rpartition("::")
+                    найденные = [
+                        address
+                        for запись in loaded.оглавление.по_имени(имя)
+                        if запись.экспорт
+                        and запись.модуль.casefold() == модуль.casefold()
+                        and (
+                            address := f"{запись.модуль}::{запись.имя}"
+                        ) in loaded.поиск.docs
+                    ]
+            else:
+                найденные = [
+                    address
+                    for запись in loaded.оглавление.по_имени(expected)
+                    if запись.экспорт
+                    and (
+                        address := f"{запись.модуль}::{запись.имя}"
+                    ) in loaded.поиск.docs
+                ]
+            if not найденные:
+                raise ValueError(
+                    f"Набор {suite.name}: ожидаемая процедура `{expected}` "
+                    "не найдена в выбранном корпусе кода."
+                )
+            addresses.extend(найденные)
+        результат.append(
+            Case(
+                query=case.query,
+                expected=list(dict.fromkeys(addresses)),
+                note=case.note,
+                expected_miss=case.expected_miss,
+                expected_rank=case.expected_rank,
+            )
+        )
+    return результат
+
+
+def _loaded_procedure_index(registry, config: str | None, extension: str | None):
+    """Снимок выбранного корпуса без поиска и дискового I/O под замком."""
+    from .registry import RegistryError
+
+    context = registry.resolve(config, extension=extension)
+    loaded = context.extension if extension is not None else context.modules
+    if loaded is None:
+        что = f"расширения {extension}" if extension is not None else "конфигурации"
+        raise RegistryError(f"Индекс кода {что} не загружен.")
+    if not loaded.готов:
+        if loaded.source.status == "error":
+            # Source.error хранит техническую причину приёма и может
+            # содержать абсолютный путь. Стенд публично сообщает состояние,
+            # а подробность остаётся на административной странице источника.
+            raise RegistryError(
+                "Индекс кода не построен; подробность доступна в состоянии "
+                "источника."
+            )
+        обработано, всего = loaded.прогресс
+        raise RegistryError(
+            "Индекс кода ещё строится: обработано "
+            f"{обработано} из {всего} элементов текущего этапа."
+        )
+    if loaded.поиск is None:
+        raise RegistryError("Готовый индекс кода неполон; перезагрузите источник.")
+    return context, loaded
+
+
+def _procedure_snapshot_is_current(registry, context, loaded) -> bool:
+    """Короткий CAS identity после прогона; тяжёлая работа сделана без lock."""
+    configuration = context.configuration
+    if configuration is None:
+        return False
+    with registry._lock:
+        return (
+            registry.configurations.get(context.name) is configuration
+            and registry.sources.get(configuration.source.id) is configuration.source
+            and registry.sources.get(loaded.source.id) is loaded.source
+            and registry.modules.get(loaded.source.id) is loaded
+        )
+
+
+def run_procedures(
+    registry,
+    suite_or_path: Suite | str | Path,
+    *,
+    config: str | None = None,
+    extension: str | None = None,
+    limit: int = 10,
+) -> Report:
+    """Прогоняет набор целиком по одному поколению procedure SearchIndex."""
+    from .registry import RegistryError
+
+    suite = (
+        suite_or_path
+        if isinstance(suite_or_path, Suite)
+        else load_cases(suite_or_path)
+    )
+    if suite.domain != "procedures":
+        raise ValueError(
+            f"Набор {suite.name}: run_procedures требует domain procedures."
+        )
+    if not suite.cases:
+        raise ValueError(f"Набор {suite.name} не содержит запросов.")
+
+    for _ in range(2):
+        context, loaded = _loaded_procedure_index(registry, config, extension)
+        cases = _procedure_cases(loaded, suite)
+        report = run(
+            loaded.поиск,
+            cases,
+            limit=limit,
+            suite=suite.name,
+            domain=suite.domain,
+        )
+        if _procedure_snapshot_is_current(registry, context, loaded):
+            return report
+    raise RegistryError(
+        "Код или конфигурация изменились во время замера дважды; "
+        "повторите прогон после завершения загрузки."
+    )
+
+
+def _наборы(имена: list[str]) -> dict[str, Suite]:
     return {имя: load_curated(имя) for имя in имена}
 
 
@@ -492,12 +837,22 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--data", default="data", help="каталог данных сервера")
     parser.add_argument(
-        "--config", default=None, help="конфигурация для замера по метаданным"
+        "--config",
+        default=None,
+        help="конфигурация для замера по метаданным и коду",
+    )
+    parser.add_argument(
+        "--extension",
+        default=None,
+        help="расширение: отдельный корпус кода для наборов domain=procedures",
     )
     parser.add_argument(
         "--sets",
         default="",
-        help="ручные наборы через запятую, без расширения: query-language",
+        help=(
+            "ручные наборы schema v1 через запятую, без расширения: "
+            "query-language,modules-procedures"
+        ),
     )
     parser.add_argument(
         "--auto",
@@ -537,35 +892,101 @@ def main(argv: list[str] | None = None) -> int:
         # набор по метаданным — зависит целиком.
         print(f"{ошибка}\nУкажите её флагом --config.")
         return 2
+    except OSError:
+        print("Стенд не запущен: не удалось прочитать каталог данных.")
+        return 2
 
-    наборы: dict[str, list[Case]] = {}
-    if args.sets:
-        наборы.update(_наборы([s.strip() for s in args.sets.split(",") if s.strip()]))
-    if args.auto:
-        if context.syntax is None:
-            parser.error("--auto нечем мерить: справка не загружена")
-        syntax = context.syntax.syntax
-        наборы["точные имена справки"] = cases_from_syntax(syntax)
-        наборы["одноимённые"] = cases_from_syntax_ambiguous(syntax)
+    try:
+        наборы: dict[str, Suite] = {}
+        if args.sets:
+            наборы.update(
+                _наборы([s.strip() for s in args.sets.split(",") if s.strip()])
+            )
+        if args.auto:
+            if context.syntax is None:
+                raise ValueError("--auto нечем мерить: справка не загружена")
+            syntax = context.syntax.syntax
+            наборы["auto-syntax-exact"] = Suite(
+                name="auto-syntax-exact",
+                domain="syntax",
+                cases=cases_from_syntax(syntax),
+            )
+            наборы["auto-syntax-ambiguous"] = Suite(
+                name="auto-syntax-ambiguous",
+                domain="syntax",
+                cases=cases_from_syntax_ambiguous(syntax),
+            )
+        if args.extension and not any(
+            suite.domain == "procedures" for suite in наборы.values()
+        ):
+            raise ValueError(
+                "--extension применим только к набору domain=procedures."
+            )
+        пустые = [suite.name for suite in наборы.values() if not suite.cases]
+        if пустые:
+            raise ValueError(
+                "Наборы не содержат запросов: " + ", ".join(sorted(пустые))
+            )
+
+        # Сначала полностью готовятся ВСЕ отчёты. Ошибка последнего набора не
+        # должна оставлять на stdout или на диске правдоподобный частичный
+        # прогон первых наборов.
+        отчёты: dict[str, Report] = {}
+        for имя, suite in наборы.items():
+            if suite.domain == "procedures":
+                отчёт = run_procedures(
+                    registry,
+                    suite,
+                    config=args.config,
+                    extension=args.extension,
+                    limit=args.limit,
+                )
+            else:
+                index = _индекс_под_набор(context, suite)
+                отчёт = run(
+                    index,
+                    suite.cases,
+                    limit=args.limit,
+                    suite=suite.name,
+                    domain=suite.domain,
+                )
+            отчёты[имя] = отчёт
+        ходы = None
+        if args.baseline:
+            прежний = load_report(args.baseline)
+            свежий = Report(
+                results=[r for о in отчёты.values() for r in о.results]
+            )
+            ходы = compare(прежний, свежий)
+        сохранённый_путь = None
+        if args.save:
+            общий = Report(
+                results=[r for о in отчёты.values() for r in о.results],
+                elapsed=sum(о.elapsed for о in отчёты.values()),
+            )
+            # Запись предшествует любому отчёту на stdout: отказ диска
+            # отменяет весь запуск так же атомарно, как негодный набор.
+            сохранённый_путь = save_report(
+                общий, args.save, title=", ".join(отчёты)
+            )
+    except (ValueError, RegistryError) as ошибка:
+        print(f"Стенд не запущен: {ошибка}")
+        return 2
+    except OSError:
+        print(
+            "Стенд не запущен: не удалось прочитать набор, baseline "
+            "или записать отчёт."
+        )
+        return 2
 
     расхождения: list[str] = []
-    отчёты: dict[str, Report] = {}
-    for имя, cases in наборы.items():
-        # Ручной набор по языку запросов ищется по справке, набор по
-        # метаданным — по конфигурации. Индекс выбирается по тому, что в
-        # наборе ожидают, а не по имени файла: имя врёт легко.
-        index = _индекс_под_набор(context, cases)
-        отчёт = run(index, cases, limit=args.limit)
-        отчёты[имя] = отчёт
+    for имя, отчёт in отчёты.items():
         print(отчёт.render(имя, show_failures=5))
         print()
         if args.check_notes:
             расхождения += check_notes(отчёт)
 
     if args.baseline:
-        прежний = load_report(args.baseline)
-        свежий = Report(results=[r for о in отчёты.values() for r in о.results])
-        ходы = compare(прежний, свежий)
         print("=== сравнение с прошлым прогоном ===")
         if not ходы:
             print("  места не изменились")
@@ -579,34 +1000,28 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {строка}")
         print()
 
-    if args.save:
-        общий = Report(
-            results=[r for о in отчёты.values() for r in о.results],
-            elapsed=sum(о.elapsed for о in отчёты.values()),
-        )
-        путь = save_report(общий, args.save, title=", ".join(отчёты))
-        print(f"прогон записан: {путь}")
+    if сохранённый_путь is not None:
+        print(f"прогон записан: {сохранённый_путь}")
 
-    # Ненулевой код только на расхождении пометок: качество поиска — цифра для
-    # человека, а не порог для CI. Пороги в процентах ломались бы от каждой
-    # правки словаря, это записано в AGENTS.md.
+    # После успешной подготовки код 1 означает только расхождение пометок:
+    # качество поиска — цифра для человека, а не порог для CI. Ошибки входа и
+    # корпуса уже вернулись выше с кодом 2, не оставив частичного отчёта.
     return 1 if расхождения else 0
 
 
-def _индекс_под_набор(context, cases: list[Case]) -> SearchIndex:
-    """Какой индекс отвечает на этот набор — справка или метаданные."""
-    по_справке = any(
-        doc_id.startswith(("query/", "objects/"))
-        for case in cases
-        for doc_id in case.expected
-    )
-    if по_справке:
+def _индекс_под_набор(context, suite: Suite) -> SearchIndex:
+    """Индекс выбирается по явному domain, а не содержимому или имени файла."""
+    if suite.domain == "syntax":
         if context.syntax is None:
-            raise SystemExit("набор спрашивает справку, а она не загружена")
+            raise ValueError("набор спрашивает справку, а она не загружена")
         return context.syntax.index
-    if context.configuration is None:
-        raise SystemExit("набор спрашивает метаданные, а конфигурация не загружена")
-    return context.configuration.index
+    if suite.domain == "metadata":
+        if context.configuration is None:
+            raise ValueError(
+                "набор спрашивает метаданные, а конфигурация не загружена"
+            )
+        return context.configuration.index
+    raise ValueError(f"Неподдерживаемый domain набора: {suite.domain}.")
 
 
 if __name__ == "__main__":

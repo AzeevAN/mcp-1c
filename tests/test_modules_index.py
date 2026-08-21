@@ -8,6 +8,8 @@
 """
 from __future__ import annotations
 
+from array import array
+
 from mcp1c.modules_index import Вызовы, Оглавление, Формы, построить_поиск
 
 
@@ -122,6 +124,50 @@ def test_вызов_платформенного_метода_не_создаё�
     assert в.рёбер == 0
 
 
+def test_выбор_мест_считает_полный_остаток_без_полной_материализации(
+    monkeypatch,
+):
+    модули = ["ОбщийМодуль.Бета", "ОбщийМодуль.Альфа", "ОбщийМодуль.Цель"]
+    сырые = array("i")
+    подтверждённых = 0
+    неразрешённых = 0
+    for номер in range(100_000):
+        модуль = номер % 2
+        цель = 2 if номер % 3 else -1
+        сырые.extend((модуль, номер + 1, цель))
+        if цель == -1:
+            неразрешённых += 1
+        else:
+            подтверждённых += 1
+    вызовы = Вызовы(
+        модули,
+        {"обработать": сырые},
+        100_000,
+        подтверждённых,
+    )
+    настоящее = вызовы._место
+    создано = 0
+
+    def считать(*args):
+        nonlocal создано
+        создано += 1
+        return настоящее(*args)
+
+    monkeypatch.setattr(Вызовы, "_место", lambda self, *args: считать(*args))
+
+    выбор = вызовы.выбрать("Обработать", "ОбщийМодуль.Цель", limit=7)
+
+    assert выбор.подтверждённых_всего == подтверждённых
+    assert выбор.неразрешённых_всего == неразрешённых
+    assert len(выбор.подтверждённые) == 7
+    assert len(выбор.неразрешённые) == 7
+    assert выбор.пропущено_в_модулях == 2
+    assert создано <= 14
+    assert [item.модуль for item in выбор.подтверждённые] == sorted(
+        item.модуль for item in выбор.подтверждённые
+    )
+
+
 # --- Формы (задача 7): обработчики событий из Form.xml -------------------
 
 
@@ -183,6 +229,73 @@ def test_событие_вложенного_элемента_тоже_прив�
     ф = Формы.построить(tmp_path)
     адрес = "Справочник.Пример.Форма.ФормаЭлемента"
     assert ф.обработчик(адрес, "КнопкаНажатие") == ("OnClick",)
+
+
+def test_привязки_обработчика_сохраняют_владельца_события(tmp_path):
+    """Верхний Events принадлежит форме, вложенный — ближайшему элементу."""
+    ext = tmp_path / "Catalogs" / "Пример" / "Forms" / "ФормаЭлемента" / "Ext"
+    (ext / "Form").mkdir(parents=True)
+    (ext / "Form" / "Module.bsl").write_text(
+        "Процедура ОбщийОбработчик()\nКонецПроцедуры\n", encoding="utf-8"
+    )
+    (ext / "Form.xml").write_text(
+        "<Form><Events><Event name=\"OnOpen\">ОбщийОбработчик</Event></Events>"
+        "<ChildItems><UsualGroup name=\"Группа\"><ChildItems>"
+        "<Button name=\"Кнопка\"><Events>"
+        "<Event name=\"OnClick\">ОбщийОбработчик</Event>"
+        "</Events></Button></ChildItems></UsualGroup></ChildItems></Form>",
+        encoding="utf-8",
+    )
+
+    формы = Формы.построить(tmp_path)
+    привязки = формы.привязки(
+        "Справочник.Пример.Форма.ФормаЭлемента", "общийобработчик"
+    )
+
+    assert [(п.элемент, п.событие) for п in привязки] == [
+        (None, "OnOpen"),
+        ("Кнопка", "OnClick"),
+    ]
+    assert формы.обработчик(
+        "Справочник.Пример.Форма.ФормаЭлемента", "ОбщийОбработчик"
+    ) == ("OnOpen", "OnClick")
+
+
+def test_служебные_обвязки_не_становятся_владельцами_и_не_теряют_события(
+    tmp_path,
+):
+    ext = tmp_path / "Catalogs" / "Пример" / "Forms" / "ФормаЭлемента" / "Ext"
+    (ext / "Form").mkdir(parents=True)
+    (ext / "Form" / "Module.bsl").write_text("", encoding="utf-8")
+    (ext / "Form.xml").write_text(
+        "<Form><ChildItems>"
+        "<ContextMenu name=\"МенюФормы\"><Events>"
+        "<Event name=\"OnFormMenu\">Общий</Event>"
+        "</Events></ContextMenu>"
+        "<Button name=\"Кнопка\">"
+        "<ExtendedTooltip name=\"Подсказка\"><Events>"
+        "<Event name=\"OnTip\">Общий</Event>"
+        "</Events></ExtendedTooltip>"
+        "<ContextMenu name=\"МенюКнопки\"><Events>"
+        "<Event name=\"OnMenu\">Общий</Event>"
+        "</Events></ContextMenu>"
+        "</Button></ChildItems></Form>",
+        encoding="utf-8",
+    )
+
+    формы = Формы.построить(tmp_path)
+    привязки = формы.привязки(
+        "Справочник.Пример.Форма.ФормаЭлемента", "Общий"
+    )
+
+    assert [(item.элемент, item.событие) for item in привязки] == [
+        (None, "OnFormMenu"),
+        ("Кнопка", "OnTip"),
+        ("Кнопка", "OnMenu"),
+    ]
+    assert формы.обработчик(
+        "Справочник.Пример.Форма.ФормаЭлемента", "Общий"
+    ) == ("OnFormMenu", "OnTip", "OnMenu")
 
 
 def test_техническая_обвязка_элемента_не_элемент_формы(tmp_path):
@@ -272,6 +385,27 @@ def test_формы_переживают_запись_и_подъём(корен
     assert сост.реквизиты == ["Объект"]
     assert сост.элементы == ["ГруппаРеквизитов"]
     assert поднятые.обработчик(адрес, "ПриОткрытии") == ("OnOpen",)
+
+
+def test_владельцы_событий_переживают_запись_и_подъём(tmp_path):
+    ext = tmp_path / "Catalogs" / "Пример" / "Forms" / "ФормаЭлемента" / "Ext"
+    (ext / "Form").mkdir(parents=True)
+    (ext / "Form" / "Module.bsl").write_text("", encoding="utf-8")
+    (ext / "Form.xml").write_text(
+        "<Form><ChildItems><Button name=\"Кнопка\"><Events>"
+        "<Event name=\"OnClick\">Нажатие</Event>"
+        "</Events></Button></ChildItems></Form>",
+        encoding="utf-8",
+    )
+    путь = tmp_path / "forms.marshal"
+    Формы.построить(tmp_path).записать(путь)
+
+    поднятые = Формы.прочитать(путь)
+    привязки = поднятые.привязки(
+        "Справочник.Пример.Форма.ФормаЭлемента", "Нажатие"
+    )
+
+    assert [(п.элемент, п.событие) for п in привязки] == [("Кнопка", "OnClick")]
 
 
 # --- Поиск словами (задача 8): SearchIndex по экспортным процедурам ------

@@ -11,3 +11,28 @@ def test_счётчики_pytest_в_readme_совпадают():
 
     assert статус is not None and раздел is not None
     assert статус.group(1) == раздел.group(1)
+
+
+def test_список_исходников_называет_индексы_вызовов_и_форм():
+    текст = (Path(__file__).parents[1] / "README.md").read_text(encoding="utf-8")
+    дерево = текст.split("# 5. Как устроено", 1)[1].split("```", 2)[1]
+
+    assert "modules_index.py" in дерево
+    строка = next(line for line in дерево.splitlines() if "modules_index.py" in line)
+    assert "вызов" in строка.lower()
+    assert "форм" in строка.lower()
+    assert "get_callers" in строка
+
+
+def test_источник_кода_называет_обратный_поиск_и_события_форм():
+    текст = (Path(__file__).parents[1] / "README.md").read_text(encoding="utf-8")
+    раздел = текст.split("## Источники независимы", 1)[1].split("\n## ", 1)[0]
+    строка = next(
+        line
+        for line in раздел.splitlines()
+        if line.startswith("| Код конфигурации или расширения |")
+    ).lower()
+
+    assert "места вызовов" in строка
+    assert "события форм" in строка
+    assert "get_callers" in строка

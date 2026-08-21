@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from mcp1c.registry import Registry
-from mcp1c.server import build_server
+from mcp1c.server import INSTRUCTIONS, build_server
 from mcp1c.store import save_syntax
 from mcp1c.syntax_model import SyntaxIndex, SyntaxItem
 
@@ -136,7 +136,7 @@ async def test_карточка_процедуры_зарегистрирова�
     инструменты,
 ):
     все = await инструменты()
-    assert len(все) == 9
+    assert len(все) == 10
     (карточка,) = [tool for tool in все if tool.name == "get_procedure"]
 
     schema = карточка.input_schema or {}
@@ -154,3 +154,47 @@ async def test_карточка_процедуры_зарегистрирова�
     assert свойства["lines"]["maximum"] == 200
     assert "оглавлен" in (карточка.description or "").lower()
     assert "тел" in (карточка.description or "").lower()
+
+
+async def test_обратный_поиск_вызовов_зарегистрирован_десятым_инструментом(
+    инструменты,
+):
+    все = await инструменты()
+    assert [tool.name for tool in все][2:5] == [
+        "search_procedures",
+        "get_procedure",
+        "get_callers",
+    ]
+    (вызовы,) = [tool for tool in все if tool.name == "get_callers"]
+
+    schema = вызовы.input_schema or {}
+    свойства = schema.get("properties") or {}
+    assert set(свойства) == {"address", "config", "extension", "limit"}
+    assert set(schema.get("required") or []) == {"address"}
+    assert свойства["limit"]["minimum"] == 1
+    assert свойства["limit"]["maximum"] == 50
+    assert "мест" in (вызовы.description or "").lower()
+    assert "привяз" in (вызовы.description or "").lower()
+
+
+async def test_tools_list_сохраняет_полный_порядок_десяти_инструментов(
+    инструменты,
+):
+    assert [tool.name for tool in await инструменты()] == [
+        "list_configurations",
+        "search_objects",
+        "search_procedures",
+        "get_procedure",
+        "get_callers",
+        "get_object",
+        "get_related",
+        "compare_configurations",
+        "search_syntax",
+        "get_syntax",
+    ]
+
+
+def test_instructions_называет_get_object_шестым_шагом():
+    assert "6. `get_object`" in INSTRUCTIONS
+    assert "Не пропускайте шаг 6" in INSTRUCTIONS
+    assert "Не пропускайте шаг 5" not in INSTRUCTIONS

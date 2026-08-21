@@ -57,6 +57,33 @@ class ProcedureOutline:
     events: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class CallerSite:
+    """Одно место вызова с владельцем, выведенным из оглавления."""
+
+    module: str
+    line: int
+    owner: str | None
+    partial_owner: bool = False
+    ambiguous_owner: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class MetadataBinding:
+    """Привязка процедуры подпиской или регламентным заданием."""
+
+    kind: str
+    source: str
+
+
+@dataclass(frozen=True, slots=True)
+class FormHandlerBinding:
+    """Событие формы и элемент; ``element=None`` означает саму форму."""
+
+    element: str | None
+    event: str
+
+
 def _code_warnings(warnings: list[str]) -> list[str]:
     """Предупреждения стоят над кодом, достоверность которого меняют."""
     if not warnings:
@@ -246,6 +273,170 @@ def render_procedure_search(
             )
             out.extend([подсказка, ""])
 
+    return "\n".join(out).rstrip() + "\n"
+
+
+def render_callers(
+    configuration: str,
+    address: str,
+    *,
+    code_sites: list[CallerSite],
+    confirmed_total: int,
+    omitted_modules: int,
+    unresolved_sites: list[CallerSite],
+    unresolved_total: int,
+    metadata: list[MetadataBinding],
+    form_bindings: list[FormHandlerBinding],
+    form_state: str,
+    warnings: list[str],
+    extension: str | None = None,
+) -> str:
+    """Три независимых источника обратных связей, без ложного объединения."""
+    источник = (
+        f"расширение {extension} конфигурации {configuration}"
+        if extension
+        else f"конфигурация {configuration}"
+    )
+    out = _code_warnings(warnings)
+    out.extend([f"# Кто вызывает `{address}`", "", f"Источник кода: {источник}.", ""])
+
+    def владелец(site: CallerSite) -> str:
+        if site.ambiguous_owner:
+            return "владелец не разрешён по границам строки"
+        if site.owner is not None:
+            return f"`{site.owner}`"
+        if site.partial_owner:
+            return (
+                "точный владелец неизвестен: граница частично "
+                "разобранной процедуры не найдена"
+            )
+        return "вне тел разобранных процедур"
+
+    out.extend(["## Места вызова в коде", ""])
+    if unresolved_sites:
+        out.append(
+            f"> Для одноимённой процедуры найдено мест, где цель не удалось "
+            f"разрешить до модуля: {unresolved_total}. Они не входят в число "
+            "подтверждённых мест и не приписаны запрошенному адресу."
+        )
+        out.append("")
+    elif unresolved_total:
+        out.extend(
+            [
+                f"> Для одноимённой процедуры найдено мест без разрешённой "
+                f"цели: {unresolved_total}. Предел занят подтверждёнными "
+                "местами, поэтому ниже показан только этот счётчик.",
+                "",
+            ]
+        )
+
+    if code_sites:
+        out.extend([f"Подтверждённых мест: {confirmed_total}.", ""])
+        текущий = None
+        for site in code_sites:
+            if site.module != текущий:
+                текущий = site.module
+                out.extend([f"### `{site.module}`", ""])
+            out.append(f"- строка {site.line} — {владелец(site)}")
+        out.append("")
+    elif unresolved_total:
+        out.extend(
+            [
+                "Подтверждённых мест именно для запрошенного модуля нет; "
+                "есть только одноимённые места без разрешённой цели.",
+                "",
+            ]
+        )
+    else:
+        out.extend(["Мест вызова в коде нет.", ""])
+
+    if confirmed_total > len(code_sites):
+        out.extend(
+            [
+                f"Показан предел; есть ещё {confirmed_total - len(code_sites)} "
+                f"в {omitted_modules} модулях.",
+                "",
+            ]
+        )
+
+    if unresolved_total:
+        out.extend(["Одноимённые места без подтверждённой цели:", ""])
+        for site in unresolved_sites:
+            out.append(
+                f"- `{site.module}`: строка {site.line} — {владелец(site)}"
+            )
+        if unresolved_sites:
+            out.append("")
+        if unresolved_total > len(unresolved_sites):
+            out.extend(
+                [
+                    f"Есть ещё {unresolved_total - len(unresolved_sites)} "
+                    "одноимённых мест без подтверждённой цели.",
+                    "",
+                ]
+            )
+
+    out.extend(["## Привязки из метаданных", ""])
+    if metadata:
+        if extension:
+            out.extend(
+                [
+                    "Привязки ниже взяты из метаданных основной конфигурации; "
+                    "сама привязка не доказывает, что тело выбранного "
+                    "расширения выполняется. Это зависит от состава "
+                    "заимствования и аннотации; код других расширений в "
+                    "ответ не добавлен.",
+                    "",
+                ]
+            )
+        подписи = {
+            "handler": "подписка на событие",
+            "method": "регламентное задание",
+        }
+        for binding in metadata:
+            out.append(
+                f"- {подписи[binding.kind]} `{binding.source}` → `{address}`"
+            )
+        out.append("")
+    else:
+        out.extend(["Привязок в метаданных нет.", ""])
+
+    out.extend(["## Обработчик формы", ""])
+    if form_bindings:
+        for binding in form_bindings:
+            владелец = "форма" if binding.element is None else f"элемент `{binding.element}`"
+            out.append(f"- {владелец}: событие `{binding.event}`")
+        out.append("")
+    elif form_state == "not_form":
+        out.extend(["Запрошенный модуль не является модулем формы.", ""])
+    elif form_state == "missing":
+        out.extend(
+            [
+                "Для модуля формы нет структуры Form.xml; доступен только его код.",
+                "",
+            ]
+        )
+    elif form_state == "broken":
+        out.extend(["Структура Form.xml повреждена; привязки прочитать нельзя.", ""])
+    else:
+        out.extend(["Процедура не назначена обработчиком события формы.", ""])
+
+    if (
+        confirmed_total == 0
+        and unresolved_total == 0
+        and not metadata
+        and not form_bindings
+        and form_state in ("ready", "not_form")
+    ):
+        out.extend(
+            [
+                "Мест вызова и привязок нет. Это не значит, что процедуру не "
+                "вызывают: динамические вызовы строкой (`Выполнить`, "
+                "`ОписаниеОповещения`, `ПодключитьОбработчикОжидания`) не "
+                "индексируются.",
+                "",
+            ]
+        )
     return "\n".join(out).rstrip() + "\n"
 
 

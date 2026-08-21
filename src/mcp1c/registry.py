@@ -794,7 +794,10 @@ class Registry:
         # Соотношение версий не меняется, пока не сменились источники, а его
         # вычисление — перебор всех элементов справки. Без кэша это давало
         # 16 мс на каждый вызов любого инструмента.
-        self._relation_cache: dict[str, tuple[str, int]] = {}
+        self._relation_cache: dict[
+            str,
+            tuple[LoadedConfiguration, LoadedSyntax | None, str, int],
+        ] = {}
 
     # ------------------------------------------------------------- источники
 
@@ -2378,82 +2381,123 @@ class Registry:
         конфигурации есть загруженные расширения — молчаливый выбор «первого
         попавшегося» здесь так же не годится, как и для самой конфигурации.
         """
-        with self._lock:
-            names = sorted(self.configurations)
+        requested_name = name
+        for _ in range(2):
+            with self._lock:
+                names = sorted(self.configurations)
+                syntax = self.syntax
+                query_source = self.query_source
 
-        if not names:
-            if not require_configuration and self.syntax is not None:
+                if not names:
+                    if not require_configuration and syntax is not None:
+                        return ResolvedContext(
+                            configuration=None,
+                            syntax=syntax,
+                            syntax_relation=RELATION_NONE,
+                        )
+                    чего_нет = ["выгрузка структуры конфигурации"]
+                    if syntax is None:
+                        чего_нет.append("справка платформы")
+                    if query_source is None:
+                        чего_нет.append("справка по языку запросов")
+                    raise RegistryError(
+                        "Не загружено ни одной конфигурации. Не хватает: "
+                        + ", ".join(чего_нет)
+                        + ". Выгрузку готовит обработка из `exporter-1c/`, "
+                        "справки берутся из каталога установки платформы "
+                        "(`shcntx_ru.hbk`, `shquery_ru.hbk`); загружаются "
+                        "командой `reg-add`."
+                    )
+
+                selected_name = requested_name
+                if selected_name is None:
+                    if len(names) > 1:
+                        raise RegistryError(
+                            "Загружено несколько конфигураций, укажите нужную "
+                            "явно: " + ", ".join(names)
+                        )
+                    selected_name = names[0]
+
+                loaded = self.configurations.get(selected_name)
+                if loaded is None:
+                    raise RegistryError(
+                        f"Конфигурация не загружена: {selected_name}. "
+                        f"Доступны: {', '.join(names)}"
+                    )
+                modules_key = f"{selected_name}:modules"
+                modules = self.modules.get(modules_key)
+                extension_key = None
+                расширение = None
+                if extension is not None:
+                    extension_key = (
+                        f"{selected_name}:ext:{index_cache.safe_name(extension)}"
+                    )
+                    расширение = self.modules.get(extension_key)
+                cached = self._relation_cache.get(selected_name)
+                if (
+                    cached is not None
+                    and cached[0] is loaded
+                    and cached[1] is syntax
+                ):
+                    relation, hidden = cached[2], cached[3]
+                else:
+                    relation = None
+                    hidden = 0
+
+            if relation is None:
+                relation, hidden = self._compute_relation(loaded, syntax)
+
+            with self._lock:
+                unchanged = (
+                    self.configurations.get(selected_name) is loaded
+                    and self.syntax is syntax
+                    and self.modules.get(modules_key) is modules
+                    and (
+                        extension_key is None
+                        or self.modules.get(extension_key) is расширение
+                    )
+                    and (
+                        requested_name is not None
+                        or sorted(self.configurations) == names
+                    )
+                )
+                if not unchanged:
+                    continue
+                self._relation_cache[selected_name] = (
+                    loaded,
+                    syntax,
+                    relation,
+                    hidden,
+                )
                 return ResolvedContext(
-                    configuration=None,
-                    syntax=self.syntax,
-                    syntax_relation=RELATION_NONE,
+                    configuration=loaded,
+                    syntax=syntax,
+                    syntax_relation=relation,
+                    syntax_hidden=hidden,
+                    modules=modules,
+                    extension=расширение,
                 )
-            # На пустом сервере не хватает не только выгрузки: справок тоже
-            # нет, и человек у первого запуска узнавал об этом лишь со второго
-            # захода — отказ приходит отсюда раньше, чем до дела доходит текст
-            # про источники. Называем всё недостающее сразу.
-            чего_нет = ["выгрузка структуры конфигурации"]
-            if self.syntax is None:
-                чего_нет.append("справка платформы")
-            if self.query_source is None:
-                чего_нет.append("справка по языку запросов")
-            raise RegistryError(
-                "Не загружено ни одной конфигурации. Не хватает: "
-                + ", ".join(чего_нет)
-                + ". Выгрузку готовит обработка из `exporter-1c/`, справки "
-                "берутся из каталога установки платформы (`shcntx_ru.hbk`, "
-                "`shquery_ru.hbk`); загружаются командой `reg-add`."
-            )
 
-        if name is None:
-            if len(names) > 1:
-                raise RegistryError(
-                    "Загружено несколько конфигураций, укажите нужную явно: "
-                    + ", ".join(names)
-                )
-            name = names[0]
-
-        loaded = self.configurations.get(name)
-        if loaded is None:
-            raise RegistryError(
-                f"Конфигурация не загружена: {name}. Доступны: {', '.join(names)}"
-            )
-
-        relation, hidden = self._compare_platforms(loaded)
-        with self._lock:
-            modules = self.modules.get(f"{name}:modules")
-            расширение = None
-            if extension is not None:
-                ключ = f"{name}:ext:{index_cache.safe_name(extension)}"
-                расширение = self.modules.get(ключ)
-        return ResolvedContext(
-            configuration=loaded,
-            syntax=self.syntax,
-            syntax_relation=relation,
-            syntax_hidden=hidden,
-            modules=modules,
-            extension=расширение,
+        raise RegistryError(
+            "Источники изменились во время разрешения контекста дважды; "
+            "повторите запрос."
         )
 
-    def _compare_platforms(self, loaded: LoadedConfiguration) -> tuple[str, int]:
-        cached = self._relation_cache.get(loaded.config.name)
-        if cached is not None:
-            return cached
-        result = self._compute_relation(loaded)
-        self._relation_cache[loaded.config.name] = result
-        return result
-
-    def _compute_relation(self, loaded: LoadedConfiguration) -> tuple[str, int]:
-        if self.syntax is None:
+    def _compute_relation(
+        self,
+        loaded: LoadedConfiguration,
+        syntax: LoadedSyntax | None,
+    ) -> tuple[str, int]:
+        if syntax is None:
             return RELATION_NONE, 0
 
         config_platform = parse_version(loaded.config.platform)[:3]
-        syntax_platform = parse_version(self.syntax.source.platform)[:3]
+        syntax_platform = parse_version(syntax.source.platform)[:3]
 
         # Справок может быть несколько: если среди них есть справка релиза
         # конфигурации, ответ по ней точный — независимо от того, какая из
         # загруженных самая свежая.
-        if config_platform and self.syntax.syntax.has_help_for(loaded.config.platform):
+        if config_platform and syntax.syntax.has_help_for(loaded.config.platform):
             return RELATION_EXACT, 0
 
         if not syntax_platform:
@@ -2465,7 +2509,7 @@ class Registry:
         if syntax_platform == config_platform:
             return RELATION_EXACT, 0
         if syntax_platform > config_platform:
-            hidden = self.syntax.syntax.hidden_for(loaded.config.platform)
+            hidden = syntax.syntax.hidden_for(loaded.config.platform)
             return RELATION_NEWER, hidden
         return RELATION_OLDER, 0
 

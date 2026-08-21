@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 import difflib
+from bisect import bisect_right
+from dataclasses import dataclass
 
 from . import replacements
 from .bsl_lex import Процедура, прочитать_модуль, разобрать
@@ -27,10 +29,14 @@ from .registry import (
     RegistryError,
 )
 from .render import (
+    CallerSite,
     DETAIL_LEVELS,
     FIELDS,
+    FormHandlerBinding,
+    MetadataBinding,
     ProcedureMatch,
     ProcedureOutline,
+    render_callers,
     render_module_toc,
     render_object,
     render_procedure_card,
@@ -1228,6 +1234,251 @@ def get_procedure(
     raise RegistryError(
         "Код изменился во время чтения дважды; повторите запрос после "
         "завершения загрузки."
+    )
+
+
+_AMBIGUOUS_OWNER = object()
+
+
+@dataclass(slots=True)
+class _OwnerBoundaries:
+    начала: list[int]
+    состояния: list[object | None]
+    частичные: list[int]
+
+
+def _build_owner_boundaries(records: list) -> _OwnerBoundaries:
+    """Кусочно-постоянное состояние владельца для двоичного поиска.
+
+    Перекрытия сворачиваются один раз при подготовке. Запрос по строке после
+    этого не идёт назад по тысячам подходящих процедур: одно состояние явно
+    говорит, что владелец единственный, отсутствует или неоднозначен.
+    """
+    записи = sorted(records, key=lambda item: (item.строка, item.позиция))
+    частичные = sorted(item.строка for item in записи if item.частичный)
+    события: dict[int, tuple[list[int], list[int]]] = {}
+    for номер, запись in enumerate(записи):
+        конец = запись.конец
+        if not конец:
+            continue
+        начала, удаления = события.setdefault(запись.строка, ([], []))
+        начала.append(номер)
+        начала, удаления = события.setdefault(конец + 1, ([], []))
+        удаления.append(номер)
+
+    координаты: list[int] = []
+    состояния: list[object | None] = []
+    активные: set[int] = set()
+    for строка in sorted(события):
+        добавления, удаления = события[строка]
+        активные.difference_update(удаления)
+        активные.update(добавления)
+        координаты.append(строка)
+        if len(активные) == 1:
+            состояния.append(записи[next(iter(активные))])
+        elif активные:
+            состояния.append(_AMBIGUOUS_OWNER)
+        else:
+            состояния.append(None)
+    return _OwnerBoundaries(координаты, состояния, частичные)
+
+
+def _caller_boundaries(
+    loaded: LoadedModules, modules: set[str]
+) -> dict[str, _OwnerBoundaries]:
+    """Интервальные состояния модулей для O(log P) поиска владельца."""
+    return {
+        module: _build_owner_boundaries(loaded.оглавление.модуля(module))
+        for module in modules
+    }
+
+
+def _caller_site(boundaries, место) -> CallerSite:
+    """Владелец места по непересекающимся строковым границам оглавления.
+
+    Вызов хранит только номер строки. Если на одной физической строке лежат
+    две процедуры, выбирать первую или последнюю было бы догадкой: обе
+    границы подходят. Частичная процедура тоже не даёт правой границы.
+    """
+    границы = boundaries[место.модуль]
+    позиция = bisect_right(границы.начала, место.строка) - 1
+    состояние = границы.состояния[позиция] if позиция >= 0 else None
+    if состояние is not None and состояние is not _AMBIGUOUS_OWNER:
+        запись = состояние
+        return CallerSite(
+            module=место.модуль,
+            line=место.строка,
+            owner=f"{место.модуль}::{запись.имя}",
+        )
+    if состояние is _AMBIGUOUS_OWNER:
+        return CallerSite(
+            module=место.модуль,
+            line=место.строка,
+            owner=None,
+            ambiguous_owner=True,
+        )
+
+    return CallerSite(
+        module=место.модуль,
+        line=место.строка,
+        owner=None,
+        partial_owner=bisect_right(границы.частичные, место.строка) > 0,
+    )
+
+
+def _metadata_bindings(context, module: str, name: str) -> list[MetadataBinding]:
+    if context.configuration is None:
+        return []
+    совпадения = [
+        MetadataBinding(kind=edge.kind, source=edge.source)
+        for edge in context.configuration.graph.edges
+        if edge.kind in ("handler", "method")
+        and edge.target.casefold() == module.casefold()
+        and edge.via.casefold() == name.casefold()
+    ]
+    return sorted(
+        совпадения,
+        key=lambda item: (item.kind, item.source.casefold(), item.source),
+    )
+
+
+def _form_bindings(loaded: LoadedModules, module: str, name: str):
+    lower_module = module.casefold()
+    if ".форма." not in lower_module and not lower_module.startswith("общаяформа."):
+        return [], "not_form"
+    форма = loaded.формы.состав(module)
+    if форма is None:
+        return [], "missing"
+    if форма.битая:
+        return [], "broken"
+    привязки = [
+        FormHandlerBinding(element=item.элемент, event=item.событие)
+        for item in loaded.формы.привязки(module, name)
+    ]
+    return привязки, "ready"
+
+
+def _get_callers_once(
+    registry: Registry,
+    address: str,
+    config: str | None,
+    extension: str | None,
+    limit: int,
+) -> str:
+    context, loaded = _selected_modules(registry, config, extension)
+    состояние = _modules_availability_message(registry, context, loaded)
+    if состояние is not None:
+        return состояние
+    if any(
+        индекс is None
+        for индекс in (loaded.оглавление, loaded.вызовы, loaded.формы)
+    ):
+        raise RegistryError("Готовый индекс кода неполон; перезагрузите источник.")
+
+    module, separator, name = address.partition("::")
+    module = module.strip()
+    name = name.strip()
+    if not separator or not module or not name or "::" in name:
+        raise RegistryError(
+            "address должен быть точным адресом процедуры `Модуль::Имя`; "
+            "адрес одного модуля для get_callers недостаточен."
+        )
+    canonical_module = next(
+        (
+            item
+            for item in loaded.оглавление.модули
+            if item.casefold() == module.casefold()
+        ),
+        None,
+    )
+    if canonical_module is None:
+        похожие = _similar_address(loaded, module, None)
+        хвост = (
+            ""
+            if not похожие
+            else "\n\nВозможно, имелось в виду:\n"
+            + "\n".join(f"- `{item}`" for item in похожие)
+        )
+        if not _modules_are_current(registry, loaded):
+            raise _StaleModules
+        return f"Модуль `{module}` в загруженном коде не найден.{хвост}\n"
+    module = canonical_module
+    записи_модуля = loaded.оглавление.модуля(module)
+    совпадения = [
+        запись for запись in записи_модуля if запись.имя.casefold() == name.casefold()
+    ]
+    if not совпадения:
+        похожие = _similar_address(loaded, module, name)
+        хвост = (
+            ""
+            if not похожие
+            else "\n\nВозможно, имелось в виду:\n"
+            + "\n".join(f"- `{item}`" for item in похожие)
+        )
+        if not _modules_are_current(registry, loaded):
+            raise _StaleModules
+        return f"В модуле `{module}` нет процедуры `{name}`.{хвост}\n"
+    canonical_name = совпадения[0].имя
+
+    выбор = loaded.вызовы.выбрать(canonical_name, module, limit=limit)
+    показанные_места = выбор.подтверждённые
+    остаток_бюджета = limit - len(показанные_места)
+    показанные_неразрешённые_места = выбор.неразрешённые[:остаток_бюджета]
+    границы = _caller_boundaries(
+        loaded,
+        {
+            item.модуль
+            for item in [*показанные_места, *показанные_неразрешённые_места]
+        },
+    )
+    показанные = [_caller_site(границы, item) for item in показанные_места]
+    показанные_неразрешённые = [
+        _caller_site(границы, item) for item in показанные_неразрешённые_места
+    ]
+    metadata = _metadata_bindings(context, module, canonical_name)
+    form_bindings, form_state = _form_bindings(loaded, module, canonical_name)
+    warnings = _module_warnings(context, loaded, записи_модуля)
+
+    # Все структуры ответа принадлежат одному объекту LoadedModules. Между
+    # чтением массивов и этой проверкой reparse/remove может заменить пакет;
+    # тогда весь запрос повторяется, а не смешивает два поколения.
+    if not _modules_are_current(registry, loaded):
+        raise _StaleModules
+    return render_callers(
+        context.name,
+        f"{module}::{canonical_name}",
+        code_sites=показанные,
+        confirmed_total=выбор.подтверждённых_всего,
+        omitted_modules=выбор.пропущено_в_модулях,
+        unresolved_sites=показанные_неразрешённые,
+        unresolved_total=выбор.неразрешённых_всего,
+        metadata=metadata,
+        form_bindings=form_bindings,
+        form_state=form_state,
+        warnings=warnings,
+        extension=extension,
+    )
+
+
+def get_callers(
+    registry: Registry,
+    address: str,
+    config: str | None = None,
+    extension: str | None = None,
+    limit: int = 20,
+) -> str:
+    """Подтверждённые вызовы, привязки метаданных и обработчики формы."""
+    limit = _procedure_limit(limit)
+    if not isinstance(address, str) or not address.strip():
+        raise RegistryError("address не может быть пустым.")
+    for _ in range(2):
+        try:
+            return _get_callers_once(registry, address, config, extension, limit)
+        except _StaleModules:
+            continue
+    raise RegistryError(
+        "Код изменился во время обратного поиска дважды; повторите запрос "
+        "после завершения загрузки."
     )
 
 

@@ -95,20 +95,19 @@ def test_readme_фиксирует_холодный_и_тёплый_замер_�
     text = _text()
 
     assert "2026-08-21" in text
-    assert "1 142,9 МиБ" in text
-    assert "1 130,6 МиБ" in text
-    assert "1 198 469 120 Б" in text and "1 185 505 280 Б" in text
-    assert "651,4 МиБ" in text
-    assert "517,3 МиБ" in text
-    assert "504,2 МиБ" in text
-    assert "492,2 МиБ" in text
-    assert "542 453 760 Б" in text and "528 736 256 Б" in text
-    assert "667 008 КиБ" in text
-    assert "669 056 КиБ" in text and "503 980 КиБ" in text
-    assert "699,1 МиБ" in text and "469,4 МиБ" in text
-    assert "125 с" in text and "19 с" in text
-    assert "три источника кода" in text and "12 файлов кэша" in text
-    assert "146 строк" in text
+    assert "1 339,6 МиБ" in text
+    assert "1 335,7 МиБ" in text
+    assert "1 404 649 472 Б" in text and "1 400 582 144 Б" in text
+    assert "744,3 МиБ" in text
+    assert "584,5 МиБ" in text
+    assert "571,4 МиБ" in text
+    assert "556,8 МиБ" in text
+    assert "612 851 712 Б" in text and "599 142 400 Б" in text
+    assert "762 180 КиБ" in text
+    assert "764 228 КиБ" in text and "570 180 КиБ" in text
+    assert "728,3 МиБ" in text and "533,2 МиБ" in text
+    assert "111,216 с" in text and "11,495 с" in text
+    assert "четыре источника кода" in text and "16 файлов кэша" in text
     assert "restart_count = 0" in text and "oom_killed = false" in text
     assert "ровно 0 строк" in text
     assert "`traceback`, `exception`, `critical` и `error`" in text

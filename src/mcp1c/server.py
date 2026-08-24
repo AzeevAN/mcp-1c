@@ -556,7 +556,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--transport",
         default="streamable-http",
-        choices=("streamable-http", "sse", "stdio"),
+        choices=("streamable-http", "stdio"),
     )
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
@@ -578,8 +578,6 @@ def main(argv: list[str] | None = None) -> int:
         # По stdio сервер разговаривает с одним клиентом, который его и
         # запустил: токен там не с кем проверять и не от кого защищаться.
         server.run(transport="stdio")
-    elif args.transport == "sse":
-        server.run(transport="sse", host=args.host, port=args.port)
     else:
         _run_streamable_http(server, host=args.host, port=args.port)
     return 0

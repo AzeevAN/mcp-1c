@@ -1305,11 +1305,28 @@ def _sources_page(
                     f"<td>{escape(строка.corpus)}"
                     f"<td>{escape(строка.state)}</tr>"
                 )
-                for line in tools.code_coverage_lines(строка.coverage):
-                    style = " class=warn" if line.startswith("ВНИМАНИЕ:") else ""
+                if строка.coverage is not None:
+                    if строка.coverage.has_limitations:
+                        parts.append(
+                            "<tr class=warn><td colspan=3>"
+                            "ВНИМАНИЕ: покрытие кода неполно; нулевой счётчик "
+                            "не доказывает отсутствие скрытых данных.</tr>"
+                        )
                     parts.append(
-                        f"<tr{style}><td colspan=3>{escape(line)}</tr>"
+                        "<tr><td colspan=3>"
+                        + _coverage_tables(строка.coverage)
+                        + "</tr>"
                     )
+                    if строка.journal:
+                        parts.append(
+                            "<tr><td colspan=3>Детальный разбор сохранён в "
+                            f"<code>data/{escape(строка.journal)}</code>.</tr>"
+                        )
+                    else:
+                        parts.append(
+                            "<tr class=warn><td colspan=3>Детальный журнал "
+                            "покрытия недоступен.</tr>"
+                        )
         else:
             parts.append("<tr><td colspan=3>Конфигурации не загружены.</tr>")
         parts.append("</table>")
@@ -1504,6 +1521,86 @@ def _sources_page(
     # обновление прекращается, иначе страница дёргалась бы вечно.
     работает = any(j.state in (JOB_READING, JOB_PARSING) for j in data.jobs)
     return _layout("Источники", "".join(parts), refresh=2 if работает else 0)
+
+
+def _coverage_percent(count: int, total: int) -> str:
+    if total == 0:
+        return "—"
+    return f"{count * 100 / total:.1f}%".replace(".", ",")
+
+
+def _coverage_table(
+    title: str,
+    rows: tuple[tuple[str, int, int], ...],
+) -> str:
+    parts = [
+        f'<table aria-label="Таблица покрытия: {escape(title)}">'
+        f"<caption>Таблица покрытия: {escape(title)}</caption>"
+        "<tr><th>Состояние<th>Количество<th>Доля</tr>"
+    ]
+    for label, count, total in rows:
+        parts.append(
+            f"<tr><td>{escape(label)}<td>{count} из {total}"
+            f"<td>{_coverage_percent(count, total)}</tr>"
+        )
+    parts.append("</table>")
+    return "".join(parts)
+
+
+def _coverage_tables(coverage: tools.CodeCoverage) -> str:
+    modules = coverage.modules_total
+    procedures = coverage.procedures_total
+    forms = coverage.forms_total
+    return "".join(
+        (
+            _coverage_table(
+                "модули и процедуры",
+                (
+                    ("Модули всего", modules, modules),
+                    ("С доступным исходником", coverage.modules_source_available, modules),
+                    ("Пустые", coverage.modules_empty, modules),
+                    ("Частично разобраны", coverage.modules_partial, modules),
+                    ("Не прочитаны", coverage.modules_unreadable, modules),
+                    ("Конфликтуют", coverage.modules_conflict, modules),
+                    (
+                        "Скомпилированы без исходника",
+                        coverage.modules_compiled_without_source,
+                        modules,
+                    ),
+                    ("Процедуры всего", procedures, procedures),
+                    (
+                        "Процедуры разобраны полностью",
+                        coverage.procedures_full,
+                        procedures,
+                    ),
+                    (
+                        "Процедуры разобраны частично",
+                        coverage.procedures_partial,
+                        procedures,
+                    ),
+                ),
+            ),
+            _coverage_table(
+                "структуры форм",
+                (
+                    ("Формы всего", forms, forms),
+                    ("Полностью разобраны", coverage.form_structures_full, forms),
+                    ("Частично разобраны", coverage.form_structures_partial, forms),
+                    ("Недоступны", coverage.form_structures_unread, forms),
+                ),
+            ),
+            _coverage_table(
+                "модули форм",
+                (
+                    ("Формы всего", forms, forms),
+                    ("Модуль прочитан", coverage.form_modules_read, forms),
+                    ("Модуль пуст", coverage.form_modules_empty, forms),
+                    ("Модуль отсутствует", coverage.form_modules_missing, forms),
+                    ("Модуль не прочитан", coverage.form_modules_unread, forms),
+                ),
+            ),
+        )
+    )
 
 
 def _dictionary_page(

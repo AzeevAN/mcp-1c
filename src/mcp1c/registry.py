@@ -37,7 +37,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable
 
-from . import index_cache, modules_index
+from . import coverage_log, index_cache, modules_index
 from .dictionary import Dictionary
 from .graph import Graph
 from .loader import ExportError, load
@@ -1678,6 +1678,63 @@ class Registry:
                 source.locator_generation,
             )
 
+    def _обновить_журнал_покрытия(
+        self,
+        source: Source,
+        loaded: LoadedModules,
+        *,
+        persist: bool,
+    ) -> bool:
+        """Записать журнал только пока Source и готовый пакет ещё актуальны."""
+        with self._modules_cache_lock:
+            with self._lock:
+                if (
+                    self.sources.get(source.id) is not source
+                    or self.modules.get(source.id) is not loaded
+                    or not loaded.готов
+                ):
+                    return False
+            записан = False
+            try:
+                if coverage_log.load_current(self.data_dir, source) is None:
+                    coverage_log.write(self.data_dir, loaded)
+                записан = True
+            except (OSError, ValueError, TypeError):
+                # Старый файл другого поколения не должен выглядеть
+                # актуальным после отказа замены. Удаление тоже best effort:
+                # identity при чтении всё равно не позволит его показать.
+                try:
+                    coverage_log.remove(self.data_dir, source.id)
+                except OSError:
+                    pass
+            with self._lock:
+                if (
+                    self.sources.get(source.id) is not source
+                    or self.modules.get(source.id) is not loaded
+                ):
+                    if записан:
+                        try:
+                            coverage_log.remove(self.data_dir, source.id)
+                        except OSError:
+                            pass
+                    return False
+                source.warnings = [
+                    warning
+                    for warning in source.warnings
+                    if warning != coverage_log.WRITE_WARNING
+                ]
+                if not записан:
+                    source.warnings.append(coverage_log.WRITE_WARNING)
+            if persist:
+                try:
+                    self.save()
+                except OSError:
+                    # Сам корпус уже опубликован предыдущей атомарной записью
+                    # registry.json. Потеря нового предупреждения или пути до
+                    # следующего старта не превращает кэш/журнал в источник.
+                    pass
+            return записан
+
     def _следующее_поколение_модулей(self, source_id: str) -> int:
         """Вызывается под `_lock`; возвращает новый монотонный номер."""
         поколение = self._modules_generation.get(source_id, 0) + 1
@@ -1879,6 +1936,9 @@ class Registry:
             except OSError:
                 pass
             self._журналировать_ограничения_кода(source, индексы)
+            self._обновить_журнал_покрытия(
+                source, loaded, persist=True
+            )
             return source
         finally:
             # До swap это убирает отменённый разбор; после swap пути
@@ -2109,6 +2169,9 @@ class Registry:
                         опубликовано = True
             if опубликовано:
                 self._журналировать_ограничения_кода(source, индексы)
+                self._обновить_журнал_покрытия(
+                    source, готовые, persist=False
+                )
         except Exception as error:
             with self._lock:
                 if self._поколение_актуально(source, поколение, строится):
@@ -2219,6 +2282,11 @@ class Registry:
                 опубликовано = True
             if опубликовано:
                 self._журналировать_ограничения_кода(source, индексы)
+                готовые = self.modules.get(source.id)
+                if готовые is not None:
+                    self._обновить_журнал_покрытия(
+                        source, готовые, persist=False
+                    )
             return
 
         файлы_каталога = modules_index.catalog_files(корень)
@@ -2907,6 +2975,15 @@ class Registry:
                 текущий = self.sources.pop(sid, None)
                 if текущий is None:
                     continue
+                if текущий.kind in (KIND_MODULES, KIND_EXTENSION):
+                    try:
+                        coverage_log.remove(self.data_dir, sid)
+                    except OSError:
+                        # Журнал диагностический и проверяется по identity;
+                        # невозможность удалить его не держит источник живым.
+                        logger.warning(
+                            "Журнал покрытия снятого корпуса не удалён."
+                        )
                 self._drop_cache(sid, текущий.kind)
                 self.modules.pop(sid, None)
                 if текущий.kind in (KIND_MODULES, KIND_EXTENSION):

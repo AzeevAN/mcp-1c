@@ -19,7 +19,7 @@ import heapq
 from bisect import bisect_right
 from dataclasses import dataclass
 
-from . import replacements
+from . import coverage_log, replacements
 from .bsl_lex import Процедура, прочитать_модуль, разобрать
 from .module_content import ModuleLocator, read_bsl
 from .module_address import путь_модуля
@@ -144,12 +144,23 @@ class CodeProblemRow:
     address: str | None
     ordinal: int
     reason: str
+    marker: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class CodeCoverage:
     """Точные агрегаты одного поколения; список проблем ограничен двадцатью."""
 
+    modules_total: int
+    modules_source_available: int
+    modules_empty: int
+    modules_partial: int
+    modules_unreadable: int
+    modules_conflict: int
+    modules_compiled_without_source: int
+    procedures_total: int
+    procedures_full: int
+    procedures_partial: int
     forms_total: int
     form_structures_full: int
     form_structures_partial: int
@@ -179,6 +190,10 @@ class CodeCoverage:
         return any(
             (
                 self.problem_categories,
+                self.modules_partial,
+                self.modules_unreadable,
+                self.modules_conflict,
+                self.procedures_partial,
                 self.form_structures_partial,
                 self.form_structures_unread,
                 self.unsupported_addresses,
@@ -234,6 +249,8 @@ class CodeStateRow:
     corpus: str
     state: str
     coverage: CodeCoverage | None = None
+    source_id: str = ""
+    journal: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -361,35 +378,69 @@ def _iter_code_problems(loaded: LoadedModules):
         for problem in problems
         if problem.категория != "form_structure_missing"
     }
-    seen: set[tuple[str, str | None, int, str]] = set()
+    seen: set[tuple[str, str | None, int, str, int | None]] = set()
 
-    for problem in loaded.каталог.problems:
-        item = CodeProblemRow(
-            problem.category,
-            problem.address,
-            problem.ordinal,
-            _safe_problem_reason(problem.reason),
-        )
-        key = (item.category, item.address, item.ordinal, item.reason)
-        if key not in seen:
-            seen.add(key)
-            yield item
-    for problem in loaded.формы.проблемы:
-        if (
-            problem.категория == "form_structure_missing"
-            and problem.адрес.casefold() in точные_причины_форм
-        ):
+    for problems in (loaded.каталог.object_problems or {}).values():
+        for problem in problems:
+            item = CodeProblemRow(
+                problem.category,
+                problem.address,
+                problem.ordinal,
+                _safe_problem_reason(problem.reason),
+            )
+            key = (
+                item.category,
+                item.address,
+                item.ordinal,
+                item.reason,
+                item.marker,
+            )
+            if key not in seen:
+                seen.add(key)
+                yield item
+    for outcome in loaded.каталог.outcomes:
+        if outcome.category != "unknown_address":
             continue
         item = CodeProblemRow(
-            problem.категория,
-            problem.адрес,
-            0,
-            _safe_problem_reason(problem.причина),
+            "unknown_address",
+            None,
+            outcome.ordinal,
+            "канонический адрес не доказан",
         )
-        key = (item.category, item.address, item.ordinal, item.reason)
+        key = (
+            item.category,
+            item.address,
+            item.ordinal,
+            item.reason,
+            item.marker,
+        )
         if key not in seen:
             seen.add(key)
             yield item
+    for problems in loaded.формы.object_problems.values():
+        for problem in problems:
+            if (
+                problem.категория == "form_structure_missing"
+                and problem.адрес.casefold() in точные_причины_форм
+            ):
+                continue
+            item = CodeProblemRow(
+                problem.категория,
+                problem.адрес,
+                0,
+                _safe_problem_reason(problem.причина),
+                problem.маркер,
+            )
+            key = (
+                item.category,
+                item.address,
+                item.ordinal,
+                item.reason,
+                item.marker,
+            )
+            if key not in seen:
+                seen.add(key)
+                yield item
     for entry in loaded.каталог.entries.values():
         if not entry.compiled:
             continue
@@ -399,7 +450,13 @@ def _iter_code_problems(loaded: LoadedModules):
             0,
             "исходный текст модуля поставлен скомпилированным",
         )
-        key = (item.category, item.address, item.ordinal, item.reason)
+        key = (
+            item.category,
+            item.address,
+            item.ordinal,
+            item.reason,
+            item.marker,
+        )
         if key not in seen:
             seen.add(key)
             yield item
@@ -418,6 +475,7 @@ def _all_code_problems(loaded: LoadedModules) -> tuple[CodeProblemRow, ...]:
                 item.category,
                 item.ordinal,
                 item.reason,
+                -1 if item.marker is None else item.marker,
             ),
         )
     )
@@ -430,12 +488,57 @@ def _code_coverage(
         raise RegistryError("Готовый индекс кода неполон; перезагрузите источник.")
     каталог = loaded.каталог
     формы = loaded.формы
+    if loaded.оглавление is None:
+        raise RegistryError("Готовый индекс кода неполон; перезагрузите источник.")
+    процедур_всего, процедур_частично, частичные_модули = (
+        loaded.оглавление.покрытие_процедур()
+    )
     категории: dict[str, set[str]] = {}
     for outcome in каталог.outcomes:
         if outcome.address is not None:
             категории.setdefault(outcome.address.casefold(), set()).add(
                 outcome.category
             )
+
+    модулей_с_исходником = 0
+    модулей_пусто_всего = 0
+    модулей_частично = 0
+    модулей_непрочитано_всего = 0
+    модулей_конфликт = 0
+    модулей_скомпилировано = 0
+    for entry in каталог.entries.values():
+        # XML-дескриптор или Form.xml доказывает существование формы, но не
+        # модуля. Такой адрес относится только к таблице модулей форм.
+        есть_кандидат_модуля = (
+            not entry.is_form
+            or entry.locator is not None
+            or bool(set(entry.form_evidence) & {"module", "container", "form_bin"})
+        )
+        if not есть_кандидат_модуля:
+            continue
+        состояния = категории.get(entry.address.casefold(), set())
+        if entry.conflict:
+            модулей_конфликт += 1
+        elif entry.compiled:
+            модулей_скомпилировано += 1
+        elif entry.locator is None:
+            модулей_непрочитано_всего += 1
+        elif "empty" in состояния and "indexed" not in состояния:
+            модулей_пусто_всего += 1
+        elif entry.address in частичные_модули:
+            модулей_частично += 1
+        else:
+            модулей_с_исходником += 1
+    модулей_всего = sum(
+        (
+            модулей_с_исходником,
+            модулей_пусто_всего,
+            модулей_частично,
+            модулей_непрочитано_всего,
+            модулей_конфликт,
+            модулей_скомпилировано,
+        )
+    )
 
     модулей_прочитано = 0
     модулей_пусто = 0
@@ -474,6 +577,16 @@ def _code_coverage(
         }
     )
     return CodeCoverage(
+        modules_total=модулей_всего,
+        modules_source_available=модулей_с_исходником,
+        modules_empty=модулей_пусто_всего,
+        modules_partial=модулей_частично,
+        modules_unreadable=модулей_непрочитано_всего,
+        modules_conflict=модулей_конфликт,
+        modules_compiled_without_source=модулей_скомпилировано,
+        procedures_total=процедур_всего,
+        procedures_full=процедур_всего - процедур_частично,
+        procedures_partial=процедур_частично,
         forms_total=len(формы.модули),
         form_structures_full=формы.полных,
         form_structures_partial=формы.частичных,
@@ -896,9 +1009,24 @@ def list_configurations(registry: Registry) -> str:
 
 def _code_state_rows(
     capture: _ListConfigurationsCapture,
+    registry: Registry | None = None,
 ) -> tuple[CodeStateRow, ...]:
+    def journal(view: _CodeView) -> tuple[str, str]:
+        source = view.capture.source
+        if source is None:
+            return "", ""
+        relative = ""
+        if (
+            registry is not None
+            and view.summary is not None
+            and coverage_log.load_current(registry.data_dir, source) is not None
+        ):
+            relative = coverage_log.relative_path(source.id)
+        return source.id, relative
+
     rows: list[CodeStateRow] = []
     for snapshot in capture.rows:
+        source_id, journal_path = journal(snapshot.modules)
         rows.append(
             CodeStateRow(
                 snapshot.context.name,
@@ -909,24 +1037,28 @@ def _code_state_rows(
                     if snapshot.modules.summary is not None
                     else None
                 ),
+                source_id,
+                journal_path,
             )
         )
-        rows.extend(
-            CodeStateRow(
+        for extension_name, view in snapshot.extensions:
+            source_id, journal_path = journal(view)
+            rows.append(CodeStateRow(
                 snapshot.context.name,
                 f"Расширение {extension_name}",
                 _code_state_text(view),
                 view.summary.coverage if view.summary is not None else None,
-            )
-            for extension_name, view in snapshot.extensions
-        )
+                source_id,
+                journal_path,
+            ))
     return tuple(rows)
 
 
 def _configurations_result(
     capture: _ListConfigurationsCapture,
+    registry: Registry | None = None,
 ) -> ConfigurationsSnapshot:
-    code = _code_state_rows(capture)
+    code = _code_state_rows(capture, registry)
     rows = []
     for snapshot in capture.rows:
         context = snapshot.context
@@ -974,7 +1106,7 @@ def configurations_snapshot(registry: Registry) -> ConfigurationsSnapshot:
         capture = _capture_configurations_list(registry)
         if capture is None:
             continue
-        result = _configurations_result(capture)
+        result = _configurations_result(capture, registry)
         with registry._lock:
             if _list_capture_is_current_locked(registry, capture):
                 return result
@@ -1016,7 +1148,7 @@ def _capture_sources_snapshot(
         SourcesSnapshot(
             configuration_names=tuple(name for name, _ in capture.configurations),
             sources=tuple(row for _, row, _ in capture.sources),
-            code=_code_state_rows(capture),
+            code=_code_state_rows(capture, registry),
         ),
         capture,
     )
@@ -1470,6 +1602,7 @@ def _object_code_block(view: _CodeView, full_name: str, detail: str) -> str:
                 problem.адрес,
                 0,
                 _safe_problem_reason(problem.причина),
+                problem.маркер,
             )
             for problem in problems
         )

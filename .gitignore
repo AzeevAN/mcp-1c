@@ -32,6 +32,7 @@ data.bak/
 **/modules/
 **/extensions/
 **/incoming/
+**/logs/
 
 # Проприетарные форматы 1С — где бы ни лежали.
 *.hbk

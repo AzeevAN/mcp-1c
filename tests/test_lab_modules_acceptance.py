@@ -27,12 +27,16 @@ def test_lab_замер_печатает_только_агрегаты(реес�
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
-    assert payload["schema"] == "modules-acceptance-v1"
+    assert payload["schema"] == "modules-acceptance-v2"
     assert payload["completed"] is True
     assert payload["sources_total"] == 1
     assert payload["sources"][0]["source_kind"] == "modules"
     assert payload["sources"][0]["locator_kinds"]["tree_bsl"] == 3
     assert payload["sources"][0]["forms"]["total"] == 1
+    assert payload["call_resolution"]["bsl"]["total"] >= 0
+    assert payload["call_resolution"]["metadata"]["total"] >= 0
+    assert payload["flat_form_module_read"]["readable_containers"] == 0
+    assert payload["flat_form_module_read"]["failed_containers"] == 0
     assert payload["elapsed_seconds"] >= 0
     assert payload["peak_rss_mib"] > 0
     assert "Пример" not in result.stdout
@@ -55,7 +59,7 @@ def test_lab_ошибка_тоже_остаётся_одним_обезличе�
 
     assert result.returncode == 2
     assert json.loads(result.stdout) == {
-        "schema": "modules-acceptance-v1",
+        "schema": "modules-acceptance-v2",
         "completed": False,
         "error": "кодовые источники не найдены",
     }
@@ -81,7 +85,7 @@ def test_lab_повреждённое_локальное_состояние_не
 
     assert result.returncode == 2
     assert json.loads(result.stdout) == {
-        "schema": "modules-acceptance-v1",
+        "schema": "modules-acceptance-v2",
         "completed": False,
         "error": "замер не завершён",
     }

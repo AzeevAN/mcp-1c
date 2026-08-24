@@ -9,6 +9,11 @@
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-08-24
+
+Устаревший SSE-транспорт полностью удалён из публичных вариантов запуска;
+сервер поддерживает только `streamable-http` и `stdio`.
+
 ### Удалено
 
 - **Устаревший SSE-транспорт полностью отключён.** `mcp1c-server --transport
@@ -3739,7 +3744,8 @@ JSON-журнал schema v1 для основной выгрузки и кажд
 Неразрешённых ссылок — ноль. Ошибок приведения типов — ноль. Оба формата дают
 одинаковый набор из 30 ключей модели.
 
-[Unreleased]: https://github.com/AzeevAN/mcp-1c/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/AzeevAN/mcp-1c/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/AzeevAN/mcp-1c/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/AzeevAN/mcp-1c/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/AzeevAN/mcp-1c/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/AzeevAN/mcp-1c/releases/tag/v0.2.0

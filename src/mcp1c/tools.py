@@ -1019,6 +1019,10 @@ def _code_state_rows(
         if (
             registry is not None
             and view.summary is not None
+            # Startup уже сверил полный payload с текущими индексами. Если
+            # заменить или удалить расходящийся файл не удалось, старый JSON
+            # может физически остаться, но публиковать путь к нему нельзя.
+            and coverage_log.WRITE_WARNING not in source.warnings
             and coverage_log.load_current(registry.data_dir, source) is not None
         ):
             relative = coverage_log.relative_path(source.id)

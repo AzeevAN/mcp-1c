@@ -1696,8 +1696,17 @@ class Registry:
                     return False
             записан = False
             try:
-                if coverage_log.load_current(self.data_dir, source) is None:
-                    coverage_log.write(self.data_dir, loaded)
+                ожидаемый = coverage_log.build_payload(loaded)
+                if coverage_log.load_current(
+                    self.data_dir,
+                    source,
+                    expected=ожидаемый,
+                ) is None:
+                    coverage_log.write(
+                        self.data_dir,
+                        loaded,
+                        payload=ожидаемый,
+                    )
                 записан = True
             except (OSError, ValueError, TypeError):
                 # Старый файл другого поколения не должен выглядеть

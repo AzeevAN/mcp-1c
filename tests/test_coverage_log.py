@@ -7,7 +7,7 @@ import threading
 from pathlib import Path
 
 from conftest import build_configuration, write_export
-from mcp1c import coverage_log
+from mcp1c import coverage_log, tools
 from mcp1c.registry import KIND_EXTENSION, KIND_MODULES, Registry
 from module_samples import v8_container_bytes
 
@@ -283,3 +283,69 @@ def test_incomplete_журнал_не_считается_актуальным(tm
     path.write_text(json.dumps(payload), encoding="utf-8")
 
     assert coverage_log.load_current(registry.data_dir, source) is None
+
+
+def test_warm_restart_заменяет_валидный_но_содержательно_устаревший_журнал(
+    tmp_path, архив_кода
+):
+    registry, root = _registry(tmp_path)
+    _write(
+        root,
+        "CommonModules/База/Ext/Module.bsl",
+        "Процедура База()\nКонецПроцедуры",
+    )
+    source = registry.add_modules(архив_кода(root), configuration="Пример")
+    path = coverage_log.log_path(registry.data_dir, source.id)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    modules = payload["coverage"]["modules"]
+    assert modules["source_available"] == 1
+    assert modules["empty"] == 0
+    modules["source_available"] = 0
+    modules["empty"] = 1
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    restored = Registry(registry.data_dir)
+    assert restored.startup() == []
+    assert restored.wait_for_module_builds()
+    current = _source(restored, KIND_MODULES)
+    rewritten = coverage_log.load_current(restored.data_dir, current)
+
+    assert rewritten is not None
+    assert rewritten["coverage"]["modules"]["source_available"] == 1
+    assert rewritten["coverage"]["modules"]["empty"] == 0
+
+
+def test_stale_журнал_не_публикуется_если_его_нельзя_заменить_или_удалить(
+    tmp_path, архив_кода, monkeypatch
+):
+    registry, root = _registry(tmp_path)
+    _write(
+        root,
+        "CommonModules/База/Ext/Module.bsl",
+        "Процедура База()\nКонецПроцедуры",
+    )
+    source = registry.add_modules(архив_кода(root), configuration="Пример")
+    path = coverage_log.log_path(registry.data_dir, source.id)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    modules = payload["coverage"]["modules"]
+    modules["source_available"] = 0
+    modules["empty"] = 1
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    def fail(*args, **kwargs):
+        raise OSError("read-only")
+
+    monkeypatch.setattr(coverage_log, "write", fail)
+    monkeypatch.setattr(coverage_log, "remove", fail)
+    restored = Registry(registry.data_dir)
+    assert restored.startup() == []
+    assert restored.wait_for_module_builds()
+    current = _source(restored, KIND_MODULES)
+    row = next(
+        item
+        for item in tools.sources_snapshot(restored).code
+        if item.source_id == current.id
+    )
+
+    assert coverage_log.WRITE_WARNING in current.warnings
+    assert row.journal == ""

@@ -147,9 +147,15 @@ def build_payload(loaded: "LoadedModules") -> dict[str, Any]:
     }
 
 
-def write(data_dir: str | Path, loaded: "LoadedModules") -> str:
+def write(
+    data_dir: str | Path,
+    loaded: "LoadedModules",
+    *,
+    payload: dict[str, Any] | None = None,
+) -> str:
     """Атомарно заменить журнал корпуса и вернуть относительный путь."""
-    payload = build_payload(loaded)
+    if payload is None:
+        payload = build_payload(loaded)
     encoded = (
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     ).encode("utf-8")
@@ -333,8 +339,13 @@ def _valid_payload(payload: object, source: "Source") -> bool:
     return True
 
 
-def load_current(data_dir: str | Path, source: "Source") -> dict[str, Any] | None:
-    """Прочитать только журнал текущего поколения; битый или старый — None."""
+def load_current(
+    data_dir: str | Path,
+    source: "Source",
+    *,
+    expected: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Прочитать только актуальный журнал; битый или расходящийся — None."""
     try:
         directory_fd = _open_directory(data_dir, create=False)
         if directory_fd is None:
@@ -348,7 +359,11 @@ def load_current(data_dir: str | Path, source: "Source") -> dict[str, Any] | Non
             os.close(directory_fd)
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
         return None
-    return payload if _valid_payload(payload, source) else None
+    if not _valid_payload(payload, source):
+        return None
+    if expected is not None and payload != expected:
+        return None
+    return payload
 
 
 def remove(data_dir: str | Path, source_id: str) -> None:

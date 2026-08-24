@@ -9,6 +9,11 @@
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-08-24
+
+Три сверяемые таблицы покрытия на `/sources` и отдельный актуальный безопасный
+JSON-журнал schema v1 для основной выгрузки и каждого расширения.
+
 ### Добавлено
 
 - **Один актуальный JSON-журнал покрытия на каждый корпус кода.** Основная
@@ -3724,7 +3729,8 @@
 Неразрешённых ссылок — ноль. Ошибок приведения типов — ноль. Оба формата дают
 одинаковый набор из 30 ключей модели.
 
-[Unreleased]: https://github.com/AzeevAN/mcp-1c/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/AzeevAN/mcp-1c/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/AzeevAN/mcp-1c/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/AzeevAN/mcp-1c/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/AzeevAN/mcp-1c/releases/tag/v0.2.0
 

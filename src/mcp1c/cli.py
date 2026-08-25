@@ -492,7 +492,9 @@ def main(argv: list[str] | None = None) -> int:
         "reg-search-procedures",
         help="найти процедуры в загруженном коде",
     )
-    search_procedures.add_argument("query", help="имя или слова о назначении")
+    search_procedures.add_argument(
+        "query", help="имя, слова о назначении или фраза о типовом событии"
+    )
     search_procedures.add_argument("--data", default="data")
     search_procedures.add_argument("--config", default=None)
     search_procedures.add_argument("--extension", default=None)

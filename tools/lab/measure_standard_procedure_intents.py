@@ -23,128 +23,15 @@ import math
 import pickle
 import time
 import tracemalloc
-from dataclasses import dataclass
 from pathlib import Path
 
 from mcp1c.registry import Registry
-from mcp1c.search import Doc, SearchIndex, normalize, tokenize
-
-
-@dataclass(frozen=True, slots=True)
-class Intent:
-    name: str
-    # OR из шаблонов, шаблон — AND из групп, группа — OR маркеров.
-    # Маркер с ``=`` сравнивается целиком, остальные — как начала слов.
-    patterns: tuple[tuple[tuple[str, ...], ...], ...]
-    priority: int = 0
-
-
-INTENTS: tuple[Intent, ...] = (
-    Intent(
-        "ОбработкаПроверкиЗаполнения",
-        ((("провер", "контрол"), ("заполн", "обязательн", "реквизит"),
-          ("объект", "документ", "обработ", "событ")),),
-        priority=20,
-    ),
-    Intent(
-        "ОбработкаПроведения",
-        (
-            (("провед", "провест", "провод"), ("документ",),
-             ("движен", "формир", "обработ", "код", "логик", "=где", "=что")),
-            (("проведен",), ("движен", "регистр")),
-        ),
-    ),
-    Intent(
-        "ПередЗаписью",
-        ((("=перед", "=до"), ("запи", "сохран"),
-          ("объект", "документ", "обработ", "событ", "логик")),),
-    ),
-    Intent(
-        "ПриЗаписи",
-        ((("=при", "=во"), ("запи", "сохран"),
-          ("объект", "документ", "обработ", "событ", "логик")),),
-    ),
-    Intent(
-        "ОбработкаУдаленияПроведения",
-        ((("отмен", "удал", "распров"),
-          ("провед", "провест", "движен", "распров"),
-          ("документ", "обработ", "событ")),),
-        priority=20,
-    ),
-    Intent(
-        "ОбработкаЗаполнения",
-        ((("заполн",),
-          ("нов", "объект", "документ", "основан", "создан"),
-          ("обработ", "объект", "документ")),),
-    ),
-    Intent(
-        "ПриОткрытии",
-        ((("=при", "=после"), ("откры",), ("форм",)),),
-    ),
-    Intent(
-        "ПередОткрытием",
-        ((("=перед", "=до"), ("откры",), ("форм",)),),
-    ),
-    Intent(
-        "ПриСозданииНаСервере",
-        ((("созда", "инициал"), ("сервер",), ("форм",)),),
-    ),
-    Intent(
-        "ПриЗакрытии",
-        ((("=при", "=после"), ("закры",), ("форм",)),),
-    ),
-    Intent(
-        "ОбработкаВыбора",
-        ((("выбор", "выбр", "выбир"), ("значен", "поле", "форм"),
-          ("обработ", "перехват", "=при")),),
-    ),
-    Intent(
-        "ОбработкаОповещения",
-        ((("оповещ", "уведом"), ("форм",),
-          ("обработ", "получ", "вызыва", "=при")),),
-    ),
+from mcp1c.search import Doc, SearchIndex, normalize
+from mcp1c.standard_procedure_intents import (
+    STANDARD_PROCEDURE_INTENTS as INTENTS,
+    StandardProcedureIntent as Intent,
+    recognize_standard_procedure_intent as recognize,
 )
-
-_BY_NORMALIZED_NAME = {
-    normalize(intent.name).replace(" ", ""): intent for intent in INTENTS
-}
-
-
-def _group_matches(tokens: set[str], group: tuple[str, ...]) -> bool:
-    for marker in group:
-        if marker.startswith("="):
-            if marker[1:] in tokens:
-                return True
-        elif any(token.startswith(marker) for token in tokens):
-            return True
-    return False
-
-
-def recognize(query: str) -> str | None:
-    """Вернуть одно типовое имя либо отказаться при пустоте/ничьей."""
-    exact = _BY_NORMALIZED_NAME.get(normalize(query).replace(" ", ""))
-    if exact is not None:
-        return exact.name
-
-    tokens = set(tokenize(query))
-    candidates: list[tuple[int, int, str]] = []
-    for intent in INTENTS:
-        specificity = max(
-            (
-                len(pattern)
-                for pattern in intent.patterns
-                if all(_group_matches(tokens, group) for group in pattern)
-            ),
-            default=0,
-        )
-        if specificity:
-            candidates.append((intent.priority, specificity, intent.name))
-    candidates.sort(reverse=True)
-    if not candidates:
-        return None
-    if len(candidates) > 1 and candidates[0][:2] == candidates[1][:2]:
-        return None
-    return candidates[0][2]
 
 
 def resolve(toc, name: str, scope_modules: frozenset[str] | None = None):

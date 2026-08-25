@@ -276,6 +276,89 @@ def render_procedure_search(
     return "\n".join(out).rstrip() + "\n"
 
 
+def render_standard_procedure_search(
+    configuration: str,
+    query: str,
+    procedure: str,
+    *,
+    found_count: int,
+    scope: str | None,
+    match: ProcedureMatch | None = None,
+    extension: str | None = None,
+) -> str:
+    """Типовое намерение не превращается в случайный адрес процедуры."""
+    источник = (
+        f"расширении {extension} конфигурации {configuration}"
+        if extension
+        else f"конфигурации {configuration}"
+    )
+    out = [f"# Типовая процедура в {источник}: «{query}»", ""]
+    out.extend([f"Распознано типовое событие `{procedure}`.", ""])
+
+    if scope is None:
+        if found_count:
+            out.extend(
+                [
+                    f"Найдено реализаций: {found_count}. Адрес не выбран: "
+                    "укажите `scope` объекта, модуля или формы.",
+                    "",
+                ]
+            )
+        else:
+            out.extend(
+                [
+                    "В загруженном коде реализаций с таким точным именем нет.",
+                    "",
+                ]
+            )
+        return "\n".join(out).rstrip() + "\n"
+
+    out.extend([f"Область: `{scope}`.", ""])
+    if found_count == 0:
+        out.extend(
+            [
+                "В этой области реализаций с таким точным именем нет. "
+                "Проверьте `scope` или продолжите обычный поиск другой "
+                "формулировкой.",
+                "",
+            ]
+        )
+    elif found_count > 1:
+        out.extend(
+            [
+                f"В области найдено реализаций: {found_count}. Адрес не "
+                "выбран: укажите точный адрес модуля или формы в `scope`.",
+                "",
+            ]
+        )
+    else:
+        assert match is not None
+        вид = "функция" if match.function else "процедура"
+        доступ = "экспортная" if match.exported else "неэкспортная"
+        свойства = [
+            вид,
+            доступ,
+            f"строка {match.line}",
+            f"подтверждённых мест вызова: {match.calls}",
+        ]
+        if match.unresolved_calls:
+            свойства.append(
+                f"одноимённых без разрешённой цели: {match.unresolved_calls}"
+            )
+        if match.annotated:
+            свойства.append("есть аннотация расширения")
+        out.extend(
+            [
+                "## Точное имя (1)",
+                "",
+                f"- `{match.address}` — {' · '.join(свойства)}",
+                f"  Сигнатура: `{match.signature}`",
+                "",
+            ]
+        )
+    return "\n".join(out).rstrip() + "\n"
+
+
 def render_callers(
     configuration: str,
     address: str,

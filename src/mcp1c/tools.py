@@ -45,9 +45,11 @@ from .render import (
     render_object,
     render_procedure_card,
     render_procedure_search,
+    render_standard_procedure_search,
     render_syntax_item,
 )
 from .search import FIELD_KIND_TITLES
+from .standard_procedure_intents import recognize_standard_procedure_intent
 from .syntax_model import (
     KIND_QUERY_ARTICLE,
     KIND_TITLES,
@@ -2134,6 +2136,49 @@ def _procedure_matches(
     return результат
 
 
+def _standard_procedure_response(
+    registry: Registry,
+    loaded: LoadedModules,
+    *,
+    configuration: str,
+    query: str,
+    procedure: str,
+    scope: str | None,
+    scope_modules: frozenset[str],
+    extension: str | None,
+) -> str:
+    """Разрешить типовое имя через TOC, не ранжируя сотни реализаций."""
+    найденные = loaded.оглавление.по_имени(procedure)
+    if scope is not None:
+        найденные = [
+            запись for запись in найденные if запись.модуль in scope_modules
+        ]
+
+    match = None
+    if scope is not None and len(найденные) == 1:
+        try:
+            match = _procedure_matches(loaded, найденные)[0]
+        except (OSError, _SignatureError) as ошибка:
+            if not _modules_are_current(registry, loaded):
+                raise _StaleModules from ошибка
+            raise RegistryError(
+                "Не удалось прочитать сигнатуру из текущей выгрузки кода: "
+                "файл модуля недоступен."
+            ) from ошибка
+
+    if not _modules_are_current(registry, loaded):
+        raise _StaleModules
+    return render_standard_procedure_search(
+        configuration,
+        query,
+        procedure,
+        found_count=len(найденные),
+        scope=scope,
+        match=match,
+        extension=extension,
+    )
+
+
 def _search_procedures_once(
     registry: Registry,
     query: str,
@@ -2168,6 +2213,20 @@ def _search_procedures_once(
     предупреждение_скомпилированных = (
         f"> {предупреждение}\n\n" if предупреждение else ""
     )
+    типовая = recognize_standard_procedure_intent(запрос)
+    # Точное каноническое имя сохраняет прежний полный контракт поиска. Только
+    # расширенная формулировка включает осторожное разрешение намерения.
+    if типовая is not None and запрос.casefold() != типовая.casefold():
+        return предупреждение_скомпилированных + _standard_procedure_response(
+            registry,
+            loaded,
+            configuration=context.name,
+            query=query,
+            procedure=типовая,
+            scope=scope,
+            scope_modules=приоритетные,
+            extension=extension,
+        )
     точные_все = loaded.оглавление.по_имени(запрос)
 
     def категория(запись) -> int:

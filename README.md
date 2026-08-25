@@ -1848,6 +1848,8 @@ MODULES_ROOT=/путь/к/выгрузке
 .venv/bin/python tools/lab/measure_search.py <файл индекса> экспортные
 .venv/bin/python tools/lab/measure_forms.py <каталог>
 .venv/bin/python tools/lab/measure_flat.py <каталог плоской выгрузки>
+PYTHONPATH=src .venv/bin/python \
+  tools/lab/measure_standard_procedure_intents.py --data data
 .venv/bin/python tools/lab/measure_container_memory.py --mode cold --data data \
   --timeout 300 --poll-interval 0.5
 .venv/bin/python tools/lab/measure_container_memory.py --mode warm --data data \

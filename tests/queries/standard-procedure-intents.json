@@ -1,0 +1,456 @@
+{
+  "schema_version": 1,
+  "domain": "standard-procedure-intents",
+  "cases": [
+    {
+      "query": "проверить заполнение объекта перед записью",
+      "expected": "ОбработкаПроверкиЗаполнения",
+      "origin": "manual"
+    },
+    {
+      "query": "какой обработчик проверяет обязательные реквизиты",
+      "expected": "ОбработкаПроверкиЗаполнения",
+      "origin": "synthetic"
+    },
+    {
+      "query": "контроль заполнения объекта",
+      "expected": "ОбработкаПроверкиЗаполнения",
+      "origin": "synthetic"
+    },
+    {
+      "query": "выполнить движения при проведении документа",
+      "expected": "ОбработкаПроведения",
+      "origin": "manual"
+    },
+    {
+      "query": "где формируются движения документа при проведении",
+      "expected": "ОбработкаПроведения",
+      "origin": "synthetic"
+    },
+    {
+      "query": "обработчик проведения документа",
+      "expected": "ОбработкаПроведения",
+      "origin": "synthetic"
+    },
+    {
+      "query": "действия перед записью объекта",
+      "expected": "ПередЗаписью",
+      "origin": "manual"
+    },
+    {
+      "query": "что изменить до сохранения объекта",
+      "expected": "ПередЗаписью",
+      "origin": "synthetic"
+    },
+    {
+      "query": "обработчик перед записью",
+      "expected": "ПередЗаписью",
+      "origin": "synthetic"
+    },
+    {
+      "query": "что выполняется при записи объекта",
+      "expected": "ПриЗаписи",
+      "origin": "synthetic"
+    },
+    {
+      "query": "обработчик при сохранении объекта",
+      "expected": "ПриЗаписи",
+      "origin": "synthetic"
+    },
+    {
+      "query": "логика во время записи объекта",
+      "expected": "ПриЗаписи",
+      "origin": "synthetic"
+    },
+    {
+      "query": "как отменить проведение и удалить движения документа",
+      "expected": "ОбработкаУдаленияПроведения",
+      "origin": "synthetic"
+    },
+    {
+      "query": "что удаляет движения при отмене проведения документа",
+      "expected": "ОбработкаУдаленияПроведения",
+      "origin": "synthetic"
+    },
+    {
+      "query": "обработчик распроведения документа",
+      "expected": "ОбработкаУдаленияПроведения",
+      "origin": "synthetic"
+    },
+    {
+      "query": "чем заполнить новый документ по основанию",
+      "expected": "ОбработкаЗаполнения",
+      "origin": "synthetic"
+    },
+    {
+      "query": "обработчик заполнения объекта",
+      "expected": "ОбработкаЗаполнения",
+      "origin": "synthetic"
+    },
+    {
+      "query": "как заполняется документ при создании",
+      "expected": "ОбработкаЗаполнения",
+      "origin": "synthetic"
+    },
+    {
+      "query": "код после открытия формы",
+      "expected": "ПриОткрытии",
+      "origin": "synthetic"
+    },
+    {
+      "query": "что выполняется при открытии формы",
+      "expected": "ПриОткрытии",
+      "origin": "synthetic"
+    },
+    {
+      "query": "обработчик при открытии формы",
+      "expected": "ПриОткрытии",
+      "origin": "synthetic"
+    },
+    {
+      "query": "изменить параметры до открытия формы",
+      "expected": "ПередОткрытием",
+      "origin": "synthetic"
+    },
+    {
+      "query": "что происходит перед открытием формы",
+      "expected": "ПередОткрытием",
+      "origin": "synthetic"
+    },
+    {
+      "query": "обработчик формы перед открытием",
+      "expected": "ПередОткрытием",
+      "origin": "synthetic"
+    },
+    {
+      "query": "инициализировать форму на сервере",
+      "expected": "ПриСозданииНаСервере",
+      "origin": "synthetic"
+    },
+    {
+      "query": "что создать на сервере при создании формы",
+      "expected": "ПриСозданииНаСервере",
+      "origin": "synthetic"
+    },
+    {
+      "query": "серверная инициализация формы",
+      "expected": "ПриСозданииНаСервере",
+      "origin": "synthetic"
+    },
+    {
+      "query": "что выполнить при закрытии формы",
+      "expected": "ПриЗакрытии",
+      "origin": "synthetic"
+    },
+    {
+      "query": "код после закрытия формы",
+      "expected": "ПриЗакрытии",
+      "origin": "synthetic"
+    },
+    {
+      "query": "обработчик при закрытии формы",
+      "expected": "ПриЗакрытии",
+      "origin": "synthetic"
+    },
+    {
+      "query": "перехватить выбор значения в поле формы",
+      "expected": "ОбработкаВыбора",
+      "origin": "synthetic"
+    },
+    {
+      "query": "что происходит при выборе значения формы",
+      "expected": "ОбработкаВыбора",
+      "origin": "synthetic"
+    },
+    {
+      "query": "обработчик выбора в поле формы",
+      "expected": "ОбработкаВыбора",
+      "origin": "synthetic"
+    },
+    {
+      "query": "как форма получает уведомление",
+      "expected": "ОбработкаОповещения",
+      "origin": "synthetic"
+    },
+    {
+      "query": "обработать оповещение в форме",
+      "expected": "ОбработкаОповещения",
+      "origin": "synthetic"
+    },
+    {
+      "query": "что вызывается при уведомлении формы",
+      "expected": "ОбработкаОповещения",
+      "origin": "synthetic"
+    },
+    {
+      "query": "проверить остатки на складе",
+      "expected": null,
+      "origin": "control"
+    },
+    {
+      "query": "записать строку в файл перед выходом",
+      "expected": null,
+      "origin": "control"
+    },
+    {
+      "query": "провести анализ движений регистра",
+      "expected": null,
+      "origin": "control"
+    },
+    {
+      "query": "заполнить реквизит табличной части",
+      "expected": null,
+      "origin": "control"
+    },
+    {
+      "query": "открыть файл на сервере",
+      "expected": null,
+      "origin": "control"
+    },
+    {
+      "query": "закрыть соединение с сервером",
+      "expected": null,
+      "origin": "control"
+    },
+    {
+      "query": "получить выбранные строки",
+      "expected": null,
+      "origin": "control"
+    },
+    {
+      "query": "отправить уведомление пользователю",
+      "expected": null,
+      "origin": "control"
+    },
+    {
+      "query": "проверить структуру параметров",
+      "expected": null,
+      "origin": "control"
+    },
+    {
+      "query": "сохранить настройки отчета перед формированием",
+      "expected": null,
+      "origin": "control"
+    },
+    {
+      "query": "создать объект на сервере",
+      "expected": null,
+      "origin": "control"
+    },
+    {
+      "query": "выбрать конфигурацию для запуска",
+      "expected": null,
+      "origin": "control"
+    },
+    {
+      "query": "как провести документ вручную",
+      "expected": null,
+      "origin": "control"
+    },
+    {
+      "query": "проверить обязательные поля формы",
+      "expected": null,
+      "origin": "control"
+    },
+    {
+      "query": "открыть форму выбора",
+      "expected": null,
+      "origin": "control"
+    },
+    {
+      "query": "обработать пользовательскую команду формы",
+      "expected": null,
+      "origin": "control"
+    },
+    {
+      "query": "найти пользовательскую процедуру проверки",
+      "expected": null,
+      "origin": "control"
+    },
+    {
+      "query": "обработчик записи объекта",
+      "expected": null,
+      "origin": "control"
+    },
+    {
+      "query": "перед сохранением проконтролировать обязательные данные объекта",
+      "expected": "ОбработкаПроверкиЗаполнения",
+      "origin": "holdout"
+    },
+    {
+      "query": "событие проверки реквизитов документа",
+      "expected": "ОбработкаПроверкиЗаполнения",
+      "origin": "holdout"
+    },
+    {
+      "query": "какой код формирует движения при проведении",
+      "expected": "ОбработкаПроведения",
+      "origin": "holdout"
+    },
+    {
+      "query": "что вызывается для движений по регистрам при проведении",
+      "expected": "ОбработкаПроведения",
+      "origin": "holdout"
+    },
+    {
+      "query": "логика до записи документа",
+      "expected": "ПередЗаписью",
+      "origin": "holdout"
+    },
+    {
+      "query": "событие перед сохранением",
+      "expected": "ПередЗаписью",
+      "origin": "holdout"
+    },
+    {
+      "query": "событие при сохранении документа",
+      "expected": "ПриЗаписи",
+      "origin": "holdout"
+    },
+    {
+      "query": "логика при записи",
+      "expected": "ПриЗаписи",
+      "origin": "holdout"
+    },
+    {
+      "query": "событие отмены проведения документа",
+      "expected": "ОбработкаУдаленияПроведения",
+      "origin": "holdout"
+    },
+    {
+      "query": "обработчик удаления движений документа",
+      "expected": "ОбработкаУдаленияПроведения",
+      "origin": "holdout"
+    },
+    {
+      "query": "событие заполнения нового объекта",
+      "expected": "ОбработкаЗаполнения",
+      "origin": "holdout"
+    },
+    {
+      "query": "обработчик заполнения документа по основанию",
+      "expected": "ОбработкаЗаполнения",
+      "origin": "holdout"
+    },
+    {
+      "query": "событие формы после открытия",
+      "expected": "ПриОткрытии",
+      "origin": "holdout"
+    },
+    {
+      "query": "логика формы при открытии",
+      "expected": "ПриОткрытии",
+      "origin": "holdout"
+    },
+    {
+      "query": "событие формы до открытия",
+      "expected": "ПередОткрытием",
+      "origin": "holdout"
+    },
+    {
+      "query": "логика формы перед открытием",
+      "expected": "ПередОткрытием",
+      "origin": "holdout"
+    },
+    {
+      "query": "событие создания формы на сервере",
+      "expected": "ПриСозданииНаСервере",
+      "origin": "holdout"
+    },
+    {
+      "query": "инициализация формы сервером",
+      "expected": "ПриСозданииНаСервере",
+      "origin": "holdout"
+    },
+    {
+      "query": "событие формы после закрытия",
+      "expected": "ПриЗакрытии",
+      "origin": "holdout"
+    },
+    {
+      "query": "логика формы при закрытии",
+      "expected": "ПриЗакрытии",
+      "origin": "holdout"
+    },
+    {
+      "query": "перехват выбора поля формы",
+      "expected": "ОбработкаВыбора",
+      "origin": "holdout"
+    },
+    {
+      "query": "при выборе значения в форме",
+      "expected": "ОбработкаВыбора",
+      "origin": "holdout"
+    },
+    {
+      "query": "форма при получении оповещения",
+      "expected": "ОбработкаОповещения",
+      "origin": "holdout"
+    },
+    {
+      "query": "обработчик уведомления формы",
+      "expected": "ОбработкаОповещения",
+      "origin": "holdout"
+    },
+    {
+      "query": "контроль заполнения настроек отчета",
+      "expected": null,
+      "origin": "holdout-control"
+    },
+    {
+      "query": "сохранить объект в файл",
+      "expected": null,
+      "origin": "holdout-control"
+    },
+    {
+      "query": "проведение собрания по документам",
+      "expected": null,
+      "origin": "holdout-control"
+    },
+    {
+      "query": "удалить движения мышью",
+      "expected": null,
+      "origin": "holdout-control"
+    },
+    {
+      "query": "инициализировать сервер приложения",
+      "expected": null,
+      "origin": "holdout-control"
+    },
+    {
+      "query": "закрыть форму отчета",
+      "expected": null,
+      "origin": "holdout-control"
+    },
+    {
+      "query": "выбор значения перечисления",
+      "expected": null,
+      "origin": "holdout-control"
+    },
+    {
+      "query": "получить уведомление из очереди",
+      "expected": null,
+      "origin": "holdout-control"
+    },
+    {
+      "query": "обработать заполнение таблицы",
+      "expected": null,
+      "origin": "holdout-control"
+    },
+    {
+      "query": "что записать при обмене данными",
+      "expected": null,
+      "origin": "holdout-control"
+    },
+    {
+      "query": "открыть форму списка",
+      "expected": null,
+      "origin": "holdout-control"
+    },
+    {
+      "query": "после закрытия файла выполнить код",
+      "expected": null,
+      "origin": "holdout-control"
+    }
+  ]
+}

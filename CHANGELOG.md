@@ -9,6 +9,12 @@
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-08-25
+
+Осторожное распознавание расширенных фраз о 12 типовых событиях при поиске
+процедур, воспроизводимые замеры провайдера модулей и актуальные версии GitHub
+Actions.
+
 ### Добавлено
 
 - **`search_procedures` понимает расширенные фразы о 12 типовых событиях.**
@@ -3825,7 +3831,8 @@ JSON-журнал schema v1 для основной выгрузки и кажд
 Неразрешённых ссылок — ноль. Ошибок приведения типов — ноль. Оба формата дают
 одинаковый набор из 30 ключей модели.
 
-[Unreleased]: https://github.com/AzeevAN/mcp-1c/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/AzeevAN/mcp-1c/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/AzeevAN/mcp-1c/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/AzeevAN/mcp-1c/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/AzeevAN/mcp-1c/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/AzeevAN/mcp-1c/compare/v0.2.0...v0.3.0

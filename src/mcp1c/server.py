@@ -185,7 +185,7 @@ def build_server(registry: Registry, name: str = "mcp1c") -> MCPServer:
         name=name,
         title="Структура конфигураций 1С",
         instructions=INSTRUCTIONS,
-        version="0.6.0",
+        version="0.7.0",
     )
 
     @server.tool(

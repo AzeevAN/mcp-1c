@@ -46,6 +46,7 @@ from .module_content import LocatorIdentity
 from .query_parser import looks_like_query_help
 from .query_parser import parse_hbk as parse_query_hbk
 from .search_keys import coverage as key_coverage
+from .search_keys import platform_coverage
 from .search import (
     SearchIndex,
     index_configuration,
@@ -2613,6 +2614,15 @@ class Registry:
             items_total=len(syntax),
             stored_path=self._relative(index_path),
         )
+
+        if not is_query:
+            # Платформенные ключи, как и ключи языка запросов ниже, привязаны
+            # к идентификаторам страниц. Проверяем каждую загружаемую версию:
+            # если дерево справки изменилось, адресный слой не должен молча
+            # перестать работать.
+            предупреждение = platform_coverage(syntax.items.keys()).as_warning()
+            if предупреждение:
+                source.warnings.append(предупреждение)
 
         if is_query:
             # Разбор страниц справки. Испорченная разметка одну страницу

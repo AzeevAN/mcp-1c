@@ -1,4 +1,4 @@
-"""Поисковые ключи языка запросов: чем спрашивают против того, как названо.
+"""Поисковые ключи справки: чем спрашивают против того, как названо.
 
 Разрыв тут другой природы, чем в словаре конфигураций. Там человек называет
 объект чужим словом («заказ клиента» вместо `ЗаказПокупателя`) — лечится
@@ -24,8 +24,9 @@
 разрыва нет: спрашивают тем же словом, которым названо. Приписывать им
 формулировки — добавлять шум там, где поиск и так не бился.
 
-Формулировки писались по тексту статей, без сверки с `tests/queries/`:
-подгонка ключей под набор, которым потом меряют, обесценивает замер.
+Новые формулировки берутся из живых промахов. Такой запрос сначала попадает в
+`tests/queries/` и измеряется до изменения ключей: иначе проверка тем же
+набором покажет только подгонку, а не выигрыш относительно исходной точки.
 """
 
 from __future__ import annotations
@@ -303,6 +304,15 @@ SEARCH_KEYS: dict[str, tuple[str, ...]] = {
     "query/FALSE": ("ложь в запросе",),
 }
 
+# Методы платформы с тем же разрывом между задачей и именем. Отделены от
+# страниц языка запросов, потому что два источника загружаются независимо и
+# потерю привязки каждый обязан показывать относительно своего набора.
+PLATFORM_SEARCH_KEYS: dict[str, tuple[str, ...]] = {
+    "objects/catalog213/catalog393/QueryResultSelection/methods/Next556": (
+        "перебрать строки в выборке результата запроса",
+    ),
+}
+
 
 @dataclass(slots=True)
 class KeyCoverage:
@@ -311,6 +321,7 @@ class KeyCoverage:
     total: int = 0
     attached: int = 0
     lost: list[str] = field(default_factory=list)
+    subject: str = "языку запросов"
 
     @property
     def ok(self) -> bool:
@@ -325,8 +336,8 @@ class KeyCoverage:
         return (
             f"поисковых ключей {self.total}, привязано {self.attached}, "
             f"потеряно {len(self.lost)}: {примеры}{хвост}. Набор страниц справки "
-            "не совпал с тем, под который ключи писались — поиск по языку "
-            "запросов работает хуже заявленного."
+            f"не совпал с тем, под который ключи писались — поиск по {self.subject} "
+            "работает хуже заявленного."
         )
 
 
@@ -349,6 +360,20 @@ def coverage(item_ids: object) -> KeyCoverage:
     )
 
 
+def platform_coverage(item_ids: object) -> KeyCoverage:
+    """Сверить ключи платформенных методов с одной версией справки."""
+    известные = set(item_ids)  # type: ignore[arg-type]
+    lost = [key for key in PLATFORM_SEARCH_KEYS if key not in известные]
+    return KeyCoverage(
+        total=len(PLATFORM_SEARCH_KEYS),
+        attached=len(PLATFORM_SEARCH_KEYS) - len(lost),
+        lost=lost,
+        subject="методам платформы",
+    )
+
+
 def keys_text(item_id: str) -> str:
     """Ключи элемента одной строкой для поля индекса. Пусто — ключей нет."""
-    return "\n".join(SEARCH_KEYS.get(item_id, ()))
+    return "\n".join(
+        (*SEARCH_KEYS.get(item_id, ()), *PLATFORM_SEARCH_KEYS.get(item_id, ()))
+    )

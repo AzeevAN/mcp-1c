@@ -1,4 +1,4 @@
-"""Слой поисковых ключей языка запросов (`search_keys.py`).
+"""Слой поисковых ключей справки (`search_keys.py`).
 
 Ключи — сочинённый текст поверх разобранной справки, и проверяется здесь
 ровно то, что делает его безопасным: привязка по идентификатору, громкий
@@ -8,8 +8,19 @@
 from __future__ import annotations
 
 from mcp1c.search import Doc, SearchIndex, index_syntax
-from mcp1c.search_keys import SEARCH_KEYS, coverage, keys_text
-from mcp1c.syntax_model import KIND_QUERY_FUNCTION, SyntaxIndex, SyntaxItem
+from mcp1c.search_keys import (
+    PLATFORM_SEARCH_KEYS,
+    SEARCH_KEYS,
+    coverage,
+    keys_text,
+    platform_coverage,
+)
+from mcp1c.syntax_model import (
+    KIND_METHOD,
+    KIND_QUERY_FUNCTION,
+    SyntaxIndex,
+    SyntaxItem,
+)
 
 # ------------------------------------------------------------------- привязка
 
@@ -55,6 +66,15 @@ def test_потерянные_показаны_не_все_но_счёт_пол�
     assert f"потеряно {len(SEARCH_KEYS)}" in текст
 
 
+def test_потеря_ключа_метода_платформы_видна_отдельно():
+    итог = platform_coverage(set())
+
+    assert итог.total == len(PLATFORM_SEARCH_KEYS)
+    assert итог.lost == list(PLATFORM_SEARCH_KEYS)
+    assert "методам платформы" in итог.as_warning()
+    assert platform_coverage(set(PLATFORM_SEARCH_KEYS)).ok
+
+
 # --------------------------------------------------------------------- поиск
 
 
@@ -82,6 +102,37 @@ def test_статья_находится_формулировкой_из_клю�
     hits = index.search(формулировка, limit=5)
 
     assert [hit.doc.id for hit in hits] == ["query/DATEDIFF"]
+
+
+def test_метод_платформы_находится_по_описанию_действия():
+    """Пользователь описывает цикл, а в имени метода стоит только «Следующий»."""
+    target_id = "objects/catalog213/catalog393/QueryResultSelection/methods/Next556"
+    syntax = SyntaxIndex(platforms=[], source="search-keys-test", language="ru")
+    syntax.add(
+        SyntaxItem(
+            id=target_id,
+            kind=KIND_METHOD,
+            name_ru="Следующий",
+            name_en="Next",
+            parent_ru="ВыборкаИзРезультатаЗапроса",
+            description="Получает следующую запись.",
+        )
+    )
+    syntax.add(
+        SyntaxItem(
+            id="query/example",
+            kind=KIND_QUERY_FUNCTION,
+            name_ru="Поля выборки",
+            name_en="Selection fields",
+            description="Строки, которые попадут в результат запроса.",
+        )
+    )
+
+    hits = index_syntax(syntax).search(
+        "как перебрать строки в выборке результата запроса", limit=5
+    )
+
+    assert hits[0].doc.id == target_id
 
 
 def test_элемент_без_ключей_ищется_как_прежде():

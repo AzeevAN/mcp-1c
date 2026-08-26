@@ -22,6 +22,7 @@ import errno
 import hashlib
 import json
 import logging
+import os
 import re
 import shutil
 import tempfile
@@ -997,14 +998,98 @@ class Registry:
         )
         return lookup
 
-    def _store_source(self, path: Path, subdir: str) -> Path:
-        """Положить исходник рядом с индексом — чтобы пересобрать без 1С."""
+    def _store_source(
+        self,
+        path: Path,
+        subdir: str,
+        *,
+        source_id: str,
+        digest: str,
+    ) -> Path:
+        """Атомарно сохранить исходник по его ID и содержимому.
+
+        Basename принадлежит каталогу пользователя и не является личностью
+        источника: два разных архива ``same.zip`` раньше затирали друг друга,
+        а после restart одна конфигурация тихо исчезала. Хеш ID разделяет
+        разные источники, хеш содержимого — их перевыгрузки.
+
+        Каталоги открываются через ``dir_fd`` и ``O_NOFOLLOW``, временный файл
+        создаётся эксклюзивно, а итоговое имя заменяется rename. Поэтому ни
+        каталог, ни заранее подложенная ссылка с итоговым именем не выводят
+        запись за пределы ``data/sources``.
+        """
+        if not re.fullmatch(r"[a-z0-9-]+", subdir):
+            raise RegistryError(f"Недопустимый каталог сохранённых источников: {subdir}")
+
+        identity = hashlib.sha256(source_id.encode("utf-8")).hexdigest()
+        suffix = path.suffix if re.fullmatch(r"\.[A-Za-z0-9]{1,12}", path.suffix) else ".source"
+        target = f"source-{identity}-{digest}{suffix}"
+        temporary = f".{target}.{uuid.uuid4().hex}.tmp"
         target_dir = self.sources_dir / subdir
-        target_dir.mkdir(parents=True, exist_ok=True)
-        target = target_dir / path.name
-        if path.resolve() != target.resolve():
-            shutil.copy2(path, target)
-        return target
+        opened: list[int] = []
+        temporary_created = False
+
+        def open_child(parent_fd: int, name: str) -> int:
+            try:
+                os.mkdir(name, 0o700, dir_fd=parent_fd)
+            except FileExistsError:
+                pass
+            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            return os.open(name, flags, dir_fd=parent_fd)
+
+        try:
+            self.data_dir.mkdir(parents=True, exist_ok=True)
+            data_fd = os.open(
+                self.data_dir,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+            )
+            opened.append(data_fd)
+            sources_fd = open_child(data_fd, "sources")
+            opened.append(sources_fd)
+            target_fd = open_child(sources_fd, subdir)
+            opened.append(target_fd)
+
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            file_fd = os.open(temporary, flags, 0o600, dir_fd=target_fd)
+            temporary_created = True
+            copied = hashlib.sha256()
+            with path.open("rb") as source_stream, os.fdopen(
+                file_fd, "wb", closefd=True
+            ) as target_stream:
+                for block in iter(lambda: source_stream.read(1 << 20), b""):
+                    copied.update(block)
+                    target_stream.write(block)
+                target_stream.flush()
+                os.fsync(target_stream.fileno())
+
+            if copied.hexdigest() != digest:
+                raise RegistryError(
+                    f"{path.name}: исходник изменился во время сохранения."
+                )
+
+            os.replace(
+                temporary,
+                target,
+                src_dir_fd=target_fd,
+                dst_dir_fd=target_fd,
+            )
+            temporary_created = False
+            os.fsync(target_fd)
+        except OSError as error:
+            raise RegistryError(
+                f"{path.name}: не удалось безопасно сохранить исходник: {error}"
+            ) from error
+        finally:
+            if temporary_created and opened:
+                try:
+                    os.unlink(temporary, dir_fd=opened[-1])
+                except FileNotFoundError:
+                    pass
+            for descriptor in reversed(opened):
+                os.close(descriptor)
+        return target_dir / target
 
     def add_configuration(
         self,
@@ -1012,12 +1097,19 @@ class Registry:
         *,
         keep_source: bool = True,
         known_sha256: str = "",
+        expected_id: str = "",
+        known_origin: str = "",
     ) -> Source:
         source_path = Path(path)
-        # При восстановлении читается сохранённая копия, но хеш должен остаться
-        # от файла, который пользователь положил изначально. Иначе bootstrap
-        # сочтёт исходник новым и разберёт его заново — при каждом старте.
-        digest = known_sha256 or _sha256(source_path)
+        # При restore сохранённая строка registry.json — ожидание, а не
+        # доверенный факт. Файл мог быть подменён или повреждён после save;
+        # публиковать его с прежним sha256 значит смешать две личности.
+        digest = _sha256(source_path)
+        if known_sha256 and digest != known_sha256:
+            raise RegistryError(
+                f"{source_path.name}: контрольная сумма сохранённого источника "
+                "не совпала с registry.json."
+            )
 
         try:
             config = load(source_path)
@@ -1026,13 +1118,27 @@ class Registry:
 
         if not config.name:
             raise RegistryError(f"{source_path.name}: в манифесте нет имени конфигурации.")
+        if expected_id and config.name != expected_id:
+            raise RegistryError(
+                f"{source_path.name}: идентификатор конфигурации «{config.name}» "
+                f"не совпал с registry.json («{expected_id}»)."
+            )
 
-        stored = self._store_source(source_path, "configurations") if keep_source else source_path
+        stored = (
+            self._store_source(
+                source_path,
+                "configurations",
+                source_id=config.name,
+                digest=digest,
+            )
+            if keep_source
+            else source_path
+        )
 
         source = Source(
             id=config.name,
             kind=KIND_CONFIGURATION,
-            origin=source_path.name,
+            origin=known_origin or source_path.name,
             sha256=digest,
             loaded_at=_now(),
             platform=config.platform,
@@ -3336,7 +3442,11 @@ class Registry:
                         # созданным Source из старого registry.json.
                         continue
                     восстановленный_source = self.add_configuration(
-                        stored, keep_source=False, known_sha256=source.sha256
+                        stored,
+                        keep_source=False,
+                        known_sha256=source.sha256,
+                        expected_id=source.id,
+                        known_origin=source.origin,
                     )
                     конфигурации_этого_restore[
                         source.id

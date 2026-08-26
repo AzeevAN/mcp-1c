@@ -7,10 +7,12 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from mcp1c import index_cache, registry as registry_module
-from mcp1c.registry import Registry
+from mcp1c.registry import Registry, RegistryError
 
 from conftest import build_configuration, write_export, write_syntax
 
@@ -84,6 +86,120 @@ def test_поднятый_из_кэша_индекс_ищет_так_же(export
             h.doc.id for h in второй.configurations["ТестоваяКонфигурация"].field_index.search(query)
         ]
         assert стало_поля == было_поля
+
+
+def test_разные_конфигурации_с_одинаковым_именем_архива_переживают_рестарт(
+    tmp_path,
+):
+    data_dir = tmp_path / "data"
+    архивы = []
+    ожидаемые_хеши = {}
+
+    for каталог, имя in (("первый", "КонфигурацияА"), ("второй", "КонфигурацияБ")):
+        incoming = tmp_path / каталог
+        incoming.mkdir()
+        config = build_configuration()
+        config.name = имя
+        archive = write_export(incoming, config)
+        archive = archive.replace(incoming / "same.zip")
+        архивы.append(archive)
+
+    registry = Registry(data_dir)
+    for archive in архивы:
+        source = registry.add_configuration(archive)
+        ожидаемые_хеши[source.id] = source.sha256
+    registry.save()
+
+    restarted = Registry(data_dir)
+    problems = restarted.restore()
+
+    assert problems == []
+    assert set(restarted.configurations) == {"КонфигурацияА", "КонфигурацияБ"}
+    assert {
+        source_id: restarted.sources[source_id].sha256
+        for source_id in ожидаемые_хеши
+    } == ожидаемые_хеши
+    assert len({restarted.sources[name].stored_path for name in ожидаемые_хеши}) == 2
+
+
+def test_сохранение_источника_не_следует_по_символической_ссылке(tmp_path):
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    archive = write_export(incoming, build_configuration())
+    registry = Registry(tmp_path / "data")
+    source = registry.add_configuration(archive)
+    stored = registry.data_dir / source.stored_path
+
+    outside = tmp_path / "outside.zip"
+    outside.write_bytes("не трогать".encode())
+    stored.unlink()
+    stored.symlink_to(outside)
+
+    replaced = registry.add_configuration(archive)
+    replaced_path = registry.data_dir / replaced.stored_path
+
+    assert outside.read_bytes() == "не трогать".encode()
+    assert not replaced_path.is_symlink()
+    assert replaced_path.read_bytes() == archive.read_bytes()
+
+
+def test_сохранение_источника_не_следует_по_ссылке_каталога(tmp_path):
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    archive = write_export(incoming, build_configuration())
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (data_dir / "sources").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(RegistryError, match="безопасно сохранить"):
+        Registry(data_dir).add_configuration(archive)
+
+    assert list(outside.iterdir()) == []
+
+
+def test_restore_отклоняет_сохранённый_источник_с_другим_хешем(tmp_path):
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    original = write_export(incoming, build_configuration())
+    registry = Registry(tmp_path / "data")
+    source = registry.add_configuration(original)
+    registry.save()
+
+    changed_config = build_configuration()
+    changed_config.name = "ДругаяКонфигурация"
+    changed_dir = tmp_path / "changed"
+    changed_dir.mkdir()
+    changed = write_export(changed_dir, changed_config)
+    (registry.data_dir / source.stored_path).write_bytes(changed.read_bytes())
+
+    restarted = Registry(registry.data_dir)
+    problems = restarted.restore()
+
+    assert any("контрольная сумма" in problem for problem in problems)
+    assert restarted.configurations == {}
+
+
+def test_restore_требует_совпадения_id_реестра_и_сохранённого_источника(tmp_path):
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    archive = write_export(incoming, build_configuration())
+    registry = Registry(tmp_path / "data")
+    registry.add_configuration(archive)
+    registry.save()
+
+    payload = json.loads(registry.registry_path.read_text(encoding="utf-8"))
+    payload["sources"][0]["id"] = "ПодменённаяКонфигурация"
+    registry.registry_path.write_text(
+        json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+    )
+
+    restarted = Registry(registry.data_dir)
+    problems = restarted.restore()
+
+    assert any("идентификатор" in problem for problem in problems)
+    assert restarted.configurations == {}
 
 
 def test_перевыгрузка_источника_заставляет_строить_заново(export, spy_build, tmp_path):

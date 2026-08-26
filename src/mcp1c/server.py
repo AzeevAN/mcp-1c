@@ -20,18 +20,119 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from typing import Annotated
 
 from mcp.server import MCPServer
 from pydantic import Field
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
-from starlette.responses import JSONResponse, RedirectResponse
-from typing import Annotated
+from starlette.responses import JSONResponse, PlainTextResponse, RedirectResponse
 
 from . import tools
-from .dashboard import can_read
+from .dashboard import MAX_UPLOAD, can_read
 from .dashboard import routes as dashboard_routes
 from .registry import Registry
+
+# Лимит файла и лимит HTTP-тела различаются: multipart добавляет служебные
+# заголовки и разделители. Остальные значения соответствуют цене операций:
+# форма входа крошечная, пакет запросов вмещает 32 максимально длинные фразы,
+# MCP и прочие маршруты получают безопасный общий запас.
+HTTP_BODY_LIMIT_LOGIN = 16 * 1024
+HTTP_BODY_LIMIT_QUERIES = 1024 * 1024
+HTTP_BODY_LIMIT_UPLOAD = MAX_UPLOAD + 1024 * 1024
+HTTP_BODY_LIMIT_DEFAULT = 2 * 1024 * 1024
+
+
+def _http_body_limit(scope) -> int:
+    if scope.get("method") == "POST":
+        path = scope.get("path", "")
+        if path == "/login":
+            return HTTP_BODY_LIMIT_LOGIN
+        if path == "/queries":
+            return HTTP_BODY_LIMIT_QUERIES
+        if path == "/sources":
+            return HTTP_BODY_LIMIT_UPLOAD
+    return HTTP_BODY_LIMIT_DEFAULT
+
+
+def http_body_guard(app):
+    """Остановить тело до parsing по объявленным и фактически принятым байтам."""
+
+    async def wrapped(scope, receive, send):
+        if scope["type"] != "http":
+            await app(scope, receive, send)
+            return
+
+        limit = _http_body_limit(scope)
+        raw_lengths = [
+            value
+            for name, value in scope.get("headers", ())
+            if name.lower() == b"content-length"
+        ]
+        if len(raw_lengths) > 1:
+            response = PlainTextResponse("Повторяющийся Content-Length.", 400)
+            await response(scope, receive, send)
+            return
+        if raw_lengths:
+            try:
+                declared = int(raw_lengths[0])
+            except ValueError:
+                declared = -1
+            if declared < 0:
+                response = PlainTextResponse("Некорректный Content-Length.", 400)
+                await response(scope, receive, send)
+                return
+            if declared > limit:
+                response = PlainTextResponse(
+                    f"Тело запроса превышает предел {limit} байт.", 413
+                )
+                await response(scope, receive, send)
+                return
+
+        received = 0
+        response_started = False
+        body_rejected = False
+
+        async def limited_receive():
+            nonlocal received, response_started, body_rejected
+            if body_rejected:
+                return {"type": "http.disconnect"}
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > limit:
+                    # Ответ отправляется в момент пересечения границы, пока
+                    # form/json parser ещё не получил тело целиком. Затем ему
+                    # показывается disconnect; возможный внутренний 500
+                    # от Starlette гасится в `tracked_send` ниже.
+                    if response_started:
+                        raise RuntimeError(
+                            "HTTP-тело превысило предел после начала ответа."
+                        )
+                    body_rejected = True
+                    response_started = True
+                    response = PlainTextResponse(
+                        f"Тело запроса превышает предел {limit} байт.", 413
+                    )
+                    await response(scope, receive, send)
+                    return {"type": "http.disconnect"}
+            return message
+
+        async def tracked_send(message):
+            nonlocal response_started
+            if body_rejected:
+                return
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await app(scope, limited_receive, tracked_send)
+        except Exception:
+            if not body_rejected:
+                raise
+
+    return wrapped
 
 # Описания параметров попадают в JSON-схему инструментов, которую клиент
 # получает при `tools/list`. Без них агент видит только тип и вынужден
@@ -541,7 +642,7 @@ def mcp_guard(app):
             )
         await response(scope, receive, send)
 
-    return wrapped
+    return http_body_guard(wrapped)
 
 
 def _run_streamable_http(server: MCPServer, *, host: str, port: int) -> None:

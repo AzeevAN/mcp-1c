@@ -37,7 +37,7 @@ from .graph_view import Neighbourhood, bounds, neighbourhood
 from .loader import ExportError
 from .registry import KIND_EXTENSION, KIND_MODULES, KIND_QUERY, Registry, RegistryError
 from .render import DETAIL_LEVELS
-from .search import FIELD_KIND_TITLES
+from .search import FIELD_KIND_TITLES, MAX_QUERY_CHARS
 from .syntax_model import KIND_TITLES
 from .v8container import V8ContainerError
 
@@ -48,6 +48,7 @@ COOKIE = "mcp1c_session"
 # потолка первый же случайный файл на гигабайты положит контейнер по памяти.
 MAX_UPLOAD = 500 * 1024 * 1024
 CHUNK = 1024 * 1024
+MAX_QUERY_PHRASES = 32
 
 # Сессии живут в памяти процесса и умирают с перезапуском. Отдельного хранилища
 # не заводим: вход — это одна вставка токена.
@@ -1021,6 +1022,7 @@ def _queries_page(
     phrases_text: str = "",
     results: list[tuple[str, list, list]] | None = None,
     error: str = "",
+    status_code: int = 200,
 ) -> HTMLResponse:
     options = "".join(
         f"<option{' selected' if name == config else ''}>{escape(name)}</option>"
@@ -1039,6 +1041,7 @@ def _queries_page(
         f"<p>{scope_inputs}</p>",
         "<p><textarea name=phrases rows=8 cols=70 "
         f"placeholder='одна фраза на строку'>{escape(phrases_text)}</textarea></p>",
+        f"<p class=note>За один прогон — не более {MAX_QUERY_PHRASES} фраз.</p>",
         "<button>Прогнать</button></form>",
     ]
     if error:
@@ -1075,7 +1078,9 @@ def _queries_page(
             )
         parts.append("</table>")
         parts.extend(_hidden_block(hidden))
-    return _layout("Запросы", "".join(parts))
+    page = _layout("Запросы", "".join(parts))
+    page.status_code = status_code
+    return page
 
 
 def _hidden_block(hidden: list) -> list[str]:
@@ -1866,12 +1871,34 @@ def routes(registry: Registry) -> list[Route]:
                 registry, config=config, scope=scope,
                 error="Не указано ни одной фразы.",
             )
+        if len(phrases) > MAX_QUERY_PHRASES:
+            return _queries_page(
+                registry, config=config, scope=scope,
+                phrases_text=phrases_text,
+                error=f"За один прогон принимается не более {MAX_QUERY_PHRASES} фраз.",
+                status_code=422,
+            )
+        if any(len(phrase) > MAX_QUERY_CHARS for phrase in phrases):
+            return _queries_page(
+                registry, config=config, scope=scope,
+                phrases_text=phrases_text,
+                error=(
+                    "Каждая поисковая фраза должна содержать не более "
+                    f"{MAX_QUERY_CHARS} символов."
+                ),
+                status_code=422,
+            )
         try:
             results = _run_queries(registry, config or None, scope, phrases)
-        except (RegistryError, ValueError) as error:
+        except RegistryError as error:
             return _queries_page(
                 registry, config=config, scope=scope,
                 phrases_text=phrases_text, error=str(error),
+            )
+        except ValueError as error:
+            return _queries_page(
+                registry, config=config, scope=scope,
+                phrases_text=phrases_text, error=str(error), status_code=422,
             )
         return _queries_page(
             registry, config=config, scope=scope,

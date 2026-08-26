@@ -229,8 +229,72 @@ def test_прогон_объясняет_превышение_лимита_по�
         },
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 422
     assert "не более 32 различных токенов" in response.text
+
+
+def test_прогон_отклоняет_33_фразы_до_поиска(tmp_path, monkeypatch):
+    client, _ = client_for(tmp_path)
+    called = False
+
+    def forbidden(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("поиск не должен запускаться сверх лимита")
+
+    monkeypatch.setattr(dashboard, "_run_queries", forbidden)
+    response = client.post(
+        "/queries",
+        data={
+            "config": "ТестоваяКонфигурация",
+            "scope": "objects",
+            "phrases": "\n".join(["контрагенты"] * 33),
+        },
+    )
+
+    assert response.status_code == 422
+    assert "не более 32 фраз" in response.text
+    assert not called
+
+
+def test_прогон_принимает_32_фразы(tmp_path):
+    client, _ = client_for(tmp_path)
+
+    response = client.post(
+        "/queries",
+        data={
+            "config": "ТестоваяКонфигурация",
+            "scope": "objects",
+            "phrases": "\n".join(["контрагенты"] * 32),
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.text.count("Справочник.Контрагенты") >= 32
+
+
+def test_прогон_отклоняет_слишком_длинную_фразу_до_поиска(tmp_path, monkeypatch):
+    client, _ = client_for(tmp_path)
+    called = False
+
+    def forbidden(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("поиск не должен запускаться сверх лимита")
+
+    monkeypatch.setattr(dashboard, "_run_queries", forbidden)
+    response = client.post(
+        "/queries",
+        data={
+            "config": "ТестоваяКонфигурация",
+            "scope": "objects",
+            "phrases": "я" * 4097,
+        },
+    )
+
+    assert response.status_code == 422
+    assert "не более 4096 символов" in response.text
+    assert not called
 
 
 def test_прогон_по_реквизитам(tmp_path):

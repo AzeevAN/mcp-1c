@@ -534,6 +534,9 @@ def main(argv: list[str] | None = None) -> int:
     except ExportError as error:
         print(f"Ошибка выгрузки: {error}", file=sys.stderr)
         return 2
+    except ValueError as error:
+        print(f"Ошибка параметров: {error}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

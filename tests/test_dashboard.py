@@ -215,6 +215,24 @@ def test_прогон_возвращает_попадания_с_причино�
     assert "все слова запроса" in response.text
 
 
+def test_прогон_объясняет_превышение_лимита_поисковой_фразы(tmp_path):
+    client, _ = client_for(tmp_path)
+    words = ["слово" + chr(1072 + index // 32) + chr(1072 + index % 32)
+             for index in range(33)]
+
+    response = client.post(
+        "/queries",
+        data={
+            "config": "ТестоваяКонфигурация",
+            "scope": "objects",
+            "phrases": " ".join(words),
+        },
+    )
+
+    assert response.status_code == 200
+    assert "не более 32 различных токенов" in response.text
+
+
 def test_прогон_по_реквизитам(tmp_path):
     client, _ = client_for(tmp_path)
 

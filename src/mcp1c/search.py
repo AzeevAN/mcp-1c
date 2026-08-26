@@ -25,8 +25,9 @@ from __future__ import annotations
 import re
 import unicodedata
 from bisect import bisect_left
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from dataclasses import dataclass, field
+from threading import Lock
 from typing import Iterable
 
 import numpy as np
@@ -40,6 +41,14 @@ from .synonyms import SYNONYMS
 # должен дотягиваться до «номенклатура». К сведению словоформ отношения не
 # имеет — этим занимается `stem()`.
 STEM_LENGTH = 6
+
+# Поисковая фраза приходит из MCP, CLI и дашборда в один и тот же `search()`.
+# Ограничение стоит здесь, а не в трёх внешних адаптерах: новый путь поиска
+# тогда нельзя случайно оставить без бюджета. 32 различных токена соответствуют
+# ширине маски покрытия `uint32`; сверх границы запрос отклоняется до NumPy.
+MAX_QUERY_CHARS = 4096
+MAX_QUERY_TOKENS = 32
+STEM_CACHE_LIMIT = 4096
 
 # Вес поля в общей оценке. Имя важнее синонима, синоним важнее описания.
 DEFAULT_FIELD_WEIGHTS = {
@@ -213,7 +222,8 @@ def tokenize(text: str) -> list[str]:
 _STEMMER = snowballstemmer.stemmer("russian")
 # Основы кэшируются: словарь имён конфигурации — тысячи уникальных токенов на
 # десятки тысяч вхождений, и один и тот же токен стеммится многократно.
-_STEM_CACHE: dict[str, str] = {}
+_STEM_CACHE: OrderedDict[str, str] = OrderedDict()
+_STEM_CACHE_LOCK = Lock()
 
 
 def stem(token: str) -> str:
@@ -225,10 +235,37 @@ def stem(token: str) -> str:
     два. Из-за этого «виды оплат чеков» не находило `ВидыОплатЧекаККМ`
     вовсе: слово «чеков» не совпадало ни с одним документом.
     """
-    got = _STEM_CACHE.get(token)
-    if got is None:
-        got = _STEM_CACHE[token] = _STEMMER.stemWord(token)
-    return got
+    with _STEM_CACHE_LOCK:
+        got = _STEM_CACHE.pop(token, None)
+        if got is not None:
+            _STEM_CACHE[token] = got
+            return got
+
+    # Стеммер не держим под общей блокировкой: два потока могут независимо
+    # вычислить одну основу, но остальные запросы в это время не ждут.
+    got = _STEMMER.stemWord(token)
+    with _STEM_CACHE_LOCK:
+        existing = _STEM_CACHE.pop(token, None)
+        _STEM_CACHE[token] = existing if existing is not None else got
+        while len(_STEM_CACHE) > STEM_CACHE_LIMIT:
+            _STEM_CACHE.popitem(last=False)
+        return _STEM_CACHE[token]
+
+
+def _query_tokens(query: str) -> list[str]:
+    """Проверить общий бюджет поисковой фразы и вернуть её токены."""
+    if len(query) > MAX_QUERY_CHARS:
+        raise ValueError(
+            f"Поисковая фраза должна содержать не более {MAX_QUERY_CHARS} символов."
+        )
+    tokens = tokenize(query)
+    distinct = len(dict.fromkeys(tokens))
+    if distinct > MAX_QUERY_TOKENS:
+        raise ValueError(
+            "Поисковая фраза должна содержать не более "
+            f"{MAX_QUERY_TOKENS} различных токенов."
+        )
+    return tokens
 
 
 @dataclass(slots=True)
@@ -760,11 +797,10 @@ class SearchIndex:
         kinds: Iterable[str] | None = None,
         predicate=None,
     ) -> list[Hit]:
-        self._finalize()
-
-        query_tokens = tokenize(query)
+        query_tokens = _query_tokens(query)
         if not query_tokens:
             return []
+        self._finalize()
 
         count = len(self._doc_ids)
         scores = np.zeros(count, dtype=np.float64)

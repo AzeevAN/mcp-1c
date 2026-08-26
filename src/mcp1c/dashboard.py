@@ -1868,7 +1868,7 @@ def routes(registry: Registry) -> list[Route]:
             )
         try:
             results = _run_queries(registry, config or None, scope, phrases)
-        except RegistryError as error:
+        except (RegistryError, ValueError) as error:
             return _queries_page(
                 registry, config=config, scope=scope,
                 phrases_text=phrases_text, error=str(error),

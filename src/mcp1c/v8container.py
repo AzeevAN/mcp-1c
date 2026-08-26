@@ -52,6 +52,14 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Iterator
 
+from .resource_limits import (
+    V8_LIMITS,
+    ResourceBudget,
+    ResourceLimitError,
+    ResourceLimits,
+    decompress_raw_deflate,
+)
+
 HEADER_SIZE = 16
 BLOCK_HEADER_SIZE = 31
 EMPTY_ADDR = 0x7FFFFFFF
@@ -64,6 +72,10 @@ _EPOCH_1C = datetime(1, 1, 1)
 
 class V8ContainerError(Exception):
     """Файл не является контейнером 1С или повреждён."""
+
+
+class V8ResourceLimitError(V8ContainerError):
+    """Контейнер корректен структурно, но превысил вычислительный бюджет."""
 
 
 def _ticks_to_datetime(ticks: int) -> datetime | None:
@@ -127,7 +139,7 @@ class V8Entry:
 
     def open_container(self) -> "V8Container":
         """Вложенный контейнер — например, .cf внутри .dt."""
-        return V8Container(self.read())
+        return V8Container(self.read(), limits=self._container._limits)
 
 
 class V8Container:
@@ -140,9 +152,16 @@ class V8Container:
             data = container.read("objects/Массив.html")
     """
 
-    def __init__(self, source: str | Path | bytes | bytearray | memoryview):
+    def __init__(
+        self,
+        source: str | Path | bytes | bytearray | memoryview,
+        *,
+        limits: ResourceLimits = V8_LIMITS,
+    ):
         self._file = None
         self._mmap: mmap.mmap | None = None
+        self._limits = limits
+        self._budget = ResourceBudget(limits, "контейнер 1С")
 
         if isinstance(source, (bytes, bytearray, memoryview)):
             self._data: bytes | mmap.mmap = bytes(source)
@@ -215,11 +234,20 @@ class V8Container:
 
             if total < 0:
                 total = doc_size
+                if total > self._limits.max_entry_bytes:
+                    raise V8ResourceLimitError(
+                        f"Документ контейнера размером {total} байт превышает "
+                        f"предел {self._limits.max_entry_bytes}."
+                    )
 
             start = addr + BLOCK_HEADER_SIZE
             chunk = self._data[start : start + block_size]
             chunks.append(bytes(chunk))
             collected += len(chunk)
+            if collected > self._limits.max_entry_bytes:
+                raise V8ResourceLimitError(
+                    "Цепочка блоков контейнера превысила предел одной записи."
+                )
 
             if total >= 0 and collected >= total:
                 break
@@ -235,6 +263,12 @@ class V8Container:
         if len(table) % 12:
             # Хвост не кратен записи — читаем столько целых записей, сколько есть.
             table = table[: len(table) - len(table) % 12]
+        entries_total = len(table) // 12
+        if entries_total > self._limits.max_entries:
+            raise V8ResourceLimitError(
+                f"Число записей контейнера {entries_total} превышает предел "
+                f"{self._limits.max_entries}."
+            )
 
         for offset in range(0, len(table), 12):
             attrs_addr, data_addr, _ = struct.unpack_from("<III", table, offset)
@@ -276,9 +310,15 @@ class V8Container:
         if not raw:
             return b""
         try:
-            return zlib.decompress(raw, -15)
+            return decompress_raw_deflate(raw, self._budget, f"entry@{addr}")
+        except ResourceLimitError as error:
+            raise V8ResourceLimitError(str(error)) from error
         except zlib.error:
             # Часть элементов лежит без сжатия — например вложенные контейнеры.
+            try:
+                self._budget.consume(f"entry@{addr}", 0, len(raw))
+            except ResourceLimitError as error:
+                raise V8ResourceLimitError(str(error)) from error
             return raw
 
     # ------------------------------------------------------------- публичное API

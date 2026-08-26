@@ -16,7 +16,7 @@ from types import MappingProxyType
 from typing import Mapping
 
 from .bsl_lex import нормализовать
-from .v8container import V8Container, V8ContainerError
+from .v8container import V8Container, V8ContainerError, V8ResourceLimitError
 
 
 _KINDS = frozenset(("file", "container", "compiled"))
@@ -235,6 +235,12 @@ def _read_bytes(root: Path, address: str, locator: ModuleLocator) -> bytes:
             "container_entry_missing",
             address,
             "в контейнере нет ожидаемой записи модуля",
+        ) from error
+    except V8ResourceLimitError as error:
+        raise ContentReadError(
+            "budget_exceeded",
+            address,
+            "контейнер модуля превысил вычислительный предел",
         ) from error
     except (OSError, V8ContainerError) as error:
         raise ContentReadError(

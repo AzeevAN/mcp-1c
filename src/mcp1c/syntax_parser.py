@@ -18,10 +18,10 @@ from __future__ import annotations
 import html
 import io
 import re
-import zipfile
 from pathlib import Path
 from typing import Iterator
 
+from .resource_limits import LimitedZipFile
 from .syntax_model import (
     AVAILABILITY,
     KIND_EVENT,
@@ -301,7 +301,7 @@ def parse_page(path: str, raw: bytes) -> SyntaxItem | None:
 # --------------------------------------------------------------- источник
 
 
-def open_file_storage(hbk_path: str | Path) -> zipfile.ZipFile:
+def open_file_storage(hbk_path: str | Path) -> LimitedZipFile:
     """Достать zip с html-страницами из контейнера .hbk."""
     with V8Container(hbk_path) as container:
         if FILE_STORAGE not in container:
@@ -310,7 +310,7 @@ def open_file_storage(hbk_path: str | Path) -> zipfile.ZipFile:
                 "это не файл справки синтакс-помощника."
             )
         blob = container.read(FILE_STORAGE)
-    return zipfile.ZipFile(io.BytesIO(blob))
+    return LimitedZipFile(io.BytesIO(blob), label="FileStorage справки")
 
 
 def parse_hbk(hbk_path: str | Path, platform: str = "") -> SyntaxIndex:

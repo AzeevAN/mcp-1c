@@ -24,6 +24,7 @@ from mcp1c.v8container import (
     V8ContainerError,
     is_container,
 )
+from module_samples import v8_container_bytes
 
 
 def header(next_page: int = EMPTY_ADDR, page_size: int = 512, version: int = 0) -> bytes:
@@ -83,3 +84,13 @@ def test_сообщение_об_отказе_не_поминает_сигнат
             pass
 
     assert "FF FF FF 7F" not in str(поймано.value)
+
+
+def test_сжатая_запись_не_распаковывается_без_предела():
+    payload = b"x" * (32 * 1024 * 1024)
+    raw = v8_container_bytes([("bomb", payload)])
+    assert len(raw) < 64 * 1024
+
+    with V8Container(raw) as container:
+        with pytest.raises(V8ContainerError, match="предел|сжати"):
+            container.read("bomb")

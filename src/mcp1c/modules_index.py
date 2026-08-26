@@ -1465,9 +1465,16 @@ class Формы:
                     )
                 except ContentReadError as error:
                     битая = True
+                    if error.category == "budget_exceeded":
+                        превышен_бюджет = True
+                    категория = (
+                        "budget_exceeded"
+                        if error.category == "budget_exceeded"
+                        else "form_container_unreadable"
+                    )
                     добавить_проблему(
                         ПроблемаФормы(
-                            "form_container_unreadable",
+                            категория,
                             адрес,
                             error.reason,
                         )

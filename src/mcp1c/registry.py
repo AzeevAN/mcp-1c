@@ -46,6 +46,7 @@ from .model import Configuration
 from .module_content import LocatorIdentity
 from .query_parser import looks_like_query_help
 from .query_parser import parse_hbk as parse_query_hbk
+from .resource_limits import ResourceLimitError
 from .search_keys import coverage as key_coverage
 from .search_keys import platform_coverage
 from .search import (
@@ -60,6 +61,7 @@ from .syntax_merge import merge_syntax
 from .syntax_model import SyntaxIndex, SyntaxItem, parse_version, release
 from .syntax_parser import open_file_storage, parse_hbk
 from .virtual_tables import TableTemplate, build_table_index
+from .v8container import V8ContainerError
 
 REGISTRY_VERSION = 1
 
@@ -2622,19 +2624,22 @@ class Registry:
                 )
             platform = "" if is_query else (platform or syntax.max_platform)
         else:
-            if known_kind:
-                is_query = known_kind == KIND_QUERY
-            else:
-                is_query = _is_query_hbk(source_path)
-            if is_query:
-                syntax = parse_query_hbk(source_path)
-                platform = ""
-            else:
-                syntax = parse_hbk(source_path, platform=platform)
-                if not platform:
-                    platform = syntax.derived_platform()
-                    if platform:
-                        syntax.platforms = [platform]
+            try:
+                if known_kind:
+                    is_query = known_kind == KIND_QUERY
+                else:
+                    is_query = _is_query_hbk(source_path)
+                if is_query:
+                    syntax = parse_query_hbk(source_path)
+                    platform = ""
+                else:
+                    syntax = parse_hbk(source_path, platform=platform)
+                    if not platform:
+                        platform = syntax.derived_platform()
+                        if platform:
+                            syntax.platforms = [platform]
+            except (ResourceLimitError, V8ContainerError) as error:
+                raise RegistryError(f"{source_path.name}: {error}") from error
 
         # Без версии справку платформы принимать нельзя: она задаёт границы
         # применимости всему набору, а пустая граница означает «элемент

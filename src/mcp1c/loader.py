@@ -18,6 +18,13 @@ from pathlib import Path
 from typing import IO, Any, Iterator
 
 from .model import Configuration, Field, MetadataObject, TabularPart
+from .resource_limits import (
+    ARCHIVE_LIMITS,
+    LimitedReader,
+    LimitedZipFile,
+    ResourceBudget,
+    ResourceLimitError,
+)
 
 MANIFEST_XML = "manifest.xml"
 MANIFEST_JSON = "manifest.json"
@@ -78,18 +85,21 @@ class _Source:
 
     def __init__(self, path: Path):
         self.path = path
-        self._zip: zipfile.ZipFile | None = None
+        self._zip: LimitedZipFile | None = None
+        self._budget: ResourceBudget | None = None
         self._root = ""
 
         if path.is_dir():
-            self._names = [
-                str(p.relative_to(path)).replace("\\", "/")
-                for p in path.rglob("*")
-                if p.is_file()
-            ]
+            files = [p for p in path.rglob("*") if p.is_file()]
+            self._names = [str(p.relative_to(path)).replace("\\", "/") for p in files]
+            self._budget = ResourceBudget(ARCHIVE_LIMITS, "каталог выгрузки")
+            self._budget.validate_members(
+                (name, file.stat().st_size, file.stat().st_size)
+                for name, file in zip(self._names, files)
+            )
         elif zipfile.is_zipfile(path):
-            self._zip = zipfile.ZipFile(path)
-            self._names = [n for n in self._zip.namelist() if not n.endswith("/")]
+            self._zip = LimitedZipFile(path, label="ZIP выгрузки schema v1")
+            self._names = self._zip.namelist()
             self._root = _common_root(self._names)
         else:
             raise ExportError(f"Не ZIP и не каталог: {path}")
@@ -101,7 +111,12 @@ class _Source:
         full = self._root + name
         if self._zip is not None:
             return self._zip.open(full)
-        return (self.path / full).open("rb")
+        assert self._budget is not None
+        return LimitedReader(
+            (self.path / full).open("rb"),
+            self._budget,
+            full,
+        )
 
     def close(self) -> None:
         if self._zip is not None:
@@ -342,7 +357,10 @@ def _manifest_warnings(manifest: dict[str, Any]) -> list[str]:
 
 def inspect(path: str | Path) -> ExportInfo:
     """Прочитать только манифест. Дёшево — объекты не трогаются."""
-    source = _Source(Path(path))
+    try:
+        source = _Source(Path(path))
+    except ResourceLimitError as error:
+        raise ExportError(str(error)) from error
     try:
         fmt, manifest = _read_manifest(source)
         return ExportInfo(
@@ -357,13 +375,18 @@ def inspect(path: str | Path) -> ExportInfo:
             predefined_available=_as_bool(manifest.get("predefined_available"), True),
             warnings=_manifest_warnings(manifest),
         )
+    except ResourceLimitError as error:
+        raise ExportError(str(error)) from error
     finally:
         source.close()
 
 
 def load(path: str | Path) -> Configuration:
     """Прочитать выгрузку целиком в модель."""
-    source = _Source(Path(path))
+    try:
+        source = _Source(Path(path))
+    except ResourceLimitError as error:
+        raise ExportError(str(error)) from error
     try:
         fmt, manifest = _read_manifest(source)
 
@@ -447,5 +470,7 @@ def load(path: str | Path) -> Configuration:
             )
 
         return config
+    except ResourceLimitError as error:
+        raise ExportError(str(error)) from error
     finally:
         source.close()

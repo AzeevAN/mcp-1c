@@ -28,7 +28,7 @@ def client_for(tmp_path) -> tuple[TestClient, Registry]:
     registry = Registry(data_dir)
     registry.add_configuration(write_export(incoming, build_configuration()))
     app = Starlette(routes=dashboard.routes(registry))
-    return TestClient(app), registry
+    return TestClient(app, headers={"origin": "http://testserver"}), registry
 
 
 def test_страница_показывает_псевдоним_с_происхождением(tmp_path):

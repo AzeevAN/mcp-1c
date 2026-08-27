@@ -30,6 +30,10 @@ def client_for(tmp_path, **client_options) -> tuple[TestClient, Registry]:
     registry = Registry(data_dir)
     registry.add_configuration(write_export(incoming, build_configuration()))
     app = Starlette(routes=dashboard.routes(registry))
+    base_url = str(client_options.get("base_url", "http://testserver")).rstrip("/")
+    headers = dict(client_options.get("headers", {}))
+    headers.setdefault("origin", base_url)
+    client_options["headers"] = headers
     return TestClient(app, **client_options), registry
 
 

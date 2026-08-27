@@ -23,9 +23,11 @@ import traceback
 from dataclasses import dataclass
 from html import escape
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import FormData, UploadFile
+from starlette.formparsers import MultiPartException, MultiPartParser
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from starlette.routing import Route
@@ -49,6 +51,8 @@ COOKIE = "mcp1c_session"
 MAX_UPLOAD = 500 * 1024 * 1024
 CHUNK = 1024 * 1024
 MAX_QUERY_PHRASES = 32
+MAX_UPLOAD_FIELDS = 1
+MAX_UPLOAD_FIELD_SIZE = 4 * 1024
 
 # Сессии живут в памяти процесса и умирают с перезапуском. Отдельного хранилища
 # не заводим: вход — это одна вставка токена.
@@ -160,6 +164,109 @@ def _authorized(request: Request) -> bool:
     if session and _SESSIONS.get(session) == LEVEL_ADMIN:
         return True
     return _same(_token_from_headers(request), _admin_token())
+
+
+def _origin_key(value: str, *, allow_path: bool) -> tuple[str, str, int] | None:
+    """Канонический origin без зависимости от написания стандартного порта."""
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        return None
+    scheme = parsed.scheme.lower()
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    if (
+        scheme not in ("http", "https")
+        or not hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or (not allow_path and (parsed.path not in ("", "/") or parsed.query))
+        or parsed.fragment
+    ):
+        return None
+    return scheme, hostname, port or (443 if scheme == "https" else 80)
+
+
+def _cookie_mutation_is_same_origin(request: Request) -> bool:
+    """Не дать браузерной cookie авторизовать запись с соседнего host.
+
+    Явный админский заголовок не является фоновым полномочием браузера и потому
+    не требует CSRF-проверки, даже если клиент заодно прислал cookie.
+    """
+    session = request.cookies.get(COOKIE, "")
+    if not session or session not in _SESSIONS:
+        return True
+    if _same(_token_from_headers(request), _admin_token()):
+        return True
+
+    origin = request.headers.get("origin", "")
+    source = origin or request.headers.get("referer", "")
+    if not source:
+        return False
+    expected = _origin_key(str(request.base_url), allow_path=True)
+    actual = _origin_key(source, allow_path=not bool(origin))
+    return expected is not None and actual == expected
+
+
+def _csrf_denied(request: Request) -> PlainTextResponse | None:
+    if _cookie_mutation_is_same_origin(request):
+        return None
+    return PlainTextResponse(
+        "Cookie-сессия не подтверждена заголовком Origin или Referer этого сервера.",
+        status_code=403,
+    )
+
+
+class _UploadTooLarge(MultiPartException):
+    """File-part пересёк границу до следующей записи в spool."""
+
+
+class _LimitedUploadParser(MultiPartParser):
+    """Multipart с одним файлом и ограниченным временным spool-файлом."""
+
+    def __init__(self, request: Request, file_limit: int) -> None:
+        super().__init__(
+            request.headers,
+            request.stream(),
+            max_files=1,
+            max_fields=MAX_UPLOAD_FIELDS,
+            max_part_size=MAX_UPLOAD_FIELD_SIZE,
+        )
+        self.file_limit = file_limit
+        self._current_file_size = 0
+
+    def on_part_begin(self) -> None:
+        super().on_part_begin()
+        self._current_file_size = 0
+
+    def on_part_data(self, data: bytes, start: int, end: int) -> None:
+        if self._current_part.file is not None:
+            self._current_file_size += end - start
+            if self._current_file_size > self.file_limit:
+                raise _UploadTooLarge(
+                    f"File-part превысил предел {self.file_limit} байт."
+                )
+        super().on_part_data(data, start, end)
+
+
+async def _limited_upload_form(request: Request) -> FormData:
+    """Разобрать загрузку, не принимая лишние файлы и поля."""
+    if not request.headers.get("content-type", "").lower().startswith(
+        "multipart/form-data"
+    ):
+        raise MultiPartException("Ожидалась multipart/form-data.")
+    parser = _LimitedUploadParser(request, MAX_UPLOAD)
+    form = await parser.parse()
+    items = form.multi_items()
+    files = [(name, value) for name, value in items if isinstance(value, UploadFile)]
+    fields = [(name, value) for name, value in items if not isinstance(value, UploadFile)]
+    if len(files) != 1 or files[0][0] != "file":
+        await form.close()
+        raise MultiPartException("Ожидался ровно один file-part с именем file.")
+    if any(name != "allow_truncated" for name, _ in fields):
+        await form.close()
+        raise MultiPartException("Получено неизвестное поле multipart.")
+    return form
 
 
 def can_read(request: Request) -> bool:
@@ -1799,7 +1906,7 @@ def routes(registry: Registry) -> list[Route]:
         if not _authorized(request):
             page = _dictionary_page(registry, error="Нужен вход администратора.")
             return HTMLResponse(page.body, status_code=403)
-        return None
+        return _csrf_denied(request)
 
     async def alias_add(request: Request) -> HTMLResponse:
         denied = _write_guard(request)
@@ -1991,6 +2098,9 @@ def routes(registry: Registry) -> list[Route]:
         return response
 
     async def logout(request: Request):
+        denied = _csrf_denied(request)
+        if denied is not None:
+            return denied
         _SESSIONS.pop(request.cookies.get(COOKIE, ""), None)
         response = RedirectResponse("/sources", status_code=303)
         response.delete_cookie(
@@ -2009,20 +2119,45 @@ def routes(registry: Registry) -> list[Route]:
             return await render_sources(
                 error="Нужен вход администратора.", status_code=403
             )
+        denied = _csrf_denied(request)
+        if denied is not None:
+            return denied
 
-        form = await request.form()
+        try:
+            form = await _limited_upload_form(request)
+        except _UploadTooLarge:
+            return await render_sources(
+                error=f"Файл больше {MAX_UPLOAD // 1024 // 1024} МБ.",
+                authorized=True,
+                status_code=413,
+            )
+        except MultiPartException:
+            return await render_sources(
+                error=(
+                    "Некорректная multipart-форма: разрешены один файл "
+                    "`file` и флаг `allow_truncated`."
+                ),
+                authorized=True,
+                status_code=400,
+            )
+
         uploaded = form.get("file")
         allow_truncated = str(form.get("allow_truncated", "")) == "1"
-        if uploaded is None or not getattr(uploaded, "filename", ""):
-            return await render_sources(error="Файл не выбран.", authorized=True)
+        if not isinstance(uploaded, UploadFile) or not uploaded.filename:
+            await form.close()
+            return await render_sources(
+                error="Файл не выбран.", authorized=True, status_code=400
+            )
 
         # Имя приходит от клиента: берём только последний сегмент, иначе из
         # «../../etc/passwd» сложится путь наружу временного каталога.
         name = Path(uploaded.filename).name
         suffix = Path(name).suffix.lower()
         if suffix not in (".zip", ".hbk"):
+            await form.close()
             return await render_sources(
-                error="Принимаются только .zip и .hbk", authorized=True
+                error="Принимаются только .zip и .hbk",
+                authorized=True,
             )
 
         # Каталог удаляется не здесь, а фоновой задачей: она переживёт этот
@@ -2041,11 +2176,14 @@ def routes(registry: Registry) -> list[Route]:
                 if size > MAX_UPLOAD:
                     shutil.rmtree(tmp, ignore_errors=True)
                     _JOBS.remove(job)
+                    await form.close()
                     return await render_sources(
                         error=f"Файл больше {MAX_UPLOAD // 1024 // 1024} МБ.",
                         authorized=True,
+                        status_code=413,
                     )
                 out.write(chunk)
+        await form.close()
 
         # Разбор уходит в фон, ответ отдаётся сразу. Справка разбирается около
         # пяти секунд, и всё это время браузер стоял на белом экране, не
@@ -2074,6 +2212,9 @@ def routes(registry: Registry) -> list[Route]:
             return await render_sources(
                 error="Нужен вход администратора.", status_code=403
             )
+        denied = _csrf_denied(request)
+        if denied is not None:
+            return denied
 
         from . import intake
         from .incoming import SETTLE_SECONDS
@@ -2189,6 +2330,9 @@ def routes(registry: Registry) -> list[Route]:
             return await render_sources(
                 error="Нужен вход администратора.", status_code=403
             )
+        denied = _csrf_denied(request)
+        if denied is not None:
+            return denied
 
         for job in [j for j in _JOBS if j["state"] in (JOB_DONE, JOB_FAILED)]:
             _JOBS.remove(job)
@@ -2202,6 +2346,9 @@ def routes(registry: Registry) -> list[Route]:
             return await render_sources(
                 error="Нужен вход администратора.", status_code=403
             )
+        denied = _csrf_denied(request)
+        if denied is not None:
+            return denied
 
         form = await request.form()
         given = str(form.get("path", ""))
@@ -2231,6 +2378,9 @@ def routes(registry: Registry) -> list[Route]:
             return await render_sources(
                 error="Нужен вход администратора.", status_code=403
             )
+        denied = _csrf_denied(request)
+        if denied is not None:
+            return denied
 
         form = await request.form()
         try:

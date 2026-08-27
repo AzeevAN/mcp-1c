@@ -44,7 +44,10 @@ def живой_клиент(app) -> TestClient:
     Найдено 2026-08-19 первым же прогоном CI: 3-4 падения из 432 на
     ubuntu-latest при 432 зелёных локально.
     """
-    client = TestClient(app)
+    # Настоящий браузер посылает Origin у POST-форм. TestClient сам его не
+    # добавляет, поэтому задаём same-origin явно: иначе тесты обходят ровно тот
+    # контракт CSRF, по которому работает пользовательский путь.
+    client = TestClient(app, headers={"origin": "http://testserver"})
     client.__enter__()
     _ОТКРЫТЫЕ_КЛИЕНТЫ.append(client)
     return client

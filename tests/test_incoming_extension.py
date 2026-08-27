@@ -1,4 +1,5 @@
 """Разбор расширения по кнопке: вид источника по-русски, дубликат по имени файла."""
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -55,6 +56,21 @@ def дождаться(client, условие, таймаут: float = 20.0) -> 
     raise AssertionError(f"за {таймаут} с условие не выполнилось:\n{текст}")
 
 
+def дождаться_завершения(client, registry: Registry, имя: str) -> str:
+    """Дождаться и результата job, и освобождения слота фонового разбора."""
+    сканер = dashboard._scanner(registry)
+
+    def завершено(_текст: str) -> bool:
+        задания = [job for job in dashboard._JOBS if job["name"] == имя]
+        return bool(
+            задания
+            and задания[-1]["state"] in (dashboard.JOB_DONE, dashboard.JOB_FAILED)
+            and имя not in сканер.running
+        )
+
+    return дождаться(client, завершено)
+
+
 def test_вид_расширения_подписан_по_русски(tmp_path, monkeypatch):
     monkeypatch.setenv("ADMIN_TOKEN", "секрет")
     monkeypatch.delenv("API_TOKEN", raising=False)
@@ -67,9 +83,10 @@ def test_вид_расширения_подписан_по_русски(tmp_path
         data={"name": "расширение.zip"},
         follow_redirects=False,
     )
-    текст = дождаться(client, lambda t: "Розница:ext:РасширениеА" in t)
+    текст = дождаться_завершения(client, registry, "расширение.zip")
 
     # Строка «Загружено» называет вид по-русски, а не сырым словом `extension`.
+    assert "Розница:ext:РасширениеА" in текст
     assert "<td>Расширение<td>" in текст
 
 
@@ -87,6 +104,22 @@ def test_две_копии_одного_расширения_под_разным
     копия = registry.incoming_dir / "РасширениеА-копия.zip"
     копия.write_bytes(оригинал.read_bytes())
     состарить(копия)
+    сканер = dashboard._scanner(registry)
+    # Источник публикуется раньше финальной очистки. Удерживаем именно это окно,
+    # чтобы тест не зависел от того, успел ли фоновый поток на конкретной машине.
+    дошёл_до_завершения = threading.Event()
+    разрешить_завершение = threading.Event()
+    настоящий_clear_failure = type(сканер).clear_failure
+
+    def задержать_первый_clear_failure(self, путь):
+        if путь.name == оригинал.name:
+            дошёл_до_завершения.set()
+            assert разрешить_завершение.wait(5)
+        return настоящий_clear_failure(self, путь)
+
+    monkeypatch.setattr(
+        type(сканер), "clear_failure", задержать_первый_clear_failure
+    )
 
     client.post(
         "/sources/incoming/parse",
@@ -94,13 +127,18 @@ def test_две_копии_одного_расширения_под_разным
         follow_redirects=False,
     )
     дождаться(client, lambda t: "Розница:ext:РасширениеА" in t)
+    assert дошёл_до_завершения.wait(5)
+    assert оригинал.name in сканер.running
+
+    разрешить_завершение.set()
+    дождаться_завершения(client, registry, оригинал.name)
 
     client.post(
         "/sources/incoming/parse",
         data={"name": "РасширениеА-копия.zip"},
         follow_redirects=False,
     )
-    текст = дождаться(client, lambda t: t.count("разобрано") >= 2)
+    текст = дождаться_завершения(client, registry, копия.name)
 
     # Один источник расширения на два файла с одинаковым содержимым.
     ключи_расширений = [i for i in registry.sources if i.startswith("Розница:ext:")]

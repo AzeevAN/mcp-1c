@@ -11,7 +11,7 @@ HTTP-эндпоинта — это не транспорт, а обходной 
 
 Запуск::
 
-    python3 -m mcp1c.server                      # streamable-http на :8000/mcp
+    python3 -m mcp1c.server                      # HTTP на 127.0.0.1:8000/mcp
     python3 -m mcp1c.server --transport stdio    # для локальных клиентов
 """
 
@@ -650,7 +650,13 @@ def mcp_guard(app):
     return http_body_guard(wrapped)
 
 
-def _run_streamable_http(server: MCPServer, *, host: str, port: int) -> None:
+def _run_streamable_http(
+    server: MCPServer,
+    *,
+    host: str,
+    port: int,
+    trust_proxy_headers: bool,
+) -> None:
     """То же, что `server.run('streamable-http')`, но с охраной вокруг.
 
     SDK умеет запускать себя сам, но тогда между сетью и приложением ничего не
@@ -659,7 +665,17 @@ def _run_streamable_http(server: MCPServer, *, host: str, port: int) -> None:
     import uvicorn
 
     app = server.streamable_http_app(host=host)
-    uvicorn.run(mcp_guard(app), host=host, port=port, log_level="info")
+    uvicorn.run(
+        mcp_guard(app),
+        host=host,
+        port=port,
+        log_level="info",
+        # X-Forwarded-Proto влияет на флаг Secure сессионной cookie. По
+        # умолчанию не доверяем заголовку от клиента. Значение `*` допустимо
+        # только за изолированным proxy, явно включённым оператором.
+        proxy_headers=trust_proxy_headers,
+        forwarded_allow_ips="*" if trust_proxy_headers else None,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -670,8 +686,16 @@ def main(argv: list[str] | None = None) -> int:
         default="streamable-http",
         choices=("streamable-http", "stdio"),
     )
-    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument(
+        "--trust-proxy-headers",
+        action="store_true",
+        help=(
+            "доверять X-Forwarded-*; только за изолированным reverse proxy, "
+            "который перезаписывает эти заголовки"
+        ),
+    )
     args = parser.parse_args(argv)
 
     registry = Registry(args.data)
@@ -691,7 +715,12 @@ def main(argv: list[str] | None = None) -> int:
         # запустил: токен там не с кем проверять и не от кого защищаться.
         server.run(transport="stdio")
     else:
-        _run_streamable_http(server, host=args.host, port=args.port)
+        _run_streamable_http(
+            server,
+            host=args.host,
+            port=args.port,
+            trust_proxy_headers=args.trust_proxy_headers,
+        )
     return 0
 
 

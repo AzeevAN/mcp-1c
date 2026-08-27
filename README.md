@@ -35,7 +35,7 @@
 | Docker | ✅ один контейнер, `357MB` по выводу Docker CLI |
 | Кэш поисковых индексов | ✅ 12 МБ, поднимается вместо повторного разбора |
 | Стенд замеров | ✅ `python -m mcp1c.bench`, P@k, MRR, отрыв, сверка пометок |
-| Тесты | ✅ `.venv/bin/python -m pytest`, 1100 |
+| Тесты | ✅ `.venv/bin/python -m pytest`, 1664 |
 | Дашборд | ✅ реестр, источники, прогон запросов, граф связей, карточки, словарь |
 | Авторизация | ✅ `API_TOKEN` на чтение, `ADMIN_TOKEN` на запись |
 | Приём выгрузки конфигурации в файлы | ✅ `data/incoming/`, отбор и учёт источника |
@@ -170,10 +170,43 @@ docker compose up -d --build --force-recreate
 
 `restart` поднимет прежний контейнер на прежнем образе, и правки не применятся.
 
-**Про порт.** Наружу сервер отдан на `5001`, внутри контейнера слушает `8000` —
-проброс `5001:8000` в `docker-compose.yml`. Все адреса в этом файле внешние,
-то есть `5001`. Занят другим сервисом — поменяйте левую часть проброса, правую
-не трогайте: на неё завязаны `EXPOSE` и healthcheck образа.
+**Про порт.** На машине сервер доступен на `127.0.0.1:5001`, внутри контейнера
+слушает `8000` — это проброс `127.0.0.1:5001:8000` в
+`docker-compose.yml`. По умолчанию Docker не публикует MCP на внешних сетевых
+интерфейсах. Занят `5001` — поменяйте среднюю часть проброса, внутренний `8000`
+не трогайте: на него завязаны `EXPOSE` и healthcheck образа.
+
+### Удалённый HTTPS-профиль
+
+Для доступа с другой машины plain HTTP и прямой публичный bind backend не
+используются. В репозитории есть override `docker-compose.remote.yml`: он
+сохраняет backend на `127.0.0.1:5001`, требует непустые `API_TOKEN` и
+`ADMIN_TOKEN` уже при разборе Compose и включает доверие к `X-Forwarded-*`.
+Этот профиль рассчитан только на TLS reverse proxy на той же машине:
+
+```bash
+cp .env.example .env
+# Запишите в .env два разных случайных значения API_TOKEN и ADMIN_TOKEN.
+docker compose -f docker-compose.yml -f docker-compose.remote.yml \
+  up -d --build --force-recreate
+```
+
+Минимальный Caddyfile после того, как DNS-имя направлено на сервер, а порты
+`80` и `443` доступны Caddy:
+
+```caddyfile
+mcp.example.com {
+    reverse_proxy 127.0.0.1:5001
+}
+```
+
+Клиент подключается к `https://mcp.example.com/mcp`, не к порту `5001`.
+Caddy завершает TLS и перезаписывает forwarded-заголовки; Uvicorn принимает
+их только из-за явного `--trust-proxy-headers` в remote override. Поэтому
+браузерная сессия получает cookie `Secure` только в HTTPS-профиле. Не
+добавляйте к нему внешний проброс `0.0.0.0:5001:8000` и не включайте флаг при
+прямом доступе клиентов к backend: тогда клиент смог бы подделать схему
+запроса заголовком `X-Forwarded-Proto`.
 
 ## Дашборд
 
@@ -307,7 +340,7 @@ MCP-клиентов это не задерживает — индексация
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-PYTHONPATH=src .venv/bin/python -m mcp1c.server --host 0.0.0.0 --port 5001
+PYTHONPATH=src .venv/bin/python -m mcp1c.server --port 5001
 ```
 
 Либо пакетом — тогда `PYTHONPATH` не нужен, а рядом появляются три команды:
@@ -315,7 +348,7 @@ PYTHONPATH=src .venv/bin/python -m mcp1c.server --host 0.0.0.0 --port 5001
 ```bash
 pip install .
 
-mcp1c-server --host 0.0.0.0 --port 5001   # = python -m mcp1c.server
+mcp1c-server --port 5001                  # = python -m mcp1c.server
 mcp1c reg-list --data data                # = python -m mcp1c.cli
 mcp1c-bench --help                        # = python -m mcp1c.bench
 ```
@@ -333,7 +366,8 @@ mcp1c-bench --help                        # = python -m mcp1c.bench
 
 | Транспорт | Когда | Адрес |
 |---|---|---|
-| **streamable-http** | сервер в Docker или на отдельной машине | `http://адрес:5001/mcp` |
+| **streamable-http** | локальный Docker | `http://localhost:5001/mcp` |
+| **streamable-http через TLS proxy** | доступ с другой машины | `https://домен/mcp` |
 | **stdio** | клиент сам запускает процесс локально | — |
 
 Оба поддерживаемых транспорта проверены официальным клиентом MCP: рукопожатие
@@ -1733,13 +1767,16 @@ PYTHONPATH=src .venv/bin/python -m mcp1c.bench \
 ## Сервер вручную — `mcp1c.server`
 
 ```bash
-PYTHONPATH=src python3 -m mcp1c.server --data data          # streamable-http на :8000/mcp
+PYTHONPATH=src python3 -m mcp1c.server --data data          # streamable-http на 127.0.0.1:8000/mcp
 PYTHONPATH=src python3 -m mcp1c.server --transport stdio    # локальному клиенту
-PYTHONPATH=src python3 -m mcp1c.server --host 0.0.0.0 --port 5001
+PYTHONPATH=src python3 -m mcp1c.server --port 5001
 ```
 
 Других значений у `--transport` нет. Устаревший HTTP+SSE полностью отключён:
 флаг `--transport sse` отклоняется до чтения данных и запуска сервера.
+`--host` по умолчанию равен `127.0.0.1`. Флаг `--trust-proxy-headers` нужен
+только изолированному TLS reverse proxy: он разрешает использовать
+`X-Forwarded-Proto` для определения HTTPS и флага `Secure` сессионной cookie.
 
 ## Откуда берутся исходные данные
 
@@ -2000,7 +2037,7 @@ PYTHONPATH=src .venv/bin/python -m mcp1c.bench \
 
 ```bash
 .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest          # 1100 тестов (прогон 2026-08-21)
+.venv/bin/python -m pytest          # 1664 теста (прогон 2026-08-27)
 ```
 
 От содержимого `data/` не зависят: проприетарных выгрузок в репозитории нет,
@@ -2029,6 +2066,13 @@ PYTHONPATH=src .venv/bin/python -m mcp1c.bench \
 работает вовсе**: одна неудачная правка словаря тихо ломает поиск всем, кто
 подключён к общему серверу.
 
+Локальный Compose-профиль публикует backend только на `127.0.0.1`. Для доступа
+из недоверенной сети используйте описанный выше
+[удалённый HTTPS-профиль](#удалённый-https-профиль): оба токена в нём
+обязательны, а TLS завершается reverse proxy. Сессионная cookie всегда
+`HttpOnly` и `SameSite=Strict`; флаг `Secure` добавляется, только когда запрос
+действительно пришёл как HTTPS или его схему сообщил явно доверенный proxy.
+
 Токен передаётся заголовком — либо `X-Api-Token`, либо
 `Authorization: Bearer <токен>`. Административный годится и для чтения:
 иначе владельцу пришлось бы держать в клиенте два заголовка вместо одного.
@@ -2043,9 +2087,9 @@ PYTHONPATH=src .venv/bin/python -m mcp1c.bench \
 
 Ещё два правила, не про токены:
 
-- **MCP-эндпоинт отдаёт структуру конфигураций целиком.** Задавайте
-  `API_TOKEN` при любом выносе за пределы своей машины, сетевого доступа
-  недостаточно.
+- **MCP-эндпоинт отдаёт структуру конфигураций целиком.** При любом выносе за
+  пределы своей машины обязательны оба токена и HTTPS reverse proxy; одного
+  сетевого ограничения недостаточно.
 - **Каталог `data/` целиком в `.gitignore`** — и `.hbk` с выгрузками, и
   разобранные индексы. Индекс справки — тот же контент фирмы «1С», только
   распакованный. Однажды он туда попал и пролежал 20 коммитов; историю

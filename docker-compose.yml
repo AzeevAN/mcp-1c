@@ -5,7 +5,9 @@ services:
     container_name: mcp1c
     restart: unless-stopped
     ports:
-      - "5001:8000"
+      # Безопасный профиль по умолчанию: порт доступен только с этой машины.
+      # Для удалённого HTTPS-доступа см. docker-compose.remote.yml и README.
+      - "127.0.0.1:5001:8000"
     volumes:
       # `./data/bootstrap` индексируется при старте: выгрузки метаданных
       # (*.zip) и справка платформы (*.hbk).

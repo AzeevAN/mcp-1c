@@ -1980,13 +1980,26 @@ def routes(registry: Registry) -> list[Route]:
         session = secrets.token_urlsafe(32)
         _SESSIONS[session] = level
         response = RedirectResponse("/sources" if level == LEVEL_ADMIN else "/", 303)
-        response.set_cookie(COOKIE, session, httponly=True, samesite="strict", path="/")
+        response.set_cookie(
+            COOKIE,
+            session,
+            httponly=True,
+            samesite="strict",
+            secure=request.url.scheme == "https",
+            path="/",
+        )
         return response
 
     async def logout(request: Request):
         _SESSIONS.pop(request.cookies.get(COOKIE, ""), None)
         response = RedirectResponse("/sources", status_code=303)
-        response.delete_cookie(COOKIE, path="/")
+        response.delete_cookie(
+            COOKIE,
+            path="/",
+            secure=request.url.scheme == "https",
+            httponly=True,
+            samesite="strict",
+        )
         return response
 
     async def upload(request: Request):

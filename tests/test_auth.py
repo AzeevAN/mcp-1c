@@ -22,7 +22,7 @@ from mcp1c.registry import Registry
 from conftest import build_configuration, write_export
 
 
-def client_for(tmp_path) -> tuple[TestClient, Registry]:
+def client_for(tmp_path, **client_options) -> tuple[TestClient, Registry]:
     data_dir = tmp_path / "data"
     incoming = tmp_path / "incoming"
     data_dir.mkdir()
@@ -30,7 +30,7 @@ def client_for(tmp_path) -> tuple[TestClient, Registry]:
     registry = Registry(data_dir)
     registry.add_configuration(write_export(incoming, build_configuration()))
     app = Starlette(routes=dashboard.routes(registry))
-    return TestClient(app), registry
+    return TestClient(app, **client_options), registry
 
 
 def test_без_api_token_чтение_открыто(tmp_path, monkeypatch):
@@ -97,6 +97,31 @@ def test_вход_по_токену_чтения_даёт_сессию_без_п
     )
     assert отказ.status_code == 403
     assert registry.dictionary.aliases == {}
+
+
+def test_http_сессия_остаётся_httponly_но_не_получает_secure(tmp_path, monkeypatch):
+    monkeypatch.setenv("API_TOKEN", "reader-token")
+    client, _ = client_for(tmp_path)
+
+    response = client.post(
+        "/login", data={"token": "reader-token"}, follow_redirects=False
+    )
+    cookie = response.headers["set-cookie"]
+
+    assert "HttpOnly" in cookie
+    assert "SameSite=strict" in cookie
+    assert "; Secure" not in cookie
+
+
+def test_https_сессия_получает_secure(tmp_path, monkeypatch):
+    monkeypatch.setenv("API_TOKEN", "reader-token")
+    client, _ = client_for(tmp_path, base_url="https://mcp.example.test")
+
+    response = client.post(
+        "/login", data={"token": "reader-token"}, follow_redirects=False
+    )
+
+    assert "; Secure" in response.headers["set-cookie"]
 
 
 def test_вход_по_админскому_токену_даёт_и_чтение_и_запись(tmp_path, monkeypatch):

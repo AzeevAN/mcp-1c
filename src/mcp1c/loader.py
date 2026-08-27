@@ -11,6 +11,7 @@ XML читается потоково (iterparse + clear), поэтому пам
 from __future__ import annotations
 
 import json
+import re
 import zipfile
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -38,6 +39,8 @@ _INT_KEYS = frozenset(
         "code_length",
         "description_length",
         "number_length",
+        "period_adjustment_length",
+        "max_ext_dimension_count",
         "objects_total",
         "chunk_size",
         "count",
@@ -49,12 +52,19 @@ _BOOL_KEYS = frozenset(
         "truncated",
         "predefined_available",
         "hierarchical",
+        "correspondence",
+        "action_period",
+        "base_period",
+        "action_period_use",
+        "distributed_infobase",
         "global",
         "server",
         "client_managed",
         "server_call",
         "privileged",
         "external_connection",
+        "use",
+        "is_predefined",
     }
 )
 
@@ -71,6 +81,7 @@ _OBJECT_HEAD = frozenset({"full_name", "type", "name", "synonym", "comment"})
 # Сколько нарушений контракта показать поимённо. Больше в сообщение не влезет,
 # а для починки хватает и нескольких: они всегда одного рода.
 _MAX_CONTRACT_PROBLEMS = 10
+_CHUNK_PATH = re.compile(r"^objects/[^/]+\.(\d{3})\.(json|xml)$")
 
 
 class ExportError(Exception):
@@ -158,10 +169,21 @@ def _xml_dict(element: ET.Element) -> dict[str, Any]:
     return data
 
 
-def _read_objects_xml(stream: IO[bytes]) -> Iterator[dict[str, Any]]:
-    """Потоковое чтение чанка: в памяти одновременно живёт один объект."""
-    for event, element in ET.iterparse(stream, events=("end",)):
-        if element.tag != "object":
+def _read_objects_xml(
+    stream: IO[bytes], *, schema_version: str, spec: "_ChunkSpec"
+) -> Iterator[dict[str, Any]]:
+    """Проверить XML-envelope и потоково читать по одному объекту."""
+    root: ET.Element | None = None
+    for event, element in ET.iterparse(stream, events=("start", "end")):
+        if root is None:
+            root = element
+            if event != "start" or root.tag != "objects":
+                raise ExportError(f"{spec.path}: корень чанка должен быть <objects>.")
+            _validate_chunk_envelope(
+                dict(root.attrib), "xml", schema_version=schema_version, spec=spec
+            )
+            continue
+        if event != "end" or element.tag != "object":
             continue
         yield _xml_dict(element)
         element.clear()
@@ -169,7 +191,13 @@ def _read_objects_xml(stream: IO[bytes]) -> Iterator[dict[str, Any]]:
 
 def _read_manifest_xml(stream: IO[bytes]) -> dict[str, Any]:
     root = ET.parse(stream).getroot()
-    return _xml_dict(root)
+    if root.tag != "manifest":
+        raise ExportError("Корень manifest.xml должен быть <manifest>.")
+    manifest = _xml_dict(root)
+    files = root.find("files")
+    if files is not None and len(files) == 0:
+        manifest["files"] = []
+    return manifest
 
 
 # ---------------------------------------------------------------- приведение
@@ -306,6 +334,169 @@ def _to_object(raw: dict[str, Any]) -> MetadataObject:
     return obj
 
 
+# --------------------------------------------------------- контракт schema v1
+
+
+@dataclass(frozen=True, slots=True)
+class _ChunkSpec:
+    path: str
+    kind: str
+    chunk: int
+    count: int
+
+
+@dataclass(frozen=True, slots=True)
+class _ManifestContract:
+    schema_version: str
+    objects_total: int
+    truncated: bool
+    files: tuple[_ChunkSpec, ...]
+
+
+def _required_string(raw: dict[str, Any], key: str, where: str) -> str:
+    value = raw.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ExportError(f"{where}: обязательное поле `{key}` должно быть строкой.")
+    return value.strip()
+
+
+def _contract_int(value: Any, *, key: str, where: str, fmt: str) -> int:
+    if isinstance(value, bool):
+        raise ExportError(f"{where}: `{key}` должно быть неотрицательным целым.")
+    if fmt == "json":
+        if type(value) is not int:
+            raise ExportError(f"{where}: `{key}` должно быть неотрицательным целым.")
+        result = value
+    else:
+        text = value if isinstance(value, str) else ""
+        if not text.isdecimal():
+            raise ExportError(f"{where}: `{key}` должно быть неотрицательным целым.")
+        result = int(text)
+    if result < 0:
+        raise ExportError(f"{where}: `{key}` должно быть неотрицательным целым.")
+    return result
+
+
+def _contract_bool(value: Any, *, key: str, where: str, fmt: str) -> bool:
+    if fmt == "json":
+        if type(value) is not bool:
+            raise ExportError(f"{where}: `{key}` должно быть true или false.")
+        return value
+    if value not in ("true", "false"):
+        raise ExportError(f"{where}: `{key}` должно быть true или false.")
+    return value == "true"
+
+
+def _schema_version(raw: dict[str, Any], where: str) -> str:
+    version = _required_string(raw, "schema_version", where)
+    if not re.fullmatch(r"1(?:\.\d+)*", version):
+        raise ExportError(
+            f"{where}: неизвестная schema_version `{version}`; "
+            "загрузчик умеет только 1.x."
+        )
+    return version
+
+
+def _validate_manifest(
+    source: _Source, fmt: str, manifest: Any
+) -> _ManifestContract:
+    """Единая fail-closed проверка манифеста до создания модели."""
+    where = f"manifest.{fmt}"
+    if not isinstance(manifest, dict):
+        raise ExportError(f"{where}: корень должен быть объектом.")
+
+    schema_version = _schema_version(manifest, where)
+    declared_format = _required_string(manifest, "format", where)
+    if declared_format != fmt:
+        raise ExportError(
+            f"{where}: format=`{declared_format}` не совпадает с расширением `{fmt}`."
+        )
+    _required_string(manifest, "name", where)
+    objects_total = _contract_int(
+        manifest.get("objects_total"), key="objects_total", where=where, fmt=fmt
+    )
+    truncated = _contract_bool(
+        manifest.get("truncated"), key="truncated", where=where, fmt=fmt
+    )
+
+    raw_files = manifest.get("files")
+    if not isinstance(raw_files, list):
+        raise ExportError(f"{where}: `files` должен быть массивом.")
+
+    files: list[_ChunkSpec] = []
+    paths: set[str] = set()
+    for number, entry in enumerate(raw_files, 1):
+        entry_where = f"{where}, files[{number}]"
+        if not isinstance(entry, dict):
+            raise ExportError(f"{entry_where}: ожидается объект.")
+        path = _required_string(entry, "path", entry_where)
+        match = _CHUNK_PATH.fullmatch(path)
+        if match is None or match.group(2) != fmt:
+            raise ExportError(
+                f"{entry_where}: path должен иметь вид `objects/name.001.{fmt}`."
+            )
+        if path in paths:
+            raise ExportError(f"{entry_where}: path `{path}` повторяется.")
+        paths.add(path)
+        if not source.exists(path):
+            raise ExportError(f"Файл из манифеста отсутствует в выгрузке: {path}")
+        kind = _required_string(entry, "type", entry_where)
+        count = _contract_int(
+            entry.get("count"), key="count", where=entry_where, fmt=fmt
+        )
+        files.append(
+            _ChunkSpec(path=path, kind=kind, chunk=int(match.group(1)), count=count)
+        )
+
+    declared_by_files = sum(file.count for file in files)
+    if declared_by_files != objects_total:
+        raise ExportError(
+            f"{where}: objects_total={objects_total}, но сумма files[].count="
+            f"{declared_by_files}."
+        )
+    return _ManifestContract(
+        schema_version=schema_version,
+        objects_total=objects_total,
+        truncated=truncated,
+        files=tuple(files),
+    )
+
+
+def _validate_chunk_envelope(
+    chunk: Any,
+    fmt: str,
+    *,
+    schema_version: str,
+    spec: _ChunkSpec,
+) -> None:
+    where = spec.path
+    if not isinstance(chunk, dict):
+        raise ExportError(f"{where}: корень чанка должен быть объектом.")
+    actual_schema = _schema_version(chunk, where)
+    if actual_schema != schema_version:
+        raise ExportError(
+            f"{where}: schema_version `{actual_schema}` не совпадает с "
+            f"манифестом `{schema_version}`."
+        )
+    kind = _required_string(chunk, "type", where)
+    if kind != spec.kind:
+        raise ExportError(
+            f"{where}: type `{kind}` не совпадает с files[].type `{spec.kind}`."
+        )
+    chunk_number = _contract_int(
+        chunk.get("chunk"), key="chunk", where=where, fmt=fmt
+    )
+    if chunk_number != spec.chunk:
+        raise ExportError(
+            f"{where}: chunk={chunk_number}, но имя файла задаёт {spec.chunk}."
+        )
+    count = _contract_int(chunk.get("count"), key="count", where=where, fmt=fmt)
+    if count != spec.count:
+        raise ExportError(
+            f"{where}: count={count} не совпадает с files[].count={spec.count}."
+        )
+
+
 # ---------------------------------------------------------------- публичное API
 
 
@@ -363,6 +554,7 @@ def inspect(path: str | Path) -> ExportInfo:
         raise ExportError(str(error)) from error
     try:
         fmt, manifest = _read_manifest(source)
+        contract = _validate_manifest(source, fmt, manifest)
         return ExportInfo(
             path=Path(path),
             fmt=fmt,
@@ -370,8 +562,8 @@ def inspect(path: str | Path) -> ExportInfo:
             version=manifest.get("version", ""),
             platform=manifest.get("platform", ""),
             exported_at=manifest.get("exported_at", ""),
-            objects_total=_as_int(manifest.get("objects_total")) or 0,
-            truncated=_as_bool(manifest.get("truncated")),
+            objects_total=contract.objects_total,
+            truncated=contract.truncated,
             predefined_available=_as_bool(manifest.get("predefined_available"), True),
             warnings=_manifest_warnings(manifest),
         )
@@ -381,20 +573,19 @@ def inspect(path: str | Path) -> ExportInfo:
         source.close()
 
 
-def load(path: str | Path) -> Configuration:
-    """Прочитать выгрузку целиком в модель."""
+def load(path: str | Path, *, allow_truncated: bool = False) -> Configuration:
+    """Прочитать schema v1; усечённую выгрузку — только по явному opt-in."""
     try:
         source = _Source(Path(path))
     except ResourceLimitError as error:
         raise ExportError(str(error)) from error
     try:
         fmt, manifest = _read_manifest(source)
-
-        schema_version = str(manifest.get("schema_version", ""))
-        if schema_version and schema_version.split(".")[0] != "1":
+        contract = _validate_manifest(source, fmt, manifest)
+        if contract.truncated and not allow_truncated:
             raise ExportError(
-                f"Неизвестная версия схемы выгрузки: {schema_version}. "
-                "Загрузчик умеет только 1.x — обновите его или перевыгрузите."
+                "Выгрузка помечена truncated=true и не является полной. "
+                "Рабочая загрузка запрещена; нужен явный режим allow_truncated."
             )
 
         config = Configuration(
@@ -405,33 +596,45 @@ def load(path: str | Path) -> Configuration:
             platform=manifest.get("platform", ""),
             exported_at=manifest.get("exported_at", ""),
             exporter_version=manifest.get("exporter_version", ""),
-            schema_version=schema_version or "1",
+            schema_version=contract.schema_version,
             source_format=fmt,
-            truncated=_as_bool(manifest.get("truncated")),
+            truncated=contract.truncated,
             predefined_available=_as_bool(manifest.get("predefined_available"), True),
             warnings=_manifest_warnings(manifest),
         )
 
-        files = manifest.get("files") or []
-        if not files:
-            raise ExportError("Манифест не содержит списка файлов.")
-
         нарушения: list[str] = []
         нарушений_всего = 0
+        full_names: set[str] = set()
 
-        for entry in files:
-            rel = entry.get("path", "")
-            if not rel or not source.exists(rel):
-                raise ExportError(f"Файл из манифеста отсутствует в выгрузке: {rel}")
-
-            with source.open(rel) as stream:
+        for spec in contract.files:
+            with source.open(spec.path) as stream:
                 if fmt == "json":
                     chunk = json.loads(stream.read().decode("utf-8-sig"))
-                    raw_objects: Iterator[dict[str, Any]] = iter(chunk.get("objects", []))
+                    _validate_chunk_envelope(
+                        chunk,
+                        fmt,
+                        schema_version=contract.schema_version,
+                        spec=spec,
+                    )
+                    objects = chunk.get("objects")
+                    if not isinstance(objects, list):
+                        raise ExportError(f"{spec.path}: `objects` должен быть массивом.")
+                    raw_objects: Iterator[dict[str, Any]] = iter(objects)
                 else:
-                    raw_objects = _read_objects_xml(stream)
+                    raw_objects = _read_objects_xml(
+                        stream,
+                        schema_version=contract.schema_version,
+                        spec=spec,
+                    )
 
+                actual_count = 0
                 for raw in raw_objects:
+                    actual_count += 1
+                    if not isinstance(raw, dict):
+                        raise ExportError(
+                            f"{spec.path}, объект {actual_count}: ожидается объект."
+                        )
                     # Контракт проверяется до разбора и по всей выгрузке сразу:
                     # чинить такие расхождения по одному значит перевыгружать
                     # конфигурацию на каждую ошибку.
@@ -446,8 +649,26 @@ def load(path: str | Path) -> Configuration:
 
                     obj = _to_object(raw)
                     if not obj.full_name:
-                        continue
+                        raise ExportError(
+                            f"{spec.path}, объект {actual_count}: `full_name` обязателен."
+                        )
+                    if obj.kind != spec.kind:
+                        raise ExportError(
+                            f"{spec.path}, `{obj.full_name}`: type `{obj.kind}` "
+                            f"не совпадает с типом чанка `{spec.kind}`."
+                        )
+                    if obj.full_name in full_names:
+                        raise ExportError(
+                            f"Полный идентификатор `{obj.full_name}` повторяется в выгрузке."
+                        )
+                    full_names.add(obj.full_name)
                     config.objects[obj.full_name] = obj
+
+                if actual_count != spec.count:
+                    raise ExportError(
+                        f"{spec.path}: count={spec.count}, фактически объектов "
+                        f"{actual_count}."
+                    )
 
         if нарушения:
             хвост = (
@@ -463,10 +684,10 @@ def load(path: str | Path) -> Configuration:
                 + "\n\nНужна свежая версия обработки из `exporter-1c/dist/`."
             )
 
-        declared = _as_int(manifest.get("objects_total"))
-        if declared is not None and declared != len(config.objects):
-            config.warnings.append(
-                f"Манифест обещает {declared} объектов, прочитано {len(config.objects)}."
+        if contract.objects_total != len(config.objects):
+            raise ExportError(
+                f"Манифест обещает {contract.objects_total} объектов, прочитано "
+                f"{len(config.objects)}."
             )
 
         return config

@@ -212,20 +212,32 @@ def _start_job(name: str, size: int) -> dict:
     return job
 
 
-def _index_source(registry: Registry, path: Path, suffix: str) -> None:
+def _index_source(
+    registry: Registry, path: Path, suffix: str, *, allow_truncated: bool = False
+) -> None:
     """Выполняется в отдельном потоке: разбор .hbk занимает около 4 секунд."""
     if suffix == ".hbk":
         registry.add_syntax(path)
     else:
-        registry.add_configuration(path)
+        registry.add_configuration(path, allow_truncated=allow_truncated)
     registry.save()
 
 
-def _run_job(registry: Registry, job: dict, directory: str, path: Path, suffix: str) -> None:
+def _run_job(
+    registry: Registry,
+    job: dict,
+    directory: str,
+    path: Path,
+    suffix: str,
+    *,
+    allow_truncated: bool = False,
+) -> None:
     """Разбор в фоне. Ошибку кладём в задание: ответа, куда её вернуть, уже нет."""
     job["state"] = JOB_PARSING
     try:
-        _index_source(registry, path, suffix)
+        _index_source(
+            registry, path, suffix, allow_truncated=allow_truncated
+        )
     except (ExportError, RegistryError, V8ContainerError, ValueError) as error:
         job["state"] = JOB_FAILED
         job["error"] = str(error)
@@ -1487,6 +1499,9 @@ def _sources_page(
             "method=post action=/sources enctype=multipart/form-data>"
             "<input type=file name=file accept='.zip,.hbk' required> "
             "<button>Загрузить</button>"
+            "<label><input type=checkbox name=allow_truncated value=1> "
+            "явно опубликовать тестовую неполную выгрузку "
+            "<code>truncated=true</code></label>"
             # Индикатор скрыт до начала передачи и наполняется скриптом.
             # Без JS остаётся скрытым, а форма работает как обычная.
             "<div id=upload-progress class=upload hidden>"
@@ -1984,6 +1999,7 @@ def routes(registry: Registry) -> list[Route]:
 
         form = await request.form()
         uploaded = form.get("file")
+        allow_truncated = str(form.get("allow_truncated", "")) == "1"
         if uploaded is None or not getattr(uploaded, "filename", ""):
             return await render_sources(error="Файл не выбран.", authorized=True)
 
@@ -2023,7 +2039,15 @@ def routes(registry: Registry) -> list[Route]:
         # показывая, идёт работа или всё зависло. Ошибку теперь возвращать
         # некуда — она ложится в задание и видна на этой же странице.
         задача = asyncio.create_task(
-            run_in_threadpool(_run_job, registry, job, tmp, target, suffix)
+            run_in_threadpool(
+                _run_job,
+                registry,
+                job,
+                tmp,
+                target,
+                suffix,
+                allow_truncated=allow_truncated,
+            )
         )
         _ФОНОВЫЕ.add(задача)
         задача.add_done_callback(_ФОНОВЫЕ.discard)

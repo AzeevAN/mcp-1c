@@ -77,6 +77,11 @@ STATUS_LOADING = "loading"
 STATUS_READY = "ready"
 STATUS_ERROR = "error"
 
+INCOMPLETE_CONFIGURATION_WARNING = (
+    "Источник опубликован в явном режиме неполной выгрузки: truncated=true; "
+    "отсутствие объекта или связи ничего не доказывает."
+)
+
 # Соотношение версии справки и платформы конфигурации.
 RELATION_EXACT = "exact"
 RELATION_NEWER = "newer"
@@ -439,6 +444,9 @@ class Source:
     # делает — исходник у человека) — без этого поля `restore()` после
     # рестарта не смог бы восстановить её ни из чего.
     code_version: str = ""
+    # Администратор явно разрешил публикацию schema v1 с truncated=true.
+    # Старые записи без поля восстанавливаются fail-closed.
+    incomplete: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -456,6 +464,7 @@ class Source:
             "selection_version": self.selection_version,
             "locator_generation": self.locator_generation,
             "code_version": self.code_version,
+            "incomplete": self.incomplete,
         }
 
     @classmethod
@@ -484,6 +493,7 @@ class Source:
             selection_version=raw.get("selection_version", 0),
             locator_generation=locator_generation,
             code_version=raw.get("code_version", ""),
+            incomplete=raw.get("incomplete") is True,
         )
 
 
@@ -1101,6 +1111,7 @@ class Registry:
         known_sha256: str = "",
         expected_id: str = "",
         known_origin: str = "",
+        allow_truncated: bool = False,
     ) -> Source:
         source_path = Path(path)
         # При restore сохранённая строка registry.json — ожидание, а не
@@ -1114,7 +1125,7 @@ class Registry:
             )
 
         try:
-            config = load(source_path)
+            config = load(source_path, allow_truncated=allow_truncated)
         except ExportError as error:
             raise RegistryError(f"{source_path.name}: {error}") from error
 
@@ -1145,9 +1156,17 @@ class Registry:
             loaded_at=_now(),
             platform=config.platform,
             status=STATUS_READY,
-            warnings=list(config.warnings),
+            warnings=[
+                *config.warnings,
+                *(
+                    [INCOMPLETE_CONFIGURATION_WARNING]
+                    if config.truncated
+                    else []
+                ),
+            ],
             items_total=len(config),
             stored_path=self._relative(stored),
+            incomplete=config.truncated,
         )
 
         # Индексы строятся до подмены: наружу не должно попасть полусобранное.
@@ -3452,6 +3471,7 @@ class Registry:
                         known_sha256=source.sha256,
                         expected_id=source.id,
                         known_origin=source.origin,
+                        allow_truncated=source.incomplete,
                     )
                     конфигурации_этого_restore[
                         source.id

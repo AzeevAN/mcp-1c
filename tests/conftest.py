@@ -233,6 +233,14 @@ def write_export(directory: Path, config: Configuration) -> Path:
             }
         )
 
+    by_kind: dict[str, list[dict]] = {}
+    for raw in objects:
+        by_kind.setdefault(raw["type"], []).append(raw)
+    chunks = [
+        (f"objects/part{number:03d}.001.json", kind, rows)
+        for number, (kind, rows) in enumerate(by_kind.items(), 1)
+    ]
+
     manifest = {
         "schema_version": "1",
         "format": "json",
@@ -245,13 +253,29 @@ def write_export(directory: Path, config: Configuration) -> Path:
         "objects_total": len(objects),
         "truncated": False,
         "predefined_available": True,
-        "files": [{"path": "objects/all.001.json", "type": "Справочник", "count": len(objects)}],
+        "files": [
+            {"path": path, "type": kind, "count": len(rows)}
+            for path, kind, rows in chunks
+        ],
     }
 
     target = directory / f"СтруктураКонфигурации_{config.name}.zip"
     with zipfile.ZipFile(target, "w") as archive:
         archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False))
-        archive.writestr("objects/all.001.json", json.dumps({"objects": objects}, ensure_ascii=False))
+        for path, kind, rows in chunks:
+            archive.writestr(
+                path,
+                json.dumps(
+                    {
+                        "schema_version": "1",
+                        "type": kind,
+                        "chunk": 1,
+                        "count": len(rows),
+                        "objects": rows,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
     return target
 
 

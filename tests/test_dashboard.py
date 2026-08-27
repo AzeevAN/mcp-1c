@@ -6,7 +6,10 @@
 
 from __future__ import annotations
 
+import io
+import json
 import time
+import zipfile
 
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
@@ -74,6 +77,22 @@ def _zip_bytes(directory, name: str = "ВтораяКонфигурация") ->
     return write_export(directory, build_configuration(name=name)).read_bytes()
 
 
+def _truncated_zip_bytes(directory) -> bytes:
+    source = write_export(
+        directory, build_configuration(name="НеполнаяКонфигурация")
+    )
+    with zipfile.ZipFile(source) as archive:
+        entries = {name: archive.read(name) for name in archive.namelist()}
+    manifest = json.loads(entries["manifest.json"])
+    manifest["truncated"] = True
+    entries["manifest.json"] = json.dumps(manifest, ensure_ascii=False).encode()
+    result = io.BytesIO()
+    with zipfile.ZipFile(result, "w") as archive:
+        for name, payload in entries.items():
+            archive.writestr(name, payload)
+    return result.getvalue()
+
+
 def test_загрузка_без_токена_отклоняется(tmp_path, monkeypatch):
     monkeypatch.setenv("ADMIN_TOKEN", "секрет")
     client, registry = client_for(tmp_path)
@@ -99,6 +118,42 @@ def test_загрузка_с_токеном_добавляет_источник(
     assert response.status_code == 303
     дождаться_разбора(client, "ВтораяКонфигурация")
     assert "ВтораяКонфигурация" in registry.configurations
+
+
+def test_дашборд_не_публикует_усечённую_выгрузку_по_умолчанию(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("ADMIN_TOKEN", "секрет")
+    client, registry = client_for(tmp_path)
+    client.post("/login", data={"token": "секрет"})
+
+    client.post(
+        "/sources",
+        files={"file": ("Неполная.zip", _truncated_zip_bytes(tmp_path / "incoming"))},
+    )
+
+    page = дождаться_разбора(client, "Неполная.zip", "ошибка")
+    assert "truncated=true" in page
+    assert "НеполнаяКонфигурация" not in registry.configurations
+
+
+def test_дашборд_публикует_усечённую_только_по_явной_галочке(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("ADMIN_TOKEN", "секрет")
+    client, registry = client_for(tmp_path)
+    client.post("/login", data={"token": "секрет"})
+
+    client.post(
+        "/sources",
+        data={"allow_truncated": "1"},
+        files={"file": ("Неполная.zip", _truncated_zip_bytes(tmp_path / "incoming"))},
+    )
+
+    дождаться_разбора(client, "НеполнаяКонфигурация", "готово")
+    source = registry.sources["НеполнаяКонфигурация"]
+    assert source.incomplete
+    assert any("неполной выгрузки" in warning for warning in source.warnings)
 
 
 def test_неверный_токен_не_выдаёт_сессию(tmp_path, monkeypatch):

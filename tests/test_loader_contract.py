@@ -32,6 +32,7 @@ def _write_export(directory, objects: list[dict]):
         "platform": "8.3.23.1997",
         "exported_at": "2026-08-17T00:00:00",
         "objects_total": len(objects),
+        "truncated": False,
         "files": [
             {
                 "path": "objects/chartofcharacteristictypes.001.json",
@@ -46,7 +47,16 @@ def _write_export(directory, objects: list[dict]):
         archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False))
         archive.writestr(
             "objects/chartofcharacteristictypes.001.json",
-            json.dumps({"objects": objects}, ensure_ascii=False),
+            json.dumps(
+                {
+                    "schema_version": "1",
+                    "type": "ПланВидовХарактеристик",
+                    "chunk": 1,
+                    "count": len(objects),
+                    "objects": objects,
+                },
+                ensure_ascii=False,
+            ),
         )
     return target
 
@@ -156,19 +166,20 @@ def test_xml_свойства_общего_модуля_сохраняют_ти�
     """Булевы строки приводятся, а строковое перечисление не теряется."""
     manifest = (
         '<manifest schema_version="1" format="xml" name="Пример" version="1.0" '
-        'platform="8.3.23.1997" objects_total="1">'
-        '<files><item path="objects/common.xml" type="ОбщийМодуль" count="1"/></files>'
+        'platform="8.3.23.1997" objects_total="1" truncated="false">'
+        '<files><item path="objects/common.001.xml" type="ОбщийМодуль" count="1"/></files>'
         "</manifest>"
     )
     objects = (
-        '<objects><object full_name="ОбщийМодуль.Пример" type="ОбщийМодуль" '
+        '<objects schema_version="1" type="ОбщийМодуль" chunk="1" count="1">'
+        '<object full_name="ОбщийМодуль.Пример" type="ОбщийМодуль" '
         'name="Пример" privileged="false" external_connection="false" '
         f'return_values_reuse="{reuse}" server="true"/></objects>'
     )
     архив = tmp_path / "структура.zip"
     with zipfile.ZipFile(архив, "w") as zf:
         zf.writestr("manifest.xml", manifest)
-        zf.writestr("objects/common.xml", objects)
+        zf.writestr("objects/common.001.xml", objects)
 
     config = load(архив)
     props = config.objects["ОбщийМодуль.Пример"].props
@@ -192,3 +203,58 @@ def test_json_return_values_reuse_остаётся_строковым_enum(tmp_p
     loaded = load(write_export(tmp_path, config))
 
     assert loaded.objects["ОбщийМодуль.Пример"].props["return_values_reuse"] == reuse
+
+
+@pytest.mark.parametrize(
+    ("kind", "attributes", "expected"),
+    [
+        (
+            "ПланОбмена",
+            'distributed_infobase="false"',
+            {"distributed_infobase": False},
+        ),
+        (
+            "РегламентноеЗадание",
+            'use="true" is_predefined="false"',
+            {"use": True, "is_predefined": False},
+        ),
+        (
+            "РегистрБухгалтерии",
+            'correspondence="true" period_adjustment_length="3"',
+            {"correspondence": True, "period_adjustment_length": 3},
+        ),
+        (
+            "РегистрРасчета",
+            'action_period="true" base_period="false" action_period_use="true"',
+            {"action_period": True, "base_period": False, "action_period_use": True},
+        ),
+        (
+            "ПланСчетов",
+            'max_ext_dimension_count="5"',
+            {"max_ext_dimension_count": 5},
+        ),
+    ],
+)
+def test_xml_булевы_свойства_объектов_совпадают_с_json(
+    tmp_path, kind, attributes, expected
+):
+    """XML-строки приводятся к тем же bool, которые JSON отдаёт напрямую."""
+    manifest = (
+        '<manifest schema_version="1" format="xml" name="Пример" '
+        'objects_total="1" truncated="false">'
+        f'<files><item path="objects/item.001.xml" type="{kind}" count="1"/>'
+        '</files></manifest>'
+    )
+    objects = (
+        f'<objects schema_version="1" type="{kind}" chunk="1" count="1">'
+        f'<object full_name="{kind}.Пример" type="{kind}" name="Пример" '
+        f'{attributes}/></objects>'
+    )
+    archive = tmp_path / f"{kind}.zip"
+    with zipfile.ZipFile(archive, "w") as target:
+        target.writestr("manifest.xml", manifest)
+        target.writestr("objects/item.001.xml", objects)
+
+    props = load(archive).objects[f"{kind}.Пример"].props
+
+    assert {key: props[key] for key in expected} == expected

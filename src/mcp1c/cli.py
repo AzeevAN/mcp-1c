@@ -37,7 +37,7 @@ def _cmd_info(args: argparse.Namespace) -> int:
 
 
 def _cmd_stats(args: argparse.Namespace) -> int:
-    config = load(args.path)
+    config = load(args.path, allow_truncated=args.allow_truncated)
     graph = Graph(config)
     print(render_configuration_summary(config, graph))
 
@@ -61,7 +61,7 @@ def _cmd_stats(args: argparse.Namespace) -> int:
 
 
 def _cmd_show(args: argparse.Namespace) -> int:
-    config = load(args.path)
+    config = load(args.path, allow_truncated=args.allow_truncated)
     obj = config.get(args.object)
     if obj is None:
         print(f"Объект не найден: {args.object}", file=sys.stderr)
@@ -73,7 +73,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
 
 
 def _cmd_related(args: argparse.Namespace) -> int:
-    config = load(args.path)
+    config = load(args.path, allow_truncated=args.allow_truncated)
     if args.object not in config.objects:
         print(f"Объект не найден: {args.object}", file=sys.stderr)
         _suggest(config, args.object)
@@ -107,7 +107,7 @@ def _cmd_related(args: argparse.Namespace) -> int:
 
 
 def _cmd_find(args: argparse.Namespace) -> int:
-    config = load(args.path)
+    config = load(args.path, allow_truncated=args.allow_truncated)
     needle = args.query.lower()
     hits = [
         obj
@@ -152,7 +152,7 @@ def _cmd_reg_add(args: argparse.Namespace) -> int:
     source = (
         registry.add_syntax(path)
         if path.suffix.lower() == ".hbk"
-        else registry.add_configuration(path)
+        else registry.add_configuration(path, allow_truncated=args.allow_truncated)
     )
     registry.save()
     print(f"добавлено: {source.id}  ({source.kind}, платформа {source.platform or '—'},"
@@ -452,6 +452,12 @@ def main(argv: list[str] | None = None) -> int:
         if name == "find":
             sp.add_argument("query", help="часть имени или синонима")
             sp.add_argument("--limit", type=int, default=30)
+        if name != "info":
+            sp.add_argument(
+                "--allow-truncated",
+                action="store_true",
+                help="явно разрешить неполную выгрузку truncated=true",
+            )
         sp.set_defaults(handler=handler)
 
     for name, handler in (
@@ -466,6 +472,11 @@ def main(argv: list[str] | None = None) -> int:
         sp.add_argument("--data", default="data", help="каталог данных сервера")
         if name == "reg-add":
             sp.add_argument("path", help="ZIP выгрузки или .hbk справки")
+            sp.add_argument(
+                "--allow-truncated",
+                action="store_true",
+                help="явно опубликовать неполную выгрузку truncated=true",
+            )
         if name == "dict-show":
             sp.add_argument("--config", default=None,
                             help="показать псевдонимы для конкретной конфигурации")

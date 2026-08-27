@@ -1088,6 +1088,21 @@ PYTHONPATH=src python3 -m mcp1c.cli reg-add Выгрузка.zip
 
 Проще: положить файл в `data/bootstrap/` — он подхватится при следующем старте.
 
+Выгрузка schema v1 проверяется до построения модели и публикации: обязательны
+мажорная версия `1.x`, совпадающие `format`, `schema_version`, `type`, `chunk`
+и `count`, точный `objects_total`, документированные пути чанков и уникальные
+`full_name`. Старые архивы без `count` в конверте чанка нужно перевыгрузить
+текущей обработкой из `exporter-1c/dist/`. Строковые представления чисел и
+булевых свойств XML приводятся к тем же типам, которые JSON передаёт напрямую:
+одна и та же конфигурация в двух форматах даёт одну логическую модель.
+
+`truncated=true` означает тестовую, заведомо неполную выгрузку. По умолчанию
+`reg-add`, автозагрузка и форма дашборда её не публикуют. Для осознанной
+диагностики администратор может передать `reg-add --allow-truncated` или
+включить на форме загрузки галочку «Разрешить неполную выгрузку». Такой выбор
+сохраняется в реестре: после рестарта источник и ответы инструментов продолжают
+предупреждать, что отсутствие объекта или связи ничего не доказывает.
+
 ## Выгрузка конфигурации в файлы
 
 Второй вид источника — не метаданные (`СтруктураКонфигурации_*.zip`), а сама
@@ -1600,7 +1615,7 @@ CLI ходит в тот же реестр и те же функции, что �
 
 ```bash
 PYTHONPATH=src python3 -m mcp1c.cli reg-list  [--data data]
-PYTHONPATH=src python3 -m mcp1c.cli reg-add   Выгрузка.zip     [--data data]
+PYTHONPATH=src python3 -m mcp1c.cli reg-add   Выгрузка.zip     [--data data] [--allow-truncated]
 PYTHONPATH=src python3 -m mcp1c.cli reg-add   shcntx_ru.hbk    [--data data]
 PYTHONPATH=src python3 -m mcp1c.cli reg-search "чек ккм"  --config РозницаДляКазахстана
 PYTHONPATH=src python3 -m mcp1c.cli reg-search "разделить строку" --syntax --limit 5
@@ -1631,11 +1646,16 @@ PYTHONPATH=src python3 -m mcp1c.cli reg-get-callers \
 
 ```bash
 PYTHONPATH=src python3 -m mcp1c.cli info    Выгрузка.zip
-PYTHONPATH=src python3 -m mcp1c.cli stats   Выгрузка.zip
-PYTHONPATH=src python3 -m mcp1c.cli show    Выгрузка.zip Документ.ЧекККМ --detail full
-PYTHONPATH=src python3 -m mcp1c.cli related Выгрузка.zip Документ.ЧекККМ --depth 2
-PYTHONPATH=src python3 -m mcp1c.cli find    Выгрузка.zip реализация --limit 10
+PYTHONPATH=src python3 -m mcp1c.cli stats   Выгрузка.zip [--allow-truncated]
+PYTHONPATH=src python3 -m mcp1c.cli show    Выгрузка.zip Документ.ЧекККМ --detail full [--allow-truncated]
+PYTHONPATH=src python3 -m mcp1c.cli related Выгрузка.zip Документ.ЧекККМ --depth 2 [--allow-truncated]
+PYTHONPATH=src python3 -m mcp1c.cli find    Выгрузка.zip реализация --limit 10 [--allow-truncated]
 ```
+
+`--allow-truncated` нужен только для диагностической работы с архивом,
+помеченным `truncated=true`; без него все команды, которые читают объекты,
+завершаются явным отказом. `info` показывает строго проверенный манифест без
+загрузки объектов и поэтому в подтверждении неполной публикации не нуждается.
 
 Путь — ZIP или распакованный каталог, формат определяется по манифесту.
 

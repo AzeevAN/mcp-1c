@@ -22,10 +22,19 @@ def test_json_чанк_с_аномальным_сжатием_отклоняет
         "name": "ТестоваяКонфигурация",
         "platform": "8.3.23",
         "objects_total": 0,
+        "truncated": False,
         "files": [{"path": "objects/all.001.json", "type": "Справочник", "count": 0}],
     }
     archive_path = tmp_path / "metadata.zip"
-    chunk = json.dumps({"objects": []}).encode() + b" " * (8 * 1024 * 1024)
+    chunk = json.dumps(
+        {
+            "schema_version": "1",
+            "type": "Справочник",
+            "chunk": 1,
+            "count": 0,
+            "objects": [],
+        }
+    ).encode() + b" " * (8 * 1024 * 1024)
     with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("manifest.json", json.dumps(manifest))
         archive.writestr("objects/all.001.json", chunk)

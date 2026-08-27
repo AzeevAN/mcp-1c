@@ -25,8 +25,11 @@ XML-вариантах не должно остаться ни одного уп
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 SRC = Path(__file__).parent / "src"
@@ -101,6 +104,66 @@ def check_legacy_safe(text: str, name: str) -> list[str]:
     return hits
 
 
+def publish(results: dict[str, str]) -> None:
+    """Опубликовать проверенный набор; при сбое вернуть прежние файлы."""
+    DIST.parent.mkdir(parents=True, exist_ok=True)
+    dist_existed = DIST.exists()
+
+    with tempfile.TemporaryDirectory(prefix=".dist-build-", dir=DIST.parent) as raw_temp:
+        temp = Path(raw_temp)
+        staged = temp / "staged"
+        backup = temp / "backup"
+        staged.mkdir()
+        backup.mkdir()
+
+        # Любая ошибка здесь оставляет dist нетронутым: публикация ещё не началась.
+        for out_name, result in results.items():
+            (staged / out_name).write_text(result, encoding="utf-8")
+
+        if DIST.exists() and not DIST.is_dir():
+            raise OSError(f"путь результата не является каталогом: {DIST}")
+        DIST.mkdir(parents=True, exist_ok=True)
+
+        existing: set[str] = set()
+        for out_name in results:
+            target = DIST / out_name
+            if target.exists():
+                shutil.copy2(target, backup / out_name)
+                existing.add(out_name)
+
+        replaced: list[str] = []
+        try:
+            # Переносимого вызова для замены четырёх файлов разом нет: каждый
+            # target меняется атомарно, а сбой набора откатывает уже заменённые.
+            for out_name in results:
+                os.replace(staged / out_name, DIST / out_name)
+                replaced.append(out_name)
+        except OSError as publish_error:
+            rollback_errors: list[str] = []
+            for out_name in reversed(replaced):
+                target = DIST / out_name
+                try:
+                    if out_name in existing:
+                        os.replace(backup / out_name, target)
+                    else:
+                        target.unlink(missing_ok=True)
+                except OSError as rollback_error:
+                    rollback_errors.append(f"{out_name}: {rollback_error}")
+
+            if not dist_existed:
+                try:
+                    DIST.rmdir()
+                except OSError:
+                    pass
+
+            if rollback_errors:
+                detail = "; ".join(rollback_errors)
+                raise OSError(
+                    f"{publish_error}; откат завершён не полностью: {detail}"
+                ) from publish_error
+            raise
+
+
 def build() -> int:
     core_path = SRC / "core.bsl"
     if not core_path.exists():
@@ -108,9 +171,8 @@ def build() -> int:
         return 1
 
     core_text = core_path.read_text(encoding="utf-8")
-    DIST.mkdir(parents=True, exist_ok=True)
-
     problems: list[str] = []
+    results: dict[str, str] = {}
 
     for variant_name, (out_name, managed, with_json) in VARIANTS.items():
         variant_path = SRC / variant_name
@@ -133,7 +195,7 @@ def build() -> int:
         if not with_json:
             problems.extend(check_legacy_safe(result, out_name))
 
-        (DIST / out_name).write_text(result, encoding="utf-8")
+        results[out_name] = result
 
         форма = "управляемая" if managed else "обычная"
         форматы = "XML + JSON" if with_json else "только XML"
@@ -142,6 +204,12 @@ def build() -> int:
     if problems:
         print("\nОШИБКА: XML-вариант не соберётся на 8.3.5:", file=sys.stderr)
         print("\n".join(problems), file=sys.stderr)
+        return 1
+
+    try:
+        publish(results)
+    except OSError as error:
+        print(f"\nОШИБКА: набор dist не опубликован: {error}", file=sys.stderr)
         return 1
 
     print("\nПроверка пройдена: XML-варианты совместимы с 8.3.5 "

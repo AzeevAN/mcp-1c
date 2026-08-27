@@ -1,16 +1,36 @@
 """Проверки самосогласованности публичного README."""
 
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 
-def test_счётчики_pytest_в_readme_совпадают():
-    текст = (Path(__file__).parents[1] / "README.md").read_text(encoding="utf-8")
+ROOT = Path(__file__).parents[1]
+
+
+def test_счётчики_pytest_в_readme_совпадают_с_реальной_collection():
+    текст = (ROOT / "README.md").read_text(encoding="utf-8")
     статус = re.search(r"\| Тесты \|[^\n]*?, (\d+) \|", текст)
     раздел = re.search(r"python -m pytest\s+# (\d+) тест(?:а|ов)?", текст)
 
     assert статус is not None and раздел is not None
     assert статус.group(1) == раздел.group(1)
+
+    env = {**os.environ, "PYTEST_ADDOPTS": ""}
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "--collect-only"],
+        cwd=ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    collected = re.search(r"(\d+) tests collected", result.stdout)
+
+    assert collected is not None
+    assert int(статус.group(1)) == int(collected.group(1))
 
 
 def test_список_исходников_называет_индексы_вызовов_и_форм():

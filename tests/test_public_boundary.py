@@ -478,11 +478,12 @@ def test_дизайн_не_выдаёт_готовые_возможности_з
 
 def test_readme_фиксирует_отображаемый_docker_размер_воспроизводимо():
     text = (ROOT / "README.md").read_text(encoding="utf-8")
+    state = text.split("## Состояние", 1)[1].split("## Содержание", 1)[0]
 
-    assert "2026-08-21" in text
-    assert "docker image ls mcp1c:latest --format '{{.Size}}'" in text
-    assert "`357MB`" in text
-    assert "Docker CLI" in text
-    assert "`77950901`" in text
-    assert "docker image inspect mcp1c:latest --format '{{.Size}}'" in text
-    assert "354 МБ" not in text
+    assert "2026-08-27" in state
+    assert "docker image ls mcp1c:latest --format '{{.Size}}'" in state
+    assert "`358MB`" in state
+    assert "Docker CLI" in state
+    assert "`78340443`" in state
+    assert "docker image inspect mcp1c:latest --format '{{.Size}}'" in state
+    assert "354 МБ" not in state

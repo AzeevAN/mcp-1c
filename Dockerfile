@@ -2,7 +2,7 @@
 # справка платформы — 160 МБ. Сравнение: исходный шаблон тянул Qdrant с torch и
 # cuda на 6+ ГБ образа, разобранный аналог — Elasticsearch на 2 ГБ памяти ради
 # 32 МБ индекса.
-FROM python:3.12-slim
+FROM python:3.12-slim@sha256:590cad70271b6c1795c6a11fb5c110efca593adbd0d4883cd19c36df6a56467b
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -11,8 +11,8 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements-lock.txt .
+RUN pip install --no-cache-dir --require-hashes -r requirements-lock.txt
 
 COPY src/ ./src/
 

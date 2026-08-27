@@ -11,6 +11,47 @@
 
 ### Изменено
 
+- **Цепочка поставки стала воспроизводимой и отдельно проверяемой.** Нижние
+  границы runtime-зависимостей сохранены в публичных входах пакета, а Docker,
+  тесты, package job, audit и сам генератор lock получили раздельные полные
+  lock-файлы с точными транзитивными версиями и SHA-256; все установки в CI и
+  образе используют `--require-hashes`. `python:3.12-slim` закреплён digest,
+  все GitHub Actions — commit SHA с читаемой версией рядом, `setuptools`,
+  `build`, `wheel` и `twine` — точными версиями. Новый workflow запускает
+  `pip-audit` на PR, push в `main`, вручную и еженедельно, выдаёт CycloneDX
+  JSON SBOM и хранит artifact 14 дней. Локальная проверка 2026-08-27 не нашла
+  известных уязвимостей в runtime lock; это снимок базы, а не утверждение об
+  отсутствии неизвестных дефектов.
+
+  Генератор выбран после замера. `pip-tools==7.6.1` добавил к пустому venv
+  10 060 КиБ, но за 178,88 с не закончил первый hash-lock: скачивал каждый
+  платформенный wheel NumPy для локального вычисления hashes. `uv==0.12.5`
+  добавил 42 344 КиБ, зато получил универсальный runtime lock за 9,68 с из
+  индексных метаданных. Оба инструмента запускаются только при обновлении и в
+  runtime-образ не входят. После обновления runtime-пакетов и добавления lock
+  внутренний размер образа изменился с 78 362 226 до 78 446 486 байт
+  (+84 260 байт); новый образ собран, живой контейнер на него не переключался.
+  Команды замера:
+
+  ```bash
+  python3 -m venv /tmp/mcp1c-pip-tools-measure
+  /usr/bin/time -p /tmp/mcp1c-pip-tools-measure/bin/pip install pip-tools==7.6.1
+  du -sk /tmp/mcp1c-pip-tools-measure
+  /usr/bin/time -p /tmp/mcp1c-pip-tools-measure/bin/python -m piptools compile \
+    --generate-hashes --output-file /tmp/mcp1c-runtime-pip-tools.txt requirements.txt
+
+  python3 -m venv /tmp/mcp1c-lock-measure
+  du -sk /tmp/mcp1c-lock-measure
+  /usr/bin/time -p /tmp/mcp1c-lock-measure/bin/pip install uv==0.12.5
+  du -sk /tmp/mcp1c-lock-measure
+  /usr/bin/time -p /tmp/mcp1c-lock-measure/bin/uv pip compile \
+    --universal --python-version 3.12 --generate-hashes \
+    --output-file /tmp/mcp1c-runtime-lock.txt requirements.txt
+  docker image inspect mcp1c:latest --format '{{.Size}}'  # до сборки
+  docker compose build
+  docker image inspect mcp1c:latest --format '{{.Size}}'  # после сборки
+  ```
+
 - **Multipart-загрузка и cookie-записи получили собственные ранние границы.**
   Общий ASGI-слой по-прежнему проверяет `Content-Length` и фактически принятые
   chunks, а потоковый multipart-parser теперь отдельно допускает ровно один

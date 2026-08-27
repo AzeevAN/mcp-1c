@@ -45,6 +45,8 @@ data.bak/
 __pycache__/
 *.py[cod]
 .venv/
+.venv-lock/
+.venv-audit/
 venv/
 .pytest_cache/
 .mypy_cache/

@@ -21,8 +21,8 @@
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest          # 1100 тестов (прогон 2026-08-21)
+.venv/bin/pip install --require-hashes -r requirements-dev-lock.txt
+.venv/bin/python -m pytest          # 1702 теста (прогон 2026-08-27)
 ```
 
 Тесты **не зависят от содержимого `data/`**: проприетарных выгрузок и справки
@@ -94,6 +94,13 @@ git, независимо от того, чем оно получено.
 Сейчас зависимостей три, у каждой замер в `CHANGELOG.md`: `mcp` (SDK
 протокола, заперт в `server.py`), `numpy` (постинги индекса, заперт в
 `search.py`), `snowballstemmer` (стемминг русского, заперт в `search.py`).
+
+Нижние границы публичного пакета живут в `requirements.txt` и
+`pyproject.toml`, воспроизводимые установки — в сгенерированных
+`requirements-*-lock.txt` с hashes. Docker и CI ставят только lock с
+`--require-hashes`; вручную менять его нельзя. Порядок одновременного
+обновления всех lock-файлов и локального dependency audit описан в
+[README](README.md#воспроизводимые-зависимости-и-sbom).
 
 Тяжёлая инфраструктура (Elasticsearch, векторные БД, эмбеддинги) не
 добавляется «на всякий случай». Сначала измерение, потом решение.

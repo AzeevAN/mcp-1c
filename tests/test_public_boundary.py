@@ -482,8 +482,8 @@ def test_readme_фиксирует_отображаемый_docker_размер_
 
     assert "2026-08-27" in state
     assert "docker image ls mcp1c:latest --format '{{.Size}}'" in state
-    assert "`358MB`" in state
+    assert "`359MB`" in state
     assert "Docker CLI" in state
-    assert "`78340443`" in state
+    assert "`78446486`" in state
     assert "docker image inspect mcp1c:latest --format '{{.Size}}'" in state
     assert "354 МБ" not in state

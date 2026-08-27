@@ -1,6 +1,7 @@
 # MCP-сервер структуры конфигураций 1С
 
 [![tests](https://github.com/AzeevAN/mcp-1c/actions/workflows/tests.yml/badge.svg)](https://github.com/AzeevAN/mcp-1c/actions/workflows/tests.yml)
+[![supply-chain](https://github.com/AzeevAN/mcp-1c/actions/workflows/supply-chain.yml/badge.svg)](https://github.com/AzeevAN/mcp-1c/actions/workflows/supply-chain.yml)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![python](https://img.shields.io/badge/python-3.12%20%7C%203.13-blue.svg)](pyproject.toml)
 
@@ -32,10 +33,11 @@
 | Таблица замен для старых платформ | ✅ недоступное не просто запрещено, а заменено рецептом |
 | Реестр источников, сопоставление версий | ✅ единый immutable snapshot для всех читателей |
 | MCP-сервер | ✅ все инструменты ниже, streamable-http и stdio |
-| Docker | ✅ один контейнер, `358MB` по выводу Docker CLI |
+| Docker | ✅ один контейнер, `359MB` по выводу Docker CLI |
+| Цепочка поставки | ✅ hash-lock, base image по digest, Actions по SHA, audit и CycloneDX SBOM |
 | Кэш поисковых индексов | ✅ расходный, поднимается вместо повторного разбора |
 | Стенд замеров | ✅ `python -m mcp1c.bench`, P@k, MRR, отрыв, сверка пометок |
-| Тесты | ✅ `.venv/bin/python -m pytest`, 1694 |
+| Тесты | ✅ `.venv/bin/python -m pytest`, 1702 |
 | Дашборд | ✅ реестр, источники, прогон запросов, граф связей, карточки, словарь |
 | Авторизация | ✅ `API_TOKEN` на чтение, `ADMIN_TOKEN` на запись |
 | Приём выгрузки конфигурации в файлы | ✅ `data/incoming/`, отбор и учёт источника |
@@ -70,11 +72,76 @@ jq '[.sources[] | {kind, status, items_total}] | group_by(.kind) |
 текущая строгая schema требует их перевыгрузить до пересоздания контейнера.
 
 Размер финального образа проверен 2026-08-27: команда
-`docker image ls mcp1c:latest --format '{{.Size}}'` вывела `358MB`.
+`docker image ls mcp1c:latest --format '{{.Size}}'` вывела `359MB`.
 Это отображаемый Docker CLI размер. Команда
-`docker image inspect mcp1c:latest --format '{{.Size}}'` вернула `78340443` байта
+`docker image inspect mcp1c:latest --format '{{.Size}}'` вернула `78446486` байт
 внутреннего поля;
 это другая метрика, а не второй замер отображаемого размера.
+
+### Воспроизводимые зависимости и SBOM
+
+`requirements.txt`, `requirements-dev.txt`, `requirements-build.txt` и
+`requirements-audit.txt` — читаемые входы. Публичный пакет сохраняет нижние
+границы runtime-зависимостей, поэтому не навязывает потребителю один снимок
+окружения. Установка из репозитория, Docker и CI используют соответствующие
+`*-lock.txt`: там зафиксированы версии всех транзитивных пакетов и SHA-256
+допустимых артефактов, а `pip` запускается с `--require-hashes`.
+
+| Контур | Вход | Lock |
+|---|---|---|
+| runtime и Docker | `requirements.txt` | `requirements-lock.txt` |
+| тесты | `requirements-dev.txt` | `requirements-dev-lock.txt` |
+| wheel/sdist и `twine check` | `requirements-build.txt` | `requirements-build-lock.txt` |
+| dependency audit и SBOM | `requirements-audit.txt` | `requirements-audit-lock.txt` |
+| генератор lock | `requirements-lock-tool.in` | `requirements-lock-tool.txt` |
+
+Docker base закреплён одновременно читаемым тегом и digest. Все сторонние
+GitHub Actions закреплены 40-символьным commit SHA; рядом оставлена версия для
+человека. Workflow `supply-chain.yml` работает на PR, push в `main`, вручную и
+по понедельникам. Он проверяет именно runtime lock через `pip-audit`, завершает
+job ошибкой при известной уязвимости и сохраняет CycloneDX JSON SBOM как
+artifact на 14 дней. Успешный audit означает только отсутствие известной
+записи в использованной базе на момент прогона, а не отсутствие уязвимостей.
+
+Lock-файлы обновляются только осознанно и все вместе:
+
+```bash
+python3 -m venv .venv-lock
+.venv-lock/bin/pip install --require-hashes -r requirements-lock-tool.txt
+
+.venv-lock/bin/uv pip compile --universal --python-version 3.12 --generate-hashes --upgrade --output-file requirements-lock.txt requirements.txt
+.venv-lock/bin/uv pip compile --universal --python-version 3.12 --generate-hashes --upgrade --output-file requirements-dev-lock.txt requirements-dev.txt
+.venv-lock/bin/uv pip compile --universal --python-version 3.12 --generate-hashes --upgrade --output-file requirements-build-lock.txt requirements-build.txt
+.venv-lock/bin/uv pip compile --universal --python-version 3.12 --generate-hashes --upgrade --output-file requirements-audit-lock.txt requirements-audit.txt
+.venv-lock/bin/uv pip compile --universal --python-version 3.12 --generate-hashes --upgrade --output-file requirements-lock-tool.txt requirements-lock-tool.in
+```
+
+Локальная проверка тем же контрактом, что в CI:
+
+```bash
+python3 -m venv .venv-audit
+.venv-audit/bin/pip install --require-hashes -r requirements-audit-lock.txt
+mkdir -p build
+.venv-audit/bin/python -m pip_audit --require-hashes --disable-pip \
+  -r requirements-lock.txt -f cyclonedx-json -o build/mcp1c-sbom.cdx.json
+```
+
+Инструмент генерации выбран по замеру 2026-08-27. В пустом venv
+`uv==0.12.5` добавил 42 344 КиБ (`12 520` → `54 864` КиБ), а универсальный
+runtime lock с hashes построил за 9,68 с. В Docker и CI этот инструмент не
+устанавливается, поэтому к runtime-образу добавляет 0 байт. Воспроизведение
+размера и времени (wall-clock сети зависит от канала):
+
+```bash
+python3 -m venv /tmp/mcp1c-lock-tool
+du -sk /tmp/mcp1c-lock-tool
+/usr/bin/time -p /tmp/mcp1c-lock-tool/bin/pip install \
+  --require-hashes -r requirements-lock-tool.txt
+du -sk /tmp/mcp1c-lock-tool
+/usr/bin/time -p /tmp/mcp1c-lock-tool/bin/uv pip compile \
+  --universal --python-version 3.12 --generate-hashes \
+  --output-file /tmp/mcp1c-runtime-lock.txt requirements.txt
+```
 
 **Ограничений на конфигурацию нет.** Загружается любая — типовая
 (бухгалтерия, зарплата, документооборот, розница) и отраслевая: обработка
@@ -373,7 +440,8 @@ MCP-клиентов это не задерживает — индексация
 Из копии репозитория — так же, как гоняются тесты и CLI:
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+python3 -m venv .venv && \
+  .venv/bin/pip install --require-hashes -r requirements-lock.txt
 PYTHONPATH=src .venv/bin/python -m mcp1c.server --port 5001
 ```
 
@@ -2073,8 +2141,8 @@ PYTHONPATH=src .venv/bin/python -m mcp1c.bench \
 ## Тесты
 
 ```bash
-.venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest          # 1694 теста (прогон 2026-08-27)
+.venv/bin/pip install --require-hashes -r requirements-dev-lock.txt
+.venv/bin/python -m pytest          # 1702 теста (прогон 2026-08-27)
 ```
 
 От содержимого `data/` не зависят: проприетарных выгрузок в репозитории нет,

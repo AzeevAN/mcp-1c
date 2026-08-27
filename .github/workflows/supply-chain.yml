@@ -1,0 +1,50 @@
+# Аудитируется именно зафиксированный runtime-набор. Инструмент аудита живёт
+# в отдельном lock и не попадает ни в пакет, ни в Docker-образ сервера.
+name: supply-chain
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supply-chain-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: dependency audit и SBOM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-audit-lock.txt
+
+      - name: Установить инструмент аудита
+        run: python -m pip install --require-hashes -r requirements-audit-lock.txt
+
+      - name: Проверить runtime lock и собрать CycloneDX SBOM
+        run: |
+          python -m pip_audit --require-hashes --disable-pip \
+            -r requirements-lock.txt \
+            -f cyclonedx-json \
+            -o "${RUNNER_TEMP}/mcp1c-sbom.cdx.json"
+
+      - name: Сохранить SBOM
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mcp1c-sbom-${{ github.sha }}
+          path: ${{ runner.temp }}/mcp1c-sbom.cdx.json
+          if-no-files-found: error
+          retention-days: 14

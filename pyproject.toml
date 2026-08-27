@@ -4,7 +4,7 @@
 # `python -m mcp1c.server` при этом остаётся рабочим и описан в README.
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools==84.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]

@@ -110,6 +110,34 @@ async def test_поиск_отправляет_к_подробностям(ин�
     assert "get_syntax" in по_имени["search_syntax"]
 
 
+async def test_initialize_и_tools_list_честно_описывают_версии_языка_запросов(
+    инструменты, tmp_path
+):
+    """Два постоянных MCP-текста не должны противоречить фильтру выдачи.
+
+    В самом `shquery_ru.hbk` нет отметок версий, но это не означает, что язык
+    запросов не меняется: подтверждённые границы добавляет курируемая таблица.
+    Старый текст смешивал эти два факта и всю сессию говорил агенту, что
+    фильтр языка запросов не касается.
+    """
+    ожидаемый_контракт = (
+        "В самом `shquery_ru.hbk` версии появления не записаны; известные "
+        "границы заданы курируемой таблицей и при заданном `config` "
+        "фильтруются по версии платформы конфигурации."
+    )
+    server = build_server(Registry(tmp_path / "initialize-data"))
+    initialize = server._lowlevel_server.create_initialization_options()
+    (поиск,) = [
+        tool for tool in await инструменты() if tool.name == "search_syntax"
+    ]
+
+    assert initialize.instructions == server.instructions == INSTRUCTIONS
+    for текст in (initialize.instructions or "", поиск.description or ""):
+        assert ожидаемый_контракт in текст
+        assert "язык запросов версий не имеет" not in текст.lower()
+        assert "фильтр его не касается" not in текст.lower()
+
+
 async def test_поиск_процедур_зарегистрирован_с_полным_контрактом(инструменты):
     """Клиент видит явный scope и выбор расширения, а не угадывает их."""
     (поиск,) = [

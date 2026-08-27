@@ -24,7 +24,7 @@ def test_функция_разбирается_с_сигнатурой_и_пар
     assert item.name_en == "ENDOFPERIOD"
     assert item.variants[0].signature.startswith("КОНЕЦПЕРИОДА")
     assert [p.name for p in item.variants[0].params] == ["Дата периода", "Тип периода"]
-    # Версий у языка запросов нет — иначе фильтр по версии спрячет элемент.
+    # Для старой функции нет курируемой границы — фильтр не должен её прятать.
     assert item.since == "" and item.until == ""
 
 

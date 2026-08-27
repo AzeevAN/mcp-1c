@@ -14,6 +14,7 @@ from mcp1c.registry import KIND_SYNTAX, Registry, RegistryError
 from mcp1c.store import save_syntax
 from mcp1c.syntax_model import (
     KIND_QUERY_ARTICLE,
+    KIND_QUERY_FUNCTION,
     KIND_QUERY_TABLE,
     SyntaxIndex,
     SyntaxItem,
@@ -107,6 +108,45 @@ def test_заголовок_поиска_не_путает_пустую_плат
     assert "язык запросов" in ответ.lower()
 
 
+def test_известная_версия_функции_запроса_фильтруется_по_конфигурации(tmp_path):
+    """Один элемент из 8.3.20 недоступен на 8.3.5 и доступен на 8.3.23.
+
+    Это наблюдаемый контракт, из-за которого постоянный MCP-текст не вправе
+    говорить, что язык запросов фильтром не затрагивается.
+    """
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    index = SyntaxIndex(platforms=[], source="query-version-test", language="ru")
+    index.add(
+        SyntaxItem(
+            id="query/StrFind",
+            kind=KIND_QUERY_FUNCTION,
+            name_ru="СтрНайти",
+            name_en="StrFind",
+            description="Ищет подстроку в строке запроса",
+            since="8.3.20",
+        )
+    )
+    registry = Registry(tmp_path / "data")
+    registry.add_syntax(save_syntax(index, incoming / "query-ru.json.gz"))
+    for имя, платформа in (
+        ("СтараяКонфигурация", "8.3.5.1570"),
+        ("НоваяКонфигурация", "8.3.23.1997"),
+    ):
+        config = build_configuration(name=имя)
+        config.platform = платформа
+        registry.add_configuration(write_export(incoming, config))
+
+    старая = search_syntax(registry, "СтрНайти", "СтараяКонфигурация")
+    новая = search_syntax(registry, "СтрНайти", "НоваяКонфигурация")
+
+    assert "доступного ничего нет" in старая
+    assert "`Запрос.СтрНайти` — с 8.3.20" in старая
+    assert "доступного ничего нет" not in новая
+    assert "- `Запрос.СтрНайти`" in новая
+    assert "с 8.3.20" in новая
+
+
 def _реестр_с_одноимёнными(tmp_path):
     """Одно имя в двух доменах: метод платформы и функция языка запросов.
 
@@ -163,7 +203,7 @@ def test_одноимённые_показывают_как_достать_ка�
 
 def _реестр_8_3_5_с_одноимённой(tmp_path):
     """Конфигурация 8.3.5, где платформенный элемент недоступен, а одноимённый
-    из языка запросов — доступен: версий у него не бывает."""
+    из языка запросов доступен: у этого элемента нет курируемой границы."""
     registry = _реестр_с_одноимёнными(tmp_path)
     config = build_configuration()
     config.platform = "8.3.5.1570"

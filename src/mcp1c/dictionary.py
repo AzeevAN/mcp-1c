@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
@@ -187,11 +188,25 @@ class Dictionary:
             "synonym_groups": self.synonym_groups,
             "aliases": self.aliases,
         }
-        tmp = target.with_suffix(".tmp")
-        tmp.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8"
-        )
-        tmp.replace(target)
+        text = json.dumps(payload, ensure_ascii=False, indent=1)
+        tmp: Path | None = None
+        try:
+            # Один `dictionary.tmp` сталкивался у параллельных CLI/HTTP writers:
+            # первый replace уносил файл, второй получал FileNotFoundError.
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=target.parent,
+                prefix=f".{target.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as stream:
+                tmp = Path(stream.name)
+                stream.write(text)
+            tmp.replace(target)
+        finally:
+            if tmp is not None:
+                tmp.unlink(missing_ok=True)
         self.path = target
         return target
 

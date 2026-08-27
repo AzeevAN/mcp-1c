@@ -37,7 +37,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
-from typing import Callable, Iterable, Mapping
+from typing import Callable, Iterable, Mapping, TypeVar
 
 from . import coverage_log, index_cache, modules_index
 from .dictionary import Dictionary
@@ -65,6 +65,8 @@ from .virtual_tables import TableTemplate, build_table_index
 from .v8container import V8ContainerError
 
 REGISTRY_VERSION = 1
+
+_DictionaryMutationResult = TypeVar("_DictionaryMutationResult")
 
 logger = logging.getLogger(__name__)
 
@@ -897,6 +899,10 @@ class Registry:
         self.dictionary = Dictionary.load(self.dictionary_path)
 
         self._lock = threading.RLock()
+        # Правка словаря — одна операция от изменения объекта до публикации
+        # перечитанных таблиц. Обычный `_lock` на дисковой записи держать нельзя,
+        # поэтому writers сериализуются отдельным реентерабельным замком.
+        self._dictionary_mutation_lock = threading.RLock()
         # Повторные startup/reload сериализуются отдельно: долгий reload не
         # держит основной замок и не мешает `resolve()`, но два восстановления
         # не могут одновременно резервировать одну фоновую сборку.
@@ -3652,6 +3658,17 @@ class Registry:
             )
             tmp.replace(self.registry_path)
 
+    def mutate_dictionary(
+        self,
+        mutation: Callable[[Dictionary], _DictionaryMutationResult],
+    ) -> _DictionaryMutationResult:
+        """Сериализовать изменение, запись и публикацию словаря как одно целое."""
+        with self._dictionary_mutation_lock:
+            result = mutation(self.dictionary)
+            self.dictionary.save(self.dictionary_path)
+            self.reload_dictionary()
+            return result
+
     def reload_dictionary(self) -> None:
         """Перечитать словарь. Индексы при этом не перестраиваются.
 
@@ -3660,13 +3677,15 @@ class Registry:
         Пересборка стоила бы секунду на каждую правку словаря и обесценивала
         бы кэш; достаточно подменить две ссылки.
         """
-        self.dictionary = Dictionary.load(self.dictionary_path)
-        synonyms = self.dictionary.synonyms()
-        with self._lock:
-            for name, loaded in self.configurations.items():
-                loaded.index.synonyms = synonyms
-                loaded.index.aliases = self.dictionary.aliases_for(name)
-                loaded.field_index.synonyms = synonyms
+        with self._dictionary_mutation_lock:
+            dictionary = Dictionary.load(self.dictionary_path)
+            synonyms = dictionary.synonyms()
+            with self._lock:
+                self.dictionary = dictionary
+                for name, loaded in self.configurations.items():
+                    loaded.index.synonyms = synonyms
+                    loaded.index.aliases = dictionary.aliases_for(name)
+                    loaded.field_index.synonyms = synonyms
 
     def restore(self) -> list[str]:
         """Поднять источники, записанные в registry.json."""
@@ -3981,7 +4000,7 @@ class Registry:
         self.incoming_dir.mkdir(parents=True, exist_ok=True)
         # Словарь перечитывается первым: правки в нём должны применяться
         # перезагрузкой, без пересборки образа и рестарта контейнера.
-        self.dictionary = Dictionary.load(self.dictionary_path)
+        self.reload_dictionary()
         # Foreground-публикация держит тот же lock от staging кэша до
         # registry.json. Startup либо ждёт её завершения в живом процессе,
         # либо восстанавливает journal, оставшийся после SIGKILL.

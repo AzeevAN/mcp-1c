@@ -1837,14 +1837,17 @@ def _dictionary_page(
     return _layout("Словарь", "".join(parts))
 
 
-def _apply_dictionary_change(registry: Registry) -> None:
+def _apply_dictionary_change(registry: Registry, mutation):
     """Записать словарь и подхватить его без перезапуска.
 
     Пересборки индексов не требуется: ни синонимы, ни псевдонимы не участвуют
     в построении постингов, они читаются в момент поиска.
     """
-    registry.dictionary.save()
-    registry.reload_dictionary()
+    return registry.mutate_dictionary(mutation)
+
+
+class _DictionaryGroupNotFound(Exception):
+    """Своей группы нет; это ожидаемый ответ формы, а не ошибка сохранения."""
 
 
 def _read_denied() -> HTMLResponse:
@@ -1920,13 +1923,17 @@ def routes(registry: Registry) -> list[Route]:
         # как удобнее разбору.
         targets = [t for t in str(form.get("targets", "")).replace(",", " ").split() if t]
         try:
-            registry.dictionary.add_alias(phrase, targets, config or None)
+            _apply_dictionary_change(
+                registry,
+                lambda dictionary: dictionary.add_alias(
+                    phrase, targets, config or None
+                ),
+            )
         except ValueError as error:
             return _dictionary_page(
                 registry, config=config, authorized=True, error=str(error),
                 phrase=phrase, targets=str(form.get("targets", "")),
             )
-        _apply_dictionary_change(registry)
         return RedirectResponse(f"/dictionary?config={quote(config)}", status_code=303)
 
     async def alias_remove(request: Request) -> HTMLResponse:
@@ -1939,9 +1946,11 @@ def routes(registry: Registry) -> list[Route]:
         phrase = str(form.get("phrase", ""))
         # Псевдоним мог быть заведён и для всех конфигураций: снимаем там, где
         # он на самом деле лежит, иначе кнопка «удалить» ничего не делает.
-        if not registry.dictionary.remove_alias(phrase, config or None):
-            registry.dictionary.remove_alias(phrase, None)
-        _apply_dictionary_change(registry)
+        def remove(dictionary):
+            if not dictionary.remove_alias(phrase, config or None):
+                dictionary.remove_alias(phrase, None)
+
+        _apply_dictionary_change(registry, remove)
         return RedirectResponse(f"/dictionary?config={quote(config)}", status_code=303)
 
     async def synonyms_add(request: Request) -> HTMLResponse:
@@ -1952,10 +1961,11 @@ def routes(registry: Registry) -> list[Route]:
         form = await request.form()
         words = str(form.get("words", "")).replace(",", " ").split()
         try:
-            registry.dictionary.add_synonyms(words)
+            _apply_dictionary_change(
+                registry, lambda dictionary: dictionary.add_synonyms(words)
+            )
         except ValueError as error:
             return _dictionary_page(registry, authorized=True, error=str(error))
-        _apply_dictionary_change(registry)
         return RedirectResponse("/dictionary", status_code=303)
 
     async def synonyms_remove(request: Request):
@@ -1965,14 +1975,19 @@ def routes(registry: Registry) -> list[Route]:
 
         form = await request.form()
         words = str(form.get("words", "")).replace(",", " ").split()
-        if not registry.dictionary.remove_synonyms(words):
+        try:
+            def remove(dictionary):
+                if not dictionary.remove_synonyms(words):
+                    raise _DictionaryGroupNotFound
+
+            _apply_dictionary_change(registry, remove)
+        except _DictionaryGroupNotFound:
             return _dictionary_page(
                 registry,
                 authorized=True,
                 error="Такой группы нет. Встроенные группы отсюда не снимаются: "
                       "они в коде и меняются вместе с поставкой.",
             )
-        _apply_dictionary_change(registry)
         return RedirectResponse("/dictionary", status_code=303)
 
     async def queries_form(request: Request) -> HTMLResponse:

@@ -36,7 +36,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Iterable
+from types import MappingProxyType
+from typing import Callable, Iterable, Mapping
 
 from . import coverage_log, index_cache, modules_index
 from .dictionary import Dictionary
@@ -598,6 +599,96 @@ class LoadedModules:
 
 
 @dataclass(frozen=True, slots=True)
+class SourceSnapshot:
+    """Неизменяемая учётная запись одного поколения ``Source``."""
+
+    id: str
+    kind: str
+    origin: str
+    sha256: str
+    loaded_at: str
+    platform: str
+    status: str
+    error: str
+    warnings: tuple[str, ...]
+    items_total: int
+    stored_path: str
+    selection_version: int
+    locator_generation: int
+    code_version: str
+    incomplete: bool
+
+    @classmethod
+    def capture(cls, source: Source) -> "SourceSnapshot":
+        return cls(
+            id=source.id,
+            kind=source.kind,
+            origin=source.origin,
+            sha256=source.sha256,
+            loaded_at=source.loaded_at,
+            platform=source.platform,
+            status=source.status,
+            error=source.error,
+            warnings=tuple(source.warnings),
+            items_total=source.items_total,
+            stored_path=source.stored_path,
+            selection_version=source.selection_version,
+            locator_generation=source.locator_generation,
+            code_version=source.code_version,
+            incomplete=source.incomplete,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RegistryCodeSnapshot:
+    """Ссылка на пакет индексов и скопированное состояние его публикации."""
+
+    source: SourceSnapshot | None
+    loaded: LoadedModules | None
+    ready: bool
+    status: str
+    error: str
+    stage: tuple[int, int]
+    stage_title: str
+    progress: tuple[int, int]
+
+
+@dataclass(frozen=True, slots=True)
+class RegistrySnapshot:
+    """Один структурный снимок реестра, целиком снятый под его lock.
+
+    Карты закрыты ``MappingProxyType``, а изменяемые поля ``Source`` и
+    прогресса кода скопированы в frozen-значения. Тяжёлые индексы не
+    копируются: ``LoadedConfiguration``, ``LoadedSyntax`` и ``LoadedModules``
+    публикуются поколениями и используются потребителями только для чтения.
+    Поздний ``Registry.snapshot_is_current`` проверяет, что такое поколение
+    не сменилось, пока ответ строился без удержания lock.
+    """
+
+    configurations: Mapping[str, LoadedConfiguration]
+    syntax_versions: Mapping[str, SourceSnapshot]
+    syntax: LoadedSyntax | None
+    query_source: SourceSnapshot | None
+    sources: Mapping[str, SourceSnapshot]
+    modules: Mapping[str, RegistryCodeSnapshot]
+    _owner: object = field(repr=False, compare=False)
+    _source_identities: tuple[Source, ...] = field(repr=False, compare=False)
+    _fingerprint: tuple = field(repr=False, compare=False)
+
+    @property
+    def configuration_names(self) -> tuple[str, ...]:
+        return tuple(self.configurations)
+
+    def extension_names(self, configuration: str) -> tuple[str, ...]:
+        prefix = f"{configuration}:ext:"
+        return tuple(
+            source_id[len(prefix):]
+            for source_id, source in self.sources.items()
+            if source.kind == KIND_EXTENSION and source_id.startswith(prefix)
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class _ModuleOperation:
     """Ранняя reservation живого add/reparse источника кода."""
 
@@ -865,6 +956,164 @@ class Registry:
             str,
             tuple[LoadedConfiguration, LoadedSyntax | None, str, int],
         ] = {}
+
+    def _snapshot_fingerprint_locked(self) -> tuple:
+        """Дешёвый CAS-маркер всех полей, видимых через ``snapshot``."""
+        source_rows = tuple(
+            (source.id, id(source), SourceSnapshot.capture(source))
+            for source in sorted(self.sources.values(), key=lambda item: item.id)
+        )
+        module_rows = tuple(
+            (
+                source_id,
+                id(loaded),
+                id(loaded.source),
+                SourceSnapshot.capture(loaded.source),
+                loaded.готов,
+                loaded.этап,
+                loaded.название_этапа,
+                loaded.прогресс,
+            )
+            for source_id, loaded in sorted(self.modules.items())
+        )
+        syntax_version_rows = tuple(
+            (
+                platform,
+                id(source),
+                SourceSnapshot.capture(source),
+            )
+            for platform, source in sorted(self.syntax_versions.items())
+        )
+        query_row = (
+            None
+            if self.query_source is None
+            else (
+                id(self.query_source),
+                SourceSnapshot.capture(self.query_source),
+            )
+        )
+        return (
+            tuple(
+                (name, id(loaded))
+                for name, loaded in sorted(self.configurations.items())
+            ),
+            id(self.syntax) if self.syntax is not None else None,
+            query_row,
+            syntax_version_rows,
+            source_rows,
+            module_rows,
+        )
+
+    def snapshot(self) -> RegistrySnapshot:
+        """Снять все публично читаемые карты и состояния одним поколением."""
+        with self._lock:
+            configurations = dict(sorted(self.configurations.items()))
+            source_objects = tuple(
+                sorted(self.sources.values(), key=lambda item: item.id)
+            )
+            sources = {
+                source.id: SourceSnapshot.capture(source)
+                for source in source_objects
+            }
+            syntax_versions = {
+                platform: SourceSnapshot.capture(source)
+                for platform, source in sorted(self.syntax_versions.items())
+            }
+            query_source = (
+                None
+                if self.query_source is None
+                else SourceSnapshot.capture(self.query_source)
+            )
+            loaded_modules = dict(sorted(self.modules.items()))
+            code_ids = sorted(
+                {
+                    source.id
+                    for source in source_objects
+                    if source.kind in (KIND_MODULES, KIND_EXTENSION)
+                }
+                | set(loaded_modules)
+            )
+            modules: dict[str, RegistryCodeSnapshot] = {}
+            source_by_id = {source.id: source for source in source_objects}
+            for source_id in code_ids:
+                loaded = loaded_modules.get(source_id)
+                source = (
+                    loaded.source
+                    if loaded is not None
+                    else source_by_id.get(source_id)
+                )
+                source_snapshot = (
+                    SourceSnapshot.capture(source) if source is not None else None
+                )
+                modules[source_id] = RegistryCodeSnapshot(
+                    source=source_snapshot,
+                    loaded=loaded,
+                    ready=loaded.готов if loaded is not None else False,
+                    status=source.status if source is not None else "",
+                    error=source.error if source is not None else "",
+                    stage=loaded.этап if loaded is not None else (0, 0),
+                    stage_title=(
+                        loaded.название_этапа if loaded is not None else ""
+                    ),
+                    progress=loaded.прогресс if loaded is not None else (0, 0),
+                )
+            fingerprint = (
+                tuple((name, id(loaded)) for name, loaded in configurations.items()),
+                id(self.syntax) if self.syntax is not None else None,
+                (
+                    None
+                    if self.query_source is None
+                    else (
+                        id(self.query_source),
+                        SourceSnapshot.capture(self.query_source),
+                    )
+                ),
+                tuple(
+                    (
+                        platform,
+                        id(self.syntax_versions[platform]),
+                        syntax_versions[platform],
+                    )
+                    for platform in syntax_versions
+                ),
+                tuple(
+                    (source.id, id(source), sources[source.id])
+                    for source in source_objects
+                ),
+                tuple(
+                    (
+                        source_id,
+                        id(loaded),
+                        id(loaded.source),
+                        SourceSnapshot.capture(loaded.source),
+                        loaded.готов,
+                        loaded.этап,
+                        loaded.название_этапа,
+                        loaded.прогресс,
+                    )
+                    for source_id, loaded in loaded_modules.items()
+                ),
+            )
+            return RegistrySnapshot(
+                configurations=MappingProxyType(configurations),
+                syntax_versions=MappingProxyType(syntax_versions),
+                syntax=self.syntax,
+                query_source=query_source,
+                sources=MappingProxyType(sources),
+                modules=MappingProxyType(modules),
+                _owner=self,
+                # Сильные ссылки исключают ABA через повторное использование
+                # Python ``id`` после remove/re-add между snapshot и CAS.
+                _source_identities=source_objects,
+                _fingerprint=fingerprint,
+            )
+
+    def snapshot_is_current(self, snapshot: RegistrySnapshot) -> bool:
+        """Проверить поздний CAS без раскрытия ``_lock`` потребителю."""
+        if snapshot._owner is not self:
+            return False
+        with self._lock:
+            return snapshot._fingerprint == self._snapshot_fingerprint_locked()
 
     # ------------------------------------------------------------- источники
 
@@ -3654,9 +3903,16 @@ class Registry:
         if not self.sources_dir.is_dir():
             return orphans
         for path in sorted(self.sources_dir.rglob("*")):
-            if not path.is_file() or path.resolve() in used:
+            try:
+                if not path.is_file() or path.resolve() in used:
+                    continue
+                size = path.stat().st_size
+            except OSError:
+                # Атомарная публикация удаляет временный файл между rglob,
+                # is_file и stat. Это штатная гонка с upload, а не причина
+                # ронять всю страницу источников.
                 continue
-            orphans.append((path, path.stat().st_size))
+            orphans.append((path, size))
         return orphans
 
     def startup(self) -> list[str]:

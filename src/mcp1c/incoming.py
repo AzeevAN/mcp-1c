@@ -80,7 +80,26 @@ class IncomingScanner:
         # словаря. Без замка «dictionary changed size during iteration» уронил
         # бы показ страницы, а `_save` ловит только `OSError`.
         self._замок = threading.RLock()
-        self.running: set[str] = set()
+        self._running: set[str] = set()
+
+    @property
+    def running(self) -> frozenset[str]:
+        """Неизменяемый снимок имён, которые сейчас разбираются."""
+        with self._замок:
+            return frozenset(self._running)
+
+    def try_start(self, name: str) -> tuple[bool, tuple[str, ...]]:
+        """Атомарно занять единственный слот разбора incoming."""
+        with self._замок:
+            busy = tuple(sorted(self._running))
+            if busy:
+                return False, busy
+            self._running.add(name)
+            return True, ()
+
+    def finish(self, name: str) -> None:
+        with self._замок:
+            self._running.discard(name)
 
     def _load(self) -> dict:
         try:
@@ -178,9 +197,10 @@ class IncomingScanner:
         строки: list[dict] = []
         if not каталог.is_dir():
             return строки
+        snapshot = self.registry.snapshot()
         источники = [
             s
-            for s in self.registry.sources.values()
+            for s in snapshot.sources.values()
             # Расширение — тот же вид выгрузки в файлы, что и модули
             # конфигурации, просто в свой каталог и под ключом `:ext:<Имя>`.
             # Без учёта этого вида разобранное расширение навсегда
@@ -190,6 +210,7 @@ class IncomingScanner:
         ]
         по_хешу = {s.sha256: s for s in источники}
         по_имени = {s.origin: s for s in источники}
+        running = self.running
         for путь in sorted(каталог.glob("*.zip")):
             try:
                 отпечаток = путь.stat()
@@ -199,7 +220,7 @@ class IncomingScanner:
                 if not путь.is_file():
                     continue
                 дописывается = self._дописывается(отпечаток)
-                if путь.name in self.running:
+                if путь.name in running:
                     состояние, подробность = STATE_RUNNING, ""
                 elif дописывается:
                     # Хеш не считаем вовсе: он всё равно устареет к концу `cp`,

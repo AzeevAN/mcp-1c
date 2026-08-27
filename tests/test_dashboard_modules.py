@@ -323,6 +323,30 @@ def test_orphan_sources_сначала_снимает_пути_под_lock(tmp_p
     assert orphans == []
 
 
+def test_orphan_sources_пропускает_исчезнувший_временный_файл(
+    tmp_path, monkeypatch
+):
+    from pathlib import Path
+
+    from mcp1c.registry import Registry
+
+    registry = Registry(tmp_path / "data")
+    temporary = registry.sources_dir / ".source.tmp"
+    temporary.parent.mkdir(parents=True)
+    temporary.write_bytes(b"temporary")
+    real_is_file = Path.is_file
+
+    def is_file_and_remove(path):
+        result = real_is_file(path)
+        if path == temporary and result:
+            path.unlink()
+        return result
+
+    monkeypatch.setattr(Path, "is_file", is_file_and_remove)
+
+    assert registry.orphan_sources() == []
+
+
 def test_reparse_во_время_сводки_не_смешивает_старые_и_новые_счётчики(
     корень_кода,
     реестр_с_кодом,

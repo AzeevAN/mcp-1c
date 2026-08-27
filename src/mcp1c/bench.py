@@ -771,13 +771,13 @@ def _procedure_snapshot_is_current(registry, context, loaded) -> bool:
     configuration = context.configuration
     if configuration is None:
         return False
-    with registry._lock:
-        return (
-            registry.configurations.get(context.name) is configuration
-            and registry.sources.get(configuration.source.id) is configuration.source
-            and registry.sources.get(loaded.source.id) is loaded.source
-            and registry.modules.get(loaded.source.id) is loaded
-        )
+    snapshot = registry.snapshot()
+    code = snapshot.modules.get(loaded.source.id)
+    return (
+        snapshot.configurations.get(context.name) is configuration
+        and code is not None
+        and code.loaded is loaded
+    )
 
 
 def run_procedures(

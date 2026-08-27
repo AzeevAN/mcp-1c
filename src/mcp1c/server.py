@@ -702,7 +702,7 @@ def main(argv: list[str] | None = None) -> int:
     for message in registry.startup():
         print(f"  {message}", file=sys.stderr)
 
-    if not registry.configurations:
+    if not registry.snapshot().configurations:
         print(
             "Внимание: не загружено ни одной конфигурации. "
             "Положите выгрузку в data/bootstrap/ или добавьте через reg-add.",

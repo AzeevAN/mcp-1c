@@ -404,8 +404,9 @@ def _cmd_dict_alias(args: argparse.Namespace) -> int:
         return 0 if removed else 1
 
     # Проверяем, что объекты существуют: псевдоним на опечатку бесполезен.
-    if args.config and args.config in registry.configurations:
-        objects = registry.configurations[args.config].config.objects
+    snapshot = registry.snapshot()
+    if args.config and args.config in snapshot.configurations:
+        objects = snapshot.configurations[args.config].config.objects
         unknown = [t for t in args.targets if t not in objects]
         if unknown:
             print(f"В конфигурации {args.config} нет: {', '.join(unknown)}", file=sys.stderr)

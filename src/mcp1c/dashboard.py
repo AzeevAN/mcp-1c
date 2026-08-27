@@ -277,7 +277,7 @@ def _scanner(registry: Registry) -> "IncomingScanner":
 def _configuration_for(registry: Registry, архив: Path) -> str:
     """Определение конфигурации — по единственной загруженной, иначе отказ с
     объяснением (привязка по манифесту — работа провайдера, разведка раздел 5)."""
-    имена = sorted(registry.configurations)
+    имена = registry.snapshot().configuration_names
     if len(имена) == 1:
         return имена[0]
     if not имена:
@@ -329,7 +329,7 @@ def _run_incoming(
         job["state"] = JOB_DONE
         сканер.clear_failure(архив)
     finally:
-        сканер.running.discard(архив.name)
+        сканер.finish(архив.name)
 
 
 def _layout(title: str, body: str, *, refresh: int = 0) -> HTMLResponse:
@@ -813,7 +813,7 @@ def _graph_page(registry: Registry, config: str, name: str, limit: int) -> HTMLR
     # Первая по алфавиту, если не выбрана: страница без выбранной конфигурации
     # ничего показать не может, а отказ вместо картинки — тупик. Тот же приём,
     # что на «Запросах» и «Словаре».
-    известные = sorted(registry.configurations)
+    известные = registry.snapshot().configuration_names
     if config not in известные:
         config = известные[0] if известные else ""
 
@@ -943,7 +943,7 @@ def _graph_form(
     )
     конфигурации = "".join(
         f"<option{' selected' if имя == config else ''}>{escape(имя)}</option>"
-        for имя in sorted(registry.configurations)
+        for имя in registry.snapshot().configuration_names
     )
     return (
         "<form method=get action=/graph>"
@@ -1038,7 +1038,7 @@ def _queries_page(
 ) -> HTMLResponse:
     options = "".join(
         f"<option{' selected' if name == config else ''}>{escape(name)}</option>"
-        for name in sorted(registry.configurations)
+        for name in registry.snapshot().configuration_names
     )
     scope_inputs = "".join(
         f"<label><input type=radio name=scope value={key}"
@@ -1638,7 +1638,7 @@ def _dictionary_page(
     разбор «почему поиск так себя ведёт» — встроенное правило чинят в
     `synonyms.py` через обычную проверку кода, локальное правят здесь же.
     """
-    names = sorted(registry.configurations)
+    names = registry.snapshot().configuration_names
     if config not in names:
         config = names[0] if names else ""
 
@@ -1869,7 +1869,7 @@ def routes(registry: Registry) -> list[Route]:
         return RedirectResponse("/dictionary", status_code=303)
 
     async def queries_form(request: Request) -> HTMLResponse:
-        names = sorted(registry.configurations)
+        names = registry.snapshot().configuration_names
         return _queries_page(registry, config=names[0] if names else "")
 
     async def queries_run(request: Request) -> HTMLResponse:
@@ -2084,7 +2084,8 @@ def routes(registry: Registry) -> list[Route]:
         архив = registry.incoming_dir / имя
         if not имя or not архив.is_file():
             return RedirectResponse("/sources", status_code=303)
-        if сканер.running:
+        занятые = сканер.running
+        if занятые:
             # Два разбора одновременно видели бы одно и то же свободное место
             # и оба прошли бы проверку. Молчаливый редирект выглядел бы как
             # «нажал, и ничего не произошло», поэтому причина ложится в журнал.
@@ -2092,7 +2093,7 @@ def routes(registry: Registry) -> list[Route]:
             занятость["state"] = JOB_FAILED
             занятость["error"] = (
                 "уже идёт разбор другой выгрузки ("
-                + ", ".join(sorted(сканер.running))
+                + ", ".join(sorted(занятые))
                 + ") — одновременно разбирается не больше одной; "
                 "повторите, когда та закончится"
             )
@@ -2144,7 +2145,10 @@ def routes(registry: Registry) -> list[Route]:
         # уже загруженных ДО того, как задание уйдёт в фон — здесь же, где
         # и остальные синхронные отказы этого обработчика.
         конфигурация = str(form.get("configuration", "")).strip()
-        if конфигурация and конфигурация not in registry.configurations:
+        if (
+            конфигурация
+            and конфигурация not in registry.snapshot().configurations
+        ):
             job["state"] = JOB_FAILED
             job["error"] = (
                 f"конфигурации «{конфигурация}» нет в реестре — выберите "
@@ -2153,7 +2157,16 @@ def routes(registry: Registry) -> list[Route]:
             await run_in_threadpool(сканер.note_failure, архив, job["error"])
             return RedirectResponse("/sources", status_code=303)
 
-        сканер.running.add(имя)
+        запущен, занятые = сканер.try_start(имя)
+        if not запущен:
+            job["state"] = JOB_FAILED
+            job["error"] = (
+                "уже идёт разбор другой выгрузки ("
+                + ", ".join(занятые)
+                + ") — одновременно разбирается не больше одной; "
+                "повторите, когда та закончится"
+            )
+            return RedirectResponse("/sources", status_code=303)
         задача = asyncio.create_task(
             run_in_threadpool(
                 _run_incoming, registry, сканер, job, архив, конфигурация or None

@@ -28,7 +28,9 @@ from .registry import (
     STATUS_ERROR,
     LoadedModules,
     Registry,
+    RegistrySnapshot,
     RegistryError,
+    SourceSnapshot,
 )
 from .render import (
     BRIEF,
@@ -76,15 +78,16 @@ def health(registry: Registry, *, detailed: bool) -> dict:
     `"syntax_loaded": true, "syntax": ""` — «справка есть, но сломана» вместо
     «справки платформы нет».
     """
-    площадки = list(registry.syntax.syntax.platforms) if registry.syntax else []
+    snapshot = registry.snapshot()
+    площадки = list(snapshot.syntax.syntax.platforms) if snapshot.syntax else []
     тело = {
         "status": "ok",
-        "configurations_total": len(registry.configurations),
+        "configurations_total": len(snapshot.configurations),
         "syntax_loaded": bool(площадки),
-        "query_language_loaded": registry.query_source is not None,
+        "query_language_loaded": snapshot.query_source is not None,
     }
     if detailed:
-        тело["configurations"] = sorted(registry.configurations)
+        тело["configurations"] = list(snapshot.configuration_names)
         тело["syntax"] = площадки
     return тело
 
@@ -128,7 +131,7 @@ def _clamp(limit: int) -> int:
 
 @dataclass(frozen=True, slots=True)
 class _CodeCapture:
-    source: object | None
+    source: SourceSnapshot | None
     loaded: LoadedModules | None
     ready: bool
     status: str
@@ -235,6 +238,7 @@ class _ConfigurationCodeSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class _ListConfigurationsCapture:
+    registry: RegistrySnapshot
     configurations: tuple[tuple[str, object], ...]
     syntax: object | None
     query_source: object | None
@@ -307,54 +311,44 @@ class ConfigurationsSnapshot:
 _OVERRIDE_KINDS = ("Вместо", "После", "Перед", "ИзменениеИКонтроль")
 
 
-def _capture_code_locked(registry: Registry, source_id: str) -> _CodeCapture:
-    source = registry.sources.get(source_id)
-    loaded = registry.modules.get(source_id)
-    if loaded is None:
+def _capture_code(snapshot: RegistrySnapshot, source_id: str) -> _CodeCapture:
+    code = snapshot.modules.get(source_id)
+    if code is None:
         return _CodeCapture(
-            source=source,
+            source=snapshot.sources.get(source_id),
             loaded=None,
             ready=False,
-            status=source.status if source is not None else "",
-            error=source.error if source is not None else "",
+            status="",
+            error="",
             stage=(0, 0),
             stage_title="",
             progress=(0, 0),
         )
     return _CodeCapture(
-        source=source,
-        loaded=loaded,
-        ready=loaded.готов,
-        status=loaded.source.status,
-        error=loaded.source.error,
-        stage=loaded.этап,
-        stage_title=loaded.название_этапа,
-        progress=loaded.прогресс,
+        source=code.source,
+        loaded=code.loaded,
+        ready=code.ready,
+        status=code.status,
+        error=code.error,
+        stage=code.stage,
+        stage_title=code.stage_title,
+        progress=code.progress,
     )
 
 
 def _capture_is_current(
-    registry: Registry, source_id: str, capture: _CodeCapture
+    snapshot: RegistrySnapshot, source_id: str, capture: _CodeCapture
 ) -> bool:
-    if registry.sources.get(source_id) is not capture.source:
-        return False
-    if registry.modules.get(source_id) is not capture.loaded:
-        return False
-    current = _capture_code_locked(registry, source_id)
+    current = _capture_code(snapshot, source_id)
     return (
-        current.ready,
-        current.status,
-        current.error,
-        current.stage,
-        current.stage_title,
-        current.progress,
-    ) == (
-        capture.ready,
-        capture.status,
-        capture.error,
-        capture.stage,
-        capture.stage_title,
-        capture.progress,
+        current.source == capture.source
+        and current.loaded is capture.loaded
+        and current.ready == capture.ready
+        and current.status == capture.status
+        and current.error == capture.error
+        and current.stage == capture.stage
+        and current.stage_title == capture.stage_title
+        and current.progress == capture.progress
     )
 
 
@@ -650,28 +644,24 @@ def _configuration_code_snapshot(
     prefix = f"{name}:ext:"
     base_id = f"{name}:modules"
     for _ in range(2):
+        snapshot = registry.snapshot()
         context = registry.resolve(name)
-        with registry._lock:
-            if (
-                registry.configurations.get(name) is not context.configuration
-                or registry.syntax is not context.syntax
-            ):
-                continue
-            base = _capture_code_locked(registry, base_id)
-            if base.loaded is not context.modules:
-                continue
-            extension_ids = sorted(
-                (
-                    source_id
-                    for source_id, source in registry.sources.items()
-                    if source.kind == KIND_EXTENSION and source_id.startswith(prefix)
-                ),
-                key=lambda value: (value.casefold(), value),
-            )
-            extensions = tuple(
-                (source_id, _capture_code_locked(registry, source_id))
-                for source_id in extension_ids
-            )
+        if (
+            snapshot.configurations.get(name) is not context.configuration
+            or snapshot.syntax is not context.syntax
+        ):
+            continue
+        base = _capture_code(snapshot, base_id)
+        if base.loaded is not context.modules:
+            continue
+        extension_ids = tuple(
+            prefix + extension
+            for extension in snapshot.extension_names(name)
+        )
+        extensions = tuple(
+            (source_id, _capture_code(snapshot, source_id))
+            for source_id in extension_ids
+        )
 
         base_summary = (
             _summarize_code(base.loaded)
@@ -691,26 +681,15 @@ def _configuration_code_snapshot(
             for source_id, capture in extensions
         )
 
-        with registry._lock:
-            current_extension_ids = sorted(
-                (
-                    source_id
-                    for source_id, source in registry.sources.items()
-                    if source.kind == KIND_EXTENSION and source_id.startswith(prefix)
-                ),
-                key=lambda value: (value.casefold(), value),
+        if (
+            not registry.snapshot_is_current(snapshot)
+            or not _capture_is_current(snapshot, base_id, base)
+            or not all(
+                _capture_is_current(snapshot, source_id, capture)
+                for source_id, capture in extensions
             )
-            if (
-                registry.configurations.get(name) is not context.configuration
-                or registry.syntax is not context.syntax
-                or current_extension_ids != extension_ids
-                or not _capture_is_current(registry, base_id, base)
-                or not all(
-                    _capture_is_current(registry, source_id, capture)
-                    for source_id, capture in extensions
-                )
-            ):
-                continue
+        ):
+            continue
         return _ConfigurationCodeSnapshot(
             context=context,
             modules=_CodeView(base, base_summary),
@@ -722,75 +701,10 @@ def _configuration_code_snapshot(
     )
 
 
-def _list_capture_is_current_locked(
+def _list_capture_is_current(
     registry: Registry, capture: _ListConfigurationsCapture
 ) -> bool:
-    current_configurations = tuple(
-        sorted(registry.configurations.items(), key=lambda item: item[0])
-    )
-    if len(current_configurations) != len(capture.configurations) or any(
-        name != old_name or loaded is not old_loaded
-        for (name, loaded), (old_name, old_loaded) in zip(
-            current_configurations, capture.configurations
-        )
-    ):
-        return False
-    if (
-        registry.syntax is not capture.syntax
-        or registry.query_source is not capture.query_source
-    ):
-        return False
-    current_sources = tuple(
-        sorted(registry.sources.values(), key=lambda source: source.id)
-    )
-    if len(current_sources) != len(capture.sources) or any(
-        source is not captured_source
-        or _source_state_row(source) != captured_row
-        or source.stored_path != captured_stored_path
-        for source, (captured_source, captured_row, captured_stored_path) in zip(
-            current_sources, capture.sources
-        )
-    ):
-        return False
-    current_versions = tuple(
-        sorted(registry.syntax_versions.items(), key=lambda item: item[0])
-    )
-    if len(current_versions) != len(capture.syntax_versions) or any(
-        key != old_key or source is not old_source
-        for (key, source), (old_key, old_source) in zip(
-            current_versions, capture.syntax_versions
-        )
-    ):
-        return False
-
-    for row in capture.rows:
-        name = row.context.name
-        if (
-            registry.configurations.get(name) is not row.context.configuration
-            or registry.syntax is not row.context.syntax
-            or not _capture_is_current(registry, f"{name}:modules", row.modules.capture)
-        ):
-            return False
-        prefix = f"{name}:ext:"
-        current_extension_ids = sorted(
-            (
-                source_id
-                for source_id, source in registry.sources.items()
-                if source.kind == KIND_EXTENSION and source_id.startswith(prefix)
-            ),
-            key=lambda value: (value.casefold(), value),
-        )
-        captured_extension_ids = [
-            prefix + extension_name for extension_name, _ in row.extensions
-        ]
-        if current_extension_ids != captured_extension_ids:
-            return False
-        if not all(
-            _capture_is_current(registry, prefix + extension_name, view.capture)
-            for extension_name, view in row.extensions
-        ):
-            return False
-    return True
+    return registry.snapshot_is_current(capture.registry)
 
 
 def _source_state_row(source) -> SourceStateRow:
@@ -807,21 +721,15 @@ def _source_state_row(source) -> SourceStateRow:
 def _capture_configurations_list(
     registry: Registry,
 ) -> _ListConfigurationsCapture | None:
-    with registry._lock:
-        configurations = tuple(
-            sorted(registry.configurations.items(), key=lambda item: item[0])
-        )
-        syntax = registry.syntax
-        query_source = registry.query_source
-        syntax_versions = tuple(
-            sorted(registry.syntax_versions.items(), key=lambda item: item[0])
-        )
-        sources = tuple(
-            (source, _source_state_row(source), source.stored_path)
-            for source in sorted(
-                registry.sources.values(), key=lambda source: source.id
-            )
-        )
+    snapshot = registry.snapshot()
+    configurations = tuple(snapshot.configurations.items())
+    syntax = snapshot.syntax
+    query_source = snapshot.query_source
+    syntax_versions = tuple(snapshot.syntax_versions.items())
+    sources = tuple(
+        (source, _source_state_row(source), source.stored_path)
+        for source in snapshot.sources.values()
+    )
     try:
         rows = tuple(
             _configuration_code_snapshot(registry, name)
@@ -829,7 +737,10 @@ def _capture_configurations_list(
         )
     except RegistryError:
         return None
+    if not registry.snapshot_is_current(snapshot):
+        return None
     return _ListConfigurationsCapture(
+        registry=snapshot,
         configurations=configurations,
         syntax=syntax,
         query_source=query_source,
@@ -1000,9 +911,8 @@ def list_configurations(registry: Registry) -> str:
         if capture is None:
             continue
         answer = _render_configurations_list(capture)
-        with registry._lock:
-            if _list_capture_is_current_locked(registry, capture):
-                return answer
+        if _list_capture_is_current(registry, capture):
+            return answer
     raise RegistryError(
         "Источники списка конфигураций изменились дважды; повторите запрос "
         "после завершения загрузки."
@@ -1113,9 +1023,8 @@ def configurations_snapshot(registry: Registry) -> ConfigurationsSnapshot:
         if capture is None:
             continue
         result = _configurations_result(capture, registry)
-        with registry._lock:
-            if _list_capture_is_current_locked(registry, capture):
-                return result
+        if _list_capture_is_current(registry, capture):
+            return result
     raise RegistryError(
         "Источники списка конфигураций изменились дважды; повторите запрос "
         "после завершения загрузки."
@@ -1164,8 +1073,7 @@ def _sources_snapshot_is_current(
     registry: Registry, capture: _ListConfigurationsCapture
 ) -> bool:
     """Финальный CAS подготовленного снимка; тяжёлой работы внутри нет."""
-    with registry._lock:
-        return _list_capture_is_current_locked(registry, capture)
+    return _list_capture_is_current(registry, capture)
 
 
 def configuration_code_states(registry: Registry) -> tuple[CodeStateRow, ...]:
@@ -1820,7 +1728,11 @@ def compare_configurations(
     configs: list[str] | None = None,
 ) -> str:
     """Один и тот же объект в разных конфигурациях — что различается."""
-    names = list(configs) if configs else sorted(registry.configurations)
+    names = (
+        list(configs)
+        if configs
+        else list(registry.snapshot().configuration_names)
+    )
     if len(names) < 2:
         return "Для сравнения нужно минимум две загруженные конфигурации."
 
@@ -1892,13 +1804,7 @@ def _selected_modules(
     if context.extension is not None:
         return context, context.extension
 
-    prefix = f"{context.name}:ext:"
-    with registry._lock:
-        доступные = sorted(
-            source.id[len(prefix):]
-            for source in registry.sources.values()
-            if source.kind == KIND_EXTENSION and source.id.startswith(prefix)
-        )
+    доступные = registry.snapshot().extension_names(context.name)
     хвост = (
         f" Доступны: {', '.join(доступные)}."
         if доступные
@@ -2036,8 +1942,8 @@ class _StaleModules(Exception):
 
 def _modules_are_current(registry: Registry, loaded: LoadedModules) -> bool:
     """Короткий CAS без дискового I/O под замком реестра."""
-    with registry._lock:
-        return registry.modules.get(loaded.source.id) is loaded
+    current = registry.snapshot().modules.get(loaded.source.id)
+    return current is not None and current.loaded is loaded
 
 
 def _modules_state_snapshot(
@@ -2059,17 +1965,17 @@ def _modules_state_snapshot(
     оглавление» или `status=error` без уже записанной причины. Диск под
     замком не читается.
     """
-    with registry._lock:
-        if registry.modules.get(loaded.source.id) is not loaded:
-            raise _StaleModules
-        return (
-            loaded.готов,
-            loaded.source.status,
-            loaded.source.error,
-            loaded.этап,
-            loaded.название_этапа,
-            loaded.прогресс,
-        )
+    current = registry.snapshot().modules.get(loaded.source.id)
+    if current is None or current.loaded is not loaded:
+        raise _StaleModules
+    return (
+        current.ready,
+        current.status,
+        current.error,
+        current.stage,
+        current.stage_title,
+        current.progress,
+    )
 
 
 def _modules_availability_message(
@@ -2366,11 +2272,12 @@ def _modules_package_is_current(
 ) -> bool:
     """Один CAS для всех корпусов, чьи части попадут в один ответ."""
     уникальные = {item.source.id: item for item in loaded_modules}
-    with registry._lock:
-        return all(
-            registry.modules.get(source_id) is item
-            for source_id, item in уникальные.items()
-        )
+    snapshot = registry.snapshot()
+    return all(
+        snapshot.modules.get(source_id) is not None
+        and snapshot.modules[source_id].loaded is item
+        for source_id, item in уникальные.items()
+    )
 
 
 def _read_module_snapshot(
@@ -2514,15 +2421,17 @@ def _foreign_extension_warnings(
     observed: list[LoadedModules],
 ) -> list[str]:
     prefix = f"{configuration}:ext:"
-    with registry._lock:
-        кандидаты = sorted(
-            (
-                (source_id[len(prefix):], loaded)
-                for source_id, loaded in registry.modules.items()
-                if source_id.startswith(prefix) and loaded is not selected
-            ),
-            key=lambda item: item[0],
-        )
+    snapshot = registry.snapshot()
+    кандидаты = sorted(
+        (
+            (source_id[len(prefix):], code.loaded)
+            for source_id, code in snapshot.modules.items()
+            if source_id.startswith(prefix)
+            and code.loaded is not None
+            and code.loaded is not selected
+        ),
+        key=lambda item: item[0],
+    )
     warnings: list[str] = []
     for extension_name, foreign in кандидаты:
         try:

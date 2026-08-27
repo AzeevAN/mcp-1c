@@ -22,6 +22,9 @@ def test_sse_транспорт_отклоняется_до_запуска_се�
         def startup(self):
             return []
 
+        def snapshot(self):
+            return self
+
     class FakeServer:
         def run(self, **kwargs):
             return None
@@ -48,6 +51,9 @@ def test_http_по_умолчанию_слушает_loopback_и_не_довер
 
         def startup(self):
             return []
+
+        def snapshot(self):
+            return self
 
     параметры = {}
     monkeypatch.setattr(server_module, "Registry", FakeRegistry)

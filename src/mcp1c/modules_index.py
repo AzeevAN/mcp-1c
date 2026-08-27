@@ -2145,7 +2145,8 @@ def сохранить_индексы(
     # Фоновая сборка держит снимок Source своего поколения. Брать sha256
     # заново из живого реестра здесь нельзя: пока writer ждал диск, источник
     # мог быть переразобран, и старые данные получили бы штамп нового кода.
-    источник = registry.sources.get(source_id)
+    snapshot = registry.snapshot()
+    источник = snapshot.sources.get(source_id)
     if source_sha256 is None:
         if источник is None:
             return
@@ -2157,7 +2158,8 @@ def сохранить_индексы(
     сигнатура = f"{source_sha256}:selection={selection_version}"
     каталог_локаторов = индексы.каталог
     if каталог_локаторов is None:
-        загруженные = registry.modules.get(source_id)
+        code = snapshot.modules.get(source_id)
+        загруженные = None if code is None else code.loaded
         каталог_локаторов = (
             None if загруженные is None else загруженные.каталог
         )
@@ -2232,7 +2234,7 @@ def поднять_индексы(
     """
     # Как и writer выше, reader работает по неизменяемому снимку поколения.
     # Публикацию после чтения отдельно защищает CAS в Registry.
-    источник = registry.sources.get(source_id)
+    источник = registry.snapshot().sources.get(source_id)
     if source_sha256 is None:
         if источник is None:
             return None

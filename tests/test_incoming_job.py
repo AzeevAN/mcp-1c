@@ -280,7 +280,8 @@ def test_занятость_объясняется(tmp_path, monkeypatch):
     monkeypatch.delenv("API_TOKEN", raising=False)
     client, registry = _стенд(tmp_path)
     client.post("/login", data={"token": "секрет"})
-    dashboard._scanner(registry).running.add("другая.zip")
+    scanner = dashboard._scanner(registry)
+    assert scanner.try_start("другая.zip") == (True, ())
     try:
         ответ = client.post(
             "/sources/incoming/parse",
@@ -288,7 +289,7 @@ def test_занятость_объясняется(tmp_path, monkeypatch):
             follow_redirects=False,
         )
     finally:
-        dashboard._scanner(registry).running.discard("другая.zip")
+        scanner.finish("другая.zip")
 
     assert ответ.status_code == 303
     текст = client.get("/sources").text

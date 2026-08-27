@@ -18,7 +18,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any, Iterator
 
-from .model import Configuration, Field, MetadataObject, TabularPart
+from .model import (
+    Configuration,
+    Field,
+    MetadataObject,
+    TabularPart,
+    normalize_common_module_binding,
+)
 from .resource_limits import (
     ARCHIVE_LIMITS,
     LimitedReader,
@@ -329,7 +335,10 @@ def _to_object(raw: dict[str, Any]) -> MetadataObject:
     for key, value in raw.items():
         if key in _KNOWN_SECTIONS or key in _OBJECT_HEAD:
             continue
-        obj.props[key] = _coerce(key, value)
+        normalized = _coerce(key, value)
+        if key == "handler" and isinstance(normalized, str):
+            normalized = normalize_common_module_binding(normalized)
+        obj.props[key] = normalized
 
     return obj
 

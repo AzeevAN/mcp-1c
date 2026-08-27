@@ -39,6 +39,23 @@ KIND_TO_MANAGER = {
     "Обработка": "Обработки",
 }
 
+_COMMON_MODULE_PREFIX = "ОбщийМодуль."
+
+
+def normalize_common_module_binding(value: str) -> str:
+    """Привести привязку процедуры общего модуля к `Модуль.Процедура`.
+
+    Exporter всегда писал короткую форму. Публичная schema раньше ошибочно
+    добавляла префикс вида метаданных, поэтому принимаем и эту историческую
+    запись. Проверка точки сохраняет корректное короткое значение для модуля,
+    который сам называется `ОбщийМодуль`.
+    """
+    if value.startswith(_COMMON_MODULE_PREFIX):
+        without_prefix = value.removeprefix(_COMMON_MODULE_PREFIX)
+        if "." in without_prefix:
+            return without_prefix
+    return value
+
 
 @dataclass(slots=True)
 class Field:

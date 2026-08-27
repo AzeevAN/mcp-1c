@@ -19,7 +19,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict, deque
 from dataclasses import dataclass
 
-from .model import Configuration, MetadataObject
+from .model import Configuration, MetadataObject, normalize_common_module_binding
 
 # Ссылки на саму конфигурацию (план обмена ссылается на Конфигурация.<Имя>)
 # объектами метаданных не являются и рёбрами не считаются.
@@ -169,6 +169,7 @@ class Graph:
         value = obj.props.get(prop)
         if not isinstance(value, str) or "." not in value:
             return
+        value = normalize_common_module_binding(value)
         module_name, _, procedure = value.partition(".")
         self._add(obj.full_name, f"ОбщийМодуль.{module_name}", prop, procedure)
 

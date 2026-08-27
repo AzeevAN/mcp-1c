@@ -287,7 +287,7 @@
 | БизнесПроцесс | `task`, `attributes[]`, `tabular_parts[]`, `predefined[]` |
 | Задача | `addressing`, `main_addressing_attribute`, `current_performer`, `attributes[]`, `tabular_parts[]`, `predefined[]` |
 | ОбщийМодуль | `global`, `server`, `client_managed`, `server_call`, `privileged`, `external_connection`, `return_values_reuse` |
-| ПодпискаНаСобытие | `event`, `handler` (`ОбщийМодуль.X.ИмяПроцедуры`), `source[]` (полные имена объектов) |
+| ПодпискаНаСобытие | `event`, `handler` (`X.ИмяПроцедуры`; историческая форма `ОбщийМодуль.X.ИмяПроцедуры` тоже принимается), `source[]` (полные имена объектов) |
 | РегламентноеЗадание | `method`, `use`, `predefined`, `key` |
 | Отчет / Обработка | `attributes[]`, `tabular_parts[]` |
 

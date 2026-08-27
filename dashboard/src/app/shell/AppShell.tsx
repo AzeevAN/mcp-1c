@@ -1,0 +1,88 @@
+import {
+  BookOpenText,
+  Boxes,
+  ChevronLeft,
+  CircleGauge,
+  DatabaseZap,
+  GitBranch,
+  SearchCode,
+} from "lucide-react";
+import { NavLink, Outlet } from "react-router-dom";
+
+import { useUiStore } from "../../store/uiStore";
+import { useBootstrap } from "../../shared/api/bootstrap";
+
+const navigation = [
+  { to: "/", label: "Обзор", icon: CircleGauge, end: true },
+  { to: "/sources", label: "Источники", icon: DatabaseZap },
+  { to: "/queries", label: "Запросы", icon: SearchCode },
+  { to: "/graph", label: "Связи", icon: GitBranch },
+  { to: "/dictionary", label: "Словарь", icon: BookOpenText },
+];
+
+export function AppShell() {
+  const compact = useUiStore((state) => state.sidebarCompact);
+  const toggleSidebar = useUiStore((state) => state.toggleSidebar);
+  const bootstrap = useBootstrap();
+  const online = bootstrap.isSuccess;
+
+  return (
+    <div className={compact ? "app-shell is-compact" : "app-shell"}>
+      <aside className="sidebar">
+        <div className="brand">
+          <span className="brand-mark" aria-hidden="true">
+            M1
+          </span>
+          <span className="brand-copy">
+            <strong>mcp-1c</strong>
+            <small>центр конфигураций</small>
+          </span>
+        </div>
+
+        <nav className="primary-nav" aria-label="Основная навигация">
+          {navigation.map(({ to, label, icon: Icon, end }) => (
+            <NavLink key={to} to={to} end={end} title={compact ? label : undefined}>
+              <Icon size={19} strokeWidth={1.8} aria-hidden="true" />
+              <span>{label}</span>
+            </NavLink>
+          ))}
+        </nav>
+
+        <div className="sidebar-footer">
+          <div className="server-mini-card">
+            <Boxes size={18} aria-hidden="true" />
+            <span>
+              <strong>{online ? "MCP работает" : "Проверяем MCP"}</strong>
+              <small>{bootstrap.data?.server.version ?? "соединение…"}</small>
+            </span>
+          </div>
+          <button
+            className="sidebar-toggle"
+            type="button"
+            onClick={toggleSidebar}
+            aria-label={compact ? "Развернуть меню" : "Свернуть меню"}
+          >
+            <ChevronLeft size={18} aria-hidden="true" />
+            <span>Свернуть меню</span>
+          </button>
+        </div>
+      </aside>
+
+      <div className="workspace">
+        <header className="topbar">
+          <div>
+            <span className="topbar-kicker">Рабочий контур</span>
+            <strong>Данные MCP-сервера</strong>
+          </div>
+          <div className={online ? "connection-badge is-online" : "connection-badge"}>
+            <span aria-hidden="true" />
+            {online ? "На связи" : "Подключение"}
+          </div>
+        </header>
+        <main className="content">
+          <Outlet />
+        </main>
+      </div>
+    </div>
+  );
+}

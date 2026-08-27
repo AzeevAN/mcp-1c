@@ -31,7 +31,7 @@ from starlette.responses import JSONResponse, PlainTextResponse, RedirectRespons
 from . import tools
 from .auth import same_token
 from .dashboard import MAX_UPLOAD, can_read
-from .dashboard import routes as dashboard_routes
+from .dashboard_runtime import routes as dashboard_routes
 from .registry import Registry
 
 # Лимит файла и лимит HTTP-тела различаются: multipart добавляет служебные
@@ -604,7 +604,7 @@ def _add_http_routes(server: MCPServer, registry: Registry) -> None:
         server.custom_route(
             route.path,
             methods=sorted(route.methods or {"GET"}),
-            name=route.endpoint.__name__,
+            name=route.name or route.endpoint.__name__,
         )(route.endpoint)
 
 

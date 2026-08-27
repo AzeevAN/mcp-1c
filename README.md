@@ -37,7 +37,7 @@
 | Цепочка поставки | ✅ hash-lock, base image по digest, Actions по SHA, audit и CycloneDX SBOM |
 | Кэш поисковых индексов | ✅ расходный, поднимается вместо повторного разбора |
 | Стенд замеров | ✅ `python -m mcp1c.bench`, P@k, MRR, отрыв, сверка пометок |
-| Тесты | ✅ `.venv/bin/python -m pytest`, 1713 |
+| Тесты | ✅ `.venv/bin/python -m pytest`, 1724 |
 | Дашборд | ✅ реестр, источники, прогон запросов, граф связей, карточки, словарь |
 | Авторизация | ✅ `API_TOKEN` на чтение, `ADMIN_TOKEN` на запись |
 | Приём выгрузки конфигурации в файлы | ✅ `data/incoming/`, отбор и учёт источника |
@@ -305,7 +305,40 @@ Caddy завершает TLS и перезаписывает forwarded-заго�
 
 ## Дашборд
 
-`http://localhost:5001/` — шесть страниц:
+Дашборд не участвует в протоколе MCP и выбирается при запуске переменной
+`MCP1C_DASHBOARD`:
+
+| Значение | Что запускается |
+|---|---|
+| `off` | только MCP, `/health` и административный API; UI-маршрутов нет |
+| `classic` | прежний серверный HTML; значение по умолчанию на переходный период |
+| `spa` | новый React-интерфейс и `/api/v1/*`; MCP и `Registry` остаются в том же Python-процессе |
+
+Обычный запуск не изменился:
+
+```bash
+docker compose up -d --build --force-recreate
+```
+
+React-вариант собирается отдельным target и заменяет классические страницы:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dashboard.yml \
+  up -d --build --force-recreate
+```
+
+Сервер без какого-либо дашборда:
+
+```bash
+MCP1C_DASHBOARD=off docker compose up -d --build --force-recreate
+```
+
+Переключение UI не меняет `/mcp`, формат данных или каталог `data/`. React не
+читает том напрямую: браузер получает снимки и запускает операции только через
+HTTP API того же сервера. Поэтому нет второго процесса с собственной копией
+Registry и риска, что MCP и интерфейс показывают разное поколение данных.
+
+`classic` содержит шесть прежних страниц:
 
 | Страница | Что там |
 |---|---|
@@ -315,6 +348,58 @@ Caddy завершает TLS и перезаписывает forwarded-заго�
 | **Связи** | **граф окрестности объекта картинкой** |
 | Карточка | состав объекта или описание элемента платформы — то же, что видит агент |
 | Словарь | правила с происхождением; завести псевдоним или группу синонимов |
+
+`spa` пока является первым согласуемым срезом: готовы общая оболочка, обзор,
+адаптивная навигация, различимые состояния, сохранение компактности меню,
+страница входа и `/api/v1/dashboard/bootstrap`. Разделы «Источники», «Запросы»,
+«Связи» и «Словарь» намеренно оставлены заглушками: перед переносом каждого
+раздела сначала фиксируются текущие данные и пользовательский путь.
+
+Для разработки frontend запускается отдельно с proxy к тестовому backend:
+
+```bash
+# терминал 1, данные можно направить в отдельный временный каталог
+MCP1C_DASHBOARD=spa .venv/bin/python -m mcp1c.server \
+  --host 127.0.0.1 --port 5003 --data /tmp/mcp1c-dashboard-data
+
+# терминал 2
+cd dashboard
+npm ci
+npm run dev                       # http://127.0.0.1:5173
+```
+
+Production-сборка не содержит Node runtime. На 2026-08-28 точные runtime
+образы одного и того же кода занимали `78 465 788` байт для `runtime-core` и
+`78 574 608` байт для `runtime-dashboard`: цена React-статики в образе —
+`108 820` байт. Сам `dashboard/dist` содержит 343 037 байт, из них JS —
+332 476 байт (105,28 КБ gzip), CSS — 9 956 байт (2,96 КБ gzip). Локальные
+`node_modules` занимают 155 408 КиБ, но используются только при сборке и в
+runtime не копируются.
+
+Воспроизведение:
+
+```bash
+cd dashboard
+npm ci
+npm test
+npm run typecheck
+npm run build
+du -sk node_modules dist
+find dist -type f -maxdepth 2 -print0 | xargs -0 wc -c
+
+cd ..
+docker build --target runtime-core -t mcp1c:dashboard-core-test .
+docker build --target runtime-dashboard -t mcp1c:dashboard-test .
+docker image inspect mcp1c:dashboard-core-test mcp1c:dashboard-test \
+  --format '{{.RepoTags}} {{.Size}}'
+```
+
+React Router отвечает за устойчивые прямые ссылки, TanStack Query — за
+серверное состояние и повторные запросы, Zustand — только за небольшой
+локальный UI-state. Иконки берутся из `lucide-react`. Drag-and-drop и полосы
+прогресса на первом срезе делаются браузерными API и CSS; отдельная библиотека
+появится только если реальный сценарий загрузки докажет её пользу. Библиотека
+графа выбирается позже, после разбора страницы «Связи».
 
 ### Загрузка — что видно и когда
 
@@ -1983,10 +2068,15 @@ src/mcp1c/
   incoming.py        состояние data/incoming: кэш sha256, причина отказа
   registry.py        реестр источников, сопоставление версий
   tools.py           десять инструментов, без зависимости от MCP
-  server.py          протокольный слой (единственная внешняя зависимость)
-  dashboard.py       веб-интерфейс: реестр, запросы, словарь
+  server.py          протокольный слой и общие HTTP-маршруты
+  dashboard_runtime.py выбор off/classic/spa и HTTP API нового UI
+  dashboard.py       прежний HTML и общий серверный механизм сессий
   cli.py             отладочный CLI
   bench.py           стенд замеров качества поиска
+
+dashboard/
+  src/               React/TypeScript-интерфейс
+  package-lock.json  точные frontend- и build-зависимости
 ```
 
 **Одна модель на два формата.** XML и JSON — разные сериализации одной схемы;
@@ -2191,7 +2281,7 @@ PYTHONPATH=src .venv/bin/python -m mcp1c.bench \
 
 ```bash
 .venv/bin/pip install --require-hashes -r requirements-dev-lock.txt
-.venv/bin/python -m pytest          # 1713 тестов (прогон 2026-08-27)
+.venv/bin/python -m pytest          # 1724 теста (прогон 2026-08-28)
 ```
 
 От содержимого `data/` не зависят: проприетарных выгрузок в репозитории нет,
@@ -2214,6 +2304,8 @@ PYTHONPATH=src .venv/bin/python -m mcp1c.bench \
 |---|---|---|
 | `API_TOKEN` | чтение: инструменты MCP и страницы дашборда | структура конфигураций открыта всем |
 | `ADMIN_TOKEN` | запись: загрузка и удаление источников, разбор входящей выгрузки (`/sources/incoming/parse`), правка словаря, `/admin/reload` | эти маршруты отключены, отвечают 404 |
+| `MCP1C_DASHBOARD` | режим UI: `off`, `classic` или `spa` | включён переходный `classic` |
+| `MCP1C_DASHBOARD_DIST` | каталог production-сборки React в режиме `spa` | `dashboard/dist` |
 
 Разница между «открыто» и «отключено» намеренная. Чтение без токена работает —
 на своей машине это удобно и ничем не грозит. Запись без токена **не

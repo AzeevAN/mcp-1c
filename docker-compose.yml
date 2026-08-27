@@ -1,6 +1,8 @@
 services:
   mcp1c:
-    build: .
+    build:
+      context: .
+      target: runtime-core
     image: mcp1c:latest
     container_name: mcp1c
     restart: unless-stopped
@@ -22,3 +24,6 @@ services:
       # конфигураций открыта всем, кто дотянется до адреса. Оба берутся из
       # `.env` рядом с этим файлом — шаблон в `.env.example`.
       API_TOKEN: ${API_TOKEN:-}
+      # off — только MCP, classic — прежний HTML, spa — React при сборке
+      # через docker-compose.dashboard.yml.
+      MCP1C_DASHBOARD: ${MCP1C_DASHBOARD:-classic}

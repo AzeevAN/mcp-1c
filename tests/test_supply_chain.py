@@ -96,7 +96,16 @@ def test_build_backend_is_pinned() -> None:
 
 def test_docker_uses_digest_and_hashed_runtime_lock() -> None:
     dockerfile = _text("Dockerfile")
-    assert re.search(r"^FROM python:3\.12-slim@sha256:[0-9a-f]{64}$", dockerfile, re.M)
+    assert re.search(
+        r"^FROM python:3\.12-slim@sha256:[0-9a-f]{64} AS runtime-base$",
+        dockerfile,
+        re.M,
+    )
+    assert re.search(
+        r"^FROM node:22\.13\.1-bookworm-slim@sha256:[0-9a-f]{64} AS dashboard-build$",
+        dockerfile,
+        re.M,
+    )
     assert "COPY requirements-lock.txt ." in dockerfile
     assert "pip install --no-cache-dir --require-hashes -r requirements-lock.txt" in dockerfile
     assert "pip install --no-cache-dir -r requirements.txt" not in dockerfile

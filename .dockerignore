@@ -1,5 +1,8 @@
 .git
 .venv
+dashboard/node_modules
+dashboard/dist
+*.tsbuildinfo
 data
 tests
 __pycache__

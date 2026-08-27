@@ -9,6 +9,49 @@
 
 ## [Unreleased]
 
+### Добавлено
+
+- **Заложен опциональный React-дашборд без второго runtime-процесса.** Режим
+  `MCP1C_DASHBOARD=off` оставляет только MCP и служебный HTTP API, переходный
+  `classic` сохраняет прежний серверный HTML, а `spa` заменяет страницы
+  React-интерфейсом и открывает версионированный
+  `/api/v1/dashboard/bootstrap`. Во всех трёх режимах данные принадлежат одному
+  `Registry` в MCP-процессе; браузер не получает прямой доступ к `data/`.
+  Первый срез включает светлую рабочую область с тёмной навигацией, живую
+  сводку, различимые состояния, устойчивые прямые ссылки, сохранение
+  компактности меню и React-страницу входа с прежней серверной проверкой
+  токена. Предметные страницы пока оставлены явными заглушками до отдельного
+  разбора пользовательского пути.
+
+### Изменено
+
+- **Production-сборка получила раздельные targets `runtime-core` и
+  `runtime-dashboard`.** Node используется только в build-stage и не входит в
+  рабочий образ. На 2026-08-28 образы одного и того же кода занимали
+  78 465 788 и 78 574 608 байт соответственно: React-вариант добавил 108 820
+  байт. Готовая статика содержит 343 037 байт; JS — 332 476 байт (105,28 КБ
+  gzip), CSS — 9 956 байт (2,96 КБ gzip). Локальные build-зависимости занимали
+  155 408 КиБ, но в runtime не копируются. Точный `package-lock.json`
+  фиксирует React Router для прямых ссылок, TanStack Query для серверного
+  состояния, Zustand для локального UI-state и Lucide для единой системы
+  иконок. Отдельные библиотеки drag-and-drop, progress bar и графа не добавлены
+  до появления проверенного сценария, который их требует.
+
+  ```bash
+  cd dashboard
+  npm ci
+  npm test
+  npm run typecheck
+  npm run build
+  du -sk node_modules dist
+  find dist -type f -maxdepth 2 -print0 | xargs -0 wc -c
+  cd ..
+  docker build --target runtime-core -t mcp1c:dashboard-core-test .
+  docker build --target runtime-dashboard -t mcp1c:dashboard-test .
+  docker image inspect mcp1c:dashboard-core-test mcp1c:dashboard-test \
+    --format '{{.RepoTags}} {{.Size}}'
+  ```
+
 ## [0.8.0] — 2026-08-27
 
 Защитный релиз закрывает подтверждённые границы входных данных и конкурентного

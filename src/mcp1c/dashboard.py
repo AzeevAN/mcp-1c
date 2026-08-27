@@ -13,7 +13,6 @@
 from __future__ import annotations
 
 import asyncio
-import hmac
 import os
 import re
 import secrets
@@ -33,6 +32,7 @@ from starlette.responses import HTMLResponse, PlainTextResponse, RedirectRespons
 from starlette.routing import Route
 
 from . import tools
+from .auth import same_token
 from .dictionary import SOURCE_BUILTIN as DICT_BUILTIN
 from .graph_view import DEFAULT_LIMIT as DEFAULT_GRAPH_LIMIT
 from .graph_view import Neighbourhood, bounds, neighbourhood
@@ -132,18 +132,6 @@ def _api_token() -> str:
     return os.environ.get("API_TOKEN", "")
 
 
-def _same(given: str, expected: str) -> bool:
-    """Сравнение постоянного времени, устойчивое к не-ASCII.
-
-    `hmac.compare_digest` на строках с кириллицей бросает `TypeError`, а токен
-    задаёт человек — «секрет» кириллицей он напишет первым делом. Сравниваем
-    байты в UTF-8: длина при этом всё равно утекает, но она утекает и так.
-    """
-    if not expected:
-        return False
-    return hmac.compare_digest(given.encode("utf-8"), expected.encode("utf-8"))
-
-
 def _token_from_headers(request: Request) -> str:
     """Токен из заголовка: `X-Api-Token` или `Authorization: Bearer`.
 
@@ -163,7 +151,7 @@ def _authorized(request: Request) -> bool:
     session = request.cookies.get(COOKIE, "")
     if session and _SESSIONS.get(session) == LEVEL_ADMIN:
         return True
-    return _same(_token_from_headers(request), _admin_token())
+    return same_token(_token_from_headers(request), _admin_token())
 
 
 def _origin_key(value: str, *, allow_path: bool) -> tuple[str, str, int] | None:
@@ -196,7 +184,7 @@ def _cookie_mutation_is_same_origin(request: Request) -> bool:
     session = request.cookies.get(COOKIE, "")
     if not session or session not in _SESSIONS:
         return True
-    if _same(_token_from_headers(request), _admin_token()):
+    if same_token(_token_from_headers(request), _admin_token()):
         return True
 
     origin = request.headers.get("origin", "")
@@ -282,7 +270,7 @@ def can_read(request: Request) -> bool:
     if session and session in _SESSIONS:
         return True
     given = _token_from_headers(request)
-    return _same(given, expected) or _same(given, _admin_token())
+    return same_token(given, expected) or same_token(given, _admin_token())
 
 
 # Что сейчас грузится. Живёт в памяти процесса и умирает с перезапуском —
@@ -2091,9 +2079,9 @@ def routes(registry: Registry) -> list[Route]:
         # Админский токен проверяется первым: он же годится и для чтения, и
         # порядок решает, какой уровень получит сессия при совпадающих
         # значениях переменных.
-        if _same(given, _admin_token()):
+        if same_token(given, _admin_token()):
             level = LEVEL_ADMIN
-        elif _same(given, _api_token()):
+        elif same_token(given, _api_token()):
             level = LEVEL_READ
         else:
             page = _layout("Вход", "<div class=error>Неверный токен.</div>" + _login_form())

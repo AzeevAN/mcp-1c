@@ -13,6 +13,8 @@ MCP, страницы дашборда, карточки. `ADMIN_TOKEN` — за
 
 from __future__ import annotations
 
+import hmac
+
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
@@ -181,6 +183,68 @@ def test_кириллический_токен_в_заголовке_не_рон
     assert client.get("/").status_code == 401
     client.post("/login", data={"token": "секрет"})
     assert client.get("/").status_code == 200
+
+
+def test_все_пути_авторизации_сравнивают_токены_constant_time(
+    tmp_path, monkeypatch
+):
+    """Новый auth path не должен обходить общий безопасный контракт."""
+    from mcp1c.server import build_server
+
+    monkeypatch.setenv("API_TOKEN", "reader-token")
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    вызовы = []
+    исходное_сравнение = hmac.compare_digest
+
+    def записать_сравнение(given, expected):
+        вызовы.append((given, expected))
+        return исходное_сравнение(given, expected)
+
+    monkeypatch.setattr(hmac, "compare_digest", записать_сравнение)
+    dashboard_client, registry = client_for(tmp_path)
+    server = build_server(registry)
+    reload_client = TestClient(
+        Starlette(routes=server._custom_starlette_routes[:2])
+    )
+    сценарии = [
+        (
+            "чтение",
+            lambda: dashboard_client.get(
+                "/", headers={"x-api-token": "reader-token"}
+            ),
+            200,
+        ),
+        (
+            "администрирование",
+            lambda: dashboard_client.post(
+                "/dictionary/alias",
+                headers={"x-api-token": "admin-token"},
+                data={"phrase": "склад", "targets": "Справочник.Контрагенты"},
+                follow_redirects=False,
+            ),
+            303,
+        ),
+        (
+            "вход",
+            lambda: dashboard_client.post(
+                "/login", data={"token": "admin-token"}, follow_redirects=False
+            ),
+            303,
+        ),
+        (
+            "ручная перезагрузка",
+            lambda: reload_client.post(
+                "/admin/reload", headers={"x-admin-token": "admin-token"}
+            ),
+            200,
+        ),
+    ]
+
+    for название, запрос, статус in сценарии:
+        до = len(вызовы)
+        response = запрос()
+        assert response.status_code == статус
+        assert len(вызовы) > до, f"{название} обошла constant-time сравнение"
 
 
 def test_mcp_эндпоинт_закрыт_токеном(tmp_path, monkeypatch):

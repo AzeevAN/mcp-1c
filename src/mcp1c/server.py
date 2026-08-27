@@ -29,6 +29,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse, RedirectResponse
 
 from . import tools
+from .auth import same_token
 from .dashboard import MAX_UPLOAD, can_read
 from .dashboard import routes as dashboard_routes
 from .registry import Registry
@@ -575,7 +576,7 @@ def _add_http_routes(server: MCPServer, registry: Registry) -> None:
                 {"error": "Перезагрузка выключена: не задан ADMIN_TOKEN."},
                 status_code=404,
             )
-        if request.headers.get("x-admin-token") != token:
+        if not same_token(request.headers.get("x-admin-token", ""), token):
             return JSONResponse({"error": "Неверный токен."}, status_code=403)
 
         # Восстановление обычных источников и подъём валидного кэша остаются

@@ -160,6 +160,25 @@
 
 ### Исправлено
 
+- **Все HTTP-пути теперь сравнивают токены через один constant-time helper.**
+  `/admin/reload` оставался единственным исключением: проверял
+  `X-Admin-Token` обычным `!=`, тогда как чтение, admin-формы и login уже
+  использовали `hmac.compare_digest` на UTF-8-байтах. Сравнение вынесено в
+  общий `auth.same_token()` и подключено к обоим слоям. Один контрактный тест
+  проходит реальные маршруты чтения, записи, входа и ручной перезагрузки;
+  RED показал обход только на последнем пути. Целевые 16 auth-сценариев и
+  полный набор из 1 710 тестов зелёные. Runtime-образ собран, helper проверен
+  внутри него с ASCII и не-ASCII значениями; рабочий контейнер не
+  пересоздавался. Команды проверки 2026-08-27:
+
+  ```bash
+  .venv/bin/python -m pytest -q tests/test_auth.py
+  .venv/bin/python -m pytest
+  docker compose build
+  docker run --rm --entrypoint python mcp1c:latest -c \
+    "from mcp1c.auth import same_token; assert same_token('secret', 'secret'); assert same_token('секрет', 'секрет')"
+  ```
+
 - **Параллельные административные правки словаря больше не сталкиваются на
   одном `dictionary.tmp`.** Раньше два сохранения писали один временный файл:
   первая атомарная замена уносила его, вторая получала `FileNotFoundError`.

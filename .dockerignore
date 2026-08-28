@@ -3,6 +3,7 @@
 dashboard/node_modules
 dashboard/dist
 *.tsbuildinfo
+src/*.egg-info
 data
 tests
 __pycache__

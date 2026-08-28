@@ -10,7 +10,6 @@ import asyncio
 import os
 import shutil
 import tempfile
-from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
@@ -26,7 +25,7 @@ from starlette.responses import (
 )
 from starlette.routing import Route
 
-from . import coverage_log, dashboard as classic_dashboard, tools
+from . import __version__, coverage_log, dashboard as classic_dashboard, tools
 from .dashboard import _authorized, _csrf_denied, _session_level, can_read
 from .dictionary import ANY_CONFIGURATION, SOURCE_BUILTIN
 from .graph_view import DEFAULT_LIMIT as DEFAULT_GRAPH_LIMIT
@@ -76,13 +75,6 @@ def dashboard_mode() -> str:
             f"Получено: {mode or '<пусто>'}."
         )
     return mode
-
-
-def _package_version() -> str:
-    try:
-        return version("mcp1c")
-    except PackageNotFoundError:  # pragma: no cover - только запуск из исходников
-        return "0.0.0+local"
 
 
 def _source_payload(source: tools.SourceStateRow | None) -> dict | None:
@@ -598,7 +590,7 @@ def _spa_routes(registry: Registry, static_dir: Path) -> list[Route]:
             {
                 "api_version": "v1",
                 "dashboard_mode": DASHBOARD_SPA,
-                "server": {"status": "ok", "version": _package_version()},
+                "server": {"status": "ok", "version": __version__},
                 "permissions": {
                     "read": True,
                     "admin": _authorized(request),

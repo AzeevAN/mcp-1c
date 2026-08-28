@@ -38,10 +38,13 @@ def _requirement_blocks(path: str) -> list[str]:
     return blocks
 
 
-def test_public_dependency_inputs_keep_lower_bounds() -> None:
+def test_public_package_metadata_and_runtime_contract() -> None:
     runtime = _text("requirements.txt")
     development = _text("requirements-dev.txt")
     project = tomllib.loads(_text("pyproject.toml"))["project"]
+    package = _text("src/mcp1c/__init__.py")
+    server = _text("src/mcp1c/server.py")
+    dashboard = _text("src/mcp1c/dashboard_runtime.py")
 
     assert "mcp>=2.0" in runtime
     assert "numpy>=2.0" in runtime
@@ -52,6 +55,12 @@ def test_public_dependency_inputs_keep_lower_bounds() -> None:
         "numpy>=2.0",
         "snowballstemmer>=3.0",
     ]
+    version_match = re.search(r'^__version__ = "([^"]+)"$', package, re.M)
+    assert version_match is not None
+    assert project["version"] == version_match.group(1)
+    assert "version=__version__" in server
+    assert '"version": __version__' in dashboard
+    assert project["classifiers"][0] == "Development Status :: 4 - Beta"
 
 
 def test_runtime_and_tool_inputs_are_separate() -> None:
@@ -96,6 +105,7 @@ def test_build_backend_is_pinned() -> None:
 
 def test_docker_uses_digest_and_hashed_runtime_lock() -> None:
     dockerfile = _text("Dockerfile")
+    dockerignore = _text(".dockerignore")
     assert re.search(
         r"^FROM python:3\.12-slim@sha256:[0-9a-f]{64} AS runtime-base$",
         dockerfile,
@@ -109,6 +119,7 @@ def test_docker_uses_digest_and_hashed_runtime_lock() -> None:
     assert "COPY requirements-lock.txt ." in dockerfile
     assert "pip install --no-cache-dir --require-hashes -r requirements-lock.txt" in dockerfile
     assert "pip install --no-cache-dir -r requirements.txt" not in dockerfile
+    assert "src/*.egg-info" in dockerignore
 
 
 def test_all_github_actions_are_pinned_to_commit_sha() -> None:

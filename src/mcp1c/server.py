@@ -31,7 +31,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse, RedirectResponse
 
-from . import tools
+from . import __version__, tools
 from .auth import same_token
 from .dashboard import MAX_UPLOAD, can_read
 from .dashboard_runtime import routes as dashboard_routes
@@ -383,7 +383,7 @@ def build_server(registry: Registry, name: str = "mcp1c") -> MCPServer:
         name=name,
         title="Структура конфигураций 1С",
         instructions=INSTRUCTIONS,
-        version="0.8.0",
+        version=__version__,
     )
 
     @server.tool(

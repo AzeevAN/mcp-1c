@@ -39,8 +39,13 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Callable, Iterable, Mapping, TypeVar
 
-from . import coverage_log, index_cache, modules_index
+from . import coverage_log, index_cache, modules_index, structure_origin
 from .dictionary import Dictionary
+from .extension_runtime import (
+    ExtensionRuntimeError,
+    ExtensionRuntimeSnapshot,
+    load_extension_runtime,
+)
 from .graph import Graph
 from .loader import ExportError, load
 from .model import Configuration
@@ -75,6 +80,7 @@ KIND_SYNTAX = "syntax"
 KIND_QUERY = "query"
 KIND_MODULES = "modules"
 KIND_EXTENSION = "extension"
+KIND_EXTENSION_RUNTIME = "extension-runtime"
 
 STATUS_LOADING = "loading"
 STATUS_READY = "ready"
@@ -510,6 +516,14 @@ class LoadedConfiguration:
 
 
 @dataclass(slots=True)
+class LoadedExtensionRuntime:
+    """Отдельный point-in-time снимок расширений одного сеанса 1С."""
+
+    source: Source
+    snapshot: ExtensionRuntimeSnapshot
+
+
+@dataclass(slots=True)
 class LoadedSyntax:
     source: Source
     syntax: SyntaxIndex
@@ -586,6 +600,9 @@ class LoadedModules:
     # версией загруженных метаданных.
     версия_кода: str
     каталог: modules_index.ModuleCatalog | None = None
+    # Компактное доказательство происхождения структуры публикуется тем же
+    # поколением и тем же swap, что код. Исходный ZIP после приёма не нужен.
+    структура: structure_origin.StructureCatalog | None = None
     готов: bool = True
     прогресс: tuple[int, int] = (0, 0)
     этап: tuple[int, int] = (4, 4)
@@ -656,6 +673,14 @@ class RegistryCodeSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class RegistryExtensionRuntimeSnapshot:
+    """Неизменяемая пара identity источника и разобранного снимка."""
+
+    source: SourceSnapshot
+    snapshot: ExtensionRuntimeSnapshot
+
+
+@dataclass(frozen=True, slots=True)
 class RegistrySnapshot:
     """Один структурный снимок реестра, целиком снятый под его lock.
 
@@ -673,6 +698,7 @@ class RegistrySnapshot:
     query_source: SourceSnapshot | None
     sources: Mapping[str, SourceSnapshot]
     modules: Mapping[str, RegistryCodeSnapshot]
+    extension_runtime: Mapping[str, RegistryExtensionRuntimeSnapshot]
     _owner: object = field(repr=False, compare=False)
     _source_identities: tuple[Source, ...] = field(repr=False, compare=False)
     _fingerprint: tuple = field(repr=False, compare=False)
@@ -717,6 +743,7 @@ class ResolvedContext:
     syntax_hidden: int = 0
     modules: LoadedModules | None = None
     extension: LoadedModules | None = None
+    extension_runtime: LoadedExtensionRuntime | None = None
 
     @property
     def name(self) -> str:
@@ -928,6 +955,10 @@ class Registry:
         # поэтому нужен свой якорь, чтобы её не потерять.
         self.query_source: Source | None = None
         self.sources: dict[str, Source] = {}
+        # Runtime-снимок намеренно не входит ни в schema v1, ни в индекс
+        # кода: это состояние конкретного сеанса и области данных на момент
+        # выгрузки. На конфигурацию публикуется ровно одно последнее поколение.
+        self.extension_runtime: dict[str, LoadedExtensionRuntime] = {}
         # Индекс кода — по id источника (`<Имя>:modules` и `<Имя>:ext:<Имя>`),
         # тот же ключ, что и в `self.sources`: у конфигурации ровно одна
         # выгрузка кода, у расширений их может быть несколько, и `resolve()`
@@ -982,6 +1013,16 @@ class Registry:
             )
             for source_id, loaded in sorted(self.modules.items())
         )
+        runtime_rows = tuple(
+            (
+                name,
+                id(loaded),
+                id(loaded.source),
+                SourceSnapshot.capture(loaded.source),
+                loaded.snapshot,
+            )
+            for name, loaded in sorted(self.extension_runtime.items())
+        )
         syntax_version_rows = tuple(
             (
                 platform,
@@ -1008,6 +1049,7 @@ class Registry:
             syntax_version_rows,
             source_rows,
             module_rows,
+            runtime_rows,
         )
 
     def snapshot(self) -> RegistrySnapshot:
@@ -1031,6 +1073,13 @@ class Registry:
                 else SourceSnapshot.capture(self.query_source)
             )
             loaded_modules = dict(sorted(self.modules.items()))
+            runtime = {
+                name: RegistryExtensionRuntimeSnapshot(
+                    source=SourceSnapshot.capture(loaded.source),
+                    snapshot=loaded.snapshot,
+                )
+                for name, loaded in sorted(self.extension_runtime.items())
+            }
             code_ids = sorted(
                 {
                     source.id
@@ -1099,6 +1148,16 @@ class Registry:
                     )
                     for source_id, loaded in loaded_modules.items()
                 ),
+                tuple(
+                    (
+                        name,
+                        id(loaded),
+                        id(loaded.source),
+                        runtime[name].source,
+                        loaded.snapshot,
+                    )
+                    for name, loaded in sorted(self.extension_runtime.items())
+                ),
             )
             return RegistrySnapshot(
                 configurations=MappingProxyType(configurations),
@@ -1107,6 +1166,7 @@ class Registry:
                 query_source=query_source,
                 sources=MappingProxyType(sources),
                 modules=MappingProxyType(modules),
+                extension_runtime=MappingProxyType(runtime),
                 _owner=self,
                 # Сильные ссылки исключают ABA через повторное использование
                 # Python ``id`` после remove/re-add между snapshot и CAS.
@@ -1436,6 +1496,86 @@ class Registry:
             self.configurations[config.name] = loaded
             self.sources[source.id] = source
             self._relation_cache.pop(config.name, None)
+        return source
+
+    def add_extension_runtime(
+        self,
+        path: str | Path,
+        *,
+        keep_source: bool = True,
+        known_sha256: str = "",
+        expected_id: str = "",
+        known_origin: str = "",
+    ) -> Source:
+        """Опубликовать отдельный снимок текущего сеанса расширений.
+
+        Сам JSON мал и сохраняется как исходник. Он привязан к уже загруженной
+        конфигурации по имени, но несовпадение версий не отвергается: это
+        полезный, честно помечаемый ``stale``-снимок, а не повреждённый файл.
+        """
+        source_path = Path(path)
+        digest = _sha256(source_path)
+        if known_sha256 and digest != known_sha256:
+            raise RegistryError(
+                f"{source_path.name}: контрольная сумма сохранённого источника "
+                "не совпала с registry.json."
+            )
+        try:
+            snapshot = load_extension_runtime(source_path)
+        except ExtensionRuntimeError as error:
+            raise RegistryError(f"{source_path.name}: {error}") from error
+
+        configuration = snapshot.configuration.name
+        source_id = f"{configuration}:extension-runtime"
+        if expected_id and source_id != expected_id:
+            raise RegistryError(
+                f"{source_path.name}: идентификатор снимка «{source_id}» "
+                f"не совпал с registry.json («{expected_id}»)."
+            )
+        with self._lock:
+            if configuration not in self.configurations:
+                raise RegistryError(
+                    f"Конфигурация не загружена: {configuration}. Сначала "
+                    "добавьте её структурную выгрузку schema v1."
+                )
+
+        stored = (
+            self._store_source(
+                source_path,
+                "extension-runtime",
+                source_id=source_id,
+                digest=digest,
+            )
+            if keep_source
+            else source_path
+        )
+        warnings = []
+        if snapshot.database_changed_since_session_start is True:
+            warnings.append(
+                "Набор расширений базы изменён после запуска сеанса; снимок "
+                "уже не описывает набор нового сеанса."
+            )
+        source = Source(
+            id=source_id,
+            kind=KIND_EXTENSION_RUNTIME,
+            origin=known_origin or source_path.name,
+            sha256=digest,
+            loaded_at=_now(),
+            platform=snapshot.configuration.platform,
+            status=STATUS_READY,
+            warnings=warnings,
+            items_total=len(snapshot.by_uuid),
+            stored_path=self._relative(stored),
+        )
+        loaded = LoadedExtensionRuntime(source=source, snapshot=snapshot)
+        with self._lock:
+            if configuration not in self.configurations:
+                raise RegistryError(
+                    f"Конфигурация не загружена: {configuration}. Она была "
+                    "снята во время добавления снимка."
+                )
+            self.extension_runtime[configuration] = loaded
+            self.sources[source_id] = source
         return source
 
     def _modules_root(self, configuration: str) -> Path:
@@ -2019,7 +2159,10 @@ class Registry:
 
     @staticmethod
     def _готовые_модули(
-        source: Source, корень: Path, индексы: modules_index.Индексы
+        source: Source,
+        корень: Path,
+        индексы: modules_index.Индексы,
+        структура: structure_origin.StructureCatalog | None = None,
     ) -> LoadedModules:
         """Один готовый пакет — общий путь для кэша, сборки и живой загрузки."""
         всего = len(индексы.оглавление.модули)
@@ -2032,6 +2175,11 @@ class Registry:
             поиск=индексы.поиск,
             версия_кода=source.code_version,
             каталог=индексы.каталог,
+            структура=(
+                структура
+                if структура is not None
+                else structure_origin.load(корень)
+            ),
             готов=True,
             прогресс=(всего, всего),
         )
@@ -2415,6 +2563,35 @@ class Registry:
                         f"{архив.name}: архив изменился во время распаковки; "
                         "разбор отменён."
                     )
+                сырая_структура = structure_origin.capture_archive(архив)
+                if not _архив_не_изменился(архив, отпечаток_архива):
+                    raise RegistryError(
+                        f"{архив.name}: архив изменился во время разбора "
+                        "происхождения структуры; повторите после завершения "
+                        "копирования."
+                    )
+                if kind == KIND_MODULES:
+                    структура = structure_origin.base_catalog(
+                        сырая_структура, digest
+                    )
+                else:
+                    with self._lock:
+                        базовый = self.modules.get(
+                            f"{операция.configuration}:modules"
+                        )
+                        каталог_базы = None
+                        if базовый is not None:
+                            кандидат = базовый.структура
+                            if (
+                                кандидат is not None
+                                and базовый.source.sha256
+                                == кандидат.source_sha256
+                            ):
+                                каталог_базы = кандидат
+                    структура = structure_origin.extension_catalog(
+                        сырая_структура, digest, каталог_базы
+                    )
+                structure_origin.save(временный, структура)
                 индексы = self._построить_индекс_кода(
                     архив.name,
                     временный,
@@ -2459,6 +2636,7 @@ class Registry:
                 поиск=индексы.поиск,
                 версия_кода=версия_кода,
                 каталог=индексы.каталог,
+                структура=структура,
             )
             try:
                 return self._опубликовать_операцию_модулей(
@@ -2690,6 +2868,7 @@ class Registry:
             формы=None,
             поиск=None,
             версия_кода=source.code_version,
+            структура=structure_origin.load(корень),
             готов=False,
             прогресс=(0, len(файлы_каталога)),
             этап=(1, 4),
@@ -3303,10 +3482,12 @@ class Registry:
             if source.kind == KIND_CONFIGURATION:
                 модули_id = f"{source_id}:modules"
                 префикс_расширений = f"{source_id}:ext:"
+                runtime_id = f"{source_id}:extension-runtime"
                 цепочка += sorted(
                     sid
                     for sid in self.sources
-                    if sid == модули_id or sid.startswith(префикс_расширений)
+                    if sid in (модули_id, runtime_id)
+                    or sid.startswith(префикс_расширений)
                 )
 
             # Canonical root отставляется ДО изменения реестра. Это
@@ -3399,6 +3580,9 @@ class Registry:
                     self._relation_cache.pop(sid, None)
                 elif текущий.kind in (KIND_MODULES, KIND_EXTENSION):
                     pass
+                elif текущий.kind == KIND_EXTENSION_RUNTIME:
+                    configuration = sid.removesuffix(":extension-runtime")
+                    self.extension_runtime.pop(configuration, None)
                 elif текущий.kind == KIND_QUERY:
                     # В `syntax_versions` источника нет, но его элементы сидят
                     # в поисковом индексе и таблице имён `self.syntax` — без
@@ -3487,6 +3671,7 @@ class Registry:
                     )
                 modules_key = f"{selected_name}:modules"
                 modules = self.modules.get(modules_key)
+                runtime = self.extension_runtime.get(selected_name)
                 extension_key = None
                 расширение = None
                 if extension is not None:
@@ -3513,6 +3698,7 @@ class Registry:
                     self.configurations.get(selected_name) is loaded
                     and self.syntax is syntax
                     and self.modules.get(modules_key) is modules
+                    and self.extension_runtime.get(selected_name) is runtime
                     and (
                         extension_key is None
                         or self.modules.get(extension_key) is расширение
@@ -3537,6 +3723,7 @@ class Registry:
                     syntax_hidden=hidden,
                     modules=modules,
                     extension=расширение,
+                    extension_runtime=runtime,
                 )
 
         raise RegistryError(
@@ -3713,10 +3900,19 @@ class Registry:
                 if source.kind in (KIND_MODULES, KIND_EXTENSION)
                 and not self._module_recovery_blocked
             ]
+            отложенный_runtime = [
+                source
+                for source in все_источники
+                if source.kind == KIND_EXTENSION_RUNTIME
+            ]
         конфигурации_этого_restore: dict[str, Source] = {}
 
         for source in все_источники:
-            if source.kind in (KIND_MODULES, KIND_EXTENSION):
+            if source.kind in (
+                KIND_MODULES,
+                KIND_EXTENSION,
+                KIND_EXTENSION_RUNTIME,
+            ):
                 continue
             stored = self._absolute(source.stored_path)
             if not stored.exists():
@@ -3761,6 +3957,22 @@ class Registry:
                         known_kind=source.kind,
                     )
             except Exception as error:  # источник не должен ронять запуск
+                problems.append(f"{source.id}: {error}")
+
+        for source in отложенный_runtime:
+            stored = self._absolute(source.stored_path)
+            if not stored.exists():
+                problems.append(f"{source.id}: файл источника пропал ({stored})")
+                continue
+            try:
+                self.add_extension_runtime(
+                    stored,
+                    keep_source=False,
+                    known_sha256=source.sha256,
+                    expected_id=source.id,
+                    known_origin=source.origin,
+                )
+            except Exception as error:
                 problems.append(f"{source.id}: {error}")
 
         for source, expected_generation in отложенный_код:

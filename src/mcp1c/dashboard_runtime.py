@@ -172,6 +172,11 @@ def _sources_payload(
                 "loaded_at": configuration.loaded_at,
                 "notes": list(configuration.notes),
                 "source": _source_payload(sources_by_id.get(configuration.name)),
+                "extension_runtime": _source_payload(
+                    sources_by_id.get(
+                        f"{configuration.name}:extension-runtime"
+                    )
+                ),
                 "corpora": corpora,
             }
         )
@@ -902,9 +907,9 @@ def _spa_routes(registry: Registry, static_dir: Path) -> list[Route]:
 
         name = Path(uploaded.filename).name
         suffix = Path(name).suffix.lower()
-        if suffix not in (".zip", ".hbk"):
+        if suffix not in (".zip", ".hbk", ".json"):
             await form.close()
-            return _json_error("Принимаются только .zip и .hbk.", 400)
+            return _json_error("Принимаются только .zip, .hbk и .json.", 400)
 
         directory = tempfile.mkdtemp()
         target = Path(directory) / name

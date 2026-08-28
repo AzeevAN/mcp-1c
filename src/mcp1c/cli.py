@@ -149,11 +149,15 @@ def _cmd_reg_add(args: argparse.Namespace) -> int:
     registry = Registry(args.data)
     registry.restore()
     path = Path(args.path)
-    source = (
-        registry.add_syntax(path)
-        if path.suffix.lower() == ".hbk"
-        else registry.add_configuration(path, allow_truncated=args.allow_truncated)
-    )
+    suffix = path.suffix.lower()
+    if suffix == ".hbk":
+        source = registry.add_syntax(path)
+    elif suffix == ".json":
+        source = registry.add_extension_runtime(path)
+    else:
+        source = registry.add_configuration(
+            path, allow_truncated=args.allow_truncated
+        )
     registry.save()
     print(f"добавлено: {source.id}  ({source.kind}, платформа {source.platform or '—'},"
           f" элементов {source.items_total})")
@@ -220,6 +224,16 @@ def _cmd_reg_list(args: argparse.Namespace) -> int:
             print(f"  {label:<11}: {state.state}")
             for line in tools.code_coverage_lines(state.coverage):
                 print(f"    {line}")
+        runtime = row.extension_runtime
+        print(
+            "  расширения : "
+            + (
+                f"сеансовый снимок, {runtime.items_total} элементов, "
+                f"загружен {runtime.loaded_at}"
+                if runtime is not None
+                else "фактическая активность unknown"
+            )
+        )
         # Язык запросов — самостоятельный источник, не версия справки
         # платформы. Берём счётчик из того же снимка, а не перечитываем
         # `registry.query_source` после долгой подготовки строк.
@@ -472,7 +486,10 @@ def main(argv: list[str] | None = None) -> int:
         sp = sub.add_parser(name)
         sp.add_argument("--data", default="data", help="каталог данных сервера")
         if name == "reg-add":
-            sp.add_argument("path", help="ZIP выгрузки или .hbk справки")
+            sp.add_argument(
+                "path",
+                help="ZIP структуры, .hbk справки или .json снимка расширений",
+            )
             sp.add_argument(
                 "--allow-truncated",
                 action="store_true",

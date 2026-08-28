@@ -26,6 +26,7 @@ from .module_content import (
     ModuleLocator,
     read_bsl,
 )
+from .structure_origin import CATALOG_FILE
 
 
 _CATEGORIES = (
@@ -701,7 +702,11 @@ def _candidate(root: Path, path: Path, ordinal: int) -> _Candidate:
 
 def catalog_files(root: Path) -> tuple[Path, ...]:
     """Единственный детерминированный снимок файлов канонического корня."""
-    return tuple(path for path in sorted(root.rglob("*")) if path.is_file())
+    return tuple(
+        path
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and path.name != CATALOG_FILE
+    )
 
 
 def build_catalog(

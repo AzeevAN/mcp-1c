@@ -37,6 +37,11 @@ def _подготовить_исходники(
             "// Синтетический вариант\n// {{CORE}}\n",
             encoding="utf-8",
         )
+    for source_name in сборщик.STANDALONE:
+        (src / source_name).write_text(
+            "// ИсточникРасширенийКонфигурации.СеансАктивные\n",
+            encoding="utf-8",
+        )
     сборщик.SRC = src
     сборщик.DIST = корень / "dist"
 
@@ -44,7 +49,9 @@ def _подготовить_исходники(
 def _старый_dist(сборщик: ModuleType) -> dict[str, bytes]:
     сборщик.DIST.mkdir(parents=True)
     старые: dict[str, bytes] = {}
-    for out_name, _, _ in сборщик.VARIANTS.values():
+    выходы = [value[0] for value in сборщик.VARIANTS.values()]
+    выходы += list(сборщик.STANDALONE.values())
+    for out_name in выходы:
         содержимое = f"старый результат: {out_name}\n".encode()
         (сборщик.DIST / out_name).write_bytes(содержимое)
         старые[out_name] = содержимое
@@ -149,7 +156,7 @@ def test_ошибка_публикации_откатывает_уже_заме�
     _проверить_временные_каталоги_убраны(сборщик)
 
 
-def test_успех_заменяет_четыре_bsl_и_не_трогает_ручные_epf(
+def test_успех_заменяет_пять_bsl_и_не_трогает_ручные_epf(
     сборщик: ModuleType,
     tmp_path: Path,
 ) -> None:

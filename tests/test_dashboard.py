@@ -184,7 +184,7 @@ def test_файл_чужого_расширения_отклоняется(tmp_p
     response = client.post("/sources", files={"file": ("заметки.txt", b"text")})
 
     assert response.status_code == 200
-    assert "только .zip и .hbk" in response.text
+    assert "только .zip, .hbk и .json" in response.text
     assert sorted(registry.configurations) == ["ТестоваяКонфигурация"]
 
 

@@ -1077,10 +1077,7 @@ def _card_page(
     if detail not in DETAIL_LEVELS:
         detail = "fields"
     try:
-        if kind == "syntax":
-            text = tools.get_syntax(registry, name, config or None, detail)
-        else:
-            text = tools.get_object(registry, name, config or None, detail)
+        text = _card_text(registry, kind, config, name, detail)
     except RegistryError as error:
         text = str(error)
 
@@ -1105,6 +1102,19 @@ def _card_page(
     )
     body = f"<p>подробность: {levels} · {переключатель}</p>{карточка}"
     return _layout(name, body)
+
+
+def _card_text(
+    registry: Registry,
+    kind: str,
+    config: str,
+    name: str,
+    detail: str,
+) -> str:
+    """Буквальный текст карточки для classic UI и JSON API SPA."""
+    if kind == "syntax":
+        return tools.get_syntax(registry, name, config or None, detail)
+    return tools.get_object(registry, name, config or None, detail)
 
 
 def _kind_title(scope: str, kind: str) -> str:

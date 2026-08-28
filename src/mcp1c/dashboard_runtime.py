@@ -36,6 +36,7 @@ from .registry import (
     Registry,
     RegistryError,
 )
+from .render import DETAIL_LEVELS
 
 DASHBOARD_OFF = "off"
 DASHBOARD_CLASSIC = "classic"
@@ -350,6 +351,35 @@ def _query_results_payload(
     }
 
 
+def _card_payload(
+    registry: Registry,
+    *,
+    kind: str,
+    config: str,
+    name: str,
+    detail: str,
+) -> dict:
+    """Карточка тем же вызовом и тем же Markdown-рендерером, что в classic."""
+    normalized_detail = detail if detail in DETAIL_LEVELS else "fields"
+    markdown = classic_dashboard._card_text(
+        registry, kind, config, name, normalized_detail
+    )
+    names = list(registry.snapshot().configuration_names)
+    resolved_configuration = config or (names[0] if len(names) == 1 else "")
+    return {
+        "api_version": "v1",
+        "kind": kind,
+        "name": name,
+        "configuration": resolved_configuration,
+        "configuration_names": names,
+        "configuration_required": kind == "object",
+        "detail": normalized_detail,
+        "detail_levels": list(DETAIL_LEVELS),
+        "markdown": markdown,
+        "html": classic_dashboard.render_markdown(markdown),
+    }
+
+
 def _admin_denied(request: Request, *, action: str) -> JSONResponse | None:
     if not os.environ.get("ADMIN_TOKEN", ""):
         return _json_error(f"{action} выключено: не задан ADMIN_TOKEN.", 404)
@@ -477,6 +507,33 @@ def _spa_routes(registry: Registry, static_dir: Path) -> list[Route]:
         except ValueError as error:
             return _json_error(str(error), 422)
         return JSONResponse(_query_results_payload(config, scope, phrases, results))
+
+    async def card_api(request: Request, *, kind: str) -> JSONResponse:
+        if not can_read(request):
+            return _json_error("Нужен токен чтения.", 401)
+        config = request.query_params.get("config", "")
+        name = request.query_params.get("name", "")
+        detail = request.query_params.get("detail", "fields")
+        if not name.strip():
+            return _json_error("Не указано имя карточки.", 422)
+        try:
+            payload = await run_in_threadpool(
+                _card_payload,
+                registry,
+                kind=kind,
+                config=config,
+                name=name,
+                detail=detail,
+            )
+        except RegistryError as error:
+            return _json_error(str(error), 409)
+        return JSONResponse(payload)
+
+    async def object_card_api(request: Request) -> JSONResponse:
+        return await card_api(request, kind="object")
+
+    async def syntax_card_api(request: Request) -> JSONResponse:
+        return await card_api(request, kind="syntax")
 
     async def coverage_api(request: Request) -> JSONResponse:
         if not can_read(request):
@@ -785,6 +842,18 @@ def _spa_routes(registry: Registry, static_dir: Path) -> list[Route]:
             queries_run_api,
             methods=["POST"],
             name="dashboard_queries_run",
+        ),
+        Route(
+            "/api/v1/cards/object",
+            object_card_api,
+            methods=["GET"],
+            name="dashboard_object_card",
+        ),
+        Route(
+            "/api/v1/cards/syntax",
+            syntax_card_api,
+            methods=["GET"],
+            name="dashboard_syntax_card",
         ),
         Route(
             "/api/v1/sources/admin",

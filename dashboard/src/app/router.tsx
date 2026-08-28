@@ -6,6 +6,7 @@ import { LoginPage } from "../pages/LoginPage";
 import { PlaceholderPage } from "../pages/PlaceholderPage";
 import { QueriesPage } from "../pages/QueriesPage";
 import { SourcesPage } from "../pages/SourcesPage";
+import { CardPage } from "../pages/CardPage";
 
 export const router = createBrowserRouter([
   { path: "/login", element: <LoginPage /> },
@@ -24,23 +25,11 @@ export const router = createBrowserRouter([
       },
       {
         path: "object",
-        element: (
-          <PlaceholderPage
-            eyebrow="Следующий предметный срез"
-            title="Карточка объекта"
-            description="Адрес результата сохранён. Содержимое карточки будет перенесено после отдельной сверки классического пути."
-          />
-        ),
+        element: <CardPage kind="object" />,
       },
       {
         path: "syntax",
-        element: (
-          <PlaceholderPage
-            eyebrow="Следующий предметный срез"
-            title="Карточка синтаксиса"
-            description="Адрес результата сохранён. Содержимое карточки будет перенесено после отдельной сверки классического пути."
-          />
-        ),
+        element: <CardPage kind="syntax" />,
       },
       {
         path: "graph",

@@ -91,6 +91,23 @@ def test_readme_описывает_строгий_roundtrip_кэша_кода():
     assert "локальные причины каждой формы" in section
 
 
+def test_документация_различает_zip_структуры_и_архив_конфигуратора():
+    readme = _text("README.md")
+    dashboard = _text("dashboard/README.md")
+    operations = _text("docs/operations.md")
+
+    for text in (readme, dashboard, operations):
+        assert "Выгрузить конфигурацию в файлы…" in text
+        assert "Архив" in text
+        assert "СтруктураКонфигурации_*.zip" in text
+        assert "data/incoming/" in text
+
+    assert "только `data/incoming/`" in readme
+    assert "без родительской конфигурации" in dashboard
+    assert "не передаётся через форму «Загрузить»" in operations
+    assert "кнопка «Разобрать» не показывается" in operations
+
+
 def test_readme_фиксирует_холодный_и_тёплый_замер_памяти_контейнера():
     text = _text("docs/architecture.md")
 

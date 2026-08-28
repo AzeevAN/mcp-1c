@@ -446,7 +446,7 @@ def test_источник_b_описывает_доступную_структу
 
 def test_текущие_агрегаты_провайдера_отделены_от_исторических():
     expected = ("137 116", "619 029", "3 194", "89 528", "24 202")
-    for relative in ("README.md", "docs/modules-provider-design.md"):
+    for relative in ("docs/architecture.md", "docs/modules-provider-design.md"):
         text = (ROOT / relative).read_text(encoding="utf-8")
         start = text.index("Текущий производственный срез")
         end = text.index("Исторический снимок прототипа", start)
@@ -456,13 +456,16 @@ def test_текущие_агрегаты_провайдера_отделены_�
         assert "2026-08-21" in current
         assert "Исторический снимок прототипа" in text
 
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    start = readme.index("Текущий производственный срез")
-    end = readme.index("Исторический снимок прототипа", start)
+    architecture = (ROOT / "docs/architecture.md").read_text(encoding="utf-8")
+    start = architecture.index("Текущий производственный срез")
+    end = architecture.index("Исторический снимок прототипа", start)
     assert (
         '.venv/bin/python tools/lab/measure_modules_cache.py "$MODULES_ROOT"'
-        in readme[start:end]
+        in architecture[start:end]
     )
+
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "](docs/architecture.md)" in readme
 
     design = (ROOT / "docs/modules-provider-design.md").read_text(encoding="utf-8")
     assert "## 1. Цена — исторический замер прототипа" in design
@@ -476,14 +479,12 @@ def test_дизайн_не_выдаёт_готовые_возможности_з
     assert "Деградация ответов во время сборки" not in text
 
 
-def test_readme_фиксирует_отображаемый_docker_размер_воспроизводимо():
+def test_readme_фиксирует_три_docker_режима_и_проверку_прав():
     text = (ROOT / "README.md").read_text(encoding="utf-8")
-    state = text.split("## Состояние", 1)[1].split("## Содержание", 1)[0]
 
-    assert "2026-08-27" in state
-    assert "docker image ls mcp1c:latest --format '{{.Size}}'" in state
-    assert "`359MB`" in state
-    assert "Docker CLI" in state
-    assert "`78446486`" in state
-    assert "docker image inspect mcp1c:latest --format '{{.Size}}'" in state
-    assert "354 МБ" not in state
+    assert "docker-compose.classic.yml" in text
+    assert "docker-compose.dashboard.yml" in text
+    assert "docker-compose.remote.yml" in text
+    assert "create_host_path: false" in text
+    assert "10001:10001" in text
+    assert "chmod -R 777" in text

@@ -22,7 +22,7 @@
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install --require-hashes -r requirements-dev-lock.txt
-.venv/bin/python -m pytest          # 1713 тестов (прогон 2026-08-27)
+.venv/bin/python -m pytest          # 1778 тестов (прогон 2026-08-28)
 ```
 
 Тесты **не зависят от содержимого `data/`**: проприетарных выгрузок и справки
@@ -76,7 +76,10 @@ git, независимо от того, чем оно получено.
 выгрузки](docs/schema-v1.md), [граница источников](docs/data-sources.md),
 [язык запросов](docs/query-language-design.md),
 [дашборд](docs/dashboard-design.md), [приём выгрузки кода](docs/modules-intake-design.md),
-[провайдер кода](docs/modules-provider-design.md). Публичные документы должны быть
+[провайдер кода](docs/modules-provider-design.md), а также пользовательские
+руководства по [клиентам](docs/clients.md),
+[инструментам](docs/tools.md), [операциям](docs/operations.md) и
+[архитектуре](docs/architecture.md). Публичные документы должны быть
 самодостаточными и не ссылаться на материалы, которых нет в репозитории.
 
 Документ публикуется, если на него ссылается README **или** он описывает
@@ -100,7 +103,7 @@ git, независимо от того, чем оно получено.
 `requirements-*-lock.txt` с hashes. Docker и CI ставят только lock с
 `--require-hashes`; вручную менять его нельзя. Порядок одновременного
 обновления всех lock-файлов и локального dependency audit описан в
-[README](README.md#воспроизводимые-зависимости-и-sbom).
+[архитектурном руководстве](docs/architecture.md#зависимости).
 
 Тяжёлая инфраструктура (Elasticsearch, векторные БД, эмбеддинги) не
 добавляется «на всякий случай». Сначала измерение, потом решение.

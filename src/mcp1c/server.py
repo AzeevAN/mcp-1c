@@ -20,6 +20,8 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import uuid
+from pathlib import Path
 from typing import Annotated
 from urllib.parse import urlencode
 
@@ -43,6 +45,93 @@ HTTP_BODY_LIMIT_LOGIN = 16 * 1024
 HTTP_BODY_LIMIT_QUERIES = 1024 * 1024
 HTTP_BODY_LIMIT_UPLOAD = MAX_UPLOAD + 1024 * 1024
 HTTP_BODY_LIMIT_DEFAULT = 2 * 1024 * 1024
+
+WRITABLE_DATA_DIRECTORIES = (
+    "bootstrap",
+    "incoming",
+    "sources",
+    "index",
+    "modules",
+    "extensions",
+    "logs",
+)
+
+
+class DataDirectoryError(RuntimeError):
+    """Каталог данных не подходит для изменяемого серверного запуска."""
+
+
+def _data_directory_error(path: Path, error: OSError) -> DataDirectoryError:
+    reason = error.strerror or str(error)
+    return DataDirectoryError(
+        f"Каталог данных `{path}` недоступен для записи: {reason}. "
+        f"Процесс запущен с uid={os.geteuid()} gid={os.getegid()}. "
+        "Для обычного Docker на Linux остановите контейнер и назначьте "
+        "владельца каталога, подключённого как `/data`, на хосте: "
+        "`sudo chown -R 10001:10001 <MCP1C_DATA_DIR>`. "
+        "Не исправляйте это через `chmod 777` и не запускайте сервер от root."
+    )
+
+
+def _probe_directory_write(path: Path) -> None:
+    """Доказать создание и удаление файла фактическим системным вызовом."""
+    name = f".mcp1c-write-test-{uuid.uuid4().hex}"
+    fd: int | None = None
+    created = False
+    try:
+        directory_fd = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(name, flags, 0o600, dir_fd=directory_fd)
+            created = True
+            os.close(fd)
+            fd = None
+            os.unlink(name, dir_fd=directory_fd)
+            created = False
+        finally:
+            if fd is not None:
+                os.close(fd)
+            if created:
+                try:
+                    os.unlink(name, dir_fd=directory_fd)
+                except OSError:
+                    pass
+            os.close(directory_fd)
+    except OSError as error:
+        raise _data_directory_error(path, error) from error
+
+
+def require_writable_data(data_dir: str | Path) -> None:
+    """Подготовить и проверить каталоги, которые изменяет живой сервер.
+
+    Проверка включается отдельным флагом у Docker-образа. Обычный запуск CLI
+    сохраняет возможность читать готовый Registry с read-only носителя; у
+    контейнера с загрузкой, словарём и входящими архивами запись обязательна.
+    """
+    root = Path(data_dir)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise _data_directory_error(root, error) from error
+    if not root.is_dir():
+        raise _data_directory_error(root, NotADirectoryError(str(root)))
+
+    _probe_directory_write(root)
+    for name in WRITABLE_DATA_DIRECTORIES:
+        directory = root / name
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise _data_directory_error(directory, error) from error
+        if not directory.is_dir():
+            raise _data_directory_error(directory, NotADirectoryError(str(directory)))
+        _probe_directory_write(directory)
 
 
 def _http_body_limit(scope) -> int:
@@ -709,7 +798,21 @@ def main(argv: list[str] | None = None) -> int:
             "который перезаписывает эти заголовки"
         ),
     )
+    parser.add_argument(
+        "--require-writable-data",
+        action="store_true",
+        help=(
+            "перед стартом создать рабочие подкаталоги и доказать запись в них; "
+            "используется Docker-образом"
+        ),
+    )
     args = parser.parse_args(argv)
+
+    if args.require_writable_data:
+        try:
+            require_writable_data(args.data)
+        except DataDirectoryError as error:
+            parser.error(str(error))
 
     registry = Registry(args.data)
     for message in registry.startup():

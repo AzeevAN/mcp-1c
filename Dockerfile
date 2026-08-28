@@ -29,9 +29,11 @@ COPY src/ ./src/
 # Данные монтируются томом: выгрузки конфигураций и справка платформы —
 # проприетарный контент, в образ он не попадает.
 RUN mkdir -p /data/bootstrap /data/index /data/sources \
-    && useradd --system --uid 10001 mcp1c \
+    && groupadd --gid 10001 mcp1c \
+    && useradd --uid 10001 --gid 10001 --no-create-home \
+       --shell /usr/sbin/nologin mcp1c \
     && chown -R mcp1c /data /app
-USER mcp1c
+USER 10001:10001
 
 VOLUME ["/data"]
 EXPOSE 8000
@@ -40,7 +42,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).status==200 else 1)"
 
 ENTRYPOINT ["python", "-m", "mcp1c.server"]
-CMD ["--host", "0.0.0.0", "--port", "8000", "--data", "/data"]
+CMD ["--host", "0.0.0.0", "--port", "8000", "--data", "/data", "--require-writable-data"]
 
 # Опциональный образ с React-статикой. Он остаётся однопроцессным и читает
 # Registry только через API того же MCP-сервера.
@@ -49,7 +51,7 @@ COPY --from=dashboard-build --chown=10001:10001 /dashboard/dist /app/dashboard/d
 ENV MCP1C_DASHBOARD=spa \
     MCP1C_DASHBOARD_DIST=/app/dashboard/dist
 
-# Финальный target по умолчанию сохраняет прежнее поведение и не заставляет
-# обычную сборку выполнять Node-stage.
+# Финальный target по умолчанию не содержит React и запускается без UI.
+# Классический HTML включается Compose-override без отдельной сборки.
 FROM runtime-base AS runtime-core
-ENV MCP1C_DASHBOARD=classic
+ENV MCP1C_DASHBOARD=off

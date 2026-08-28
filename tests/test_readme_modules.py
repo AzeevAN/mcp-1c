@@ -3,16 +3,16 @@
 from pathlib import Path
 
 
-README = Path(__file__).parents[1] / "README.md"
+ROOT = Path(__file__).parents[1]
 
 
-def _text() -> str:
-    return README.read_text(encoding="utf-8")
+def _text(relative: str) -> str:
+    return (ROOT / relative).read_text(encoding="utf-8")
 
 
 def test_readme_описывает_три_cli_команды_и_все_их_параметры():
-    text = _text()
-    section = text.split("## Отладка без агента — `mcp1c.cli`", 1)[1]
+    text = _text("docs/operations.md")
+    section = text.split("## Все команды `mcp1c.cli`", 1)[1]
     section = section.split("\n## ", 1)[0]
 
     for command in (
@@ -34,8 +34,8 @@ def test_readme_описывает_три_cli_команды_и_все_их_па
 
 
 def test_readme_объясняет_потери_на_каждом_шаге_цепочки_кода():
-    text = _text()
-    section = text.split("## Порядок вызовов — и что теряется", 1)[1]
+    text = _text("docs/tools.md")
+    section = text.split("## Рабочая последовательность для кода", 1)[1]
     section = section.split("\n## ", 1)[0].lower()
 
     assert "search_procedures" in section and "точн" in section
@@ -44,7 +44,7 @@ def test_readme_объясняет_потери_на_каждом_шаге_це�
 
 
 def test_readme_разделяет_источник_кода_конфигурации_и_расширения():
-    text = _text()
+    text = _text("docs/tools.md")
     section = text.split("## Источники независимы", 1)[1].split("\n## ", 1)[0]
 
     assert "| Код конфигурации |" in section
@@ -54,19 +54,19 @@ def test_readme_разделяет_источник_кода_конфигура�
 
 
 def test_readme_имеет_отдельный_раздел_границ_провайдера():
-    text = _text()
-    section = text.split("## Чего провайдер не знает", 1)[1].split("\n## ", 1)[0]
+    text = _text("docs/tools.md")
+    section = text.split("## Границы провайдера кода", 1)[1].split("\n## ", 1)[0]
     lowered = section.lower()
 
-    assert "только по экспортным" in lowered
-    assert "выполнить" in lowered and "строк" in lowered
+    assert "экспортные процедуры" in lowered
+    assert "не выполняет bsl" in lowered and "строк" in lowered
     assert "скомпилирован" in lowered
-    assert "плоск" in lowered and "структур" in lowered and "форм" in lowered
-    assert "не разреш" in lowered and "модул" in lowered
+    assert "плоской структурой" in lowered and "форм" in lowered
+    assert "динамические вызовы" in lowered and "модуль" in lowered
 
 
 def test_readme_объясняет_единую_диагностику_покрытия_кода():
-    text = _text().lower()
+    text = _text("docs/operations.md").lower()
 
     assert "готов с ограничениями" in text
     assert "полностью, частично и не прочитаны" in text
@@ -78,7 +78,7 @@ def test_readme_объясняет_единую_диагностику_покр�
 
 
 def test_readme_описывает_строгий_roundtrip_кэша_кода():
-    text = _text().lower()
+    text = _text("docs/operations.md").lower()
     section = text.split("## выгрузка конфигурации в файлы", 1)[1]
     section = section.split("\n## ", 1)[0]
 
@@ -92,7 +92,7 @@ def test_readme_описывает_строгий_roundtrip_кэша_кода():
 
 
 def test_readme_фиксирует_холодный_и_тёплый_замер_памяти_контейнера():
-    text = _text()
+    text = _text("docs/architecture.md")
 
     assert "2026-08-21" in text
     assert "1 339,6 МиБ" in text
@@ -118,7 +118,7 @@ def test_readme_фиксирует_холодный_и_тёплый_замер_�
         kind in text
         for kind in ("modules-toc", "modules-calls", "modules-forms", "modules-search")
     )
-    assert "loaded_at" in text and "символическими ссылками" in text
+    assert "loaded_at" in text and "O_NOFOLLOW" in text
     assert all(field in text for field in ("O_NOFOLLOW", "dir_fd", "mtime_ns"))
     assert "сам измеритель не удаляет и не заменяет источники" in text.lower()
     assert "сервер штатно атомарно обновляет" in text.lower()

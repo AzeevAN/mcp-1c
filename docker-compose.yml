@@ -6,16 +6,30 @@ services:
     image: mcp1c:latest
     container_name: mcp1c
     restart: unless-stopped
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     ports:
       # Безопасный профиль по умолчанию: порт доступен только с этой машины.
       # Для удалённого HTTPS-доступа см. docker-compose.remote.yml и README.
-      - "127.0.0.1:5001:8000"
+      - "127.0.0.1:${MCP1C_PORT:-5001}:8000"
     volumes:
       # `./data/bootstrap` индексируется при старте: выгрузки метаданных
       # (*.zip) и справка платформы (*.hbk).
       # `./data/incoming` разбирается по кнопке: выгрузки конфигурации в файлы,
       # гигабайты — разбирать такое при каждом старте нельзя.
-      - ./data:/data
+      - type: bind
+        source: ${MCP1C_DATA_DIR:-./data}
+        target: /data
+        bind:
+          # Отсутствующий путь — ошибка развёртывания, а не новый root-owned
+          # каталог, в который процесс uid=10001 не сможет писать.
+          create_host_path: false
+          # На SELinux-хосте каталог получает приватную метку контейнера.
+          # Docker без SELinux это поле игнорирует.
+          selinux: Z
     environment:
       # Запись: загрузка и удаление источников, правка словаря,
       # POST /admin/reload. Без токена этих ручек не существует.
@@ -24,6 +38,10 @@ services:
       # конфигураций открыта всем, кто дотянется до адреса. Оба берутся из
       # `.env` рядом с этим файлом — шаблон в `.env.example`.
       API_TOKEN: ${API_TOKEN:-}
-      # off — только MCP, classic — прежний HTML, spa — React при сборке
-      # через docker-compose.dashboard.yml.
-      MCP1C_DASHBOARD: ${MCP1C_DASHBOARD:-classic}
+      # Базовый файл — только MCP. UI включается одним из двух явных override.
+      MCP1C_DASHBOARD: off
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

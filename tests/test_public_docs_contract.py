@@ -15,14 +15,14 @@ def _read(relative: str) -> str:
     return (ROOT / relative).read_text(encoding="utf-8")
 
 
-def test_readme_показывает_текущий_снимок_реестра_с_командой():
+def test_readme_не_выдаёт_локальный_registry_за_состав_установки():
     readme = _read("README.md")
-    state = readme.split("## Состояние", 1)[1].split("## Содержание", 1)[0]
+    state = readme.split("## Состояние", 1)[1].split("## Навигация", 1)[0]
 
-    assert "2026-08-27" in state
-    assert "| Конфигурации | 3 | 8 172 |" in state
-    assert "| Всего источников | 11 |" in state
-    assert "jq '" in state and "group_by(.kind)" in state
+    assert "2026-08-28" in state
+    assert "| Тесты |" in state
+    assert "| Конфигурации |" not in state
+    assert "group_by(.kind)" not in state
     assert "5 конфигураций, 20 522 объекта" not in state
 
 

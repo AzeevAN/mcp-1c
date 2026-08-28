@@ -332,7 +332,9 @@ INSTRUCTIONS = f"""
 Порядок работы:
 1. `list_configurations` — узнать, какие конфигурации загружены и что по ним
    доступно. Если загружено больше одной, параметр `config` обязателен во
-   всех остальных вызовах.
+   всех остальных вызовах. Если вывод зависит от фактической активности
+   расширений, сразу после этого вызовите `list_extensions`; без отдельного
+   снимка он честно вернёт `unknown`.
 2. `search_objects` — превратить человеческую формулировку («расходная
    накладная») в точное имя объекта.
 3. `search_procedures` — найти уже существующий код по точному имени или
@@ -396,6 +398,19 @@ def build_server(registry: Registry, name: str = "mcp1c") -> MCPServer:
     )
     def list_configurations() -> str:
         return tools.list_configurations(registry)
+
+    @server.tool(
+        description=(
+            "Показать расширения, фактически действовавшие в снятом сеансе "
+            "1С, не применённые расширения и порядок элементов в ответе API "
+            "платформы. Вызывать после `list_configurations`, когда задача "
+            "зависит от активности расширений. Без отдельного runtime-снимка "
+            "возвращает `unknown`; позиция API не выдаётся за доказанный "
+            "порядок исполнения модулей."
+        )
+    )
+    def list_extensions(config: CONFIG_PARAM = None) -> str:
+        return tools.list_extensions(registry, config)
 
     @server.tool(
         description=(

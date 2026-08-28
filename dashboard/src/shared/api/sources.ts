@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 
 export type SourceItem = {
   id: string;
-  kind: "configuration" | "modules" | "extension" | "syntax" | "query";
+  kind: "configuration" | "modules" | "extension" | "extension-runtime" | "syntax" | "query";
   platform: string;
   items_total: number;
   status: string;
@@ -57,6 +57,7 @@ export type ConfigurationSource = {
   loaded_at: string;
   notes: string[];
   source: SourceItem | null;
+  extension_runtime?: SourceItem | null;
   corpora: CodeCorpus[];
 };
 

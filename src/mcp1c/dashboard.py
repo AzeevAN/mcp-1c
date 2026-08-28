@@ -37,7 +37,14 @@ from .dictionary import SOURCE_BUILTIN as DICT_BUILTIN
 from .graph_view import DEFAULT_LIMIT as DEFAULT_GRAPH_LIMIT
 from .graph_view import Neighbourhood, bounds, neighbourhood
 from .loader import ExportError
-from .registry import KIND_EXTENSION, KIND_MODULES, KIND_QUERY, Registry, RegistryError
+from .registry import (
+    KIND_EXTENSION,
+    KIND_EXTENSION_RUNTIME,
+    KIND_MODULES,
+    KIND_QUERY,
+    Registry,
+    RegistryError,
+)
 from .render import DETAIL_LEVELS
 from .search import FIELD_KIND_TITLES, MAX_QUERY_CHARS
 from .syntax_model import KIND_TITLES
@@ -317,6 +324,8 @@ def _index_source(
     """Выполняется в отдельном потоке: разбор .hbk занимает около 4 секунд."""
     if suffix == ".hbk":
         registry.add_syntax(path)
+    elif suffix == ".json":
+        registry.add_extension_runtime(path)
     else:
         registry.add_configuration(path, allow_truncated=allow_truncated)
     registry.save()
@@ -1265,6 +1274,7 @@ _SOURCE_KIND_TITLES = {
     KIND_QUERY: "Язык запросов",
     KIND_MODULES: "Модули",
     KIND_EXTENSION: "Расширение",
+    KIND_EXTENSION_RUNTIME: "Снимок активности расширений",
 }
 
 
@@ -1610,7 +1620,7 @@ def _sources_page(
             # полтерабайта трафика уже потрачены на серверную проверку.
             f"<form id=upload-form data-limit={MAX_UPLOAD} "
             "method=post action=/sources enctype=multipart/form-data>"
-            "<input type=file name=file accept='.zip,.hbk' required> "
+            "<input type=file name=file accept='.zip,.hbk,.json' required> "
             "<button>Загрузить</button>"
             "<label><input type=checkbox name=allow_truncated value=1> "
             "явно опубликовать тестовую неполную выгрузку "
@@ -1622,10 +1632,13 @@ def _sources_page(
             "<span id=upload-text></span></div>"
             # Имя файла названо прямо: в каталоге установки платформы лежат
             # 38 файлов `.hbk`, и без подсказки человек берёт наугад соседний.
-            "<p>Принимаются три вида файлов:</p>"
+            "<p>Принимаются четыре вида файлов:</p>"
             "<ul>"
             "<li><b>Выгрузка структуры</b> — <code>.zip</code>, который "
             "делает обработка <code>ВыгрузкаСтруктуры</code>.</li>"
+            "<li><b>Активность расширений</b> — "
+            "<code>СнимокРасширений_*.json</code>, который делает отдельная "
+            "обработка снимка в текущем сеансе.</li>"
             "<li><b>Справка платформы</b> — файл <code>shcntx_ru.hbk</code> "
             "из каталога установки 1С:<br>"
             "<code>/opt/1cv8/&lt;версия&gt;/shcntx_ru.hbk</code><br>"
@@ -2174,10 +2187,10 @@ def routes(registry: Registry) -> list[Route]:
         # «../../etc/passwd» сложится путь наружу временного каталога.
         name = Path(uploaded.filename).name
         suffix = Path(name).suffix.lower()
-        if suffix not in (".zip", ".hbk"):
+        if suffix not in (".zip", ".hbk", ".json"):
             await form.close()
             return await render_sources(
-                error="Принимаются только .zip и .hbk",
+                error="Принимаются только .zip, .hbk и .json",
                 authorized=True,
             )
 

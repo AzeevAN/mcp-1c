@@ -136,9 +136,9 @@ export function SourcesAdminPanel({
       return;
     }
     const suffix = next.name.toLowerCase().split(".").pop();
-    if (suffix !== "zip" && suffix !== "hbk") {
+    if (suffix !== "zip" && suffix !== "hbk" && suffix !== "json") {
       setFile(null);
-      setFeedback({ tone: "danger", text: "Выберите файл .zip или .hbk." });
+      setFeedback({ tone: "danger", text: "Выберите файл .zip, .hbk или .json." });
       return;
     }
     const limit = admin.data?.limits.upload_bytes;
@@ -244,12 +244,12 @@ export function SourcesAdminPanel({
           {file ? (
             <span><strong>{file.name}</strong><small>{formatBytes(file.size)}</small></span>
           ) : (
-            <span><strong>Перетащите файл сюда</strong><small>.zip структуры · архив выгрузки в файлы · .hbk справки</small></span>
+            <span><strong>Перетащите файл сюда</strong><small>.zip структуры · .hbk справки · .json снимка расширений</small></span>
           )}
           <button className="button-secondary" type="button" onClick={() => fileInput.current?.click()} disabled={uploading}>
             Выбрать файл
           </button>
-          <input ref={fileInput} type="file" accept=".zip,.hbk" onChange={handleInput} hidden />
+          <input ref={fileInput} type="file" accept=".zip,.hbk,.json" onChange={handleInput} hidden />
         </div>
 
         <div className="upload-options">
@@ -272,6 +272,7 @@ export function SourcesAdminPanel({
           <summary>Какие файлы загружать</summary>
           <div>
             <p><strong>Структура конфигурации:</strong> архив <code>СтруктураКонфигурации_*.zip</code>, полученный обработкой проекта.</p>
+            <p><strong>Активность расширений:</strong> файл <code>СнимокРасширений_*.json</code> из отдельной обработки снимка.</p>
             <p><strong>Справка платформы:</strong> точный файл <code>shcntx_ru.hbk</code>. Для языка запросов — <code>shquery_ru.hbk</code>; другие похожие HBK не заменяют их.</p>
             <p><strong>Большая выгрузка модулей и расширений:</strong> положите ZIP в <code>{data.incoming_dir}</code> и запустите разбор в следующем блоке.</p>
           </div>

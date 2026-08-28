@@ -327,6 +327,10 @@ def test_exporter_sources_and_binaries_write_documented_chunk_count():
     json_marker = 'ЗаписатьИмяСвойства("count"'.encode()
 
     for path in dist.glob("*.bsl"):
+        # Самостоятельный runtime-снимок расширений не является schema v1 и
+        # потому не пишет чанки структуры с полем count.
+        if path.name.startswith("СнимокРасширений_"):
+            continue
         payload = path.read_bytes()
         assert xml_marker in payload, path.name
         if "JSON" in path.name:

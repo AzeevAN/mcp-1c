@@ -164,7 +164,7 @@ async def test_карточка_процедуры_зарегистрирова�
     инструменты,
 ):
     все = await инструменты()
-    assert len(все) == 10
+    assert len(все) == 11
     (карточка,) = [tool for tool in все if tool.name == "get_procedure"]
 
     schema = карточка.input_schema or {}
@@ -184,11 +184,11 @@ async def test_карточка_процедуры_зарегистрирова�
     assert "тел" in (карточка.description or "").lower()
 
 
-async def test_обратный_поиск_вызовов_зарегистрирован_десятым_инструментом(
+async def test_обратный_поиск_вызовов_остаётся_рядом_с_поиском_процедур(
     инструменты,
 ):
     все = await инструменты()
-    assert [tool.name for tool in все][2:5] == [
+    assert [tool.name for tool in все][3:6] == [
         "search_procedures",
         "get_procedure",
         "get_callers",
@@ -205,11 +205,12 @@ async def test_обратный_поиск_вызовов_зарегистрир
     assert "привяз" in (вызовы.description or "").lower()
 
 
-async def test_tools_list_сохраняет_полный_порядок_десяти_инструментов(
+async def test_tools_list_сохраняет_полный_порядок_одиннадцати_инструментов(
     инструменты,
 ):
     assert [tool.name for tool in await инструменты()] == [
         "list_configurations",
+        "list_extensions",
         "search_objects",
         "search_procedures",
         "get_procedure",
@@ -220,6 +221,19 @@ async def test_tools_list_сохраняет_полный_порядок_дес�
         "search_syntax",
         "get_syntax",
     ]
+
+
+async def test_состояние_расширений_зарегистрировано_с_fail_closed_контрактом(
+    инструменты,
+):
+    (extensions,) = [
+        tool for tool in await инструменты() if tool.name == "list_extensions"
+    ]
+    schema = extensions.input_schema or {}
+    assert set(schema.get("properties") or {}) == {"config"}
+    description = (extensions.description or "").lower()
+    assert "unknown" in description
+    assert "порядок исполнения" in description
 
 
 def test_instructions_называет_get_object_шестым_шагом():

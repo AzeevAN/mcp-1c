@@ -32,6 +32,7 @@ const sourceKindLabel: Record<SourceItem["kind"], string> = {
   configuration: "Конфигурация",
   modules: "Основной код",
   extension: "Расширение",
+  "extension-runtime": "Снимок активности расширений",
   syntax: "Справка платформы",
   query: "Язык запросов",
 };
@@ -284,6 +285,57 @@ function CorpusCard({
   );
 }
 
+function RuntimeSourceCard({
+  source,
+  onRemove,
+}: {
+  source: SourceItem;
+  onRemove?: (target: RemovalTarget) => void;
+}) {
+  const hasWarnings = source.warnings.length > 0;
+  return (
+    <article className={`corpus-card is-${hasWarnings ? "limited" : "ready"}`}>
+      <header>
+        <div className="corpus-title">
+          <span className="corpus-icon" aria-hidden="true"><FileJson size={20} /></span>
+          <div>
+            <span className="eyebrow">Runtime-состояние</span>
+            <h3>Активность расширений</h3>
+          </div>
+        </div>
+        <div className="corpus-actions">
+          <StatusBadge tone={hasWarnings ? "warning" : "success"}>
+            {hasWarnings ? "Устарел" : "Снимок загружен"}
+          </StatusBadge>
+          {onRemove && (
+            <button
+              className="is-danger"
+              type="button"
+              aria-label="Удалить снимок активности расширений"
+              onClick={() => onRemove({
+                operation: "source",
+                id: source.id,
+                title: "Снимок активности расширений",
+                impact: "Будет снят только сеансовый снимок активности. Структура и код расширений останутся.",
+              })}
+            >
+              <Trash2 size={16} aria-hidden="true" />
+            </button>
+          )}
+        </div>
+      </header>
+      <p className="corpus-state">
+        Расширений в снимке: {formatNumber(source.items_total)} · загружено {formatDate(source.loaded_at)}
+      </p>
+      {source.warnings.map((warning) => (
+        <div className="inline-warning" key={warning}>
+          <AlertTriangle size={18} aria-hidden="true" /><span>{warning}</span>
+        </div>
+      ))}
+    </article>
+  );
+}
+
 function ConfigurationDetail({
   configuration,
   onRemove,
@@ -337,9 +389,14 @@ function ConfigurationDetail({
         <div><Layers3 size={20} aria-hidden="true" /><span><strong>Основной код</strong><small>{configuration.corpora.some((item) => item.kind === "modules") ? "подключён" : "не загружен"}</small></span></div>
         <GitFork size={18} aria-hidden="true" />
         <div><Puzzle size={20} aria-hidden="true" /><span><strong>Расширения</strong><small>{configuration.corpora.filter((item) => item.kind === "extension").length}</small></span></div>
+        <GitFork size={18} aria-hidden="true" />
+        <div><FileJson size={20} aria-hidden="true" /><span><strong>Активность</strong><small>{configuration.extension_runtime ? "снимок" : "unknown"}</small></span></div>
       </section>
 
       <div className="corpus-stack">
+        {configuration.extension_runtime && (
+          <RuntimeSourceCard source={configuration.extension_runtime} onRemove={onRemove} />
+        )}
         {configuration.corpora.map((corpus) => (
           <CorpusCard corpus={corpus} key={corpus.id} onRemove={onRemove} />
         ))}

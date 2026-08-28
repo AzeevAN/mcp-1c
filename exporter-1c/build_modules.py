@@ -75,6 +75,13 @@ VARIANTS = {
     "variant_managed_both.bsl": ("УправляемаяФорма_XML_JSON.bsl", True, True),
 }
 
+# Самостоятельные модули не разделяют ядро schema v1 и не входят в два EPF,
+# которые собираются вручную. Сборщик лишь публикует проверенную копию из src/:
+# так новый runtime-источник не делает существующие EPF устаревшими.
+STANDALONE = {
+    "extension_runtime_managed_json.bsl": "СнимокРасширений_УправляемаяФорма_JSON.bsl",
+}
+
 
 def apply_capabilities(text: str, with_json: bool) -> str:
     """Оставить или вырезать блоки, зависящие от поддержки JSON платформой."""
@@ -200,6 +207,24 @@ def build() -> int:
         форма = "управляемая" if managed else "обычная"
         форматы = "XML + JSON" if with_json else "только XML"
         print(f"  {out_name:32} {форма:12} {форматы:12} {len(result.splitlines()):>5} строк")
+
+    for source_name, out_name in STANDALONE.items():
+        source_path = SRC / source_name
+        if not source_path.exists():
+            print(f"НЕ НАЙДЕНО: {source_path}", file=sys.stderr)
+            return 1
+        result = source_path.read_text(encoding="utf-8")
+        if "ИсточникРасширенийКонфигурации.СеансАктивные" not in result:
+            print(
+                f"ОШИБКА: {source_name} не читает действующие расширения сеанса",
+                file=sys.stderr,
+            )
+            return 1
+        results[out_name] = result
+        print(
+            f"  {out_name:32} {'управляемая':12} {'JSON, 8.3.8+':12} "
+            f"{len(result.splitlines()):>5} строк"
+        )
 
     if problems:
         print("\nОШИБКА: XML-вариант не соберётся на 8.3.5:", file=sys.stderr)

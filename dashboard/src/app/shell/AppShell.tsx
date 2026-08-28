@@ -5,12 +5,15 @@ import {
   CircleGauge,
   DatabaseZap,
   GitBranch,
+  LogIn,
+  LogOut,
   SearchCode,
+  ShieldCheck,
 } from "lucide-react";
-import { NavLink, Outlet } from "react-router-dom";
+import { Link, Navigate, NavLink, Outlet, useLocation } from "react-router-dom";
 
 import { useUiStore } from "../../store/uiStore";
-import { useBootstrap } from "../../shared/api/bootstrap";
+import { DashboardApiError, useBootstrap } from "../../shared/api/bootstrap";
 
 const navigation = [
   { to: "/", label: "Обзор", icon: CircleGauge, end: true },
@@ -24,7 +27,33 @@ export function AppShell() {
   const compact = useUiStore((state) => state.sidebarCompact);
   const toggleSidebar = useUiStore((state) => state.toggleSidebar);
   const bootstrap = useBootstrap();
-  const online = bootstrap.isSuccess;
+  const location = useLocation();
+  const currentPath = location.pathname + location.search;
+
+  if (bootstrap.isPending) {
+    return (
+      <main className="auth-gate" aria-live="polite">
+        <span className="loading-dot" />Проверяем доступ к дашборду…
+      </main>
+    );
+  }
+
+  if (bootstrap.error instanceof DashboardApiError && bootstrap.error.status === 401) {
+    return <Navigate to={`/login?next=${encodeURIComponent(currentPath)}`} replace />;
+  }
+
+  if (bootstrap.isError) {
+    return (
+      <main className="auth-gate is-error">
+        Не удалось проверить доступ. Обновите страницу после восстановления сервера.
+      </main>
+    );
+  }
+
+  const online = true;
+  const admin = bootstrap.data.permissions.admin;
+  const sessionLevel = bootstrap.data.authentication.session_level;
+  const loginTarget = `/login?next=${encodeURIComponent(currentPath)}`;
 
   return (
     <div className={compact ? "app-shell is-compact" : "app-shell"}>
@@ -74,9 +103,26 @@ export function AppShell() {
             <span className="topbar-kicker">Рабочий контур</span>
             <strong>Данные MCP-сервера</strong>
           </div>
-          <div className={online ? "connection-badge is-online" : "connection-badge"}>
-            <span aria-hidden="true" />
-            {online ? "На связи" : "Подключение"}
+          <div className="topbar-actions">
+            <div className="connection-badge is-online">
+              <span aria-hidden="true" />На связи
+            </div>
+            <div className={admin ? "access-badge is-admin" : "access-badge"}>
+              <ShieldCheck size={16} aria-hidden="true" />
+              {admin ? "Администратор" : "Только чтение"}
+            </div>
+            {!admin && bootstrap.data.authentication.admin_available && (
+              <Link className="session-action" to={loginTarget}>
+                <LogIn size={16} aria-hidden="true" />Войти как администратор
+              </Link>
+            )}
+            {sessionLevel && (
+              <form method="post" action="/logout" className="logout-form">
+                <button className="session-action" type="submit">
+                  <LogOut size={16} aria-hidden="true" />Выйти
+                </button>
+              </form>
+            )}
           </div>
         </header>
         <main className="content">

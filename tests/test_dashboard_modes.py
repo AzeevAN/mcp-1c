@@ -72,6 +72,11 @@ def test_spa_отдаёт_api_и_понятный_ответ_без_сборки
         "dashboard_mode": "spa",
         "server": {"status": "ok", "version": "0.8.0"},
         "permissions": {"read": True, "admin": False},
+        "authentication": {
+            "read_required": False,
+            "admin_available": False,
+            "session_level": None,
+        },
         "summary": {
             "configurations": 0,
             "metadata_objects": 0,
@@ -107,6 +112,7 @@ def test_spa_оставляет_единую_серверную_проверку
     tmp_path, monkeypatch
 ):
     monkeypatch.setenv("API_TOKEN", "test-read-token")
+    monkeypatch.setenv("ADMIN_TOKEN", "test-admin-token")
     registry = Registry(tmp_path / "data")
     static_dir = tmp_path / "dashboard-dist"
     static_dir.mkdir()
@@ -118,11 +124,70 @@ def test_spa_оставляет_единую_серверную_проверку
         response = client.post(
             "/login", data={"token": "test-read-token"}, follow_redirects=False
         )
+        reader = client.get("/api/v1/dashboard/bootstrap").json()
+        client.cookies.clear()
+        client.post("/login", data={"token": "test-admin-token"})
+        admin = client.get("/api/v1/dashboard/bootstrap").json()
 
     assert page.status_code == 200
     assert response.status_code == 303
     assert response.headers["location"] == "/"
     assert "mcp1c_session=" in response.headers["set-cookie"]
+    assert reader["permissions"] == {"read": True, "admin": False}
+    assert reader["authentication"] == {
+        "read_required": True,
+        "admin_available": True,
+        "session_level": "read",
+    }
+    assert admin["permissions"] == {"read": True, "admin": True}
+    assert admin["authentication"]["session_level"] == "admin"
+
+
+def test_spa_без_сессии_перенаправляет_прямую_ссылку_на_вход(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("API_TOKEN", "test-read-token")
+    registry = Registry(tmp_path / "data")
+    static_dir = tmp_path / "dashboard-dist"
+    static_dir.mkdir()
+    (static_dir / "index.html").write_text("<div id=root></div>", encoding="utf-8")
+    app = Starlette(routes=routes(registry, mode=DASHBOARD_SPA, static_dir=static_dir))
+
+    with TestClient(app) as client:
+        denied = client.get("/sources", follow_redirects=False)
+        login_page = client.get("/login")
+        client.post("/login", data={"token": "test-read-token"})
+        allowed = client.get("/sources")
+
+    assert denied.status_code == 303
+    assert denied.headers["location"] == "/login?next=%2Fsources"
+    assert login_page.status_code == 200
+    assert allowed.status_code == 200
+
+
+def test_spa_api_источников_требует_токен_чтения(tmp_path, monkeypatch):
+    monkeypatch.setenv("API_TOKEN", "test-read-token")
+    registry = Registry(tmp_path / "data")
+    app = Starlette(
+        routes=routes(
+            registry,
+            mode=DASHBOARD_SPA,
+            static_dir=tmp_path / "dashboard-dist",
+        )
+    )
+
+    with TestClient(app) as client:
+        denied_sources = client.get("/api/v1/sources")
+        denied_journal = client.get(
+            "/api/v1/sources/coverage?source_id=example"
+        )
+        allowed_sources = client.get(
+            "/api/v1/sources", headers={"x-api-token": "test-read-token"}
+        )
+
+    assert denied_sources.status_code == 401
+    assert denied_journal.status_code == 401
+    assert allowed_sources.status_code == 200
 
 
 def test_bootstrap_считает_синтетические_источники(
@@ -145,3 +210,60 @@ def test_bootstrap_считает_синтетические_источники(
         "code_corpora": 1,
         "reference_sources": 0,
     }
+
+
+def test_sources_api_группирует_конфигурацию_модули_и_расширение(
+    tmp_path, корень_кода, реестр_из_кода, архив_кода
+):
+    registry = реестр_из_кода(корень_кода, name="Пример")
+    registry.add_modules(
+        архив_кода(корень_кода, extension="Доп"),
+        configuration="Пример",
+    )
+    app = Starlette(
+        routes=routes(
+            registry,
+            mode=DASHBOARD_SPA,
+            static_dir=tmp_path / "dashboard-dist",
+        )
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/sources")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["api_version"] == "v1"
+    assert payload["permissions"] == {"read": True, "admin": False}
+    assert payload["references"] == []
+    assert len(payload["configurations"]) == 1
+    configuration = payload["configurations"][0]
+    assert {
+        "id": configuration["id"],
+        "version": configuration["version"],
+        "platform": configuration["platform"],
+        "objects": configuration["objects"],
+    } == {
+        "id": "Пример",
+        "version": "1.0",
+        "platform": "8.3.23.1997",
+        "objects": 2,
+    }
+    assert configuration["source"]["kind"] == "configuration"
+    assert [corpus["kind"] for corpus in configuration["corpora"]] == [
+        "modules",
+        "extension",
+    ]
+    for corpus in configuration["corpora"]:
+        assert corpus["phase"] == "ready"
+        assert corpus["coverage"]["modules"]["total"] == 3
+        assert corpus["coverage"]["form_structures"]["total"] == 1
+        assert corpus["coverage"]["form_modules"]["total"] == 1
+        assert corpus["journal"].startswith("logs/code-")
+
+    with TestClient(app) as client:
+        journal = client.get(configuration["corpora"][0]["journal_url"])
+
+    assert journal.status_code == 200
+    assert journal.json()["schema_version"] == 1
+    assert journal.json()["kind"] == "module_coverage"

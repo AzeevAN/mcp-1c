@@ -257,6 +257,7 @@ class CodeStateRow:
     coverage: CodeCoverage | None = None
     source_id: str = ""
     journal: str = ""
+    phase: str = "missing"
 
 
 @dataclass(frozen=True, slots=True)
@@ -268,6 +269,10 @@ class SourceStateRow:
     platform: str
     items_total: int
     warnings: tuple[str, ...]
+    status: str = ""
+    loaded_at: str = ""
+    code_version: str = ""
+    incomplete: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,6 +282,7 @@ class SourcesSnapshot:
     configuration_names: tuple[str, ...]
     sources: tuple[SourceStateRow, ...]
     code: tuple[CodeStateRow, ...]
+    configurations: tuple["ConfigurationStateRow", ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -715,6 +721,10 @@ def _source_state_row(source) -> SourceStateRow:
         platform=source.platform,
         items_total=source.items_total,
         warnings=tuple(source.warnings),
+        status=source.status,
+        loaded_at=source.loaded_at,
+        code_version=source.code_version,
+        incomplete=source.incomplete,
     )
 
 
@@ -940,6 +950,15 @@ def _code_state_rows(
             relative = coverage_log.relative_path(source.id)
         return source.id, relative
 
+    def phase(view: _CodeView) -> str:
+        if view.capture.source is None or view.capture.loaded is None:
+            return "missing"
+        if view.capture.ready and view.summary is not None:
+            return "limited" if view.summary.coverage.has_limitations else "ready"
+        if view.capture.status == STATUS_ERROR:
+            return "error"
+        return "building"
+
     rows: list[CodeStateRow] = []
     for snapshot in capture.rows:
         source_id, journal_path = journal(snapshot.modules)
@@ -955,6 +974,7 @@ def _code_state_rows(
                 ),
                 source_id,
                 journal_path,
+                phase(snapshot.modules),
             )
         )
         for extension_name, view in snapshot.extensions:
@@ -966,6 +986,7 @@ def _code_state_rows(
                 view.summary.coverage if view.summary is not None else None,
                 source_id,
                 journal_path,
+                phase(view),
             ))
     return tuple(rows)
 
@@ -1059,11 +1080,15 @@ def _capture_sources_snapshot(
     capture = _capture_configurations_list(registry)
     if capture is None:
         return None
+    configurations = _configurations_result(capture, registry).rows
     return (
         SourcesSnapshot(
             configuration_names=tuple(name for name, _ in capture.configurations),
             sources=tuple(row for _, row, _ in capture.sources),
-            code=_code_state_rows(capture, registry),
+            code=tuple(
+                code for configuration in configurations for code in configuration.code
+            ),
+            configurations=configurations,
         ),
         capture,
     )

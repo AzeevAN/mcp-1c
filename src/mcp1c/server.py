@@ -21,6 +21,7 @@ import argparse
 import os
 import sys
 from typing import Annotated
+from urllib.parse import urlencode
 
 from mcp.server import MCPServer
 from pydantic import Field
@@ -616,16 +617,22 @@ def mcp_guard(app):
     бы держать два. Слой ставится вокруг всего приложения, а не в маршрутах,
     потому что маршрут `/mcp` заводит SDK и до его обработчика не дотянуться.
 
-    Мимо охраны пропускаются два пути. `/health` — по нему ходит healthcheck
-    контейнера, а сведения он и без того отдаёт по праву чтения. `/login` —
-    иначе войти из браузера неоткуда: форма входа оказалась бы за той самой
-    авторизацией, которую она выдаёт. Это поймала живая проверка, а не тесты:
-    они вешали маршруты дашборда напрямую, без внешнего слоя.
+    Мимо охраны пропускаются `/health`, `/login` и статика SPA. Health нужен
+    контейнеру, а форма входа вместе с CSS/JS должна загрузиться до появления
+    сессии. В статике нет предметных данных: они доступны только через API,
+    который остаётся закрытым. Это проверяется живым входом, потому что тесты
+    маршрутов дашборда не видят внешний слой.
     """
-    OPEN = ("/health", "/login")
+    OPEN_EXACT = ("/health", "/login")
+    OPEN_PREFIX = ("/assets/",)
 
     async def wrapped(scope, receive, send):
-        if scope["type"] != "http" or scope.get("path", "").startswith(OPEN):
+        path = scope.get("path", "")
+        if (
+            scope["type"] != "http"
+            or path in OPEN_EXACT
+            or path.startswith(OPEN_PREFIX)
+        ):
             await app(scope, receive, send)
             return
         request = Request(scope)
@@ -637,7 +644,12 @@ def mcp_guard(app):
         # в адресной строке — тупик: войти из него неоткуда, а форма входа
         # рядом. Различаем по `Accept`, как это делает сам протокол MCP.
         if "text/html" in request.headers.get("accept", ""):
-            response = RedirectResponse("/login", status_code=303)
+            target = request.url.path
+            if request.url.query:
+                target += "?" + request.url.query
+            response = RedirectResponse(
+                "/login?" + urlencode({"next": target}), status_code=303
+            )
         else:
             response = JSONResponse(
                 {

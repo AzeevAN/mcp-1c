@@ -14,6 +14,11 @@ beforeEach(() => {
         dashboard_mode: "spa",
         server: { status: "ok", version: "0.8.0" },
         permissions: { read: true, admin: false },
+        authentication: {
+          read_required: false,
+          admin_available: false,
+          session_level: null,
+        },
         summary: {
           configurations: 2,
           metadata_objects: 420,

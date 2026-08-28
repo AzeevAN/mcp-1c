@@ -9,13 +9,27 @@ from __future__ import annotations
 import os
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from urllib.parse import quote, urlencode
 
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse, PlainTextResponse
+from starlette.responses import (
+    FileResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+)
 from starlette.routing import Route
 
-from .dashboard import _authorized, can_read
-from .registry import KIND_EXTENSION, KIND_MODULES, Registry
+from . import coverage_log, tools
+from .dashboard import _authorized, _session_level, can_read
+from .registry import (
+    KIND_EXTENSION,
+    KIND_MODULES,
+    KIND_QUERY,
+    KIND_SYNTAX,
+    Registry,
+)
 
 DASHBOARD_OFF = "off"
 DASHBOARD_CLASSIC = "classic"
@@ -60,6 +74,117 @@ def _package_version() -> str:
         return "0.0.0+local"
 
 
+def _source_payload(source: tools.SourceStateRow | None) -> dict | None:
+    if source is None:
+        return None
+    return {
+        "id": source.id,
+        "kind": source.kind,
+        "platform": source.platform,
+        "items_total": source.items_total,
+        "status": source.status,
+        "loaded_at": source.loaded_at,
+        "code_version": source.code_version,
+        "incomplete": source.incomplete,
+        "warnings": list(source.warnings),
+    }
+
+
+def _coverage_payload(coverage: tools.CodeCoverage | None) -> dict | None:
+    if coverage is None:
+        return None
+    return {
+        "has_limitations": coverage.has_limitations,
+        "modules": {
+            "total": coverage.modules_total,
+            "source_available": coverage.modules_source_available,
+            "empty": coverage.modules_empty,
+            "partial": coverage.modules_partial,
+            "unreadable": coverage.modules_unreadable,
+            "conflict": coverage.modules_conflict,
+            "compiled_without_source": coverage.modules_compiled_without_source,
+        },
+        "procedures": {
+            "total": coverage.procedures_total,
+            "full": coverage.procedures_full,
+            "partial": coverage.procedures_partial,
+        },
+        "form_structures": {
+            "total": coverage.forms_total,
+            "full": coverage.form_structures_full,
+            "partial": coverage.form_structures_partial,
+            "unreadable": coverage.form_structures_unread,
+        },
+        "form_modules": {
+            "total": coverage.forms_total,
+            "read": coverage.form_modules_read,
+            "empty": coverage.form_modules_empty,
+            "missing": coverage.form_modules_missing,
+            "unreadable": coverage.form_modules_unread,
+        },
+        "problems_total": coverage.problems_total,
+        "problem_categories": [
+            {"category": category, "count": count}
+            for category, count in coverage.problem_categories
+        ],
+    }
+
+
+def _sources_payload(
+    snapshot: tools.SourcesSnapshot,
+    *,
+    admin: bool,
+) -> dict:
+    sources_by_id = {source.id: source for source in snapshot.sources}
+    configurations = []
+    for configuration in snapshot.configurations:
+        corpora = []
+        for corpus in configuration.code:
+            source = sources_by_id.get(corpus.source_id)
+            corpora.append(
+                {
+                    "id": corpus.source_id or f"{configuration.name}:modules",
+                    "label": corpus.corpus,
+                    "kind": source.kind if source is not None else KIND_MODULES,
+                    "phase": corpus.phase,
+                    "state": corpus.state,
+                    "source": _source_payload(source),
+                    "coverage": _coverage_payload(corpus.coverage),
+                    "journal": corpus.journal,
+                    "journal_url": (
+                        "/api/v1/sources/coverage?source_id="
+                        + quote(corpus.source_id, safe="")
+                        if corpus.journal and corpus.source_id
+                        else ""
+                    ),
+                }
+            )
+        configurations.append(
+            {
+                "id": configuration.name,
+                "version": configuration.version,
+                "platform": configuration.platform,
+                "objects": configuration.objects,
+                "edges": configuration.edges,
+                "loaded_at": configuration.loaded_at,
+                "notes": list(configuration.notes),
+                "source": _source_payload(sources_by_id.get(configuration.name)),
+                "corpora": corpora,
+            }
+        )
+    references = [
+        _source_payload(source)
+        for source in snapshot.sources
+        if source.kind in (KIND_SYNTAX, KIND_QUERY)
+    ]
+    return {
+        "api_version": "v1",
+        "permissions": {"read": True, "admin": admin},
+        "configurations": configurations,
+        "references": references,
+    }
+
+
 def _spa_routes(registry: Registry, static_dir: Path) -> list[Route]:
     static_dir = static_dir.resolve()
 
@@ -86,6 +211,11 @@ def _spa_routes(registry: Registry, static_dir: Path) -> list[Route]:
                     "read": True,
                     "admin": _authorized(request),
                 },
+                "authentication": {
+                    "read_required": bool(os.environ.get("API_TOKEN", "")),
+                    "admin_available": bool(os.environ.get("ADMIN_TOKEN", "")),
+                    "session_level": _session_level(request),
+                },
                 "summary": {
                     "configurations": len(snapshot.configurations),
                     "metadata_objects": metadata_objects,
@@ -96,7 +226,44 @@ def _spa_routes(registry: Registry, static_dir: Path) -> list[Route]:
             }
         )
 
+    async def sources_api(request: Request) -> JSONResponse:
+        if not can_read(request):
+            return JSONResponse({"error": "Нужен токен чтения."}, status_code=401)
+        snapshot = await run_in_threadpool(tools.sources_snapshot, registry)
+        return JSONResponse(
+            _sources_payload(snapshot, admin=_authorized(request))
+        )
+
+    async def coverage_api(request: Request) -> JSONResponse:
+        if not can_read(request):
+            return JSONResponse({"error": "Нужен токен чтения."}, status_code=401)
+        source_id = request.query_params.get("source_id", "")
+        if not source_id:
+            return JSONResponse(
+                {"error": "Не указан source_id."}, status_code=400
+            )
+        snapshot = registry.snapshot()
+        source = snapshot.sources.get(source_id)
+        if source is None or source.kind not in (KIND_MODULES, KIND_EXTENSION):
+            return JSONResponse({"error": "Журнал не найден."}, status_code=404)
+        payload = await run_in_threadpool(
+            coverage_log.load_current, registry.data_dir, source
+        )
+        if payload is None:
+            return JSONResponse(
+                {"error": "Актуальный журнал недоступен."}, status_code=404
+            )
+        return JSONResponse(payload)
+
     async def spa_page(request: Request):
+        if request.url.path != "/login" and not can_read(request):
+            target = request.url.path
+            if request.url.query:
+                target += "?" + request.url.query
+            return RedirectResponse(
+                "/login?" + urlencode({"next": target}),
+                status_code=303,
+            )
         index = static_dir / "index.html"
         if not index.is_file():
             return PlainTextResponse(
@@ -119,6 +286,18 @@ def _spa_routes(registry: Registry, static_dir: Path) -> list[Route]:
             bootstrap,
             methods=["GET"],
             name="dashboard_bootstrap",
+        ),
+        Route(
+            "/api/v1/sources",
+            sources_api,
+            methods=["GET"],
+            name="dashboard_sources",
+        ),
+        Route(
+            "/api/v1/sources/coverage",
+            coverage_api,
+            methods=["GET"],
+            name="dashboard_source_coverage",
         ),
         Route(
             "/assets/{path:path}",

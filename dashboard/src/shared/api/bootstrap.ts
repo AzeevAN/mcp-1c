@@ -11,6 +11,11 @@ export type DashboardBootstrap = {
     read: boolean;
     admin: boolean;
   };
+  authentication: {
+    read_required: boolean;
+    admin_available: boolean;
+    session_level: "read" | "admin" | null;
+  };
   summary: {
     configurations: number;
     metadata_objects: number;
@@ -19,13 +24,19 @@ export type DashboardBootstrap = {
   };
 };
 
+export class DashboardApiError extends Error {
+  constructor(public readonly status: number) {
+    super(`API дашборда ответил ${status}.`);
+  }
+}
+
 async function getBootstrap(): Promise<DashboardBootstrap> {
   const response = await fetch("/api/v1/dashboard/bootstrap", {
     headers: { accept: "application/json" },
     credentials: "same-origin",
   });
   if (!response.ok) {
-    throw new Error(`API дашборда ответил ${response.status}.`);
+    throw new DashboardApiError(response.status);
   }
   return response.json() as Promise<DashboardBootstrap>;
 }

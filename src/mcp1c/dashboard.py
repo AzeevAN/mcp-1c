@@ -146,10 +146,15 @@ def _token_from_headers(request: Request) -> str:
     return auth[len(prefix):] if auth.lower().startswith(prefix) else ""
 
 
+def _session_level(request: Request) -> str | None:
+    """Уровень серверной браузерной сессии без раскрытия самой cookie."""
+    session = request.cookies.get(COOKIE, "")
+    return _SESSIONS.get(session) if session else None
+
+
 def _authorized(request: Request) -> bool:
     """Право записи: загрузка источников, удаление, правка словаря."""
-    session = request.cookies.get(COOKIE, "")
-    if session and _SESSIONS.get(session) == LEVEL_ADMIN:
+    if _session_level(request) == LEVEL_ADMIN:
         return True
     return same_token(_token_from_headers(request), _admin_token())
 
@@ -266,8 +271,7 @@ def can_read(request: Request) -> bool:
     expected = _api_token()
     if not expected:
         return True
-    session = request.cookies.get(COOKIE, "")
-    if session and session in _SESSIONS:
+    if _session_level(request) is not None:
         return True
     given = _token_from_headers(request)
     return same_token(given, expected) or same_token(given, _admin_token())

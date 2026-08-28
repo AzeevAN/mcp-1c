@@ -4,6 +4,7 @@ import { AppShell } from "./shell/AppShell";
 import { OverviewPage } from "../pages/OverviewPage";
 import { LoginPage } from "../pages/LoginPage";
 import { PlaceholderPage } from "../pages/PlaceholderPage";
+import { SourcesPage } from "../pages/SourcesPage";
 
 export const router = createBrowserRouter([
   { path: "/login", element: <LoginPage /> },
@@ -14,13 +15,7 @@ export const router = createBrowserRouter([
       { index: true, element: <OverviewPage /> },
       {
         path: "sources",
-        element: (
-          <PlaceholderPage
-            eyebrow="Следующий этап"
-            title="Источники"
-            description="Состав конфигурации, корпуса кода, загрузка и диагностические журналы будут перенесены после отдельного разбора текущего пути."
-          />
-        ),
+        element: <SourcesPage />,
       },
       {
         path: "queries",

@@ -1,6 +1,6 @@
 import type { PropsWithChildren } from "react";
 
-type StatusTone = "success" | "warning" | "danger" | "info";
+export type StatusTone = "success" | "warning" | "danger" | "info";
 
 type StatusBadgeProps = PropsWithChildren<{
   tone: StatusTone;

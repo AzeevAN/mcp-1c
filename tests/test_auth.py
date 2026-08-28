@@ -262,10 +262,14 @@ def test_mcp_эндпоинт_закрыт_токеном(tmp_path, monkeypatch)
     async def health(request):
         return PlainTextResponse("ok")
 
+    async def asset(request):
+        return PlainTextResponse("статика")
+
     app = mcp_guard(
         Starlette(routes=[Route("/mcp", mcp, methods=["GET"]),
                           Route("/health", health, methods=["GET"]),
-                          Route("/login", health, methods=["GET"])])
+                          Route("/login", health, methods=["GET"]),
+                          Route("/assets/app.js", asset, methods=["GET"])])
     )
     client = TestClient(app)
 
@@ -277,6 +281,10 @@ def test_mcp_эндпоинт_закрыт_токеном(tmp_path, monkeypatch)
     # показала 401 там, где тесты дашборда давали 200 — они вешали маршруты
     # напрямую, без внешнего слоя.
     assert client.get("/login").status_code == 200
+    # Без этой статики React-форма входа была бы пустой белой страницей.
+    assert client.get("/assets/app.js").status_code == 200
+    # Совпадение только точное: произвольный путь с таким префиксом не открыт.
+    assert client.get("/login-extra").status_code == 401
 
 
 def test_без_api_token_mcp_открыт(tmp_path, monkeypatch):
@@ -317,9 +325,15 @@ def test_браузер_получает_отказ_ссылкой_на_вход
         follow_redirects=False,
     )
 
-    браузер = client.get("/", headers={"accept": "text/html,application/xhtml+xml"})
+    браузер = client.get(
+        "/sources?config=Пример",
+        headers={"accept": "text/html,application/xhtml+xml"},
+    )
     assert браузер.status_code == 303
-    assert браузер.headers["location"] == "/login"
+    assert браузер.headers["location"] == (
+        "/login?next=%2Fsources%3Fconfig%3D%25D0%259F%25D1%2580%25D0%25B8"
+        "%25D0%25BC%25D0%25B5%25D1%2580"
+    )
 
     клиент = client.get("/", headers={"accept": "application/json"})
     assert клиент.status_code == 401

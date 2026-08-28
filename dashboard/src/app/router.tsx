@@ -7,6 +7,7 @@ import { PlaceholderPage } from "../pages/PlaceholderPage";
 import { QueriesPage } from "../pages/QueriesPage";
 import { SourcesPage } from "../pages/SourcesPage";
 import { CardPage } from "../pages/CardPage";
+import { GraphPage } from "../pages/GraphPage";
 
 export const router = createBrowserRouter([
   { path: "/login", element: <LoginPage /> },
@@ -33,13 +34,7 @@ export const router = createBrowserRouter([
       },
       {
         path: "graph",
-        element: (
-          <PlaceholderPage
-            eyebrow="Запланировано"
-            title="Связи"
-            description="Интерактивный граф получит собственное согласование раскладки, фильтров и состояний."
-          />
-        ),
+        element: <GraphPage />,
       },
       {
         path: "dictionary",

@@ -28,6 +28,9 @@ from starlette.routing import Route
 
 from . import coverage_log, dashboard as classic_dashboard, tools
 from .dashboard import _authorized, _csrf_denied, _session_level, can_read
+from .graph_view import DEFAULT_LIMIT as DEFAULT_GRAPH_LIMIT
+from .graph_view import bounds as graph_bounds
+from .graph_view import neighbourhood
 from .registry import (
     KIND_EXTENSION,
     KIND_MODULES,
@@ -380,6 +383,123 @@ def _card_payload(
     }
 
 
+_GRAPH_LIMIT_OPTIONS = (15, 30, 60, 150, 400)
+
+
+def _graph_payload(
+    registry: Registry,
+    *,
+    config: str,
+    name: str,
+    limit: int,
+) -> dict:
+    """Окрестность с готовой серверной раскладкой для classic и SPA."""
+    names = list(registry.snapshot().configuration_names)
+    selected = config if config in names else (names[0] if names else "")
+    payload = {
+        "api_version": "v1",
+        "configuration_names": names,
+        "configuration": selected,
+        "name": name,
+        "limit": limit,
+        "limit_options": list(_GRAPH_LIMIT_OPTIONS),
+        "state": "awaiting_object",
+        "message": (
+            "Введите полное имя объекта или возьмите его со страницы «Запросы»."
+        ),
+        "suggestions": [],
+        "graph": None,
+    }
+    if not selected:
+        payload["state"] = "empty_registry"
+        payload["message"] = (
+            "Не загружено ни одной конфигурации — граф строить не по чему."
+        )
+        return payload
+
+    context = registry.resolve(selected)
+    if not name:
+        return payload
+
+    if name not in context.configuration.config.objects:
+        hits = context.configuration.index.search(name, limit=5)
+        payload["state"] = "not_found"
+        payload["message"] = (
+            f"В конфигурации {context.name} нет объекта `{name}`."
+        )
+        payload["suggestions"] = [
+            {
+                "name": hit.doc.id,
+                "graph_url": (
+                    f"/graph?config={quote(context.name)}"
+                    f"&name={quote(hit.doc.id)}&limit={limit}"
+                ),
+            }
+            for hit in hits
+        ]
+        return payload
+
+    area = neighbourhood(context.configuration.graph, name, limit=limit)
+
+    def node_payload(node) -> dict:
+        return {
+            "name": node.name,
+            "short": node.short,
+            "kind": node.kind,
+            "degree": node.degree,
+            "x": node.x,
+            "y": node.y,
+            "color": classic_dashboard.KIND_COLORS.get(
+                node.kind, classic_dashboard.KIND_FALLBACK
+            ),
+            "graph_url": (
+                f"/graph?config={quote(context.name)}"
+                f"&name={quote(node.name)}&limit={limit}"
+            ),
+            "object_url": (
+                f"/object?config={quote(context.name)}&name={quote(node.name)}"
+            ),
+        }
+
+    kinds = sorted({area.subject.kind} | {node.kind for node in area.nodes})
+    payload["graph"] = {
+        "depth": 1,
+        "total": area.total,
+        "shown": area.shown,
+        "truncated": area.truncated,
+        "bounds": list(graph_bounds(area)),
+        "subject": node_payload(area.subject),
+        "nodes": [node_payload(node) for node in area.nodes],
+        "links": [
+            {
+                "source": link.source,
+                "target": link.target,
+                "title": link.title,
+                "outgoing": link.outgoing,
+            }
+            for link in area.links
+        ],
+        "kinds": [
+            {
+                "kind": kind,
+                "color": classic_dashboard.KIND_COLORS.get(
+                    kind, classic_dashboard.KIND_FALLBACK
+                ),
+            }
+            for kind in kinds
+        ],
+    }
+    if area.total:
+        payload["state"] = "ready"
+        payload["message"] = ""
+    else:
+        payload["state"] = "isolated"
+        payload["message"] = (
+            f"`{name}` ни на что не ссылается и на него не ссылается никто."
+        )
+    return payload
+
+
 def _admin_denied(request: Request, *, action: str) -> JSONResponse | None:
     if not os.environ.get("ADMIN_TOKEN", ""):
         return _json_error(f"{action} выключено: не задан ADMIN_TOKEN.", 404)
@@ -534,6 +654,31 @@ def _spa_routes(registry: Registry, static_dir: Path) -> list[Route]:
 
     async def syntax_card_api(request: Request) -> JSONResponse:
         return await card_api(request, kind="syntax")
+
+    async def graph_api(request: Request) -> JSONResponse:
+        if not can_read(request):
+            return _json_error("Нужен токен чтения.", 401)
+        params = request.query_params
+        try:
+            raw_limit = int(params.get("limit") or 0)
+        except ValueError:
+            raw_limit = 0
+        limit = (
+            max(1, min(raw_limit, 400))
+            if raw_limit
+            else DEFAULT_GRAPH_LIMIT
+        )
+        try:
+            payload = await run_in_threadpool(
+                _graph_payload,
+                registry,
+                config=params.get("config", ""),
+                name=params.get("name", "").strip(),
+                limit=limit,
+            )
+        except RegistryError as error:
+            return _json_error(str(error), 409)
+        return JSONResponse(payload)
 
     async def coverage_api(request: Request) -> JSONResponse:
         if not can_read(request):
@@ -854,6 +999,12 @@ def _spa_routes(registry: Registry, static_dir: Path) -> list[Route]:
             syntax_card_api,
             methods=["GET"],
             name="dashboard_syntax_card",
+        ),
+        Route(
+            "/api/v1/graph",
+            graph_api,
+            methods=["GET"],
+            name="dashboard_graph",
         ),
         Route(
             "/api/v1/sources/admin",

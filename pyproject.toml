@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mcp1c"
-version = "0.8.0"
+version = "1.0.0"
 description = "MCP-сервер: справочник структуры конфигураций 1С, синтаксиса платформы и языка запросов для агентов, пишущих на BSL"
 readme = "README.md"
 license = "Apache-2.0"
@@ -19,7 +19,7 @@ authors = [{ name = "Andrey Azeev" }]
 keywords = ["mcp", "1c", "1c-enterprise", "bsl", "metadata", "llm-tools"]
 
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Natural Language :: Russian",
     "Operating System :: OS Independent",

@@ -60,7 +60,7 @@ def test_public_package_metadata_and_runtime_contract() -> None:
     assert project["version"] == version_match.group(1)
     assert "version=__version__" in server
     assert '"version": __version__' in dashboard
-    assert project["classifiers"][0] == "Development Status :: 4 - Beta"
+    assert project["classifiers"][0] == "Development Status :: 5 - Production/Stable"
 
 
 def test_runtime_and_tool_inputs_are_separate() -> None:

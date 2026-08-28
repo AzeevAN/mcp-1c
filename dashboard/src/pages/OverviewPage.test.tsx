@@ -12,7 +12,7 @@ beforeEach(() => {
       json: async () => ({
         api_version: "v1",
         dashboard_mode: "spa",
-        server: { status: "ok", version: "0.8.0" },
+        server: { status: "ok", version: "1.0.0" },
         permissions: { read: true, admin: false },
         authentication: {
           read_required: false,

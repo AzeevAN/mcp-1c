@@ -292,9 +292,9 @@ function ConfigurationDetail({
   return (
     <div className="configuration-detail">
       <section className="configuration-hero">
-        <div>
+        <div className="configuration-hero-copy">
           <span className="eyebrow">Выбранная конфигурация</span>
-          <h1>{configuration.id}</h1>
+          <h1 title={configuration.id}>{configuration.id}</h1>
           <p>Структура, основной код и расширения собраны в один связанный контур.</p>
         </div>
         <div className="configuration-hero-actions">

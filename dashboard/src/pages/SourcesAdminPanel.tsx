@@ -11,7 +11,7 @@ import {
   Trash2,
   UploadCloud,
 } from "lucide-react";
-import { type DragEvent, type ChangeEvent, useRef, useState } from "react";
+import { type DragEvent, type ChangeEvent, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import {
@@ -102,6 +102,7 @@ export function SourcesAdminPanel({
   const queryClient = useQueryClient();
   const parseIncoming = useParseIncoming();
   const fileInput = useRef<HTMLInputElement>(null);
+  const refreshedTerminalJobs = useRef("");
   const [file, setFile] = useState<File | null>(null);
   const [allowTruncated, setAllowTruncated] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -110,6 +111,23 @@ export function SourcesAdminPanel({
   const [feedback, setFeedback] = useState<{ tone: "success" | "danger"; text: string } | null>(null);
   const [configurationByFile, setConfigurationByFile] = useState<Record<string, string>>({});
   const [activeIncoming, setActiveIncoming] = useState("");
+  const terminalJobsSignature = (admin.data?.jobs ?? [])
+    .filter((job) => job.state === "готово" || job.state === "ошибка")
+    .map((job, index) => `${index}\u0000${job.name}\u0000${job.size}\u0000${job.state}\u0000${job.error}`)
+    .join("\u0001");
+
+  useEffect(() => {
+    if (!terminalJobsSignature) {
+      refreshedTerminalJobs.current = "";
+      return;
+    }
+    if (refreshedTerminalJobs.current === terminalJobsSignature) return;
+    refreshedTerminalJobs.current = terminalJobsSignature;
+    void Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["sources"], exact: true }),
+      queryClient.invalidateQueries({ queryKey: ["dashboard", "bootstrap"] }),
+    ]);
+  }, [queryClient, terminalJobsSignature]);
 
   const chooseFile = (next: File | null) => {
     setFeedback(null);

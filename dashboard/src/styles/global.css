@@ -814,6 +814,7 @@ h2 {
 
 .configuration-detail {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
 }
 
@@ -828,6 +829,18 @@ h2 {
   background:
     linear-gradient(125deg, rgba(77, 143, 247, 0.08), transparent 52%),
     var(--surface);
+}
+
+.configuration-hero-copy {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.configuration-hero-copy h1 {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .configuration-facts {
@@ -1308,6 +1321,7 @@ h2 {
 
 .configuration-hero-actions {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 10px;
 }

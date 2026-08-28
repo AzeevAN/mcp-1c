@@ -181,3 +181,137 @@ it("показывает администратору компактную за�
   expect(screen.getByText(/каскадно удалены структура конфигурации/)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Удалить без возможности отмены" })).toBeDisabled();
 });
+
+it("обновляет корпуса после перехода фоновой загрузки в готово", async () => {
+  let sourceRequests = 0;
+  let adminRequests = 0;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === "/api/v1/sources/admin") {
+        adminRequests += 1;
+        return {
+          ok: true,
+          json: async () => ({
+            api_version: "v1",
+            limits: { upload_bytes: 500 * 1024 * 1024 },
+            configuration_names: ["Отраслевая конфигурация"],
+            jobs: [
+              {
+                name: "СинтетическоеРасширение.zip",
+                size: 1024,
+                state: adminRequests > 1 ? "готово" : "разбирается",
+                error: "",
+              },
+            ],
+            incoming: [],
+            incoming_exists: true,
+            incoming_dir: "data/incoming/",
+            orphans: [],
+            snapshot_error: "",
+          }),
+        };
+      }
+      sourceRequests += 1;
+      return {
+        ok: true,
+        json: async () => ({
+          api_version: "v1",
+          permissions: { read: true, admin: true },
+          configurations: [
+            {
+              id: "Отраслевая конфигурация",
+              version: "1.0",
+              platform: "8.3.23.1997",
+              objects: 120,
+              edges: 640,
+              loaded_at: "2026-08-28T09:00:00+00:00",
+              notes: [],
+              source: configurationSource("Отраслевая конфигурация"),
+              corpora: sourceRequests > 1
+                ? [
+                    corpus("synthetic:modules", "Основная конфигурация", "modules"),
+                    corpus("synthetic:extension", "Загруженное расширение", "extension"),
+                  ]
+                : [corpus("synthetic:modules", "Основная конфигурация", "modules")],
+            },
+          ],
+          references: [],
+        }),
+      };
+    }),
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  render(
+    <MemoryRouter initialEntries={["/sources"]}>
+      <QueryClientProvider client={client}>
+        <SourcesPage />
+      </QueryClientProvider>
+    </MemoryRouter>,
+  );
+
+  expect(await screen.findByText("разбирается")).toBeInTheDocument();
+  await client.refetchQueries({ queryKey: ["sources", "admin"], exact: true });
+  expect(await screen.findByText("Загруженное расширение")).toBeInTheDocument();
+  expect(sourceRequests).toBe(2);
+});
+
+it("сохраняет полное длинное имя конфигурации для подсказки", async () => {
+  const longName = "ОтраслеваяКонфигурацияСОченьДлиннымИдентификаторомДляПроверки";
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === "/api/v1/sources/admin") {
+        return {
+          ok: true,
+          json: async () => ({
+            api_version: "v1",
+            limits: { upload_bytes: 500 * 1024 * 1024 },
+            configuration_names: [longName],
+            jobs: [],
+            incoming: [],
+            incoming_exists: true,
+            incoming_dir: "data/incoming/",
+            orphans: [],
+            snapshot_error: "",
+          }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          api_version: "v1",
+          permissions: { read: true, admin: true },
+          configurations: [
+            {
+              id: longName,
+              version: "1.0",
+              platform: "8.3.23.1997",
+              objects: 120,
+              edges: 640,
+              loaded_at: "2026-08-28T09:00:00+00:00",
+              notes: [],
+              source: configurationSource(longName),
+              corpora: [corpus("long:modules", "Основная конфигурация", "modules")],
+            },
+          ],
+          references: [],
+        }),
+      };
+    }),
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  render(
+    <MemoryRouter initialEntries={["/sources"]}>
+      <QueryClientProvider client={client}>
+        <SourcesPage />
+      </QueryClientProvider>
+    </MemoryRouter>,
+  );
+
+  expect(await screen.findByRole("heading", { name: longName })).toHaveAttribute("title", longName);
+});

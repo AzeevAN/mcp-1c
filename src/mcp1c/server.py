@@ -52,7 +52,7 @@ def _http_body_limit(scope) -> int:
             return HTTP_BODY_LIMIT_LOGIN
         if path == "/queries":
             return HTTP_BODY_LIMIT_QUERIES
-        if path == "/sources":
+        if path in ("/sources", "/api/v1/sources/upload"):
             return HTTP_BODY_LIMIT_UPLOAD
     return HTTP_BODY_LIMIT_DEFAULT
 

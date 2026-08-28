@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
+import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
 
 import { QueriesPage } from "./QueriesPage";
@@ -55,8 +55,7 @@ function client() {
 }
 
 function BackPage() {
-  const navigate = useNavigate();
-  return <button type="button" onClick={() => navigate(-1)}>Вернуться назад</button>;
+  return <Link to="/queries">К результатам запросов</Link>;
 }
 
 beforeEach(() => {
@@ -110,7 +109,7 @@ it("запускает несколько фраз и показывает об�
   });
 });
 
-it("восстанавливает введённую фразу и результат после перехода по карточке назад", async () => {
+it("восстанавливает весь прогон после возврата по ссылке карточки", async () => {
   const view = render(
     <MemoryRouter initialEntries={["/queries?config=Отраслевая+конфигурация+Б&scope=fields"]}>
       <QueryClientProvider client={client()}>
@@ -129,9 +128,11 @@ it("восстанавливает введённую фразу и резуль
 
   Object.defineProperty(window, "scrollY", { configurable: true, value: 280 });
   fireEvent.click(resultLink);
-  fireEvent.click(await screen.findByRole("button", { name: "Вернуться назад" }));
+  fireEvent.click(await screen.findByRole("link", { name: "К результатам запросов" }));
 
   expect(await screen.findByRole("textbox", { name: "Поисковые фразы" })).toHaveValue("номер телефона");
+  expect(screen.getByRole("combobox", { name: "Конфигурация" })).toHaveValue("Отраслевая конфигурация Б");
+  expect(screen.getByRole("radio", { name: /Реквизиты/ })).toBeChecked();
   expect(screen.getByRole("link", { name: "Справочник.Контрагенты.Телефон" })).toBeInTheDocument();
   await waitFor(() => expect(window.scrollTo).toHaveBeenCalledWith({ top: 280, behavior: "auto" }));
   view.unmount();

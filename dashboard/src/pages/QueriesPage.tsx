@@ -26,9 +26,21 @@ type StoredQueryPage = {
   phrasesText: string;
   response: QueryRunResponse | null;
   scrollY: number;
+  config: string;
+  scope: QueryScope | "";
 };
 
-const emptyStored: StoredQueryPage = { phrasesText: "", response: null, scrollY: 0 };
+const emptyStored: StoredQueryPage = {
+  phrasesText: "",
+  response: null,
+  scrollY: 0,
+  config: "",
+  scope: "",
+};
+
+function storedScope(value: unknown): QueryScope | "" {
+  return value === "objects" || value === "fields" || value === "syntax" ? value : "";
+}
 
 function readStored(): StoredQueryPage {
   try {
@@ -37,6 +49,8 @@ function readStored(): StoredQueryPage {
       phrasesText: typeof parsed?.phrasesText === "string" ? parsed.phrasesText : "",
       response: parsed?.response?.api_version === "v1" ? parsed.response : null,
       scrollY: typeof parsed?.scrollY === "number" ? parsed.scrollY : 0,
+      config: typeof parsed?.config === "string" ? parsed.config : "",
+      scope: storedScope(parsed?.scope),
     };
   } catch {
     return emptyStored;
@@ -138,11 +152,17 @@ export function QueriesPage() {
   const [running, setRunning] = useState(false);
 
   const names = setup.data?.configuration_names ?? [];
-  const requestedConfig = searchParams.get("config") || "";
+  const restoredConfig = stored.config || stored.response?.request.config || "";
+  const requestedConfig = searchParams.get("config") || restoredConfig;
   const selectedConfig = names.includes(requestedConfig)
     ? requestedConfig
     : setup.data?.default_configuration ?? "";
-  const requestedScope = searchParams.get("scope") as QueryScope | null;
+  const requestedScope = (
+    searchParams.get("scope")
+    || stored.scope
+    || stored.response?.request.scope
+    || null
+  ) as QueryScope | null;
   const defaultScope: QueryScope = setup.data?.availability.configurations
     ? "objects"
     : setup.data?.availability.syntax ? "syntax" : "objects";
@@ -176,6 +196,11 @@ export function QueriesPage() {
   useEffect(() => {
     writeStored({ phrasesText, response });
   }, [phrasesText, response]);
+
+  useEffect(() => {
+    if (!setup.data) return;
+    writeStored({ config: selectedConfig, scope: selectedScope });
+  }, [selectedConfig, selectedScope, setup.data]);
 
   useEffect(() => {
     const saved = readStored().scrollY;

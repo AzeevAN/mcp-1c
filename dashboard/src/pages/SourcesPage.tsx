@@ -9,10 +9,13 @@ import {
   PackageCheck,
   Puzzle,
   ServerCrash,
+  Trash2,
+  X,
 } from "lucide-react";
 import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
+import { useForgetSource, useRemoveSource } from "../shared/api/sourceAdmin";
 import {
   type CodeCorpus,
   type ConfigurationSource,
@@ -21,6 +24,7 @@ import {
   useSources,
 } from "../shared/api/sources";
 import { StatusBadge, type StatusTone } from "../shared/ui/StatusBadge";
+import { SourcesAdminPanel } from "./SourcesAdminPanel";
 
 const sourceKindLabel: Record<SourceItem["kind"], string> = {
   configuration: "Конфигурация",
@@ -140,7 +144,20 @@ function ConfigurationNavItem({
   );
 }
 
-function ReferenceRow({ source }: { source: SourceItem }) {
+type RemovalTarget = {
+  operation: "source" | "orphan";
+  id: string;
+  title: string;
+  impact: string;
+};
+
+function ReferenceRow({
+  source,
+  onRemove,
+}: {
+  source: SourceItem;
+  onRemove?: (target: RemovalTarget) => void;
+}) {
   return (
     <div className="reference-row">
       <Braces size={17} aria-hidden="true" />
@@ -149,11 +166,32 @@ function ReferenceRow({ source }: { source: SourceItem }) {
         <small>{source.platform || formatNumber(source.items_total) + " элементов"}</small>
       </span>
       <i className="is-success" aria-hidden="true" />
+      {onRemove && (
+        <button
+          className="icon-danger-button"
+          type="button"
+          aria-label={`Удалить ${sourceKindLabel[source.kind]}`}
+          onClick={() => onRemove({
+            operation: "source",
+            id: source.id,
+            title: sourceKindLabel[source.kind],
+            impact: "Источник и его разобранный индекс будут сняты с учёта. Остальные конфигурации и корпуса не изменятся.",
+          })}
+        >
+          <Trash2 size={15} aria-hidden="true" />
+        </button>
+      )}
     </div>
   );
 }
 
-function CorpusCard({ corpus }: { corpus: CodeCorpus }) {
+function CorpusCard({
+  corpus,
+  onRemove,
+}: {
+  corpus: CodeCorpus;
+  onRemove?: (target: RemovalTarget) => void;
+}) {
   const phase = phaseView[corpus.phase];
   const Icon = corpus.kind === "extension" ? Puzzle : Layers3;
   const [expanded, setExpanded] = useState(corpus.kind === "modules");
@@ -169,6 +207,23 @@ function CorpusCard({ corpus }: { corpus: CodeCorpus }) {
         </div>
         <div className="corpus-actions">
           <StatusBadge tone={phase.tone}>{phase.label}</StatusBadge>
+          {onRemove && corpus.source && (
+            <button
+              className="is-danger"
+              type="button"
+              onClick={() => onRemove({
+                operation: "source",
+                id: corpus.source!.id,
+                title: corpus.label,
+                impact: corpus.kind === "extension"
+                  ? "Будут удалены индекс этого расширения, его каталог кода и журнал покрытия. Родительская конфигурация останется."
+                  : "Будут удалены индекс основного кода, каталог модулей и журнал покрытия. Структура конфигурации останется.",
+              })}
+              aria-label={`Удалить ${corpus.label}`}
+            >
+              <Trash2 size={16} aria-hidden="true" />
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setExpanded((value) => !value)}
@@ -227,7 +282,13 @@ function CorpusCard({ corpus }: { corpus: CodeCorpus }) {
   );
 }
 
-function ConfigurationDetail({ configuration }: { configuration: ConfigurationSource }) {
+function ConfigurationDetail({
+  configuration,
+  onRemove,
+}: {
+  configuration: ConfigurationSource;
+  onRemove?: (target: RemovalTarget) => void;
+}) {
   return (
     <div className="configuration-detail">
       <section className="configuration-hero">
@@ -236,7 +297,23 @@ function ConfigurationDetail({ configuration }: { configuration: ConfigurationSo
           <h1>{configuration.id}</h1>
           <p>Структура, основной код и расширения собраны в один связанный контур.</p>
         </div>
-        <StatusBadge tone="success">Источник активен</StatusBadge>
+        <div className="configuration-hero-actions">
+          <StatusBadge tone="success">Источник активен</StatusBadge>
+          {onRemove && configuration.source && (
+            <button
+              className="button-danger-quiet"
+              type="button"
+              onClick={() => onRemove({
+                operation: "source",
+                id: configuration.source!.id,
+                title: configuration.id,
+                impact: "Будут каскадно удалены структура конфигурации, основной код, все привязанные расширения и их журналы покрытия.",
+              })}
+            >
+              <Trash2 size={15} aria-hidden="true" />Удалить
+            </button>
+          )}
+        </div>
       </section>
 
       <section className="configuration-facts" aria-label="Сводка конфигурации">
@@ -261,8 +338,62 @@ function ConfigurationDetail({ configuration }: { configuration: ConfigurationSo
       </section>
 
       <div className="corpus-stack">
-        {configuration.corpora.map((corpus) => <CorpusCard corpus={corpus} key={corpus.id} />)}
+        {configuration.corpora.map((corpus) => (
+          <CorpusCard corpus={corpus} key={corpus.id} onRemove={onRemove} />
+        ))}
       </div>
+    </div>
+  );
+}
+
+function RemovalDialog({
+  target,
+  onClose,
+}: {
+  target: RemovalTarget;
+  onClose: () => void;
+}) {
+  const removeSource = useRemoveSource();
+  const forgetSource = useForgetSource();
+  const [confirmation, setConfirmation] = useState("");
+  const mutation = target.operation === "source" ? removeSource : forgetSource;
+  const confirmed = confirmation === target.id;
+
+  const remove = async () => {
+    if (!confirmed) return;
+    try {
+      await mutation.mutateAsync(target.id);
+      onClose();
+    } catch {
+      // Сообщение остаётся в модальном окне через mutation.error.
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
+      if (event.target === event.currentTarget && !mutation.isPending) onClose();
+    }}>
+      <section className="removal-dialog" role="dialog" aria-modal="true" aria-labelledby="removal-title">
+        <button className="modal-close" type="button" onClick={onClose} aria-label="Закрыть" disabled={mutation.isPending}>
+          <X size={18} />
+        </button>
+        <span className="removal-icon"><Trash2 size={22} /></span>
+        <span className="eyebrow">Необратимое действие</span>
+        <h2 id="removal-title">Удалить «{target.title}»?</h2>
+        <p>{target.impact}</p>
+        <label className="confirmation-field">
+          <span>Для подтверждения введите точное имя:</span>
+          <code>{target.id}</code>
+          <input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="off" />
+        </label>
+        {mutation.isError && <div className="admin-feedback is-danger">{mutation.error instanceof Error ? mutation.error.message : "Не удалось удалить."}</div>}
+        <footer>
+          <button className="button-secondary" type="button" onClick={onClose} disabled={mutation.isPending}>Отмена</button>
+          <button className="button-danger" type="button" onClick={remove} disabled={!confirmed || mutation.isPending}>
+            {mutation.isPending ? "Удаляем…" : "Удалить без возможности отмены"}
+          </button>
+        </footer>
+      </section>
     </div>
   );
 }
@@ -270,6 +401,7 @@ function ConfigurationDetail({ configuration }: { configuration: ConfigurationSo
 export function SourcesPage() {
   const query = useSources();
   const [searchParams, setSearchParams] = useSearchParams();
+  const [removalTarget, setRemovalTarget] = useState<RemovalTarget | null>(null);
   const configurations = query.data?.configurations ?? [];
   const requested = searchParams.get("config");
   const selected = configurations.find((item) => item.id === requested) ?? configurations[0];
@@ -317,14 +449,23 @@ export function SourcesPage() {
           <div className="references-title">Общие источники</div>
           <div className="reference-list">
             {query.data?.references.length
-              ? query.data.references.map((source) => <ReferenceRow source={source} key={source.id} />)
+              ? query.data.references.map((source) => (
+                <ReferenceRow
+                  source={source}
+                  key={source.id}
+                  onRemove={query.data.permissions.admin ? setRemovalTarget : undefined}
+                />
+              ))
               : <span className="reference-empty">Справочники не загружены</span>}
           </div>
         </aside>
 
         <main className="sources-detail">
           {selected ? (
-            <ConfigurationDetail configuration={selected} />
+            <ConfigurationDetail
+              configuration={selected}
+              onRemove={query.data?.permissions.admin ? setRemovalTarget : undefined}
+            />
           ) : (
             <section className="sources-empty">
               <Boxes size={34} aria-hidden="true" />
@@ -336,12 +477,17 @@ export function SourcesPage() {
       </div>
 
       {query.data?.permissions.admin && (
-        <section className="admin-next-block">
-          <span className="eyebrow">Следующий согласуемый блок</span>
-          <strong>Загрузка, входящие выгрузки и удаление</strong>
-          <p>Административные действия получат отдельную область, прогресс и явные подтверждения.</p>
-        </section>
+        <SourcesAdminPanel
+          onRequestForget={(path) => setRemovalTarget({
+            operation: "orphan",
+            id: path,
+            title: path,
+            impact: "Будет удалён исходный файл, который сейчас не заявлен ни одним источником. Если индекс понадобится построить заново, файл придётся получить повторно.",
+          })}
+        />
       )}
+
+      {removalTarget && <RemovalDialog target={removalTarget} onClose={() => setRemovalTarget(null)} />}
     </div>
   );
 }

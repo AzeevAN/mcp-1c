@@ -6,12 +6,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
+import shutil
+import tempfile
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
 from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import UploadFile
+from starlette.formparsers import MultiPartException
 from starlette.requests import Request
 from starlette.responses import (
     FileResponse,
@@ -21,14 +26,15 @@ from starlette.responses import (
 )
 from starlette.routing import Route
 
-from . import coverage_log, tools
-from .dashboard import _authorized, _session_level, can_read
+from . import coverage_log, dashboard as classic_dashboard, tools
+from .dashboard import _authorized, _csrf_denied, _session_level, can_read
 from .registry import (
     KIND_EXTENSION,
     KIND_MODULES,
     KIND_QUERY,
     KIND_SYNTAX,
     Registry,
+    RegistryError,
 )
 
 DASHBOARD_OFF = "off"
@@ -185,6 +191,98 @@ def _sources_payload(
     }
 
 
+def _job_payload(job) -> dict:
+    def value(name: str):
+        return job[name] if isinstance(job, dict) else getattr(job, name)
+
+    return {
+        "name": str(value("name")),
+        "size": int(value("size")),
+        "state": str(value("state")),
+        "error": str(value("error")),
+    }
+
+
+def _admin_sources_payload(prepared) -> dict:
+    """Административная часть снимка без второго обхода живого Registry."""
+    from .incoming import (
+        STATE_FAILED,
+        STATE_NEW,
+        STATE_STALE,
+        STATE_UPDATED,
+    )
+
+    actionable = {STATE_NEW, STATE_UPDATED, STATE_STALE, STATE_FAILED}
+    configurations = list(prepared.sources.configuration_names)
+    incoming = []
+    for row in prepared.incoming:
+        can_parse = (
+            row.state in actionable
+            and not row.settling
+            and bool(configurations)
+        )
+        incoming.append(
+            {
+                "name": row.name,
+                "size": row.size,
+                "state": row.state,
+                "detail": row.detail,
+                "settling": row.settling,
+                "can_parse": can_parse,
+                "action": (
+                    "reparse"
+                    if row.state in (STATE_UPDATED, STATE_STALE)
+                    else "parse"
+                ),
+            }
+        )
+    return {
+        "api_version": "v1",
+        "limits": {"upload_bytes": classic_dashboard.MAX_UPLOAD},
+        "configuration_names": configurations,
+        "jobs": [_job_payload(job) for job in reversed(prepared.jobs)],
+        "incoming": incoming,
+        "incoming_exists": prepared.incoming_exists,
+        # В интерфейсе важен переносимый путь тома, а не абсолютный путь хоста.
+        "incoming_dir": "data/incoming/",
+        "orphans": [
+            {"path": row.relative, "size": row.size}
+            for row in prepared.orphans
+        ],
+        "snapshot_error": prepared.sources_error,
+    }
+
+
+def _json_error(message: str, status_code: int) -> JSONResponse:
+    return JSONResponse({"error": message}, status_code=status_code)
+
+
+def _admin_denied(request: Request, *, action: str) -> JSONResponse | None:
+    if not os.environ.get("ADMIN_TOKEN", ""):
+        return _json_error(f"{action} выключено: не задан ADMIN_TOKEN.", 404)
+    if not _authorized(request):
+        return _json_error("Нужен вход администратора.", 403)
+    return None
+
+
+def _mutation_denied(request: Request, *, action: str) -> JSONResponse | None:
+    denied = _admin_denied(request, action=action)
+    if denied is not None:
+        return denied
+    csrf = _csrf_denied(request)
+    if csrf is not None:
+        return _json_error("Запрос отклонён проверкой источника.", csrf.status_code)
+    return None
+
+
+async def _json_body(request: Request) -> dict:
+    try:
+        payload = await request.json()
+    except ValueError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
 def _spa_routes(registry: Registry, static_dir: Path) -> list[Route]:
     static_dir = static_dir.resolve()
 
@@ -255,6 +353,237 @@ def _spa_routes(registry: Registry, static_dir: Path) -> list[Route]:
             )
         return JSONResponse(payload)
 
+    async def admin_sources_api(request: Request) -> JSONResponse:
+        denied = _admin_denied(request, action="Управление источниками")
+        if denied is not None:
+            return denied
+        prepared = await run_in_threadpool(
+            classic_dashboard._prepare_sources_page,
+            registry,
+            authorized=True,
+        )
+        return JSONResponse(_admin_sources_payload(prepared))
+
+    async def upload_source_api(request: Request) -> JSONResponse:
+        denied = _mutation_denied(request, action="Загрузка")
+        if denied is not None:
+            return denied
+        try:
+            form = await classic_dashboard._limited_upload_form(request)
+        except classic_dashboard._UploadTooLarge:
+            return _json_error(
+                f"Файл больше {classic_dashboard.MAX_UPLOAD // 1024 // 1024} МБ.",
+                413,
+            )
+        except MultiPartException:
+            return _json_error(
+                "Некорректная multipart-форма: разрешены один файл `file` "
+                "и флаг `allow_truncated`.",
+                400,
+            )
+
+        uploaded = form.get("file")
+        allow_truncated = str(form.get("allow_truncated", "")) == "1"
+        if not isinstance(uploaded, UploadFile) or not uploaded.filename:
+            await form.close()
+            return _json_error("Файл не выбран.", 400)
+
+        name = Path(uploaded.filename).name
+        suffix = Path(name).suffix.lower()
+        if suffix not in (".zip", ".hbk"):
+            await form.close()
+            return _json_error("Принимаются только .zip и .hbk.", 400)
+
+        directory = tempfile.mkdtemp()
+        target = Path(directory) / name
+        job = classic_dashboard._start_job(name, 0)
+        try:
+            size = 0
+            with target.open("wb") as output:
+                while True:
+                    chunk = await uploaded.read(classic_dashboard.CHUNK)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    job["size"] = size
+                    if size > classic_dashboard.MAX_UPLOAD:
+                        raise classic_dashboard._UploadTooLarge
+                    output.write(chunk)
+        except classic_dashboard._UploadTooLarge:
+            shutil.rmtree(directory, ignore_errors=True)
+            classic_dashboard._JOBS.remove(job)
+            await form.close()
+            return _json_error(
+                f"Файл больше {classic_dashboard.MAX_UPLOAD // 1024 // 1024} МБ.",
+                413,
+            )
+        except OSError as error:
+            shutil.rmtree(directory, ignore_errors=True)
+            classic_dashboard._JOBS.remove(job)
+            await form.close()
+            return _json_error(f"Не удалось принять файл: {error}", 500)
+        await form.close()
+
+        task = asyncio.create_task(
+            run_in_threadpool(
+                classic_dashboard._run_job,
+                registry,
+                job,
+                directory,
+                target,
+                suffix,
+                allow_truncated=allow_truncated,
+            )
+        )
+        classic_dashboard._ФОНОВЫЕ.add(task)
+        task.add_done_callback(classic_dashboard._ФОНОВЫЕ.discard)
+        return JSONResponse({"job": _job_payload(job)}, status_code=202)
+
+    async def parse_incoming_api(request: Request) -> JSONResponse:
+        denied = _mutation_denied(request, action="Разбор")
+        if denied is not None:
+            return denied
+
+        from . import intake
+        from .incoming import SETTLE_SECONDS
+
+        payload = await _json_body(request)
+        raw_name = str(payload.get("name", ""))
+        name = Path(raw_name).name
+        if not name or name != raw_name:
+            return _json_error("Входящая выгрузка не найдена.", 404)
+        scanner = classic_dashboard._scanner(registry)
+        archive = registry.incoming_dir / name
+        if not archive.is_file():
+            return _json_error("Входящая выгрузка не найдена.", 404)
+
+        busy = scanner.running
+        if busy:
+            job = classic_dashboard._start_job(name, archive.stat().st_size)
+            job["state"] = classic_dashboard.JOB_FAILED
+            job["error"] = (
+                "уже идёт разбор другой выгрузки ("
+                + ", ".join(sorted(busy))
+                + ") — одновременно разбирается не больше одной"
+            )
+            return JSONResponse(
+                {"error": job["error"], "job": _job_payload(job)},
+                status_code=409,
+            )
+        if scanner.дописывается(archive):
+            job = classic_dashboard._start_job(name, archive.stat().st_size)
+            job["state"] = classic_dashboard.JOB_FAILED
+            job["error"] = (
+                f"{name}: файл изменялся только что — похоже, копирование ещё "
+                f"идёт. Повторите через {int(SETTLE_SECONDS)} с."
+            )
+            return JSONResponse(
+                {"error": job["error"], "job": _job_payload(job)},
+                status_code=409,
+            )
+
+        job = classic_dashboard._start_job(name, archive.stat().st_size)
+        try:
+            await run_in_threadpool(intake.planned_size, archive)
+        except Exception as error:
+            job["state"] = classic_dashboard.JOB_FAILED
+            job["error"] = f"{archive.name}: не похоже на zip-архив ({error})"
+            await run_in_threadpool(scanner.note_failure, archive, job["error"])
+            return JSONResponse(
+                {"error": job["error"], "job": _job_payload(job)},
+                status_code=400,
+            )
+
+        configuration = str(payload.get("configuration", "")).strip()
+        if configuration and configuration not in registry.snapshot().configurations:
+            job["state"] = classic_dashboard.JOB_FAILED
+            job["error"] = (
+                f"конфигурации «{configuration}» нет в реестре — выберите "
+                "загруженную конфигурацию."
+            )
+            await run_in_threadpool(scanner.note_failure, archive, job["error"])
+            return JSONResponse(
+                {"error": job["error"], "job": _job_payload(job)},
+                status_code=400,
+            )
+
+        started, busy = scanner.try_start(name)
+        if not started:
+            job["state"] = classic_dashboard.JOB_FAILED
+            job["error"] = (
+                "уже идёт разбор другой выгрузки ("
+                + ", ".join(busy)
+                + ") — одновременно разбирается не больше одной"
+            )
+            return JSONResponse(
+                {"error": job["error"], "job": _job_payload(job)},
+                status_code=409,
+            )
+        task = asyncio.create_task(
+            run_in_threadpool(
+                classic_dashboard._run_incoming,
+                registry,
+                scanner,
+                job,
+                archive,
+                configuration or None,
+            )
+        )
+        classic_dashboard._ФОНОВЫЕ.add(task)
+        task.add_done_callback(classic_dashboard._ФОНОВЫЕ.discard)
+        return JSONResponse({"job": _job_payload(job)}, status_code=202)
+
+    async def clear_jobs_api(request: Request) -> JSONResponse:
+        denied = _mutation_denied(request, action="Очистка журнала")
+        if denied is not None:
+            return denied
+        completed = [
+            job
+            for job in classic_dashboard._JOBS
+            if job["state"]
+            in (classic_dashboard.JOB_DONE, classic_dashboard.JOB_FAILED)
+        ]
+        for job in completed:
+            classic_dashboard._JOBS.remove(job)
+        return JSONResponse({"cleared": len(completed)})
+
+    async def remove_source_api(request: Request) -> JSONResponse:
+        denied = _mutation_denied(request, action="Удаление")
+        if denied is not None:
+            return denied
+        payload = await _json_body(request)
+        source_id = str(payload.get("id", ""))
+        if not source_id or payload.get("confirmation") != source_id:
+            return _json_error("Не подтверждено точное имя источника.", 400)
+        try:
+            await run_in_threadpool(registry.remove, source_id)
+            await run_in_threadpool(registry.save)
+        except RegistryError as error:
+            return _json_error(str(error), 400)
+        return JSONResponse({"removed": source_id})
+
+    async def forget_source_api(request: Request) -> JSONResponse:
+        denied = _mutation_denied(request, action="Удаление файла")
+        if denied is not None:
+            return denied
+        payload = await _json_body(request)
+        given = str(payload.get("path", ""))
+        if not given or payload.get("confirmation") != given:
+            return _json_error("Не подтверждено точное имя файла.", 400)
+        orphan_sources = await run_in_threadpool(registry.orphan_sources)
+        allowed = {
+            path.relative_to(registry.data_dir).as_posix(): path
+            for path, _ in orphan_sources
+        }
+        target = allowed.get(given)
+        if target is None:
+            return _json_error("Такого неиспользуемого файла нет.", 404)
+        try:
+            await run_in_threadpool(target.unlink)
+        except OSError as error:
+            return _json_error(str(error), 400)
+        return JSONResponse({"forgotten": given})
+
     async def spa_page(request: Request):
         if request.url.path != "/login" and not can_read(request):
             target = request.url.path
@@ -298,6 +627,42 @@ def _spa_routes(registry: Registry, static_dir: Path) -> list[Route]:
             coverage_api,
             methods=["GET"],
             name="dashboard_source_coverage",
+        ),
+        Route(
+            "/api/v1/sources/admin",
+            admin_sources_api,
+            methods=["GET"],
+            name="dashboard_sources_admin",
+        ),
+        Route(
+            "/api/v1/sources/upload",
+            upload_source_api,
+            methods=["POST"],
+            name="dashboard_source_upload",
+        ),
+        Route(
+            "/api/v1/sources/incoming/parse",
+            parse_incoming_api,
+            methods=["POST"],
+            name="dashboard_incoming_parse",
+        ),
+        Route(
+            "/api/v1/sources/jobs/clear",
+            clear_jobs_api,
+            methods=["POST"],
+            name="dashboard_source_jobs_clear",
+        ),
+        Route(
+            "/api/v1/sources/remove",
+            remove_source_api,
+            methods=["POST"],
+            name="dashboard_source_remove",
+        ),
+        Route(
+            "/api/v1/sources/forget",
+            forget_source_api,
+            methods=["POST"],
+            name="dashboard_source_forget",
         ),
         Route(
             "/assets/{path:path}",

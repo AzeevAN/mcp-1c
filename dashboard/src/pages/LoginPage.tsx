@@ -62,7 +62,7 @@ export function LoginPage() {
           <label htmlFor="token">Токен доступа</label>
           <div className="token-field">
             <KeyRound size={18} aria-hidden="true" />
-            <input id="token" name="token" type="password" autoComplete="current-password" required />
+            <input id="token" name="token" type="password" autoComplete="off" required />
           </div>
           {error && <div className="login-error" role="alert">{error}</div>}
           <button type="submit" disabled={pending}>

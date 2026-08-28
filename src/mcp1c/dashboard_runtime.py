@@ -618,7 +618,14 @@ def _spa_routes(registry: Registry, static_dir: Path) -> list[Route]:
     async def sources_api(request: Request) -> JSONResponse:
         if not can_read(request):
             return JSONResponse({"error": "Нужен токен чтения."}, status_code=401)
-        snapshot = await run_in_threadpool(tools.sources_snapshot, registry)
+        try:
+            snapshot = await run_in_threadpool(tools.sources_snapshot, registry)
+        except RegistryError as error:
+            # Публикация нового поколения может дважды обогнать CAS снимка.
+            # Это ожидаемый конфликт чтения, а не авария сервера.
+            if str(error).startswith("Источники изменились дважды;"):
+                return _json_error(str(error), 409)
+            raise
         return JSONResponse(
             _sources_payload(snapshot, admin=_authorized(request))
         )

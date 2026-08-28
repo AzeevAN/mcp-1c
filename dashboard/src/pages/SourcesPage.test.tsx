@@ -152,6 +152,37 @@ it("переключает конфигурацию без ухода со ст�
   expect(screen.getAllByRole("link", { name: "Открыть JSON-журнал" })).toHaveLength(2);
 });
 
+it("повторяет чтение снимка после временного 409", async () => {
+  const fetchMock = vi.mocked(fetch);
+  const regularFetch = fetchMock.getMockImplementation()!;
+  let conflictReturned = false;
+  fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input) === "/api/v1/sources" && !conflictReturned) {
+      conflictReturned = true;
+      return {
+        ok: false,
+        status: 409,
+        json: async () => ({ error: "Источники изменились; повторите запрос." }),
+      } as Response;
+    }
+    return regularFetch(input, init);
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  render(
+    <MemoryRouter initialEntries={["/sources"]}>
+      <QueryClientProvider client={client}>
+        <SourcesPage />
+      </QueryClientProvider>
+    </MemoryRouter>,
+  );
+
+  expect(await screen.findByRole("heading", { name: "Отраслевая конфигурация А" })).toBeInTheDocument();
+  expect(
+    fetchMock.mock.calls.filter(([input]) => String(input) === "/api/v1/sources"),
+  ).toHaveLength(2);
+});
+
 it("показывает администратору компактную загрузку, выбор конфигурации и подтверждение удаления", async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const { container } = render(

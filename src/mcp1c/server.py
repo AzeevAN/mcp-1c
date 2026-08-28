@@ -21,11 +21,13 @@ import argparse
 import os
 import sys
 import uuid
+from functools import wraps
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Callable, ParamSpec, TypeVar
 from urllib.parse import urlencode
 
 from mcp.server import MCPServer
+from mcp.types import CallToolResult, TextContent
 from pydantic import Field
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
@@ -35,7 +37,7 @@ from . import __version__, tools
 from .auth import same_token
 from .dashboard import MAX_UPLOAD, can_read
 from .dashboard_runtime import routes as dashboard_routes
-from .registry import Registry
+from .registry import Registry, RegistryError
 
 # Лимит файла и лимит HTTP-тела различаются: multipart добавляет служебные
 # заголовки и разделители. Остальные значения соответствуют цене операций:
@@ -324,6 +326,42 @@ QUERY_VERSION_CONTRACT = (
     "фильтруются по версии платформы конфигурации."
 )
 
+_P = ParamSpec("_P")
+_T = TypeVar("_T")
+
+
+def _safe_registry_error_message(error: RegistryError) -> str:
+    """Скрыть имена локальных конфигураций в ошибке выбора для MCP."""
+    message = str(error)
+    if message.startswith(
+        ("Загружено несколько конфигураций", "Конфигурация не загружена:")
+    ):
+        return (
+            "Конфигурация не выбрана или не найдена. Сначала вызовите "
+            "`list_configurations` и передайте точное имя в параметре `config`."
+        )
+    return message
+
+
+def _expected_registry_errors(
+    function: Callable[_P, _T],
+) -> Callable[_P, _T | CallToolResult]:
+    """Вернуть ожидаемую предметную ошибку как результат ``tools/call``."""
+
+    @wraps(function)
+    def guarded(*args: _P.args, **kwargs: _P.kwargs) -> _T | CallToolResult:
+        try:
+            return function(*args, **kwargs)
+        except RegistryError as error:
+            message = _safe_registry_error_message(error)
+            return CallToolResult(
+                content=[TextContent(type="text", text=message)],
+                structured_content={"result": message},
+                is_error=True,
+            )
+
+    return guarded
+
 
 INSTRUCTIONS = f"""
 Справочник по структуре конфигураций 1С, синтаксису платформы и языку
@@ -396,6 +434,7 @@ def build_server(registry: Registry, name: str = "mcp1c") -> MCPServer:
             "имя для него берётся отсюда."
         )
     )
+    @_expected_registry_errors
     def list_configurations() -> str:
         return tools.list_configurations(registry)
 
@@ -409,6 +448,7 @@ def build_server(registry: Registry, name: str = "mcp1c") -> MCPServer:
             "порядок исполнения модулей."
         )
     )
+    @_expected_registry_errors
     def list_extensions(config: CONFIG_PARAM = None) -> str:
         return tools.list_extensions(registry, config)
 
@@ -425,6 +465,7 @@ def build_server(registry: Registry, name: str = "mcp1c") -> MCPServer:
             "правильным и падает на «поле не найдено»."
         )
     )
+    @_expected_registry_errors
     def search_objects(
         query: Annotated[str, Field(
             description="Формулировка по-человечески («расходная накладная») "
@@ -450,6 +491,7 @@ def build_server(registry: Registry, name: str = "mcp1c") -> MCPServer:
             "читаются из выгрузки в файлы только для показанных результатов."
         )
     )
+    @_expected_registry_errors
     def search_procedures(
         query: Annotated[str, Field(
             description=(
@@ -492,6 +534,7 @@ def build_server(registry: Registry, name: str = "mcp1c") -> MCPServer:
             "конфигурации; смысл его аннотации показывается явно."
         )
     )
+    @_expected_registry_errors
     def get_procedure(
         address: Annotated[str, Field(
             description=(
@@ -523,6 +566,7 @@ def build_server(registry: Registry, name: str = "mcp1c") -> MCPServer:
             "запрошенному адресу. Тела модулей не читаются."
         )
     )
+    @_expected_registry_errors
     def get_callers(
         address: Annotated[str, Field(
             description=(
@@ -557,6 +601,7 @@ def build_server(registry: Registry, name: str = "mcp1c") -> MCPServer:
             "таких имён не видно."
         )
     )
+    @_expected_registry_errors
     def get_object(
         full_name: Annotated[str, Field(
             description="Полное имя объекта: `Документ.ЧекККМ`, "
@@ -578,6 +623,7 @@ def build_server(registry: Registry, name: str = "mcp1c") -> MCPServer:
             "повторными вызовами по конкретному имени из выдачи."
         )
     )
+    @_expected_registry_errors
     def get_related(
         full_name: Annotated[str, Field(
             description="Полное имя объекта, например `Документ.ЧекККМ`.")],
@@ -591,6 +637,7 @@ def build_server(registry: Registry, name: str = "mcp1c") -> MCPServer:
             "различается состав реквизитов."
         )
     )
+    @_expected_registry_errors
     def compare_configurations(
         full_name: Annotated[str, Field(
             description="Полное имя объекта, которое ищется в обеих конфигурациях.")],
@@ -611,6 +658,7 @@ def build_server(registry: Registry, name: str = "mcp1c") -> MCPServer:
             "найденному имени."
         )
     )
+    @_expected_registry_errors
     def search_syntax(
         query: Annotated[str, Field(
             description="Что ищем: «разделить строку», «ЗаписьJSON», «StrFind» "
@@ -638,6 +686,7 @@ def build_server(registry: Registry, name: str = "mcp1c") -> MCPServer:
             "серверный метод из клиентского контекста не соберётся."
         )
     )
+    @_expected_registry_errors
     def get_syntax(
         name: Annotated[str, Field(
             description="Имя элемента платформы: `СтрНайти`, "

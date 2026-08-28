@@ -6,6 +6,7 @@ import pytest
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
+from mcp1c import tools
 from mcp1c.dashboard_runtime import (
     DASHBOARD_CLASSIC,
     DASHBOARD_OFF,
@@ -267,3 +268,33 @@ def test_sources_api_группирует_конфигурацию_модули_
     assert journal.status_code == 200
     assert journal.json()["schema_version"] == 1
     assert journal.json()["kind"] == "module_coverage"
+
+
+def test_sources_api_при_двойной_смене_поколения_просит_повторить(
+    tmp_path, monkeypatch
+):
+    """Публикация нового поколения не должна превращаться во внешний 500."""
+    registry = Registry(tmp_path / "data")
+    monkeypatch.setattr(
+        tools,
+        "_sources_snapshot_is_current",
+        lambda registry, capture: False,
+    )
+    app = Starlette(
+        routes=routes(
+            registry,
+            mode=DASHBOARD_SPA,
+            static_dir=tmp_path / "dashboard-dist",
+        )
+    )
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.get("/api/v1/sources")
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "error": (
+            "Источники изменились дважды; повторите запрос после завершения "
+            "загрузки."
+        )
+    }

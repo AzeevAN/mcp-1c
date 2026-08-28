@@ -8,7 +8,10 @@
 
 from __future__ import annotations
 
+import anyio
 import pytest
+from mcp import ClientSession
+from mcp.shared.memory import create_client_server_memory_streams
 
 from mcp1c.registry import Registry
 from mcp1c.server import INSTRUCTIONS, build_server
@@ -158,6 +161,56 @@ async def test_поиск_процедур_зарегистрирован_с_п�
     assert "list_configurations" in свойства["config"]["description"]
     assert свойства["limit"]["minimum"] == 1
     assert свойства["limit"]["maximum"] == 50
+
+
+async def test_tools_call_возвращает_ожидаемую_ошибку_без_исключения_и_имён(
+    tmp_path, caplog
+):
+    """Ошибка выбора конфигурации остаётся результатом tools/call, не 500."""
+    registry = Registry(tmp_path / "data")
+    for номер in ("А", "Б"):
+        incoming = tmp_path / f"config-{номер}"
+        incoming.mkdir()
+        registry.add_configuration(
+            write_export(
+                incoming,
+                build_configuration(name=f"ОтраслеваяКонфигурация{номер}"),
+            )
+        )
+    server = build_server(registry)
+
+    async with create_client_server_memory_streams() as (
+        client_streams,
+        server_streams,
+    ):
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(
+                server._lowlevel_server.run,
+                *server_streams,
+                server._lowlevel_server.create_initialization_options(),
+            )
+            try:
+                async with ClientSession(*client_streams) as session:
+                    await session.initialize()
+                    result = await session.call_tool(
+                        "list_extensions",
+                        {"config": "__missing__"},
+                    )
+            finally:
+                tasks.cancel_scope.cancel()
+
+    assert result.is_error is True
+    assert result.structured_content == {
+        "result": (
+            "Конфигурация не выбрана или не найдена. Сначала вызовите "
+            "`list_configurations` и передайте точное имя в параметре `config`."
+        )
+    }
+    text = result.content[0].text
+    assert text == result.structured_content["result"]
+    assert "Error executing tool" not in text
+    assert "ОтраслеваяКонфигурация" not in caplog.text
+    assert "Traceback" not in caplog.text
 
 
 async def test_карточка_процедуры_зарегистрирована_с_английскими_параметрами(

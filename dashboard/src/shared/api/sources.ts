@@ -68,13 +68,19 @@ export type SourcesResponse = {
   references: SourceItem[];
 };
 
+class SourcesApiError extends Error {
+  constructor(readonly status: number) {
+    super(`API источников ответил ${status}.`);
+  }
+}
+
 async function getSources(): Promise<SourcesResponse> {
   const response = await fetch("/api/v1/sources", {
     headers: { accept: "application/json" },
     credentials: "same-origin",
   });
   if (!response.ok) {
-    throw new Error(`API источников ответил ${response.status}.`);
+    throw new SourcesApiError(response.status);
   }
   return response.json() as Promise<SourcesResponse>;
 }
@@ -83,6 +89,11 @@ export function useSources() {
   return useQuery({
     queryKey: ["sources"],
     queryFn: getSources,
+    retry: (failureCount, error) =>
+      error instanceof SourcesApiError && error.status === 409
+        ? failureCount < 5
+        : failureCount < 3,
+    retryDelay: (attempt) => Math.min(100 * 2 ** attempt, 500),
     refetchInterval: (query) =>
       query.state.data?.configurations.some((configuration) =>
         configuration.corpora.some((corpus) => corpus.phase === "building"),

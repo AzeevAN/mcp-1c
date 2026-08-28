@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
 
@@ -58,6 +58,10 @@ const configurationSource = (id: string) => ({
 });
 
 beforeEach(() => {
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: vi.fn().mockResolvedValue(undefined) },
+  });
   vi.stubGlobal(
     "fetch",
     vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
@@ -180,6 +184,81 @@ it("показывает администратору компактную за�
   expect(screen.getByRole("dialog", { name: "Удалить «Отраслевая конфигурация А»?" })).toBeInTheDocument();
   expect(screen.getByText(/каскадно удалены структура конфигурации/)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Удалить без возможности отмены" })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Скопировать точное имя" }));
+  await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith("Отраслевая конфигурация А"));
+  expect(screen.getByRole("button", { name: "Точное имя скопировано" })).toBeInTheDocument();
+});
+
+it("удаляет файл вне реестра через простое подтверждение без ввода пути", async () => {
+  const orphanPath = "sources/configurations/source-очень-длинный-идентификатор.zip";
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path === "/api/v1/sources/admin") {
+        return {
+          ok: true,
+          json: async () => ({
+            api_version: "v1",
+            limits: { upload_bytes: 500 * 1024 * 1024 },
+            configuration_names: ["Отраслевая конфигурация А"],
+            jobs: [],
+            incoming: [],
+            incoming_exists: true,
+            incoming_dir: "data/incoming/",
+            orphans: [{ path: orphanPath, size: 1024 }],
+            snapshot_error: "",
+          }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          api_version: "v1",
+          permissions: { read: true, admin: true },
+          configurations: [
+            {
+              id: "Отраслевая конфигурация А",
+              version: "1.0",
+              platform: "8.3.23.1997",
+              objects: 120,
+              edges: 640,
+              loaded_at: "2026-08-28T09:00:00+00:00",
+              notes: [],
+              source: configurationSource("Отраслевая конфигурация А"),
+              corpora: [],
+            },
+          ],
+          references: [],
+        }),
+      };
+    }),
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  render(
+    <MemoryRouter initialEntries={["/sources"]}>
+      <QueryClientProvider client={client}>
+        <SourcesPage />
+      </QueryClientProvider>
+    </MemoryRouter>,
+  );
+
+  fireEvent.click(await screen.findByRole("button", { name: "Удалить файл" }));
+  const dialog = screen.getByRole("dialog", { name: "Удалить исходный файл?" });
+  expect(within(dialog).queryByRole("textbox")).not.toBeInTheDocument();
+  expect(within(dialog).queryByText(orphanPath)).not.toBeInTheDocument();
+  const remove = within(dialog).getByRole("button", { name: "Удалить файл" });
+  expect(remove).toBeEnabled();
+  fireEvent.click(remove);
+  await waitFor(() => {
+    const request = vi.mocked(fetch).mock.calls.find(([input]) => String(input) === "/api/v1/sources/forget");
+    expect(request).toBeDefined();
+    expect(JSON.parse(String(request?.[1]?.body))).toEqual({
+      path: orphanPath,
+      confirmation: orphanPath,
+    });
+  });
 });
 
 it("обновляет корпуса после перехода фоновой загрузки в готово", async () => {

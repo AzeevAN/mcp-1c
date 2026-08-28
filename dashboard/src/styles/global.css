@@ -1995,9 +1995,28 @@ h2 {
 }
 
 .confirmation-field code {
+  min-width: 0;
+  flex: 1 1 260px;
   overflow-wrap: anywhere;
   color: var(--red-deep);
   font-size: 11px;
+}
+
+.confirmation-name {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.confirmation-copy-button {
+  min-height: 32px;
+  flex: 0 0 auto;
+  padding: 6px 10px;
+}
+
+.confirmation-copy-error {
+  color: var(--red-deep);
+  font-size: 10px;
 }
 
 .confirmation-field input {

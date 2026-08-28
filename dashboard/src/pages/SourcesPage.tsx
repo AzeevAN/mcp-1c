@@ -2,7 +2,9 @@ import {
   AlertTriangle,
   Boxes,
   Braces,
+  Check,
   ChevronDown,
+  Copy,
   FileJson,
   GitFork,
   Layers3,
@@ -356,8 +358,20 @@ function RemovalDialog({
   const removeSource = useRemoveSource();
   const forgetSource = useForgetSource();
   const [confirmation, setConfirmation] = useState("");
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const mutation = target.operation === "source" ? removeSource : forgetSource;
-  const confirmed = confirmation === target.id;
+  const requiresExactName = target.operation === "source";
+  const confirmed = !requiresExactName || confirmation === target.id;
+
+  const copyExactName = async () => {
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("Clipboard API недоступен");
+      await navigator.clipboard.writeText(target.id);
+      setCopyState("copied");
+    } catch {
+      setCopyState("failed");
+    }
+  };
 
   const remove = async () => {
     if (!confirmed) return;
@@ -379,18 +393,45 @@ function RemovalDialog({
         </button>
         <span className="removal-icon"><Trash2 size={22} /></span>
         <span className="eyebrow">Необратимое действие</span>
-        <h2 id="removal-title">Удалить «{target.title}»?</h2>
+        <h2 id="removal-title">
+          {target.operation === "orphan" ? "Удалить исходный файл?" : `Удалить «${target.title}»?`}
+        </h2>
         <p>{target.impact}</p>
-        <label className="confirmation-field">
-          <span>Для подтверждения введите точное имя:</span>
-          <code>{target.id}</code>
-          <input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="off" />
-        </label>
+        {requiresExactName && (
+          <div className="confirmation-field">
+            <label htmlFor="removal-confirmation">Для подтверждения введите точное имя:</label>
+            <div className="confirmation-name">
+              <code title={target.id}>{target.id}</code>
+              <button
+                className="button-secondary confirmation-copy-button"
+                type="button"
+                onClick={copyExactName}
+                aria-label={copyState === "copied" ? "Точное имя скопировано" : "Скопировать точное имя"}
+              >
+                {copyState === "copied" ? <Check size={15} aria-hidden="true" /> : <Copy size={15} aria-hidden="true" />}
+                {copyState === "copied" ? "Скопировано" : "Копировать"}
+              </button>
+            </div>
+            <input
+              id="removal-confirmation"
+              value={confirmation}
+              onChange={(event) => setConfirmation(event.target.value)}
+              autoComplete="off"
+            />
+            {copyState === "failed" && (
+              <span className="confirmation-copy-error" role="status">
+                Не удалось скопировать автоматически — имя можно выделить вручную.
+              </span>
+            )}
+          </div>
+        )}
         {mutation.isError && <div className="admin-feedback is-danger">{mutation.error instanceof Error ? mutation.error.message : "Не удалось удалить."}</div>}
         <footer>
           <button className="button-secondary" type="button" onClick={onClose} disabled={mutation.isPending}>Отмена</button>
           <button className="button-danger" type="button" onClick={remove} disabled={!confirmed || mutation.isPending}>
-            {mutation.isPending ? "Удаляем…" : "Удалить без возможности отмены"}
+            {mutation.isPending
+              ? "Удаляем…"
+              : target.operation === "orphan" ? "Удалить файл" : "Удалить без возможности отмены"}
           </button>
         </footer>
       </section>
@@ -481,7 +522,7 @@ export function SourcesPage() {
           onRequestForget={(path) => setRemovalTarget({
             operation: "orphan",
             id: path,
-            title: path,
+            title: "исходный файл",
             impact: "Будет удалён исходный файл, который сейчас не заявлен ни одним источником. Если индекс понадобится построить заново, файл придётся получить повторно.",
           })}
         />

@@ -3,11 +3,11 @@ import { createBrowserRouter } from "react-router-dom";
 import { AppShell } from "./shell/AppShell";
 import { OverviewPage } from "../pages/OverviewPage";
 import { LoginPage } from "../pages/LoginPage";
-import { PlaceholderPage } from "../pages/PlaceholderPage";
 import { QueriesPage } from "../pages/QueriesPage";
 import { SourcesPage } from "../pages/SourcesPage";
 import { CardPage } from "../pages/CardPage";
 import { GraphPage } from "../pages/GraphPage";
+import { DictionaryPage } from "../pages/DictionaryPage";
 
 export const router = createBrowserRouter([
   { path: "/login", element: <LoginPage /> },
@@ -38,13 +38,7 @@ export const router = createBrowserRouter([
       },
       {
         path: "dictionary",
-        element: (
-          <PlaceholderPage
-            eyebrow="Запланировано"
-            title="Словарь"
-            description="Встроенные и локальные правила останутся разделены по происхождению."
-          />
-        ),
+        element: <DictionaryPage />,
       },
     ],
   },

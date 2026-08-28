@@ -99,7 +99,7 @@ def test_предыдущее_правило_отбора_помечено_ус�
 
     строки = сканер.scan()
 
-    assert SELECTION_VERSION == 4
+    assert SELECTION_VERSION == 5
     assert строки[0]["state"] == STATE_STALE
 
 
@@ -149,7 +149,7 @@ def test_startup_не_переразбирает_selection_v3_из_incoming_ав
     assert IncomingScanner(restored).scan()[0]["state"] == STATE_STALE
 
 
-def test_явный_reparse_selection_v4_добавляет_дескриптор_и_form_bin(tmp_path):
+def test_явный_reparse_selection_v5_сохраняет_состав_v4(tmp_path):
     input_dir = tmp_path / "input"
     input_dir.mkdir()
     registry = Registry(tmp_path / "data")
@@ -179,7 +179,7 @@ def test_явный_reparse_selection_v4_добавляет_дескриптор
 
     source = registry.add_modules(new_archive, configuration="Розница")
 
-    assert source.selection_version == 4
+    assert source.selection_version == 5
     assert (root / "Catalogs/Т/Forms/Основная.xml").read_text() == "descriptor"
     assert (root / "Catalogs/Т/Forms/Основная/Ext/Form.bin").read_bytes() == b"container"
     assert "Новая" in (root / "Catalogs/Т/Ext/ObjectModule.bsl").read_text()
@@ -189,7 +189,7 @@ def test_явный_reparse_selection_v4_добавляет_дескриптор
     )
     assert persisted_source["sha256"] == source.sha256
     assert persisted_source["origin"] == "new.zip"
-    assert persisted_source["selection_version"] == 4
+    assert persisted_source["selection_version"] == 5
 
     restarted = Registry(registry.data_dir)
     assert restarted.restore() == []

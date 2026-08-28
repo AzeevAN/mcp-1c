@@ -20,6 +20,7 @@ from mcp1c.registry import (
     Registry,
     RegistryError,
 )
+from mcp1c.structure_origin import CATALOG_FILE
 
 _NS = "http://v8.1c.ru/8.3/MDClasses"
 
@@ -264,7 +265,8 @@ def test_две_копии_одного_расширения_под_разным
     assert второй.origin == "РасширениеА-копия.zip"
     каталог = registry.extensions_dir / "Розница" / "РасширениеА"
     файлы = [p for p in каталог.rglob("*") if p.is_file()]
-    assert len(файлы) == второй.items_total == 1
+    assert второй.items_total == 1
+    assert sorted(p.name for p in файлы) == [CATALOG_FILE, "ObjectModule.bsl"]
 
 
 # -------------------------------------- распознавание упакованной конфигурации
@@ -647,7 +649,7 @@ def test_мусор_finder_не_попадает_в_отобранный_код(
     assert источник.items_total == 1
     каталог = registry.extensions_dir / "Розница" / "Доп"
     файлы = sorted(p.name for p in каталог.rglob("*") if p.is_file())
-    assert файлы == ["ObjectModule.bsl"]
+    assert файлы == [CATALOG_FILE, "ObjectModule.bsl"]
 
 
 # ------------------------------------------- отказ до замены рабочего каталога

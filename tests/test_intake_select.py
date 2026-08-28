@@ -46,7 +46,8 @@ def test_в_иерархической_берём_модули_и_формы():
 
 
 def test_иерархический_отбор_сохраняет_доказательства_контейнерных_форм():
-    assert SELECTION_VERSION == 4
+    # v5 добавляет производный каталог происхождения и сохраняет весь отбор v4.
+    assert SELECTION_VERSION == 5
     for name in (
         "Documents/Заказ/Forms/Основная.xml",
         "Documents/Заказ/Forms/Основная/Ext/Form.bin",

@@ -39,7 +39,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Callable, Iterable, Mapping, TypeVar
 
-from . import coverage_log, index_cache, modules_index
+from . import coverage_log, index_cache, modules_index, structure_origin
 from .dictionary import Dictionary
 from .extension_runtime import (
     ExtensionRuntimeError,
@@ -600,6 +600,9 @@ class LoadedModules:
     # версией загруженных метаданных.
     версия_кода: str
     каталог: modules_index.ModuleCatalog | None = None
+    # Компактное доказательство происхождения структуры публикуется тем же
+    # поколением и тем же swap, что код. Исходный ZIP после приёма не нужен.
+    структура: structure_origin.StructureCatalog | None = None
     готов: bool = True
     прогресс: tuple[int, int] = (0, 0)
     этап: tuple[int, int] = (4, 4)
@@ -2156,7 +2159,10 @@ class Registry:
 
     @staticmethod
     def _готовые_модули(
-        source: Source, корень: Path, индексы: modules_index.Индексы
+        source: Source,
+        корень: Path,
+        индексы: modules_index.Индексы,
+        структура: structure_origin.StructureCatalog | None = None,
     ) -> LoadedModules:
         """Один готовый пакет — общий путь для кэша, сборки и живой загрузки."""
         всего = len(индексы.оглавление.модули)
@@ -2169,6 +2175,11 @@ class Registry:
             поиск=индексы.поиск,
             версия_кода=source.code_version,
             каталог=индексы.каталог,
+            структура=(
+                структура
+                if структура is not None
+                else structure_origin.load(корень)
+            ),
             готов=True,
             прогресс=(всего, всего),
         )
@@ -2552,6 +2563,35 @@ class Registry:
                         f"{архив.name}: архив изменился во время распаковки; "
                         "разбор отменён."
                     )
+                сырая_структура = structure_origin.capture_archive(архив)
+                if not _архив_не_изменился(архив, отпечаток_архива):
+                    raise RegistryError(
+                        f"{архив.name}: архив изменился во время разбора "
+                        "происхождения структуры; повторите после завершения "
+                        "копирования."
+                    )
+                if kind == KIND_MODULES:
+                    структура = structure_origin.base_catalog(
+                        сырая_структура, digest
+                    )
+                else:
+                    with self._lock:
+                        базовый = self.modules.get(
+                            f"{операция.configuration}:modules"
+                        )
+                        каталог_базы = None
+                        if базовый is not None:
+                            кандидат = базовый.структура
+                            if (
+                                кандидат is not None
+                                and базовый.source.sha256
+                                == кандидат.source_sha256
+                            ):
+                                каталог_базы = кандидат
+                    структура = structure_origin.extension_catalog(
+                        сырая_структура, digest, каталог_базы
+                    )
+                structure_origin.save(временный, структура)
                 индексы = self._построить_индекс_кода(
                     архив.name,
                     временный,
@@ -2596,6 +2636,7 @@ class Registry:
                 поиск=индексы.поиск,
                 версия_кода=версия_кода,
                 каталог=индексы.каталог,
+                структура=структура,
             )
             try:
                 return self._опубликовать_операцию_модулей(
@@ -2827,6 +2868,7 @@ class Registry:
             формы=None,
             поиск=None,
             версия_кода=source.code_version,
+            структура=structure_origin.load(корень),
             готов=False,
             прогресс=(0, len(файлы_каталога)),
             этап=(1, 4),

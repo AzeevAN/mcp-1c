@@ -4,6 +4,7 @@ import { AppShell } from "./shell/AppShell";
 import { OverviewPage } from "../pages/OverviewPage";
 import { LoginPage } from "../pages/LoginPage";
 import { PlaceholderPage } from "../pages/PlaceholderPage";
+import { QueriesPage } from "../pages/QueriesPage";
 import { SourcesPage } from "../pages/SourcesPage";
 
 export const router = createBrowserRouter([
@@ -19,11 +20,25 @@ export const router = createBrowserRouter([
       },
       {
         path: "queries",
+        element: <QueriesPage />,
+      },
+      {
+        path: "object",
         element: (
           <PlaceholderPage
-            eyebrow="Запланировано"
-            title="Запросы"
-            description="Проверка поисковых формулировок останется связана с теми же индексами MCP."
+            eyebrow="Следующий предметный срез"
+            title="Карточка объекта"
+            description="Адрес результата сохранён. Содержимое карточки будет перенесено после отдельной сверки классического пути."
+          />
+        ),
+      },
+      {
+        path: "syntax",
+        element: (
+          <PlaceholderPage
+            eyebrow="Следующий предметный срез"
+            title="Карточка синтаксиса"
+            description="Адрес результата сохранён. Содержимое карточки будет перенесено после отдельной сверки классического пути."
           />
         ),
       },

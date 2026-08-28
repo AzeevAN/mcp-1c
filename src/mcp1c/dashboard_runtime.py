@@ -257,6 +257,99 @@ def _json_error(message: str, status_code: int) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status_code)
 
 
+_QUERY_SCOPE_LABELS = {
+    "objects": "Объекты",
+    "fields": "Реквизиты",
+    "syntax": "Справка и язык запросов",
+}
+
+
+def _queries_setup_payload(registry: Registry) -> dict:
+    """Стабильные настройки формы и доступность живых поисковых корпусов."""
+    snapshot = registry.snapshot()
+    names = list(snapshot.configuration_names)
+    return {
+        "api_version": "v1",
+        "configuration_names": names,
+        "default_configuration": names[0] if names else "",
+        "scopes": [
+            {
+                "id": scope,
+                "label": _QUERY_SCOPE_LABELS[scope],
+                "requires_configuration": scope != "syntax",
+            }
+            for scope in classic_dashboard.SCOPES
+        ],
+        "limits": {
+            "phrases": classic_dashboard.MAX_QUERY_PHRASES,
+            "phrase_chars": classic_dashboard.MAX_QUERY_CHARS,
+            "results_per_phrase": 5,
+        },
+        "availability": {
+            "configurations": bool(names),
+            "syntax": snapshot.syntax is not None,
+            "query_language": snapshot.query_source is not None,
+        },
+    }
+
+
+def _query_results_payload(
+    config: str,
+    scope: str,
+    phrases: list[str],
+    results: list[tuple[str, list, list]],
+) -> dict:
+    """Перевести результат общего SearchIndex в JSON без пересчёта выдачи."""
+    serialized = []
+    for phrase, hits, hidden in results:
+        alias_url = None
+        if scope != "syntax":
+            alias_url = (
+                f"/dictionary?config={quote(config)}&phrase={quote(phrase)}"
+            )
+        serialized.append(
+            {
+                "phrase": phrase,
+                "alias_url": alias_url,
+                "hits": [
+                    {
+                        "position": position,
+                        "id": hit.doc.id,
+                        "title": (
+                            getattr(hit.doc.payload, "address", "") or hit.doc.id
+                            if scope == "syntax"
+                            else hit.doc.id
+                        ),
+                        "kind": classic_dashboard._kind_title(
+                            scope, hit.doc.kind
+                        ),
+                        "score": hit.score,
+                        "reason": hit.reason,
+                        "card_url": classic_dashboard._card_link(
+                            scope, config, hit
+                        ),
+                    }
+                    for position, hit in enumerate(hits, start=1)
+                ],
+                "hidden": [
+                    {
+                        "title": getattr(hit.doc.payload, "address", "")
+                        or hit.doc.id,
+                        "reason": classic_dashboard._hidden_reason(
+                            hit.doc.payload
+                        ),
+                    }
+                    for hit in hidden
+                ],
+            }
+        )
+    return {
+        "api_version": "v1",
+        "request": {"config": config, "scope": scope, "phrases": phrases},
+        "results": serialized,
+    }
+
+
 def _admin_denied(request: Request, *, action: str) -> JSONResponse | None:
     if not os.environ.get("ADMIN_TOKEN", ""):
         return _json_error(f"{action} выключено: не задан ADMIN_TOKEN.", 404)
@@ -331,6 +424,59 @@ def _spa_routes(registry: Registry, static_dir: Path) -> list[Route]:
         return JSONResponse(
             _sources_payload(snapshot, admin=_authorized(request))
         )
+
+    async def queries_setup_api(request: Request) -> JSONResponse:
+        if not can_read(request):
+            return _json_error("Нужен токен чтения.", 401)
+        payload = await run_in_threadpool(_queries_setup_payload, registry)
+        return JSONResponse(payload)
+
+    async def queries_run_api(request: Request) -> JSONResponse:
+        if not can_read(request):
+            return _json_error("Нужен токен чтения.", 401)
+        payload = await _json_body(request)
+        config = payload.get("config", "")
+        scope = payload.get("scope", "")
+        raw_phrases = payload.get("phrases")
+        if not isinstance(config, str) or not isinstance(scope, str):
+            return _json_error("config и scope должны быть строками.", 422)
+        if scope not in classic_dashboard.SCOPES:
+            return _json_error(f"Неизвестная область поиска: {scope or '<пусто>'}.", 422)
+        if not isinstance(raw_phrases, list) or not all(
+            isinstance(phrase, str) for phrase in raw_phrases
+        ):
+            return _json_error("phrases должен быть списком строк.", 422)
+        phrases = [phrase.strip() for phrase in raw_phrases if phrase.strip()]
+        if not phrases:
+            return _json_error("Не указано ни одной фразы.", 422)
+        if len(phrases) > classic_dashboard.MAX_QUERY_PHRASES:
+            return _json_error(
+                "За один прогон принимается не более "
+                f"{classic_dashboard.MAX_QUERY_PHRASES} фраз.",
+                422,
+            )
+        if any(
+            len(phrase) > classic_dashboard.MAX_QUERY_CHARS
+            for phrase in phrases
+        ):
+            return _json_error(
+                "Каждая поисковая фраза должна содержать не более "
+                f"{classic_dashboard.MAX_QUERY_CHARS} символов.",
+                422,
+            )
+        try:
+            results = await run_in_threadpool(
+                classic_dashboard._run_queries,
+                registry,
+                config or None,
+                scope,
+                phrases,
+            )
+        except RegistryError as error:
+            return _json_error(str(error), 409)
+        except ValueError as error:
+            return _json_error(str(error), 422)
+        return JSONResponse(_query_results_payload(config, scope, phrases, results))
 
     async def coverage_api(request: Request) -> JSONResponse:
         if not can_read(request):
@@ -627,6 +773,18 @@ def _spa_routes(registry: Registry, static_dir: Path) -> list[Route]:
             coverage_api,
             methods=["GET"],
             name="dashboard_source_coverage",
+        ),
+        Route(
+            "/api/v1/queries",
+            queries_setup_api,
+            methods=["GET"],
+            name="dashboard_queries_setup",
+        ),
+        Route(
+            "/api/v1/queries",
+            queries_run_api,
+            methods=["POST"],
+            name="dashboard_queries_run",
         ),
         Route(
             "/api/v1/sources/admin",

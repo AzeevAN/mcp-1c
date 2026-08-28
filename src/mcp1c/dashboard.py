@@ -1207,16 +1207,20 @@ def _hidden_block(hidden: list) -> list[str]:
     parts = ["<h4>Скрыто фильтром версии</h4><ul>"]
     for hit in hidden:
         item = hit.doc.payload
-        if item.until:
-            причина = f"описан по версию {escape(item.until)} включительно, дальше его нет"
-        elif item.since:
-            причина = f"появился в {escape(item.since)}"
-        else:
-            причина = "недоступен в этой версии"
+        причина = escape(_hidden_reason(item))
         имя = escape(getattr(item, "address", "") or hit.doc.id)
         parts.append(f"<li><code>{имя}</code> — {причина}</li>")
     parts.append("</ul>")
     return parts
+
+
+def _hidden_reason(item) -> str:
+    """Единое человекочитаемое объяснение фильтра версии для classic и SPA."""
+    if item.until:
+        return f"описан по версию {item.until} включительно, дальше его нет"
+    if item.since:
+        return f"появился в {item.since}"
+    return "недоступен в этой версии"
 
 
 def _login_form() -> str:

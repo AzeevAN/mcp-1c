@@ -898,7 +898,7 @@ h2 {
 
 .relationship-strip {
   display: grid;
-  grid-template-columns: 1fr auto 1fr auto 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   align-items: center;
   gap: 12px;
   padding: 15px 18px;
@@ -4018,11 +4018,6 @@ h2 {
 
   .relationship-strip {
     grid-template-columns: 1fr;
-  }
-
-  .relationship-strip > svg {
-    transform: rotate(90deg);
-    justify-self: center;
   }
 
   .coverage-table {

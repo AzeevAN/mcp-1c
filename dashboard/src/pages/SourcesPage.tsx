@@ -6,7 +6,6 @@ import {
   ChevronDown,
   Copy,
   FileJson,
-  GitFork,
   Layers3,
   PackageCheck,
   Puzzle,
@@ -343,6 +342,8 @@ function ConfigurationDetail({
   configuration: ConfigurationSource;
   onRemove?: (target: RemovalTarget) => void;
 }) {
+  const extensionCount = configuration.corpora.filter((item) => item.kind === "extension").length;
+  const showRuntimeStatus = extensionCount > 0 || Boolean(configuration.extension_runtime);
   return (
     <div className="configuration-detail">
       <section className="configuration-hero">
@@ -385,12 +386,11 @@ function ConfigurationDetail({
 
       <section className="relationship-strip" aria-label="Состав конфигурации">
         <div><PackageCheck size={20} aria-hidden="true" /><span><strong>Структура</strong><small>{formatNumber(configuration.objects)} объектов</small></span></div>
-        <GitFork size={18} aria-hidden="true" />
         <div><Layers3 size={20} aria-hidden="true" /><span><strong>Основной код</strong><small>{configuration.corpora.some((item) => item.kind === "modules") ? "подключён" : "не загружен"}</small></span></div>
-        <GitFork size={18} aria-hidden="true" />
-        <div><Puzzle size={20} aria-hidden="true" /><span><strong>Расширения</strong><small>{configuration.corpora.filter((item) => item.kind === "extension").length}</small></span></div>
-        <GitFork size={18} aria-hidden="true" />
-        <div><FileJson size={20} aria-hidden="true" /><span><strong>Активность</strong><small>{configuration.extension_runtime ? "снимок" : "unknown"}</small></span></div>
+        <div><Puzzle size={20} aria-hidden="true" /><span><strong>Расширения</strong><small>{extensionCount}</small></span></div>
+        {showRuntimeStatus && (
+          <div><FileJson size={20} aria-hidden="true" /><span><strong>Снимок активности расширений</strong><small>{configuration.extension_runtime ? "загружен" : "не загружен"}</small></span></div>
+        )}
       </section>
 
       <div className="corpus-stack">

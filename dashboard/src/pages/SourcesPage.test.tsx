@@ -145,11 +145,65 @@ it("переключает конфигурацию без ухода со ст�
   fireEvent.click(screen.getByRole("button", { name: /Отраслевая конфигурация Б/ }));
 
   expect(screen.getByRole("heading", { name: "Отраслевая конфигурация Б" })).toBeInTheDocument();
+  const composition = screen.getByLabelText("Состав конфигурации");
+  expect(within(composition).getByText("Снимок активности расширений")).toBeInTheDocument();
+  expect(within(composition).getByText("не загружен")).toBeInTheDocument();
   expect(screen.getByText("Расширение Доп")).toBeInTheDocument();
   expect(screen.getAllByText("Структуры форм")).toHaveLength(1);
   fireEvent.click(screen.getByRole("button", { name: "Показать подробности Расширение Доп" }));
   expect(screen.getAllByText("Структуры форм")).toHaveLength(2);
   expect(screen.getAllByRole("link", { name: "Открыть JSON-журнал" })).toHaveLength(2);
+});
+
+it("не изображает состав конфигурации декоративными развилками", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const { container } = render(
+    <MemoryRouter initialEntries={["/sources"]}>
+      <QueryClientProvider client={client}>
+        <SourcesPage />
+      </QueryClientProvider>
+    </MemoryRouter>,
+  );
+
+  expect(await screen.findByRole("heading", { name: "Отраслевая конфигурация А" })).toBeInTheDocument();
+  expect(container.querySelectorAll(".lucide-git-fork")).toHaveLength(0);
+  expect(within(screen.getByLabelText("Состав конфигурации")).queryByText("Активность")).not.toBeInTheDocument();
+});
+
+it("показывает загруженный снимок активности расширений понятным статусом", async () => {
+  const fetchMock = vi.mocked(fetch);
+  const regularFetch = fetchMock.getMockImplementation()!;
+  fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const response = await regularFetch(input, init);
+    if (String(input) !== "/api/v1/sources") return response;
+    const payload = await response.json();
+    payload.configurations[0].extension_runtime = {
+      id: "a:extension-runtime",
+      kind: "extension-runtime",
+      platform: "8.3.23.1997",
+      items_total: 2,
+      status: "ready",
+      loaded_at: "2026-08-29T09:00:00+00:00",
+      code_version: "",
+      incomplete: false,
+      warnings: [],
+    };
+    return { ...response, json: async () => payload };
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  render(
+    <MemoryRouter initialEntries={["/sources"]}>
+      <QueryClientProvider client={client}>
+        <SourcesPage />
+      </QueryClientProvider>
+    </MemoryRouter>,
+  );
+
+  expect(await screen.findByRole("heading", { name: "Отраслевая конфигурация А" })).toBeInTheDocument();
+  const composition = screen.getByLabelText("Состав конфигурации");
+  expect(within(composition).getByText("Снимок активности расширений")).toBeInTheDocument();
+  expect(within(composition).getByText("загружен")).toBeInTheDocument();
 });
 
 it("повторяет чтение снимка после временного 409", async () => {

@@ -246,7 +246,7 @@ def _untracked_markdown_targets(
     ]
 
 
-def test_отслеживаемые_тексты_не_ссылаются_на_локальные_материалы():
+def test_публичные_тексты_не_раскрывают_внутренние_материалы():
     findings = []
     for name, text in _tracked_texts():
         for offset in _forbidden_offsets(text):
@@ -254,6 +254,25 @@ def test_отслеживаемые_тексты_не_ссылаются_на_л
             findings.append(f"{name}:{line_number}")
 
     assert findings == [], "\n".join(findings)
+
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    заголовок = "## Помочь проекту реальным примером"
+    assert заголовок in readme
+    раздел = readme.split(заголовок, 1)[1].split("\n# ", 1)[0]
+
+    for обязательное in (
+        "https://github.com/AzeevAN/mcp-1c/issues/new",
+        "какую задачу вы решали",
+        "что получили",
+        "что ожидали получить",
+        "обезличьте пример",
+        "каталога `data/`",
+    ):
+        assert обязательное in раздел
+
+    # Внутренние идентификаторы задач не перечисляются даже в самой проверке:
+    # иначе нейтральный README скрыл бы карту работ, а тест тут же раскрыл её.
+    assert re.search(r"\b[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+\b", раздел) is None
 
 
 def test_публичные_дизайны_перечислены_в_readme_и_contributing():

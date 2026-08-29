@@ -101,15 +101,15 @@ def test_readme_описывает_все_ключи_и_домены_стенд�
     assert all(domain in раздел for domain in ("syntax", "metadata", "procedures"))
 
 
-def test_readme_фиксирует_воспроизводимый_baseline_трёх_процедурных_запросов():
+def test_readme_фиксирует_воспроизводимый_baseline_шести_процедурных_запросов():
     текст = (ROOT / "docs" / "architecture.md").read_text(encoding="utf-8")
     раздел = текст.split("### Качество поиска", 1)[1].split("\n## ", 1)[0]
     строка = next(
         line for line in раздел.splitlines() if line.startswith("| Процедуры модулей |")
     )
 
-    assert "| 3 | 0% | 0% | 0% | 33,3% | 0,047619 | 0% |" in строка
-    assert "2026-08-25" in раздел
+    assert "| 6 | 0% | 0% | 0% | 16,7% | 0,024 | 0% |" in строка
+    assert "2026-08-29" in раздел
     assert "--sets modules-procedures" in раздел
     assert "три ручных" in раздел.lower()
     assert re.search(

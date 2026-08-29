@@ -40,6 +40,28 @@ def _корпус(root: Path, *, suffix: str = "") -> Path:
     return root
 
 
+def test_публичный_набор_процедур_содержит_парные_русские_и_английские_запросы():
+    def содержит(query: str, начало: str, конец: str) -> bool:
+        return any(начало <= char.casefold() <= конец for char in query)
+
+    def содержит_русский(query: str) -> bool:
+        return содержит(query, "а", "я") or "ё" in query.casefold()
+
+    suite = bench.load_curated("modules-procedures")
+    по_цели: dict[tuple[str, ...], list[str]] = {}
+    for case in suite.cases:
+        по_цели.setdefault(tuple(case.expected), []).append(case.query)
+
+    assert len(по_цели) == 3
+    for queries in по_цели.values():
+        assert len(queries) == 2
+        assert any(содержит_русский(query) for query in queries)
+        assert any(
+            содержит(query, "a", "z") and not содержит_русский(query)
+            for query in queries
+        )
+
+
 def test_стенд_считает_метрики_по_настоящему_индексу_процедур(
     tmp_path, реестр_из_кода, monkeypatch
 ):
@@ -662,14 +684,18 @@ def test_tracked_procedure_set_работает_на_синтетическом_
 ):
     suite = bench.load_curated("modules-procedures")
     names = [expected for case in suite.cases for expected in case.expected]
+    запросы_по_цели: dict[str, list[str]] = {}
+    for case in suite.cases:
+        запросы_по_цели.setdefault(case.expected[0], []).append(case.query)
     root = tmp_path / "tracked"
     module = root / "CommonModules" / "ПубличныйСтенд" / "Ext"
     module.mkdir(parents=True)
     module.joinpath("Module.bsl").write_text(
         "\n".join(
-            f"// {case.query}.\nПроцедура {case.expected[0]}() Экспорт\n"
+            "\n".join(f"// {query}." for query in queries)
+            + f"\nПроцедура {expected}() Экспорт\n"
             "КонецПроцедуры"
-            for case in suite.cases
+            for expected, queries in запросы_по_цели.items()
         ),
         encoding="utf-8",
     )
@@ -682,12 +708,26 @@ def test_tracked_procedure_set_работает_на_синтетическом_
 
     report = bench.run_procedures(registry, suite, config="Пример")
 
-    assert report.total == 3
+    assert report.total == 6
     assert all(result.rank is None or 0 <= result.rank < 10 for result in report.results)
     assert all("::" not in name and "/" not in name and "\\" not in name for name in names)
     assert all("." not in name for name in names)
-    assert [case.expected_miss for case in suite.cases] == [True, True, False]
-    assert [case.expected_rank for case in suite.cases] == [None, None, 6]
+    assert [case.expected_miss for case in suite.cases] == [
+        True,
+        True,
+        True,
+        True,
+        False,
+        True,
+    ]
+    assert [case.expected_rank for case in suite.cases] == [
+        None,
+        None,
+        None,
+        None,
+        6,
+        None,
+    ]
 
 
 @pytest.mark.parametrize("extension", [None, "Доп"], ids=["modules", "extension"])

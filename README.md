@@ -18,13 +18,13 @@
 | Синтаксис | справки нескольких версий платформы плюс язык запросов |
 | Дашборд | рабочая SPA и классический совместимый UI |
 | Авторизация | `API_TOKEN` на чтение, `ADMIN_TOKEN` на запись |
-| Тесты | `.venv/bin/python -m pytest`, 1806 |
+| Тесты | `.venv/bin/python -m pytest`, 1807 |
 
 Воспроизводимый прогон:
 
 ```bash
 .venv/bin/pip install --require-hashes -r requirements-dev-lock.txt
-.venv/bin/python -m pytest          # 1806 тестов (прогон 2026-08-29)
+.venv/bin/python -m pytest          # 1807 тестов (прогон 2026-08-29)
 ```
 
 ## Навигация

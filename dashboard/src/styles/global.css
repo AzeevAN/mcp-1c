@@ -898,7 +898,7 @@ h2 {
 
 .relationship-strip {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   align-items: center;
   gap: 12px;
   padding: 15px 18px;

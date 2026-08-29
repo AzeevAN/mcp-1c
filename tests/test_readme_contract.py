@@ -1,4 +1,4 @@
-"""Проверки самосогласованности публичного README."""
+"""Проверки самосогласованности публичных README и CONTRIBUTING."""
 
 import os
 import re
@@ -10,13 +10,17 @@ from pathlib import Path
 ROOT = Path(__file__).parents[1]
 
 
-def test_счётчики_pytest_в_readme_совпадают_с_реальной_collection():
-    текст = (ROOT / "README.md").read_text(encoding="utf-8")
-    статус = re.search(r"\| Тесты \|[^\n]*?, (\d+) \|", текст)
-    раздел = re.search(r"python -m pytest\s+# (\d+) тест(?:а|ов)?", текст)
+def test_счётчики_pytest_в_публичных_документах_совпадают_с_collection():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    contributing = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+    статус = re.search(r"\| Тесты \|[^\n]*?, (\d+) \|", readme)
+    раздел = re.search(r"python -m pytest\s+# (\d+) тест(?:а|ов)?", readme)
+    вклад = re.search(
+        r"python -m pytest\s+# (\d+) тест(?:а|ов)?", contributing
+    )
 
-    assert статус is not None and раздел is not None
-    assert статус.group(1) == раздел.group(1)
+    assert статус is not None and раздел is not None and вклад is not None
+    assert статус.group(1) == раздел.group(1) == вклад.group(1)
 
     env = {**os.environ, "PYTEST_ADDOPTS": ""}
     result = subprocess.run(

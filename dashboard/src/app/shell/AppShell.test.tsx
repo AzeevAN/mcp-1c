@@ -33,7 +33,7 @@ function renderShell(initialEntry = "/sources?config=Пример") {
 const bootstrap = (admin: boolean, sessionLevel: "read" | "admin") => ({
   api_version: "v1",
   dashboard_mode: "spa",
-  server: { status: "ok", version: "1.0.0" },
+  server: { status: "ok", version: "1.1.0" },
   permissions: { read: true, admin },
   authentication: {
     read_required: true,

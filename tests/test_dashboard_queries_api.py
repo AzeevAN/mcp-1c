@@ -101,7 +101,11 @@ def test_post_queries_api_возвращает_те_же_попадания_и_�
             json={
                 "config": "ТестоваяКонфигурация",
                 "scope": "objects",
-                "phrases": ["контрагенты", "реализация услуг"],
+                "phrases": [
+                    "контрагенты",
+                    "реализация услуг",
+                    "контрагенты реализация",
+                ],
             },
         )
 
@@ -110,7 +114,11 @@ def test_post_queries_api_возвращает_те_же_попадания_и_�
     assert payload["request"] == {
         "config": "ТестоваяКонфигурация",
         "scope": "objects",
-        "phrases": ["контрагенты", "реализация услуг"],
+        "phrases": [
+            "контрагенты",
+            "реализация услуг",
+            "контрагенты реализация",
+        ],
     }
     first = payload["results"][0]
     assert first["phrase"] == "контрагенты"
@@ -122,6 +130,14 @@ def test_post_queries_api_возвращает_те_же_попадания_и_�
     )
     assert first["alias_url"].startswith("/dictionary?config=")
     assert len(first["hits"]) <= 5
+
+    partial = payload["results"][2]
+    assert partial["hits"]
+    assert all(hit["reason"] for hit in partial["hits"])
+    assert any(
+        hit["reason"] == "совпала часть слов запроса"
+        for hit in partial["hits"]
+    )
 
 
 def test_queries_api_показывает_скрытые_версией_попадания(tmp_path):

@@ -6,7 +6,6 @@ import {
   ChevronDown,
   Copy,
   FileJson,
-  GitFork,
   Layers3,
   PackageCheck,
   Puzzle,
@@ -385,11 +384,8 @@ function ConfigurationDetail({
 
       <section className="relationship-strip" aria-label="Состав конфигурации">
         <div><PackageCheck size={20} aria-hidden="true" /><span><strong>Структура</strong><small>{formatNumber(configuration.objects)} объектов</small></span></div>
-        <GitFork size={18} aria-hidden="true" />
         <div><Layers3 size={20} aria-hidden="true" /><span><strong>Основной код</strong><small>{configuration.corpora.some((item) => item.kind === "modules") ? "подключён" : "не загружен"}</small></span></div>
-        <GitFork size={18} aria-hidden="true" />
         <div><Puzzle size={20} aria-hidden="true" /><span><strong>Расширения</strong><small>{configuration.corpora.filter((item) => item.kind === "extension").length}</small></span></div>
-        <GitFork size={18} aria-hidden="true" />
         <div><FileJson size={20} aria-hidden="true" /><span><strong>Активность</strong><small>{configuration.extension_runtime ? "снимок" : "unknown"}</small></span></div>
       </section>
 

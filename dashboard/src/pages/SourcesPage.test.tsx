@@ -152,6 +152,20 @@ it("переключает конфигурацию без ухода со ст�
   expect(screen.getAllByRole("link", { name: "Открыть JSON-журнал" })).toHaveLength(2);
 });
 
+it("не изображает состав конфигурации декоративными развилками", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const { container } = render(
+    <MemoryRouter initialEntries={["/sources"]}>
+      <QueryClientProvider client={client}>
+        <SourcesPage />
+      </QueryClientProvider>
+    </MemoryRouter>,
+  );
+
+  expect(await screen.findByRole("heading", { name: "Отраслевая конфигурация А" })).toBeInTheDocument();
+  expect(container.querySelectorAll(".lucide-git-fork")).toHaveLength(0);
+});
+
 it("повторяет чтение снимка после временного 409", async () => {
   const fetchMock = vi.mocked(fetch);
   const regularFetch = fetchMock.getMockImplementation()!;

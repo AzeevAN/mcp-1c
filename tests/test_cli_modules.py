@@ -11,12 +11,9 @@ import pytest
 from mcp1c import cli, index_cache, tools
 from mcp1c.registry import (
     KIND_MODULES,
-    KIND_QUERY,
     STATUS_ERROR,
     STATUS_LOADING,
-    STATUS_READY,
     Registry,
-    Source,
 )
 
 
@@ -348,7 +345,7 @@ def test_reg_list_различает_сборку_и_ошибку(
     assert expected in capsys.readouterr().out
 
 
-def test_reg_list_не_смешивает_metadata_query_и_код_при_remove_readd(
+def test_reg_list_не_смешивает_metadata_и_код_при_remove_readd(
     корень_кода,
     реестр_с_кодом,
     архив_кода,
@@ -358,15 +355,6 @@ def test_reg_list_не_смешивает_metadata_query_и_код_при_remove
 ):
     from conftest import build_configuration, write_export
 
-    old_query = Source(
-        id="syntax-query",
-        kind=KIND_QUERY,
-        status=STATUS_READY,
-        items_total=11,
-    )
-    with реестр_с_кодом._lock:
-        реестр_с_кодом.sources[old_query.id] = old_query
-        реестр_с_кодом.query_source = old_query
     incoming = tmp_path / "incoming-v2"
     incoming.mkdir()
     export = write_export(
@@ -384,15 +372,6 @@ def test_reg_list_не_смешивает_metadata_query_и_код_при_remove
             реестр_с_кодом.remove("Пример")
             реестр_с_кодом.add_configuration(export)
             реестр_с_кодом.add_modules(archive, configuration="Пример")
-            new_query = Source(
-                id="syntax-query",
-                kind=KIND_QUERY,
-                status=STATUS_READY,
-                items_total=22,
-            )
-            with реестр_с_кодом._lock:
-                реестр_с_кодом.sources[new_query.id] = new_query
-                реестр_с_кодом.query_source = new_query
         return real(loaded)
 
     monkeypatch.setattr(tools, "_summarize_code", summarize)
@@ -403,7 +382,6 @@ def test_reg_list_не_смешивает_metadata_query_и_код_при_remove
     output = capsys.readouterr().out
     assert "Пример  2.0" in output
     assert "Пример  1.0" not in output
-    assert "язык запросов: подключён, 22 страниц" in output
 
 
 def test_reg_list_после_двух_смен_возвращает_стабильную_ошибку(
@@ -428,44 +406,3 @@ def test_reg_list_после_двух_смен_возвращает_стабил
     error = capsys.readouterr().err
     assert "изменились дважды" in error
     assert "/private/" not in error
-
-
-def test_reg_list_после_capture_не_перечитывает_live_query_source(
-    реестр_с_кодом, monkeypatch, capsys
-):
-    old_query = Source(
-        id="syntax-query",
-        kind=KIND_QUERY,
-        status=STATUS_READY,
-        items_total=11,
-    )
-    with реестр_с_кодом._lock:
-        реестр_с_кодом.sources[old_query.id] = old_query
-        реестр_с_кодом.query_source = old_query
-    real = tools.configurations_snapshot
-    captured = False
-
-    def capture(registry):
-        nonlocal captured
-        result = real(registry)
-        captured = True
-        new_query = Source(
-            id="syntax-query",
-            kind=KIND_QUERY,
-            status=STATUS_READY,
-            items_total=99,
-        )
-        with registry._lock:
-            registry.sources[new_query.id] = new_query
-            registry.query_source = new_query
-        return result
-
-    monkeypatch.setattr(tools, "configurations_snapshot", capture)
-    monkeypatch.setattr(cli, "_registry", lambda _args: реестр_с_кодом)
-
-    assert cli.main(["reg-list"]) == 0
-
-    output = capsys.readouterr().out
-    assert captured
-    assert "язык запросов: подключён, 11 страниц" in output
-    assert "99 страниц" not in output

@@ -50,11 +50,8 @@ from .graph import Graph
 from .loader import ExportError, load
 from .model import Configuration
 from .module_content import LocatorIdentity
-from .query_parser import looks_like_query_help
-from .query_parser import parse_hbk as parse_query_hbk
 from .resource_limits import ResourceLimitError
-from .search_keys import coverage as key_coverage
-from .search_keys import platform_coverage
+from .search_keys import coverage as search_keys_coverage
 from .search import (
     SearchIndex,
     index_configuration,
@@ -65,7 +62,7 @@ from .search import (
 from .store import load_syntax, save_syntax
 from .syntax_merge import merge_syntax
 from .syntax_model import SyntaxIndex, SyntaxItem, parse_version, release
-from .syntax_parser import open_file_storage, parse_hbk
+from .syntax_parser import parse_hbk
 from .virtual_tables import TableTemplate, build_table_index
 from .v8container import V8ContainerError
 
@@ -77,7 +74,6 @@ logger = logging.getLogger(__name__)
 
 KIND_CONFIGURATION = "configuration"
 KIND_SYNTAX = "syntax"
-KIND_QUERY = "query"
 KIND_MODULES = "modules"
 KIND_EXTENSION = "extension"
 KIND_EXTENSION_RUNTIME = "extension-runtime"
@@ -387,26 +383,6 @@ def _combined_sha256(sources: Iterable["Source"]) -> str:
     return digest.hexdigest()
 
 
-def _is_query_hbk(source_path: Path) -> bool:
-    """Вид `.hbk` — по содержимому `FileStorage`, а не по имени файла.
-
-    Проверяется до разбора и до требования версии: у языка запросов версии
-    платформы в данных нет по устройству формата (`__categories__` несёт
-    только нулевые отметки), и угадывать вид позже, разбором, уже поздно —
-    к этому моменту отсутствие версии успело бы завернуть файл как ошибку.
-
-    Файл `.hbk` из-за этого открывается дважды: здесь — только заголовок и
-    список страниц, затем ещё раз внутри `parse_hbk`/`parse_query_hbk` — уже
-    разбор содержимого. Замер: 8 мс на языке запросов и 154 мс на справке
-    платформы (40 МБ) — заметно, но платит это только загрузка источника
-    человеком; при старте поднимается уже разобранный `.json.gz`, второго
-    открытия `.hbk` там нет вовсе. Экономить эти миллисекунды за счёт
-    единого прохода не стали — усложнение того не стоит.
-    """
-    with open_file_storage(source_path) as storage:
-        return looks_like_query_help(storage.namelist())
-
-
 def _platform_from_path(path: Path) -> str:
     """Версия платформы из пути: data/hbk/8.3.27.2130/shcntx_ru.hbk."""
     for part in (path.name, *reversed(path.parts[:-1])):
@@ -531,12 +507,6 @@ class LoadedSyntax:
     # Имя в нижнем регистре -> элементы. Без него точное совпадение искалось
     # перебором всех 25 тысяч элементов на каждый вызов get_syntax.
     by_name: dict[str, list[SyntaxItem]] = field(default_factory=dict)
-    # Язык запросов держится отдельно от слитого вида: у него нет версий, а
-    # `merge_syntax` требует их у каждого участника и проставляет `until`
-    # тем, кого нет в свежей справке. `index`/`by_name` выше уже включают его
-    # элементы вперемешку с платформой — `query` нужен только чтобы отличить
-    # «языка запросов нет вовсе» от «загружен, но пуст».
-    query: SyntaxIndex | None = None
     # Вид объекта -> шаблоны таблиц запроса. По той же причине, что `by_name`:
     # без него `get_object` по регистру перебирал всю справку и стоил 14,8 мс
     # против 0,04 мс на объекте без таблиц.
@@ -695,7 +665,6 @@ class RegistrySnapshot:
     configurations: Mapping[str, LoadedConfiguration]
     syntax_versions: Mapping[str, SourceSnapshot]
     syntax: LoadedSyntax | None
-    query_source: SourceSnapshot | None
     sources: Mapping[str, SourceSnapshot]
     modules: Mapping[str, RegistryCodeSnapshot]
     extension_runtime: Mapping[str, RegistryExtensionRuntimeSnapshot]
@@ -822,24 +791,12 @@ class ResolvedContext:
 
         if self.configuration is None:
             if self.syntax is not None:
-                if self.syntax.syntax.platforms:
-                    notes.append(
-                        "Конфигурация не загружена — фильтрация по версии платформы "
-                        "выключена. В выдаче есть всё, что описано в справке "
-                        f"{self.syntax.source.platform}, включая методы, которых "
-                        "может не быть в вашей версии."
-                    )
-                else:
-                    # Справки платформы нет вовсе — загружен только язык
-                    # запросов, у которого версий не бывает по устройству
-                    # формата. Прежний текст подставлял сюда пустую строку
-                    # («справке , включая методы») — врал сразу по двум
-                    # пунктам: имени нет, и версии тут в принципе не бывает.
-                    notes.append(
-                        "Синтаксис платформы недоступен — подключён только "
-                        "язык запросов. Загрузите `shcntx_ru.hbk`, чтобы "
-                        "искать по методам и свойствам платформы."
-                    )
+                notes.append(
+                    "Конфигурация не загружена — фильтрация по версии платформы "
+                    "выключена. В выдаче есть всё, что описано в справке "
+                    f"{self.syntax.source.platform}, включая методы, которых "
+                    "может не быть в вашей версии."
+                )
             return notes
 
         config = self.configuration.config
@@ -866,19 +823,6 @@ class ResolvedContext:
         if self.syntax is None:
             notes.append(
                 "Справка платформы не подключена — синтаксис недоступен."
-            )
-        elif self.syntax_relation == RELATION_NONE:
-            # Эта ветка недостижима иначе как через язык запросов: справку
-            # без версии `add_syntax` не принимает (см. проверку в
-            # `registry.py`), а случай «синтаксиса нет вовсе» отсекла ветка
-            # выше. Единственный источник, которому неоткуда взять версию
-            # платформы, — язык запросов, и старый текст («версия … не
-            # определена») звучал так, будто платформенная справка есть, но
-            # с дефектом, — тогда как её нет вовсе.
-            notes.append(
-                "Синтаксис платформы недоступен — подключён только язык "
-                "запросов. Методы и свойства платформы не найдутся, пока не "
-                "загружен `shcntx_ru.hbk`."
             )
         elif self.syntax_relation == RELATION_OLDER:
             загружены = ", ".join(self.syntax.syntax.platforms)
@@ -950,10 +894,6 @@ class Registry:
         # диске и поднимается на время сборки слитого вида.
         self.syntax_versions: dict[str, Source] = {}
         self.syntax: LoadedSyntax | None = None
-        # Справка по языку запросов — учётная запись отдельно от версий
-        # платформы: она в `syntax_versions` не попадает (см. `add_syntax`),
-        # поэтому нужен свой якорь, чтобы её не потерять.
-        self.query_source: Source | None = None
         self.sources: dict[str, Source] = {}
         # Runtime-снимок намеренно не входит ни в schema v1, ни в индекс
         # кода: это состояние конкретного сеанса и области данных на момент
@@ -1031,21 +971,12 @@ class Registry:
             )
             for platform, source in sorted(self.syntax_versions.items())
         )
-        query_row = (
-            None
-            if self.query_source is None
-            else (
-                id(self.query_source),
-                SourceSnapshot.capture(self.query_source),
-            )
-        )
         return (
             tuple(
                 (name, id(loaded))
                 for name, loaded in sorted(self.configurations.items())
             ),
             id(self.syntax) if self.syntax is not None else None,
-            query_row,
             syntax_version_rows,
             source_rows,
             module_rows,
@@ -1067,11 +998,6 @@ class Registry:
                 platform: SourceSnapshot.capture(source)
                 for platform, source in sorted(self.syntax_versions.items())
             }
-            query_source = (
-                None
-                if self.query_source is None
-                else SourceSnapshot.capture(self.query_source)
-            )
             loaded_modules = dict(sorted(self.modules.items()))
             runtime = {
                 name: RegistryExtensionRuntimeSnapshot(
@@ -1115,14 +1041,6 @@ class Registry:
             fingerprint = (
                 tuple((name, id(loaded)) for name, loaded in configurations.items()),
                 id(self.syntax) if self.syntax is not None else None,
-                (
-                    None
-                    if self.query_source is None
-                    else (
-                        id(self.query_source),
-                        SourceSnapshot.capture(self.query_source),
-                    )
-                ),
                 tuple(
                     (
                         platform,
@@ -1163,7 +1081,6 @@ class Registry:
                 configurations=MappingProxyType(configurations),
                 syntax_versions=MappingProxyType(syntax_versions),
                 syntax=self.syntax,
-                query_source=query_source,
                 sources=MappingProxyType(sources),
                 modules=MappingProxyType(modules),
                 extension_runtime=MappingProxyType(runtime),
@@ -1203,15 +1120,9 @@ class Registry:
 
     # Виды индексов, которые кэшируются для каждого рода источника.
     #
-    # `KIND_QUERY` нужен здесь, даже когда справок платформы нет вовсе: тогда
-    # `LoadedSyntax.source` в `_prepare_syntax` — сам источник языка запросов,
-    # и кэш поиска/таблицы имён ложится под его id. Без записи здесь
-    # `_cached_names()` не признал бы эти файлы своими, и `sweep` на первом
-    # же старте сносил бы кэш, который сам только что построил `restore()`.
     CACHE_KINDS = {
         KIND_CONFIGURATION: ("objects", "fields"),
         KIND_SYNTAX: ("syntax", "lookup"),
-        KIND_QUERY: ("syntax", "lookup"),
         # Четыре структуры — четыре имени, не одно общее. `sweep` считает
         # своим только то, что названо здесь; одно общее имя на все четыре
         # значило бы, что три индекса из четырёх
@@ -1220,8 +1131,7 @@ class Registry:
         KIND_MODULES: ("modules-toc", "modules-calls", "modules-forms", "modules-search"),
         # Тот же набор видов, что у модулей конфигурации: провайдер поиска
         # по коду не должен различать их источники. Без этой записи `sweep`
-        # счёл бы кэш расширения ничьим на первом же старте — ровно то, от
-        # чего предупреждает комментарий выше для KIND_QUERY.
+        # счёл бы кэш расширения ничьим на первом же старте.
         KIND_EXTENSION: ("modules-toc", "modules-calls", "modules-forms", "modules-search"),
     }
 
@@ -3051,46 +2961,23 @@ class Registry:
         keep_source: bool = True,
         known_sha256: str = "",
         rebuild: bool = True,
-        known_kind: str = "",
     ) -> Source:
-        """Принять справку платформы или языка запросов — по содержимому.
-
-        `known_kind` — вид, поднятый из `registry.json` при восстановлении:
-        распознавать его заново не нужно (и вредно — см. `restore()`), он уже
-        известен из прошлой загрузки.
-        """
+        """Принять версионную справку платформы."""
         source_path = Path(path)
         digest = known_sha256 or _sha256(source_path)
         platform = platform or _platform_from_path(source_path)
 
-        # Вид определяется до разбора и до проверки версии: у языка запросов
-        # версии в данных нет вовсе, и проверка `not platform` отвергла бы
-        # его раньше, чем выяснится, что версия ему и не нужна.
         is_index = source_path.suffix == ".gz"
         if is_index:
             syntax = load_syntax(source_path)
-            if known_kind:
-                is_query = known_kind == KIND_QUERY
-            else:
-                is_query = len(syntax) > 0 and all(
-                    item.kind.startswith("query_") for item in syntax.items.values()
-                )
-            platform = "" if is_query else (platform or syntax.max_platform)
+            platform = platform or syntax.max_platform
         else:
             try:
-                if known_kind:
-                    is_query = known_kind == KIND_QUERY
-                else:
-                    is_query = _is_query_hbk(source_path)
-                if is_query:
-                    syntax = parse_query_hbk(source_path)
-                    platform = ""
-                else:
-                    syntax = parse_hbk(source_path, platform=platform)
-                    if not platform:
-                        platform = syntax.derived_platform()
-                        if platform:
-                            syntax.platforms = [platform]
+                syntax = parse_hbk(source_path, platform=platform)
+                if not platform:
+                    platform = syntax.derived_platform()
+                    if platform:
+                        syntax.platforms = [platform]
             except (ResourceLimitError, V8ContainerError) as error:
                 raise RegistryError(f"{source_path.name}: {error}") from error
 
@@ -3098,9 +2985,8 @@ class Registry:
         # применимости всему набору, а пустая граница означает «элемент
         # актуален» — противоположное правде. Вывести версию из данных
         # удаётся не всегда: в справке 8.3.5 отметок «начиная с версии» нет
-        # ни на одной из 18 936 страниц, они появились позже. Языка запросов
-        # это не касается — версии в нём нет по устройству формата.
-        if not is_query and not platform:
+        # ни на одной из 18 936 страниц, они появились позже.
+        if not platform:
             raise RegistryError(
                 f"{source_path.name}: не удалось определить версию платформы. "
                 "В справках старых платформ версии внутри нет — укажите её при "
@@ -3123,35 +3009,17 @@ class Registry:
                 "оттуда — справки интерфейса, они не подходят."
             )
 
-        if is_query:
-            # Языконезависимый вариант (`shquery_root.hbk`) устроен структурно
-            # так же, как `shquery_ru.hbk`: те же `__categories__` и страницы
-            # секций, `looks_like_query_help` их не различает. Отличие — в
-            # текстах страниц, тем же приёмом, что и для `shcntx_root.hbk`
-            # ниже.
-            if not any(item.description for item in syntax.items.values()):
-                raise RegistryError(
-                    f"{source_path.name}: ни у одной из {len(syntax)} страниц нет "
-                    "текста. Так выглядит языконезависимый вариант "
-                    "(`shquery_root.hbk`) — в нём только дерево страниц. Нужен "
-                    "`shquery_ru.hbk` из каталога установки."
-                )
-        else:
-            # Элементы есть, но ни у одного нет описания — это `shcntx_root.hbk`:
-            # языконезависимая часть справки. Дерево страниц и английские
-            # идентификаторы там те же (25 508 элементов против 25 511 у
-            # `shcntx_ru.hbk`), поэтому проверка на пустоту его пропускает. А
-            # искать по нему нечего: ни описаний, ни русских имён, ни версий
-            # появления — значит и фильтр по версии платформы не работает.
-            if not any(item.description for item in syntax.items.values()):
-                raise RegistryError(
-                    f"{source_path.name}: ни у одного из {len(syntax)} элементов нет "
-                    "описания. Так выглядят языконезависимая часть справки "
-                    "(`shcntx_root.hbk` — дерево страниц и английские "
-                    "идентификаторы без текстов) и соседние справки платформы "
-                    "(`shlang_ru.hbk` и подобные — другая разметка). "
-                    "Нужен `shcntx_ru.hbk` из каталога установки."
-                )
+        # Элементы есть, но ни у одного нет описания — это `shcntx_root.hbk`:
+        # языконезависимая часть справки. Дерево страниц и английские
+        # идентификаторы там те же, поэтому проверка на пустоту его пропускает.
+        if not any(item.description for item in syntax.items.values()):
+            raise RegistryError(
+                f"{source_path.name}: ни у одного из {len(syntax)} элементов нет "
+                "описания. Так выглядят языконезависимая часть справки "
+                "(`shcntx_root.hbk` — дерево страниц и английские "
+                "идентификаторы без текстов) и соседние справки платформы. "
+                "Нужен `shcntx_ru.hbk` из каталога установки."
+            )
 
         if is_index:
             index_path = source_path
@@ -3163,13 +3031,13 @@ class Registry:
             # «переразобрать из сохранённого» нет, а повторная загрузка того же
             # файла отсекается по хешу. Понадобится другой разбор — файл берут
             # из каталога установки платформы, там он и лежит.
-            имя = "query-ru" if is_query else (platform or source_path.stem)
+            имя = platform or source_path.stem
             index_path = self.index_dir / "syntax" / f"{имя}.json.gz"
             save_syntax(syntax, index_path)
 
         source = Source(
-            id="syntax-query" if is_query else f"syntax-{platform or source_path.stem}",
-            kind=KIND_QUERY if is_query else KIND_SYNTAX,
+            id=f"syntax-{platform or source_path.stem}",
+            kind=KIND_SYNTAX,
             origin=source_path.name,
             sha256=digest,
             loaded_at=_now(),
@@ -3179,47 +3047,9 @@ class Registry:
             stored_path=self._relative(index_path),
         )
 
-        if not is_query:
-            # Платформенные ключи, как и ключи языка запросов ниже, привязаны
-            # к идентификаторам страниц. Проверяем каждую загружаемую версию:
-            # если дерево справки изменилось, адресный слой не должен молча
-            # перестать работать.
-            предупреждение = platform_coverage(syntax.items.keys()).as_warning()
-            if предупреждение:
-                source.warnings.append(предупреждение)
-
-        if is_query:
-            # Разбор страниц справки. Испорченная разметка одну страницу
-            # обедняет, а справку в целом оставляет рабочей — поэтому не отказ,
-            # а имя страницы вслух. Молчание здесь неотличимо от справки, в
-            # которой этого просто нет.
-            source.warnings.extend(syntax.warnings)
-
-            # Поисковые ключи привязываются к страницам по идентификатору, а он
-            # приходит из имени файла внутри `.hbk`. Справка другой сборки может
-            # дать другой набор страниц — тогда часть ключей повиснет, и поиск
-            # молча просядет до состояния «как без ключей». Расхождение говорим
-            # вслух здесь, при загрузке: молчащая деградация дороже отказа.
-            предупреждение = key_coverage(syntax.items.keys()).as_warning()
-            if предупреждение:
-                source.warnings.append(предупреждение)
-
-            # Экземпляр один на сервер: повторная загрузка заменяет прежний.
-            # В `syntax_versions` источник не попадает — у него нет версии, а
-            # `merge_syntax` на индексе без версии падает `ValueError`, и
-            # `syntax_coverage()` держал бы его вечно «лишней» справкой. В
-            # `sources` он обязан остаться — иначе `sweep_syntax` сочтёт его
-            # разобранный индекс ничьим и снесёт при следующем старте.
-            with self._lock:
-                self.sources[source.id] = source
-                self.query_source = source
-                snapshot = dict(self.syntax_versions)
-            if rebuild:
-                # Без пересборки язык запросов ляжет в `sources`, но не
-                # попадёт в поиск и таблицу имён до перезапуска — `syntax`
-                # собирается заново только здесь и в `remove()`.
-                self._apply_syntax(snapshot, preloaded_query=syntax)
-            return source
+        предупреждение = search_keys_coverage(syntax.items.keys()).as_warning()
+        if предупреждение:
+            source.warnings.append(предупреждение)
 
         with self._lock:
             # Справки разных версий стоят рядом: та же версия — это исправление
@@ -3235,29 +3065,16 @@ class Registry:
         return source
 
     @staticmethod
-    def _fingerprint(
-        versions: dict[str, "Source"], query_source: "Source | None" = None
-    ) -> tuple:
-        """Отпечаток набора источников, решающий, нужна ли пересборка `syntax`.
-
-        Язык запросов в `merge_syntax` не участвует, но подмешивается в
-        поисковый индекс и таблицу имён — без его id/sha256 здесь добавление
-        или удаление источника языка запросов не меняло бы отпечаток, и
-        `_apply_syntax` решил бы, что пересобирать нечего, подняв прежний
-        индекс без новых элементов. Тот же класс дефекта, что и с кэшем на
-        диске: код изменился, а выдача — нет.
-        """
-        return (
-            tuple(sorted((sid, source.sha256) for sid, source in versions.items())),
-            (query_source.id, query_source.sha256) if query_source is not None else None,
+    def _fingerprint(versions: dict[str, "Source"]) -> tuple:
+        """Отпечаток набора справок, решающий, нужна ли пересборка."""
+        return tuple(
+            sorted((sid, source.sha256) for sid, source in versions.items())
         )
 
     def _prepare_syntax(
         self,
         versions: dict[str, "Source"],
         preloaded: dict[str, SyntaxIndex] | None = None,
-        query_source: "Source | None" = None,
-        preloaded_query: SyntaxIndex | None = None,
     ) -> tuple[LoadedSyntax | None, list[str]]:
         """Собрать слитый вид. Дорогая часть: слияние, поисковый индекс, кэш.
 
@@ -3270,7 +3087,7 @@ class Registry:
         ронять сборку остальных — это то же правило, по которому отдельный
         источник не роняет запуск.
         """
-        if not versions and query_source is None:
+        if not versions:
             return None, []
 
         preloaded = preloaded or {}
@@ -3310,63 +3127,20 @@ class Registry:
                 merged = index if merged is None else merge_syntax([index, merged])
             живые.reverse()
 
-            # Раньше здесь был ранний `return None, problems`: без справок
-            # платформы собирать было нечего. Теперь есть второй источник —
-            # язык запросов: сам `.hbk` не объявляет версию платформы, и
-            # отсутствие справок платформы не должно мешать поднять хотя бы
-            # его. Курируемые границы элементов при этом сохраняются.
             if merged is not None and len(живые) > 1:
                 self._save_merged(merged, живые)
 
-        # Язык запросов — не версия справки: `merge_syntax` в этом не
-        # участвует (см. `LoadedSyntax`). Поднимается тем же приёмом, что и
-        # справки версий — с диска, если не передан уже разобранным.
-        query = preloaded_query
-        if query is None and query_source is not None:
-            try:
-                query = load_syntax(self._absolute(query_source.stored_path))
-            except Exception as error:
-                problems.append(
-                    f"{query_source.id}: язык запросов не читается — {error}"
-                )
-                query = None
-
-        if merged is None and query is None:
+        if merged is None:
             return None, problems
 
-        # Поиск и таблица имён строятся по обоим наборам сразу: агент задаёт
-        # один вопрос и не должен выбирать, в каком источнике искать. Слитый
-        # вид (`merged`) в это соединение не идёт — он остаётся только
-        # справкой платформы и уходит в `_save_merged` без языка запросов.
-        для_поиска = merged
-        if query is not None:
-            для_поиска = SyntaxIndex(
-                platforms=list(merged.platforms) if merged else [],
-                items={**(merged.items if merged else {}), **query.items},
-                source=(merged.source if merged else query.source),
-                language=(merged.language if merged else query.language),
-            )
-
-        # Без загруженной справки платформы «самая свежая» — это сам источник
-        # языка запросов: он тоже должен на что-то отвечать в `LoadedSyntax`
-        # даже без справки платформы, поэтому индекс собирается уже здесь.
-        newest = живые[-1] if живые else query_source
-
-        # Штамп кэша — по всему набору источников, включая язык запросов: он
-        # не входит в слияние, но входит в поисковый индекс, и без его
-        # sha256 здесь добавление или удаление языка запросов подняло бы
-        # прежний кэш индекса — имя файла кэша от этого не меняется.
-        отпечаток = _combined_sha256(живые + ([query_source] if query_source else []))
+        newest = живые[-1]
+        отпечаток = _combined_sha256(живые)
         stamp = replace(newest, sha256=отпечаток)
         loaded = LoadedSyntax(
             source=newest,
-            # Пустой `SyntaxIndex()`, если справок платформы нет вовсе —
-            # поле типизировано без `None`, а «нет платформы» и «загружена
-            # пустая» тут неразличимы и не нужны разными.
-            syntax=merged if merged is not None else SyntaxIndex(language="ru"),
-            index=self._syntax_index(для_поиска, stamp),
-            by_name=self._syntax_lookup(для_поиска, stamp),
-            query=query,
+            syntax=merged,
+            index=self._syntax_index(merged, stamp),
+            by_name=self._syntax_lookup(merged, stamp),
             tables=build_table_index(merged),
         )
         return loaded, problems
@@ -3411,26 +3185,17 @@ class Registry:
         self,
         versions: dict[str, "Source"],
         preloaded: dict[str, SyntaxIndex] | None = None,
-        preloaded_query: SyntaxIndex | None = None,
     ) -> list[str]:
         """Собрать слитый вид вне замка и подменить ссылку под ним.
 
         Если за время сборки набор справок изменился — собираем заново по
         новому набору: наружу не должен попасть вид, не соответствующий
-        списку источников. Источник языка запросов снят с `self` тем же
-        приёмом, что и справки версий: без него добавление или удаление языка
-        запросов, случившееся, пока эта сборка уже шла, было бы потеряно.
+        списку источников.
         """
-        with self._lock:
-            query_source = self.query_source
         while True:
-            prepared, problems = self._prepare_syntax(
-                versions, preloaded, query_source, preloaded_query
-            )
+            prepared, problems = self._prepare_syntax(versions, preloaded)
             with self._lock:
-                if self._fingerprint(
-                    self.syntax_versions, self.query_source
-                ) == self._fingerprint(versions, query_source):
+                if self._fingerprint(self.syntax_versions) == self._fingerprint(versions):
                     self.syntax = prepared
                     self._relation_cache.clear()
                     for problem in problems:
@@ -3441,10 +3206,7 @@ class Registry:
                             source.error = problem
                     return problems
                 versions = dict(self.syntax_versions)
-                query_source = self.query_source
-                # Разошедшийся снимок больше не годится: набор источников
-                # сменился, а разобранный текст был поднят под старый.
-                preloaded_query = None
+                preloaded = None
 
     def remove(self, source_id: str) -> None:
         """Снять источник — а для конфигурации ещё и её код.
@@ -3583,13 +3345,6 @@ class Registry:
                 elif текущий.kind == KIND_EXTENSION_RUNTIME:
                     configuration = sid.removesuffix(":extension-runtime")
                     self.extension_runtime.pop(configuration, None)
-                elif текущий.kind == KIND_QUERY:
-                    # В `syntax_versions` источника нет, но его элементы сидят
-                    # в поисковом индексе и таблице имён `self.syntax` — без
-                    # пересборки они останутся там до перезапуска.
-                    self.query_source = None
-                    self._relation_cache.clear()
-                    отложенная_справка = dict(self.syntax_versions)
                 elif self.syntax_versions.pop(sid, None) is not None:
                     self._relation_cache.clear()
                     отложенная_справка = dict(self.syntax_versions)
@@ -3631,7 +3386,6 @@ class Registry:
             with self._lock:
                 names = sorted(self.configurations)
                 syntax = self.syntax
-                query_source = self.query_source
 
                 if not names:
                     if not require_configuration and syntax is not None:
@@ -3643,14 +3397,12 @@ class Registry:
                     чего_нет = ["выгрузка структуры конфигурации"]
                     if syntax is None:
                         чего_нет.append("справка платформы")
-                    if query_source is None:
-                        чего_нет.append("справка по языку запросов")
                     raise RegistryError(
                         "Не загружено ни одной конфигурации. Не хватает: "
                         + ", ".join(чего_нет)
                         + ". Выгрузку готовит обработка из `exporter-1c/`, "
-                        "справки берутся из каталога установки платформы "
-                        "(`shcntx_ru.hbk`, `shquery_ru.hbk`); загружаются "
+                        "справка берётся из каталога установки платформы "
+                        "(`shcntx_ru.hbk`) и загружается "
                         "командой `reg-add`."
                     )
 
@@ -3941,20 +3693,21 @@ class Registry:
                     конфигурации_этого_restore[
                         source.id
                     ] = восстановленный_source
-                else:
+                elif source.kind == KIND_SYNTAX:
                     # Слитый вид собирается один раз в конце: сборка на каждой
                     # справке дала бы квадрат работы, а видел бы её только
                     # последний прогон. Вид источника передаём как сохранённый
-                    # (`known_kind`), а не распознаём заново: угадывание по
-                    # содержимому `.gz` на пустом или повреждённом индексе
-                    # может ошибиться, а сохранённый вид — уже проверенный факт.
                     self.add_syntax(
                         stored,
                         platform=source.platform,
                         keep_source=False,
                         known_sha256=source.sha256,
                         rebuild=False,
-                        known_kind=source.kind,
+                    )
+                else:
+                    problems.append(
+                        f"{source.id}: вид источника `{source.kind}` больше "
+                        "не поддерживается и снят с учёта."
                     )
             except Exception as error:  # источник не должен ронять запуск
                 problems.append(f"{source.id}: {error}")
@@ -4009,12 +3762,9 @@ class Registry:
                     f"построен — {error}"
                 )
 
-        if self.syntax_versions or self.query_source is not None:
+        if self.syntax_versions:
             # Сборка не должна ронять запуск: испорченная справка версии
             # называется в списке проблем, остальные продолжают работать.
-            # Условие срабатывает и когда справок платформы нет вовсе, но
-            # загружен язык запросов — иначе после перезапуска он оставался
-            # бы в `self.sources`, а `self.syntax` так и не собрался бы.
             try:
                 problems += self._apply_syntax(dict(self.syntax_versions))
             except Exception as error:
@@ -4082,11 +3832,7 @@ class Registry:
         allowed = {
             self._absolute(source.stored_path).resolve()
             for source in self.sources.values()
-            # Язык запросов лежит в том же каталоге
-            # (`index/syntax/query-ru.json.gz`), но в `syntax_versions` не
-            # попадает — без этой оговорки его разобранный индекс сочли бы
-            # ничьим и снесли на первом же старте.
-            if source.kind in (KIND_SYNTAX, KIND_QUERY) and source.stored_path
+            if source.kind == KIND_SYNTAX and source.stored_path
         }
         # Слитый вид источником не заявлен — он производное от всего набора.
         # Действующий оставляем, устаревшие уходят вместе с прочим мусором.

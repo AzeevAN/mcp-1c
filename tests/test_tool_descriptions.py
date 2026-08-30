@@ -113,21 +113,9 @@ async def test_поиск_отправляет_к_подробностям(ин�
     assert "get_syntax" in по_имени["search_syntax"]
 
 
-async def test_initialize_и_tools_list_честно_описывают_версии_языка_запросов(
+async def test_initialize_и_tools_list_описывают_только_справку_платформы(
     инструменты, tmp_path
 ):
-    """Два постоянных MCP-текста не должны противоречить фильтру выдачи.
-
-    В самом `shquery_ru.hbk` нет отметок версий, но это не означает, что язык
-    запросов не меняется: подтверждённые границы добавляет курируемая таблица.
-    Старый текст смешивал эти два факта и всю сессию говорил агенту, что
-    фильтр языка запросов не касается.
-    """
-    ожидаемый_контракт = (
-        "В самом `shquery_ru.hbk` версии появления не записаны; известные "
-        "границы заданы курируемой таблицей и при заданном `config` "
-        "фильтруются по версии платформы конфигурации."
-    )
     server = build_server(Registry(tmp_path / "initialize-data"))
     initialize = server._lowlevel_server.create_initialization_options()
     (поиск,) = [
@@ -135,10 +123,12 @@ async def test_initialize_и_tools_list_честно_описывают_верс
     ]
 
     assert initialize.instructions == server.instructions == INSTRUCTIONS
-    for текст in (initialize.instructions or "", поиск.description or ""):
-        assert ожидаемый_контракт in текст
-        assert "язык запросов версий не имеет" not in текст.lower()
-        assert "фильтр его не касается" not in текст.lower()
+    assert "синтаксису платформы" in (initialize.instructions or "")
+    assert "метод, свойство или объект платформы" in (поиск.description or "")
+    свойства = (поиск.input_schema or {}).get("properties") or {}
+    assert свойства["kind"]["description"].endswith(
+        "method, property, event, object, query_table, query_field."
+    )
 
 
 async def test_поиск_процедур_зарегистрирован_с_полным_контрактом(инструменты):

@@ -33,7 +33,6 @@ const sourceKindLabel: Record<SourceItem["kind"], string> = {
   extension: "Расширение",
   "extension-runtime": "Снимок активности расширений",
   syntax: "Справка платформы",
-  query: "Язык запросов",
 };
 
 const phaseView: Record<CodeCorpus["phase"], { label: string; tone: StatusTone }> = {

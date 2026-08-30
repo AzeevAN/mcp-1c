@@ -11,7 +11,7 @@ from mcp1c.dashboard import render_markdown
 from mcp1c.dashboard_runtime import DASHBOARD_SPA, routes
 from mcp1c.registry import Registry
 
-from conftest import build_configuration, query_hbk_stub, write_export, write_syntax
+from conftest import build_configuration, write_export, write_syntax
 
 
 def _client(registry: Registry, tmp_path) -> TestClient:
@@ -74,7 +74,6 @@ def test_object_card_api_возвращает_тот_же_markdown_и_безоп
 def test_syntax_card_api_работает_без_конфигурации(tmp_path):
     registry = Registry(tmp_path / "data")
     registry.add_syntax(write_syntax(tmp_path / "data" / "index" / "syntax"))
-    registry.add_syntax(query_hbk_stub(tmp_path / "incoming"))
     expected = tools.get_syntax(registry, "СтрНайти", detail="full")
 
     with _client(registry, tmp_path) as client:

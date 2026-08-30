@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+import json
+
 from mcp1c.registry import Registry
 
 from conftest import write_syntax, живой_клиент
@@ -55,6 +57,40 @@ def test_используемый_индекс_остаётся(tmp_path):
     assert свой.exists()
     assert заново.syntax is not None
     assert len(заново.syntax.syntax) == 3
+
+
+def test_устаревший_вид_источника_снимается_и_его_индекс_убирается(tmp_path):
+    """Обновление не должно оставлять источник, которого новый код не читает."""
+    data = tmp_path / "data"
+    index = data / "index" / "syntax" / "устаревший.json.gz"
+    index.parent.mkdir(parents=True)
+    index.write_bytes(b"retired derived index")
+    registry_path = data / "registry.json"
+    registry_path.write_text(
+        json.dumps(
+            {
+                "registry_version": 1,
+                "sources": [
+                    {
+                        "id": "retired-reference",
+                        "kind": "retired-reference",
+                        "status": "ready",
+                        "stored_path": "index/syntax/устаревший.json.gz",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    registry = Registry(data)
+    messages = registry.startup()
+
+    assert registry.sources == {}
+    assert not index.exists()
+    assert any("больше не поддерживается и снят с учёта" in row for row in messages)
+    saved = json.loads(registry_path.read_text(encoding="utf-8"))
+    assert saved["sources"] == []
 
 
 def test_исходные_файлы_не_трогаются(tmp_path):
@@ -193,8 +229,7 @@ def test_справка_не_копируется_в_sources(tmp_path, monkeypat
     data.mkdir()
     incoming.mkdir()
 
-    # Путь `.hbk` идёт другой веткой, чем готовый индекс, поэтому разбор
-    # подменяется: проверяем поведение реестра, а не работу парсера.
+    # Разбор подменяется: проверяем поведение реестра, а не работу парсера.
     from conftest import build_syntax
     from mcp1c import registry as registry_module
 
@@ -203,10 +238,6 @@ def test_справка_не_копируется_в_sources(tmp_path, monkeypat
     monkeypatch.setattr(
         registry_module, "parse_hbk", lambda path, platform="": build_syntax("8.3.99.1")
     )
-    # Вид теперь распознаётся до разбора и тоже читает файл — с поддельными
-    # байтами он бы упал раньше, чем дошло до подменённого `parse_hbk`.
-    monkeypatch.setattr(registry_module, "_is_query_hbk", lambda path: False)
-
     registry = Registry(data)
     registry.add_syntax(источник)
 

@@ -26,7 +26,6 @@ from .syntax_model import (
     SyntaxIndex,
     SyntaxItem,
     SyntaxParam,
-    SyntaxTable,
     SyntaxVariant,
 )
 
@@ -134,13 +133,6 @@ def _item_from_dict(raw: dict[str, Any]) -> SyntaxItem:
         until=raw.get("until", ""),
         older=older,
         variants=variants,
-        tables=[
-            SyntaxTable(
-                header=list(t.get("header") or []),
-                rows=[list(строка) for строка in t.get("rows") or []],
-            )
-            for t in raw.get("tables") or []
-        ],
         examples=list(raw.get("examples") or []),
         see_also=list(raw.get("see_also") or []),
         members={k: list(v) for k, v in (raw.get("members") or {}).items()},

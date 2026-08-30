@@ -11,7 +11,7 @@ from mcp1c.dashboard_runtime import DASHBOARD_SPA, routes
 from mcp1c.registry import Registry
 from mcp1c.search import MAX_QUERY_CHARS
 
-from conftest import build_configuration, query_hbk_stub, write_export, write_syntax
+from conftest import build_configuration, write_export, write_syntax
 
 
 def _client(registry: Registry, tmp_path) -> TestClient:
@@ -54,7 +54,7 @@ def test_get_queries_api_описывает_пустое_состояние_и_�
             {"id": "fields", "label": "Реквизиты", "requires_configuration": True},
             {
                 "id": "syntax",
-                "label": "Справка и язык запросов",
+                "label": "Справка платформы",
                 "requires_configuration": False,
             },
         ],
@@ -66,7 +66,6 @@ def test_get_queries_api_описывает_пустое_состояние_и_�
         "availability": {
             "configurations": False,
             "syntax": False,
-            "query_language": False,
         },
     }
 
@@ -93,7 +92,6 @@ def test_queries_api_требует_токен_чтения(tmp_path, monkeypatc
 def test_post_queries_api_возвращает_те_же_попадания_и_ссылки(tmp_path):
     registry = _registry(tmp_path)
     registry.add_syntax(write_syntax(tmp_path / "data" / "index" / "syntax"))
-    registry.add_syntax(query_hbk_stub(tmp_path / "incoming" / "query"))
 
     with _client(registry, tmp_path) as client:
         response = client.post(

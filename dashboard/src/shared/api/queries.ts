@@ -19,7 +19,6 @@ export type QueriesSetup = {
   availability: {
     configurations: boolean;
     syntax: boolean;
-    query_language: boolean;
   };
 };
 

@@ -19,12 +19,7 @@ from dataclasses import dataclass
 from .graph import Graph
 from .model import Configuration, Field, MetadataObject
 from .structure_origin import StructureOriginView
-from .syntax_model import (
-    KIND_TITLES,
-    SyntaxItem,
-    МЕТКА_ТАБЛИЦЫ,
-    без_меток,
-)
+from .syntax_model import KIND_TITLES, SyntaxItem
 
 BRIEF, FIELDS, FULL = "brief", "fields", "full"
 DETAIL_LEVELS = (BRIEF, FIELDS, FULL)
@@ -1007,45 +1002,6 @@ def _version_notice(item: SyntaxItem, resolution) -> list[str]:
     return out
 
 
-def _table_markdown(table) -> str:
-    """Одна таблица страницы справки — markdown-таблицей.
-
-    До разделения показа и поиска таблицы лежали в описании: ячейки размечены
-    абзацами внутри `<TD>`, и карточка печатала таблицу столбцом значений —
-    «Товар / Количество / Сантехника / 104» подряд два десятка строк.
-
-    Черта в значении экранируется: неэкранированная разрывает строку на
-    лишние колонки, и таблица разъезжается у первого же значения со знаком.
-    """
-    ширина = max([len(table.header)] + [len(строка) for строка in table.rows])
-    if not ширина:
-        return ""
-
-    def строка_разметки(ячейки: list[str]) -> str:
-        выровненные = list(ячейки) + [""] * (ширина - len(ячейки))
-        границы = " | ".join(ячейка.replace("|", "\\|") for ячейка in выровненные)
-        return f"| {границы} |"
-
-    строки = [строка_разметки(table.header), "|" + " --- |" * ширина]
-    строки += [строка_разметки(строка) for строка in table.rows]
-    return "\n".join(строки)
-
-
-def _with_tables(описание: str, item: SyntaxItem, detail: str) -> str:
-    """Подставить таблицы на их места в описании.
-
-    Место — часть смысла: на странице с двумя примерами обе таблицы в хвосте
-    карточки не дают понять, какая к какому примеру относится. В `brief`
-    таблицы не показываются вовсе — это беглый взгляд, а таблица результата
-    запроса бывает и на двадцать строк.
-    """
-    for номер, table in enumerate(item.tables):
-        метка = МЕТКА_ТАБЛИЦЫ.format(номер=номер)
-        замена = "" if detail == BRIEF else _table_markdown(table)
-        описание = описание.replace(метка, замена)
-    return без_меток(описание)
-
-
 def render_syntax_item(
     item: SyntaxItem, detail: str = FIELDS, resolution=None
 ) -> str:
@@ -1093,7 +1049,7 @@ def render_syntax_item(
     out += _version_notice(item, resolution)
 
     if item.description:
-        out.append(_with_tables(item.description, item, detail))
+        out.append(item.description)
         out.append("")
 
     base_signature = item.variants[0].signature if item.variants else ""

@@ -69,7 +69,7 @@ function writeStored(patch: Partial<StoredQueryPage>) {
 const scopeDescription: Record<QueryScope, string> = {
   objects: "Метаданные конфигурации",
   fields: "Реквизиты и измерения",
-  syntax: "Платформа и язык запросов",
+  syntax: "Справка платформы",
 };
 
 const scopeIcon = {
@@ -290,13 +290,6 @@ export function QueriesPage() {
           <span><strong>Поисковые источники пока не загружены</strong>Добавьте структуру конфигурации или справку на странице «Источники».</span>
         </section>
       )}
-      {!noneAvailable && !contract.availability.query_language && (
-        <section className="query-source-warning">
-          <BookOpenText size={20} aria-hidden="true" />
-          <span><strong>Язык запросов не подключён</strong>Поиск по платформенной справке работает, но статьи из <code>shquery_ru.hbk</code> в выдачу не попадут.</span>
-        </section>
-      )}
-
       <div className="queries-workbench">
         <form className="query-controls" onSubmit={submit}>
           <div className="query-controls-title">

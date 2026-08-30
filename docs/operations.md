@@ -208,7 +208,7 @@ PYTHONPATH=src python -m mcp1c.cli reg-get-procedure --help
 | Ключ | Значение |
 |---|---|
 | `--data` | каталог Registry |
-| `--sets` | ручные наборы через запятую, например `query-language,modules-procedures` |
+| `--sets` | ручные наборы через запятую, например `modules-procedures` |
 | `--auto` | автоматические наборы точных и одноимённых запросов |
 | `--config` | конфигурация для `metadata` и `procedures` |
 | `--extension` | отдельный корпус расширения для `procedures` |
@@ -223,7 +223,7 @@ PYTHONPATH=src python -m mcp1c.cli reg-get-procedure --help
 PYTHONPATH=src .venv/bin/python -m mcp1c.bench \
   --data data \
   --config ИмяКонфигурации \
-  --sets query-language,modules-procedures \
+  --sets roznica-metadata,modules-procedures \
   --auto \
   --limit 10 \
   --check-notes \
@@ -261,5 +261,5 @@ PYTHONPATH=src .venv/bin/python -m mcp1c.server \
 - Отдельный снимок активности расширений создаётся BSL-модулем из того же каталога и требует платформу 8.3.8+.
 - Контракт ZIP — [schema-v1.md](schema-v1.md).
 - Разделение сведений по источникам — [data-sources.md](data-sources.md).
-- Справки `shcntx_ru.hbk` и `shquery_ru.hbk` берутся из установленной платформы
-  1С; в репозитории их нет.
+- Справка `shcntx_ru.hbk` берётся из установленной платформы 1С; в репозитории
+  её нет.

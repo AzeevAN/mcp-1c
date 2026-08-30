@@ -57,7 +57,6 @@ COMMONMARK_ESCAPABLE = frozenset(r'''!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~''')
 PUBLIC_DESIGNS = (
     "docs/schema-v1.md",
     "docs/data-sources.md",
-    "docs/query-language-design.md",
     "docs/dashboard-design.md",
     "docs/modules-intake-design.md",
     "docs/modules-provider-design.md",
@@ -322,14 +321,6 @@ def test_дизайн_дашборда_описывает_текущую_реа�
     assert "registry.py    без изменений" not in text
 
 
-def test_дизайн_языка_запросов_не_выдаёт_реализованное_за_план():
-    text = (ROOT / "docs/query-language-design.md").read_text(encoding="utf-8")
-
-    assert "Статус: реализовано" in text
-    assert "Реализовано и проверено тестами" in text
-    assert "Подтверждено и **требует работы**" not in text
-
-
 @pytest.mark.parametrize(
     "example",
     [
@@ -390,7 +381,7 @@ def test_запрещённые_примеры_распознаются(example:
         "лок_ОбъектА — нейтральный синтетический идентификатор",
         "Изменение прошло независимое ревью.",
         "Критично сохранять каталог data при обновлении.",
-        "Round — функция языка запросов.",
+        "Round — функция платформы.",
         "taskbar-item — CSS-компонент интерфейса.",
         "TaskManager-worker — технический идентификатор.",
         "taskmodules-binding — слитный продуктовый идентификатор.",

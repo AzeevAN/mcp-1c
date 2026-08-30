@@ -12,10 +12,10 @@ const setup = {
   scopes: [
     { id: "objects", label: "Объекты", requires_configuration: true },
     { id: "fields", label: "Реквизиты", requires_configuration: true },
-    { id: "syntax", label: "Справка и язык запросов", requires_configuration: false },
+    { id: "syntax", label: "Справка платформы", requires_configuration: false },
   ],
   limits: { phrases: 32, phrase_chars: 4096, results_per_phrase: 5 },
-  availability: { configurations: true, syntax: true, query_language: true },
+  availability: { configurations: true, syntax: true },
 };
 
 const runResult = {
@@ -146,7 +146,7 @@ it("объясняет пустой Registry и недоступность об�
       ...setup,
       configuration_names: [],
       default_configuration: "",
-      availability: { configurations: false, syntax: false, query_language: false },
+      availability: { configurations: false, syntax: false },
     }),
   } as Response);
 
@@ -159,7 +159,7 @@ it("объясняет пустой Registry и недоступность об�
   expect(await screen.findByText("Поисковые источники пока не загружены")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Прогнать запросы" })).toBeDisabled();
   expect(screen.getByRole("radio", { name: /Объекты/ })).toBeDisabled();
-  expect(screen.getByRole("radio", { name: /Справка и язык запросов/ })).toBeDisabled();
+  expect(screen.getByRole("radio", { name: /Справка платформы/ })).toBeDisabled();
 });
 
 it("без конфигураций сразу выбирает доступный поиск по справке", async () => {
@@ -170,7 +170,7 @@ it("без конфигураций сразу выбирает доступны
       ...setup,
       configuration_names: [],
       default_configuration: "",
-      availability: { configurations: false, syntax: true, query_language: true },
+      availability: { configurations: false, syntax: true },
     }),
   } as Response);
 
@@ -180,7 +180,7 @@ it("без конфигураций сразу выбирает доступны
     </MemoryRouter>,
   );
 
-  expect(await screen.findByRole("radio", { name: /Справка и язык запросов/ })).toBeChecked();
+  expect(await screen.findByRole("radio", { name: /Справка платформы/ })).toBeChecked();
   expect(screen.getByRole("button", { name: "Прогнать запросы" })).toBeEnabled();
   expect(screen.getByRole("combobox", { name: "Конфигурация" })).toHaveValue("");
 });

@@ -52,14 +52,7 @@ from .render import (
 )
 from .search import FIELD_KIND_TITLES
 from .standard_procedure_intents import recognize_standard_procedure_intent
-from .syntax_model import (
-    KIND_QUERY_ARTICLE,
-    KIND_TITLES,
-    QUERY_LANGUAGE_KINDS,
-    SyntaxItem,
-    parse_version,
-    release,
-)
+from .syntax_model import KIND_TITLES, SyntaxItem, parse_version, release
 from .virtual_tables import virtual_tables
 
 
@@ -73,10 +66,6 @@ def health(registry: Registry, *, detailed: bool) -> dict:
     сведения о клиенте: кто у него внедрён и как называются доработки, — без
     токена отдаются только счётчики.
 
-    Справка платформы и язык запросов разведены намеренно. Прежде оба жили в
-    одном поле, и при загруженном только `shquery_ru.hbk` ответ гласил
-    `"syntax_loaded": true, "syntax": ""` — «справка есть, но сломана» вместо
-    «справки платформы нет».
     """
     snapshot = registry.snapshot()
     площадки = list(snapshot.syntax.syntax.platforms) if snapshot.syntax else []
@@ -84,7 +73,6 @@ def health(registry: Registry, *, detailed: bool) -> dict:
         "status": "ok",
         "configurations_total": len(snapshot.configurations),
         "syntax_loaded": bool(площадки),
-        "query_language_loaded": snapshot.query_source is not None,
     }
     if detailed:
         тело["configurations"] = list(snapshot.configuration_names)
@@ -93,10 +81,6 @@ def health(registry: Registry, *, detailed: bool) -> dict:
 
 
 MAX_LIMIT = 50
-# Самая большая статья по языку запросов весит 24,8 КБ — это 2–7 тысяч
-# токенов на одну. Десять таких в выдаче поиска из десяти строк съели бы
-# контекст агента; по имени статья по-прежнему отдаётся целиком (`get_syntax`).
-SNIPPET_CHARS = 400
 
 
 def _render_notes(notes: list[str]) -> str:
@@ -241,7 +225,6 @@ class _ListConfigurationsCapture:
     registry: RegistrySnapshot
     configurations: tuple[tuple[str, object], ...]
     syntax: object | None
-    query_source: object | None
     syntax_versions: tuple[tuple[str, object], ...]
     sources: tuple[tuple[object, "SourceStateRow", str], ...]
     rows: tuple[_ConfigurationCodeSnapshot, ...]
@@ -312,7 +295,6 @@ class ConfigurationsSnapshot:
     syntax_platforms: tuple[str, ...]
     syntax_source_platform: str
     syntax_items: int
-    query_pages: int | None
 
 
 _OVERRIDE_KINDS = ("Вместо", "После", "Перед", "ИзменениеИКонтроль")
@@ -761,7 +743,6 @@ def _capture_configurations_list(
     snapshot = registry.snapshot()
     configurations = tuple(snapshot.configurations.items())
     syntax = snapshot.syntax
-    query_source = snapshot.query_source
     syntax_versions = tuple(snapshot.syntax_versions.items())
     sources = tuple(
         (source, _source_state_row(source), source.stored_path)
@@ -780,7 +761,6 @@ def _capture_configurations_list(
         registry=snapshot,
         configurations=configurations,
         syntax=syntax,
-        query_source=query_source,
         syntax_versions=syntax_versions,
         sources=sources,
         rows=rows,
@@ -1229,11 +1209,6 @@ def _configurations_result(
             syntax.source.platform if syntax is not None else ""
         ),
         syntax_items=len(syntax.syntax) if syntax is not None else 0,
-        query_pages=(
-            capture.query_source.items_total
-            if capture.query_source is not None
-            else None
-        ),
     )
 
 
@@ -1309,10 +1284,9 @@ def configuration_code_states(registry: Registry) -> tuple[CodeStateRow, ...]:
 def _render_configurations_list(capture: _ListConfigurationsCapture) -> str:
     if not capture.rows:
         if capture.syntax is not None:
-            return _syntax_only_overview(capture.syntax, capture.query_source)
+            return _syntax_only_overview(capture.syntax)
         return (
-            "Не загружено ни одной конфигурации, нет ни справки платформы, ни "
-            "справки по языку запросов.\n\n"
+            "Не загружено ни одной конфигурации и нет справки платформы.\n\n"
             "Выгрузите структуру обработкой из `exporter-1c/` и загрузите архив."
         )
 
@@ -1330,10 +1304,6 @@ def _render_configurations_list(capture: _ListConfigurationsCapture) -> str:
             f"{len(context.configuration.graph.edges)}"
         )
         out.append(f"- Метаданные: да")
-        # `providers['syntax']` истинно и когда подключён только язык
-        # запросов (`LoadedSyntax` в registry.py собирает их в один объект):
-        # у языка запросов платформы нет, `syntax_platform` тогда пуст, а
-        # прежний текст на этом месте показывал «справка  — none».
         if context.syntax is not None and context.syntax_platform:
             relation = {
                 "exact": "версия совпадает с конфигурацией",
@@ -1348,12 +1318,6 @@ def _render_configurations_list(capture: _ListConfigurationsCapture) -> str:
             )
         else:
             out.append("- Синтаксис платформы: не подключён")
-        if context.syntax is not None and context.syntax.query is not None:
-            out.append(
-                f"- Язык запросов: подключён, {len(context.syntax.query)} страниц"
-            )
-        else:
-            out.append("- Язык запросов: не подключён")
         out.append(f"- Индекс кода: {_code_state_text(snapshot.modules)}")
         out.extend(
             f"> {line}"
@@ -1420,31 +1384,16 @@ def _render_configurations_list(capture: _ListConfigurationsCapture) -> str:
     return "\n".join(out).rstrip() + "\n"
 
 
-def _syntax_only_overview(syntax, query_source) -> str:
-    """Что доступно без единой загруженной конфигурации.
-
-    Справка платформы и язык запросов — самостоятельные источники (см.
-    `docs/query-language-design.md`, «Работа без справки платформы»): любой
-    из них может быть загружен один, вместе или порознь. Прежний текст
-    называл оба случая «справкой платформы» и на одном лишь языке запросов
-    печатал пустое имя платформы между парой `**` и «0 элементов» — считал
-    по слитому виду одной только платформы, который в этом сценарии пуст.
-    """
-    доступно = []
-    if syntax.syntax.platforms:
-        total = f"{len(syntax.syntax):,}".replace(",", "\u00a0")
-        доступно.append(
-            f"справка платформы **{syntax.source.platform}** "
-            f"({total} элементов)"
-        )
-    if query_source is not None:
-        доступно.append(
-            f"язык запросов ({query_source.items_total} страниц)"
-        )
+def _syntax_only_overview(syntax) -> str:
+    """Что доступно без единой загруженной конфигурации."""
+    total = f"{len(syntax.syntax):,}".replace(",", "\u00a0")
+    доступно = (
+        f"справка платформы **{syntax.source.platform}** ({total} элементов)"
+    )
 
     return (
         "# Конфигурации не загружены\n\n"
-        f"Доступно: {', '.join(доступно)}. Работают `search_syntax` и "
+        f"Доступно: {доступно}. Работают `search_syntax` и "
         "`get_syntax`, параметр `config` указывать не нужно.\n\n"
         "Фильтрации по версии платформы нет — выдача содержит всё, что "
         "описано в подключённых справках. Загрузите выгрузку структуры "
@@ -3182,15 +3131,10 @@ def get_callers(
 
 def _syntax_context(registry: Registry, config: str | None):
     context = registry.resolve(config, require_configuration=False)
-    # Каждый из двух источников самостоятелен (`docs/query-language-design.md`,
-    # «Работа без справки платформы»): справка платформы весит десятки МБ, а
-    # язык запросов — отдельный лёгкий файл. Требовать оба сразу незачем,
-    # отказ остаётся только когда не подключено ни одного.
     if context.syntax is None:
         raise RegistryError(
-            "Не подключено ни справки платформы, ни справки по языку "
-            "запросов. Загрузите `shcntx_ru.hbk` или `shquery_ru.hbk` из "
-            "каталога установки 1С."
+            "Справка платформы не подключена. Загрузите `shcntx_ru.hbk` "
+            "из каталога установки 1С."
         )
     return context
 
@@ -3231,31 +3175,25 @@ def search_syntax(
         скрытое = _hidden_block(context, filtered_out)
         if скрытое:
             head = [
-                f"# {_заголовок_выдачи(context)}: «{query}»",
+                f"# Справка платформы: «{query}»",
                 f"В версии платформы {context.platform} доступного ничего нет, "
                 "но подходящие элементы есть в других версиях.",
             ]
             return "\n".join(head + скрытое) + "\n" + _notes_block(context)
         return (
-            f"По запросу «{query}» в {_где_искали(context)} "
+            f"По запросу «{query}» в справке платформы "
             f"ничего не найдено{where}."
             + _notes_block(context)
         )
 
-    out = [f"# {_заголовок_выдачи(context)}: «{query}»"]
+    out = [f"# Справка платформы: «{query}»"]
     if context.configuration is not None:
         out.append(f"Для конфигурации {context.name}, платформа {context.platform}")
-    elif context.syntax.source.platform:
+    else:
         out.append(
             f"Справка {context.syntax.source.platform}, "
             "конфигурация не выбрана — фильтрации по версии нет"
         )
-    else:
-        # Справки платформы нет вовсе — источник только язык запросов. Без
-        # выбранной конфигурации фильтровать его курируемые границы не по чему.
-        # Прежний текст подставлял сюда пустую строку («Справка , конфигурация
-        # не выбрана») — тот же класс ошибки, что и в `list_configurations`.
-        out.append("Только язык запросов — без `config` фильтрации по версии нет")
     out.append("")
     for hit in hits:
         item: SyntaxItem = hit.doc.payload
@@ -3265,13 +3203,10 @@ def search_syntax(
             facts.append(f"с {item.since}")
         # Доступность берётся по версии конфигурации: мобильных контекстов в
         # старых платформах не существовало, а справка приписала их задним
-        # числом тысячам элементов. У языка запросов нет платформенных facts;
-        # курируемый `since` уже проверен общим фильтром. На пустом наборе
-        # платформ `facts_for` падает `AttributeError`, вызывать его для этих
-        # элементов незачем и нельзя.
+        # числом тысячам элементов.
         resolution = (
             context.syntax.syntax.facts_for(item, context.platform)
-            if context.platform and not _is_query_kind(item.kind)
+            if context.platform
             else None
         )
         availability = (
@@ -3284,72 +3219,7 @@ def search_syntax(
         if resolution is not None and not resolution.exact:
             facts.append(f"сведения по справке {resolution.platform}")
         out.append(f"  {' · '.join(facts)}")
-        if item.kind == KIND_QUERY_ARTICLE:
-            out.append(f"  {_article_snippet(item)}")
-
     return "\n".join(out + _hidden_block(context, filtered_out)) + "\n" + _notes_block(context)
-
-
-КВАЛИФИКАТОР_ЗАПРОСА = ("запрос.", "языкзапросов.", "язык запросов.")
-
-
-def _снять_квалификатор(name: str) -> tuple[str, bool]:
-    """`Запрос.СтрНайти` → («стрнайти», только язык запросов).
-
-    Одно имя живёт в двух доменах: `СтрНайти` есть и в платформе (с 8.3.6), и
-    в языке запросов. У платформенного элемента есть владелец и его можно
-    назвать `Глобальный контекст.СтрНайти`; у элемента языка запросов владельца
-    нет вовсе, и до этого квалификатора достать его по имени было нечем.
-    """
-    имя = name.strip()
-    низкое = имя.lower()
-    for приставка in КВАЛИФИКАТОР_ЗАПРОСА:
-        if низкое.startswith(приставка):
-            return имя[len(приставка):].strip().lower(), True
-    return низкое, False
-
-
-def _is_query_kind(kind: str) -> bool:
-    """Элемент языка запросов — без платформенных facts/availability.
-
-    Курируемая граница `since` у него может быть и проверяется общим фильтром.
-    Не путать с `query_table`/`query_field`: те же таблицы языка запросов, но
-    описаны в справке платформы и получают полные факты как любой её элемент.
-    """
-    return kind in QUERY_LANGUAGE_KINDS
-
-
-def _article_snippet(item: SyntaxItem) -> str:
-    """Первый абзац статьи, обрезанный до `SNIPPET_CHARS`.
-
-    Полный текст — только через `get_syntax` по имени: карточка отвечает на
-    прямой вопрос «что говорит статья про X», а поиск — на «что вообще
-    находится», и туда рецепт целиком класть незачем (см. `SNIPPET_CHARS`).
-    """
-    абзац = item.description.split("\n\n", 1)[0].strip()
-    if len(абзац) > SNIPPET_CHARS:
-        абзац = абзац[:SNIPPET_CHARS].rstrip() + "…"
-    return абзац
-
-
-def _заголовок_выдачи(context) -> str:
-    """Чем представляется выдача поиска: справкой платформы, языком запросов
-    или обоими сразу.
-
-    Прежде строка была одна — «Справка платформы» — и печаталась даже когда
-    платформы не загружено вовсе, тут же противореча собственному подзаголовку
-    «Только язык запросов».
-    """
-    платформа = bool(context.syntax and context.syntax.syntax.platforms)
-    return "Справка платформы" if платформа else "Язык запросов"
-
-
-def _где_искали(context) -> str:
-    """То же самое в предложном падеже: «в справке платформы», «в языке
-    запросов». Отдельной функцией, потому что склонять на месте — значит
-    получить «в справка платформы»."""
-    платформа = bool(context.syntax and context.syntax.syntax.platforms)
-    return "справке платформы" if платформа else "языке запросов"
 
 
 def _hidden_block(context, filtered_out: list) -> list[str]:
@@ -3429,12 +3299,6 @@ def _replacement_block(item: SyntaxItem, target: tuple[int, ...], platform: str)
     """
     if not _appears_later(item, target):
         return ""
-    # Таблица замен написана про платформу: вместо `СтрНайти` — `Найти`. У
-    # функции языка запросов имя то же, но `Найти` — метод глобального
-    # контекста, в тексте запроса его не написать. Подставить сюда этот рецепт
-    # значит выдать невыполнимый совет за проверенный.
-    if _is_query_kind(item.kind):
-        return ""
     рецепт = replacements.find(item.name_ru)
     if рецепт is None:
         return ""
@@ -3459,15 +3323,8 @@ def _отсечённые_однофамильцы(context, отсечённые
     """Одноимённые, которых фильтр версии убрал, — названные вслух.
 
     Фильтр молчит, и это правильно, пока он убирает всё: тогда срабатывает
-    `_unavailable_here` с причиной и заменой. Но если рядом остался
-    одноимённый — например, из языка запросов без границы для этого элемента,
-    или просто доступный член другого объекта, — отсечённое исчезало
-    бесследно.
-
-    Живой промах 2026-08-19: на конфигурации 8.3.5 запрос `СтрНайти` отдавал
-    карточку функции языка запросов и ни слова о том, что платформенная
-    появилась в 8.3.6. Замер по живому реестру: 419 таких имён на 8.3.5,
-    124 на 8.3.23, 101 на 8.3.27.
+    `_unavailable_here` с причиной и заменой. Но если рядом остался доступный
+    одноимённый член другого объекта, отсечённое исчезало бесследно.
 
     `подробно` — отдана карточка одного элемента, места хватает на причину и
     рецепт. Иначе печатается список одноимённых, и туда идёт короткая сводка:
@@ -3569,11 +3426,9 @@ def get_syntax(
     """Полное описание элемента платформы: сигнатура, параметры, доступность."""
     context = _syntax_context(registry, config)
     keep = context.syntax_filter()
-    wanted, только_запросы = _снять_квалификатор(name)
+    wanted = name.strip().lower()
 
     matching = context.syntax.find_exact(wanted)
-    if только_запросы:
-        matching = [item for item in matching if _is_query_kind(item.kind)]
     exact = [item for item in matching if keep(item)]
     отсечённые = [item for item in matching if not keep(item)]
 
@@ -3623,10 +3478,6 @@ def get_syntax(
                 + (f", с {item.since}" if item.since else "")
             )
         out.append("")
-        # Прежний текст советовал «уточните в виде `Объект.Член`» — для языка
-        # запросов это тупик: владельца у элемента нет, и назвать его было
-        # нечем. Теперь в списке стоит готовый адрес каждого, включая
-        # квалификатор `Запрос.`.
         out.append("Повторите вызов с адресом из списка.")
         return (
             "\n".join(out)
@@ -3637,12 +3488,10 @@ def get_syntax(
 
     # Карточка собирается под версию конфигурации: сигнатура, доступность и
     # имя между версиями менялись, и разница в один параметр — ошибка
-    # компиляции, а не мелочь. У языка запросов нет платформенных facts (но
-    # может быть курируемый `since`) — тот же `_is_query_kind` бережёт от
-    # `facts_for` на пустом наборе платформ.
+    # компиляции, а не мелочь.
     resolution = (
         context.syntax.syntax.facts_for(exact[0], context.platform)
-        if context.platform and not _is_query_kind(exact[0].kind)
+        if context.platform
         else None
     )
     return (

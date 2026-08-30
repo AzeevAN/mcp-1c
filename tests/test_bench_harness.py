@@ -25,7 +25,6 @@ from mcp1c.bench import (
     save_report,
 )
 from mcp1c.search import Doc, SearchIndex
-from mcp1c.syntax_model import KIND_QUERY_ARTICLE
 
 
 def _отчёт(*места: int | None) -> Report:
@@ -97,7 +96,7 @@ def test_отрыв_ноль_когда_первых_мест_нет():
 def _справка() -> SearchIndex:
     return SearchIndex(
         [
-            Doc(id="query/DISTINCT", kind=KIND_QUERY_ARTICLE, fields={"name": "РАЗЛИЧНЫЕ"}),
+            Doc(id="syntax/DISTINCT", kind="property", fields={"name": "РАЗЛИЧНЫЕ"}),
             Doc(id="objects/property.Различный", kind="property",
                 fields={"name": "Различный"}),
         ]
@@ -105,38 +104,12 @@ def _справка() -> SearchIndex:
 
 
 def test_прогон_запоминает_выдачу_поимённо():
-    отчёт = run(_справка(), [Case(query="РАЗЛИЧНЫЕ", expected=["query/DISTINCT"])])
+    отчёт = run(_справка(), [Case(query="РАЗЛИЧНЫЕ", expected=["syntax/DISTINCT"])])
 
     (результат,) = отчёт.results
     assert результат.rank == 0
-    assert результат.got[0] == "query/DISTINCT"
+    assert результат.got[0] == "syntax/DISTINCT"
     assert результат.separation > 0
-
-
-def test_чужой_домен_первым_отмечается():
-    """Ждали статью языка запросов — первым пришло свойство платформы.
-
-    Ровно та мера, которой руками считали «магнит выигрывает 5 вопросов
-    из 27».
-    """
-    отчёт = run(_справка(), [Case(query="Различный", expected=["query/DISTINCT"])])
-
-    (результат,) = отчёт.results
-    assert результат.rank != 0
-    assert результат.foreign_first
-
-
-def test_свой_домен_первым_чужим_не_считается():
-    """Промах внутри одного домена — не попадание не в ту справку."""
-    docs = [
-        Doc(id="query/A", kind=KIND_QUERY_ARTICLE, fields={"name": "СОЕДИНЕНИЕ"}),
-        Doc(id="query/B", kind=KIND_QUERY_ARTICLE, fields={"name": "СОЕДИНЕНИЕ ЛЕВОЕ"}),
-    ]
-    отчёт = run(SearchIndex(docs), [Case(query="СОЕДИНЕНИЕ", expected=["query/B"])])
-
-    (результат,) = отчёт.results
-    assert результат.rank != 0
-    assert not результат.foreign_first
 
 
 # ------------------------------------------------------ сохранение и сравнение
@@ -145,8 +118,8 @@ def test_свой_домен_первым_чужим_не_считается():
 def test_прогон_переживает_запись_и_чтение(tmp_path):
     исходный = run(
         _справка(),
-        [Case(query="РАЗЛИЧНЫЕ", expected=["query/DISTINCT"])],
-        suite="язык-запросов",
+        [Case(query="РАЗЛИЧНЫЕ", expected=["syntax/DISTINCT"])],
+        suite="синтаксис",
         domain="syntax",
     )
 
@@ -155,13 +128,13 @@ def test_прогон_переживает_запись_и_чтение(tmp_path
 
     assert [r.query for r in поднятый.results] == [r.query for r in исходный.results]
     assert [r.rank for r in поднятый.results] == [r.rank for r in исходный.results]
-    assert [r.suite for r in поднятый.results] == ["язык-запросов"]
+    assert [r.suite for r in поднятый.results] == ["синтаксис"]
     assert [r.domain for r in поднятый.results] == ["syntax"]
     assert поднятый.hit1 == исходный.hit1
 
     payload = json.loads(путь.read_text(encoding="utf-8"))
     assert payload["schema_version"] == 1
-    assert payload["results"][0]["suite"] == "язык-запросов"
+    assert payload["results"][0]["suite"] == "синтаксис"
     assert payload["results"][0]["domain"] == "syntax"
 
 
@@ -181,12 +154,10 @@ def test_отчёт_без_suite_и_domain_не_сохраняется(tmp_path)
 
 
 def test_наборы_имеют_единую_явную_схему():
-    язык = load_curated("query-language")
     метаданные = load_curated("roznica-metadata")
 
-    assert язык.domain == "syntax"
     assert метаданные.domain == "metadata"
-    assert язык.cases and метаданные.cases
+    assert метаданные.cases
 
 
 def test_старый_list_root_набор_явно_отклоняется(tmp_path, monkeypatch):

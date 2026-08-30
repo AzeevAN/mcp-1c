@@ -7,45 +7,7 @@
 
 import pytest
 
-from conftest import build_configuration, query_hbk_stub, write_export
-from mcp1c.cli import main
 from mcp1c.registry import Registry, RegistryError
-
-
-def test_reg_list_не_врёт_про_пустоту_когда_есть_язык_запросов(tmp_path, capsys):
-    """Тот же класс дефекта, что чинили в `list_configurations`: ветка
-    «ничего не загружено» срабатывает раньше проверки источников. Здесь она
-    ещё и возвращала код 1 — то есть скрипт вокруг считал бы это отказом."""
-    incoming = tmp_path / "incoming"
-    incoming.mkdir()
-    registry = Registry(tmp_path / "data")
-    источник = registry.add_syntax(query_hbk_stub(incoming / "query"))
-    registry.save()
-
-    код = main(["reg-list", "--data", str(tmp_path / "data")])
-    вывод = capsys.readouterr().out
-
-    assert код == 0
-    assert "Ничего не загружено" not in вывод
-    assert f"{источник.items_total} страниц" in вывод
-
-
-def test_reg_list_не_печатает_пустое_имя_платформы(tmp_path, capsys):
-    """При конфигурации без справки платформы, но с языком запросов строка
-    выходила противоречивой: «синтаксис : справка , не подключён» — пустое
-    имя платформы рядом со словом «справка»."""
-    incoming = tmp_path / "incoming"
-    incoming.mkdir()
-    registry = Registry(tmp_path / "data")
-    registry.add_configuration(write_export(incoming, build_configuration()))
-    registry.add_syntax(query_hbk_stub(incoming / "query"))
-    registry.save()
-
-    main(["reg-list", "--data", str(tmp_path / "data")])
-    вывод = capsys.readouterr().out
-
-    assert "справка ," not in вывод
-    assert "справка  " not in вывод
 
 
 def test_пустой_реестр_называет_оба_недостающих_источника(tmp_path):

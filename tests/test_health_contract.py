@@ -1,17 +1,11 @@
-"""Что отвечает `/health` — по нему судят о сервере, не глядя в интерфейс.
-
-Найдено живой проверкой 2026-08-19: загружен только `shquery_ru.hbk`, а ответ
-гласил `"syntax_loaded": true, "syntax": ""` — справка платформы объявлена
-загруженной, и тут же её версия пустой строкой. Читающий видит «справка есть,
-но сломана» там, где верно «справки платформы нет, есть язык запросов».
-"""
+"""Что отвечает `/health` — по нему судят о сервере, не глядя в интерфейс."""
 
 from __future__ import annotations
 
 from mcp1c.registry import Registry
 from mcp1c.tools import health
 
-from conftest import build_configuration, query_hbk_stub, write_export, write_syntax
+from conftest import build_configuration, write_export, write_syntax
 
 
 def каталог(tmp_path, имя: str = "incoming"):
@@ -20,15 +14,18 @@ def каталог(tmp_path, имя: str = "incoming"):
     return путь
 
 
-def test_только_язык_запросов_не_выдаётся_за_справку(tmp_path):
+def test_health_показывает_только_поддерживаемые_источники(tmp_path):
     registry = Registry(tmp_path / "data")
-    registry.add_syntax(query_hbk_stub(каталог(tmp_path)))
 
     тело = health(registry, detailed=True)
 
-    assert тело["syntax_loaded"] is False
-    assert тело["query_language_loaded"] is True
-    assert тело["syntax"] == []
+    assert тело == {
+        "status": "ok",
+        "configurations_total": 0,
+        "syntax_loaded": False,
+        "configurations": [],
+        "syntax": [],
+    }
 
 
 def test_справка_платформы_называет_свои_версии(tmp_path):

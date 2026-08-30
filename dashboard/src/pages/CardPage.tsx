@@ -108,7 +108,7 @@ export function CardPage({ kind }: { kind: CardKind }) {
         <aside className="card-controls" aria-label="Настройки карточки">
           <div className="card-kind-mark">
             <span><Icon size={20} aria-hidden="true" /></span>
-            <div><strong>Карточка {noun}</strong><small>{kind === "object" ? "Метаданные и код" : "Платформа и язык запросов"}</small></div>
+            <div><strong>Карточка {noun}</strong><small>{kind === "object" ? "Метаданные и код" : "Справка платформы"}</small></div>
           </div>
 
           <label className="query-field">

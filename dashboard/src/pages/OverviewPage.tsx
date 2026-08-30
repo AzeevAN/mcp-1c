@@ -28,7 +28,7 @@ export function OverviewPage() {
         <MetricCard label="Конфигурации" value={summary?.configurations ?? "—"} hint="структура и связанные корпуса" />
         <MetricCard label="Объекты метаданных" value={summary?.metadata_objects ?? "—"} hint="поиск, карточки и связи" />
         <MetricCard label="Корпуса кода" value={summary?.code_corpora ?? "—"} hint="основной код и расширения" />
-        <MetricCard label="Общие справочники" value={summary?.reference_sources ?? "—"} hint="платформа и язык запросов" />
+        <MetricCard label="Справки платформы" value={summary?.reference_sources ?? "—"} hint="загруженные версии" />
       </section>
 
       <section className="section-card" aria-labelledby="contour-title">

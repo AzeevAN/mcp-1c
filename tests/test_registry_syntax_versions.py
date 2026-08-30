@@ -240,14 +240,10 @@ def test_восстановление_собирает_слитый_вид_од�
     сборок = 0
     настоящая = поднятый._prepare_syntax
 
-    def считать(versions, preloaded=None, *args, **kwargs):
-        # `*args, **kwargs` передают параметры языка запросов (`query_source`,
-        # `preloaded_query`); подмена
-        # считает вызовы, а не проверяет сигнатуру, поэтому пробрасывает их
-        # как есть, не называя по имени.
+    def считать(versions, preloaded=None):
         nonlocal сборок
         сборок += 1
-        return настоящая(versions, preloaded, *args, **kwargs)
+        return настоящая(versions, preloaded)
 
     поднятый._prepare_syntax = считать
     поднятый.restore()

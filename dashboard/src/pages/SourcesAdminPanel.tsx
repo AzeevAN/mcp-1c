@@ -273,7 +273,7 @@ export function SourcesAdminPanel({
           <div>
             <p><strong>Структура конфигурации:</strong> архив <code>СтруктураКонфигурации_*.zip</code>, полученный обработкой проекта.</p>
             <p><strong>Активность расширений:</strong> файл <code>СнимокРасширений_*.json</code> из отдельной обработки снимка.</p>
-            <p><strong>Справка платформы:</strong> точный файл <code>shcntx_ru.hbk</code>. Для языка запросов — <code>shquery_ru.hbk</code>; другие похожие HBK не заменяют их.</p>
+            <p><strong>Справка платформы:</strong> точный файл <code>shcntx_ru.hbk</code>; другие похожие HBK его не заменяют.</p>
             <p><strong>Большая выгрузка модулей и расширений:</strong> положите ZIP в <code>{data.incoming_dir}</code> и запустите разбор в следующем блоке.</p>
           </div>
         </details>

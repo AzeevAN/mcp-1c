@@ -18,8 +18,6 @@
 приходилось всё равно:
 
 * **P@1, P@3, P@5, P@10 и MRR** — попал ли правильный ответ в первые `k`;
-* **чужой домен первым** — ждали язык запросов, получили платформу или
-  наоборот. Так руками считали «магнит выигрывает 5 вопросов из 27»;
 * **отрыв первого от второго**, медианой — «уверенно попали или чудом».
   Ничья даёт ноль, и такой результат нельзя выдавать за победу правила;
 * **сверка пометок** — говорит ли `note` в наборе то же, что вышло. Пометки
@@ -34,7 +32,7 @@
 
     PYTHONPATH=src .venv/bin/python -m mcp1c.bench \\
         --data data --config РозницаДляКазахстана \\
-        --auto --sets query-language,roznica-metadata,modules-procedures \\
+        --auto --sets roznica-metadata,modules-procedures \\
         --check-notes
 
 Все ручные наборы используют schema v1 с явным ``domain``: ``syntax``,
@@ -59,7 +57,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .search import SearchIndex
-from .syntax_model import QUERY_LANGUAGE_KINDS
 
 # Наборы лежат в репозитории и **в образ не входят** (`tests/` в
 # `.dockerignore`). Мерить нужно из рабочей копии, а не из контейнера:
@@ -116,10 +113,6 @@ class CaseResult:
     # попали или чудом»: ничья 41,107076 против 41,107076 даёт ноль, и такой
     # результат нельзя выдавать за победу правила.
     separation: float = 0.0
-    # Первым пришёл элемент чужого домена: ждали язык запросов — получили
-    # платформу, или наоборот. Ровно та мера, которой руками считали «магнит
-    # выигрывает 5 вопросов из 27».
-    foreign_first: bool = False
     note: str = ""
     expected_miss: bool = False
     expected_rank: int | None = None
@@ -138,7 +131,6 @@ class CaseResult:
             "got": got,
             "rank": self.rank,
             "separation": round(self.separation, 6),
-            "foreign_first": self.foreign_first,
             "note": self.note,
         }
         # Автоматические наборы дают десятки тысяч строк. Пустые ожидания
@@ -159,7 +151,6 @@ class CaseResult:
             got=list(raw.get("got") or []),
             rank=raw.get("rank"),
             separation=raw.get("separation", 0.0),
-            foreign_first=raw.get("foreign_first", False),
             note=raw.get("note", ""),
             expected_miss=raw.get("expected_miss", False),
             expected_rank=raw.get("expected_rank"),
@@ -203,10 +194,6 @@ class Report:
         return [r for r in self.results if r.rank is None]
 
     @property
-    def foreign_first(self) -> int:
-        return sum(1 for r in self.results if r.foreign_first)
-
-    @property
     def separation(self) -> float:
         """Медиана отрыва по тем запросам, где ответ пришёл первым.
 
@@ -233,8 +220,6 @@ class Report:
             f"P@5             : {self.hit5:>5}  {self.rate(self.hit5):6.1%}",
             f"P@10            : {self.hit10:>5}  {self.rate(self.hit10):6.1%}",
             f"MRR             : {self.mrr / self.total:.3f}",
-            f"чужой домен 1-м : {self.foreign_first:>5}  "
-            f"{self.rate(self.foreign_first):6.1%}",
             f"отрыв (медиана) : {self.separation:6.1%}",
             f"время           : {self.elapsed * 1000:.0f} мс "
             f"({self.elapsed / self.total * 1000:.2f} мс на запрос)",
@@ -248,16 +233,6 @@ class Report:
                 lines.append(f"    ждали : {', '.join(r.expected)}")
                 lines.append(f"    дали  : {', '.join(r.got[:3]) or '—'}")
         return "\n".join(lines)
-
-
-def _domain(kind: str) -> str:
-    """Домен элемента: язык запросов против всего остального.
-
-    Грубее, чем вид, и намеренно: мера отвечает на «попали ли вообще не в ту
-    справку», а не «какого вида элемент». Различать метод и свойство здесь
-    незачем — оба из справки платформы.
-    """
-    return "query" if kind in QUERY_LANGUAGE_KINDS else "platform"
 
 
 def run(
@@ -281,17 +256,6 @@ def run(
         if len(hits) > 1 and hits[0].score:
             separation = (hits[0].score - hits[1].score) / hits[0].score
 
-        # Домен считается только когда первым пришёл не тот элемент: у
-        # правильного ответа домен по определению совпадает.
-        foreign = False
-        if hits and rank != 0:
-            ждали = {
-                _domain(doc.kind)
-                for doc in (index.docs.get(i) for i in case.expected)
-                if doc is not None
-            }
-            foreign = bool(ждали) and _domain(hits[0].doc.kind) not in ждали
-
         report.results.append(
             CaseResult(
                 suite=suite,
@@ -301,7 +265,6 @@ def run(
                 got=got,
                 rank=rank,
                 separation=separation,
-                foreign_first=foreign,
                 note=case.note,
                 expected_miss=case.expected_miss,
                 expected_rank=case.expected_rank,
@@ -478,7 +441,7 @@ def load_cases(path: str | Path) -> Suite:
 
 
 def load_curated(name: str) -> Suite:
-    """Живой набор запросов по имени без расширения: `query-language`.
+    """Живой набор запросов по имени без расширения.
 
     Отсутствие файла — ошибка, а не пустой набор. Молчаливый ноль здесь хуже
     всего: стенд отчитается «0 запросов, 0% первым», и ложная цифра попадёт
@@ -851,7 +814,7 @@ def main(argv: list[str] | None = None) -> int:
         default="",
         help=(
             "ручные наборы schema v1 через запятую, без расширения: "
-            "query-language,modules-procedures"
+            "roznica-metadata,modules-procedures"
         ),
     )
     parser.add_argument(

@@ -181,10 +181,6 @@ def _cmd_reg_list(args: argparse.Namespace) -> int:
                 f"справка платформы {snapshot.syntax_source_platform}, "
                 f"{snapshot.syntax_items} элементов"
             )
-        if snapshot.query_pages is not None:
-            источники.append(
-                f"язык запросов, {snapshot.query_pages} страниц"
-            )
         if not источники:
             print("Ничего не загружено.")
             return 1
@@ -201,11 +197,6 @@ def _cmd_reg_list(args: argparse.Namespace) -> int:
             f"загружено {row.loaded_at}"
         )
         print(f"  метаданные : да")
-        # `providers['syntax']` истинно и когда подключён только язык
-        # запросов: `LoadedSyntax` собирает оба источника в один объект. У
-        # языка запросов платформы нет, `syntax_platform` тогда пуст, и строка
-        # выходила противоречивой — «справка , не подключён». Тот же баг-паттерн
-        # чинили в `list_configurations`, в CLI он оставался.
         if row.syntax_present and row.syntax_platform:
             отношение = _RELATION_TITLES.get(
                 row.syntax_relation, row.syntax_relation
@@ -232,17 +223,6 @@ def _cmd_reg_list(args: argparse.Namespace) -> int:
                 f"загружен {runtime.loaded_at}"
                 if runtime is not None
                 else "фактическая активность unknown"
-            )
-        )
-        # Язык запросов — самостоятельный источник, не версия справки
-        # платформы. Берём счётчик из того же снимка, а не перечитываем
-        # `registry.query_source` после долгой подготовки строк.
-        print(
-            "  язык запросов: "
-            + (
-                f"подключён, {snapshot.query_pages} страниц"
-                if snapshot.query_pages is not None
-                else "не подключён"
             )
         )
         for note in row.notes:

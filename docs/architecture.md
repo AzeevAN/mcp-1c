@@ -9,11 +9,10 @@ health, административный API и выбранный дашбор�
 ```text
 src/mcp1c/
 ├── server.py             MCP SDK, HTTP-граница, токены, запуск
-├── tools.py              десять наблюдаемых операций MCP
+├── tools.py              одиннадцать наблюдаемых операций MCP
 ├── registry.py           источники, поколения и атомарная публикация
 ├── loader.py             строгая schema v1 XML/JSON
 ├── syntax_parser.py      справка платформы
-├── query_parser.py       язык запросов
 ├── search.py             индекс и ранжирование
 ├── graph.py              связи метаданных
 ├── modules_index.py      процедуры, вызовы, формы и get_callers
@@ -242,7 +241,6 @@ Cold удаляет только точные файлы `modules-toc`, `modules
 
 | Набор | Запросов | P@1 | P@3 | P@5 | P@10 | MRR | Отрыв |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Язык запросов | 22 | 86,4% | 86,4% | 90,9% | 90,9% | 0,875 | 34,1% |
 | Метаданные | 21 | 81,0% | 90,5% | 90,5% | 95,2% | 0,862 | 93,2% |
 | Процедуры модулей | 6 | 0% | 0% | 0% | 16,7% | 0,024 | 0% |
 | Точные имена справки | 50 926 | 97,1% | 98,3% | 98,7% | 98,9% | 0,978 | 91,7% |
@@ -254,7 +252,7 @@ Cold удаляет только точные файлы `modules-toc`, `modules
 ```bash
 PYTHONPATH=src .venv/bin/python -m mcp1c.bench \
   --data data --config ИмяКонфигурации \
-  --auto --sets query-language,roznica-metadata,modules-procedures \
+  --auto --sets roznica-metadata,modules-procedures \
   --check-notes
 ```
 
@@ -265,7 +263,6 @@ baseline для улучшений, а не автоматический пор�
 
 - [schema-v1.md](schema-v1.md) — структура выгрузки;
 - [data-sources.md](data-sources.md) — происхождение каждого сведения;
-- [query-language-design.md](query-language-design.md) — язык запросов;
 - [dashboard-design.md](dashboard-design.md) — HTTP/UI;
 - [modules-intake-design.md](modules-intake-design.md) — приём кода;
 - [modules-provider-design.md](modules-provider-design.md) — индексы кода.

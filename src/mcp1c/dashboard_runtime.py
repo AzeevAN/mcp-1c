@@ -34,7 +34,6 @@ from .graph_view import neighbourhood
 from .registry import (
     KIND_EXTENSION,
     KIND_MODULES,
-    KIND_QUERY,
     KIND_SYNTAX,
     Registry,
     RegistryError,
@@ -183,7 +182,7 @@ def _sources_payload(
     references = [
         _source_payload(source)
         for source in snapshot.sources
-        if source.kind in (KIND_SYNTAX, KIND_QUERY)
+        if source.kind == KIND_SYNTAX
     ]
     return {
         "api_version": "v1",
@@ -262,7 +261,7 @@ def _json_error(message: str, status_code: int) -> JSONResponse:
 _QUERY_SCOPE_LABELS = {
     "objects": "Объекты",
     "fields": "Реквизиты",
-    "syntax": "Справка и язык запросов",
+    "syntax": "Справка платформы",
 }
 
 
@@ -290,7 +289,6 @@ def _queries_setup_payload(registry: Registry) -> dict:
         "availability": {
             "configurations": bool(names),
             "syntax": snapshot.syntax is not None,
-            "query_language": snapshot.query_source is not None,
         },
     }
 
@@ -609,8 +607,7 @@ def _spa_routes(registry: Registry, static_dir: Path) -> list[Route]:
                     "configurations": len(snapshot.configurations),
                     "metadata_objects": metadata_objects,
                     "code_corpora": code_corpora,
-                    "reference_sources": len(snapshot.syntax_versions)
-                    + int(snapshot.query_source is not None),
+                    "reference_sources": len(snapshot.syntax_versions),
                 },
             }
         )

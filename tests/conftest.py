@@ -474,64 +474,12 @@ def write_syntax_without_platform(directory: Path) -> Path:
 
     Так выглядят старые платформы (в справке 8.3.5 нет ни одной отметки
     «начиная с версии» — версию неоткуда вывести и из данных). Проверка
-    версии обязана отвергать такой файл, в отличие от языка запросов, где
-    версии нет по устройству формата.
+    версии обязана отвергать такой файл.
     """
     directory.mkdir(parents=True, exist_ok=True)
     index = build_syntax()
     index.platforms = []
     return save_syntax(index, directory / "без-версии.json.gz")
-
-
-def build_query_index() -> SyntaxIndex:
-    """Справка по языку запросов из трёх страниц: функция, слово, статья."""
-    from mcp1c.syntax_model import (
-        KIND_QUERY_ARTICLE,
-        KIND_QUERY_FUNCTION,
-        KIND_QUERY_KEYWORD,
-    )
-
-    index = SyntaxIndex(platforms=[], source="query-test", language="ru")
-    index.add(
-        SyntaxItem(
-            id="query/ENDOFPERIOD",
-            kind=KIND_QUERY_FUNCTION,
-            name_ru="КОНЕЦПЕРИОДА",
-            name_en="ENDOFPERIOD",
-            description="Возвращает конец периода",
-            variants=[SyntaxVariant(signature="КОНЕЦПЕРИОДА (<Дата периода>, <Тип периода>)")],
-        )
-    )
-    index.add(
-        SyntaxItem(
-            id="query/LEFTJOIN",
-            kind=KIND_QUERY_KEYWORD,
-            name_ru="Левое внешнее соединение",
-            name_en="LEFTJOIN",
-            description="ЛЕВОЕ ВНЕШНЕЕ СОЕДИНЕНИЕ включает записи левой таблицы",
-        )
-    )
-    index.add(
-        SyntaxItem(
-            id="query/hierarchical_totals.html",
-            kind=KIND_QUERY_ARTICLE,
-            name_ru="Итоги по иерархии",
-            name_en="hierarchical_totals",
-            description="Первый абзац статьи.\n\n" + "Продолжение. " * 200,
-        )
-    )
-    return index
-
-
-def query_hbk_stub(directory: Path) -> Path:
-    """Разобранный индекс языка запросов на диске — то, что примет реестр.
-
-    Настоящий контейнер 1С в тестах не собрать, поэтому приём должен уметь
-    принять и уже разобранный индекс — тем же путём, каким принимается
-    разобранная справка платформы (`registry.add_syntax` умеет `.json.gz`).
-    """
-    directory.mkdir(parents=True, exist_ok=True)
-    return save_syntax(build_query_index(), directory / "query-ru.json.gz")
 
 
 @pytest.fixture(autouse=True)

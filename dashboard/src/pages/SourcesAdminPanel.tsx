@@ -114,56 +114,7 @@ const referenceStateLabels: Record<string, string> = {
 };
 
 function ReferenceAdminCard({ reference }: { reference: ReferenceAdminState }) {
-  const queryClient = useQueryClient();
-  const fileInput = useRef<HTMLInputElement>(null);
-  const [file, setFile] = useState<File | null>(null);
-  const [uploading, setUploading] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [feedback, setFeedback] = useState<{ tone: "success" | "danger"; text: string } | null>(null);
   const shown = reference.pending ?? reference.active;
-
-  const choose = (next: File | null) => {
-    setFeedback(null);
-    if (!next) {
-      setFile(null);
-      return;
-    }
-    if (!next.name.toLowerCase().endsWith(".sqlite3")) {
-      setFile(null);
-      setFeedback({ tone: "danger", text: "Выберите файл .sqlite3 schema v1." });
-      return;
-    }
-    if (next.size > reference.limits.upload_bytes) {
-      setFile(null);
-      setFeedback({
-        tone: "danger",
-        text: `Файл больше лимита ${formatBytes(reference.limits.upload_bytes)}.`,
-      });
-      return;
-    }
-    setFile(next);
-  };
-
-  const upload = async () => {
-    if (!file) return;
-    setUploading(true);
-    setProgress(0);
-    setFeedback(null);
-    try {
-      await uploadReference(file, setProgress);
-      setFeedback({
-        tone: "success",
-        text: "База проверена и сохранена. Для появления двух MCP-инструментов перезапустите сервер.",
-      });
-      setFile(null);
-      if (fileInput.current) fileInput.current.value = "";
-      await queryClient.invalidateQueries({ queryKey: ["sources", "admin"] });
-    } catch (error) {
-      setFeedback({ tone: "danger", text: errorMessage(error) });
-    } finally {
-      setUploading(false);
-    }
-  };
 
   return (
     <section className="admin-card reference-admin-card" aria-label="Локальная общая справка">
@@ -182,40 +133,15 @@ function ReferenceAdminCard({ reference }: { reference: ReferenceAdminState }) {
           {shown.items ? `Лимит ${formatBytes(reference.limits.upload_bytes)} · ${shown.items} элементов` : `Лимит ${formatBytes(reference.limits.upload_bytes)}`}
           {shown.index_cache ? ` · индекс ${shown.index_cache}` : ""}
           {shown.signature ? ` · ${shown.signature}` : ""}
+          {reference.managed_upload ? " · загрузка через общую форму выше" : ""}
         </small>
       </div>
-
-      {feedback && <div className={`admin-feedback is-${feedback.tone}`} role="status">{feedback.text}</div>}
-
-      {reference.managed_upload ? (
-        <div className="reference-upload-row">
-          <span>
-            <strong>{file?.name || "Файл schema v1 не выбран"}</strong>
-            <small>{file ? formatBytes(file.size) : "Реальная база в репозиторий не входит."}</small>
-          </span>
-          <button className="button-secondary" type="button" onClick={() => fileInput.current?.click()} disabled={uploading}>
-            Выбрать .sqlite3
-          </button>
-          <input
-            ref={fileInput}
-            aria-label="Файл локальной общей справки"
-            type="file"
-            accept=".sqlite3"
-            onChange={(event) => choose(event.target.files?.[0] ?? null)}
-            hidden
-          />
-          <button className="button-primary" type="button" onClick={upload} disabled={!file || uploading}>
-            {uploading ? <LoaderCircle className="is-spinning" size={17} /> : <BookOpen size={17} />}
-            {uploading ? `Передаём ${progress}%` : "Загрузить справочную базу"}
-          </button>
-        </div>
-      ) : (
+      {!reference.managed_upload && (
         <div className="inline-warning">
           <AlertCircle size={18} aria-hidden="true" />
           <span>База подключена через внешний <code>MCP1C_REFERENCE_DB</code>; загрузка из дашборда выключена.</span>
         </div>
       )}
-      {uploading && <div className="upload-progress" aria-label={`Передано ${progress}%`}><i style={{ width: `${progress}%` }} /></div>}
     </section>
   );
 }
@@ -263,17 +189,30 @@ export function SourcesAdminPanel({
       return;
     }
     const suffix = next.name.toLowerCase().split(".").pop();
-    if (suffix !== "zip" && suffix !== "hbk" && suffix !== "json") {
+    if (suffix !== "zip" && suffix !== "hbk" && suffix !== "json" && suffix !== "sqlite3") {
       setFile(null);
-      setFeedback({ tone: "danger", text: "Выберите файл .zip, .hbk или .json." });
+      setFeedback({ tone: "danger", text: "Выберите файл .zip, .hbk, .json или .sqlite3." });
       return;
     }
-    const limit = admin.data?.limits.upload_bytes;
+    const isReference = suffix === "sqlite3";
+    const reference = admin.data?.reference;
+    if (isReference && !reference?.managed_upload) {
+      setFile(null);
+      setFeedback({
+        tone: "danger",
+        text: "SQLite подключена через внешний путь; её загрузкой управляет оператор сервера.",
+      });
+      return;
+    }
+    const limit = isReference
+      ? reference?.limits.upload_bytes
+      : admin.data?.limits.upload_bytes;
     if (limit && next.size > limit) {
       setFile(null);
       setFeedback({ tone: "danger", text: `Файл больше лимита ${formatBytes(limit)}.` });
       return;
     }
+    if (isReference) setAllowTruncated(false);
     setFile(next);
   };
 
@@ -293,16 +232,26 @@ export function SourcesAdminPanel({
     setUploadProgress(0);
     setFeedback(null);
     try {
-      await uploadSource(file, allowTruncated, setUploadProgress);
-      setFeedback({
-        tone: "success",
-        text: "Файл передан. Разбор продолжается в фоне и останется в журнале.",
-      });
+      const isReference = file.name.toLowerCase().endsWith(".sqlite3");
+      if (isReference) {
+        await uploadReference(file, setUploadProgress);
+        setFeedback({
+          tone: "success",
+          text: "База проверена и сохранена. Для появления двух MCP-инструментов перезапустите сервер.",
+        });
+      } else {
+        await uploadSource(file, allowTruncated, setUploadProgress);
+        setFeedback({
+          tone: "success",
+          text: "Файл передан. Разбор продолжается в фоне и останется в журнале.",
+        });
+      }
       setFile(null);
       if (fileInput.current) fileInput.current.value = "";
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["sources"] }),
         queryClient.invalidateQueries({ queryKey: ["dashboard", "bootstrap"] }),
+        queryClient.invalidateQueries({ queryKey: ["sources", "admin"] }),
       ]);
     } catch (error) {
       setFeedback({ tone: "danger", text: errorMessage(error) });
@@ -336,6 +285,7 @@ export function SourcesAdminPanel({
 
   const data = admin.data;
   const configurationNames = data.configuration_names;
+  const referenceFile = file?.name.toLowerCase().endsWith(".sqlite3") ?? false;
 
   return (
     <section className="source-admin" aria-label="Администрирование источников">
@@ -356,7 +306,7 @@ export function SourcesAdminPanel({
           <span className="admin-card-icon"><FileUp size={21} aria-hidden="true" /></span>
           <div>
             <h3>Загрузить источник</h3>
-            <p>Один файл до {formatBytes(data.limits.upload_bytes)}. Тип определяется по содержимому.</p>
+            <p>Registry — до {formatBytes(data.limits.upload_bytes)}; SQLite общей справки — {data.reference ? `до ${formatBytes(data.reference.limits.upload_bytes)}` : "недоступна"}.</p>
           </div>
         </header>
 
@@ -371,26 +321,33 @@ export function SourcesAdminPanel({
           {file ? (
             <span><strong>{file.name}</strong><small>{formatBytes(file.size)}</small></span>
           ) : (
-            <span><strong>Перетащите файл сюда</strong><small>.zip структуры · .hbk справки · .json снимка расширений</small></span>
+            <span><strong>Перетащите файл сюда</strong><small>.zip структуры · .hbk платформы · .json снимка · .sqlite3 общей справки</small></span>
           )}
           <button className="button-secondary" type="button" onClick={() => fileInput.current?.click()} disabled={uploading}>
             Выбрать файл
           </button>
-          <input ref={fileInput} type="file" accept=".zip,.hbk,.json" onChange={handleInput} hidden />
+          <input ref={fileInput} type="file" accept=".zip,.hbk,.json,.sqlite3" onChange={handleInput} hidden />
         </div>
 
         <div className="upload-options">
-          <label className="switch-field">
-            <input type="checkbox" checked={allowTruncated} onChange={(event) => setAllowTruncated(event.target.checked)} />
-            <span className="switch-control" aria-hidden="true"><i /></span>
-            <span>
-              <strong>Разрешить неполную тестовую выгрузку</strong>
-              <small>Только для осознанной диагностики файла с <code>truncated=true</code>. Отсутствие объекта или связи в таком источнике ничего не доказывает.</small>
-            </span>
-          </label>
+          {referenceFile ? (
+            <div className="inline-warning">
+              <BookOpen size={18} aria-hidden="true" />
+              <span>SQLite будет полностью проверена и сохранена для активации после перезапуска.</span>
+            </div>
+          ) : (
+            <label className="switch-field">
+              <input type="checkbox" checked={allowTruncated} onChange={(event) => setAllowTruncated(event.target.checked)} />
+              <span className="switch-control" aria-hidden="true"><i /></span>
+              <span>
+                <strong>Разрешить неполную тестовую выгрузку</strong>
+                <small>Только для осознанной диагностики файла с <code>truncated=true</code>. Отсутствие объекта или связи в таком источнике ничего не доказывает.</small>
+              </span>
+            </label>
+          )}
           <button className="button-primary" type="button" onClick={beginUpload} disabled={!file || uploading}>
             {uploading ? <LoaderCircle className="is-spinning" size={17} /> : <FileUp size={17} />}
-            {uploading ? `Передаём ${uploadProgress}%` : "Загрузить и разобрать"}
+            {uploading ? `Передаём ${uploadProgress}%` : referenceFile ? "Проверить и сохранить" : "Загрузить и разобрать"}
           </button>
         </div>
         {uploading && <div className="upload-progress" aria-label={`Передано ${uploadProgress}%`}><i style={{ width: `${uploadProgress}%` }} /></div>}
@@ -401,6 +358,7 @@ export function SourcesAdminPanel({
             <p><strong>Структура конфигурации:</strong> архив <code>СтруктураКонфигурации_*.zip</code>, полученный обработкой проекта.</p>
             <p><strong>Активность расширений:</strong> файл <code>СнимокРасширений_*.json</code> из отдельной обработки снимка.</p>
             <p><strong>Справка платформы:</strong> точный файл <code>shcntx_ru.hbk</code>; другие похожие HBK его не заменяют.</p>
+            <p><strong>Общая справка:</strong> каноническая <code>.sqlite3</code> schema v1; после проверки потребуется перезапуск сервера.</p>
             <p><strong>Большая выгрузка модулей и расширений:</strong> положите ZIP в <code>{data.incoming_dir}</code> и запустите разбор в следующем блоке.</p>
           </div>
         </details>

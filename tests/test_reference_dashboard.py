@@ -163,7 +163,7 @@ def test_external_path_делает_dashboard_upload_недоступным(tmp_
     assert response.status_code == 409
 
 
-def test_classic_показывает_тот_же_статус_и_форму(tmp_path, monkeypatch):
+def test_classic_показывает_статус_и_одну_общую_форму(tmp_path, monkeypatch):
     monkeypatch.delenv("API_TOKEN", raising=False)
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
     registry = Registry(tmp_path / "data")
@@ -184,10 +184,12 @@ def test_classic_показывает_тот_же_статус_и_форму(tmp
     assert page.status_code == 200
     assert "Локальная общая справка" in page.text
     assert "не загружена" in page.text
-    assert "Загрузить справочную базу" in page.text
+    assert "общей форме «Загрузить»" in page.text
+    assert ".zip,.hbk,.json,.sqlite3" in page.text
+    assert page.text.count("<input type=file") == 1
 
 
-def test_classic_upload_возвращает_на_страницу_источников(tmp_path, monkeypatch):
+def test_classic_общая_форма_принимает_sqlite_без_javascript(tmp_path, monkeypatch):
     monkeypatch.delenv("API_TOKEN", raising=False)
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
     source = build_reference_database(tmp_path / "source.sqlite3")
@@ -205,7 +207,7 @@ def test_classic_upload_возвращает_на_страницу_источн�
     _login(client)
 
     response = client.post(
-        "/api/v1/reference/upload",
+        "/sources",
         headers={"accept": "text/html"},
         files={"file": ("reference.sqlite3", source.read_bytes())},
         follow_redirects=False,

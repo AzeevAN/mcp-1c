@@ -264,7 +264,8 @@ it("показывает администратору компактную за�
   expect(await screen.findByRole("heading", { name: "Добавление и обслуживание данных" })).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "Локальная общая справка" })).toBeInTheDocument();
   expect(screen.getByText("Каноническая база не загружена.")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Загрузить справочную базу" })).toBeDisabled();
+  expect(screen.queryByRole("button", { name: "Загрузить справочную базу" })).not.toBeInTheDocument();
+  expect(screen.getByText(/загрузка через общую форму выше/)).toBeInTheDocument();
   const truncated = screen.getByRole("checkbox", { name: /Разрешить неполную тестовую выгрузку/ });
   fireEvent.click(truncated);
   expect(truncated).toBeChecked();
@@ -274,6 +275,13 @@ it("показывает администратору компактную за�
   fireEvent.change(input!, { target: { files: [file] } });
   expect(screen.getByText("структура.zip")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Загрузить и разобрать" })).toBeEnabled();
+
+  const reference = new File(["synthetic"], "reference.sqlite3", { type: "application/vnd.sqlite3" });
+  fireEvent.change(input!, { target: { files: [reference] } });
+  expect(screen.getByText("reference.sqlite3")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Проверить и сохранить" })).toBeEnabled();
+  expect(screen.queryByRole("checkbox", { name: /Разрешить неполную тестовую выгрузку/ })).not.toBeInTheDocument();
+  expect(input).toHaveAttribute("accept", ".zip,.hbk,.json,.sqlite3");
 
   const parse = screen.getByRole("button", { name: "Разобрать" });
   expect(parse).toBeDisabled();

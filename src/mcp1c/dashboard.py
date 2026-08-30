@@ -44,7 +44,11 @@ from .registry import (
     Registry,
     RegistryError,
 )
-from .reference_provider import ReferenceService
+from .reference_provider import (
+    MAX_REFERENCE_DB_BYTES,
+    ReferenceService,
+    ReferenceValidationError,
+)
 from .render import DETAIL_LEVELS
 from .search import FIELD_KIND_TITLES, MAX_QUERY_CHARS
 from .syntax_model import KIND_TITLES
@@ -756,7 +760,9 @@ _UPLOAD_JS = """
   var показ = document.getElementById("upload-progress");
   var полоса = document.getElementById("upload-bar");
   var строка = document.getElementById("upload-text");
-  var предел = parseInt(форма.getAttribute("data-limit"), 10);
+  var обычныйПредел = parseInt(форма.getAttribute("data-limit"), 10);
+  var справочныйПредел = parseInt(форма.getAttribute("data-reference-limit"), 10);
+  var справкаУправляется = форма.getAttribute("data-reference-managed") === "1";
 
   /* Мелкий файл в мегабайтах — это «0,0 из 0,0 МБ»: единица не подходит. */
   function объём(байт) {
@@ -776,6 +782,14 @@ _UPLOAD_JS = """
   форма.addEventListener("submit", function (событие) {
     var файл = поле.files && поле.files[0];
     if (!файл) return;                     /* пустое поле — пусть скажет браузер */
+    var справочнаяБаза = файл.name.toLowerCase().endsWith(".sqlite3");
+    var предел = справочнаяБаза ? справочныйПредел : обычныйПредел;
+
+    if (справочнаяБаза && !справкаУправляется) {
+      событие.preventDefault();
+      отказ("SQLite подключена через внешний путь; загрузкой управляет оператор.");
+      return;
+    }
 
     /* Предел проверяется и на сервере, но там — после приёма: к моменту
      * отказа трафик уже потрачен. Здесь размер известен до отправки. */
@@ -792,6 +806,7 @@ _UPLOAD_JS = """
      * браузере 2026-08-19: файл молча терялся, сервер отвечал «файл не
      * выбран», задание не заводилось вовсе. */
     var данные = new FormData(форма);
+    if (справочнаяБаза) данные.delete("allow_truncated");
 
     поле.disabled = true;
     кнопка.disabled = true;
@@ -801,7 +816,10 @@ _UPLOAD_JS = """
 
     var начало = Date.now();
     var xhr = new XMLHttpRequest();
-    xhr.open("POST", форма.getAttribute("action"));
+    xhr.open(
+      "POST",
+      справочнаяБаза ? "/api/v1/reference/upload" : форма.getAttribute("action")
+    );
 
     xhr.upload.onprogress = function (событие) {
       if (!событие.lengthComputable) {
@@ -830,7 +848,11 @@ _UPLOAD_JS = """
      * диск и ставит задание. Молчать здесь нельзя — это опять пустой экран. */
     xhr.upload.onload = function () {
       полоса.removeAttribute("value");     /* неопределённый прогресс */
-      сказать("Файл передан. Сервер принимает и ставит в разбор…");
+      сказать(
+        справочнаяБаза
+          ? "Файл передан. Сервер проверяет каноническую базу…"
+          : "Файл передан. Сервер принимает и ставит в разбор…"
+      );
     };
 
     xhr.onload = function () {
@@ -1463,15 +1485,10 @@ def _sources_page(
             if details:
                 parts.append(f"<p>{' · '.join(details)}</p>")
             if reference.get("managed_upload"):
-                limit = reference["limits"]["upload_bytes"]
                 parts.append(
-                    f"<form method=post action=/api/v1/reference/upload "
-                    f"enctype=multipart/form-data data-limit={limit}>"
-                    "<input type=file name=file accept='.sqlite3' required> "
-                    "<button>Загрузить справочную базу</button>"
-                    "<p>Файл полностью проверяется до атомарной замены. "
-                    "После успешной загрузки перезапустите сервер и MCP-клиент.</p>"
-                    "</form>"
+                    "<p>Для установки или замены выберите <code>.sqlite3</code> "
+                    "в общей форме «Загрузить» ниже. После успешной проверки "
+                    "перезапустите сервер и MCP-клиент.</p>"
                 )
             else:
                 parts.append(
@@ -1663,14 +1680,22 @@ def _sources_page(
             )
 
     if authorized:
+        reference_limit = (
+            reference["limits"]["upload_bytes"] if reference is not None else 0
+        )
+        reference_managed = int(
+            bool(reference is not None and reference.get("managed_upload"))
+        )
         parts.append(
             "<h2>Загрузить</h2>"
             # `data-limit` — тот же MAX_UPLOAD числом: браузер знает размер
             # файла до отправки и отказывает сразу, а не после того, как
             # полтерабайта трафика уже потрачены на серверную проверку.
             f"<form id=upload-form data-limit={MAX_UPLOAD} "
+            f"data-reference-limit={reference_limit} "
+            f"data-reference-managed={reference_managed} "
             "method=post action=/sources enctype=multipart/form-data>"
-            "<input type=file name=file accept='.zip,.hbk,.json' required> "
+            "<input type=file name=file accept='.zip,.hbk,.json,.sqlite3' required> "
             "<button>Загрузить</button>"
             "<label><input type=checkbox name=allow_truncated value=1> "
             "явно опубликовать тестовую неполную выгрузку "
@@ -1682,7 +1707,9 @@ def _sources_page(
             "<span id=upload-text></span></div>"
             # Имя файла названо прямо: в каталоге установки платформы лежат
             # 38 файлов `.hbk`, и без подсказки человек берёт наугад соседний.
-            "<p>Принимаются три вида файлов:</p>"
+            "<p>Принимаются четыре вида файлов. Для Registry предел "
+            f"{MAX_UPLOAD // 1024 // 1024} МиБ, для SQLite общей справки — "
+            f"{reference_limit // 1024 // 1024} МиБ.</p>"
             "<ul>"
             "<li><b>Выгрузка структуры</b> — <code>.zip</code>, который "
             "делает обработка <code>ВыгрузкаСтруктуры</code>.</li>"
@@ -1694,6 +1721,9 @@ def _sources_page(
             "<code>/opt/1cv8/&lt;версия&gt;/shcntx_ru.hbk</code><br>"
             "<code>C:\\Program Files\\1cv8\\&lt;версия&gt;\\bin\\shcntx_ru.hbk</code>"
             "<br>Имя должно совпадать целиком.</li>"
+            "<li><b>Общая справка</b> — каноническая <code>.sqlite3</code> "
+            "schema v1. Она полностью проверяется и становится активной "
+            "после перезапуска сервера.</li>"
             "</ul>"
             "<p>Рядом лежат сотни файлов <code>.hbk</code> (38 справок × "
             "языки), и похожие есть: <code>shcntx_root.hbk</code> — та же "
@@ -2244,37 +2274,80 @@ def routes(
         # «../../etc/passwd» сложится путь наружу временного каталога.
         name = Path(uploaded.filename).name
         suffix = Path(name).suffix.lower()
-        if suffix not in (".zip", ".hbk", ".json"):
+        if suffix not in (".zip", ".hbk", ".json", ".sqlite3"):
             await form.close()
             return await render_sources(
-                error="Принимаются только .zip, .hbk и .json",
+                error="Принимаются только .zip, .hbk, .json и .sqlite3",
                 authorized=True,
             )
 
-        # Каталог удаляется не здесь, а фоновой задачей: она переживёт этот
-        # ответ, и её файл нельзя убирать у неё из-под ног.
-        tmp = tempfile.mkdtemp()
+        reference_upload = suffix == ".sqlite3"
+        if reference_upload and not reference.managed_upload_available:
+            await form.close()
+            return await render_sources(
+                error="Загрузка SQLite выключена: база подключена по внешнему пути.",
+                authorized=True,
+                status_code=409,
+            )
+
+        # Registry-файл остаётся фоновой задаче. SQLite ставится синхронно,
+        # поэтому её staging лежит рядом с целевым файлом для атомарной замены
+        # и удаляется до ответа.
+        if reference_upload:
+            reference.managed_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = tempfile.mkdtemp(
+                dir=reference.managed_path.parent,
+                prefix=".reference-upload-",
+            )
+        else:
+            tmp = tempfile.mkdtemp()
         target = Path(tmp) / name
-        job = _start_job(name, 0)
+        job = None if reference_upload else _start_job(name, 0)
+        limit = MAX_REFERENCE_DB_BYTES if reference_upload else MAX_UPLOAD
         size = 0
-        with target.open("wb") as out:
-            while True:
-                chunk = await uploaded.read(CHUNK)
-                if not chunk:
-                    break
-                size += len(chunk)
-                job["size"] = size
-                if size > MAX_UPLOAD:
-                    shutil.rmtree(tmp, ignore_errors=True)
-                    _JOBS.remove(job)
-                    await form.close()
-                    return await render_sources(
-                        error=f"Файл больше {MAX_UPLOAD // 1024 // 1024} МБ.",
-                        authorized=True,
-                        status_code=413,
-                    )
-                out.write(chunk)
+        try:
+            with target.open("wb") as out:
+                while True:
+                    chunk = await uploaded.read(CHUNK)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if job is not None:
+                        job["size"] = size
+                    if size > limit:
+                        raise _UploadTooLarge
+                    out.write(chunk)
+                if reference_upload:
+                    out.flush()
+                    os.fsync(out.fileno())
+        except _UploadTooLarge:
+            shutil.rmtree(tmp, ignore_errors=True)
+            if job is not None:
+                _JOBS.remove(job)
+            await form.close()
+            return await render_sources(
+                error=f"Файл больше {limit // 1024 // 1024} МБ.",
+                authorized=True,
+                status_code=413,
+            )
         await form.close()
+
+        if reference_upload:
+            try:
+                await run_in_threadpool(reference.install_candidate, target)
+            except ReferenceValidationError as error:
+                return await render_sources(
+                    error=str(error), authorized=True, status_code=422
+                )
+            except OSError:
+                return await render_sources(
+                    error="Не удалось сохранить каноническую базу.",
+                    authorized=True,
+                    status_code=500,
+                )
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
+            return RedirectResponse("/sources", status_code=303)
 
         # Разбор уходит в фон, ответ отдаётся сразу. Справка разбирается около
         # пяти секунд, и всё это время браузер стоял на белом экране, не

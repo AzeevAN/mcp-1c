@@ -1691,33 +1691,9 @@ h2 {
   font-size: 12px;
 }
 
-.reference-status-copy small,
-.reference-upload-row small {
+.reference-status-copy small {
   color: var(--muted);
   font-size: 10px;
-}
-
-.reference-upload-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  align-items: center;
-  gap: 12px;
-  padding: 15px 16px;
-  border: 1px dashed #b9c8dc;
-  border-radius: 12px;
-  background: #f8fafe;
-}
-
-.reference-upload-row > span {
-  min-width: 0;
-  display: grid;
-  gap: 4px;
-}
-
-.reference-upload-row strong {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .operation-progress {
@@ -4091,8 +4067,7 @@ h2 {
 
   .upload-dropzone,
   .admin-card-heading.is-spread,
-  .incoming-row,
-  .reference-upload-row {
+  .incoming-row {
     grid-template-columns: 1fr;
   }
 

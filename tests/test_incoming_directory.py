@@ -18,6 +18,7 @@ from mcp1c.intake import (
     extract,
     identity_digest,
     identity_files,
+    listing_size,
     planned_size,
 )
 from mcp1c.registry import Registry
@@ -129,6 +130,15 @@ def test_нет_манифеста_не_хешируется_по_дереву(t
     (пустой / "VERSION").write_text("1.0", encoding="utf-8")
 
     assert identity_files(пустой) == ()
+
+
+def test_размер_каталога_это_файлы_идентичности_а_не_дерево(tmp_path):
+    каталог = _каталог_выгрузки(tmp_path / "dump", dump_info="dump-1")
+    (каталог / "ballast.bin").write_bytes(b"X" * 2_000_000)
+
+    dump_info = каталог / "ConfigDumpInfo.xml"
+    assert listing_size(каталог) == dump_info.stat().st_size
+    assert listing_size(каталог) < 2_000_000
 
 
 def test_скан_видит_каталог_рядом_с_zip(tmp_path):

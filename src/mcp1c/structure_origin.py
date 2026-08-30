@@ -16,7 +16,7 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from .intake import карта_архива
+from .intake import карта_архива, карта_каталога
 
 
 CATALOG_FILE = ".structure-origin.json.gz"
@@ -110,8 +110,7 @@ class StructureOriginView:
 
 
 def _descriptor(
-    zf: zipfile.ZipFile,
-    info: zipfile.ZipInfo,
+    stream,
     *,
     expected_kind: str,
     expected_name: str,
@@ -119,29 +118,28 @@ def _descriptor(
     actual_name = ""
     field_names: set[str] = set()
     stack: list[str] = []
-    with zf.open(info) as stream:
-        for event, element in ET.iterparse(stream, events=("start", "end")):
-            tag = _tag(element)
-            if event == "start":
-                stack.append(tag)
-                if len(stack) == 2 and tag != expected_kind:
-                    raise ValueError("XML-дескриптор содержит другой вид объекта")
-                continue
-            if stack == ["MetaDataObject", expected_kind, "Properties", "Name"]:
-                actual_name = (element.text or "").strip()
-            elif stack == [
-                "MetaDataObject",
-                expected_kind,
-                "ChildObjects",
-                "Attribute",
-                "Properties",
-                "Name",
-            ]:
-                field_name = (element.text or "").strip()
-                if field_name:
-                    field_names.add(field_name)
-            element.clear()
-            stack.pop()
+    for event, element in ET.iterparse(stream, events=("start", "end")):
+        tag = _tag(element)
+        if event == "start":
+            stack.append(tag)
+            if len(stack) == 2 and tag != expected_kind:
+                raise ValueError("XML-дескриптор содержит другой вид объекта")
+            continue
+        if stack == ["MetaDataObject", expected_kind, "Properties", "Name"]:
+            actual_name = (element.text or "").strip()
+        elif stack == [
+            "MetaDataObject",
+            expected_kind,
+            "ChildObjects",
+            "Attribute",
+            "Properties",
+            "Name",
+        ]:
+            field_name = (element.text or "").strip()
+            if field_name:
+                field_names.add(field_name)
+        element.clear()
+        stack.pop()
     if actual_name != expected_name:
         raise ValueError("имя в XML-дескрипторе не совпало с манифестом")
 
@@ -153,33 +151,84 @@ def _descriptor(
     return object_address, frozenset(fields)
 
 
-def _manifest(
-    zf: zipfile.ZipFile, info: zipfile.ZipInfo
-) -> tuple[bool, list[tuple[str, str]]]:
+def _manifest(stream) -> tuple[bool, list[tuple[str, str]]]:
     """Потоково прочитать перечень корневых объектов Configuration.xml."""
     found_children = False
     expected: list[tuple[str, str]] = []
     stack: list[str] = []
-    with zf.open(info) as stream:
-        for event, element in ET.iterparse(stream, events=("start", "end")):
-            tag = _tag(element)
-            if event == "start":
-                stack.append(tag)
-                if stack == ["MetaDataObject", "Configuration", "ChildObjects"]:
-                    found_children = True
-                continue
-            if (
-                len(stack) == 4
-                and stack[:3]
-                == ["MetaDataObject", "Configuration", "ChildObjects"]
-                and tag in _KINDS
-            ):
-                name = (element.text or "").strip()
-                if name:
-                    expected.append((tag, name))
-            element.clear()
-            stack.pop()
+    for event, element in ET.iterparse(stream, events=("start", "end")):
+        tag = _tag(element)
+        if event == "start":
+            stack.append(tag)
+            if stack == ["MetaDataObject", "Configuration", "ChildObjects"]:
+                found_children = True
+            continue
+        if (
+            len(stack) == 4
+            and stack[:3]
+            == ["MetaDataObject", "Configuration", "ChildObjects"]
+            and tag in _KINDS
+        ):
+            name = (element.text or "").strip()
+            if name:
+                expected.append((tag, name))
+        element.clear()
+        stack.pop()
     return found_children, expected
+
+
+def _capture_from_map(
+    archive: dict[str, object],
+    open_member,
+) -> DeclaredStructure:
+    problems: list[str] = []
+    objects: set[str] = set()
+    fields: set[str] = set()
+    configuration_info = archive.get("Configuration.xml")
+    if configuration_info is None:
+        return DeclaredStructure(
+            False, frozenset(), frozenset(), ("нет Configuration.xml",)
+        )
+    with open_member(configuration_info) as stream:
+        found_children, expected = _manifest(stream)
+    if not found_children:
+        return DeclaredStructure(
+            False,
+            frozenset(),
+            frozenset(),
+            ("в Configuration.xml нет ChildObjects",),
+        )
+
+    for kind, name in expected:
+        folder, _public_kind = _KINDS[kind]
+        info = archive.get(f"{folder}/{name}.xml")
+        if info is None:
+            info = archive.get(f"{kind}.{name}.xml")
+        if info is None:
+            problems.append("нет XML-дескриптора поддерживаемого объекта")
+            continue
+        try:
+            with open_member(info) as stream:
+                object_address, object_fields = _descriptor(
+                    stream, expected_kind=kind, expected_name=name
+                )
+        except (
+            ET.ParseError,
+            OSError,
+            ValueError,
+            RuntimeError,
+            NotImplementedError,
+        ):
+            problems.append("не прочитан XML-дескриптор поддерживаемого объекта")
+            continue
+        objects.add(object_address)
+        fields.update(object_fields)
+    return DeclaredStructure(
+        not problems,
+        frozenset(objects),
+        frozenset(fields),
+        tuple(problems),
+    )
 
 
 def capture_archive(path: Path) -> DeclaredStructure:
@@ -190,49 +239,13 @@ def capture_archive(path: Path) -> DeclaredStructure:
     Каждому поддержанному элементу манифеста должен соответствовать ровно
     разбираемый XML в иерархической либо плоской раскладке.
     """
-    problems: list[str] = []
-    objects: set[str] = set()
-    fields: set[str] = set()
     try:
+        if path.is_dir():
+            archive = карта_каталога(path)
+            return _capture_from_map(archive, lambda member: member.open("rb"))
         with zipfile.ZipFile(path) as zf:
             archive = карта_архива(zf)
-            configuration_info = archive.get("Configuration.xml")
-            if configuration_info is None:
-                return DeclaredStructure(
-                    False, frozenset(), frozenset(), ("нет Configuration.xml",)
-                )
-            found_children, expected = _manifest(zf, configuration_info)
-            if not found_children:
-                return DeclaredStructure(
-                    False,
-                    frozenset(),
-                    frozenset(),
-                    ("в Configuration.xml нет ChildObjects",),
-                )
-
-            for kind, name in expected:
-                folder, _public_kind = _KINDS[kind]
-                info = archive.get(f"{folder}/{name}.xml")
-                if info is None:
-                    info = archive.get(f"{kind}.{name}.xml")
-                if info is None:
-                    problems.append("нет XML-дескриптора поддерживаемого объекта")
-                    continue
-                try:
-                    object_address, object_fields = _descriptor(
-                        zf, info, expected_kind=kind, expected_name=name
-                    )
-                except (
-                    ET.ParseError,
-                    OSError,
-                    ValueError,
-                    RuntimeError,
-                    NotImplementedError,
-                ):
-                    problems.append("не прочитан XML-дескриптор поддерживаемого объекта")
-                    continue
-                objects.add(object_address)
-                fields.update(object_fields)
+            return _capture_from_map(archive, zf.open)
     except (
         ET.ParseError,
         OSError,
@@ -246,13 +259,6 @@ def capture_archive(path: Path) -> DeclaredStructure:
             frozenset(),
             ("файловая выгрузка недоступна для каталога происхождения",),
         )
-
-    return DeclaredStructure(
-        not problems,
-        frozenset(objects),
-        frozenset(fields),
-        tuple(problems),
-    )
 
 
 def base_catalog(raw: DeclaredStructure, source_sha256: str) -> StructureCatalog:

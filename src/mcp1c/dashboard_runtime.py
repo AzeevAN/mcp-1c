@@ -209,11 +209,18 @@ def _admin_sources_payload(prepared) -> dict:
     from .incoming import (
         STATE_FAILED,
         STATE_NEW,
+        STATE_READY,
         STATE_STALE,
         STATE_UPDATED,
     )
 
-    actionable = {STATE_NEW, STATE_UPDATED, STATE_STALE, STATE_FAILED}
+    actionable = {
+        STATE_NEW,
+        STATE_UPDATED,
+        STATE_STALE,
+        STATE_FAILED,
+        STATE_READY,
+    }
     configurations = list(prepared.sources.configuration_names)
     incoming = []
     for row in prepared.incoming:
@@ -229,10 +236,11 @@ def _admin_sources_payload(prepared) -> dict:
                 "state": row.state,
                 "detail": row.detail,
                 "settling": row.settling,
+                "kind": getattr(row, "kind", "archive"),
                 "can_parse": can_parse,
                 "action": (
                     "reparse"
-                    if row.state in (STATE_UPDATED, STATE_STALE)
+                    if row.state in (STATE_UPDATED, STATE_STALE, STATE_READY)
                     else "parse"
                 ),
             }
@@ -974,13 +982,14 @@ def _spa_routes(registry: Registry, static_dir: Path) -> list[Route]:
         if not name or name != raw_name:
             return _json_error("Входящая выгрузка не найдена.", 404)
         scanner = classic_dashboard._scanner(registry)
-        archive = registry.incoming_dir / name
-        if not archive.is_file():
+        archive = classic_dashboard._incoming_path(registry, name)
+        if archive is None:
             return _json_error("Входящая выгрузка не найдена.", 404)
+        size = classic_dashboard._incoming_size(archive)
 
         busy = scanner.running
         if busy:
-            job = classic_dashboard._start_job(name, archive.stat().st_size)
+            job = classic_dashboard._start_job(name, size)
             job["state"] = classic_dashboard.JOB_FAILED
             job["error"] = (
                 "уже идёт разбор другой выгрузки ("
@@ -992,7 +1001,7 @@ def _spa_routes(registry: Registry, static_dir: Path) -> list[Route]:
                 status_code=409,
             )
         if scanner.дописывается(archive):
-            job = classic_dashboard._start_job(name, archive.stat().st_size)
+            job = classic_dashboard._start_job(name, size)
             job["state"] = classic_dashboard.JOB_FAILED
             job["error"] = (
                 f"{name}: файл изменялся только что — похоже, копирование ещё "
@@ -1003,12 +1012,20 @@ def _spa_routes(registry: Registry, static_dir: Path) -> list[Route]:
                 status_code=409,
             )
 
-        job = classic_dashboard._start_job(name, archive.stat().st_size)
+        job = classic_dashboard._start_job(name, size)
         try:
+            if archive.is_dir() and not intake.identity_files(archive):
+                raise ValueError(intake.нет_идентичности(archive.name))
             await run_in_threadpool(intake.planned_size, archive)
         except Exception as error:
             job["state"] = classic_dashboard.JOB_FAILED
-            job["error"] = f"{archive.name}: не похоже на zip-архив ({error})"
+            if archive.is_dir():
+                text = str(error)
+                job["error"] = (
+                    text if text.startswith(archive.name) else f"{archive.name}: {text}"
+                )
+            else:
+                job["error"] = f"{archive.name}: не похоже на zip-архив ({error})"
             await run_in_threadpool(scanner.note_failure, archive, job["error"])
             return JSONResponse(
                 {"error": job["error"], "job": _job_payload(job)},

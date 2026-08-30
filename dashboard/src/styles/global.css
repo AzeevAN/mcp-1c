@@ -1696,11 +1696,29 @@ h2 {
   font-size: 10px;
 }
 
+.reference-admin-card {
+  margin-block: 8px;
+  border-color: #b9ded4;
+  border-left: 4px solid var(--mint);
+  background: linear-gradient(135deg, rgba(228, 245, 239, 0.76), var(--surface) 52%);
+  box-shadow: 0 0 0 5px rgba(42, 151, 122, 0.05), var(--shadow);
+}
+
+.reference-admin-card .admin-card-icon {
+  color: var(--mint-deep);
+  background: #e4f5ef;
+}
+
 .reference-actions {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 9px;
+}
+
+.reference-admin-card .admin-feedback + .reference-actions,
+.reference-admin-card .inline-warning + .reference-actions {
+  margin-top: 14px;
 }
 
 .restart-dialog {

@@ -2,8 +2,10 @@ import {
   AlertCircle,
   Archive,
   BookOpen,
+  Check,
   CheckCircle2,
   CircleOff,
+  Copy,
   FileArchive,
   FileUp,
   FolderInput,
@@ -128,6 +130,7 @@ function ReferenceAdminCard({
   const removeReference = useRemoveReference();
   const [action, setAction] = useState<"remove" | "restart" | null>(null);
   const [confirmation, setConfirmation] = useState("");
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const [restarting, setRestarting] = useState(false);
   const [feedback, setFeedback] = useState<{ tone: "success" | "danger"; text: string } | null>(null);
 
@@ -135,6 +138,17 @@ function ReferenceAdminCard({
     if (removeReference.isPending || restarting) return;
     setAction(null);
     setConfirmation("");
+    setCopyState("idle");
+  };
+
+  const copyExactName = async () => {
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("Clipboard API недоступен");
+      await navigator.clipboard.writeText("reference.sqlite3");
+      setCopyState("copied");
+    } catch {
+      setCopyState("failed");
+    }
   };
 
   const remove = async () => {
@@ -201,7 +215,7 @@ function ReferenceAdminCard({
             <button
               className="button-danger-quiet"
               type="button"
-              onClick={() => { setFeedback(null); setAction("remove"); }}
+              onClick={() => { setFeedback(null); setCopyState("idle"); setAction("remove"); }}
               disabled={restarting || removeReference.isPending}
             >
               <Trash2 size={16} aria-hidden="true" />Удалить базу
@@ -256,13 +270,29 @@ function ReferenceAdminCard({
                 <p>Файл и расходный индекс будут удалены. Если инструменты уже активны, текущий снимок продолжит отвечать только до перезапуска, после которого <code>search_reference</code> и <code>get_reference</code> исчезнут.</p>
                 <div className="confirmation-field">
                   <label htmlFor="reference-remove-confirmation">Для подтверждения введите точное имя:</label>
-                  <code>reference.sqlite3</code>
+                  <div className="confirmation-name">
+                    <code title="reference.sqlite3">reference.sqlite3</code>
+                    <button
+                      className="button-secondary confirmation-copy-button"
+                      type="button"
+                      onClick={() => void copyExactName()}
+                      aria-label={copyState === "copied" ? "Точное имя скопировано" : "Скопировать точное имя"}
+                    >
+                      {copyState === "copied" ? <Check size={15} aria-hidden="true" /> : <Copy size={15} aria-hidden="true" />}
+                      {copyState === "copied" ? "Скопировано" : "Копировать"}
+                    </button>
+                  </div>
                   <input
                     id="reference-remove-confirmation"
                     value={confirmation}
                     onChange={(event) => setConfirmation(event.target.value)}
                     autoComplete="off"
                   />
+                  {copyState === "failed" && (
+                    <span className="confirmation-copy-error" role="status">
+                      Не удалось скопировать автоматически — имя можно выделить вручную.
+                    </span>
+                  )}
                 </div>
                 <footer>
                   <button className="button-secondary" type="button" onClick={closeDialog}>Отмена</button>

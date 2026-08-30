@@ -329,11 +329,17 @@ it("требует точное подтверждение перед удале
   );
 
   expect(await screen.findByRole("button", { name: "Удалить базу" })).toBeEnabled();
+  expect(screen.getByRole("region", { name: "Локальная общая справка" })).toHaveClass(
+    "reference-admin-card",
+  );
   fireEvent.click(screen.getByRole("button", { name: "Удалить базу" }));
   const dialog = screen.getByRole("dialog", { name: "Удалить локальную общую базу?" });
   expect(dialog).toBeInTheDocument();
   const confirm = within(dialog).getByRole("button", { name: "Удалить базу" });
   expect(confirm).toBeDisabled();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Скопировать точное имя" }));
+  await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith("reference.sqlite3"));
+  expect(within(dialog).getByRole("button", { name: "Точное имя скопировано" })).toBeInTheDocument();
   fireEvent.change(screen.getByLabelText("Для подтверждения введите точное имя:"), {
     target: { value: "reference.sqlite3" },
   });
@@ -347,6 +353,9 @@ it("требует точное подтверждение перед удале
       }),
     );
   });
+  const success = await screen.findByRole("status");
+  expect(success).toHaveClass("admin-feedback", "is-success");
+  expect(success.nextElementSibling).toHaveClass("reference-actions");
 });
 
 it("показывает подтверждение рестарта только для pending общей базы", async () => {

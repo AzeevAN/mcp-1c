@@ -38,12 +38,9 @@ services:
       # конфигураций открыта всем, кто дотянется до адреса. Оба берутся из
       # `.env` рядом с этим файлом — шаблон в `.env.example`.
       API_TOKEN: ${API_TOKEN:-}
-      # Необязательная каноническая SQLite. Пустое значение использует
-      # управляемый путь /data/reference/reference.sqlite3; `off` отключает.
-      MCP1C_REFERENCE_DB: ${MCP1C_REFERENCE_DB:-}
-      # Только для локальной приёмки экспериментальной ветки. Релиз не должен
-      # запускаться с обходом проверки подписи.
-      MCP1C_REFERENCE_TRUST_UNSIGNED: ${MCP1C_REFERENCE_TRUST_UNSIGNED:-}
+      # Необязательная общая справка. Пустое значение использует подписанный
+      # /data/reference/reference.mcp1cref; `off` отключает адаптер.
+      MCP1C_REFERENCE_ARTIFACT: ${MCP1C_REFERENCE_ARTIFACT:-}
       # Этот профиль уже имеет restart: unless-stopped, поэтому процесс может
       # безопасно завершить себя после административного HTTP-ответа. Для
       # bare-запуска возможность по умолчанию выключена.

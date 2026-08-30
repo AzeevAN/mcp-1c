@@ -283,12 +283,12 @@ it("показывает администратору компактную за�
   expect(screen.getByText("структура.zip")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Загрузить и разобрать" })).toBeEnabled();
 
-  const reference = new File(["synthetic"], "reference.sqlite3", { type: "application/vnd.sqlite3" });
+  const reference = new File(["synthetic"], "reference.mcp1cref", { type: "application/octet-stream" });
   fireEvent.change(input!, { target: { files: [reference] } });
-  expect(screen.getByText("reference.sqlite3")).toBeInTheDocument();
+  expect(screen.getByText("reference.mcp1cref")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Проверить и сохранить" })).toBeEnabled();
   expect(screen.queryByRole("checkbox", { name: /Разрешить неполную тестовую выгрузку/ })).not.toBeInTheDocument();
-  expect(input).toHaveAttribute("accept", ".zip,.hbk,.json,.sqlite3");
+  expect(input).toHaveAttribute("accept", ".zip,.hbk,.json,.mcp1cref");
 
   const parse = screen.getByRole("button", { name: "Разобрать" });
   expect(parse).toBeDisabled();
@@ -338,10 +338,10 @@ it("требует точное подтверждение перед удале
   const confirm = within(dialog).getByRole("button", { name: "Удалить базу" });
   expect(confirm).toBeDisabled();
   fireEvent.click(within(dialog).getByRole("button", { name: "Скопировать точное имя" }));
-  await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith("reference.sqlite3"));
+  await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith("reference.mcp1cref"));
   expect(within(dialog).getByRole("button", { name: "Точное имя скопировано" })).toBeInTheDocument();
   fireEvent.change(screen.getByLabelText("Для подтверждения введите точное имя:"), {
-    target: { value: "reference.sqlite3" },
+    target: { value: "reference.mcp1cref" },
   });
   expect(confirm).toBeEnabled();
   fireEvent.click(confirm);
@@ -349,7 +349,7 @@ it("требует точное подтверждение перед удале
     expect(fetch).toHaveBeenCalledWith(
       "/api/v1/reference/remove",
       expect.objectContaining({
-        body: JSON.stringify({ confirmation: "reference.sqlite3" }),
+        body: JSON.stringify({ confirmation: "reference.mcp1cref" }),
       }),
     );
   });

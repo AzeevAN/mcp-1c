@@ -14,22 +14,51 @@ import json
 import os
 import re
 import sqlite3
+import stat
+import tempfile
 import threading
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Mapping, Protocol
+
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from . import index_cache
 from .search import Doc, SearchIndex
 
 CANONICAL_SCHEMA_VERSION = "1"
 MAX_REFERENCE_DB_BYTES = 32 * 1024 * 1024
+MAX_REFERENCE_ARTIFACT_BYTES = MAX_REFERENCE_DB_BYTES + 1024 * 1024
 MIN_PAGE_CHARS = 256
 MAX_PAGE_CHARS = 20_000
 DEFAULT_PAGE_CHARS = 8_000
-REFERENCE_PATH_ENV = "MCP1C_REFERENCE_DB"
-UNSIGNED_ENV = "MCP1C_REFERENCE_TRUST_UNSIGNED"
+REFERENCE_PATH_ENV = "MCP1C_REFERENCE_ARTIFACT"
+REFERENCE_ARTIFACT_NAME = "reference.mcp1cref"
+REFERENCE_ARTIFACT_SUFFIX = ".mcp1cref"
+REFERENCE_DATABASE_MEMBER = "reference.sqlite3"
+REFERENCE_MANIFEST_MEMBER = "manifest.json"
+REFERENCE_SIGNATURE_MEMBER = "manifest.sig"
+REFERENCE_FORMAT = "mcp1c-reference"
+REFERENCE_ARTIFACT_VERSION = "1"
+REFERENCE_SIGNATURE_ALGORITHM = "ed25519"
+MAX_REFERENCE_MANIFEST_BYTES = 4096
+ED25519_SIGNATURE_BYTES = 64
+ED25519_PUBLIC_KEY_BYTES = 32
 _QUERY_TABLE_MARKER = re.compile(r"\x00таблица-\d+\x00")
+_SHA256 = re.compile(r"[0-9a-f]{64}")
+_KEY_ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+
+# Приватные половины release-ключей никогда не попадают в этот проект.
+# SHA-256 raw public key `reference-2026-01`:
+# 509d077f669ebf935aa03453bdb1e904f95e0192fdf265b2c45b239678615c2e
+TRUSTED_REFERENCE_PUBLIC_KEYS: dict[str, bytes] = {
+    "reference-2026-01": bytes.fromhex(
+        "02ed13d505d3dea350e991c7ca9e6ef2"
+        "e11c4c0879a3859da9b916c30ab70c25"
+    ),
+}
 
 # Schema runtime-слоя публична: адаптер обязан отвергать похожую SQLite с
 # недостающими или подменёнными таблицами до выполнения предметных запросов.
@@ -101,51 +130,287 @@ class ReferenceQueryError(ValueError):
 class ReferenceValidationError(RuntimeError):
     """Безопасно классифицированный отказ необязательной базы."""
 
-    def __init__(self, state: str, message: str):
+    def __init__(
+        self,
+        state: str,
+        message: str,
+        *,
+        key_id: str | None = None,
+        signature: str = "not-checked",
+    ):
         super().__init__(message)
         self.state = state
+        self.key_id = key_id
+        self.signature = signature
 
 
 @dataclass(frozen=True, slots=True)
-class SignatureVerification:
-    trusted: bool
-    state: str
-    label: str
-    message: str
-    key_id: str | None = None
+class VerifiedArtifact:
+    database: Path
+    artifact_sha256: str
+    file_sha256: str
+    logical_sha256: str
+    schema_version: str
+    key_id: str
+    signature: str = REFERENCE_SIGNATURE_ALGORITHM
 
 
 class ArtifactVerifier(Protocol):
-    """Шов для будущей проверки manifest и отдельной подписи."""
+    """Проверить доверие к bundle, не открывая SQLite."""
 
-    def verify(self, database: Path, file_sha256: str) -> SignatureVerification:
+    def verify(self, artifact: Path, extraction_dir: Path) -> VerifiedArtifact:
         ...
 
 
-class RejectUnsignedVerifier:
-    """Безопасное состояние до выбора измеренной криптографической реализации."""
+def canonical_manifest_bytes(manifest: Mapping[str, object]) -> bytes:
+    """Точные подписываемые байты: ASCII JSON, сортировка ключей и один LF."""
+    return (
+        json.dumps(
+            manifest,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        + b"\n"
+    )
 
-    def verify(self, database: Path, file_sha256: str) -> SignatureVerification:
-        del database, file_sha256
-        return SignatureVerification(
-            trusted=False,
-            state="untrusted",
-            label="unsigned",
-            message="У базы нет проверенной подписи.",
+
+def _manifest_object(raw: bytes) -> dict[str, object]:
+    if not raw or len(raw) > MAX_REFERENCE_MANIFEST_BYTES:
+        raise ReferenceValidationError(
+            "untrusted", "Manifest подписанного артефакта отсутствует или слишком велик."
         )
 
+    def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate key")
+            result[key] = value
+        return result
 
-class ExperimentalUnsignedVerifier:
-    """Явный локальный режим ветки; не является релизным доверием."""
-
-    def verify(self, database: Path, file_sha256: str) -> SignatureVerification:
-        del database, file_sha256
-        return SignatureVerification(
-            trusted=True,
-            state="ready",
-            label="unsigned-experimental",
-            message="Включён экспериментальный режим без проверки подписи.",
+    try:
+        decoded = raw.decode("utf-8")
+        manifest = json.loads(decoded, object_pairs_hook=unique_object)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        raise ReferenceValidationError(
+            "untrusted", "Manifest подписанного артефакта повреждён."
+        ) from error
+    if not isinstance(manifest, dict) or canonical_manifest_bytes(manifest) != raw:
+        raise ReferenceValidationError(
+            "untrusted", "Manifest не соответствует каноническому формату."
         )
+    return manifest
+
+
+def _validated_manifest(manifest: dict[str, object]) -> dict[str, object]:
+    expected = {
+        "artifact",
+        "artifact_sha256",
+        "artifact_size",
+        "format",
+        "format_version",
+        "key_id",
+        "logical_sha256",
+        "schema_version",
+        "signature_algorithm",
+    }
+    if set(manifest) != expected:
+        raise ReferenceValidationError(
+            "untrusted", "Manifest содержит неизвестный или неполный набор полей."
+        )
+    key_id = manifest.get("key_id")
+    if not isinstance(key_id, str) or _KEY_ID.fullmatch(key_id) is None:
+        raise ReferenceValidationError(
+            "untrusted", "Manifest содержит недопустимый key_id."
+        )
+    if (
+        manifest.get("artifact") != REFERENCE_DATABASE_MEMBER
+        or manifest.get("format") != REFERENCE_FORMAT
+        or manifest.get("format_version") != REFERENCE_ARTIFACT_VERSION
+        or manifest.get("signature_algorithm") != REFERENCE_SIGNATURE_ALGORITHM
+    ):
+        raise ReferenceValidationError(
+            "incompatible",
+            "Формат подписанного артефакта не поддерживается.",
+            key_id=key_id,
+        )
+    if manifest.get("schema_version") != CANONICAL_SCHEMA_VERSION:
+        raise ReferenceValidationError(
+            "incompatible",
+            "Версия канонической базы несовместима с schema v1.",
+            key_id=key_id,
+        )
+    if (
+        not isinstance(manifest.get("artifact_size"), int)
+        or isinstance(manifest.get("artifact_size"), bool)
+        or not 0 < int(manifest["artifact_size"]) <= MAX_REFERENCE_DB_BYTES
+        or not isinstance(manifest.get("artifact_sha256"), str)
+        or _SHA256.fullmatch(str(manifest["artifact_sha256"])) is None
+        or not isinstance(manifest.get("logical_sha256"), str)
+        or _SHA256.fullmatch(str(manifest["logical_sha256"])) is None
+    ):
+        raise ReferenceValidationError(
+            "untrusted", "Manifest содержит недопустимые контрольные значения.",
+            key_id=key_id,
+        )
+    return manifest
+
+
+def _strict_bundle(artifact: Path) -> tuple[zipfile.ZipFile, dict[str, zipfile.ZipInfo]]:
+    try:
+        bundle = zipfile.ZipFile(artifact)
+    except (OSError, zipfile.BadZipFile) as error:
+        try:
+            with artifact.open("rb") as stream:
+                unsigned_sqlite = stream.read(16) == b"SQLite format 3\x00"
+        except OSError:
+            unsigned_sqlite = False
+        state = "untrusted" if unsigned_sqlite else "corrupt"
+        message = (
+            "Неподписанная SQLite не принимается."
+            if unsigned_sqlite
+            else "Файл не является подписанным артефактом общей справки."
+        )
+        raise ReferenceValidationError(state, message) from error
+    infos = bundle.infolist()
+    names = [info.filename for info in infos]
+    expected = {
+        REFERENCE_DATABASE_MEMBER,
+        REFERENCE_MANIFEST_MEMBER,
+        REFERENCE_SIGNATURE_MEMBER,
+    }
+    if len(names) != len(expected) or set(names) != expected:
+        bundle.close()
+        missing_trust = (
+            REFERENCE_MANIFEST_MEMBER not in names
+            or REFERENCE_SIGNATURE_MEMBER not in names
+        )
+        raise ReferenceValidationError(
+            "untrusted" if missing_trust else "corrupt",
+            "Подписанный артефакт должен содержать ровно три обязательных файла.",
+        )
+    by_name = {info.filename: info for info in infos}
+    for info in infos:
+        mode = info.external_attr >> 16
+        file_type = stat.S_IFMT(mode)
+        if (
+            info.is_dir()
+            or info.flag_bits & 0x1
+            or info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)
+            or file_type not in (0, stat.S_IFREG)
+        ):
+            bundle.close()
+            raise ReferenceValidationError(
+                "corrupt", "Подписанный артефакт содержит недопустимую запись ZIP."
+            )
+    database_info = by_name[REFERENCE_DATABASE_MEMBER]
+    manifest_info = by_name[REFERENCE_MANIFEST_MEMBER]
+    signature_info = by_name[REFERENCE_SIGNATURE_MEMBER]
+    if (
+        not 0 < database_info.file_size <= MAX_REFERENCE_DB_BYTES
+        or not 0 < manifest_info.file_size <= MAX_REFERENCE_MANIFEST_BYTES
+        or signature_info.file_size != ED25519_SIGNATURE_BYTES
+    ):
+        bundle.close()
+        state = "untrusted" if signature_info.file_size != ED25519_SIGNATURE_BYTES else "corrupt"
+        raise ReferenceValidationError(
+            state, "Размер одного из файлов подписанного артефакта недопустим."
+        )
+    return bundle, by_name
+
+
+class SignedArtifactVerifier:
+    """Ed25519 detached-подпись manifest и потоковая проверка SQLite."""
+
+    def __init__(self, public_keys: Mapping[str, bytes] | None = None):
+        self.public_keys = dict(
+            TRUSTED_REFERENCE_PUBLIC_KEYS if public_keys is None else public_keys
+        )
+
+    def verify(self, artifact: Path, extraction_dir: Path) -> VerifiedArtifact:
+        artifact_size = artifact.stat().st_size
+        if not 0 < artifact_size <= MAX_REFERENCE_ARTIFACT_BYTES:
+            raise ReferenceValidationError(
+                "corrupt", "Размер подписанного артефакта недопустим."
+            )
+        artifact_sha256 = _file_sha256(artifact)
+        bundle, infos = _strict_bundle(artifact)
+        temporary: Path | None = None
+        try:
+            raw_manifest = bundle.read(REFERENCE_MANIFEST_MEMBER)
+            manifest = _validated_manifest(_manifest_object(raw_manifest))
+            key_id = str(manifest["key_id"])
+            public_bytes = self.public_keys.get(key_id)
+            if public_bytes is None:
+                raise ReferenceValidationError(
+                    "untrusted", "Артефакт подписан неизвестным ключом.",
+                    key_id=key_id, signature=REFERENCE_SIGNATURE_ALGORITHM,
+                )
+            if len(public_bytes) != ED25519_PUBLIC_KEY_BYTES:
+                raise RuntimeError("invalid embedded Ed25519 public key")
+            signature = bundle.read(REFERENCE_SIGNATURE_MEMBER)
+            try:
+                Ed25519PublicKey.from_public_bytes(public_bytes).verify(
+                    signature, raw_manifest
+                )
+            except (InvalidSignature, ValueError) as error:
+                raise ReferenceValidationError(
+                    "untrusted", "Подпись артефакта не прошла проверку.",
+                    key_id=key_id, signature=REFERENCE_SIGNATURE_ALGORITHM,
+                ) from error
+
+            database_info = infos[REFERENCE_DATABASE_MEMBER]
+            if database_info.file_size != manifest["artifact_size"]:
+                raise ReferenceValidationError(
+                    "corrupt", "Размер SQLite не совпал с подписанным manifest.",
+                    key_id=key_id, signature=REFERENCE_SIGNATURE_ALGORITHM,
+                )
+            database_dir = extraction_dir / "databases"
+            database_dir.mkdir(parents=True, exist_ok=True)
+            descriptor, raw_path = tempfile.mkstemp(
+                prefix=".reference-db-", suffix=".sqlite3", dir=database_dir
+            )
+            os.close(descriptor)
+            temporary = Path(raw_path)
+            digest = hashlib.sha256()
+            size = 0
+            with bundle.open(REFERENCE_DATABASE_MEMBER) as source, temporary.open("wb") as target:
+                while chunk := source.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > MAX_REFERENCE_DB_BYTES:
+                        raise ReferenceValidationError(
+                            "corrupt", "SQLite внутри артефакта превышает предел."
+                        )
+                    digest.update(chunk)
+                    target.write(chunk)
+                target.flush()
+                os.fsync(target.fileno())
+            file_sha256 = digest.hexdigest()
+            if size != manifest["artifact_size"] or file_sha256 != manifest["artifact_sha256"]:
+                raise ReferenceValidationError(
+                    "corrupt", "SHA-256 SQLite не совпал с подписанным manifest.",
+                    key_id=key_id, signature=REFERENCE_SIGNATURE_ALGORITHM,
+                )
+            destination = database_dir / f"{file_sha256}.sqlite3"
+            temporary.chmod(0o600)
+            if destination.is_file() and _file_sha256(destination) == file_sha256:
+                temporary.unlink()
+            else:
+                temporary.replace(destination)
+            temporary = None
+            return VerifiedArtifact(
+                database=destination,
+                artifact_sha256=artifact_sha256,
+                file_sha256=file_sha256,
+                logical_sha256=str(manifest["logical_sha256"]),
+                schema_version=str(manifest["schema_version"]),
+                key_id=key_id,
+            )
+        finally:
+            bundle.close()
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,6 +467,24 @@ def _file_sha256(path: Path) -> str:
         while chunk := stream.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _cleanup_reference_derivatives(data_dir: Path) -> None:
+    """Подмести только расходные файлы общей справки, не трогая источники."""
+    root = data_dir / "index" / "reference"
+    targets = [root / "reference.search"]
+    databases = root / "databases"
+    if databases.is_dir():
+        targets.extend(
+            path for path in databases.iterdir()
+            if path.is_file() and path.suffix == ".sqlite3"
+        )
+    for target in targets:
+        try:
+            target.unlink(missing_ok=True)
+        except OSError:
+            # Кэш не может быть причиной отказа основного сервера.
+            pass
 
 
 def _quote_identifier(value: str) -> str:
@@ -824,21 +1107,21 @@ class ReferenceService:
     def __init__(
         self,
         *,
+        artifact_path: Path,
         database_path: Path,
         managed_path: Path,
         status: ReferenceStatus,
         provider: ReferenceProvider | None,
         data_dir: Path,
         verifier: ArtifactVerifier,
-        allow_unsigned: bool,
     ):
         self.data_dir = data_dir
+        self.artifact_path = artifact_path
         self.database_path = database_path
         self.managed_path = managed_path
         self.status = status
         self.provider = provider
         self.verifier = verifier
-        self.allow_unsigned = allow_unsigned
         self.pending_status: ReferenceStatus | None = None
         self._mutation_lock = threading.Lock()
 
@@ -848,17 +1131,17 @@ class ReferenceService:
         data_dir: str | Path,
         *,
         database_path: str | Path | None = None,
-        allow_unsigned: bool | None = None,
         verifier: ArtifactVerifier | None = None,
     ) -> "ReferenceService":
         root = Path(data_dir).resolve()
-        managed = root / "reference" / "reference.sqlite3"
+        managed = root / "reference" / REFERENCE_ARTIFACT_NAME
         configured = database_path
         if configured is None:
             configured = os.environ.get(REFERENCE_PATH_ENV, "").strip()
+        selected_verifier = verifier or SignedArtifactVerifier()
         if isinstance(configured, str) and configured.casefold() == "off":
-            selected_verifier = verifier or RejectUnsignedVerifier()
             return cls(
+                artifact_path=managed,
                 database_path=managed, managed_path=managed,
                 status=ReferenceStatus(
                     state="disabled", message="Локальная общая справка выключена.",
@@ -867,16 +1150,13 @@ class ReferenceService:
                 provider=None,
                 data_dir=root,
                 verifier=selected_verifier,
-                allow_unsigned=False,
             )
         path = Path(configured).resolve() if configured else managed
-        if allow_unsigned is None:
-            allow_unsigned = os.environ.get(UNSIGNED_ENV, "") == "1"
-        selected_verifier = verifier or (
-            ExperimentalUnsignedVerifier() if allow_unsigned else RejectUnsignedVerifier()
-        )
         if not path.is_file():
+            if path == managed:
+                _cleanup_reference_derivatives(root)
             return cls(
+                artifact_path=path,
                 database_path=path, managed_path=managed,
                 status=ReferenceStatus(
                     state="missing", message="Каноническая база не загружена.",
@@ -885,110 +1165,113 @@ class ReferenceService:
                 provider=None,
                 data_dir=root,
                 verifier=selected_verifier,
-                allow_unsigned=allow_unsigned,
             )
+        verified: VerifiedArtifact | None = None
         try:
-            size = path.stat().st_size
-            if size <= 0 or size > MAX_REFERENCE_DB_BYTES:
-                raise ReferenceValidationError(
-                    "corrupt", "Размер канонической базы недопустим."
-                )
-            with path.open("rb") as stream:
-                if stream.read(16) != b"SQLite format 3\x00":
-                    raise ReferenceValidationError(
-                        "corrupt", "Файл не является SQLite schema v1."
-                    )
-            file_sha256 = _file_sha256(path)
             try:
-                signature = selected_verifier.verify(path, file_sha256)
+                verified = selected_verifier.verify(
+                    path, root / "index" / "reference"
+                )
+            except ReferenceValidationError:
+                raise
             except Exception:
                 return cls(
+                    artifact_path=path,
                     database_path=path, managed_path=managed,
                     status=ReferenceStatus(
                         state="untrusted",
                         message="Проверку подписи не удалось выполнить.",
                         signature="verification-error",
-                        file_sha256=file_sha256,
                     ),
                     provider=None,
                     data_dir=root,
                     verifier=selected_verifier,
-                    allow_unsigned=allow_unsigned,
                 )
-            if not signature.trusted:
-                return cls(
-                    database_path=path, managed_path=managed,
-                    status=ReferenceStatus(
-                        state=signature.state, message=signature.message,
-                        signature=signature.label, file_sha256=file_sha256,
-                        key_id=signature.key_id,
-                    ),
-                    provider=None,
-                    data_dir=root,
-                    verifier=selected_verifier,
-                    allow_unsigned=allow_unsigned,
-                )
-            connection = _connect(path)
+            connection = _connect(verified.database)
             try:
                 schema_version, logical, items = _validate_schema(connection)
             finally:
                 connection.close()
+            if (
+                schema_version != verified.schema_version
+                or logical != verified.logical_sha256
+            ):
+                raise ReferenceValidationError(
+                    "corrupt",
+                    "Логический SHA-256 не совпал с подписанным manifest.",
+                    key_id=verified.key_id,
+                    signature=verified.signature,
+                )
             cache_path = root / "index" / "reference" / "reference.search"
-            provider = ReferenceProvider(path, cache_path, file_sha256)
+            provider = ReferenceProvider(
+                verified.database, cache_path, verified.file_sha256
+            )
             return cls(
-                database_path=path, managed_path=managed,
+                artifact_path=path,
+                database_path=verified.database, managed_path=managed,
                 status=ReferenceStatus(
                     state="ready", message="Каноническая база подключена.",
-                    signature=signature.label, schema_version=schema_version,
-                    content_sha256=logical, file_sha256=file_sha256, items=items,
-                    index_cache=provider.index_cache_state, key_id=signature.key_id,
+                    signature=verified.signature, schema_version=schema_version,
+                    content_sha256=logical, file_sha256=verified.file_sha256,
+                    items=items, index_cache=provider.index_cache_state,
+                    key_id=verified.key_id,
                 ),
                 provider=provider,
                 data_dir=root,
                 verifier=selected_verifier,
-                allow_unsigned=allow_unsigned,
             )
         except ReferenceValidationError as error:
             return cls(
-                database_path=path, managed_path=managed,
+                artifact_path=path,
+                database_path=verified.database if verified is not None else path,
+                managed_path=managed,
                 status=ReferenceStatus(
-                    state=error.state, message=str(error), signature="not-checked",
+                    state=error.state, message=str(error),
+                    signature=error.signature,
+                    key_id=error.key_id,
                 ),
                 provider=None,
                 data_dir=root,
                 verifier=selected_verifier,
-                allow_unsigned=allow_unsigned,
             )
         except (OSError, sqlite3.Error) as error:
             del error
             return cls(
-                database_path=path, managed_path=managed,
+                artifact_path=path,
+                database_path=verified.database if verified is not None else path,
+                managed_path=managed,
                 status=ReferenceStatus(
                     state="corrupt", message="Каноническая база не читается.",
-                    signature="not-checked",
+                    signature=(
+                        verified.signature if verified is not None else "not-checked"
+                    ),
+                    key_id=verified.key_id if verified is not None else None,
                 ),
                 provider=None,
                 data_dir=root,
                 verifier=selected_verifier,
-                allow_unsigned=allow_unsigned,
             )
         except Exception:
             return cls(
-                database_path=path, managed_path=managed,
+                artifact_path=path,
+                database_path=verified.database if verified is not None else path,
+                managed_path=managed,
                 status=ReferenceStatus(
                     state="corrupt",
                     message="Каноническую базу не удалось проиндексировать.",
-                    signature="not-checked",
+                    signature=(
+                        verified.signature if verified is not None else "not-checked"
+                    ),
+                    key_id=verified.key_id if verified is not None else None,
                 ),
                 provider=None,
                 data_dir=root,
                 verifier=selected_verifier,
-                allow_unsigned=allow_unsigned,
             )
 
     @property
     def managed_upload_available(self) -> bool:
-        return self.database_path == self.managed_path
+        return self.artifact_path == self.managed_path
 
     def payload(self, *, detailed: bool = False) -> dict[str, Any]:
         return {
@@ -1002,11 +1285,11 @@ class ReferenceService:
             "managed_file_present": (
                 self.managed_upload_available and self.managed_path.is_file()
             ),
-            "limits": {"upload_bytes": MAX_REFERENCE_DB_BYTES},
+            "limits": {"upload_bytes": MAX_REFERENCE_ARTIFACT_BYTES},
         }
 
     def install_candidate(self, candidate: Path) -> ReferenceStatus:
-        """Проверить временную SQLite и атомарно установить для следующего старта."""
+        """Скопировать candidate, проверить и атомарно установить bundle."""
         with self._mutation_lock:
             return self._install_candidate(candidate)
 
@@ -1014,28 +1297,50 @@ class ReferenceService:
         if not self.managed_upload_available:
             raise ReferenceValidationError(
                 "incompatible",
-                "Dashboard upload недоступен при внешнем MCP1C_REFERENCE_DB.",
+                "Dashboard upload недоступен при внешнем MCP1C_REFERENCE_ARTIFACT.",
             )
-        inspected = self.discover(
-            self.data_dir,
-            database_path=candidate,
-            allow_unsigned=self.allow_unsigned,
-            verifier=self.verifier,
+        self.managed_path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, raw_stage = tempfile.mkstemp(
+            dir=self.managed_path.parent,
+            prefix=".reference-install-",
+            suffix=REFERENCE_ARTIFACT_SUFFIX,
         )
+        os.close(descriptor)
+        stage = Path(raw_stage)
+        inspected: ReferenceService | None = None
         closed = False
         try:
+            with candidate.open("rb") as source, stage.open("wb") as target:
+                size = 0
+                while chunk := source.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > MAX_REFERENCE_ARTIFACT_BYTES:
+                        raise ReferenceValidationError(
+                            "corrupt", "Размер подписанного артефакта недопустим."
+                        )
+                    target.write(chunk)
+                target.flush()
+                os.fsync(target.fileno())
+            stage.chmod(0o600)
+            inspected = self.discover(
+                self.data_dir,
+                database_path=stage,
+                verifier=self.verifier,
+            )
             if inspected.provider is None:
                 raise ReferenceValidationError(
-                    inspected.status.state, inspected.status.message
+                    inspected.status.state,
+                    inspected.status.message,
+                    key_id=inspected.status.key_id,
+                    signature=inspected.status.signature,
                 )
-            # Валидация и построение кэша закончены: временный inode больше не
-            # должен удерживаться SQLite во время атомарной рокировки файла.
+            # Подписанный bundle — единственная точка commit: после полной
+            # проверки меняется один inode, неполного комплекта не бывает.
             status = inspected.status
             inspected.close()
             closed = True
-            candidate.chmod(0o600)
-            self.managed_path.parent.mkdir(parents=True, exist_ok=True)
-            candidate.replace(self.managed_path)
+            stage.replace(self.managed_path)
+            candidate.unlink(missing_ok=True)
             self.pending_status = ReferenceStatus(
                 state="pending_restart",
                 message="База проверена и будет активна после перезапуска сервера.",
@@ -1050,7 +1355,8 @@ class ReferenceService:
             )
             return self.pending_status
         finally:
-            if not closed:
+            stage.unlink(missing_ok=True)
+            if inspected is not None and not closed:
                 inspected.close()
 
     def remove_managed(self) -> ReferenceStatus | None:
@@ -1062,7 +1368,7 @@ class ReferenceService:
         if not self.managed_upload_available:
             raise ReferenceValidationError(
                 "incompatible",
-                "Dashboard delete недоступен при внешнем MCP1C_REFERENCE_DB.",
+                "Dashboard delete недоступен при внешнем MCP1C_REFERENCE_ARTIFACT.",
             )
         if not self.managed_path.is_file():
             raise ReferenceValidationError(
@@ -1070,13 +1376,7 @@ class ReferenceService:
             )
 
         self.managed_path.unlink()
-        cache = self.data_dir / "index" / "reference" / "reference.search"
-        try:
-            cache.unlink(missing_ok=True)
-        except OSError:
-            # Кэш расходный: отказ его уборки не должен превращать успешно
-            # снятую базу в ошибку административной операции.
-            pass
+        _cleanup_reference_derivatives(self.data_dir)
 
         if self.provider is None:
             # Удаление ещё не активированной загрузки отменяет pending: в

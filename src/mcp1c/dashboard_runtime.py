@@ -42,11 +42,18 @@ from .registry import (
 )
 from .process_restart import RestartController
 from .reference_provider import (
-    MAX_REFERENCE_DB_BYTES,
+    DEFAULT_PAGE_CHARS,
+    MAX_PAGE_CHARS,
+    MAX_REFERENCE_ARTIFACT_BYTES,
+    MIN_PAGE_CHARS,
+    REFERENCE_ARTIFACT_NAME,
+    REFERENCE_ARTIFACT_SUFFIX,
+    ReferenceQueryError,
     ReferenceService,
     ReferenceValidationError,
 )
 from .render import DETAIL_LEVELS
+from .search import MAX_QUERY_CHARS
 
 DASHBOARD_OFF = "off"
 DASHBOARD_CLASSIC = "classic"
@@ -58,6 +65,7 @@ SPA_PAGE_PATHS = (
     "/login",
     "/sources",
     "/queries",
+    "/reference",
     "/graph",
     "/dictionary",
     "/object",
@@ -1292,6 +1300,116 @@ def _reference_routes(
 ) -> list[Route]:
     """Общий API статуса, файла и controlled restart для classic и SPA."""
 
+    def unique_param(request: Request, name: str, *, maximum: int) -> str | None:
+        values = request.query_params.getlist(name)
+        if len(values) > 1:
+            raise ReferenceQueryError(f"Параметр {name} должен быть указан один раз.")
+        if not values:
+            return None
+        value = values[0]
+        if len(value) > maximum:
+            raise ReferenceQueryError(
+                f"Параметр {name} должен содержать не более {maximum} символов."
+            )
+        return value
+
+    def integer_param(
+        request: Request,
+        name: str,
+        *,
+        default: int,
+        minimum: int,
+        maximum: int,
+    ) -> int:
+        raw = unique_param(request, name, maximum=20)
+        if raw is None:
+            return default
+        try:
+            value = int(raw)
+        except ValueError as error:
+            raise ReferenceQueryError(f"Параметр {name} должен быть целым числом.") from error
+        if not minimum <= value <= maximum:
+            raise ReferenceQueryError(
+                f"Параметр {name} должен быть от {minimum} до {maximum}."
+            )
+        return value
+
+    def boolean_param(request: Request, name: str) -> bool:
+        raw = unique_param(request, name, maximum=1)
+        if raw is None or raw == "0":
+            return False
+        if raw == "1":
+            return True
+        raise ReferenceQueryError(f"Параметр {name} должен быть 0 или 1.")
+
+    def unavailable() -> JSONResponse:
+        return JSONResponse(
+            {"error": reference.status.message, "state": reference.status.state},
+            status_code=409,
+        )
+
+    async def reference_search_api(request: Request) -> JSONResponse:
+        if not can_read(request):
+            return _json_error("Нужен токен чтения.", 401)
+        if reference.provider is None:
+            return unavailable()
+        try:
+            query = unique_param(request, "query", maximum=MAX_QUERY_CHARS)
+            if query is None or not query.strip():
+                raise ReferenceQueryError("Параметр query не должен быть пустым.")
+            domain = unique_param(request, "domain", maximum=100) or None
+            kind = unique_param(request, "kind", maximum=100) or None
+            platform = unique_param(request, "platform", maximum=64) or None
+            limit = integer_param(
+                request, "limit", default=10, minimum=1, maximum=50
+            )
+            include_explicit = boolean_param(request, "include_explicit")
+            include_hidden = boolean_param(request, "include_hidden")
+            result = await run_in_threadpool(
+                reference.provider.search,
+                query,
+                domain=domain,
+                kind=kind,
+                platform=platform,
+                include_explicit=include_explicit,
+                include_hidden=include_hidden,
+                limit=limit,
+            )
+        except ReferenceQueryError as error:
+            return _json_error(str(error), 400)
+        return JSONResponse(result)
+
+    async def reference_item_api(request: Request) -> JSONResponse:
+        if not can_read(request):
+            return _json_error("Нужен токен чтения.", 401)
+        if reference.provider is None:
+            return unavailable()
+        try:
+            item_id = unique_param(request, "item_id", maximum=512)
+            if item_id is None or not item_id:
+                raise ReferenceQueryError("Параметр item_id не должен быть пустым.")
+            section_id = unique_param(request, "section_id", maximum=512) or None
+            cursor = unique_param(request, "cursor", maximum=2048) or None
+            platform = unique_param(request, "platform", maximum=64) or None
+            max_chars = integer_param(
+                request,
+                "max_chars",
+                default=DEFAULT_PAGE_CHARS,
+                minimum=MIN_PAGE_CHARS,
+                maximum=MAX_PAGE_CHARS,
+            )
+            result = await run_in_threadpool(
+                reference.provider.get,
+                item_id,
+                section_id=section_id,
+                cursor=cursor,
+                max_chars=max_chars,
+                platform=platform,
+            )
+        except ReferenceQueryError as error:
+            return _json_error(str(error), 400)
+        return JSONResponse(result)
+
     async def reference_status_api(request: Request) -> JSONResponse:
         if not can_read(request):
             return _json_error("Нужен токен чтения.", 401)
@@ -1315,12 +1433,12 @@ def _reference_routes(
         try:
             form = await classic_dashboard._limited_upload_form(
                 request,
-                MAX_REFERENCE_DB_BYTES,
+                MAX_REFERENCE_ARTIFACT_BYTES,
                 allowed_fields=frozenset(),
             )
         except classic_dashboard._UploadTooLarge:
             return denied_response(
-                f"Файл больше {MAX_REFERENCE_DB_BYTES // 1024 // 1024} МБ.",
+                f"Файл больше {MAX_REFERENCE_ARTIFACT_BYTES // 1024 // 1024} МБ.",
                 413,
             )
         except MultiPartException:
@@ -1333,9 +1451,11 @@ def _reference_routes(
             await form.close()
             return denied_response("Файл не выбран.", 400)
         name = Path(uploaded.filename).name
-        if Path(name).suffix.lower() != ".sqlite3":
+        if Path(name).suffix.lower() != REFERENCE_ARTIFACT_SUFFIX:
             await form.close()
-            return denied_response("Принимается только файл .sqlite3 schema v1.", 400)
+            return denied_response(
+                "Принимается только подписанный файл .mcp1cref.", 400
+            )
 
         directory = reference.managed_path.parent
         temporary: Path | None = None
@@ -1344,7 +1464,7 @@ def _reference_routes(
             descriptor, raw_path = tempfile.mkstemp(
                 dir=directory,
                 prefix=".reference-upload-",
-                suffix=".sqlite3",
+                suffix=REFERENCE_ARTIFACT_SUFFIX,
             )
             os.close(descriptor)
             temporary = Path(raw_path)
@@ -1355,7 +1475,7 @@ def _reference_routes(
                     if not chunk:
                         break
                     size += len(chunk)
-                    if size > MAX_REFERENCE_DB_BYTES:
+                    if size > MAX_REFERENCE_ARTIFACT_BYTES:
                         raise classic_dashboard._UploadTooLarge
                     output.write(chunk)
                 output.flush()
@@ -1376,7 +1496,7 @@ def _reference_routes(
             )
         except classic_dashboard._UploadTooLarge:
             return denied_response(
-                f"Файл больше {MAX_REFERENCE_DB_BYTES // 1024 // 1024} МБ.",
+                f"Файл больше {MAX_REFERENCE_ARTIFACT_BYTES // 1024 // 1024} МБ.",
                 413,
             )
         except ReferenceValidationError as error:
@@ -1409,9 +1529,9 @@ def _reference_routes(
         else:
             payload = await _json_body(request)
             confirmation = str(payload.get("confirmation", ""))
-        if confirmation != "reference.sqlite3":
+        if confirmation != REFERENCE_ARTIFACT_NAME:
             return denied_response(
-                "Для удаления подтвердите точное имя reference.sqlite3.", 400
+                f"Для удаления подтвердите точное имя {REFERENCE_ARTIFACT_NAME}.", 400
             )
         try:
             pending = await run_in_threadpool(reference.remove_managed)
@@ -1424,7 +1544,7 @@ def _reference_routes(
             return RedirectResponse("/sources", status_code=303)
         return JSONResponse(
             {
-                "removed": "reference.sqlite3",
+                "removed": REFERENCE_ARTIFACT_NAME,
                 "reference": reference.payload(detailed=True),
                 "pending": (
                     pending.payload(detailed=True) if pending is not None else None
@@ -1476,6 +1596,18 @@ def _reference_routes(
             reference_status_api,
             methods=["GET"],
             name="dashboard_reference_status",
+        ),
+        Route(
+            "/api/v1/reference/search",
+            reference_search_api,
+            methods=["GET"],
+            name="dashboard_reference_search",
+        ),
+        Route(
+            "/api/v1/reference/item",
+            reference_item_api,
+            methods=["GET"],
+            name="dashboard_reference_item",
         ),
         Route(
             "/api/v1/reference/upload",

@@ -144,7 +144,7 @@ function ReferenceAdminCard({
   const copyExactName = async () => {
     try {
       if (!navigator.clipboard?.writeText) throw new Error("Clipboard API недоступен");
-      await navigator.clipboard.writeText("reference.sqlite3");
+      await navigator.clipboard.writeText("reference.mcp1cref");
       setCopyState("copied");
     } catch {
       setCopyState("failed");
@@ -188,7 +188,7 @@ function ReferenceAdminCard({
         <span className="admin-card-icon"><BookOpen size={21} aria-hidden="true" /></span>
         <div>
           <h3>Локальная общая справка</h3>
-          <p>Опциональная каноническая SQLite добавляет <code>search_reference</code> и <code>get_reference</code> только после проверки и перезапуска.</p>
+          <p>Опциональный подписанный артефакт добавляет <code>search_reference</code> и <code>get_reference</code> только после проверки и перезапуска.</p>
         </div>
         <StatusBadge tone={referenceTone(shown.state)}>{referenceStateLabels[shown.state] ?? shown.state}</StatusBadge>
       </header>
@@ -242,7 +242,7 @@ function ReferenceAdminCard({
       {!reference.managed_upload && (
         <div className="inline-warning">
           <AlertCircle size={18} aria-hidden="true" />
-          <span>База подключена через внешний <code>MCP1C_REFERENCE_DB</code>; загрузка из дашборда выключена.</span>
+          <span>Артефакт подключён через внешний <code>MCP1C_REFERENCE_ARTIFACT</code>; загрузка из дашборда выключена.</span>
         </div>
       )}
 
@@ -271,7 +271,7 @@ function ReferenceAdminCard({
                 <div className="confirmation-field">
                   <label htmlFor="reference-remove-confirmation">Для подтверждения введите точное имя:</label>
                   <div className="confirmation-name">
-                    <code title="reference.sqlite3">reference.sqlite3</code>
+                    <code title="reference.mcp1cref">reference.mcp1cref</code>
                     <button
                       className="button-secondary confirmation-copy-button"
                       type="button"
@@ -300,7 +300,7 @@ function ReferenceAdminCard({
                     className="button-danger"
                     type="button"
                     onClick={() => void remove()}
-                    disabled={confirmation !== "reference.sqlite3" || removeReference.isPending}
+                    disabled={confirmation !== "reference.mcp1cref" || removeReference.isPending}
                   >
                     {removeReference.isPending ? <LoaderCircle className="is-spinning" size={16} /> : <Trash2 size={16} />}
                     Удалить базу
@@ -368,18 +368,18 @@ export function SourcesAdminPanel({
       return;
     }
     const suffix = next.name.toLowerCase().split(".").pop();
-    if (suffix !== "zip" && suffix !== "hbk" && suffix !== "json" && suffix !== "sqlite3") {
+    if (suffix !== "zip" && suffix !== "hbk" && suffix !== "json" && suffix !== "mcp1cref") {
       setFile(null);
-      setFeedback({ tone: "danger", text: "Выберите файл .zip, .hbk, .json или .sqlite3." });
+      setFeedback({ tone: "danger", text: "Выберите файл .zip, .hbk, .json или .mcp1cref." });
       return;
     }
-    const isReference = suffix === "sqlite3";
+    const isReference = suffix === "mcp1cref";
     const reference = admin.data?.reference;
     if (isReference && !reference?.managed_upload) {
       setFile(null);
       setFeedback({
         tone: "danger",
-        text: "SQLite подключена через внешний путь; её загрузкой управляет оператор сервера.",
+        text: "Артефакт общей справки подключён через внешний путь; его загрузкой управляет оператор сервера.",
       });
       return;
     }
@@ -411,7 +411,7 @@ export function SourcesAdminPanel({
     setUploadProgress(0);
     setFeedback(null);
     try {
-      const isReference = file.name.toLowerCase().endsWith(".sqlite3");
+      const isReference = file.name.toLowerCase().endsWith(".mcp1cref");
       if (isReference) {
         await uploadReference(file, setUploadProgress);
         setFeedback({
@@ -464,7 +464,7 @@ export function SourcesAdminPanel({
 
   const data = admin.data;
   const configurationNames = data.configuration_names;
-  const referenceFile = file?.name.toLowerCase().endsWith(".sqlite3") ?? false;
+  const referenceFile = file?.name.toLowerCase().endsWith(".mcp1cref") ?? false;
 
   return (
     <section className="source-admin" aria-label="Администрирование источников">
@@ -485,7 +485,7 @@ export function SourcesAdminPanel({
           <span className="admin-card-icon"><FileUp size={21} aria-hidden="true" /></span>
           <div>
             <h3>Загрузить источник</h3>
-            <p>Registry — до {formatBytes(data.limits.upload_bytes)}; SQLite общей справки — {data.reference ? `до ${formatBytes(data.reference.limits.upload_bytes)}` : "недоступна"}.</p>
+            <p>Registry — до {formatBytes(data.limits.upload_bytes)}; артефакт общей справки — {data.reference ? `до ${formatBytes(data.reference.limits.upload_bytes)}` : "недоступен"}.</p>
           </div>
         </header>
 
@@ -500,19 +500,19 @@ export function SourcesAdminPanel({
           {file ? (
             <span><strong>{file.name}</strong><small>{formatBytes(file.size)}</small></span>
           ) : (
-            <span><strong>Перетащите файл сюда</strong><small>.zip структуры · .hbk платформы · .json снимка · .sqlite3 общей справки</small></span>
+            <span><strong>Перетащите файл сюда</strong><small>.zip структуры · .hbk платформы · .json снимка · .mcp1cref общей справки</small></span>
           )}
           <button className="button-secondary" type="button" onClick={() => fileInput.current?.click()} disabled={uploading}>
             Выбрать файл
           </button>
-          <input ref={fileInput} type="file" accept=".zip,.hbk,.json,.sqlite3" onChange={handleInput} hidden />
+          <input ref={fileInput} type="file" accept=".zip,.hbk,.json,.mcp1cref" onChange={handleInput} hidden />
         </div>
 
         <div className="upload-options">
           {referenceFile ? (
             <div className="inline-warning">
               <BookOpen size={18} aria-hidden="true" />
-              <span>SQLite будет полностью проверена и сохранена для активации после перезапуска.</span>
+              <span>Подпись, manifest и SQLite будут полностью проверены до сохранения для активации после перезапуска.</span>
             </div>
           ) : (
             <label className="switch-field">
@@ -537,7 +537,7 @@ export function SourcesAdminPanel({
             <p><strong>Структура конфигурации:</strong> архив <code>СтруктураКонфигурации_*.zip</code>, полученный обработкой проекта.</p>
             <p><strong>Активность расширений:</strong> файл <code>СнимокРасширений_*.json</code> из отдельной обработки снимка.</p>
             <p><strong>Справка платформы:</strong> точный файл <code>shcntx_ru.hbk</code>; другие похожие HBK его не заменяют.</p>
-            <p><strong>Общая справка:</strong> каноническая <code>.sqlite3</code> schema v1; после проверки потребуется перезапуск сервера.</p>
+            <p><strong>Общая справка:</strong> подписанный <code>.mcp1cref</code> с канонической SQLite schema v1; после проверки потребуется перезапуск сервера.</p>
             <p><strong>Большая выгрузка модулей и расширений:</strong> положите ZIP в <code>{data.incoming_dir}</code> и запустите разбор в следующем блоке.</p>
           </div>
         </details>

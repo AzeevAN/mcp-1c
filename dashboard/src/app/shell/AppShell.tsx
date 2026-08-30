@@ -7,6 +7,7 @@ import {
   GitBranch,
   LogIn,
   LogOut,
+  Library,
   SearchCode,
   ShieldCheck,
 } from "lucide-react";
@@ -19,6 +20,7 @@ const navigation = [
   { to: "/", label: "Обзор", icon: CircleGauge, end: true },
   { to: "/sources", label: "Источники", icon: DatabaseZap },
   { to: "/queries", label: "Запросы", icon: SearchCode },
+  { to: "/reference", label: "Общая справка", icon: Library },
   { to: "/graph", label: "Связи", icon: GitBranch },
   { to: "/dictionary", label: "Словарь", icon: BookOpenText },
 ];

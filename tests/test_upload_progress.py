@@ -108,7 +108,7 @@ def test_чужое_расширение_отвергается_до_фона(tm
     ответ = client.post("/sources", files={"file": ("заметки.txt", b"text")})
 
     assert ответ.status_code == 200
-    assert "только .zip, .hbk, .json и .sqlite3" in ответ.text
+    assert "только .zip, .hbk, .json и .mcp1cref" in ответ.text
 
 
 def test_задания_видны_только_после_входа(tmp_path, monkeypatch):

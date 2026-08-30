@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
+import zipfile
+from dataclasses import dataclass
 from pathlib import Path
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
 SCHEMA = """
@@ -188,3 +195,105 @@ def build_reference_database(path: Path, *, body: str = "Синтетическ�
     connection.commit()
     connection.close()
     return path
+
+
+def reference_manifest(
+    database: bytes,
+    *,
+    key_id: str,
+    logical_sha256: str,
+) -> dict[str, object]:
+    """Собрать синтетический manifest без заимствованного содержимого."""
+    return {
+        "artifact": "reference.sqlite3",
+        "artifact_sha256": hashlib.sha256(database).hexdigest(),
+        "artifact_size": len(database),
+        "format": "mcp1c-reference",
+        "format_version": "1",
+        "key_id": key_id,
+        "logical_sha256": logical_sha256,
+        "schema_version": "1",
+        "signature_algorithm": "ed25519",
+    }
+
+
+def manifest_bytes(manifest: dict[str, object]) -> bytes:
+    return (
+        json.dumps(
+            manifest,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        + b"\n"
+    )
+
+
+def build_reference_artifact(
+    path: Path,
+    database: Path,
+    private_key: Ed25519PrivateKey,
+    *,
+    key_id: str = "synthetic-ephemeral",
+    manifest_override: dict[str, object] | None = None,
+    signed_manifest: bytes | None = None,
+    signature: bytes | None = None,
+    database_bytes: bytes | None = None,
+    include_manifest: bool = True,
+    include_signature: bool = True,
+) -> Path:
+    """Упаковать три синтетических файла; ключ создаёт сам тест во временном каталоге."""
+    raw_database = database.read_bytes()
+    connection = sqlite3.connect(database)
+    logical_row = connection.execute(
+        "SELECT value FROM meta WHERE key='content_sha256'"
+    ).fetchone()
+    logical_sha256 = logical_row[0] if logical_row is not None else "0" * 64
+    connection.close()
+    manifest = reference_manifest(
+        raw_database,
+        key_id=key_id,
+        logical_sha256=logical_sha256,
+    )
+    if manifest_override:
+        manifest.update(manifest_override)
+    raw_manifest = manifest_bytes(manifest)
+    raw_signature = signature or private_key.sign(signed_manifest or raw_manifest)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as bundle:
+        if include_manifest:
+            bundle.writestr("manifest.json", raw_manifest)
+        if include_signature:
+            bundle.writestr("manifest.sig", raw_signature)
+        bundle.writestr("reference.sqlite3", database_bytes or raw_database)
+    return path
+
+
+@dataclass(frozen=True)
+class SyntheticReferenceSigner:
+    """Эфемерный ключ одного теста; приватные байты не пишутся на диск."""
+
+    private_key: Ed25519PrivateKey
+    key_id: str = "synthetic-ephemeral"
+
+    @classmethod
+    def generate(cls) -> "SyntheticReferenceSigner":
+        return cls(Ed25519PrivateKey.generate())
+
+    def verifier(self):
+        from mcp1c.reference_provider import SignedArtifactVerifier
+
+        public = self.private_key.public_key().public_bytes(
+            serialization.Encoding.Raw,
+            serialization.PublicFormat.Raw,
+        )
+        return SignedArtifactVerifier({self.key_id: public})
+
+    def build(self, path: Path, database: Path, **kwargs) -> Path:
+        return build_reference_artifact(
+            path,
+            database,
+            self.private_key,
+            key_id=self.key_id,
+            **kwargs,
+        )

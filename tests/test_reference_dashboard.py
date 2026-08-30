@@ -11,7 +11,27 @@ from mcp1c.dashboard_runtime import DASHBOARD_CLASSIC, DASHBOARD_SPA, routes
 from mcp1c.reference_provider import ReferenceService
 from mcp1c.registry import Registry
 
-from reference_fixture import build_reference_database
+from reference_fixture import SyntheticReferenceSigner, build_reference_database
+
+
+def _trusted_signer(monkeypatch) -> SyntheticReferenceSigner:
+    signer = SyntheticReferenceSigner.generate()
+    monkeypatch.setattr(
+        "mcp1c.reference_provider.TRUSTED_REFERENCE_PUBLIC_KEYS",
+        signer.verifier().public_keys,
+    )
+    return signer
+
+
+def _artifact(tmp_path, source, signer, name="candidate.mcp1cref"):
+    return signer.build(tmp_path / name, source)
+
+
+def _installed_reference(registry, tmp_path, monkeypatch):
+    signer = _trusted_signer(monkeypatch)
+    source = build_reference_database(tmp_path / "source.sqlite3")
+    signer.build(registry.data_dir / "reference" / "reference.mcp1cref", source)
+    return ReferenceService.discover(registry.data_dir), signer, source
 
 
 def _client(
@@ -42,7 +62,7 @@ def test_reference_status_скрывает_хеши_от_read_only(tmp_path, mon
     monkeypatch.setenv("API_TOKEN", "read-token")
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
     registry = Registry(tmp_path / "data")
-    reference = ReferenceService.discover(registry.data_dir, allow_unsigned=True)
+    reference = ReferenceService.discover(registry.data_dir)
     client = _client(registry, reference)
 
     _login(client, "read-token")
@@ -64,13 +84,13 @@ def test_reference_upload_требует_admin(tmp_path, monkeypatch):
     monkeypatch.setenv("API_TOKEN", "read-token")
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
     registry = Registry(tmp_path / "data")
-    reference = ReferenceService.discover(registry.data_dir, allow_unsigned=True)
+    reference = ReferenceService.discover(registry.data_dir)
     client = _client(registry, reference)
     _login(client, "read-token")
 
     response = client.post(
         "/api/v1/reference/upload",
-        files={"file": ("reference.sqlite3", b"synthetic")},
+        files={"file": ("reference.mcp1cref", b"synthetic")},
     )
 
     assert response.status_code == 403
@@ -90,7 +110,7 @@ def test_unsigned_upload_без_явного_экспериментальног�
 
     response = client.post(
         "/api/v1/reference/upload",
-        files={"file": ("reference.sqlite3", source.read_bytes())},
+        files={"file": ("reference.mcp1cref", source.read_bytes())},
     )
 
     assert response.status_code == 422
@@ -104,14 +124,16 @@ def test_valid_upload_остаётся_на_диске_и_активируетс
     monkeypatch.delenv("API_TOKEN", raising=False)
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
     source = build_reference_database(tmp_path / "source.sqlite3")
+    signer = _trusted_signer(monkeypatch)
+    artifact = _artifact(tmp_path, source, signer)
     registry = Registry(tmp_path / "data")
-    reference = ReferenceService.discover(registry.data_dir, allow_unsigned=True)
+    reference = ReferenceService.discover(registry.data_dir)
     client = _client(registry, reference)
     _login(client)
 
     response = client.post(
         "/api/v1/reference/upload",
-        files={"file": ("reference.sqlite3", source.read_bytes())},
+        files={"file": ("reference.mcp1cref", artifact.read_bytes())},
     )
 
     assert response.status_code == 201
@@ -121,7 +143,7 @@ def test_valid_upload_остаётся_на_диске_и_активируетс
     assert reference.managed_path.is_file()
     assert reference.managed_path.stat().st_mode & 0o777 == 0o600
 
-    restarted = ReferenceService.discover(registry.data_dir, allow_unsigned=True)
+    restarted = ReferenceService.discover(registry.data_dir)
     assert restarted.status.state == "ready"
     assert restarted.status.index_cache == "hit"
     assert restarted.provider.search("образец")["results"][0]["id"] == "bsl/Example"
@@ -130,18 +152,20 @@ def test_valid_upload_остаётся_на_диске_и_активируетс
 def test_invalid_upload_не_заменяет_прежнюю_базу(tmp_path, monkeypatch):
     monkeypatch.delenv("API_TOKEN", raising=False)
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    signer = _trusted_signer(monkeypatch)
     registry = Registry(tmp_path / "data")
-    reference = ReferenceService.discover(registry.data_dir, allow_unsigned=True)
-    reference.managed_path.parent.mkdir(parents=True)
-    build_reference_database(reference.managed_path)
-    original = reference.managed_path.read_bytes()
-    reference = ReferenceService.discover(registry.data_dir, allow_unsigned=True)
+    source = build_reference_database(tmp_path / "source.sqlite3")
+    managed = signer.build(
+        registry.data_dir / "reference" / "reference.mcp1cref", source
+    )
+    original = managed.read_bytes()
+    reference = ReferenceService.discover(registry.data_dir)
     client = _client(registry, reference)
     _login(client)
 
     response = client.post(
         "/api/v1/reference/upload",
-        files={"file": ("reference.sqlite3", b"not sqlite")},
+        files={"file": ("reference.mcp1cref", b"not signed bundle")},
     )
 
     assert response.status_code == 422
@@ -152,19 +176,20 @@ def test_invalid_upload_не_заменяет_прежнюю_базу(tmp_path, 
 def test_external_path_делает_dashboard_upload_недоступным(tmp_path, monkeypatch):
     monkeypatch.delenv("API_TOKEN", raising=False)
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
-    external = build_reference_database(tmp_path / "external.sqlite3")
+    signer = _trusted_signer(monkeypatch)
+    database = build_reference_database(tmp_path / "external.sqlite3")
+    external = signer.build(tmp_path / "external.mcp1cref", database)
     registry = Registry(tmp_path / "data")
     reference = ReferenceService.discover(
         registry.data_dir,
         database_path=external,
-        allow_unsigned=True,
     )
     client = _client(registry, reference)
     _login(client)
 
     response = client.post(
         "/api/v1/reference/upload",
-        files={"file": ("reference.sqlite3", external.read_bytes())},
+        files={"file": ("reference.mcp1cref", external.read_bytes())},
     )
 
     assert response.status_code == 409
@@ -174,16 +199,13 @@ def test_delete_управляемой_базы_требует_admin(tmp_path, m
     monkeypatch.setenv("API_TOKEN", "read-token")
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
     registry = Registry(tmp_path / "data")
-    reference = ReferenceService.discover(registry.data_dir, allow_unsigned=True)
-    reference.managed_path.parent.mkdir(parents=True)
-    build_reference_database(reference.managed_path)
-    reference = ReferenceService.discover(registry.data_dir, allow_unsigned=True)
+    reference, _, _ = _installed_reference(registry, tmp_path, monkeypatch)
     client = _client(registry, reference)
     _login(client, "read-token")
 
     response = client.post(
         "/api/v1/reference/remove",
-        json={"confirmation": "reference.sqlite3"},
+        json={"confirmation": "reference.mcp1cref"},
     )
 
     assert response.status_code == 403
@@ -194,16 +216,13 @@ def test_delete_оставляет_активные_ручки_до_restart(tmp_
     monkeypatch.delenv("API_TOKEN", raising=False)
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
     registry = Registry(tmp_path / "data")
-    reference = ReferenceService.discover(registry.data_dir, allow_unsigned=True)
-    reference.managed_path.parent.mkdir(parents=True)
-    build_reference_database(reference.managed_path)
-    reference = ReferenceService.discover(registry.data_dir, allow_unsigned=True)
+    reference, _, _ = _installed_reference(registry, tmp_path, monkeypatch)
     client = _client(registry, reference)
     _login(client)
 
     response = client.post(
         "/api/v1/reference/remove",
-        json={"confirmation": "reference.sqlite3"},
+        json={"confirmation": "reference.mcp1cref"},
     )
 
     assert response.status_code == 200
@@ -214,7 +233,7 @@ def test_delete_оставляет_активные_ручки_до_restart(tmp_
     assert payload["managed_file_present"] is False
     assert reference.provider.search("образец")["results"][0]["id"] == "bsl/Example"
 
-    restarted = ReferenceService.discover(registry.data_dir, allow_unsigned=True)
+    restarted = ReferenceService.discover(registry.data_dir)
     assert restarted.status.state == "missing"
 
 
@@ -222,10 +241,7 @@ def test_delete_требует_точное_подтверждение(tmp_path,
     monkeypatch.delenv("API_TOKEN", raising=False)
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
     registry = Registry(tmp_path / "data")
-    reference = ReferenceService.discover(registry.data_dir, allow_unsigned=True)
-    reference.managed_path.parent.mkdir(parents=True)
-    build_reference_database(reference.managed_path)
-    reference = ReferenceService.discover(registry.data_dir, allow_unsigned=True)
+    reference, _, _ = _installed_reference(registry, tmp_path, monkeypatch)
     client = _client(registry, reference)
     _login(client)
 
@@ -241,19 +257,20 @@ def test_delete_требует_точное_подтверждение(tmp_path,
 def test_delete_внешней_базы_из_dashboard_запрещён(tmp_path, monkeypatch):
     monkeypatch.delenv("API_TOKEN", raising=False)
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
-    external = build_reference_database(tmp_path / "external.sqlite3")
+    signer = _trusted_signer(monkeypatch)
+    database = build_reference_database(tmp_path / "external.sqlite3")
+    external = signer.build(tmp_path / "external.mcp1cref", database)
     registry = Registry(tmp_path / "data")
     reference = ReferenceService.discover(
         registry.data_dir,
         database_path=external,
-        allow_unsigned=True,
     )
     client = _client(registry, reference)
     _login(client)
 
     response = client.post(
         "/api/v1/reference/remove",
-        json={"confirmation": "reference.sqlite3"},
+        json={"confirmation": "reference.mcp1cref"},
     )
 
     assert response.status_code == 409
@@ -264,13 +281,15 @@ def test_restart_выключен_без_явной_возможности(tmp_p
     monkeypatch.delenv("API_TOKEN", raising=False)
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
     source = build_reference_database(tmp_path / "source.sqlite3")
+    signer = _trusted_signer(monkeypatch)
+    artifact = _artifact(tmp_path, source, signer)
     registry = Registry(tmp_path / "data")
-    reference = ReferenceService.discover(registry.data_dir, allow_unsigned=True)
+    reference = ReferenceService.discover(registry.data_dir)
     client = _client(registry, reference)
     _login(client)
     client.post(
         "/api/v1/reference/upload",
-        files={"file": ("reference.sqlite3", source.read_bytes())},
+        files={"file": ("reference.mcp1cref", artifact.read_bytes())},
     )
 
     response = client.post("/api/v1/server/restart", json={})
@@ -282,7 +301,7 @@ def test_restart_разрешён_только_для_pending_reference(tmp_path
     monkeypatch.delenv("API_TOKEN", raising=False)
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
     registry = Registry(tmp_path / "data")
-    reference = ReferenceService.discover(registry.data_dir, allow_unsigned=True)
+    reference = ReferenceService.discover(registry.data_dir)
     restart = RestartController(enabled=True, terminate=lambda: None, delay=0)
     client = _client(registry, reference, restart)
     _login(client)
@@ -299,15 +318,17 @@ def test_restart_отвечает_до_завершения_процесса(tmp
     monkeypatch.delenv("API_TOKEN", raising=False)
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
     source = build_reference_database(tmp_path / "source.sqlite3")
+    signer = _trusted_signer(monkeypatch)
+    artifact = _artifact(tmp_path, source, signer)
     registry = Registry(tmp_path / "data")
-    reference = ReferenceService.discover(registry.data_dir, allow_unsigned=True)
+    reference = ReferenceService.discover(registry.data_dir)
     terminated = Event()
     restart = RestartController(enabled=True, terminate=terminated.set, delay=0)
     client = _client(registry, reference, restart)
     _login(client)
     uploaded = client.post(
         "/api/v1/reference/upload",
-        files={"file": ("reference.sqlite3", source.read_bytes())},
+        files={"file": ("reference.mcp1cref", artifact.read_bytes())},
     )
     assert uploaded.status_code == 201
 
@@ -326,12 +347,14 @@ def test_restart_требует_admin_и_same_origin(tmp_path, monkeypatch):
     monkeypatch.setenv("API_TOKEN", "read-token")
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
     source = build_reference_database(tmp_path / "source.sqlite3")
+    signer = _trusted_signer(monkeypatch)
+    artifact = _artifact(tmp_path, source, signer)
     registry = Registry(tmp_path / "data")
-    reference = ReferenceService.discover(registry.data_dir, allow_unsigned=True)
+    reference = ReferenceService.discover(registry.data_dir)
     restart = RestartController(enabled=True, terminate=lambda: None, delay=0)
     client = _client(registry, reference, restart)
     _login(client, "read-token")
-    reference.install_candidate(source)
+    reference.install_candidate(artifact)
 
     read_only = client.post("/api/v1/server/restart", json={})
     client.cookies.clear()
@@ -351,12 +374,14 @@ def test_повторный_restart_не_планируется_дважды(tmp
     monkeypatch.delenv("API_TOKEN", raising=False)
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
     source = build_reference_database(tmp_path / "source.sqlite3")
+    signer = _trusted_signer(monkeypatch)
+    artifact = _artifact(tmp_path, source, signer)
     registry = Registry(tmp_path / "data")
-    reference = ReferenceService.discover(registry.data_dir, allow_unsigned=True)
+    reference = ReferenceService.discover(registry.data_dir)
     restart = RestartController(enabled=True, terminate=lambda: None, delay=60)
     client = _client(registry, reference, restart)
     _login(client)
-    reference.install_candidate(source)
+    reference.install_candidate(artifact)
 
     first = client.post("/api/v1/server/restart", json={})
     second = client.post("/api/v1/server/restart", json={})
@@ -369,7 +394,7 @@ def test_classic_показывает_статус_и_одну_общую_фор
     monkeypatch.delenv("API_TOKEN", raising=False)
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
     registry = Registry(tmp_path / "data")
-    reference = ReferenceService.discover(registry.data_dir, allow_unsigned=True)
+    reference = ReferenceService.discover(registry.data_dir)
     client = живой_клиент(
         Starlette(
             routes=routes(
@@ -387,16 +412,20 @@ def test_classic_показывает_статус_и_одну_общую_фор
     assert "Локальная общая справка" in page.text
     assert "не загружена" in page.text
     assert "общей форме «Загрузить»" in page.text
-    assert ".zip,.hbk,.json,.sqlite3" in page.text
+    assert ".zip,.hbk,.json,.mcp1cref" in page.text
     assert page.text.count("<input type=file") == 1
 
 
-def test_classic_общая_форма_принимает_sqlite_без_javascript(tmp_path, monkeypatch):
+def test_classic_общая_форма_принимает_подписанный_bundle_без_javascript(
+    tmp_path, monkeypatch
+):
     monkeypatch.delenv("API_TOKEN", raising=False)
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
     source = build_reference_database(tmp_path / "source.sqlite3")
+    signer = _trusted_signer(monkeypatch)
+    artifact = _artifact(tmp_path, source, signer)
     registry = Registry(tmp_path / "data")
-    reference = ReferenceService.discover(registry.data_dir, allow_unsigned=True)
+    reference = ReferenceService.discover(registry.data_dir)
     client = живой_клиент(
         Starlette(
             routes=routes(
@@ -411,7 +440,7 @@ def test_classic_общая_форма_принимает_sqlite_без_javascri
     response = client.post(
         "/sources",
         headers={"accept": "text/html"},
-        files={"file": ("reference.sqlite3", source.read_bytes())},
+        files={"file": ("reference.mcp1cref", artifact.read_bytes())},
         follow_redirects=False,
     )
 
@@ -425,10 +454,7 @@ def test_classic_удаляет_базу_и_предлагает_restart(tmp_pat
     monkeypatch.delenv("API_TOKEN", raising=False)
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
     registry = Registry(tmp_path / "data")
-    reference = ReferenceService.discover(registry.data_dir, allow_unsigned=True)
-    reference.managed_path.parent.mkdir(parents=True)
-    build_reference_database(reference.managed_path)
-    reference = ReferenceService.discover(registry.data_dir, allow_unsigned=True)
+    reference, _, _ = _installed_reference(registry, tmp_path, monkeypatch)
     restart = RestartController(enabled=True, terminate=lambda: None, delay=60)
     client = живой_клиент(
         Starlette(
@@ -445,7 +471,7 @@ def test_classic_удаляет_базу_и_предлагает_restart(tmp_pat
     response = client.post(
         "/api/v1/reference/remove",
         headers={"accept": "text/html"},
-        data={"confirmation": "reference.sqlite3"},
+        data={"confirmation": "reference.mcp1cref"},
         follow_redirects=False,
     )
 

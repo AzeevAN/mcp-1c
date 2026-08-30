@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import tomllib
 from pathlib import Path
+
+from mcp1c.reference_provider import TRUSTED_REFERENCE_PUBLIC_KEYS
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -38,6 +41,20 @@ def _requirement_blocks(path: str) -> list[str]:
     return blocks
 
 
+def test_release_reference_public_key_is_exact_and_reviewable() -> None:
+    assert set(TRUSTED_REFERENCE_PUBLIC_KEYS) == {"reference-2026-01"}
+    public_key = TRUSTED_REFERENCE_PUBLIC_KEYS["reference-2026-01"]
+    assert len(public_key) == 32
+    assert public_key.hex() == (
+        "02ed13d505d3dea350e991c7ca9e6ef2"
+        "e11c4c0879a3859da9b916c30ab70c25"
+    )
+    assert hashlib.sha256(public_key).hexdigest() == (
+        "509d077f669ebf935aa03453bdb1e904"
+        "f95e0192fdf265b2c45b239678615c2e"
+    )
+
+
 def test_public_package_metadata_and_runtime_contract() -> None:
     runtime = _text("requirements.txt")
     development = _text("requirements-dev.txt")
@@ -47,11 +64,13 @@ def test_public_package_metadata_and_runtime_contract() -> None:
     dashboard = _text("src/mcp1c/dashboard_runtime.py")
 
     assert "mcp>=2.0" in runtime
+    assert "cryptography>=44.0" in runtime
     assert "numpy>=2.0" in runtime
     assert "snowballstemmer>=3.0" in runtime
     assert "pytest>=8" in development
     assert project["dependencies"] == [
         "mcp>=2.0",
+        "cryptography>=44.0",
         "numpy>=2.0",
         "snowballstemmer>=3.0",
     ]

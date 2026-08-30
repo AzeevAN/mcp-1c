@@ -83,7 +83,7 @@ def test_admin_snapshot_скрыт_от_токена_чтения(tmp_path, monk
             "pending": None,
             "managed_upload": True,
             "managed_file_present": False,
-            "limits": {"upload_bytes": 32 * 1024 * 1024},
+                "limits": {"upload_bytes": 33 * 1024 * 1024},
         },
         "runtime": {"self_restart": False},
     }

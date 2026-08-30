@@ -34,6 +34,7 @@ classifiers = [
 # читает Dockerfile, этот список — pip.
 dependencies = [
     "mcp>=2.0",
+    "cryptography>=44.0",
     "numpy>=2.0",
     "snowballstemmer>=3.0",
 ]

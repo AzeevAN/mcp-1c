@@ -41,7 +41,7 @@ from .dashboard_runtime import routes as dashboard_routes
 from .process_restart import RestartController
 from .reference_provider import (
     MAX_PAGE_CHARS,
-    MAX_REFERENCE_DB_BYTES,
+    MAX_REFERENCE_ARTIFACT_BYTES,
     MIN_PAGE_CHARS,
     ReferenceQueryError,
     ReferenceService,
@@ -55,7 +55,7 @@ from .registry import Registry, RegistryError
 HTTP_BODY_LIMIT_LOGIN = 16 * 1024
 HTTP_BODY_LIMIT_QUERIES = 1024 * 1024
 HTTP_BODY_LIMIT_UPLOAD = MAX_UPLOAD + 1024 * 1024
-HTTP_BODY_LIMIT_REFERENCE = MAX_REFERENCE_DB_BYTES + 1024 * 1024
+HTTP_BODY_LIMIT_REFERENCE = MAX_REFERENCE_ARTIFACT_BYTES + 1024 * 1024
 HTTP_BODY_LIMIT_DEFAULT = 2 * 1024 * 1024
 
 WRITABLE_DATA_DIRECTORIES = (

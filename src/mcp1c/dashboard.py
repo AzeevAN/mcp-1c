@@ -22,7 +22,7 @@ import traceback
 from dataclasses import dataclass
 from html import escape
 from pathlib import Path
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import FormData, UploadFile
@@ -45,7 +45,9 @@ from .registry import (
     RegistryError,
 )
 from .reference_provider import (
-    MAX_REFERENCE_DB_BYTES,
+    MAX_REFERENCE_ARTIFACT_BYTES,
+    REFERENCE_ARTIFACT_SUFFIX,
+    ReferenceQueryError,
     ReferenceService,
     ReferenceValidationError,
 )
@@ -458,7 +460,8 @@ def _layout(title: str, body: str, *, refresh: int = 0) -> HTMLResponse:
         f"<!doctype html><html lang=ru><meta charset=utf-8>{обновление}"
         f"<title>{escape(title)}</title><style>{_STYLE}</style>"
         f"<nav><a href=/>Обзор</a><a href=/sources>Источники</a>"
-        f"<a href=/queries>Запросы</a><a href=/graph>Связи</a>"
+        f"<a href=/queries>Запросы</a><a href=/reference>Общая справка</a>"
+        f"<a href=/graph>Связи</a>"
         f"<a href=/dictionary>Словарь</a></nav>{body}"
     )
 
@@ -782,12 +785,12 @@ _UPLOAD_JS = """
   форма.addEventListener("submit", function (событие) {
     var файл = поле.files && поле.files[0];
     if (!файл) return;                     /* пустое поле — пусть скажет браузер */
-    var справочнаяБаза = файл.name.toLowerCase().endsWith(".sqlite3");
+    var справочнаяБаза = файл.name.toLowerCase().endsWith(".mcp1cref");
     var предел = справочнаяБаза ? справочныйПредел : обычныйПредел;
 
     if (справочнаяБаза && !справкаУправляется) {
       событие.preventDefault();
-      отказ("SQLite подключена через внешний путь; загрузкой управляет оператор.");
+      отказ("Артефакт общей справки подключён через внешний путь; загрузкой управляет оператор.");
       return;
     }
 
@@ -1486,7 +1489,8 @@ def _sources_page(
                 parts.append(f"<p>{' · '.join(details)}</p>")
             if reference.get("managed_upload"):
                 parts.append(
-                    "<p>Для установки или замены выберите <code>.sqlite3</code> "
+                    "<p>Для установки или замены выберите подписанный "
+                    "<code>.mcp1cref</code> "
                     "в общей форме «Загрузить» ниже. После успешной проверки "
                     "перезапустите сервер и MCP-клиент.</p>"
                 )
@@ -1494,9 +1498,9 @@ def _sources_page(
                     parts.append(
                         "<form method=post action=/api/v1/reference/remove>"
                         "<label>Для удаления введите "
-                        "<code>reference.sqlite3</code>: "
+                        "<code>reference.mcp1cref</code>: "
                         "<input name=confirmation required "
-                        "pattern='reference\\.sqlite3'></label> "
+                        "pattern='reference\\.mcp1cref'></label> "
                         "<button>Удалить общую базу</button></form>"
                     )
                 if pending is not None:
@@ -1514,7 +1518,7 @@ def _sources_page(
             else:
                 parts.append(
                     "<p class=warn>Dashboard upload выключен: база подключена "
-                    "через внешний <code>MCP1C_REFERENCE_DB</code>.</p>"
+                    "через внешний <code>MCP1C_REFERENCE_ARTIFACT</code>.</p>"
                 )
 
     if data.sources.code or data.sources_error or data.sources.configuration_names:
@@ -1716,7 +1720,7 @@ def _sources_page(
             f"data-reference-limit={reference_limit} "
             f"data-reference-managed={reference_managed} "
             "method=post action=/sources enctype=multipart/form-data>"
-            "<input type=file name=file accept='.zip,.hbk,.json,.sqlite3' required> "
+            "<input type=file name=file accept='.zip,.hbk,.json,.mcp1cref' required> "
             "<button>Загрузить</button>"
             "<label><input type=checkbox name=allow_truncated value=1> "
             "явно опубликовать тестовую неполную выгрузку "
@@ -1729,7 +1733,7 @@ def _sources_page(
             # Имя файла названо прямо: в каталоге установки платформы лежат
             # 38 файлов `.hbk`, и без подсказки человек берёт наугад соседний.
             "<p>Принимаются четыре вида файлов. Для Registry предел "
-            f"{MAX_UPLOAD // 1024 // 1024} МиБ, для SQLite общей справки — "
+            f"{MAX_UPLOAD // 1024 // 1024} МиБ, для артефакта общей справки — "
             f"{reference_limit // 1024 // 1024} МиБ.</p>"
             "<ul>"
             "<li><b>Выгрузка структуры</b> — <code>.zip</code>, который "
@@ -1742,8 +1746,9 @@ def _sources_page(
             "<code>/opt/1cv8/&lt;версия&gt;/shcntx_ru.hbk</code><br>"
             "<code>C:\\Program Files\\1cv8\\&lt;версия&gt;\\bin\\shcntx_ru.hbk</code>"
             "<br>Имя должно совпадать целиком.</li>"
-            "<li><b>Общая справка</b> — каноническая <code>.sqlite3</code> "
-            "schema v1. Она полностью проверяется и становится активной "
+            "<li><b>Общая справка</b> — подписанный <code>.mcp1cref</code> "
+            "с канонической SQLite schema v1. Подпись и содержимое полностью "
+            "проверяются, а база становится активной "
             "после перезапуска сервера.</li>"
             "</ul>"
             "<p>Рядом лежат сотни файлов <code>.hbk</code> (38 справок × "
@@ -2023,6 +2028,160 @@ def routes(
         authorized = _authorized(request)
         return await render_sources(authorized=authorized)
 
+    async def reference_page(request: Request) -> HTMLResponse:
+        status = reference.status
+        if reference.provider is None:
+            return _layout(
+                "Общая справка",
+                "<h1>Общая справка не подключена</h1>"
+                f"<p>{escape(status.message)}</p>"
+                "<p>Состояние и способ подключения показаны на странице "
+                '<a href="/sources">«Источники»</a>.</p>',
+            )
+
+        params = request.query_params
+        query = params.get("query", "")
+        domain = params.get("domain", "")
+        kind = params.get("kind", "")
+        platform = params.get("platform", "")
+        limit_text = params.get("limit", "10")
+        item_id = params.get("item_id", "")
+        section_id = params.get("section_id", "")
+        cursor = params.get("cursor", "")
+        include_explicit = params.get("include_explicit") == "1"
+        include_hidden = params.get("include_hidden") == "1"
+        error = ""
+        results: dict | None = None
+        card: dict | None = None
+        try:
+            limit = int(limit_text)
+        except ValueError:
+            limit = 0
+        if (
+            len(query) > MAX_QUERY_CHARS
+            or len(domain) > 100
+            or len(kind) > 100
+            or len(platform) > 64
+            or len(item_id) > 512
+            or len(section_id) > 512
+            or len(cursor) > 2048
+            or not 1 <= limit <= 50
+        ):
+            error = "Один из параметров страницы превышает допустимый размер."
+        else:
+            try:
+                if query.strip():
+                    results = await run_in_threadpool(
+                        reference.provider.search,
+                        query,
+                        domain=domain or None,
+                        kind=kind or None,
+                        platform=platform or None,
+                        include_explicit=include_explicit,
+                        include_hidden=include_hidden,
+                        limit=limit,
+                    )
+                if item_id:
+                    card = await run_in_threadpool(
+                        reference.provider.get,
+                        item_id,
+                        section_id=section_id or None,
+                        cursor=cursor or None,
+                        max_chars=8_000,
+                        platform=platform or None,
+                    )
+            except ReferenceQueryError as caught:
+                error = str(caught)
+
+        checked_explicit = " checked" if include_explicit else ""
+        checked_hidden = " checked" if include_hidden else ""
+        parts = [
+            "<h1>Общая справка</h1>",
+            "<p>Ручная read-only проверка использует тот же провайдер, что "
+            "<code>search_reference</code> и <code>get_reference</code>.</p>",
+            "<form method=get action=/reference>",
+            "<label>Поиск <input name=query required maxlength=4096 value='",
+            escape(query, quote=True),
+            "'></label> ",
+            "<label>Домен <input name=domain maxlength=100 value='",
+            escape(domain, quote=True),
+            "'></label> ",
+            "<label>Вид <input name=kind maxlength=100 value='",
+            escape(kind, quote=True),
+            "'></label> ",
+            "<label>Платформа <input name=platform maxlength=64 value='",
+            escape(platform, quote=True),
+            "' placeholder='8.3.20'></label> ",
+            "<label>Лимит <input name=limit type=number min=1 max=50 value='",
+            escape(limit_text, quote=True),
+            "'></label> ",
+            f"<label><input type=checkbox name=include_explicit value=1{checked_explicit}> "
+            "explicit</label> ",
+            f"<label><input type=checkbox name=include_hidden value=1{checked_hidden}> "
+            "hidden</label> ",
+            "<button>Найти</button></form>",
+        ]
+        if error:
+            parts.append(f"<p class=error>{escape(error)}</p>")
+        if results is not None:
+            hits = results["results"]
+            parts.append("<h2>Результаты</h2>")
+            if not hits:
+                parts.append("<p>Ничего не найдено.</p>")
+            else:
+                parts.append("<ul>")
+                for hit in hits:
+                    target = {
+                        "query": query,
+                        "item_id": hit["id"],
+                    }
+                    if hit.get("matched_section_id"):
+                        target["section_id"] = hit["matched_section_id"]
+                    for name, value in (
+                        ("domain", domain), ("kind", kind), ("platform", platform),
+                        ("limit", limit_text),
+                    ):
+                        if value:
+                            target[name] = value
+                    if include_explicit:
+                        target["include_explicit"] = "1"
+                    if include_hidden:
+                        target["include_hidden"] = "1"
+                    title = hit["title_ru"] or hit["title_en"] or hit["id"]
+                    parts.append(
+                        f"<li><a href='/reference?{urlencode(target)}'>"
+                        f"{escape(title)}</a> — {escape(hit['kind'])}"
+                        f"<br><small>{escape(hit['reason'])}</small></li>"
+                    )
+                parts.append("</ul>")
+        if card is not None:
+            shown = card["card"]
+            title = shown["title_ru"] or shown["title_en"] or shown["id"]
+            parts.extend(
+                (
+                    f"<h2>{escape(title)}</h2>",
+                    f"<p><code>{escape(shown['id'])}</code> · "
+                    f"{escape(shown['kind'])}</p>",
+                    f"<pre class=card>{escape(card['content'])}</pre>",
+                )
+            )
+            next_cursor = card["continuation"]["next_cursor"]
+            if next_cursor:
+                continuation = {
+                    "query": query,
+                    "item_id": shown["id"],
+                    "cursor": next_cursor,
+                }
+                if shown.get("section_id"):
+                    continuation["section_id"] = shown["section_id"]
+                if platform:
+                    continuation["platform"] = platform
+                parts.append(
+                    f"<p><a href='/reference?{urlencode(continuation)}'>"
+                    "Следующая часть</a></p>"
+                )
+        return _layout("Общая справка", "".join(parts))
+
     async def dictionary_page(request: Request) -> HTMLResponse:
         return _dictionary_page(
             registry,
@@ -2298,23 +2457,23 @@ def routes(
         # «../../etc/passwd» сложится путь наружу временного каталога.
         name = Path(uploaded.filename).name
         suffix = Path(name).suffix.lower()
-        if suffix not in (".zip", ".hbk", ".json", ".sqlite3"):
+        if suffix not in (".zip", ".hbk", ".json", REFERENCE_ARTIFACT_SUFFIX):
             await form.close()
             return await render_sources(
-                error="Принимаются только .zip, .hbk, .json и .sqlite3",
+                error="Принимаются только .zip, .hbk, .json и .mcp1cref",
                 authorized=True,
             )
 
-        reference_upload = suffix == ".sqlite3"
+        reference_upload = suffix == REFERENCE_ARTIFACT_SUFFIX
         if reference_upload and not reference.managed_upload_available:
             await form.close()
             return await render_sources(
-                error="Загрузка SQLite выключена: база подключена по внешнему пути.",
+                error="Загрузка общей справки выключена: артефакт подключён по внешнему пути.",
                 authorized=True,
                 status_code=409,
             )
 
-        # Registry-файл остаётся фоновой задаче. SQLite ставится синхронно,
+        # Registry-файл остаётся фоновой задаче. Подписанный bundle ставится синхронно,
         # поэтому её staging лежит рядом с целевым файлом для атомарной замены
         # и удаляется до ответа.
         if reference_upload:
@@ -2327,7 +2486,7 @@ def routes(
             tmp = tempfile.mkdtemp()
         target = Path(tmp) / name
         job = None if reference_upload else _start_job(name, 0)
-        limit = MAX_REFERENCE_DB_BYTES if reference_upload else MAX_UPLOAD
+        limit = MAX_REFERENCE_ARTIFACT_BYTES if reference_upload else MAX_UPLOAD
         size = 0
         try:
             with target.open("wb") as out:
@@ -2594,6 +2753,7 @@ def routes(
         Route("/sources/incoming/parse", parse_incoming, methods=["POST"]),
         Route("/queries", guard_read(queries_form), methods=["GET"]),
         Route("/queries", guard_read(queries_run), methods=["POST"]),
+        Route("/reference", guard_read(reference_page), methods=["GET"]),
         Route("/object", guard_read(object_card), methods=["GET"]),
         Route("/graph", guard_read(graph_page), methods=["GET"]),
         Route("/syntax", guard_read(syntax_card), methods=["GET"]),

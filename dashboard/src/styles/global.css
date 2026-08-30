@@ -1696,6 +1696,22 @@ h2 {
   font-size: 10px;
 }
 
+.reference-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 9px;
+}
+
+.restart-dialog {
+  border-color: #bed0e7;
+}
+
+.restart-dialog .removal-icon {
+  color: var(--blue-deep);
+  background: #e8f0fb;
+}
+
 .operation-progress {
   width: 100%;
   height: 4px;

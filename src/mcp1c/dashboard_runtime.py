@@ -13,12 +13,14 @@ import tempfile
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
+from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 from starlette.formparsers import MultiPartException
 from starlette.requests import Request
 from starlette.responses import (
     FileResponse,
+    HTMLResponse,
     JSONResponse,
     PlainTextResponse,
     RedirectResponse,
@@ -38,6 +40,7 @@ from .registry import (
     Registry,
     RegistryError,
 )
+from .process_restart import RestartController
 from .reference_provider import (
     MAX_REFERENCE_DB_BYTES,
     ReferenceService,
@@ -581,6 +584,7 @@ def _spa_routes(
     registry: Registry,
     static_dir: Path,
     reference: ReferenceService,
+    restart: RestartController,
 ) -> list[Route]:
     static_dir = static_dir.resolve()
 
@@ -894,6 +898,7 @@ def _spa_routes(
         )
         payload = _admin_sources_payload(prepared)
         payload["reference"] = reference.payload(detailed=True)
+        payload["runtime"] = {"self_restart": restart.enabled}
         return JSONResponse(payload)
 
     async def upload_source_api(request: Request) -> JSONResponse:
@@ -1281,8 +1286,11 @@ def _spa_routes(
     return result
 
 
-def _reference_routes(reference: ReferenceService) -> list[Route]:
-    """Общий API статуса и загрузки для classic и SPA."""
+def _reference_routes(
+    reference: ReferenceService,
+    restart: RestartController,
+) -> list[Route]:
+    """Общий API статуса, файла и controlled restart для classic и SPA."""
 
     async def reference_status_api(request: Request) -> JSONResponse:
         if not can_read(request):
@@ -1380,6 +1388,88 @@ def _reference_routes(reference: ReferenceService) -> list[Route]:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
 
+    async def reference_remove_api(request: Request):
+        wants_html = "text/html" in request.headers.get("accept", "")
+
+        def denied_response(message: str, status_code: int):
+            if wants_html:
+                return PlainTextResponse(message, status_code=status_code)
+            return _json_error(message, status_code)
+
+        denied = _mutation_denied(request, action="Удаление общей справки")
+        if denied is not None:
+            return denied
+        if not reference.managed_upload_available:
+            return denied_response(
+                "Удаление выключено: база подключена по внешнему пути.", 409
+            )
+        if wants_html:
+            form = await request.form()
+            confirmation = str(form.get("confirmation", ""))
+        else:
+            payload = await _json_body(request)
+            confirmation = str(payload.get("confirmation", ""))
+        if confirmation != "reference.sqlite3":
+            return denied_response(
+                "Для удаления подтвердите точное имя reference.sqlite3.", 400
+            )
+        try:
+            pending = await run_in_threadpool(reference.remove_managed)
+        except ReferenceValidationError as error:
+            status_code = 404 if error.state == "missing" else 409
+            return denied_response(str(error), status_code)
+        except OSError:
+            return denied_response("Не удалось удалить каноническую базу.", 500)
+        if wants_html:
+            return RedirectResponse("/sources", status_code=303)
+        return JSONResponse(
+            {
+                "removed": "reference.sqlite3",
+                "reference": reference.payload(detailed=True),
+                "pending": (
+                    pending.payload(detailed=True) if pending is not None else None
+                ),
+            }
+        )
+
+    async def restart_api(request: Request):
+        wants_html = "text/html" in request.headers.get("accept", "")
+
+        def denied_response(message: str, status_code: int):
+            if wants_html:
+                return PlainTextResponse(message, status_code=status_code)
+            return _json_error(message, status_code)
+
+        denied = _mutation_denied(request, action="Перезапуск сервера")
+        if denied is not None:
+            return denied
+        if not restart.enabled:
+            return denied_response(
+                "Перезапуск из дашборда выключен оператором.", 404
+            )
+        if reference.pending_status is None:
+            return denied_response(
+                "Нет ожидающего изменения общей справки.", 409
+            )
+        if not restart.reserve():
+            return denied_response("Перезапуск уже запрошен.", 409)
+
+        background = BackgroundTask(restart.terminate_after_response)
+        if wants_html:
+            page = classic_dashboard._layout(
+                "Перезапуск",
+                "<h2>Сервер перезапускается</h2>"
+                "<p>MCP-сеансы и вход в дашборд будут созданы заново. "
+                "После восстановления откройте страницу «Источники».</p>"
+                "<p><a href='/login?next=/sources'>Проверить состояние</a></p>",
+            )
+            return HTMLResponse(page.body, status_code=202, background=background)
+        return JSONResponse(
+            {"state": "restarting", "runtime_id": restart.runtime_id},
+            status_code=202,
+            background=background,
+        )
+
     return [
         Route(
             "/api/v1/reference",
@@ -1393,6 +1483,18 @@ def _reference_routes(reference: ReferenceService) -> list[Route]:
             methods=["POST"],
             name="dashboard_reference_upload",
         ),
+        Route(
+            "/api/v1/reference/remove",
+            reference_remove_api,
+            methods=["POST"],
+            name="dashboard_reference_remove",
+        ),
+        Route(
+            "/api/v1/server/restart",
+            restart_api,
+            methods=["POST"],
+            name="dashboard_server_restart",
+        ),
     ]
 
 
@@ -1402,6 +1504,7 @@ def routes(
     mode: str | None = None,
     static_dir: Path | None = None,
     reference: ReferenceService | None = None,
+    restart: RestartController | None = None,
 ) -> list[Route]:
     """Вернуть ровно один UI-контур, не затрагивая ``/mcp`` и ``/health``."""
     selected = dashboard_mode() if mode is None else mode
@@ -1413,14 +1516,23 @@ def routes(
         return []
     if reference is None:
         reference = ReferenceService.discover(registry.data_dir)
+    if restart is None:
+        restart = RestartController(enabled=False)
     if selected == DASHBOARD_CLASSIC:
         from .dashboard import routes as classic_routes
 
         return [
-            *classic_routes(registry, reference=reference),
-            *_reference_routes(reference),
+            *classic_routes(
+                registry,
+                reference=reference,
+                restart_available=restart.enabled,
+            ),
+            *_reference_routes(reference, restart),
         ]
     root = static_dir or Path(
         os.environ.get("MCP1C_DASHBOARD_DIST", "dashboard/dist")
     )
-    return [*_spa_routes(registry, root, reference), *_reference_routes(reference)]
+    return [
+        *_spa_routes(registry, root, reference, restart),
+        *_reference_routes(reference, restart),
+    ]

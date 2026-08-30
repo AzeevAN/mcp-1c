@@ -159,6 +159,7 @@ class ReferenceStatus:
     items: int | None = None
     index_cache: str | None = None
     key_id: str | None = None
+    action: str | None = None
 
     @property
     def ready(self) -> bool:
@@ -180,6 +181,7 @@ class ReferenceStatus:
                     "items": self.items,
                     "index_cache": self.index_cache,
                     "key_id": self.key_id,
+                    "action": self.action,
                 }
             )
         return result
@@ -838,6 +840,7 @@ class ReferenceService:
         self.verifier = verifier
         self.allow_unsigned = allow_unsigned
         self.pending_status: ReferenceStatus | None = None
+        self._mutation_lock = threading.Lock()
 
     @classmethod
     def discover(
@@ -996,11 +999,18 @@ class ReferenceService:
                 if self.pending_status is not None else None
             ),
             "managed_upload": self.managed_upload_available,
+            "managed_file_present": (
+                self.managed_upload_available and self.managed_path.is_file()
+            ),
             "limits": {"upload_bytes": MAX_REFERENCE_DB_BYTES},
         }
 
     def install_candidate(self, candidate: Path) -> ReferenceStatus:
         """Проверить временную SQLite и атомарно установить для следующего старта."""
+        with self._mutation_lock:
+            return self._install_candidate(candidate)
+
+    def _install_candidate(self, candidate: Path) -> ReferenceStatus:
         if not self.managed_upload_available:
             raise ReferenceValidationError(
                 "incompatible",
@@ -1036,11 +1046,59 @@ class ReferenceService:
                 items=status.items,
                 index_cache=status.index_cache,
                 key_id=status.key_id,
+                action="activate",
             )
             return self.pending_status
         finally:
             if not closed:
                 inspected.close()
+
+    def remove_managed(self) -> ReferenceStatus | None:
+        """Снять управляемый файл, сохранив открытый снимок до рестарта."""
+        with self._mutation_lock:
+            return self._remove_managed()
+
+    def _remove_managed(self) -> ReferenceStatus | None:
+        if not self.managed_upload_available:
+            raise ReferenceValidationError(
+                "incompatible",
+                "Dashboard delete недоступен при внешнем MCP1C_REFERENCE_DB.",
+            )
+        if not self.managed_path.is_file():
+            raise ReferenceValidationError(
+                "missing", "Каноническая база уже отсутствует."
+            )
+
+        self.managed_path.unlink()
+        cache = self.data_dir / "index" / "reference" / "reference.search"
+        try:
+            cache.unlink(missing_ok=True)
+        except OSError:
+            # Кэш расходный: отказ его уборки не должен превращать успешно
+            # снятую базу в ошибку административной операции.
+            pass
+
+        if self.provider is None:
+            # Удаление ещё не активированной загрузки отменяет pending: в
+            # текущем процессе справочных инструментов и так не было.
+            self.pending_status = None
+            return None
+
+        self.pending_status = ReferenceStatus(
+            state="pending_restart",
+            message=(
+                "База удалена и будет отключена после перезапуска сервера."
+            ),
+            signature=self.status.signature,
+            schema_version=self.status.schema_version,
+            content_sha256=self.status.content_sha256,
+            file_sha256=self.status.file_sha256,
+            items=self.status.items,
+            index_cache=None,
+            key_id=self.status.key_id,
+            action="remove",
+        )
+        return self.pending_status
 
     def close(self) -> None:
         if self.provider is not None:

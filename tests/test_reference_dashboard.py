@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from starlette.applications import Starlette
 
+from mcp1c.process_restart import RestartController
+
 from conftest import живой_клиент
 from mcp1c.dashboard_runtime import DASHBOARD_CLASSIC, DASHBOARD_SPA, routes
 from mcp1c.reference_provider import ReferenceService
@@ -12,13 +14,18 @@ from mcp1c.registry import Registry
 from reference_fixture import build_reference_database
 
 
-def _client(registry: Registry, reference: ReferenceService):
+def _client(
+    registry: Registry,
+    reference: ReferenceService,
+    restart: RestartController | None = None,
+):
     return живой_клиент(
         Starlette(
             routes=routes(
                 registry,
                 mode=DASHBOARD_SPA,
                 reference=reference,
+                restart=restart,
             )
         )
     )
@@ -163,6 +170,201 @@ def test_external_path_делает_dashboard_upload_недоступным(tmp_
     assert response.status_code == 409
 
 
+def test_delete_управляемой_базы_требует_admin(tmp_path, monkeypatch):
+    monkeypatch.setenv("API_TOKEN", "read-token")
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    registry = Registry(tmp_path / "data")
+    reference = ReferenceService.discover(registry.data_dir, allow_unsigned=True)
+    reference.managed_path.parent.mkdir(parents=True)
+    build_reference_database(reference.managed_path)
+    reference = ReferenceService.discover(registry.data_dir, allow_unsigned=True)
+    client = _client(registry, reference)
+    _login(client, "read-token")
+
+    response = client.post(
+        "/api/v1/reference/remove",
+        json={"confirmation": "reference.sqlite3"},
+    )
+
+    assert response.status_code == 403
+    assert reference.managed_path.is_file()
+
+
+def test_delete_оставляет_активные_ручки_до_restart(tmp_path, monkeypatch):
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    registry = Registry(tmp_path / "data")
+    reference = ReferenceService.discover(registry.data_dir, allow_unsigned=True)
+    reference.managed_path.parent.mkdir(parents=True)
+    build_reference_database(reference.managed_path)
+    reference = ReferenceService.discover(registry.data_dir, allow_unsigned=True)
+    client = _client(registry, reference)
+    _login(client)
+
+    response = client.post(
+        "/api/v1/reference/remove",
+        json={"confirmation": "reference.sqlite3"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["reference"]
+    assert payload["active"]["state"] == "ready"
+    assert payload["pending"]["state"] == "pending_restart"
+    assert payload["pending"]["action"] == "remove"
+    assert payload["managed_file_present"] is False
+    assert reference.provider.search("образец")["results"][0]["id"] == "bsl/Example"
+
+    restarted = ReferenceService.discover(registry.data_dir, allow_unsigned=True)
+    assert restarted.status.state == "missing"
+
+
+def test_delete_требует_точное_подтверждение(tmp_path, monkeypatch):
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    registry = Registry(tmp_path / "data")
+    reference = ReferenceService.discover(registry.data_dir, allow_unsigned=True)
+    reference.managed_path.parent.mkdir(parents=True)
+    build_reference_database(reference.managed_path)
+    reference = ReferenceService.discover(registry.data_dir, allow_unsigned=True)
+    client = _client(registry, reference)
+    _login(client)
+
+    response = client.post(
+        "/api/v1/reference/remove",
+        json={"confirmation": "delete"},
+    )
+
+    assert response.status_code == 400
+    assert reference.managed_path.is_file()
+
+
+def test_delete_внешней_базы_из_dashboard_запрещён(tmp_path, monkeypatch):
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    external = build_reference_database(tmp_path / "external.sqlite3")
+    registry = Registry(tmp_path / "data")
+    reference = ReferenceService.discover(
+        registry.data_dir,
+        database_path=external,
+        allow_unsigned=True,
+    )
+    client = _client(registry, reference)
+    _login(client)
+
+    response = client.post(
+        "/api/v1/reference/remove",
+        json={"confirmation": "reference.sqlite3"},
+    )
+
+    assert response.status_code == 409
+    assert external.is_file()
+
+
+def test_restart_выключен_без_явной_возможности(tmp_path, monkeypatch):
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    source = build_reference_database(tmp_path / "source.sqlite3")
+    registry = Registry(tmp_path / "data")
+    reference = ReferenceService.discover(registry.data_dir, allow_unsigned=True)
+    client = _client(registry, reference)
+    _login(client)
+    client.post(
+        "/api/v1/reference/upload",
+        files={"file": ("reference.sqlite3", source.read_bytes())},
+    )
+
+    response = client.post("/api/v1/server/restart", json={})
+
+    assert response.status_code == 404
+
+
+def test_restart_разрешён_только_для_pending_reference(tmp_path, monkeypatch):
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    registry = Registry(tmp_path / "data")
+    reference = ReferenceService.discover(registry.data_dir, allow_unsigned=True)
+    restart = RestartController(enabled=True, terminate=lambda: None, delay=0)
+    client = _client(registry, reference, restart)
+    _login(client)
+
+    response = client.post("/api/v1/server/restart", json={})
+
+    assert response.status_code == 409
+    assert restart.requested is False
+
+
+def test_restart_отвечает_до_завершения_процесса(tmp_path, monkeypatch):
+    from threading import Event
+
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    source = build_reference_database(tmp_path / "source.sqlite3")
+    registry = Registry(tmp_path / "data")
+    reference = ReferenceService.discover(registry.data_dir, allow_unsigned=True)
+    terminated = Event()
+    restart = RestartController(enabled=True, terminate=terminated.set, delay=0)
+    client = _client(registry, reference, restart)
+    _login(client)
+    uploaded = client.post(
+        "/api/v1/reference/upload",
+        files={"file": ("reference.sqlite3", source.read_bytes())},
+    )
+    assert uploaded.status_code == 201
+
+    response = client.post("/api/v1/server/restart", json={})
+
+    assert response.status_code == 202
+    assert response.json() == {
+        "state": "restarting",
+        "runtime_id": restart.runtime_id,
+    }
+    assert terminated.wait(1)
+    assert restart.requested is True
+
+
+def test_restart_требует_admin_и_same_origin(tmp_path, monkeypatch):
+    monkeypatch.setenv("API_TOKEN", "read-token")
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    source = build_reference_database(tmp_path / "source.sqlite3")
+    registry = Registry(tmp_path / "data")
+    reference = ReferenceService.discover(registry.data_dir, allow_unsigned=True)
+    restart = RestartController(enabled=True, terminate=lambda: None, delay=0)
+    client = _client(registry, reference, restart)
+    _login(client, "read-token")
+    reference.install_candidate(source)
+
+    read_only = client.post("/api/v1/server/restart", json={})
+    client.cookies.clear()
+    _login(client)
+    foreign_origin = client.post(
+        "/api/v1/server/restart",
+        json={},
+        headers={"origin": "http://sibling.test"},
+    )
+
+    assert read_only.status_code == 403
+    assert foreign_origin.status_code == 403
+    assert restart.requested is False
+
+
+def test_повторный_restart_не_планируется_дважды(tmp_path, monkeypatch):
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    source = build_reference_database(tmp_path / "source.sqlite3")
+    registry = Registry(tmp_path / "data")
+    reference = ReferenceService.discover(registry.data_dir, allow_unsigned=True)
+    restart = RestartController(enabled=True, terminate=lambda: None, delay=60)
+    client = _client(registry, reference, restart)
+    _login(client)
+    reference.install_candidate(source)
+
+    first = client.post("/api/v1/server/restart", json={})
+    second = client.post("/api/v1/server/restart", json={})
+
+    assert first.status_code == 202
+    assert second.status_code == 409
+
+
 def test_classic_показывает_статус_и_одну_общую_форму(tmp_path, monkeypatch):
     monkeypatch.delenv("API_TOKEN", raising=False)
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
@@ -217,3 +419,37 @@ def test_classic_общая_форма_принимает_sqlite_без_javascri
     assert response.headers["location"] == "/sources"
     page = client.get("/sources")
     assert "ожидает перезапуска" in page.text
+
+
+def test_classic_удаляет_базу_и_предлагает_restart(tmp_path, monkeypatch):
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    registry = Registry(tmp_path / "data")
+    reference = ReferenceService.discover(registry.data_dir, allow_unsigned=True)
+    reference.managed_path.parent.mkdir(parents=True)
+    build_reference_database(reference.managed_path)
+    reference = ReferenceService.discover(registry.data_dir, allow_unsigned=True)
+    restart = RestartController(enabled=True, terminate=lambda: None, delay=60)
+    client = живой_клиент(
+        Starlette(
+            routes=routes(
+                registry,
+                mode=DASHBOARD_CLASSIC,
+                reference=reference,
+                restart=restart,
+            )
+        )
+    )
+    _login(client)
+
+    response = client.post(
+        "/api/v1/reference/remove",
+        headers={"accept": "text/html"},
+        data={"confirmation": "reference.sqlite3"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    page = client.get("/sources")
+    assert "База удалена и будет отключена" in page.text
+    assert "Перезапустить сервер и применить изменение" in page.text

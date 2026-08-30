@@ -44,6 +44,10 @@ services:
       # Только для локальной приёмки экспериментальной ветки. Релиз не должен
       # запускаться с обходом проверки подписи.
       MCP1C_REFERENCE_TRUST_UNSIGNED: ${MCP1C_REFERENCE_TRUST_UNSIGNED:-}
+      # Этот профиль уже имеет restart: unless-stopped, поэтому процесс может
+      # безопасно завершить себя после административного HTTP-ответа. Для
+      # bare-запуска возможность по умолчанию выключена.
+      MCP1C_ALLOW_SELF_RESTART: ${MCP1C_ALLOW_SELF_RESTART:-1}
       # Базовый файл — только MCP. UI включается одним из двух явных override.
       MCP1C_DASHBOARD: off
     logging:

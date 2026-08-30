@@ -1490,6 +1490,27 @@ def _sources_page(
                     "в общей форме «Загрузить» ниже. После успешной проверки "
                     "перезапустите сервер и MCP-клиент.</p>"
                 )
+                if reference.get("managed_file_present"):
+                    parts.append(
+                        "<form method=post action=/api/v1/reference/remove>"
+                        "<label>Для удаления введите "
+                        "<code>reference.sqlite3</code>: "
+                        "<input name=confirmation required "
+                        "pattern='reference\\.sqlite3'></label> "
+                        "<button>Удалить общую базу</button></form>"
+                    )
+                if pending is not None:
+                    if reference.get("restart_available"):
+                        parts.append(
+                            "<form method=post action=/api/v1/server/restart>"
+                            "<button>Перезапустить сервер и применить изменение"
+                            "</button></form>"
+                        )
+                    else:
+                        parts.append(
+                            "<p class=warn>Перезапуск из дашборда выключен; "
+                            "изменение должен применить оператор сервера.</p>"
+                        )
             else:
                 parts.append(
                     "<p class=warn>Dashboard upload выключен: база подключена "
@@ -1963,6 +1984,7 @@ def routes(
     registry: Registry,
     *,
     reference: ReferenceService | None = None,
+    restart_available: bool = False,
 ) -> list[Route]:
     if reference is None:
         reference = ReferenceService.discover(registry.data_dir)
@@ -1986,10 +2008,12 @@ def routes(
         data = await run_in_threadpool(
             _prepare_sources_page, registry, authorized=authorized
         )
+        reference_payload = reference.payload(detailed=authorized)
+        reference_payload["restart_available"] = restart_available
         page = _sources_page(
             data,
             error=error,
-            reference=reference.payload(detailed=authorized),
+            reference=reference_payload,
         )
         if status_code == 200:
             return page

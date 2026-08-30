@@ -170,6 +170,55 @@ def test_обычный_startup_registry_не_удаляет_кэш_общей_�
     assert restarted.status.index_cache == "hit"
 
 
+def test_удаление_управляемой_базы_оставляет_живой_снимок_до_restart(tmp_path):
+    database = tmp_path / "reference" / "reference.sqlite3"
+    database.parent.mkdir()
+    build_reference_database(database)
+    service = ReferenceService.discover(tmp_path, allow_unsigned=True)
+    cache = tmp_path / "index" / "reference" / "reference.search"
+    assert service.provider is not None
+    assert cache.is_file()
+
+    pending = service.remove_managed()
+
+    assert not database.exists()
+    assert not cache.exists()
+    assert pending is not None
+    assert pending.state == "pending_restart"
+    assert pending.action == "remove"
+    assert service.provider.search("образец")["results"][0]["id"] == "bsl/Example"
+
+    restarted = ReferenceService.discover(tmp_path, allow_unsigned=True)
+    assert restarted.status.state == "missing"
+    assert restarted.provider is None
+    names = [
+        tool.name
+        for tool in asyncio.run(
+            build_server(Registry(tmp_path), reference=restarted).list_tools()
+        )
+    ]
+    assert len(names) == 11
+    assert "search_reference" not in names
+    assert "get_reference" not in names
+
+
+def test_удаление_неактивированной_загрузки_отменяет_pending(tmp_path):
+    source = build_reference_database(tmp_path / "source.sqlite3")
+    service = ReferenceService.discover(tmp_path, allow_unsigned=True)
+    candidate = tmp_path / "candidate.sqlite3"
+    candidate.write_bytes(source.read_bytes())
+    installed = service.install_candidate(candidate)
+    assert installed.action == "activate"
+    assert service.managed_path.is_file()
+
+    pending = service.remove_managed()
+
+    assert pending is None
+    assert service.pending_status is None
+    assert not service.managed_path.exists()
+    assert service.status.state == "missing"
+
+
 def test_битое_json_поле_отклоняется_при_старте_до_tools_call(tmp_path):
     from mcp1c.reference_provider import calculate_logical_hash
 

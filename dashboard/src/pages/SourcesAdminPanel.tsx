@@ -11,6 +11,7 @@ import {
   RotateCw,
   Trash2,
   UploadCloud,
+  X,
 } from "lucide-react";
 import { type DragEvent, type ChangeEvent, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -21,9 +22,12 @@ import {
   SourceAdminApiError,
   uploadSource,
   uploadReference,
+  requestServerRestart,
+  waitForServerRestart,
   useAdminSources,
   useClearJobs,
   useParseIncoming,
+  useRemoveReference,
 } from "../shared/api/sourceAdmin";
 import { StatusBadge, type StatusTone } from "../shared/ui/StatusBadge";
 
@@ -113,8 +117,56 @@ const referenceStateLabels: Record<string, string> = {
   pending_restart: "ожидает перезапуска",
 };
 
-function ReferenceAdminCard({ reference }: { reference: ReferenceAdminState }) {
+function ReferenceAdminCard({
+  reference,
+  restartAvailable,
+}: {
+  reference: ReferenceAdminState;
+  restartAvailable: boolean;
+}) {
   const shown = reference.pending ?? reference.active;
+  const removeReference = useRemoveReference();
+  const [action, setAction] = useState<"remove" | "restart" | null>(null);
+  const [confirmation, setConfirmation] = useState("");
+  const [restarting, setRestarting] = useState(false);
+  const [feedback, setFeedback] = useState<{ tone: "success" | "danger"; text: string } | null>(null);
+
+  const closeDialog = () => {
+    if (removeReference.isPending || restarting) return;
+    setAction(null);
+    setConfirmation("");
+  };
+
+  const remove = async () => {
+    setFeedback(null);
+    try {
+      const result = await removeReference.mutateAsync(confirmation);
+      setAction(null);
+      setConfirmation("");
+      setFeedback({
+        tone: "success",
+        text: result.pending
+          ? "Файл и расходный индекс удалены. Справочные инструменты исчезнут после перезапуска."
+          : "Неактивированная база удалена; перезапуск не требуется.",
+      });
+    } catch (error) {
+      setFeedback({ tone: "danger", text: errorMessage(error) });
+    }
+  };
+
+  const restart = async () => {
+    setFeedback(null);
+    setRestarting(true);
+    setAction(null);
+    try {
+      const response = await requestServerRestart();
+      await waitForServerRestart(response.runtime_id);
+      window.location.assign("/login?next=%2Fsources");
+    } catch (error) {
+      setRestarting(false);
+      setFeedback({ tone: "danger", text: errorMessage(error) });
+    }
+  };
 
   return (
     <section className="admin-card reference-admin-card" aria-label="Локальная общая справка">
@@ -136,10 +188,107 @@ function ReferenceAdminCard({ reference }: { reference: ReferenceAdminState }) {
           {reference.managed_upload ? " · загрузка через общую форму выше" : ""}
         </small>
       </div>
+      {feedback && <div className={`admin-feedback is-${feedback.tone}`} role="status">{feedback.text}</div>}
+      {restarting && (
+        <div className="inline-warning" role="status">
+          <LoaderCircle className="is-spinning" size={18} aria-hidden="true" />
+          <span>Сервер перезапускается. Страница входа откроется после нового <code>runtime_id</code>.</span>
+        </div>
+      )}
+      {reference.managed_upload && (
+        <div className="reference-actions">
+          {reference.managed_file_present && (
+            <button
+              className="button-danger-quiet"
+              type="button"
+              onClick={() => { setFeedback(null); setAction("remove"); }}
+              disabled={restarting || removeReference.isPending}
+            >
+              <Trash2 size={16} aria-hidden="true" />Удалить базу
+            </button>
+          )}
+          {reference.pending && restartAvailable && (
+            <button
+              className="button-primary"
+              type="button"
+              onClick={() => { setFeedback(null); setAction("restart"); }}
+              disabled={restarting || removeReference.isPending}
+            >
+              <RotateCw size={16} aria-hidden="true" />Перезапустить и применить
+            </button>
+          )}
+        </div>
+      )}
+      {reference.pending && !restartAvailable && (
+        <div className="inline-warning">
+          <AlertCircle size={18} aria-hidden="true" />
+          <span>Перезапуск из дашборда выключен; изменение должен применить оператор сервера.</span>
+        </div>
+      )}
       {!reference.managed_upload && (
         <div className="inline-warning">
           <AlertCircle size={18} aria-hidden="true" />
           <span>База подключена через внешний <code>MCP1C_REFERENCE_DB</code>; загрузка из дашборда выключена.</span>
+        </div>
+      )}
+
+      {action && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) closeDialog();
+        }}>
+          <section
+            className={action === "remove" ? "removal-dialog" : "removal-dialog restart-dialog"}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="reference-action-title"
+          >
+            <button className="modal-close" type="button" onClick={closeDialog} aria-label="Закрыть">
+              <X size={17} aria-hidden="true" />
+            </button>
+            <span className="removal-icon" aria-hidden="true">
+              {action === "remove" ? <Trash2 size={22} /> : <RotateCw size={22} />}
+            </span>
+            <h2 id="reference-action-title">
+              {action === "remove" ? "Удалить локальную общую базу?" : "Перезапустить сервер?"}
+            </h2>
+            {action === "remove" ? (
+              <>
+                <p>Файл и расходный индекс будут удалены. Если инструменты уже активны, текущий снимок продолжит отвечать только до перезапуска, после которого <code>search_reference</code> и <code>get_reference</code> исчезнут.</p>
+                <div className="confirmation-field">
+                  <label htmlFor="reference-remove-confirmation">Для подтверждения введите точное имя:</label>
+                  <code>reference.sqlite3</code>
+                  <input
+                    id="reference-remove-confirmation"
+                    value={confirmation}
+                    onChange={(event) => setConfirmation(event.target.value)}
+                    autoComplete="off"
+                  />
+                </div>
+                <footer>
+                  <button className="button-secondary" type="button" onClick={closeDialog}>Отмена</button>
+                  <button
+                    className="button-danger"
+                    type="button"
+                    onClick={() => void remove()}
+                    disabled={confirmation !== "reference.sqlite3" || removeReference.isPending}
+                  >
+                    {removeReference.isPending ? <LoaderCircle className="is-spinning" size={16} /> : <Trash2 size={16} />}
+                    Удалить базу
+                  </button>
+                </footer>
+              </>
+            ) : (
+              <>
+                <p>Текущие MCP-сеансы будут разорваны, а сессия дашборда исчезнет. После восстановления сервера потребуется повторный вход.</p>
+                <footer>
+                  <button className="button-secondary" type="button" onClick={closeDialog}>Отмена</button>
+                  <button className="button-primary" type="button" onClick={() => void restart()}>
+                    <RotateCw size={16} aria-hidden="true" />Перезапустить сервер
+                  </button>
+                </footer>
+              </>
+            )}
+          </section>
         </div>
       )}
     </section>
@@ -366,7 +515,12 @@ export function SourcesAdminPanel({
 
       <JobList jobs={data.jobs} />
 
-      {data.reference && <ReferenceAdminCard reference={data.reference} />}
+      {data.reference && (
+        <ReferenceAdminCard
+          reference={data.reference}
+          restartAvailable={data.runtime?.self_restart ?? false}
+        />
+      )}
 
       <section className="admin-card incoming-card">
         <header className="admin-card-heading is-spread">

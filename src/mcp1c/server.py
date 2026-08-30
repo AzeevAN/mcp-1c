@@ -38,6 +38,7 @@ from . import __version__, tools
 from .auth import same_token
 from .dashboard import MAX_UPLOAD, can_read
 from .dashboard_runtime import routes as dashboard_routes
+from .process_restart import RestartController
 from .reference_provider import (
     MAX_PAGE_CHARS,
     MAX_REFERENCE_DB_BYTES,
@@ -426,9 +427,12 @@ def build_server(
     name: str = "mcp1c",
     *,
     reference: ReferenceService | None = None,
+    restart: RestartController | None = None,
 ) -> MCPServer:
     if reference is None:
         reference = ReferenceService.discover(registry.data_dir)
+    if restart is None:
+        restart = RestartController(enabled=False)
     server = MCPServer(
         name=name,
         title="Структура конфигураций 1С",
@@ -782,7 +786,7 @@ def build_server(
                     structured_content={"result": message}, is_error=True,
                 )
 
-    _add_http_routes(server, registry, reference)
+    _add_http_routes(server, registry, reference, restart)
     return server
 
 
@@ -790,6 +794,7 @@ def _add_http_routes(
     server: MCPServer,
     registry: Registry,
     reference: ReferenceService,
+    restart: RestartController,
 ) -> None:
     """Служебные HTTP-маршруты рядом с MCP: проверка живости и перезагрузка.
 
@@ -809,7 +814,12 @@ def _add_http_routes(
         # конфигураций — уже сведения о клиенте, кто у него внедрён и как
         # называются его доработки. Без токена отдаём только живость и
         # счётчики; с токеном — прежний ответ целиком.
-        return JSONResponse(tools.health(registry, detailed=can_read(request)))
+        return JSONResponse(
+            {
+                **tools.health(registry, detailed=can_read(request)),
+                "runtime_id": restart.runtime_id,
+            }
+        )
 
     @server.custom_route("/admin/reload", methods=["POST"])
     async def reload(request: Request) -> JSONResponse:
@@ -843,7 +853,11 @@ def _add_http_routes(
     # Имя передаётся явно, потому что два маршрута `/queries` (GET и POST) —
     # разные функции, а без имени Starlette выведет его из пути и получит
     # конфликт.
-    for route in dashboard_routes(registry, reference=reference):
+    for route in dashboard_routes(
+        registry,
+        reference=reference,
+        restart=restart,
+    ):
         server.custom_route(
             route.path,
             methods=sorted(route.methods or {"GET"}),
@@ -978,7 +992,10 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
 
-    server = build_server(registry)
+    server = build_server(
+        registry,
+        restart=RestartController.from_environment(),
+    )
     if args.transport == "stdio":
         # По stdio сервер разговаривает с одним клиентом, который его и
         # запустил: токен там не с кем проверять и не от кого защищаться.

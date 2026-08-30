@@ -9,6 +9,15 @@
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-08-30
+
+Минорный выпуск добавляет полностью опциональную общую справку: подписанный
+read-only `.mcp1cref` проходит fail-closed проверку до открытия SQLite и только
+в состоянии `ready` добавляет `search_reference` и `get_reference`. Classic и
+SPA получили единый административный lifecycle и отдельную read-only страницу
+ручной проверки. Сам справочный артефакт и технология его сборки в выпуск не
+входят; без базы сервер сохраняет прежние одиннадцать инструментов.
+
 ### Добавлено
 
 - **Опциональный адаптер канонической общей справки schema v1.** Валидная
@@ -4673,7 +4682,9 @@ JSON-журнал schema v1 для основной выгрузки и кажд
 Неразрешённых ссылок — ноль. Ошибок приведения типов — ноль. Оба формата дают
 одинаковый набор из 30 ключей модели.
 
-[Unreleased]: https://github.com/AzeevAN/mcp-1c/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/AzeevAN/mcp-1c/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/AzeevAN/mcp-1c/compare/v1.2.0...v1.3.0
+[1.2.0]: https://github.com/AzeevAN/mcp-1c/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/AzeevAN/mcp-1c/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/AzeevAN/mcp-1c/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/AzeevAN/mcp-1c/compare/v0.8.0...v1.0.0

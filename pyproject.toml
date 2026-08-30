@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mcp1c"
-version = "1.2.0"
+version = "1.3.0"
 description = "MCP-сервер: справочник структуры конфигураций 1С и синтаксиса платформы для агентов, пишущих на BSL"
 readme = "README.md"
 license = "Apache-2.0"

@@ -5,6 +5,7 @@ import {
   CircleOff,
   FileArchive,
   FileUp,
+  Folder,
   FolderInput,
   LoaderCircle,
   RotateCw,
@@ -274,7 +275,7 @@ export function SourcesAdminPanel({
             <p><strong>Структура конфигурации:</strong> архив <code>СтруктураКонфигурации_*.zip</code>, полученный обработкой проекта.</p>
             <p><strong>Активность расширений:</strong> файл <code>СнимокРасширений_*.json</code> из отдельной обработки снимка.</p>
             <p><strong>Справка платформы:</strong> точный файл <code>shcntx_ru.hbk</code>; другие похожие HBK его не заменяют.</p>
-            <p><strong>Большая выгрузка модулей и расширений:</strong> положите ZIP в <code>{data.incoming_dir}</code> и запустите разбор в следующем блоке.</p>
+            <p><strong>Большая выгрузка модулей и расширений:</strong> положите ZIP или каталог выгрузки в <code>{data.incoming_dir}</code> и запустите разбор в следующем блоке.</p>
           </div>
         </details>
       </section>
@@ -286,7 +287,7 @@ export function SourcesAdminPanel({
           <span className="admin-card-icon"><FolderInput size={21} aria-hidden="true" /></span>
           <div>
             <h3>Входящие выгрузки</h3>
-            <p>Большие ZIP из <code>{data.incoming_dir}</code>. Сканируется только сам каталог, без вложенных папок.</p>
+            <p>ZIP или каталог выгрузки из <code>{data.incoming_dir}</code>. Сканируются ZIP-файлы и непосредственные подкаталоги, без вложенных папок как отдельных строк.</p>
           </div>
           <span className="count-pill">{data.incoming.length} {data.incoming.length === 1 ? "файл" : "файлов"}</span>
         </header>
@@ -294,7 +295,7 @@ export function SourcesAdminPanel({
         {!data.incoming_exists ? (
           <div className="admin-empty"><Archive size={24} /><span><strong>Каталог ещё не создан</strong><small>Создайте или смонтируйте <code>{data.incoming_dir}</code>.</small></span></div>
         ) : data.incoming.length === 0 ? (
-          <div className="admin-empty"><Archive size={24} /><span><strong>Входящих файлов нет</strong><small>ZIP появится здесь после копирования в <code>{data.incoming_dir}</code>.</small></span></div>
+          <div className="admin-empty"><Archive size={24} /><span><strong>Входящих файлов нет</strong><small>ZIP или каталог появится здесь после копирования в <code>{data.incoming_dir}</code>.</small></span></div>
         ) : (
           <div className="incoming-list">
             {data.incoming.map((item) => {
@@ -302,7 +303,7 @@ export function SourcesAdminPanel({
               const needsChoice = configurationNames.length > 1 && !selectedConfiguration;
               return (
                 <article className="incoming-row" key={item.name}>
-                  <span className="incoming-file-icon"><FileArchive size={20} aria-hidden="true" /></span>
+                  <span className="incoming-file-icon">{item.kind === "directory" ? <Folder size={20} aria-hidden="true" /> : <FileArchive size={20} aria-hidden="true" />}</span>
                   <span className="incoming-file-copy">
                     <strong>{item.name}</strong>
                     <small>{formatBytes(item.size)}{item.detail ? ` · ${item.detail}` : ""}</small>
@@ -340,7 +341,7 @@ export function SourcesAdminPanel({
         {!configurationNames.length && data.incoming.length > 0 && (
           <div className="admin-callout"><AlertCircle size={18} /><span>Сначала загрузите структуру конфигурации: без неё серверу не к чему привязать код, модули форм и расширения.</span></div>
         )}
-        <div className="admin-callout is-info"><AlertCircle size={18} /><span>Человек выбирает только родительскую конфигурацию. Основной код или расширение сервер определяет из содержимого выгрузки, а не из имени ZIP.</span></div>
+        <div className="admin-callout is-info"><AlertCircle size={18} /><span>Человек выбирает только родительскую конфигурацию. Основной код или расширение сервер определяет из содержимого выгрузки, а не из имени ZIP или каталога.</span></div>
       </section>
 
       {data.orphans.length > 0 && (

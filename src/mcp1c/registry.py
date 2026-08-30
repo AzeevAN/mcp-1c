@@ -122,11 +122,20 @@ def _отпечаток_архива(path: Path) -> tuple[int, int, int, int]:
     return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
 
 
+def _отпечаток_выгрузки(path: Path) -> tuple[tuple[int, int, int, int], ...]:
+    """ZIP — сам архив; каталог — ConfigDumpInfo.xml или Configuration.xml и VERSION."""
+    from . import intake
+
+    if path.is_dir():
+        return intake.identity_fingerprint(path)
+    return (_отпечаток_архива(path),)
+
+
 def _архив_не_изменился(
-    path: Path, ожидался: tuple[int, int, int, int]
+    path: Path, ожидался: tuple[tuple[int, int, int, int], ...]
 ) -> bool:
     try:
-        return _отпечаток_архива(path) == ожидался
+        return _отпечаток_выгрузки(path) == ожидался
     except OSError:
         return False
 
@@ -240,22 +249,41 @@ def _сведения_о_выгрузке(path: Path) -> tuple[bool, str, str]:
         )
 
     try:
-        with zipfile.ZipFile(path) as zf:
-            сведения = _найти_configuration_xml(zf)
-            if сведения is None:
+        if path.is_dir():
+            from . import intake
+
+            xml_path = intake.карта_каталога(path).get("Configuration.xml")
+            if xml_path is None:
                 raise отказ(
-                    "В архиве не нашлось Configuration.xml ни в корне, ни в "
+                    "В каталоге не нашлось Configuration.xml ни в корне, ни в "
                     "единственном каталоге верхнего уровня."
                 )
-            if сведения.file_size > _MAX_CONFIGURATION_XML_SIZE:
+            размер = xml_path.stat().st_size
+            if размер > _MAX_CONFIGURATION_XML_SIZE:
                 raise RegistryError(
                     f"{path.name}: Configuration.xml весит "
-                    f"{сведения.file_size / 1024 / 1024:.1f} МБ по "
-                    "заявленному размеру в архиве — это на порядок больше "
+                    f"{размер / 1024 / 1024:.1f} МБ — это на порядок больше "
                     "боевой конфигурации (847 КБ), похоже на повреждённый "
-                    "или поддельный архив."
+                    "или поддельный каталог."
                 )
-            содержимое = zf.read(сведения)
+            содержимое = xml_path.read_bytes()
+        else:
+            with zipfile.ZipFile(path) as zf:
+                сведения = _найти_configuration_xml(zf)
+                if сведения is None:
+                    raise отказ(
+                        "В архиве не нашлось Configuration.xml ни в корне, ни в "
+                        "единственном каталоге верхнего уровня."
+                    )
+                if сведения.file_size > _MAX_CONFIGURATION_XML_SIZE:
+                    raise RegistryError(
+                        f"{path.name}: Configuration.xml весит "
+                        f"{сведения.file_size / 1024 / 1024:.1f} МБ по "
+                        "заявленному размеру в архиве — это на порядок больше "
+                        "боевой конфигурации (847 КБ), похоже на повреждённый "
+                        "или поддельный архив."
+                    )
+                содержимое = zf.read(сведения)
     except zipfile.BadZipFile as ошибка:
         raise отказ(
             "Архив ZIP повреждён или его центральный каталог не читается."
@@ -265,7 +293,7 @@ def _сведения_о_выгрузке(path: Path) -> tuple[bool, str, str]:
         # (обрезанная на записи выгрузка) — тоже сюда: без перехвата человек
         # увидел бы голое исключение вместо объяснения.
         raise отказ(
-            "Configuration.xml или архив недоступны для чтения; проверьте "
+            "Configuration.xml или выгрузка недоступны для чтения; проверьте "
             "файл и права процесса."
         ) from ошибка
 
@@ -345,6 +373,9 @@ def _отбираемых_членов(архив: Path) -> int:
     """
     from . import intake
 
+    if архив.is_dir():
+        записи, _формат = intake._отобрать(intake.карта_каталога(архив))
+        return len(записи)
     with zipfile.ZipFile(архив) as zf:
         записи, _формат = intake._отобранные_записи(zf)
         return len(записи)
@@ -1638,7 +1669,11 @@ class Registry:
         # архив, который мы всё равно не возьмём, незачем.
         временный: Path | None = None
         try:
-            digest = _sha256(архив)
+            digest = (
+                intake.identity_digest(архив)
+                if архив.is_dir()
+                else _sha256(архив)
+            )
             корень.parent.mkdir(parents=True, exist_ok=True)
             _sweep_stale_extract_tmp(корень.parent, корень.name)
             временный = Path(
@@ -2406,7 +2441,7 @@ class Registry:
         kind: str,
         версия_кода: str,
         снести: Callable[[Path], None],
-        отпечаток_архива: tuple[int, int, int, int],
+        отпечаток_архива: tuple[tuple[int, int, int, int], ...],
     ) -> Source:
         """Общий foreground lifecycle модулей и расширения."""
         from . import intake
@@ -2830,12 +2865,18 @@ class Registry:
         `self.sources`, а `save()` записал бы реестр уже без них.
         """
         архив = Path(path)
+        from . import intake
+
         if configuration not in self.configurations:
             raise RegistryError(
                 f"{архив.name}: конфигурация «{configuration}» не загружена."
             )
         try:
-            отпечаток_архива = _отпечаток_архива(архив)
+            if архив.is_dir() and not intake.identity_files(архив):
+                raise RegistryError(intake.нет_идентичности(архив.name))
+            отпечаток_архива = _отпечаток_выгрузки(архив)
+        except FileNotFoundError as error:
+            raise RegistryError(str(error)) from error
         except OSError as error:
             raise RegistryError(
                 f"{архив.name}: архив недоступен; проверьте файл и повторите."
@@ -2911,7 +2952,7 @@ class Registry:
         configuration: str,
         extension: str,
         версия_кода: str = "",
-        отпечаток_архива: tuple[int, int, int, int],
+        отпечаток_архива: tuple[tuple[int, int, int, int], ...],
     ) -> Source:
         """Выгрузка расширения: код в свой каталог, источник `:ext:<Имя>`.
 

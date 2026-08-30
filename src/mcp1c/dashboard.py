@@ -439,6 +439,29 @@ def _run_incoming(
         сканер.finish(архив.name)
 
 
+def _incoming_path(registry: Registry, имя: str) -> Path | None:
+    """ZIP или каталог верхнего уровня incoming; симлинк отвергается."""
+    if not имя or имя != Path(имя).name:
+        return None
+    путь = registry.incoming_dir / имя
+    try:
+        if путь.is_symlink():
+            return None
+        if путь.is_file() or путь.is_dir():
+            return путь
+    except OSError:
+        return None
+    return None
+
+
+def _incoming_size(путь: Path) -> int:
+    from . import intake
+
+    if путь.is_dir():
+        return intake.listing_size(путь)
+    return путь.stat().st_size
+
+
 def _layout(title: str, body: str, *, refresh: int = 0) -> HTMLResponse:
     обновление = f"<meta http-equiv=refresh content={refresh}>" if refresh else ""
     return HTMLResponse(
@@ -1280,6 +1303,7 @@ class _IncomingRow:
     state: str
     detail: str
     settling: bool
+    kind: str = "archive"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1324,6 +1348,7 @@ def _prepare_sources_page(
                     state=str(row["state"]),
                     detail=str(row["detail"]),
                     settling=bool(row.get("settling")),
+                    kind=str(row.get("kind") or "archive"),
                 )
                 for row in _scanner(registry).scan()
             )
@@ -1526,6 +1551,7 @@ def _sources_page(
         from .incoming import (
             STATE_FAILED,
             STATE_NEW,
+            STATE_READY,
             STATE_STALE,
             STATE_UPDATED,
         )
@@ -1549,6 +1575,7 @@ def _sources_page(
                         STATE_UPDATED,
                         STATE_STALE,
                         STATE_FAILED,
+                        STATE_READY,
                     )
                     and not строка.settling
                     and bool(имена_конфигураций)
@@ -1557,7 +1584,7 @@ def _sources_page(
                 # должен понимать, что делает с уже лежащим на диске кодом.
                 подпись = (
                     "переразобрать"
-                    if строка.state in (STATE_UPDATED, STATE_STALE)
+                    if строка.state in (STATE_UPDATED, STATE_STALE, STATE_READY)
                     else "разобрать"
                 )
                 # Выбор конфигурации — только когда есть из чего выбирать:
@@ -1595,10 +1622,11 @@ def _sources_page(
             # ни того, что приём есть, ни того, куда класть архив.
             parts.append(
                 "<h2>Входящие выгрузки</h2>"
-                f"<p>Пусто. Положите выгрузку конфигурации в файлы (.zip) в "
-                f"<code>{escape(data.incoming_dir)}</code> — она "
+                f"<p>Пусто. Положите ZIP или каталог выгрузки конфигурации в файлы в "
+                f"<code>{escape(data.incoming_dir)}</code> — он "
                 "появится здесь с кнопкой «разобрать». Сканируется только сам "
-                "каталог, без вложенных подкаталогов.</p>"
+                "каталог incoming: ZIP-файлы и непосредственные подкаталоги, "
+                "без вложенных подкаталогов как отдельных строк.</p>"
             )
 
     if authorized:
@@ -2242,15 +2270,16 @@ def routes(registry: Registry) -> list[Route]:
         form = await request.form()
         имя = Path(str(form.get("name", ""))).name
         сканер = _scanner(registry)
-        архив = registry.incoming_dir / имя
-        if not имя or not архив.is_file():
+        архив = _incoming_path(registry, имя)
+        if архив is None:
             return RedirectResponse("/sources", status_code=303)
+        размер = _incoming_size(архив)
         занятые = сканер.running
         if занятые:
             # Два разбора одновременно видели бы одно и то же свободное место
             # и оба прошли бы проверку. Молчаливый редирект выглядел бы как
             # «нажал, и ничего не произошло», поэтому причина ложится в журнал.
-            занятость = _start_job(имя, архив.stat().st_size)
+            занятость = _start_job(имя, размер)
             занятость["state"] = JOB_FAILED
             занятость["error"] = (
                 "уже идёт разбор другой выгрузки ("
@@ -2264,7 +2293,7 @@ def routes(registry: Registry) -> list[Route]:
             # гигабайт идёт минуты, а файл виден с первой секунды. Разбор
             # недокопированного архива даёт `BadZipFile` и запись неудачи,
             # которую потом надо снимать руками.
-            копируется = _start_job(имя, архив.stat().st_size)
+            копируется = _start_job(имя, размер)
             копируется["state"] = JOB_FAILED
             копируется["error"] = (
                 f"{имя}: файл изменялся только что — похоже, копирование ещё "
@@ -2276,15 +2305,25 @@ def routes(registry: Registry) -> list[Route]:
             # признак и позволяет не делать.
             return RedirectResponse("/sources", status_code=303)
 
-        job = _start_job(имя, архив.stat().st_size)
+        job = _start_job(имя, размер)
         try:
+            if архив.is_dir() and not intake.identity_files(архив):
+                raise ValueError(intake.нет_идентичности(архив.name))
             нужно, _формат = intake.planned_size(архив)
         except Exception as error:
             # Битый архив (не zip, обрезан, нечитаем) валит расчёт размера до
             # фоновой задачи. Без этой ветки задание висело бы в «принимается»
             # навсегда — `_start_job` вычищает только завершённые записи.
             job["state"] = JOB_FAILED
-            job["error"] = f"{архив.name}: не похоже на zip-архив ({error})"
+            if архив.is_dir():
+                текст = str(error)
+                job["error"] = (
+                    текст
+                    if текст.startswith(архив.name)
+                    else f"{архив.name}: {текст}"
+                )
+            else:
+                job["error"] = f"{архив.name}: не похоже на zip-архив ({error})"
             # `note_failure` считает sha256 файла, чтобы привязать отказ к
             # содержимому: на архиве в 1,4 ГБ это секунды, и в цикле событий
             # они остановили бы весь процесс — ровно то, ради чего сканирование

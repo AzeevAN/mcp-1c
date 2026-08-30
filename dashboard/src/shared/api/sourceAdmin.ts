@@ -13,6 +13,7 @@ export type IncomingExport = {
   state: string;
   detail: string;
   settling: boolean;
+  kind?: "archive" | "directory";
   can_parse: boolean;
   action: "parse" | "reparse";
 };

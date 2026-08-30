@@ -18,6 +18,7 @@ HTTP-эндпоинта — это не транспорт, а обходной 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import uuid
@@ -37,6 +38,13 @@ from . import __version__, tools
 from .auth import same_token
 from .dashboard import MAX_UPLOAD, can_read
 from .dashboard_runtime import routes as dashboard_routes
+from .reference_provider import (
+    MAX_PAGE_CHARS,
+    MAX_REFERENCE_DB_BYTES,
+    MIN_PAGE_CHARS,
+    ReferenceQueryError,
+    ReferenceService,
+)
 from .registry import Registry, RegistryError
 
 # Лимит файла и лимит HTTP-тела различаются: multipart добавляет служебные
@@ -46,6 +54,7 @@ from .registry import Registry, RegistryError
 HTTP_BODY_LIMIT_LOGIN = 16 * 1024
 HTTP_BODY_LIMIT_QUERIES = 1024 * 1024
 HTTP_BODY_LIMIT_UPLOAD = MAX_UPLOAD + 1024 * 1024
+HTTP_BODY_LIMIT_REFERENCE = MAX_REFERENCE_DB_BYTES + 1024 * 1024
 HTTP_BODY_LIMIT_DEFAULT = 2 * 1024 * 1024
 
 WRITABLE_DATA_DIRECTORIES = (
@@ -56,6 +65,7 @@ WRITABLE_DATA_DIRECTORIES = (
     "modules",
     "extensions",
     "logs",
+    "reference",
 )
 
 
@@ -145,6 +155,8 @@ def _http_body_limit(scope) -> int:
             return HTTP_BODY_LIMIT_QUERIES
         if path in ("/sources", "/api/v1/sources/upload"):
             return HTTP_BODY_LIMIT_UPLOAD
+        if path == "/api/v1/reference/upload":
+            return HTTP_BODY_LIMIT_REFERENCE
     return HTTP_BODY_LIMIT_DEFAULT
 
 
@@ -409,7 +421,14 @@ INSTRUCTIONS = f"""
 """.strip()
 
 
-def build_server(registry: Registry, name: str = "mcp1c") -> MCPServer:
+def build_server(
+    registry: Registry,
+    name: str = "mcp1c",
+    *,
+    reference: ReferenceService | None = None,
+) -> MCPServer:
+    if reference is None:
+        reference = ReferenceService.discover(registry.data_dir)
     server = MCPServer(
         name=name,
         title="Структура конфигураций 1С",
@@ -682,11 +701,96 @@ def build_server(registry: Registry, name: str = "mcp1c") -> MCPServer:
     ) -> str:
         return tools.get_syntax(registry, name, config, detail)
 
-    _add_http_routes(server, registry)
+    if reference.provider is not None:
+        provider = reference.provider
+
+        @server.tool(
+            description=(
+                "Найти статью, функцию, конструкцию языка или раздел в "
+                "подключённой локальной общей справке. Возвращает короткие "
+                "карточки; полный текст читается только через `get_reference` "
+                "по точному `id`."
+            )
+        )
+        def search_reference(
+            query: Annotated[str, Field(
+                description="Формулировка вопроса или точное имя элемента."
+            )],
+            domain: Annotated[str | None, Field(
+                description="Необязательный домен общей справки."
+            )] = None,
+            kind: Annotated[str | None, Field(
+                description="Необязательный точный вид элемента внутри домена."
+            )] = None,
+            platform: Annotated[str | None, Field(
+                description="Целевая версия платформы, например `8.3.20`."
+            )] = None,
+            include_explicit: Annotated[bool, Field(
+                description="Включить материалы, доступные только при явном запросе."
+            )] = False,
+            include_hidden: Annotated[bool, Field(
+                description="Включить скрытые и legacy-материалы."
+            )] = False,
+            limit: Annotated[int, Field(ge=1, le=50)] = 10,
+        ) -> str:
+            try:
+                result = provider.search(
+                    query, domain=domain, kind=kind, platform=platform,
+                    include_explicit=include_explicit,
+                    include_hidden=include_hidden, limit=limit,
+                )
+                return json.dumps(result, ensure_ascii=False, indent=2)
+            except ReferenceQueryError as error:
+                message = str(error)
+                return CallToolResult(
+                    content=[TextContent(type="text", text=message)],
+                    structured_content={"result": message}, is_error=True,
+                )
+
+        @server.tool(
+            description=(
+                "Прочитать точную карточку или её раздел из подключённой "
+                "локальной общей справки. Длинный текст выдаётся страницами; "
+                "для продолжения повторите вызов с `next_cursor`."
+            )
+        )
+        def get_reference(
+            item_id: Annotated[str, Field(
+                description="Точный `id`, полученный из `search_reference`."
+            )],
+            section_id: Annotated[str | None, Field(
+                description="Необязательный точный идентификатор найденного раздела."
+            )] = None,
+            cursor: Annotated[str | None, Field(
+                description="Непрозрачный `next_cursor` предыдущей страницы."
+            )] = None,
+            max_chars: Annotated[int, Field(ge=MIN_PAGE_CHARS, le=MAX_PAGE_CHARS)] = 8000,
+            platform: Annotated[str | None, Field(
+                description="Целевая версия платформы, например `8.3.20`."
+            )] = None,
+        ) -> str:
+            try:
+                result = provider.get(
+                    item_id, section_id=section_id, cursor=cursor,
+                    max_chars=max_chars, platform=platform,
+                )
+                return json.dumps(result, ensure_ascii=False, indent=2)
+            except ReferenceQueryError as error:
+                message = str(error)
+                return CallToolResult(
+                    content=[TextContent(type="text", text=message)],
+                    structured_content={"result": message}, is_error=True,
+                )
+
+    _add_http_routes(server, registry, reference)
     return server
 
 
-def _add_http_routes(server: MCPServer, registry: Registry) -> None:
+def _add_http_routes(
+    server: MCPServer,
+    registry: Registry,
+    reference: ReferenceService,
+) -> None:
     """Служебные HTTP-маршруты рядом с MCP: проверка живости и перезагрузка.
 
     Перезагрузка нужна, потому что источники добавляются отдельным процессом
@@ -739,7 +843,7 @@ def _add_http_routes(server: MCPServer, registry: Registry) -> None:
     # Имя передаётся явно, потому что два маршрута `/queries` (GET и POST) —
     # разные функции, а без имени Starlette выведет его из пути и получит
     # конфликт.
-    for route in dashboard_routes(registry):
+    for route in dashboard_routes(registry, reference=reference):
         server.custom_route(
             route.path,
             methods=sorted(route.methods or {"GET"}),

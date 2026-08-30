@@ -26,6 +26,7 @@ def test_проверка_каталога_создаёт_рабочие_под�
         "modules",
         "extensions",
         "logs",
+        "reference",
     }
     assert not list(data_dir.rglob(".mcp1c-write-test-*"))
 

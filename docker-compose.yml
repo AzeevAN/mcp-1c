@@ -38,6 +38,12 @@ services:
       # конфигураций открыта всем, кто дотянется до адреса. Оба берутся из
       # `.env` рядом с этим файлом — шаблон в `.env.example`.
       API_TOKEN: ${API_TOKEN:-}
+      # Необязательная каноническая SQLite. Пустое значение использует
+      # управляемый путь /data/reference/reference.sqlite3; `off` отключает.
+      MCP1C_REFERENCE_DB: ${MCP1C_REFERENCE_DB:-}
+      # Только для локальной приёмки экспериментальной ветки. Релиз не должен
+      # запускаться с обходом проверки подписи.
+      MCP1C_REFERENCE_TRUST_UNSIGNED: ${MCP1C_REFERENCE_TRUST_UNSIGNED:-}
       # Базовый файл — только MCP. UI включается одним из двух явных override.
       MCP1C_DASHBOARD: off
     logging:

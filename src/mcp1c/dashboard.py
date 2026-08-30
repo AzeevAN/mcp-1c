@@ -44,6 +44,7 @@ from .registry import (
     Registry,
     RegistryError,
 )
+from .reference_provider import ReferenceService
 from .render import DETAIL_LEVELS
 from .search import FIELD_KIND_TITLES, MAX_QUERY_CHARS
 from .syntax_model import KIND_TITLES
@@ -248,13 +249,21 @@ class _LimitedUploadParser(MultiPartParser):
         super().on_part_data(data, start, end)
 
 
-async def _limited_upload_form(request: Request) -> FormData:
+async def _limited_upload_form(
+    request: Request,
+    file_limit: int | None = None,
+    *,
+    allowed_fields: frozenset[str] = frozenset({"allow_truncated"}),
+) -> FormData:
     """Разобрать загрузку, не принимая лишние файлы и поля."""
     if not request.headers.get("content-type", "").lower().startswith(
         "multipart/form-data"
     ):
         raise MultiPartException("Ожидалась multipart/form-data.")
-    parser = _LimitedUploadParser(request, MAX_UPLOAD)
+    parser = _LimitedUploadParser(
+        request,
+        MAX_UPLOAD if file_limit is None else file_limit,
+    )
     form = await parser.parse()
     items = form.multi_items()
     files = [(name, value) for name, value in items if isinstance(value, UploadFile)]
@@ -262,7 +271,7 @@ async def _limited_upload_form(request: Request) -> FormData:
     if len(files) != 1 or files[0][0] != "file":
         await form.close()
         raise MultiPartException("Ожидался ровно один file-part с именем file.")
-    if any(name != "allow_truncated" for name, _ in fields):
+    if any(name not in allowed_fields for name, _ in fields):
         await form.close()
         raise MultiPartException("Получено неизвестное поле multipart.")
     return form
@@ -1383,6 +1392,7 @@ def _sources_page(
     data: _SourcesPageData,
     *,
     error: str = "",
+    reference: dict | None = None,
 ) -> HTMLResponse:
     """Чистая отрисовка заранее собранного снимка страницы «Источники»."""
     authorized = data.authorized
@@ -1417,6 +1427,57 @@ def _sources_page(
                 f"<tr><td colspan=5 class=warn>! {escape(предупреждение)}</tr>"
             )
     parts.append("</table>")
+
+    if reference is not None:
+        active = reference["active"]
+        pending = reference.get("pending")
+        shown = pending or active
+        labels = {
+            "disabled": "выключена",
+            "missing": "не загружена",
+            "untrusted": "подпись не подтверждена",
+            "incompatible": "несовместима",
+            "corrupt": "повреждена",
+            "ready": "активна",
+            "pending_restart": "ожидает перезапуска",
+        }
+        state = labels.get(shown["state"], shown["state"])
+        parts.append(
+            "<h2>Локальная общая справка</h2>"
+            "<p>Опциональная каноническая база добавляет только "
+            "<code>search_reference</code> и <code>get_reference</code>. "
+            "Основной MCP работает и без неё.</p>"
+            f"<p><b>Состояние: {escape(state)}.</b> "
+            f"{escape(shown['message'])}</p>"
+        )
+        if authorized:
+            details = []
+            if shown.get("items"):
+                details.append(f"элементов: {shown['items']}")
+            if shown.get("schema_version"):
+                details.append(f"schema: {escape(shown['schema_version'])}")
+            if shown.get("index_cache"):
+                details.append(f"индекс: {escape(shown['index_cache'])}")
+            if shown.get("signature"):
+                details.append(f"подпись: {escape(shown['signature'])}")
+            if details:
+                parts.append(f"<p>{' · '.join(details)}</p>")
+            if reference.get("managed_upload"):
+                limit = reference["limits"]["upload_bytes"]
+                parts.append(
+                    f"<form method=post action=/api/v1/reference/upload "
+                    f"enctype=multipart/form-data data-limit={limit}>"
+                    "<input type=file name=file accept='.sqlite3' required> "
+                    "<button>Загрузить справочную базу</button>"
+                    "<p>Файл полностью проверяется до атомарной замены. "
+                    "После успешной загрузки перезапустите сервер и MCP-клиент.</p>"
+                    "</form>"
+                )
+            else:
+                parts.append(
+                    "<p class=warn>Dashboard upload выключен: база подключена "
+                    "через внешний <code>MCP1C_REFERENCE_DB</code>.</p>"
+                )
 
     if data.sources.code or data.sources_error or data.sources.configuration_names:
         parts.append(
@@ -1868,7 +1929,13 @@ def _read_denied() -> HTMLResponse:
     return HTMLResponse(page.body, status_code=401)
 
 
-def routes(registry: Registry) -> list[Route]:
+def routes(
+    registry: Registry,
+    *,
+    reference: ReferenceService | None = None,
+) -> list[Route]:
+    if reference is None:
+        reference = ReferenceService.discover(registry.data_dir)
     def guard_read(handler):
         """Закрывает страницу, пока `API_TOKEN` задан и не предъявлен."""
 
@@ -1889,7 +1956,11 @@ def routes(registry: Registry) -> list[Route]:
         data = await run_in_threadpool(
             _prepare_sources_page, registry, authorized=authorized
         )
-        page = _sources_page(data, error=error)
+        page = _sources_page(
+            data,
+            error=error,
+            reference=reference.payload(detailed=authorized),
+        )
         if status_code == 200:
             return page
         return HTMLResponse(page.body, status_code=status_code)

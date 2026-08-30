@@ -38,6 +38,11 @@ from .registry import (
     Registry,
     RegistryError,
 )
+from .reference_provider import (
+    MAX_REFERENCE_DB_BYTES,
+    ReferenceService,
+    ReferenceValidationError,
+)
 from .render import DETAIL_LEVELS
 
 DASHBOARD_OFF = "off"
@@ -572,7 +577,11 @@ async def _json_body(request: Request) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
-def _spa_routes(registry: Registry, static_dir: Path) -> list[Route]:
+def _spa_routes(
+    registry: Registry,
+    static_dir: Path,
+    reference: ReferenceService,
+) -> list[Route]:
     static_dir = static_dir.resolve()
 
     async def bootstrap(request: Request) -> JSONResponse:
@@ -883,7 +892,9 @@ def _spa_routes(registry: Registry, static_dir: Path) -> list[Route]:
             registry,
             authorized=True,
         )
-        return JSONResponse(_admin_sources_payload(prepared))
+        payload = _admin_sources_payload(prepared)
+        payload["reference"] = reference.payload(detailed=True)
+        return JSONResponse(payload)
 
     async def upload_source_api(request: Request) -> JSONResponse:
         denied = _mutation_denied(request, action="Загрузка")
@@ -1263,11 +1274,126 @@ def _spa_routes(registry: Registry, static_dir: Path) -> list[Route]:
 
     result.extend(
         route
-        for route in classic_routes(registry)
+        for route in classic_routes(registry, reference=reference)
         if (route.path == "/login" and "POST" in (route.methods or set()))
         or route.path == "/logout"
     )
     return result
+
+
+def _reference_routes(reference: ReferenceService) -> list[Route]:
+    """Общий API статуса и загрузки для classic и SPA."""
+
+    async def reference_status_api(request: Request) -> JSONResponse:
+        if not can_read(request):
+            return _json_error("Нужен токен чтения.", 401)
+        return JSONResponse(reference.payload(detailed=_authorized(request)))
+
+    async def reference_upload_api(request: Request) -> JSONResponse:
+        wants_html = "text/html" in request.headers.get("accept", "")
+
+        def denied_response(message: str, status_code: int):
+            if wants_html:
+                return PlainTextResponse(message, status_code=status_code)
+            return _json_error(message, status_code)
+
+        denied = _mutation_denied(request, action="Загрузка общей справки")
+        if denied is not None:
+            return denied
+        if not reference.managed_upload_available:
+            return denied_response(
+                "Загрузка выключена: база подключена по внешнему пути.", 409
+            )
+        try:
+            form = await classic_dashboard._limited_upload_form(
+                request,
+                MAX_REFERENCE_DB_BYTES,
+                allowed_fields=frozenset(),
+            )
+        except classic_dashboard._UploadTooLarge:
+            return denied_response(
+                f"Файл больше {MAX_REFERENCE_DB_BYTES // 1024 // 1024} МБ.",
+                413,
+            )
+        except MultiPartException:
+            return denied_response(
+                "Некорректная multipart-форма: разрешён один файл `file`.",
+                400,
+            )
+        uploaded = form.get("file")
+        if not isinstance(uploaded, UploadFile) or not uploaded.filename:
+            await form.close()
+            return denied_response("Файл не выбран.", 400)
+        name = Path(uploaded.filename).name
+        if Path(name).suffix.lower() != ".sqlite3":
+            await form.close()
+            return denied_response("Принимается только файл .sqlite3 schema v1.", 400)
+
+        directory = reference.managed_path.parent
+        temporary: Path | None = None
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            descriptor, raw_path = tempfile.mkstemp(
+                dir=directory,
+                prefix=".reference-upload-",
+                suffix=".sqlite3",
+            )
+            os.close(descriptor)
+            temporary = Path(raw_path)
+            size = 0
+            with temporary.open("wb") as output:
+                while True:
+                    chunk = await uploaded.read(classic_dashboard.CHUNK)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > MAX_REFERENCE_DB_BYTES:
+                        raise classic_dashboard._UploadTooLarge
+                    output.write(chunk)
+                output.flush()
+                os.fsync(output.fileno())
+            await form.close()
+            pending = await run_in_threadpool(
+                reference.install_candidate, temporary
+            )
+            temporary = None
+            if wants_html:
+                return RedirectResponse("/sources", status_code=303)
+            return JSONResponse(
+                {
+                    "reference": reference.payload(detailed=True),
+                    "pending": pending.payload(detailed=True),
+                },
+                status_code=201,
+            )
+        except classic_dashboard._UploadTooLarge:
+            return denied_response(
+                f"Файл больше {MAX_REFERENCE_DB_BYTES // 1024 // 1024} МБ.",
+                413,
+            )
+        except ReferenceValidationError as error:
+            return denied_response(str(error), 422)
+        except OSError:
+            return denied_response("Не удалось сохранить каноническую базу.", 500)
+        finally:
+            await form.close()
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
+    return [
+        Route(
+            "/api/v1/reference",
+            reference_status_api,
+            methods=["GET"],
+            name="dashboard_reference_status",
+        ),
+        Route(
+            "/api/v1/reference/upload",
+            reference_upload_api,
+            methods=["POST"],
+            name="dashboard_reference_upload",
+        ),
+    ]
 
 
 def routes(
@@ -1275,6 +1401,7 @@ def routes(
     *,
     mode: str | None = None,
     static_dir: Path | None = None,
+    reference: ReferenceService | None = None,
 ) -> list[Route]:
     """Вернуть ровно один UI-контур, не затрагивая ``/mcp`` и ``/health``."""
     selected = dashboard_mode() if mode is None else mode
@@ -1284,11 +1411,16 @@ def routes(
         )
     if selected == DASHBOARD_OFF:
         return []
+    if reference is None:
+        reference = ReferenceService.discover(registry.data_dir)
     if selected == DASHBOARD_CLASSIC:
         from .dashboard import routes as classic_routes
 
-        return classic_routes(registry)
+        return [
+            *classic_routes(registry, reference=reference),
+            *_reference_routes(reference),
+        ]
     root = static_dir or Path(
         os.environ.get("MCP1C_DASHBOARD_DIST", "dashboard/dist")
     )
-    return _spa_routes(registry, root)
+    return [*_spa_routes(registry, root, reference), *_reference_routes(reference)]

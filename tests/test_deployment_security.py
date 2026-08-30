@@ -57,6 +57,16 @@ def test_compose_сохраняет_защитные_ограничения_пр
     assert "max-file: \"3\"" in compose
 
 
+def test_compose_передаёт_настройки_необязательной_общей_справки():
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+
+    assert "MCP1C_REFERENCE_DB: ${MCP1C_REFERENCE_DB:-}" in compose
+    assert (
+        "MCP1C_REFERENCE_TRUST_UNSIGNED: "
+        "${MCP1C_REFERENCE_TRUST_UNSIGNED:-}"
+    ) in compose
+
+
 def test_remote_override_требует_оба_токена_и_явно_доверяет_proxy():
     remote = (ROOT / "docker-compose.remote.yml").read_text(encoding="utf-8")
 

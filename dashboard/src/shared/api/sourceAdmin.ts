@@ -17,6 +17,27 @@ export type IncomingExport = {
   action: "parse" | "reparse";
 };
 
+export type ReferenceState = {
+  state: string;
+  ready: boolean;
+  message: string;
+  signature?: string | null;
+  schema_version?: string | null;
+  content_sha256?: string | null;
+  file_sha256?: string | null;
+  items?: number | null;
+  index_cache?: string | null;
+  key_id?: string | null;
+};
+
+export type ReferenceAdminState = {
+  api_version: "v1";
+  active: ReferenceState;
+  pending: ReferenceState | null;
+  managed_upload: boolean;
+  limits: { upload_bytes: number };
+};
+
 export type AdminSourcesResponse = {
   api_version: "v1";
   limits: { upload_bytes: number };
@@ -27,6 +48,7 @@ export type AdminSourcesResponse = {
   incoming_dir: string;
   orphans: Array<{ path: string; size: number }>;
   snapshot_error: string;
+  reference?: ReferenceAdminState;
 };
 
 type ApiErrorPayload = { error?: string };
@@ -111,6 +133,52 @@ export function uploadSource(
     const form = new FormData();
     form.append("file", file);
     if (allowTruncated) form.append("allow_truncated", "1");
+    request.send(form);
+  });
+}
+
+export function uploadReference(
+  file: File,
+  onProgress: (percent: number) => void,
+): Promise<{ reference: ReferenceAdminState; pending: ReferenceState }> {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("POST", "/api/v1/reference/upload");
+    request.responseType = "json";
+    request.setRequestHeader("accept", "application/json");
+    request.upload.addEventListener("progress", (event) => {
+      if (event.lengthComputable && event.total > 0) {
+        onProgress(Math.round((event.loaded * 100) / event.total));
+      }
+    });
+    request.addEventListener("load", () => {
+      const payload = (request.response || {}) as {
+        reference?: ReferenceAdminState;
+        pending?: ReferenceState;
+        error?: string;
+      };
+      if (
+        request.status >= 200
+        && request.status < 300
+        && payload.reference
+        && payload.pending
+      ) {
+        onProgress(100);
+        resolve({ reference: payload.reference, pending: payload.pending });
+      } else {
+        reject(
+          new SourceAdminApiError(
+            payload.error || `Загрузка завершилась ответом ${request.status}.`,
+            request.status,
+          ),
+        );
+      }
+    });
+    request.addEventListener("error", () => {
+      reject(new SourceAdminApiError("Соединение оборвалось во время загрузки.", 0));
+    });
+    const form = new FormData();
+    form.append("file", file);
     request.send(form);
   });
 }

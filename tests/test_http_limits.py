@@ -17,6 +17,7 @@ LOGIN_BODY_LIMIT = 16 * 1024
 QUERY_BODY_LIMIT = 1024 * 1024
 UPLOAD_FILE_LIMIT = 500 * 1024 * 1024
 UPLOAD_OVERHEAD = 1024 * 1024
+REFERENCE_FILE_LIMIT = 32 * 1024 * 1024
 DEFAULT_BODY_LIMIT = 2 * 1024 * 1024
 
 
@@ -31,6 +32,7 @@ def _body_client() -> TestClient:
             Route("/queries", consume, methods=["POST"]),
             Route("/sources", consume, methods=["POST"]),
             Route("/api/v1/sources/upload", consume, methods=["POST"]),
+            Route("/api/v1/reference/upload", consume, methods=["POST"]),
             Route("/mcp", consume, methods=["POST"]),
         ]
     )
@@ -45,6 +47,26 @@ def test_login_query_and_upload_have_different_declared_limits() -> None:
     assert client.post("/login", content=medium).status_code == 413
     assert client.post("/queries", content=medium).status_code == 200
     assert client.post("/sources", content=medium).status_code == 200
+    assert (
+        client.post(
+            "/api/v1/reference/upload",
+            content=b"x",
+            headers={
+                "content-length": str(REFERENCE_FILE_LIMIT + UPLOAD_OVERHEAD)
+            },
+        ).status_code
+        == 200
+    )
+    assert (
+        client.post(
+            "/api/v1/reference/upload",
+            content=b"x",
+            headers={
+                "content-length": str(REFERENCE_FILE_LIMIT + UPLOAD_OVERHEAD + 1)
+            },
+        ).status_code
+        == 413
+    )
     assert (
         client.post(
             "/api/v1/sources/upload",

@@ -89,6 +89,20 @@ beforeEach(() => {
             incoming_dir: "data/incoming/",
             orphans: [],
             snapshot_error: "",
+            reference: {
+              api_version: "v1",
+              active: {
+                state: "missing",
+                ready: false,
+                message: "Каноническая база не загружена.",
+                signature: "not-checked",
+                items: null,
+                index_cache: null,
+              },
+              pending: null,
+              managed_upload: true,
+              limits: { upload_bytes: 32 * 1024 * 1024 },
+            },
           }),
         };
       }
@@ -248,6 +262,9 @@ it("показывает администратору компактную за�
   );
 
   expect(await screen.findByRole("heading", { name: "Добавление и обслуживание данных" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Локальная общая справка" })).toBeInTheDocument();
+  expect(screen.getByText("Каноническая база не загружена.")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Загрузить справочную базу" })).toBeDisabled();
   const truncated = screen.getByRole("checkbox", { name: /Разрешить неполную тестовую выгрузку/ });
   fireEvent.click(truncated);
   expect(truncated).toBeChecked();

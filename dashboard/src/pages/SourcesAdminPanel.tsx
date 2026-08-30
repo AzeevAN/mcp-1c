@@ -1,6 +1,7 @@
 import {
   AlertCircle,
   Archive,
+  BookOpen,
   CheckCircle2,
   CircleOff,
   FileArchive,
@@ -16,8 +17,10 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import {
   type AdminJob,
+  type ReferenceAdminState,
   SourceAdminApiError,
   uploadSource,
+  uploadReference,
   useAdminSources,
   useClearJobs,
   useParseIncoming,
@@ -89,6 +92,130 @@ function JobList({ jobs }: { jobs: AdminJob[] }) {
           );
         })}
       </div>
+    </section>
+  );
+}
+
+function referenceTone(state: string): StatusTone {
+  if (state === "ready") return "success";
+  if (state === "pending_restart") return "warning";
+  if (state === "missing" || state === "disabled") return "info";
+  return "danger";
+}
+
+const referenceStateLabels: Record<string, string> = {
+  disabled: "выключена",
+  missing: "не загружена",
+  untrusted: "нет доверия",
+  incompatible: "несовместима",
+  corrupt: "повреждена",
+  ready: "подключена",
+  pending_restart: "ожидает перезапуска",
+};
+
+function ReferenceAdminCard({ reference }: { reference: ReferenceAdminState }) {
+  const queryClient = useQueryClient();
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [file, setFile] = useState<File | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [feedback, setFeedback] = useState<{ tone: "success" | "danger"; text: string } | null>(null);
+  const shown = reference.pending ?? reference.active;
+
+  const choose = (next: File | null) => {
+    setFeedback(null);
+    if (!next) {
+      setFile(null);
+      return;
+    }
+    if (!next.name.toLowerCase().endsWith(".sqlite3")) {
+      setFile(null);
+      setFeedback({ tone: "danger", text: "Выберите файл .sqlite3 schema v1." });
+      return;
+    }
+    if (next.size > reference.limits.upload_bytes) {
+      setFile(null);
+      setFeedback({
+        tone: "danger",
+        text: `Файл больше лимита ${formatBytes(reference.limits.upload_bytes)}.`,
+      });
+      return;
+    }
+    setFile(next);
+  };
+
+  const upload = async () => {
+    if (!file) return;
+    setUploading(true);
+    setProgress(0);
+    setFeedback(null);
+    try {
+      await uploadReference(file, setProgress);
+      setFeedback({
+        tone: "success",
+        text: "База проверена и сохранена. Для появления двух MCP-инструментов перезапустите сервер.",
+      });
+      setFile(null);
+      if (fileInput.current) fileInput.current.value = "";
+      await queryClient.invalidateQueries({ queryKey: ["sources", "admin"] });
+    } catch (error) {
+      setFeedback({ tone: "danger", text: errorMessage(error) });
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  return (
+    <section className="admin-card reference-admin-card" aria-label="Локальная общая справка">
+      <header className="admin-card-heading is-spread">
+        <span className="admin-card-icon"><BookOpen size={21} aria-hidden="true" /></span>
+        <div>
+          <h3>Локальная общая справка</h3>
+          <p>Опциональная каноническая SQLite добавляет <code>search_reference</code> и <code>get_reference</code> только после проверки и перезапуска.</p>
+        </div>
+        <StatusBadge tone={referenceTone(shown.state)}>{referenceStateLabels[shown.state] ?? shown.state}</StatusBadge>
+      </header>
+
+      <div className="reference-status-copy">
+        <strong>{shown.message}</strong>
+        <small>
+          {shown.items ? `Лимит ${formatBytes(reference.limits.upload_bytes)} · ${shown.items} элементов` : `Лимит ${formatBytes(reference.limits.upload_bytes)}`}
+          {shown.index_cache ? ` · индекс ${shown.index_cache}` : ""}
+          {shown.signature ? ` · ${shown.signature}` : ""}
+        </small>
+      </div>
+
+      {feedback && <div className={`admin-feedback is-${feedback.tone}`} role="status">{feedback.text}</div>}
+
+      {reference.managed_upload ? (
+        <div className="reference-upload-row">
+          <span>
+            <strong>{file?.name || "Файл schema v1 не выбран"}</strong>
+            <small>{file ? formatBytes(file.size) : "Реальная база в репозиторий не входит."}</small>
+          </span>
+          <button className="button-secondary" type="button" onClick={() => fileInput.current?.click()} disabled={uploading}>
+            Выбрать .sqlite3
+          </button>
+          <input
+            ref={fileInput}
+            aria-label="Файл локальной общей справки"
+            type="file"
+            accept=".sqlite3"
+            onChange={(event) => choose(event.target.files?.[0] ?? null)}
+            hidden
+          />
+          <button className="button-primary" type="button" onClick={upload} disabled={!file || uploading}>
+            {uploading ? <LoaderCircle className="is-spinning" size={17} /> : <BookOpen size={17} />}
+            {uploading ? `Передаём ${progress}%` : "Загрузить справочную базу"}
+          </button>
+        </div>
+      ) : (
+        <div className="inline-warning">
+          <AlertCircle size={18} aria-hidden="true" />
+          <span>База подключена через внешний <code>MCP1C_REFERENCE_DB</code>; загрузка из дашборда выключена.</span>
+        </div>
+      )}
+      {uploading && <div className="upload-progress" aria-label={`Передано ${progress}%`}><i style={{ width: `${progress}%` }} /></div>}
     </section>
   );
 }
@@ -280,6 +407,8 @@ export function SourcesAdminPanel({
       </section>
 
       <JobList jobs={data.jobs} />
+
+      {data.reference && <ReferenceAdminCard reference={data.reference} />}
 
       <section className="admin-card incoming-card">
         <header className="admin-card-heading is-spread">

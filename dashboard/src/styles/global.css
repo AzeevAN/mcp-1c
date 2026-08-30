@@ -1652,7 +1652,8 @@ h2 {
 .switch-field code,
 .source-help code,
 .admin-card-heading code,
-.admin-empty code {
+.admin-empty code,
+.inline-warning code {
   padding: 1px 4px;
   border-radius: 4px;
   color: var(--mint-deep);
@@ -1680,6 +1681,43 @@ h2 {
   border-radius: inherit;
   background: linear-gradient(90deg, var(--blue-deep), var(--mint));
   transition: width 180ms ease;
+}
+
+.reference-status-copy {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 16px;
+  color: var(--ink-800);
+  font-size: 12px;
+}
+
+.reference-status-copy small,
+.reference-upload-row small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.reference-upload-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 15px 16px;
+  border: 1px dashed #b9c8dc;
+  border-radius: 12px;
+  background: #f8fafe;
+}
+
+.reference-upload-row > span {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.reference-upload-row strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .operation-progress {
@@ -4053,7 +4091,8 @@ h2 {
 
   .upload-dropzone,
   .admin-card-heading.is-spread,
-  .incoming-row {
+  .incoming-row,
+  .reference-upload-row {
     grid-template-columns: 1fr;
   }
 

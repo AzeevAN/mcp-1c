@@ -141,7 +141,7 @@ def build_reference_database(path: Path, *, body: str = "Синтетическ�
     items = (
         (
             "bsl/Example", "synthetic-current", "example.html", "b" * 64,
-            "bsl_language", "article", "default", "informational",
+            "bsl", "article", "default", "informational",
             "Пример языка", "Language example", "Пример()", body,
             f"Пример языка {body}", 1, "c" * 64,
         ),

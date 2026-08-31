@@ -11,9 +11,9 @@ import pytest
 from mcp import ClientSession
 from mcp.shared.memory import create_client_server_memory_streams
 
-from mcp1c.reference_provider import ReferenceService
+from mcp1c.reference_provider import ReferenceQueryError, ReferenceService
 from mcp1c.registry import Registry
-from mcp1c.server import build_server
+from mcp1c.server import INSTRUCTIONS, build_server
 
 from reference_fixture import SyntheticReferenceSigner, build_reference_database
 
@@ -103,6 +103,11 @@ def test_валидная_экспериментальная_база_добав
     assert limit["default"] == 10
     assert limit["minimum"] == 1
     assert limit["maximum"] == 50
+    assert "не привязанной к Registry" in search.description
+    assert "`query` — язык запросов" in search.input_schema["properties"]["domain"]["description"]
+    assert "не влияет на текстовое совпадение" in search.input_schema["properties"]["platform"]["description"]
+    assert "не угадывайте `id`" in search.input_schema["properties"]["query"]["description"]
+    assert "общая справка, не зависящая" in INSTRUCTIONS
 
 
 def test_поиск_и_чтение_работают_по_schema_v1(tmp_path):
@@ -118,6 +123,51 @@ def test_поиск_и_чтение_работают_по_schema_v1(tmp_path):
     card = provider.get("bsl/Example", max_chars=256)
     assert card["card"]["id"] == "bsl/Example"
     assert "Синтетическое описание" in card["content"]
+
+
+def test_каталог_объясняет_доступные_фильтры_по_содержимому_базы(tmp_path):
+    database = build_reference_database(tmp_path / "source.sqlite3")
+    service, _ = _signed_service(tmp_path, database)
+    provider = service.provider
+    assert provider is not None
+
+    catalog = provider.catalog()
+
+    assert catalog["domains"] == [
+        {
+            "id": "bsl",
+            "title": "Встроенный язык (BSL)",
+            "description": "Конструкции языка, правила и практические шаблоны BSL.",
+            "access_scope": "default",
+            "items": 1,
+        },
+        {
+            "id": "dcs",
+            "title": "Выражения СКД",
+            "description": "Функции и выражения системы компоновки данных.",
+            "access_scope": "explicit",
+            "items": 1,
+        },
+    ]
+    assert {row["id"] for row in catalog["kinds"]} == {"article", "function"}
+    assert catalog["platform_versions"] == ["8.3.20", "8.3.10"]
+    assert service.payload()["catalog"] == catalog
+
+
+def test_поиск_проверяет_фильтры_и_явный_домен_открывает_свои_карточки(tmp_path):
+    database = build_reference_database(tmp_path / "source.sqlite3")
+    service, _ = _signed_service(tmp_path, database)
+    provider = service.provider
+    assert provider is not None
+
+    found = provider.search("сумма", domain="dcs")
+
+    assert found["results"][0]["id"] == "dcs/Sum"
+    assert provider.search("сумма")["results"] == []
+    with pytest.raises(ReferenceQueryError, match="Неизвестный domain 'unknown'"):
+        provider.search("сумма", domain="unknown")
+    with pytest.raises(ReferenceQueryError, match="Неизвестный kind 'function' в domain 'bsl'"):
+        provider.search("сумма", domain="bsl", kind="function")
 
 
 def test_повреждённая_и_несовместимая_базы_не_роняют_mcp(tmp_path):

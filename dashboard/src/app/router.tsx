@@ -9,6 +9,7 @@ import { CardPage } from "../pages/CardPage";
 import { GraphPage } from "../pages/GraphPage";
 import { DictionaryPage } from "../pages/DictionaryPage";
 import { ReferencePage } from "../pages/ReferencePage";
+import { ReferenceItemPage } from "../pages/ReferenceItemPage";
 
 export const router = createBrowserRouter([
   { path: "/login", element: <LoginPage /> },
@@ -28,6 +29,10 @@ export const router = createBrowserRouter([
       {
         path: "reference",
         element: <ReferencePage />,
+      },
+      {
+        path: "reference/item",
+        element: <ReferenceItemPage />,
       },
       {
         path: "object",

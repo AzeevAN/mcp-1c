@@ -60,6 +60,20 @@ def test_reference_api_готовая_база_ищет_и_выбирает_ка
     assert card.status_code == 200
     assert card.json()["card"]["id"] == "bsl/Example"
     assert "Синтетическое описание" in card.json()["content"]
+    assert "<p>Синтетическое описание" in card.json()["html"]
+
+
+def test_reference_api_экранирует_html_в_карточке(tmp_path):
+    reference = _reference(tmp_path, body="<script>alert('x')</script>")
+    client = _client(tmp_path, reference, mode=DASHBOARD_ON)
+
+    card = client.get(
+        "/api/v1/reference/item", params={"item_id": "bsl/Example"}
+    )
+
+    assert card.status_code == 200
+    assert "<script>" not in card.json()["html"]
+    assert "&lt;script&gt;" in card.json()["html"]
 
 
 @pytest.mark.parametrize(

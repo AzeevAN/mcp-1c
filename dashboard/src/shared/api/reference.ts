@@ -32,6 +32,7 @@ export type ReferenceSearchResponse = {
   kind: string | null;
   platform: string | null;
   results: ReferenceHit[];
+  has_more: boolean;
   unavailable_matches: ReferenceHit[];
 };
 
@@ -57,6 +58,7 @@ export type ReferenceItemResponse = {
   availability: { status: string; platform: string | null; reason: string };
   content_format: "markdown";
   content: string;
+  html: string;
   continuation: {
     offset: number;
     next_offset: number;

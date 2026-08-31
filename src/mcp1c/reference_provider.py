@@ -966,12 +966,6 @@ class ReferenceProvider:
             return None
 
     def availability(self, item_id: str, platform: str | None) -> dict[str, Any]:
-        if platform is None:
-            return {
-                "status": "unknown", "platform": None,
-                "reason": "Целевая версия платформы не указана.", "evidence": [],
-            }
-        target = _release(platform)
         facts = self._facts.get(item_id, [])
         observations = self._observations.get(item_id, [])
         introduced = sorted(
@@ -987,34 +981,85 @@ class ReferenceProvider:
             }
             for row in facts
         ]
-        if introduced and target < introduced[0]:
-            return {
-                "status": "unavailable", "platform": platform,
-                "reason": f"Элемент появился в {_version_text(introduced[0])}.",
-                "evidence": evidence,
-            }
-        if removed and target >= removed[0]:
-            return {
-                "status": "unavailable", "platform": platform,
-                "reason": f"Элемент удалён начиная с {_version_text(removed[0])}.",
-                "evidence": evidence,
-            }
-        if introduced:
-            return {
-                "status": "available", "platform": platform,
-                "reason": f"Подтверждена версия появления {_version_text(introduced[0])}.",
-                "evidence": evidence,
-            }
         present = []
         for observation in observations:
             version_value = observation["platform_version"]
             if observation["presence"] != "present" or not version_value:
                 continue
-            version = _release(version_value)
-            if version <= target:
-                present.append((version, observation))
-        if present and not removed:
-            version, observation = max(present, key=lambda value: value[0])
+            present.append((_release(version_value), observation))
+        present.sort(key=lambda value: value[0])
+
+        introduced_text = _version_text(introduced[0]) if introduced else None
+        removed_text = _version_text(removed[0]) if removed else None
+        known_present_in = _version_text(present[0][0]) if present else None
+        summary = {
+            "introduced": introduced_text,
+            "removed": removed_text,
+            "known_present_in": known_present_in,
+        }
+
+        if platform is None:
+            if introduced_text and removed_text:
+                reason = (
+                    f"Подтверждена версия появления {introduced_text}; "
+                    f"элемент удалён начиная с {removed_text}. "
+                    "Целевая версия платформы не указана."
+                )
+            elif introduced_text:
+                reason = (
+                    f"Подтверждена версия появления {introduced_text}. "
+                    "Целевая версия платформы не указана."
+                )
+            elif known_present_in:
+                reason = (
+                    f"Элемент присутствует в полном снимке {known_present_in}. "
+                    "Точная версия появления не установлена. "
+                    "Целевая версия платформы не указана."
+                )
+                observation = present[0][1]
+                evidence.append({
+                    "kind": "observation", "presence": "present",
+                    "version": observation["platform_version"],
+                    "ref": observation["evidence_ref"],
+                })
+            elif removed_text:
+                reason = (
+                    f"Элемент удалён начиная с {removed_text}. "
+                    "Точная версия появления не установлена. "
+                    "Целевая версия платформы не указана."
+                )
+            else:
+                reason = (
+                    "Данных о версии появления нет. "
+                    "Целевая версия платформы не указана."
+                )
+            return {
+                "status": "unknown", "platform": None, "reason": reason,
+                "evidence": evidence, **summary,
+            }
+
+        target = _release(platform)
+        if introduced and target < introduced[0]:
+            return {
+                "status": "unavailable", "platform": platform,
+                "reason": f"Элемент появился в {_version_text(introduced[0])}.",
+                "evidence": evidence, **summary,
+            }
+        if removed and target >= removed[0]:
+            return {
+                "status": "unavailable", "platform": platform,
+                "reason": f"Элемент удалён начиная с {_version_text(removed[0])}.",
+                "evidence": evidence, **summary,
+            }
+        if introduced:
+            return {
+                "status": "available", "platform": platform,
+                "reason": f"Подтверждена версия появления {_version_text(introduced[0])}.",
+                "evidence": evidence, **summary,
+            }
+        applicable = [value for value in present if value[0] <= target]
+        if applicable and not removed:
+            version, observation = applicable[-1]
             return {
                 "status": "available", "platform": platform,
                 "reason": f"Элемент присутствует в полном снимке {_version_text(version)}.",
@@ -1022,12 +1067,12 @@ class ReferenceProvider:
                     "kind": "observation", "presence": "present",
                     "version": observation["platform_version"],
                     "ref": observation["evidence_ref"],
-                }],
+                }], **summary,
             }
         return {
             "status": "unknown", "platform": platform,
             "reason": "Для этой версии нет достаточного факта или версионного снимка.",
-            "evidence": evidence,
+            "evidence": evidence, **summary,
         }
 
     @staticmethod

@@ -120,7 +120,12 @@ CREATE TABLE build_issues (
 """
 
 
-def build_reference_database(path: Path, *, body: str = "Синтетическое описание.") -> Path:
+def build_reference_database(
+    path: Path,
+    *,
+    body: str = "Синтетическое описание.",
+    observed_present: bool = False,
+) -> Path:
     """Создать минимальную schema v1 с двумя вымышленными карточками."""
     from mcp1c.reference_provider import calculate_logical_hash
 
@@ -138,6 +143,14 @@ def build_reference_database(path: Path, *, body: str = "Синтетическ�
             "ru", "8.3.20", "a" * 64, 100, "test-1",
         ),
     )
+    if observed_present:
+        connection.execute(
+            "INSERT INTO sources VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "synthetic-old", "Синтетическая старая книга", "synthetic", "Synthetic",
+                "ru", "8.3.5.1570", "9" * 64, 90, "test-1",
+            ),
+        )
     items = (
         (
             "bsl/Example", "synthetic-current", "example.html", "b" * 64,
@@ -183,6 +196,14 @@ def build_reference_database(path: Path, *, body: str = "Синтетическ�
             "curated", "synthetic", "Синтетический факт.",
         ),
     )
+    if observed_present:
+        connection.execute(
+            "INSERT INTO observations VALUES (?, ?, ?, ?, ?)",
+            (
+                "dcs/Sum", "synthetic-old", "present", "8.3.5.1570",
+                "synthetic:8.3.5",
+            ),
+        )
     connection.execute(
         "INSERT INTO search_hints VALUES (?, 1, ?, ?)",
         ("bsl/Example", "показать образец", "measured"),

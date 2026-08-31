@@ -12,6 +12,7 @@ import { Link, useSearchParams } from "react-router-dom";
 
 import {
   ReferenceApiError,
+  type ReferenceAvailability,
   type ReferenceHit,
   useReferenceSearch,
   useReferenceStatus,
@@ -54,6 +55,21 @@ function kindTitle(catalog: ReferenceCatalog | null, domain: string, id: string)
   )?.title || id;
 }
 
+function availabilityLabel(availability: ReferenceAvailability) {
+  if (availability.status === "available") return "Доступно";
+  if (availability.status === "unavailable") return "Недоступно";
+  if (!availability.platform && availability.introduced) {
+    return `С ${availability.introduced}`;
+  }
+  if (!availability.platform && availability.known_present_in) {
+    return `Есть в ${availability.known_present_in}`;
+  }
+  if (!availability.platform && availability.removed) {
+    return `Удалено с ${availability.removed}`;
+  }
+  return availability.platform ? "Нет точных данных" : "Версия неизвестна";
+}
+
 function HitRow({
   hit,
   position,
@@ -83,15 +99,13 @@ function HitRow({
       </strong>
       <span className="reference-hit-reason">
         {hit.reason || "—"}
-        {hit.availability.platform && <small>{hit.availability.reason}</small>}
+        <small>{hit.availability.reason}</small>
       </span>
       <span
         className={`reference-availability is-${hit.availability.status}`}
         title={hit.availability.reason}
       >
-        {hit.availability.status === "available"
-          ? "Доступно"
-          : hit.availability.status === "unavailable" ? "Недоступно" : "Версия не проверена"}
+        {availabilityLabel(hit.availability)}
       </span>
     </div>
   );

@@ -96,6 +96,31 @@ it("показывает безопасный html и позволяет уви�
   expect(document.querySelector("script")).toBeNull();
 });
 
+it("без целевой платформы показывает известную версию появления", async () => {
+  vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
+    ok: true,
+    status: 200,
+    json: async () => String(input).includes("/item") ? {
+      ...card,
+      availability: {
+        status: "unknown",
+        platform: null,
+        introduced: "8.3.10",
+        removed: null,
+        known_present_in: null,
+        reason: "Подтверждена версия появления 8.3.10. Целевая версия платформы не указана.",
+        evidence: [],
+      },
+    } : status,
+  } as Response));
+
+  renderPage("/reference/item?item_id=query%2FExample");
+
+  expect(await screen.findByText("Версия появления")).toBeInTheDocument();
+  expect(screen.getByText(/Подтверждена версия появления 8.3.10/)).toBeInTheDocument();
+  expect(screen.queryByText("Совместимость не определена")).not.toBeInTheDocument();
+});
+
 it("читает следующую часть по непрозрачному курсору", async () => {
   renderPage("/reference/item?item_id=query%2FExample");
 

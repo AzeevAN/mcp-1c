@@ -63,6 +63,29 @@ def test_reference_api_готовая_база_ищет_и_выбирает_ка
     assert "<p>Синтетическое описание" in card.json()["html"]
 
 
+def test_reference_api_без_platform_не_теряет_версию_появления(tmp_path):
+    client = _client(tmp_path, _reference(tmp_path), mode=DASHBOARD_ON)
+
+    found = client.get(
+        "/api/v1/reference/search",
+        params={"query": "показать образец", "limit": 1},
+    )
+    card = client.get(
+        "/api/v1/reference/item", params={"item_id": "bsl/Example"}
+    )
+
+    for response in (found, card):
+        assert response.status_code == 200
+        availability = (
+            response.json()["results"][0]["availability"]
+            if "results" in response.json()
+            else response.json()["availability"]
+        )
+        assert availability["introduced"] == "8.3.10"
+        assert availability["status"] == "unknown"
+        assert "Подтверждена версия появления 8.3.10" in availability["reason"]
+
+
 def test_reference_api_экранирует_html_в_карточке(tmp_path):
     reference = _reference(tmp_path, body="<script>alert('x')</script>")
     client = _client(tmp_path, reference, mode=DASHBOARD_ON)

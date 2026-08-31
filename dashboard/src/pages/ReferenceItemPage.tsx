@@ -93,6 +93,19 @@ export function ReferenceItemPage() {
   );
   const title = data.card.title_ru || data.card.title_en || data.card.id;
   const continuation = data.continuation;
+  const availabilityTitle = data.availability.platform
+    ? data.availability.status === "available"
+      ? "Подходит для версии"
+      : data.availability.status === "unavailable"
+        ? "Не подходит для версии"
+        : "Совместимость не определена"
+    : data.availability.introduced
+      ? "Версия появления"
+      : data.availability.known_present_in
+        ? "Известно присутствие"
+        : data.availability.removed
+          ? "Версия удаления"
+          : "Данных о версиях нет";
 
   return (
     <div className="card-page reference-item-page">
@@ -137,11 +150,7 @@ export function ReferenceItemPage() {
           </div>
 
           <div className={`reference-card-availability is-${data.availability.status}`}>
-            <strong>
-              {data.availability.status === "available"
-                ? "Подходит для версии"
-                : data.availability.status === "unavailable" ? "Не подходит для версии" : "Совместимость не определена"}
-            </strong>
+            <strong>{availabilityTitle}</strong>
             <span>{data.availability.reason}</span>
           </div>
 

@@ -165,6 +165,37 @@ it("показывает несовместимые совпадения отд�
   expect(screen.getByText(/Не подходит для версии 8.3.5/)).toBeInTheDocument();
 });
 
+it("без целевой платформы показывает версию появления в выдаче", async () => {
+  vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
+    ok: true,
+    status: 200,
+    json: async () => String(input).includes("/search")
+      ? {
+        ...searchResult,
+        platform: null,
+        results: [{
+          ...searchResult.results[0],
+          availability: {
+            status: "unknown",
+            platform: null,
+            introduced: "8.3.10",
+            removed: null,
+            known_present_in: null,
+            reason: "Подтверждена версия появления 8.3.10. Целевая версия платформы не указана.",
+            evidence: [],
+          },
+        }],
+      }
+      : status,
+  } as Response));
+
+  renderPage("/reference?query=пример&domain=query");
+
+  expect(await screen.findByText("С 8.3.10")).toBeInTheDocument();
+  expect(screen.getByText(/Подтверждена версия появления 8.3.10/)).toBeInTheDocument();
+  expect(screen.queryByText("Версия не проверена")).not.toBeInTheDocument();
+});
+
 it("увеличивает внутренний лимит без отдельного поля", async () => {
   vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => ({
     ok: true,

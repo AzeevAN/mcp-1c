@@ -106,8 +106,11 @@ def test_валидная_экспериментальная_база_добав
     assert "не привязанной к Registry" in search.description
     assert "`query` — язык запросов" in search.input_schema["properties"]["domain"]["description"]
     assert "не влияет на текстовое совпадение" in search.input_schema["properties"]["platform"]["description"]
+    assert "даже без целевой версии" in search.description
     assert "не угадывайте `id`" in search.input_schema["properties"]["query"]["description"]
     assert "общая справка, не зависящая" in INSTRUCTIONS
+    assert "Известная версия появления" in INSTRUCTIONS
+    assert "целевая версия только добавляет проверку применимости" in INSTRUCTIONS
 
 
 def test_поиск_и_чтение_работают_по_schema_v1(tmp_path):
@@ -123,6 +126,62 @@ def test_поиск_и_чтение_работают_по_schema_v1(tmp_path):
     card = provider.get("bsl/Example", max_chars=256)
     assert card["card"]["id"] == "bsl/Example"
     assert "Синтетическое описание" in card["content"]
+
+
+def test_версия_появления_возвращается_и_без_целевой_платформы(tmp_path):
+    database = build_reference_database(tmp_path / "source.sqlite3")
+    service, _ = _signed_service(tmp_path, database)
+    provider = service.provider
+    assert provider is not None
+
+    without_platform = provider.get("bsl/Example")["availability"]
+    before = provider.get("bsl/Example", platform="8.3.9")["availability"]
+    since = provider.get("bsl/Example", platform="8.3.10")["availability"]
+
+    assert without_platform["status"] == "unknown"
+    assert without_platform["platform"] is None
+    assert without_platform["introduced"] == "8.3.10"
+    assert without_platform["removed"] is None
+    assert without_platform["known_present_in"] is None
+    assert without_platform["reason"] == (
+        "Подтверждена версия появления 8.3.10. "
+        "Целевая версия платформы не указана."
+    )
+    assert without_platform["evidence"] == [{
+        "kind": "curated",
+        "fact": "introduced",
+        "version": "8.3.10",
+        "ref": "synthetic",
+    }]
+    assert before["status"] == "unavailable"
+    assert before["introduced"] == "8.3.10"
+    assert since["status"] == "available"
+    assert since["introduced"] == "8.3.10"
+
+
+def test_известное_присутствие_не_выдаётся_за_точную_версию_появления(tmp_path):
+    database = build_reference_database(
+        tmp_path / "source.sqlite3", observed_present=True
+    )
+    service, _ = _signed_service(tmp_path, database)
+    provider = service.provider
+    assert provider is not None
+
+    availability = provider.get("dcs/Sum")["availability"]
+
+    assert availability["introduced"] is None
+    assert availability["known_present_in"] == "8.3.5"
+    assert availability["reason"] == (
+        "Элемент присутствует в полном снимке 8.3.5. "
+        "Точная версия появления не установлена. "
+        "Целевая версия платформы не указана."
+    )
+    assert availability["evidence"] == [{
+        "kind": "observation",
+        "presence": "present",
+        "version": "8.3.5.1570",
+        "ref": "synthetic:8.3.5",
+    }]
 
 
 def test_каталог_объясняет_доступные_фильтры_по_содержимому_базы(tmp_path):
@@ -341,6 +400,9 @@ async def test_reference_tools_работают_через_полную_mcp_се
     assert found.is_error is False
     assert json.loads(found.content[0].text)["results"][0]["id"] == "bsl/Example"
     assert card.is_error is False
-    assert json.loads(card.content[0].text)["card"]["id"] == "bsl/Example"
+    card_payload = json.loads(card.content[0].text)
+    assert card_payload["card"]["id"] == "bsl/Example"
+    assert card_payload["availability"]["introduced"] == "8.3.10"
+    assert "Подтверждена версия появления 8.3.10" in card_payload["availability"]["reason"]
     assert missing.is_error is True
     assert missing.structured_content == {"result": "Элемент 'missing' не найден."}

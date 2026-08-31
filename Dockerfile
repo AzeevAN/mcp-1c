@@ -47,8 +47,7 @@ CMD ["--host", "0.0.0.0", "--port", "8000", "--data", "/data", "--require-writab
 # Единственный runtime содержит готовую SPA-статику, но регистрирует UI только
 # при MCP1C_DASHBOARD=on. Node и node_modules в этот слой не переходят.
 FROM runtime-base AS runtime
-COPY --from=dashboard-build --chown=10001:10001 /dashboard/dist /app/dashboard/dist
+COPY --from=dashboard-build --chown=10001:10001 /dashboard/dist /app/src/mcp1c/dashboard_dist
 ENV MCP1C_DASHBOARD=on \
-    MCP1C_ACCESS=local \
-    MCP1C_DASHBOARD_DIST=/app/dashboard/dist
+    MCP1C_ACCESS=local
 CMD ["--host", "0.0.0.0", "--port", "8000", "--data", "/data", "--require-writable-data", "--require-tokens"]

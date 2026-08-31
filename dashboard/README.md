@@ -41,10 +41,20 @@ npm run typecheck
 npm run build
 ```
 
-Vite складывает результат в `dashboard/dist/`. Backend раздаёт только файлы из
-этого каталога и для клиентских путей (`/sources`, `/queries`, `/reference`,
-`/graph`, `/dictionary`, `/object`, `/syntax`, `/login`) возвращает
-`index.html`.
+Vite складывает результат в `dashboard/dist/`. После изменения frontend
+синхронизируйте точную пакетную копию и проверьте её:
+
+```bash
+cd ..
+.venv/bin/python tools/sync_dashboard_assets.py
+.venv/bin/python tools/sync_dashboard_assets.py --check
+```
+
+`src/mcp1c/dashboard_dist/` входит в wheel и sdist, поэтому установленный
+Python-пакет раздаёт SPA без рабочей копии репозитория и без Node.js. Docker
+кладёт тот же production build в тот же пакетный путь. Для клиентских путей
+(`/sources`, `/queries`, `/reference`, `/graph`, `/dictionary`, `/object`,
+`/syntax`, `/login`) backend возвращает один `index.html`.
 
 Локальный образ собирается тем же target, что релизный:
 

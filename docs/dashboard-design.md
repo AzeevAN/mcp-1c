@@ -25,12 +25,18 @@ CLI остаётся полным административным интерф�
 ```text
 server.py             /mcp, /health, /admin/reload и подключение UI
 runtime_config.py     on/off, local/https-proxy и Docker auth contract
-dashboard_runtime.py  /api/v1, login/logout и раздача собранной SPA
+dashboard_runtime.py  /api/v1, login/logout и package-local SPA
 dashboard_backend.py  auth, multipart, jobs, incoming и общие операции
 dashboard/            React/Vite, состояние интерфейса и компоненты
+dashboard_dist/       синхронная production-копия внутри Python-пакета
 registry.py           единственный живой Registry
 tools.py              предметные снимки и ответы MCP
 ```
+
+По умолчанию backend читает SPA из `mcp1c/dashboard_dist` установленного
+пакета. `MCP1C_DASHBOARD_DIST` остаётся явным seam для dev-сервера и тестов,
+но официальный wheel, sdist и Docker image уже содержат одинаковые assets.
+Node.js в runtime не требуется.
 
 React не читает и не монтирует `data/`. Все операции проходят через API того
 же Python-процесса. После успешной публикации источник сразу видят MCP и SPA;

@@ -21,13 +21,13 @@
 | Общая справка | опциональный подписанный `.mcp1cref`; без доверенного артефакта две дополнительные ручки не регистрируются |
 | Дашборд | современная SPA включена по умолчанию; `on` либо `off` |
 | Авторизация Docker | два разных обязательных токена: `API_TOKEN` на чтение, `ADMIN_TOKEN` на запись |
-| Тесты | `.venv/bin/python -m pytest`, 1680 |
+| Тесты | `.venv/bin/python -m pytest`, 1683 |
 
 Воспроизводимый прогон:
 
 ```bash
 .venv/bin/pip install --require-hashes -r requirements-dev-lock.txt
-.venv/bin/python -m pytest          # 1680 тестов (прогон 2026-08-31)
+.venv/bin/python -m pytest          # 1683 теста (прогон 2026-08-31)
 ```
 
 ## Навигация
@@ -495,7 +495,8 @@ docker compose exec mcp1c sh -c '
 При `on` asset существует в образе, а запрос с токеном возвращает HTML:
 
 ```bash
-docker compose exec mcp1c test -f /app/dashboard/dist/index.html
+docker compose exec mcp1c \
+  test -f /app/src/mcp1c/dashboard_dist/index.html
 curl --fail --show-error \
   --header "X-Api-Token: $API_TOKEN" \
   http://127.0.0.1:5001/

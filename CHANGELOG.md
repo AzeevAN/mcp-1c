@@ -11,6 +11,13 @@
 
 ### Добавлено
 
+- **SPA входит во все установочные артефакты.** Production assets хранятся как
+  package data и побайтно проверяются в source tree, wheel, sdist, wheel из
+  sdist и Docker runtime. Установленный пакет раздаёт современный дашборд без
+  рабочей копии репозитория; Node.js остаётся только build-зависимостью.
+- **Frontend стал самостоятельным CI-gate.** Зафиксированные Node/npm
+  зависимости проходят tests, typecheck, production build и проверку
+  синхронности пакетной SPA до сборки Python-артефактов.
 - **Единый безопасный Docker-контракт.** Один pull-only `compose.yaml`
   использует готовый образ, loopback bind, non-root `10001:10001`, обязательные
   разные `API_TOKEN` и `ADMIN_TOKEN`, `MCP1C_DASHBOARD=on|off` и
@@ -22,6 +29,9 @@
 
 ### Изменено
 
+- **Путь SPA стал пакетным.** Runtime по умолчанию читает
+  `mcp1c/dashboard_dist`, а Docker build копирует туда результат Vite без
+  `node`, `npm` и `node_modules` в финальном слое.
 - **Современный дашборд стал единственным UI и включён по умолчанию.** Общие
   auth/session/CSRF, multipart, jobs, incoming, поиск и подготовка снимков
   вынесены в нейтральный `dashboard_backend.py`; SPA API больше не импортирует

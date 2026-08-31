@@ -107,6 +107,13 @@ Docker устанавливает runtime через `pip --require-hashes`. Б�
 закреплены тегом и digest; CI проверяет runtime lock через `pip-audit` и
 создаёт CycloneDX JSON SBOM.
 
+Production-сборка SPA хранится в `src/mcp1c/dashboard_dist/` как package data.
+`tools/sync_dashboard_assets.py --check` доказывает совпадение с
+`dashboard/dist/`, а `tools/check_dashboard_artifacts.py` сравнивает состав и
+SHA-256 файлов в source tree, wheel, sdist и wheel, повторно собранном из
+sdist. Node.js используется только в frontend build job и Docker build stage;
+в Python-пакете и runtime image его нет.
+
 ## Воспроизводимые проверки
 
 Python:
@@ -129,6 +136,8 @@ npm ci
 npm test
 npm run typecheck
 npm run build
+cd ..
+.venv/bin/python tools/sync_dashboard_assets.py --check
 ```
 
 Compose без запуска контейнера:

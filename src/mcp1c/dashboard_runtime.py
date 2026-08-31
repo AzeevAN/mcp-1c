@@ -85,6 +85,7 @@ SPA_PAGE_PATHS = (
     "/object",
     "/syntax",
 )
+DEFAULT_DASHBOARD_DIST = Path(__file__).resolve().with_name("dashboard_dist")
 
 
 def _source_payload(source: tools.SourceStateRow | None) -> dict | None:
@@ -1657,8 +1658,9 @@ def routes(
         reference = ReferenceService.discover(registry.data_dir)
     if restart is None:
         restart = RestartController(enabled=False)
-    root = static_dir or Path(
-        os.environ.get("MCP1C_DASHBOARD_DIST", "dashboard/dist")
+    configured_dist = os.environ.get("MCP1C_DASHBOARD_DIST", "")
+    root = static_dir or (
+        Path(configured_dist) if configured_dist else DEFAULT_DASHBOARD_DIST
     )
     return [
         *_spa_routes(registry, root, reference, restart),

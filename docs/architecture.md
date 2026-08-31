@@ -168,6 +168,18 @@ Docker runtime проверяется четырьмя сочетаниями о
 отсутствие UI и сохранение Registry после пересоздания. Порт хоста остаётся
 привязан к loopback; внешний HTTPS proxy не входит в Compose.
 
+Полная изолированная матрица использует только временный `tmpfs /data`,
+поднимает временный TLS proxy и удаляет свои контейнеры после проверки:
+
+```bash
+docker build --target runtime -t mcp1c:accept .
+.venv/bin/python tools/lab/accept_universal_image.py mcp1c:accept
+```
+
+Между четырьмя режимами образ не пересобирается; скрипт сравнивает один image
+ID, MCP version/tools, `on/off`, forwarded headers, Secure cookie, плохие
+значения режимов и обязательный token contract. Рабочий `data/` он не монтирует.
+
 ## Измерения
 
 Проект не назначает `mem_limit` по одному локальному пику: cold-разбор, warm

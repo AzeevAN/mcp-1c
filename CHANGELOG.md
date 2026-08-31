@@ -16,6 +16,11 @@
   index в GHCR, добавляет SemVer-теги, SPDX SBOM и provenance `mode=max`.
   Отдельный job без registry credentials проверяет анонимный pull digest;
   обычный push и ручной запуск публикации отсутствуют.
+- **Воспроизводимая Docker-приёмка.** Один локально собранный image ID
+  параллельно запускается в четырёх сочетаниях `on/off` и
+  `local/https-proxy` на временных `tmpfs`: проверяются настоящий MCP
+  initialize/tools, health, UID/GID, SPA/API, forwarded headers, Secure cookie
+  через временный TLS proxy, отрицательные режимы и токены.
 - **SPA входит во все установочные артефакты.** Production assets хранятся как
   package data и побайтно проверяются в source tree, wheel, sdist, wheel из
   sdist и Docker runtime. Установленный пакет раздаёт современный дашборд без

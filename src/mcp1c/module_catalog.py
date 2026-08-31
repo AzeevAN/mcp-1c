@@ -47,6 +47,7 @@ class CandidateOutcome:
     ordinal: int
     category: str
     address: str | None
+    reason: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,7 +151,12 @@ class ModuleCatalog:
                 for entry in self.entries.values()
             ],
             "outcomes": [
-                (outcome.ordinal, outcome.category, outcome.address)
+                (
+                    outcome.ordinal,
+                    outcome.category,
+                    outcome.address,
+                    outcome.reason,
+                )
                 for outcome in self.outcomes
             ],
             "problems": [
@@ -291,16 +297,20 @@ class ModuleCatalog:
 
             outcomes: list[CandidateOutcome] = []
             for raw in raw_outcomes:
-                if not isinstance(raw, tuple) or len(raw) != 3:
+                if not isinstance(raw, tuple) or len(raw) != 4:
                     return None
-                ordinal, category, address = raw
+                ordinal, category, address, reason = raw
                 if type(ordinal) is not int or ordinal < 1:
                     return None
                 if category not in _CATEGORIES:
                     return None
                 if address is not None and not isinstance(address, str):
                     return None
-                outcomes.append(CandidateOutcome(ordinal, category, address))
+                if not isinstance(reason, str):
+                    return None
+                outcomes.append(
+                    CandidateOutcome(ordinal, category, address, reason)
+                )
 
             def parse_problem(raw: object) -> CatalogProblem | None:
                 if not isinstance(raw, tuple) or len(raw) != 4:
@@ -409,7 +419,7 @@ class ModuleCatalog:
 
             for outcome in outcomes:
                 if outcome.category == "unknown_address":
-                    if outcome.address is not None:
+                    if outcome.address is not None or not outcome.reason:
                         return None
                     continue
                 if outcome.address is None:
@@ -483,7 +493,7 @@ class ModuleCatalog:
                     "unknown_address",
                     None,
                     outcome.ordinal,
-                    "канонический адрес не доказан",
+                    outcome.reason,
                 )
                 for outcome in outcomes
                 if outcome.category == "unknown_address"
@@ -552,6 +562,20 @@ class _Candidate:
     digest: str | None = None
 
 
+def _unknown_address_reason(relative: str, error: BaseException) -> str:
+    """Причина для журнала: какой файл выгрузки и почему адрес не доказан.
+
+    Публичные ответы этот текст не показывают: наружу уходит категория и
+    порядковый номер. Путь здесь относительный внутри выгрузки, не хостовый
+    корень источника.
+    """
+    detail = str(error).strip()
+    reason = f"канонический адрес не доказан: {relative}"
+    if detail:
+        return f"{reason}; {detail}"
+    return reason
+
+
 def _is_form_address(address: str) -> bool:
     return address.startswith("ОбщаяФорма.") or ".Форма." in address
 
@@ -571,6 +595,19 @@ def _tree_form(relative: str) -> tuple[str, str]:
     ):
         form = parts[3][: -len(".xml")]
         pseudo = f"{parts[0]}/{parts[1]}/Forms/{form}/Ext/Form/Module.bsl"
+        return адрес_модуля(pseudo), "descriptor"
+    if (
+        len(parts) == 6
+        and parts[0] == "ExternalDataSources"
+        and parts[2] == "Tables"
+        and parts[4] == "Forms"
+        and parts[5].endswith(".xml")
+    ):
+        form = parts[5][: -len(".xml")]
+        pseudo = (
+            f"{parts[0]}/{parts[1]}/Tables/{parts[3]}/Forms/{form}"
+            "/Ext/Form/Module.bsl"
+        )
         return адрес_модуля(pseudo), "descriptor"
     if relative.endswith("/Ext/Form.xml"):
         pseudo = relative[: -len("Form.xml")] + "Form/Module.bsl"
@@ -646,7 +683,7 @@ def _candidate(root: Path, path: Path, ordinal: int) -> _Candidate:
                 locator = ModuleLocator.container(relative, "module")
         else:
             raise ValueError("неподдержанный кандидат")
-    except (FlatNameError, ValueError):
+    except (FlatNameError, ValueError) as error:
         return _Candidate(
             ordinal,
             None,
@@ -656,7 +693,7 @@ def _candidate(root: Path, path: Path, ordinal: int) -> _Candidate:
             None,
             None,
             "unknown_address",
-            "канонический адрес не доказан",
+            _unknown_address_reason(relative, error),
         )
 
     if locator is None:
@@ -838,7 +875,12 @@ def build_catalog(
         )
 
     outcomes = tuple(
-        CandidateOutcome(candidate.ordinal, candidate.category, candidate.address)
+        CandidateOutcome(
+            candidate.ordinal,
+            candidate.category,
+            candidate.address,
+            candidate.reason,
+        )
         for candidate in candidates
     )
     counts = {category: 0 for category in _CATEGORIES}

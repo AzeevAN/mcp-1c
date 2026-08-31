@@ -130,7 +130,7 @@ class ModulesArchiveBuilder:
             '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">'
             '<Form><Properties>'
             f'<Name>{form_name}</Name><Synonym><item><content>{form_name}</content></item></Synonym>'
-            '<FormType>Ordinary</FormType>'
+            '<FormType>Managed</FormType>'
             '</Properties></Form></MetaDataObject>'
         )
         return self.raw(f"{folder}/{object_name}/Forms/{form_name}.xml", descriptor)

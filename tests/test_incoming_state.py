@@ -99,7 +99,7 @@ def test_предыдущее_правило_отбора_помечено_ус�
 
     строки = сканер.scan()
 
-    assert SELECTION_VERSION == 5
+    assert SELECTION_VERSION == 6
     assert строки[0]["state"] == STATE_STALE
 
 

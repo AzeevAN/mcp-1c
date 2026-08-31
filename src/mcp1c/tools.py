@@ -349,8 +349,13 @@ def _safe_problem_reason(reason: str) -> str:
     return reason
 
 
-def _iter_code_problems(loaded: LoadedModules):
-    """Уникальные обезличенные проблемы без сортировки и общего списка."""
+def _iter_code_problems(loaded: LoadedModules, *, sanitize: bool = True):
+    """Уникальные проблемы без сортировки и общего списка.
+
+    ``sanitize=True`` — публичные ответы: пути и физические имена
+    отбрасываются. Журнал покрытия передаёт ``False``, чтобы оператор видел
+    относительный путь неадресуемого файла.
+    """
     if loaded.каталог is None or loaded.формы is None:
         raise RegistryError("Готовый индекс кода неполон; перезагрузите источник.")
     # ``form_structure_missing`` — итоговое следствие. Когда та же форма уже
@@ -365,13 +370,18 @@ def _iter_code_problems(loaded: LoadedModules):
     }
     seen: set[tuple[str, str | None, int, str, int | None]] = set()
 
+    def present(reason: str) -> str:
+        if sanitize:
+            return _safe_problem_reason(reason)
+        return reason or "причина не записана"
+
     for problems in (loaded.каталог.object_problems or {}).values():
         for problem in problems:
             item = CodeProblemRow(
                 problem.category,
                 problem.address,
                 problem.ordinal,
-                _safe_problem_reason(problem.reason),
+                present(problem.reason),
             )
             key = (
                 item.category,
@@ -390,7 +400,11 @@ def _iter_code_problems(loaded: LoadedModules):
             "unknown_address",
             None,
             outcome.ordinal,
-            "канонический адрес не доказан",
+            (
+                "канонический адрес не доказан"
+                if sanitize
+                else (outcome.reason or "канонический адрес не доказан")
+            ),
         )
         key = (
             item.category,
@@ -413,7 +427,7 @@ def _iter_code_problems(loaded: LoadedModules):
                 problem.категория,
                 problem.адрес,
                 0,
-                _safe_problem_reason(problem.причина),
+                present(problem.причина),
                 problem.маркер,
             )
             key = (

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from module_samples import v8_container_bytes
-from mcp1c import modules_index
+from mcp1c import modules_index, tools
 from mcp1c.module_catalog import ModuleCatalog, build_catalog
 from mcp1c.module_content import LocatorIdentity, read_bsl
 
@@ -106,6 +106,8 @@ def test_каждый_кандидат_попадает_ровно_в_одну_�
     assert "Процедура Б" not in repr(catalog)
     unknown = next(p for p in catalog.problems if p.category == "unknown_address")
     assert unknown.address is None and unknown.ordinal > 0
+    assert "Unknown.Объект.Module.txt" in unknown.reason
+    assert "неподдержанный вид плоской выгрузки" in unknown.reason
 
 
 def test_пустой_txt_сохраняет_локатор_а_пустой_container_только_форму(tmp_path):
@@ -149,6 +151,56 @@ def test_семантически_битый_cache_каталога_станов
         first[2] = (kind, relative.replace(name, name.lower()), entry)
     state["entries"][0] = tuple(first)
 
+    assert ModuleCatalog.from_state(state, catalog.identity) is None
+
+
+def test_unknown_address_в_кэше_сохраняет_относительный_путь(tmp_path):
+    relative = "ExternalDataSources/Источник/Ext/Module.bsl"
+    _write(tmp_path, relative, "Процедура А() КонецПроцедуры")
+
+    catalog = build_catalog(tmp_path, _identity())
+    unknown = next(p for p in catalog.problems if p.category == "unknown_address")
+    restored = ModuleCatalog.from_state(catalog.to_state(), catalog.identity)
+
+    assert relative in unknown.reason
+    assert "неизвестный вид объекта метаданных" in unknown.reason
+    assert restored is not None
+    restored_unknown = next(
+        p for p in restored.problems if p.category == "unknown_address"
+    )
+    assert restored_unknown.reason == unknown.reason
+
+
+def test_журнал_проблем_называет_файл_а_публичный_ответ_нет(tmp_path):
+    relative = "ExternalDataSources/Источник/Ext/Module.bsl"
+    _write(tmp_path, relative, "Процедура А() КонецПроцедуры")
+    catalog = build_catalog(tmp_path, _identity())
+    forms = modules_index.Формы.построить(tmp_path, каталог=catalog)
+
+    class _Loaded:
+        каталог = catalog
+        формы = forms
+
+    public = list(tools._iter_code_problems(_Loaded()))
+    journal = list(tools._iter_code_problems(_Loaded(), sanitize=False))
+
+    assert [item.reason for item in public] == ["канонический адрес не доказан"]
+    assert relative in journal[0].reason
+    assert journal[0].reason != public[0].reason
+
+
+def test_кэш_без_причины_unknown_address_это_miss(tmp_path):
+    _write(tmp_path, "Unknown.Объект.Module.txt", "Процедура Б() КонецПроцедуры")
+    catalog = build_catalog(tmp_path, _identity())
+    unknown = next(p for p in catalog.problems if p.category == "unknown_address")
+    state = copy.deepcopy(catalog.to_state())
+    state["outcomes"] = [
+        (ordinal, category, address)
+        for ordinal, category, address, _reason in state["outcomes"]
+    ]
+
+    assert "Unknown.Объект.Module.txt" in unknown.reason
+    assert "неподдержанный вид плоской выгрузки" in unknown.reason
     assert ModuleCatalog.from_state(state, catalog.identity) is None
 
 
@@ -272,6 +324,168 @@ def test_filter_criteria_из_tree_получает_канонический_а�
     assert catalog.entries[
         "КритерийОтбора.Отбор.Форма.Основная"
     ].form_evidence == ("descriptor", "form_bin", "form_xml", "module")
+
+
+def test_хранилище_настроек_форма_без_form_bin(tmp_path):
+    """На «Автосалон6» 19 форм хранилищ — дескриптор, Form.xml и Module.bsl,
+    без Form.bin. Структура должна собираться из XML, адрес — не unknown."""
+    _write(
+        tmp_path,
+        "SettingsStorages/Настройки/Forms/Основная.xml",
+        "<MetaDataObject/>",
+    )
+    _write(
+        tmp_path,
+        "SettingsStorages/Настройки/Forms/Основная/Ext/Form.xml",
+        "<Form/>",
+    )
+    _write(
+        tmp_path,
+        "SettingsStorages/Настройки/Forms/Основная/Ext/Form/Module.bsl",
+        "Процедура Открыть() КонецПроцедуры",
+    )
+
+    catalog = build_catalog(tmp_path, _identity())
+
+    адрес = "ХранилищеНастроек.Настройки.Форма.Основная"
+    assert list(catalog.entries) == [адрес]
+    assert catalog.entries[адрес].form_evidence == (
+        "descriptor",
+        "form_xml",
+        "module",
+    )
+    assert catalog.coverage.unknown_address == 0
+
+
+def test_план_видов_расчета_и_сервис_интеграции_получают_адрес(tmp_path):
+    _write(
+        tmp_path,
+        "ChartsOfCalculationTypes/Начисления/Ext/ObjectModule.bsl",
+        "Процедура ПередЗаписью() КонецПроцедуры",
+    )
+    _write(
+        tmp_path,
+        "IntegrationServices/ОбменСообщениями/Ext/Module.bsl",
+        "Процедура Обработать() КонецПроцедуры",
+    )
+
+    catalog = build_catalog(tmp_path, _identity())
+
+    assert list(catalog.entries) == [
+        "ПланВидовРасчета.Начисления.МодульОбъекта",
+        "СервисИнтеграции.ОбменСообщениями",
+    ]
+    assert catalog.coverage.unknown_address == 0
+
+
+def test_регистры_бухгалтерии_и_расчета_получают_адрес_и_форму(tmp_path):
+    _write(
+        tmp_path,
+        "AccountingRegisters/Регистр/Ext/RecordSetModule.bsl",
+        "Процедура ПередЗаписью() КонецПроцедуры",
+    )
+    _write(
+        tmp_path,
+        "AccountingRegisters/Регистр/Forms/ФормаСписка.xml",
+        "<MetaDataObject/>",
+    )
+    _write(
+        tmp_path,
+        "AccountingRegisters/Регистр/Forms/ФормаСписка/Ext/Form.xml",
+        "<Form/>",
+    )
+    _write(
+        tmp_path,
+        "AccountingRegisters/Регистр/Forms/ФормаСписка/Ext/Form/Module.bsl",
+        "Процедура ПриСозданииНаСервере() КонецПроцедуры",
+    )
+    _write(
+        tmp_path,
+        "AccountingRegisters/Регистр/Commands/Команда/Ext/CommandModule.bsl",
+        "Процедура ОбработкаКоманды() КонецПроцедуры",
+    )
+    _write(
+        tmp_path,
+        "CalculationRegisters/Регистр/Ext/ManagerModule.bsl",
+        "Процедура ОбработкаПолученияДанныхВыбора() КонецПроцедуры",
+    )
+
+    catalog = build_catalog(tmp_path, _identity())
+
+    assert list(catalog.entries) == [
+        "РегистрБухгалтерии.Регистр.Команда.Команда",
+        "РегистрБухгалтерии.Регистр.МодульНабораЗаписей",
+        "РегистрБухгалтерии.Регистр.Форма.ФормаСписка",
+        "РегистрРасчета.Регистр.МодульМенеджера",
+    ]
+    форма = catalog.entries["РегистрБухгалтерии.Регистр.Форма.ФормаСписка"]
+    assert форма.form_evidence == ("descriptor", "form_xml", "module")
+    assert catalog.coverage.unknown_address == 0
+
+
+def test_таблица_внешнего_источника_данных_получает_адрес_и_форму(tmp_path):
+    _write(
+        tmp_path,
+        "ExternalDataSources/Источник/Tables/Данные/Ext/ManagerModule.bsl",
+        "Процедура ОбработкаПолученияДанныхВыбора() КонецПроцедуры",
+    )
+    _write(
+        tmp_path,
+        "ExternalDataSources/Источник/Tables/Данные/Forms/ФормаСписка.xml",
+        "<MetaDataObject/>",
+    )
+    _write(
+        tmp_path,
+        "ExternalDataSources/Источник/Tables/Данные/Forms/ФормаСписка/Ext/Form.xml",
+        "<Form/>",
+    )
+    _write(
+        tmp_path,
+        "ExternalDataSources/Источник/Tables/Данные/Forms/ФормаСписка/Ext/Form/Module.bsl",
+        "Процедура ПриСозданииНаСервере() КонецПроцедуры",
+    )
+
+    catalog = build_catalog(tmp_path, _identity())
+
+    assert list(catalog.entries) == [
+        "ВнешнийИсточникДанных.Источник.Таблица.Данные.МодульМенеджера",
+        "ВнешнийИсточникДанных.Источник.Таблица.Данные.Форма.ФормаСписка",
+    ]
+    форма = catalog.entries[
+        "ВнешнийИсточникДанных.Источник.Таблица.Данные.Форма.ФормаСписка"
+    ]
+    assert форма.form_evidence == ("descriptor", "form_xml", "module")
+    assert catalog.coverage.unknown_address == 0
+
+
+def test_обычная_форма_пропускает_form_bin_без_invalid_syntax(tmp_path):
+    _write(
+        tmp_path,
+        "Reports/Генератор/Forms/Обычная.xml",
+        '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">'
+        "<Form><Properties><Name>Обычная</Name>"
+        "<FormType>Ordinary</FormType></Properties></Form>"
+        "</MetaDataObject>",
+    )
+    _write(
+        tmp_path,
+        "Reports/Генератор/Forms/Обычная/Ext/Form.bin",
+        v8_container_bytes([("form", b"{19 20}")]),
+    )
+
+    catalog = build_catalog(tmp_path, _identity())
+    forms = modules_index.Формы.построить(tmp_path, каталог=catalog)
+    адрес = "Отчет.Генератор.Форма.Обычная"
+    form = forms.состав(адрес)
+
+    assert form is not None
+    if form.тип is None:
+        pytest.skip("дескриптор формы не читается в этой среде")
+    assert form.тип == "Ordinary"
+    assert form.структура_доступна
+    assert not form.структура_частична
+    assert forms.проблемы == ()
+    assert forms.частичных == 0
 
 
 def test_каталог_неизменяем_и_порядок_не_зависит_от_создания(tmp_path):

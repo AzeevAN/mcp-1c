@@ -596,6 +596,19 @@ def _tree_form(relative: str) -> tuple[str, str]:
         form = parts[3][: -len(".xml")]
         pseudo = f"{parts[0]}/{parts[1]}/Forms/{form}/Ext/Form/Module.bsl"
         return адрес_модуля(pseudo), "descriptor"
+    if (
+        len(parts) == 6
+        and parts[0] == "ExternalDataSources"
+        and parts[2] == "Tables"
+        and parts[4] == "Forms"
+        and parts[5].endswith(".xml")
+    ):
+        form = parts[5][: -len(".xml")]
+        pseudo = (
+            f"{parts[0]}/{parts[1]}/Tables/{parts[3]}/Forms/{form}"
+            "/Ext/Form/Module.bsl"
+        )
+        return адрес_модуля(pseudo), "descriptor"
     if relative.endswith("/Ext/Form.xml"):
         pseudo = relative[: -len("Form.xml")] + "Form/Module.bsl"
         return адрес_модуля(pseudo), "form_xml"

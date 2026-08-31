@@ -41,6 +41,7 @@ Python-объект (кортеж + строки внутри), а `array('i')` 
 """
 from __future__ import annotations
 
+import logging
 import marshal
 import re
 import sys
@@ -64,6 +65,7 @@ from .module_content import (
 from .search import Doc, SearchIndex
 
 Прогресс = Callable[[int, int], None]
+logger = logging.getLogger(__name__)
 
 
 def _единый_каталог(
@@ -1088,6 +1090,7 @@ _КАТЕГОРИИ_ПРОБЛЕМ_ФОРМ = frozenset(
         "invalid_token",
         "invalid_utf8",
         "known_marker_semantics_incomplete",
+        "ordinary_form_bin_skipped",
         "trailing_data",
         "truncated",
         "unknown_marker",
@@ -1447,63 +1450,79 @@ class Формы:
                 for source in entry.form_sources
                 if source.kind in {"form_bin", "container"}
             )
-            for source in контейнерные:
-                try:
-                    result = read_form(
-                        read_content_bytes(корень, адрес, source.locator)
+            if тип == "Ordinary" and контейнерные:
+                # Обычная форма хранит UI в двоичной записи form, не в
+                # скобочном `{19,…}`. Разбор этой записи давал ложный
+                # invalid_syntax; пропускаем и оставляем дескриптор.
+                logger.warning(
+                    "Обычная форма: запись form в Form.bin пропущена; "
+                    "категория=ordinary_form_bin_skipped."
+                )
+                добавить_проблему(
+                    ПроблемаФормы(
+                        "ordinary_form_bin_skipped",
+                        адрес,
+                        "обычная форма: запись form в Form.bin пропущена",
                     )
-                except FormReadError as error:
-                    битая = True
-                    if error.category == "budget_exceeded":
-                        превышен_бюджет = True
-                    добавить_проблему(
-                        ПроблемаФормы(
-                            error.category,
-                            адрес,
-                            error.reason,
+                )
+            else:
+                for source in контейнерные:
+                    try:
+                        result = read_form(
+                            read_content_bytes(корень, адрес, source.locator)
                         )
-                    )
-                except ContentReadError as error:
-                    битая = True
-                    if error.category == "budget_exceeded":
-                        превышен_бюджет = True
-                    категория = (
-                        "budget_exceeded"
-                        if error.category == "budget_exceeded"
-                        else "form_container_unreadable"
-                    )
-                    добавить_проблему(
-                        ПроблемаФормы(
-                            категория,
-                            адрес,
-                            error.reason,
-                        )
-                    )
-                else:
-                    структура_прочитана = True
-                    частичная = True
-                    if маркер is None:
-                        маркер = result.marker
-                    elif маркер != result.marker:
+                    except FormReadError as error:
+                        битая = True
+                        if error.category == "budget_exceeded":
+                            превышен_бюджет = True
                         добавить_проблему(
                             ПроблемаФормы(
-                                "form_marker_conflict",
+                                error.category,
                                 адрес,
-                                "источники формы содержат разные маркеры",
+                                error.reason,
                             )
                         )
-                    if result.category == "unknown_marker":
-                        неизвестный_маркер = True
-                    else:
-                        известный_неполный = True
-                    добавить_проблему(
-                        ПроблемаФормы(
-                            result.category,
-                            адрес,
-                            result.reason,
-                            result.marker,
+                    except ContentReadError as error:
+                        битая = True
+                        if error.category == "budget_exceeded":
+                            превышен_бюджет = True
+                        категория = (
+                            "budget_exceeded"
+                            if error.category == "budget_exceeded"
+                            else "form_container_unreadable"
                         )
-                    )
+                        добавить_проблему(
+                            ПроблемаФормы(
+                                категория,
+                                адрес,
+                                error.reason,
+                            )
+                        )
+                    else:
+                        структура_прочитана = True
+                        частичная = True
+                        if маркер is None:
+                            маркер = result.marker
+                        elif маркер != result.marker:
+                            добавить_проблему(
+                                ПроблемаФормы(
+                                    "form_marker_conflict",
+                                    адрес,
+                                    "источники формы содержат разные маркеры",
+                                )
+                            )
+                        if result.category == "unknown_marker":
+                            неизвестный_маркер = True
+                        else:
+                            известный_неполный = True
+                        добавить_проблему(
+                            ПроблемаФормы(
+                                result.category,
+                                адрес,
+                                result.reason,
+                                result.marker,
+                            )
+                        )
 
             if дескриптор_прочитан and not структура_прочитана:
                 структура_прочитана = True

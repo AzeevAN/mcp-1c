@@ -46,8 +46,9 @@ def test_в_иерархической_берём_модули_и_формы():
 
 
 def test_иерархический_отбор_сохраняет_доказательства_контейнерных_форм():
-    # v6 добавляет формы хранилищ настроек и планов видов расчёта;
-    # отбор v4/v5 (дескриптор, Form.bin, происхождение) сохраняется.
+    # v6 добавляет формы хранилищ настроек, планов видов расчёта и таблиц
+    # внешних источников; отбор v4/v5 (дескриптор, Form.bin, происхождение)
+    # сохраняется.
     assert SELECTION_VERSION == 6
     for name in (
         "Documents/Заказ/Forms/Основная.xml",
@@ -58,6 +59,9 @@ def test_иерархический_отбор_сохраняет_доказат
         "SettingsStorages/Настройки/Forms/Основная/Ext/Form.xml",
         "ChartsOfCalculationTypes/Начисления/Forms/ФормаСписка.xml",
         "ChartsOfCalculationTypes/Начисления/Forms/ФормаСписка/Ext/Form.xml",
+        "ExternalDataSources/Источник/Tables/Данные/Forms/ФормаСписка.xml",
+        "ExternalDataSources/Источник/Tables/Данные/Forms/ФормаСписка/Ext/Form.xml",
+        "ExternalDataSources/Источник/Tables/Данные/Forms/ФормаСписка/Ext/Form.bin",
     ):
         assert is_wanted(name, FORMAT_TREE), name
 
@@ -75,6 +79,9 @@ def test_иерархический_отбор_сохраняет_доказат
         "HTTPServices/Сервис/Forms/Ложная/Ext/Form.bin",
         "WebServices/Сервис/Forms/Ложная.xml",
         "Sequences/Порядок/Forms/Ложная/Ext/Form.bin",
+        "ExternalDataSources/Источник.xml",
+        "ExternalDataSources/Источник/Tables/Данные.xml",
+        "ExternalDataSources/Источник/Forms/Ложная.xml",
         "Other/Form.xml",
     ],
 )

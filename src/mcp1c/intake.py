@@ -20,7 +20,7 @@ _TREE_FORM_FOLDERS = {
     "ChartsOfCharacteristicTypes", "CommonForms",
     "DataProcessors", "DocumentJournals", "Documents", "Enums",
     "ExchangePlans", "FilterCriteria", "InformationRegisters", "Reports",
-    "SettingsStorages", "Tasks",
+    "SettingsStorages", "Tasks", "ExternalDataSources",
 }
 # Плоская: модуль в `.txt`, код формы — записью внутри контейнера `.Form`.
 _FLAT_SUFFIXES = {".txt", ".Form"}
@@ -103,6 +103,24 @@ def is_wanted(name: str, формат: str) -> bool:
             len(части) == 4
             and части[2] == "Ext"
             and части[3] in {"Form.xml", "Form.bin"}
+        )
+        return descriptor or body
+    if части[0] == "ExternalDataSources":
+        # Таблица источника: Forms лежит под Tables/<Таблица>/, а не сразу
+        # под именем объекта. Обычное правило len==4 / len==6 сюда не подходит.
+        descriptor = (
+            len(части) == 6
+            and части[2] == "Tables"
+            and части[4] == "Forms"
+            and путь.suffix == ".xml"
+            and bool(путь.stem)
+        )
+        body = (
+            len(части) == 8
+            and части[2] == "Tables"
+            and части[4] == "Forms"
+            and части[6] == "Ext"
+            and части[7] in {"Form.xml", "Form.bin"}
         )
         return descriptor or body
     descriptor = (
@@ -307,10 +325,12 @@ def enough_space(нужно: int, каталог: Path) -> tuple[bool, int]:
 # но старый корень без нового каталога нельзя считать разобранным по текущему
 # правилу: восстановить доказательство после удаления ZIP уже неоткуда.
 #
-# 6: иерархический отбор берёт формы `SettingsStorages` и
-# `ChartsOfCalculationTypes` (дескриптор, `Form.xml`, `Form.bin`). На
-# «Автосалон6» без этого 19 форм хранилищ оставались без структуры: Module.bsl
-# уже попадал в корень как `.bsl`, а XML формы отбор отбрасывал.
+# 6: иерархический отбор берёт формы `SettingsStorages`,
+# `ChartsOfCalculationTypes` и таблиц `ExternalDataSources` (дескриптор,
+# `Form.xml`, `Form.bin`). На «Автосалон6» без хранилищ 19 форм оставались
+# без структуры; XML таблиц внешнего источника лежит на два уровня глубже
+# обычного объекта (`…/Tables/<Таблица>/Forms/…`) и прежним правилом
+# отбрасывался, хотя Module.bsl уже попадал как `.bsl`.
 SELECTION_VERSION = 6
 
 

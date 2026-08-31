@@ -378,6 +378,70 @@ def test_план_видов_расчета_и_сервис_интеграции
     assert catalog.coverage.unknown_address == 0
 
 
+def test_таблица_внешнего_источника_данных_получает_адрес_и_форму(tmp_path):
+    _write(
+        tmp_path,
+        "ExternalDataSources/Источник/Tables/Данные/Ext/ManagerModule.bsl",
+        "Процедура ОбработкаПолученияДанныхВыбора() КонецПроцедуры",
+    )
+    _write(
+        tmp_path,
+        "ExternalDataSources/Источник/Tables/Данные/Forms/ФормаСписка.xml",
+        "<MetaDataObject/>",
+    )
+    _write(
+        tmp_path,
+        "ExternalDataSources/Источник/Tables/Данные/Forms/ФормаСписка/Ext/Form.xml",
+        "<Form/>",
+    )
+    _write(
+        tmp_path,
+        "ExternalDataSources/Источник/Tables/Данные/Forms/ФормаСписка/Ext/Form/Module.bsl",
+        "Процедура ПриСозданииНаСервере() КонецПроцедуры",
+    )
+
+    catalog = build_catalog(tmp_path, _identity())
+
+    assert list(catalog.entries) == [
+        "ВнешнийИсточникДанных.Источник.Таблица.Данные.МодульМенеджера",
+        "ВнешнийИсточникДанных.Источник.Таблица.Данные.Форма.ФормаСписка",
+    ]
+    форма = catalog.entries[
+        "ВнешнийИсточникДанных.Источник.Таблица.Данные.Форма.ФормаСписка"
+    ]
+    assert форма.form_evidence == ("descriptor", "form_xml", "module")
+    assert catalog.coverage.unknown_address == 0
+
+
+def test_обычная_форма_пропускает_form_bin_без_invalid_syntax(tmp_path):
+    _write(
+        tmp_path,
+        "Reports/Генератор/Forms/Обычная.xml",
+        '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">'
+        "<Form><Properties><Name>Обычная</Name>"
+        "<FormType>Ordinary</FormType></Properties></Form>"
+        "</MetaDataObject>",
+    )
+    _write(
+        tmp_path,
+        "Reports/Генератор/Forms/Обычная/Ext/Form.bin",
+        v8_container_bytes([("form", b"{19 20}")]),
+    )
+
+    catalog = build_catalog(tmp_path, _identity())
+    forms = modules_index.Формы.построить(tmp_path, каталог=catalog)
+    адрес = "Отчет.Генератор.Форма.Обычная"
+    form = forms.состав(адрес)
+
+    assert form is not None
+    assert form.тип == "Ordinary"
+    assert {p.категория for p in forms.проблемы} == {
+        "descriptor_only",
+        "ordinary_form_bin_skipped",
+    }
+    assert "invalid_syntax" not in {p.категория for p in forms.проблемы}
+
+
 def test_каталог_неизменяем_и_порядок_не_зависит_от_создания(tmp_path):
     _write(tmp_path, "CommonModule.Б.Module.txt", "Процедура Б() КонецПроцедуры")
     _write(tmp_path, "CommonModule.А.Module.txt", "Процедура А() КонецПроцедуры")

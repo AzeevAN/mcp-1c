@@ -9,6 +9,14 @@
 
 ## [Unreleased]
 
+## [2.0.0] — 2026-08-31
+
+Мажорный выпуск заменяет переходный Docker-контур единым установочным образом:
+один pull-only Compose запускает современную SPA либо только MCP, обязательные
+токены проверяются до открытия порта, а локальный и release build получают
+только публичные файлы точного Git-коммита. Серверный HTML-дашборд и прежние
+многосоставные Compose-файлы удалены как неподдерживаемый переходный путь.
+
 ### Добавлено
 
 - **Изолированный production build context.** Локальная сборка принимает только
@@ -4735,7 +4743,8 @@ JSON-журнал schema v1 для основной выгрузки и кажд
 Неразрешённых ссылок — ноль. Ошибок приведения типов — ноль. Оба формата дают
 одинаковый набор из 30 ключей модели.
 
-[Unreleased]: https://github.com/AzeevAN/mcp-1c/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/AzeevAN/mcp-1c/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/AzeevAN/mcp-1c/compare/v1.3.0...v2.0.0
 [1.3.0]: https://github.com/AzeevAN/mcp-1c/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/AzeevAN/mcp-1c/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/AzeevAN/mcp-1c/compare/v1.1.0...v1.1.1

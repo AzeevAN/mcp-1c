@@ -59,9 +59,12 @@ Python-пакет раздаёт SPA без рабочей копии репоз
 Локальный образ собирается тем же target, что релизный:
 
 ```bash
-docker build --target runtime -t mcp1c:dev .
-MCP1C_IMAGE=mcp1c:dev docker compose up -d
+python3 tools/build_image.py mcp1c:local
+MCP1C_IMAGE=mcp1c:local docker compose up -d
 ```
+
+Скрипт принимает только чистый Git HEAD и передаёт Docker его архив, поэтому
+локальные данные, `.env`, секреты и ignored-файлы в production-образ не входят.
 
 ## Контракт API
 

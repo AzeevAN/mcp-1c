@@ -114,11 +114,31 @@ SHA-256 файлов в source tree, wheel, sdist и wheel, повторно с�
 sdist. Node.js используется только в frontend build job и Docker build stage;
 в Python-пакете и runtime image его нет.
 
+## Изоляция контекста Docker-сборки
+
+Production image никогда не собирается из произвольного содержимого рабочей
+папки. Локальная команда `python3 tools/build_image.py mcp1c:local` сначала
+требует чистый checkout, затем передаёт в `docker build` поток `git archive
+HEAD`. Поэтому ignored-файлы — `data/`, `.env`, ключи, локальные исследования,
+частные корпуса и агентские настройки — вообще не являются входом BuildKit.
+
+Release workflow использует Git context `{{defaultContext}}` action сборки,
+то есть читает проверенный `GITHUB_SHA`, а не checkout workspace runner. Перед
+сборкой workflow отдельно доказывает совпадение SHA release tag, `GITHUB_SHA`
+и `HEAD`, а также принадлежность коммита `main`.
+
+Вторая независимая граница — deny-by-default `.dockerignore`: сначала закрыт
+весь контекст, затем явно разрешены только `requirements-lock.txt`, Python
+runtime под `src/mcp1c/` и минимальные входы Vite под `dashboard/`. `Dockerfile`
+не содержит `COPY .` или `ADD`. Приёмочный скрипт после сборки сравнивает полный
+список файлов `/app` и `/data` с manifest отслеживаемых `src/mcp1c` плюс
+runtime lock; одного поиска известных опасных расширений недостаточно.
+
 ## Публикация OCI-образа
 
 `.github/workflows/release-image.yml` не имеет `push` или ручного запуска и
 срабатывает только после публикации стабильного GitHub Release. До registry
-доходит checkout точного tag SHA; tag, `pyproject.toml`, `__version__`,
+доходит Git context точного tag SHA; tag, `pyproject.toml`, `__version__`,
 `compose.yaml` и `.env.example` должны называть одну версию v2+. Один OCI index
 содержит `linux/amd64` и `linux/arm64`, SemVer-теги и `latest`; BuildKit
 прикрепляет SPDX SBOM и provenance уровня `mode=max`.
@@ -172,13 +192,14 @@ Docker runtime проверяется четырьмя сочетаниями о
 поднимает временный TLS proxy и удаляет свои контейнеры после проверки:
 
 ```bash
-docker build --target runtime -t mcp1c:accept .
+python3 tools/build_image.py mcp1c:accept
 .venv/bin/python tools/lab/accept_universal_image.py mcp1c:accept
 ```
 
 Между четырьмя режимами образ не пересобирается; скрипт сравнивает один image
 ID, MCP version/tools, `on/off`, forwarded headers, Secure cookie, плохие
-значения режимов и обязательный token contract. Рабочий `data/` он не монтирует.
+значения режимов, обязательный token contract и точный manifest файлов
+runtime. Рабочий `data/` он не монтирует.
 
 ## Измерения
 

@@ -96,7 +96,9 @@ jobs:
         id: push
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
-          context: .
+          # Git context читает точный GITHUB_SHA. Изменения workspace,
+          # untracked/ignored файлы и локальные лаборатории в BuildKit не идут.
+          context: "{{defaultContext}}"
           target: runtime
           platforms: linux/amd64,linux/arm64
           push: true

@@ -399,6 +399,32 @@ def _image_filesystem_is_public(image: str) -> None:
     ]
     _run(command)
 
+    actual = set(
+        _run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--entrypoint",
+                "find",
+                image,
+                "/app",
+                "/data",
+                "-type",
+                "f",
+            ]
+        ).stdout.splitlines()
+    )
+    tracked = _run(["git", "ls-files", "src/mcp1c"]).stdout.splitlines()
+    expected = {"/app/requirements-lock.txt"}
+    expected.update(f"/app/{path}" for path in tracked)
+    if actual != expected:
+        raise AssertionError(
+            "Состав runtime image не совпал с публичным manifest: "
+            f"лишних файлов {len(actual - expected)}, "
+            f"отсутствующих {len(expected - actual)}."
+        )
+
 
 def _accept_mode(
     name: str,

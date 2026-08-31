@@ -21,13 +21,13 @@
 | Общая справка | опциональный подписанный `.mcp1cref`; без доверенного артефакта две дополнительные ручки не регистрируются |
 | Дашборд | современная SPA включена по умолчанию; `on` либо `off` |
 | Авторизация Docker | два разных обязательных токена: `API_TOKEN` на чтение, `ADMIN_TOKEN` на запись |
-| Тесты | `.venv/bin/python -m pytest`, 1690 |
+| Тесты | `.venv/bin/python -m pytest`, 1694 |
 
 Воспроизводимый прогон:
 
 ```bash
 .venv/bin/pip install --require-hashes -r requirements-dev-lock.txt
-.venv/bin/python -m pytest          # 1690 тестов (прогон 2026-08-31)
+.venv/bin/python -m pytest          # 1694 теста (прогон 2026-08-31)
 ```
 
 ## Навигация
@@ -88,6 +88,23 @@
 Один образ работает с `MCP1C_DASHBOARD=on|off`; серверный HTML удалён. Для внешнего
 доступа за уже настроенным HTTPS reverse proxy используется
 `MCP1C_ACCESS=https-proxy`; отдельного Compose-файла и встроенного proxy нет.
+
+Есть два поддержанных способа получить этот образ:
+
+1. Обычный пользователь скачивает готовый
+   `ghcr.io/azeevan/mcp-1c:2.0.0` и запускает один `compose.yaml` по инструкции
+   ниже.
+2. Разработчик собирает локальный тег из чистого checkout командой
+   `python3 tools/build_image.py mcp1c:local`, указывает
+   `MCP1C_IMAGE=mcp1c:local` и использует тот же `compose.yaml`.
+
+Второй путь архивирует только отслеживаемые файлы текущего `Git HEAD` и
+отказывает при незакоммиченных или новых неотслеживаемых файлах. Рабочий
+`data/`, `.env`, секреты, локальные исследования, агентские настройки и любые
+другие ignored-файлы физически не передаются Docker daemon. Дополнительный
+deny-by-default `.dockerignore` разрешает только runtime Python, lock-файл и
+исходники SPA. Node и npm на хосте не нужны: frontend собирается внутри
+изолированного build stage.
 
 ## Требования
 
@@ -248,15 +265,16 @@ mkdir -p data/bootstrap data/incoming
 ### Rootless Docker и user namespace remap
 
 При remap числовой UID хоста может отличаться от UID внутри контейнера. Не
-применяйте `chown 10001:10001` вслепую. После сборки проверьте отображение
+применяйте `chown 10001:10001` вслепую. Для собственного образа сначала
+соберите локальный тег из чистого Git HEAD, затем проверьте отображение
 коротким запуском с тем же bind mount:
 
 ```bash
-docker compose build mcp1c
+python3 tools/build_image.py mcp1c:local
 docker run --rm \
   --entrypoint sh \
   --mount type=bind,src=/srv/mcp1c/data,dst=/data \
-  mcp1c:latest \
+  mcp1c:local \
   -c 'id; test -w /data'
 ```
 
@@ -448,13 +466,18 @@ Node используется только в build-stage. В рабочий о�
 Чтобы переключить UI, измените `MCP1C_DASHBOARD` в `.env` и повторите
 `docker compose up -d --force-recreate`. Образ и `data/` останутся теми же.
 
-Разработчик из исходного checkout собирает тот же единственный target отдельно,
-не добавляя `build` в пользовательский Compose:
+Разработчик из чистого исходного checkout собирает тот же единственный target
+отдельно, не добавляя `build` в пользовательский Compose:
 
 ```bash
-docker build --target runtime -t mcp1c:dev .
-MCP1C_IMAGE=mcp1c:dev docker compose up -d --force-recreate
+python3 tools/build_image.py mcp1c:local
+MCP1C_IMAGE=mcp1c:local docker compose up -d --force-recreate
 ```
+
+Команда не собирает произвольное текущее состояние каталога: `git archive
+HEAD` передаёт Docker только публичные файлы зафиксированного коммита. Если
+нужно проверить незакоммиченную разработку, это отдельный dev-процесс, а не
+способ получить production или release image.
 
 `restart` не применяет новый образ или frontend. Кнопка дашборда решает только
 применение уже проверенной установки или удаления общей SQLite.

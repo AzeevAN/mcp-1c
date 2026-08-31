@@ -47,5 +47,8 @@ def test_acceptance_проверяет_mcp_proxy_tokens_и_один_image_id() -
         'row["version"]',
         'row["tools"]',
         '"negative_cases"',
+        '["git", "ls-files", "src/mcp1c"]',
+        '"/app/requirements-lock.txt"',
+        'actual != expected',
     ):
         assert contract in source

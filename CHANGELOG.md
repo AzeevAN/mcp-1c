@@ -11,6 +11,12 @@
 
 ### Добавлено
 
+- **Изолированный production build context.** Локальная сборка принимает только
+  чистый `Git HEAD` через `git archive`, release workflow читает Git context
+  точного SHA, а deny-by-default `.dockerignore` разрешает лишь runtime-код,
+  lock и входы SPA. Приёмка сравнивает полный manifest файлов образа, поэтому
+  `data/`, `.env`, секреты, локальные исследования и ignored-файлы не могут
+  попасть в него из рабочей папки.
 - **Release-only публикация OCI image.** Стабильный GitHub Release после
   сверки tag, версии и точного SHA собирает один `linux/amd64` + `linux/arm64`
   index в GHCR, добавляет SemVer-теги, SPDX SBOM и provenance `mode=max`.

@@ -138,7 +138,9 @@ def test_docker_uses_digest_and_hashed_runtime_lock() -> None:
     assert "COPY requirements-lock.txt ." in dockerfile
     assert "pip install --no-cache-dir --require-hashes -r requirements-lock.txt" in dockerfile
     assert "pip install --no-cache-dir -r requirements.txt" not in dockerfile
-    assert "src/*.egg-info" in dockerignore
+    assert dockerignore.splitlines()[2] == "**"
+    assert "src/mcp1c/*" in dockerignore
+    assert "!src/mcp1c/*.py" in dockerignore
 
 
 def test_all_github_actions_are_pinned_to_commit_sha() -> None:

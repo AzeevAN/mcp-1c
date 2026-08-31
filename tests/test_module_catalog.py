@@ -378,6 +378,51 @@ def test_план_видов_расчета_и_сервис_интеграции
     assert catalog.coverage.unknown_address == 0
 
 
+def test_регистры_бухгалтерии_и_расчета_получают_адрес_и_форму(tmp_path):
+    _write(
+        tmp_path,
+        "AccountingRegisters/Регистр/Ext/RecordSetModule.bsl",
+        "Процедура ПередЗаписью() КонецПроцедуры",
+    )
+    _write(
+        tmp_path,
+        "AccountingRegisters/Регистр/Forms/ФормаСписка.xml",
+        "<MetaDataObject/>",
+    )
+    _write(
+        tmp_path,
+        "AccountingRegisters/Регистр/Forms/ФормаСписка/Ext/Form.xml",
+        "<Form/>",
+    )
+    _write(
+        tmp_path,
+        "AccountingRegisters/Регистр/Forms/ФормаСписка/Ext/Form/Module.bsl",
+        "Процедура ПриСозданииНаСервере() КонецПроцедуры",
+    )
+    _write(
+        tmp_path,
+        "AccountingRegisters/Регистр/Commands/Команда/Ext/CommandModule.bsl",
+        "Процедура ОбработкаКоманды() КонецПроцедуры",
+    )
+    _write(
+        tmp_path,
+        "CalculationRegisters/Регистр/Ext/ManagerModule.bsl",
+        "Процедура ОбработкаПолученияДанныхВыбора() КонецПроцедуры",
+    )
+
+    catalog = build_catalog(tmp_path, _identity())
+
+    assert list(catalog.entries) == [
+        "РегистрБухгалтерии.Регистр.Команда.Команда",
+        "РегистрБухгалтерии.Регистр.МодульНабораЗаписей",
+        "РегистрБухгалтерии.Регистр.Форма.ФормаСписка",
+        "РегистрРасчета.Регистр.МодульМенеджера",
+    ]
+    форма = catalog.entries["РегистрБухгалтерии.Регистр.Форма.ФормаСписка"]
+    assert форма.form_evidence == ("descriptor", "form_xml", "module")
+    assert catalog.coverage.unknown_address == 0
+
+
 def test_таблица_внешнего_источника_данных_получает_адрес_и_форму(tmp_path):
     _write(
         tmp_path,

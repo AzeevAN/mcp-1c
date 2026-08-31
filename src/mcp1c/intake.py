@@ -15,9 +15,9 @@ FORMAT_FLAT = "flat"
 # Иерархическая: модуль — отдельный файл, форма — разбираемый XML.
 _TREE_SUFFIXES = {".bsl"}
 _TREE_FORM_FOLDERS = {
-    "AccumulationRegisters", "BusinessProcesses", "Catalogs",
-    "ChartsOfAccounts", "ChartsOfCalculationTypes",
-    "ChartsOfCharacteristicTypes", "CommonForms",
+    "AccountingRegisters", "AccumulationRegisters", "BusinessProcesses",
+    "CalculationRegisters", "Catalogs", "ChartsOfAccounts",
+    "ChartsOfCalculationTypes", "ChartsOfCharacteristicTypes", "CommonForms",
     "DataProcessors", "DocumentJournals", "Documents", "Enums",
     "ExchangePlans", "FilterCriteria", "InformationRegisters", "Reports",
     "SettingsStorages", "Tasks", "ExternalDataSources",
@@ -326,11 +326,12 @@ def enough_space(нужно: int, каталог: Path) -> tuple[bool, int]:
 # правилу: восстановить доказательство после удаления ZIP уже неоткуда.
 #
 # 6: иерархический отбор берёт формы `SettingsStorages`,
-# `ChartsOfCalculationTypes` и таблиц `ExternalDataSources` (дескриптор,
-# `Form.xml`, `Form.bin`). На «Автосалон6» без хранилищ 19 форм оставались
-# без структуры; XML таблиц внешнего источника лежит на два уровня глубже
-# обычного объекта (`…/Tables/<Таблица>/Forms/…`) и прежним правилом
-# отбрасывался, хотя Module.bsl уже попадал как `.bsl`.
+# `ChartsOfCalculationTypes`, `AccountingRegisters`, `CalculationRegisters`
+# и таблиц `ExternalDataSources` (дескриптор, `Form.xml`, `Form.bin`).
+# На «Автосалон6» без хранилищ 19 форм оставались без структуры; XML таблиц
+# внешнего источника лежит на два уровня глубже обычного объекта
+# (`…/Tables/<Таблица>/Forms/…`) и прежним правилом отбрасывался, хотя
+# Module.bsl уже попадал как `.bsl`.
 SELECTION_VERSION = 6
 
 

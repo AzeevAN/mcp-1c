@@ -11,6 +11,11 @@
 
 ### Добавлено
 
+- **Release-only публикация OCI image.** Стабильный GitHub Release после
+  сверки tag, версии и точного SHA собирает один `linux/amd64` + `linux/arm64`
+  index в GHCR, добавляет SemVer-теги, SPDX SBOM и provenance `mode=max`.
+  Отдельный job без registry credentials проверяет анонимный pull digest;
+  обычный push и ручной запуск публикации отсутствуют.
 - **SPA входит во все установочные артефакты.** Production assets хранятся как
   package data и побайтно проверяются в source tree, wheel, sdist, wheel из
   sdist и Docker runtime. Установленный пакет раздаёт современный дашборд без

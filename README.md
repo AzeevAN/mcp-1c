@@ -21,13 +21,13 @@
 | Общая справка | опциональный подписанный `.mcp1cref`; без доверенного артефакта две дополнительные ручки не регистрируются |
 | Дашборд | современная SPA включена по умолчанию; `on` либо `off` |
 | Авторизация Docker | два разных обязательных токена: `API_TOKEN` на чтение, `ADMIN_TOKEN` на запись |
-| Тесты | `.venv/bin/python -m pytest`, 1683 |
+| Тесты | `.venv/bin/python -m pytest`, 1688 |
 
 Воспроизводимый прогон:
 
 ```bash
 .venv/bin/pip install --require-hashes -r requirements-dev-lock.txt
-.venv/bin/python -m pytest          # 1683 теста (прогон 2026-08-31)
+.venv/bin/python -m pytest          # 1688 тестов (прогон 2026-08-31)
 ```
 
 ## Навигация
@@ -122,6 +122,10 @@ curl --fail --show-error --location --output .env.example \
 
 Исходники и Node для обычного запуска не нужны. Точный release-тег в URL и
 `MCP1C_IMAGE` не дают незаметно перейти на другую версию.
+
+Образ из GHCR должен быть публичным: тогда первый `docker compose up -d`
+скачивает его без `docker login`. Release workflow после публикации проверяет
+именно анонимный pull точного digest.
 
 ## 2. Подготовить окружение
 

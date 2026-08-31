@@ -114,6 +114,22 @@ SHA-256 файлов в source tree, wheel, sdist и wheel, повторно с�
 sdist. Node.js используется только в frontend build job и Docker build stage;
 в Python-пакете и runtime image его нет.
 
+## Публикация OCI-образа
+
+`.github/workflows/release-image.yml` не имеет `push` или ручного запуска и
+срабатывает только после публикации стабильного GitHub Release. До registry
+доходит checkout точного tag SHA; tag, `pyproject.toml`, `__version__`,
+`compose.yaml` и `.env.example` должны называть одну версию v2+. Один OCI index
+содержит `linux/amd64` и `linux/arm64`, SemVer-теги и `latest`; BuildKit
+прикрепляет SPDX SBOM и provenance уровня `mode=max`.
+
+[GHCR создаёт первый package приватным](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility).
+После первого publish владелец один раз переводит `mcp-1c` в Public в Package
+settings и повторяет неуспешный workflow. Финальный job работает без registry
+credentials и обязан скачать точный digest анонимно; пока это не прошло,
+установочный образ не считается опубликованным. Переход Public необратим,
+поэтому выполняется только в рамках явно разрешённого релиза.
+
 ## Воспроизводимые проверки
 
 Python:

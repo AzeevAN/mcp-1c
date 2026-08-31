@@ -274,6 +274,58 @@ def test_filter_criteria_из_tree_получает_канонический_а�
     ].form_evidence == ("descriptor", "form_bin", "form_xml", "module")
 
 
+def test_хранилище_настроек_форма_без_form_bin(tmp_path):
+    """На «Автосалон6» 19 форм хранилищ — дескриптор, Form.xml и Module.bsl,
+    без Form.bin. Структура должна собираться из XML, адрес — не unknown."""
+    _write(
+        tmp_path,
+        "SettingsStorages/Настройки/Forms/Основная.xml",
+        "<MetaDataObject/>",
+    )
+    _write(
+        tmp_path,
+        "SettingsStorages/Настройки/Forms/Основная/Ext/Form.xml",
+        "<Form/>",
+    )
+    _write(
+        tmp_path,
+        "SettingsStorages/Настройки/Forms/Основная/Ext/Form/Module.bsl",
+        "Процедура Открыть() КонецПроцедуры",
+    )
+
+    catalog = build_catalog(tmp_path, _identity())
+
+    адрес = "ХранилищеНастроек.Настройки.Форма.Основная"
+    assert list(catalog.entries) == [адрес]
+    assert catalog.entries[адрес].form_evidence == (
+        "descriptor",
+        "form_xml",
+        "module",
+    )
+    assert catalog.coverage.unknown_address == 0
+
+
+def test_план_видов_расчета_и_сервис_интеграции_получают_адрес(tmp_path):
+    _write(
+        tmp_path,
+        "ChartsOfCalculationTypes/Начисления/Ext/ObjectModule.bsl",
+        "Процедура ПередЗаписью() КонецПроцедуры",
+    )
+    _write(
+        tmp_path,
+        "IntegrationServices/ОбменСообщениями/Ext/Module.bsl",
+        "Процедура Обработать() КонецПроцедуры",
+    )
+
+    catalog = build_catalog(tmp_path, _identity())
+
+    assert list(catalog.entries) == [
+        "ПланВидовРасчета.Начисления.МодульОбъекта",
+        "СервисИнтеграции.ОбменСообщениями",
+    ]
+    assert catalog.coverage.unknown_address == 0
+
+
 def test_каталог_неизменяем_и_порядок_не_зависит_от_создания(tmp_path):
     _write(tmp_path, "CommonModule.Б.Module.txt", "Процедура Б() КонецПроцедуры")
     _write(tmp_path, "CommonModule.А.Module.txt", "Процедура А() КонецПроцедуры")

@@ -46,13 +46,18 @@ def test_в_иерархической_берём_модули_и_формы():
 
 
 def test_иерархический_отбор_сохраняет_доказательства_контейнерных_форм():
-    # v5 добавляет производный каталог происхождения и сохраняет весь отбор v4.
-    assert SELECTION_VERSION == 5
+    # v6 добавляет формы хранилищ настроек и планов видов расчёта;
+    # отбор v4/v5 (дескриптор, Form.bin, происхождение) сохраняется.
+    assert SELECTION_VERSION == 6
     for name in (
         "Documents/Заказ/Forms/Основная.xml",
         "Documents/Заказ/Forms/Основная/Ext/Form.bin",
         "CommonForms/Общая.xml",
         "CommonForms/Общая/Ext/Form.bin",
+        "SettingsStorages/Настройки/Forms/Основная.xml",
+        "SettingsStorages/Настройки/Forms/Основная/Ext/Form.xml",
+        "ChartsOfCalculationTypes/Начисления/Forms/ФормаСписка.xml",
+        "ChartsOfCalculationTypes/Начисления/Forms/ФормаСписка/Ext/Form.xml",
     ):
         assert is_wanted(name, FORMAT_TREE), name
 
@@ -70,7 +75,6 @@ def test_иерархический_отбор_сохраняет_доказат
         "HTTPServices/Сервис/Forms/Ложная/Ext/Form.bin",
         "WebServices/Сервис/Forms/Ложная.xml",
         "Sequences/Порядок/Forms/Ложная/Ext/Form.bin",
-        "SettingsStorages/Настройки/Forms/Ложная.xml",
         "Other/Form.xml",
     ],
 )

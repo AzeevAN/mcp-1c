@@ -16,10 +16,11 @@ FORMAT_FLAT = "flat"
 _TREE_SUFFIXES = {".bsl"}
 _TREE_FORM_FOLDERS = {
     "AccumulationRegisters", "BusinessProcesses", "Catalogs",
-    "ChartsOfAccounts", "ChartsOfCharacteristicTypes", "CommonForms",
+    "ChartsOfAccounts", "ChartsOfCalculationTypes",
+    "ChartsOfCharacteristicTypes", "CommonForms",
     "DataProcessors", "DocumentJournals", "Documents", "Enums",
     "ExchangePlans", "FilterCriteria", "InformationRegisters", "Reports",
-    "Tasks",
+    "SettingsStorages", "Tasks",
 }
 # Плоская: модуль в `.txt`, код формы — записью внутри контейнера `.Form`.
 _FLAT_SUFFIXES = {".txt", ".Form"}
@@ -305,7 +306,12 @@ def enough_space(нужно: int, каталог: Path) -> tuple[bool, int]:
 # происхождения структуры. Исходные XML объектов по-прежнему не сохраняются,
 # но старый корень без нового каталога нельзя считать разобранным по текущему
 # правилу: восстановить доказательство после удаления ZIP уже неоткуда.
-SELECTION_VERSION = 5
+#
+# 6: иерархический отбор берёт формы `SettingsStorages` и
+# `ChartsOfCalculationTypes` (дескриптор, `Form.xml`, `Form.bin`). На
+# «Автосалон6» без этого 19 форм хранилищ оставались без структуры: Module.bsl
+# уже попадал в корень как `.bsl`, а XML формы отбор отбрасывал.
+SELECTION_VERSION = 6
 
 
 def extract(архив: Path, корень: Path) -> tuple[int, int]:

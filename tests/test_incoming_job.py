@@ -1,11 +1,13 @@
 """Разбор по кнопке: право, единственность, отказ по месту."""
+import json
 import zipfile
 from pathlib import Path
 
 from conftest import build_configuration, modules_configuration_xml, состарить, write_export, живой_клиент
 from starlette.applications import Starlette
 
-from mcp1c import dashboard
+from mcp1c import dashboard_backend as dashboard
+from mcp1c.dashboard_runtime import DASHBOARD_ON, routes
 from mcp1c.registry import Registry
 
 
@@ -18,7 +20,7 @@ def _стенд(tmp_path):
     registry.add_configuration(write_export(входящее, build_configuration(name="Розница")))
     registry.incoming_dir.mkdir(parents=True, exist_ok=True)
     _выгрузка(registry.incoming_dir / "модули.zip")
-    client = живой_клиент(Starlette(routes=dashboard.routes(registry)))
+    client = живой_клиент(Starlette(routes=routes(registry, mode=DASHBOARD_ON)))
     return client, registry
 
 
@@ -36,7 +38,7 @@ def test_разбор_требует_админского_токена(tmp_path,
     client, _ = _стенд(tmp_path)
 
     ответ = client.post(
-        "/sources/incoming/parse", data={"name": "модули.zip"}, follow_redirects=False
+        "/api/v1/sources/incoming/parse", json={"name": "модули.zip"}, follow_redirects=False
     )
 
     assert ответ.status_code == 403
@@ -47,7 +49,7 @@ def test_без_admin_token_маршрута_нет(tmp_path, monkeypatch):
     monkeypatch.delenv("API_TOKEN", raising=False)
     client, _ = _стенд(tmp_path)
 
-    ответ = client.post("/sources/incoming/parse", data={"name": "модули.zip"})
+    ответ = client.post("/api/v1/sources/incoming/parse", json={"name": "модули.zip"})
 
     assert ответ.status_code == 404
 
@@ -59,10 +61,10 @@ def test_разбор_заводит_источник_и_не_трогает_и�
     client.post("/login", data={"token": "секрет"})
 
     ответ = client.post(
-        "/sources/incoming/parse", data={"name": "модули.zip"}, follow_redirects=False
+        "/api/v1/sources/incoming/parse", json={"name": "модули.zip"}, follow_redirects=False
     )
 
-    assert ответ.status_code == 303
+    assert ответ.status_code == 202
     дождаться(client, lambda t: "Розница:modules" in t or "разобрано" in t)
     assert (registry.incoming_dir / "модули.zip").is_file()
     assert "Розница:modules" in registry.sources
@@ -75,12 +77,12 @@ def test_имя_с_выходом_наружу_отвергается(tmp_path, 
     client.post("/login", data={"token": "секрет"})
 
     ответ = client.post(
-        "/sources/incoming/parse",
-        data={"name": "../../etc/passwd"},
+        "/api/v1/sources/incoming/parse",
+        json={"name": "../../etc/passwd"},
         follow_redirects=False,
     )
 
-    assert ответ.status_code == 303
+    assert ответ.status_code == 404
 
 
 def test_битый_архив_не_роняет_обработчик(tmp_path, monkeypatch):
@@ -93,11 +95,11 @@ def test_битый_архив_не_роняет_обработчик(tmp_path, 
     состарить(битый)
 
     ответ = client.post(
-        "/sources/incoming/parse", data={"name": "битый.zip"}, follow_redirects=False
+        "/api/v1/sources/incoming/parse", json={"name": "битый.zip"}, follow_redirects=False
     )
 
-    assert ответ.status_code == 303
-    текст = client.get("/sources").text
+    assert ответ.status_code == 400
+    текст = json.dumps(client.get("/api/v1/sources/admin").json(), ensure_ascii=False)
     assert "битый.zip" in текст
     assert "zip-архив" in текст
     assert not any(
@@ -114,10 +116,10 @@ def test_нет_места_отражается_в_задании(tmp_path, monk
     monkeypatch.setattr("mcp1c.intake.enough_space", lambda нужно, каталог: (False, 0))
 
     ответ = client.post(
-        "/sources/incoming/parse", data={"name": "модули.zip"}, follow_redirects=False
+        "/api/v1/sources/incoming/parse", json={"name": "модули.zip"}, follow_redirects=False
     )
 
-    assert ответ.status_code == 303
+    assert ответ.status_code == 202
     текст = дождаться(
         client, lambda t: "недостаточно свободного места" in t
     )
@@ -136,10 +138,10 @@ def test_несколько_конфигураций_разбор_не_прив�
     client.post("/login", data={"token": "секрет"})
 
     ответ = client.post(
-        "/sources/incoming/parse", data={"name": "модули.zip"}, follow_redirects=False
+        "/api/v1/sources/incoming/parse", json={"name": "модули.zip"}, follow_redirects=False
     )
 
-    assert ответ.status_code == 303
+    assert ответ.status_code == 202
     страница = дождаться(client, lambda t: "модули.zip" in t and "ошибка" in t)
     assert "Розница:modules" not in registry.sources
     assert "УправлениеТорговлей:modules" not in registry.sources
@@ -163,12 +165,12 @@ def test_выбор_конфигурации_привязывает_код_к_н
     client.post("/login", data={"token": "секрет"})
 
     ответ = client.post(
-        "/sources/incoming/parse",
-        data={"name": "модули.zip", "configuration": "УправлениеТорговлей"},
+        "/api/v1/sources/incoming/parse",
+        json={"name": "модули.zip", "configuration": "УправлениеТорговлей"},
         follow_redirects=False,
     )
 
-    assert ответ.status_code == 303
+    assert ответ.status_code == 202
     дождаться(client, lambda t: "УправлениеТорговлей:modules" in t or dashboard.JOB_DONE in t)
     assert "УправлениеТорговлей:modules" in registry.sources
     assert "Розница:modules" not in registry.sources
@@ -188,13 +190,13 @@ def test_неизвестная_конфигурация_отклоняется_
     client.post("/login", data={"token": "секрет"})
 
     ответ = client.post(
-        "/sources/incoming/parse",
-        data={"name": "модули.zip", "configuration": "НетТакой"},
+        "/api/v1/sources/incoming/parse",
+        json={"name": "модули.zip", "configuration": "НетТакой"},
         follow_redirects=False,
     )
 
-    assert ответ.status_code == 303
-    текст = client.get("/sources").text
+    assert ответ.status_code == 400
+    текст = json.dumps(client.get("/api/v1/sources/admin").json(), ensure_ascii=False)
     assert "НетТакой" in текст
     assert "реестре" in текст
     assert "Розница:modules" not in registry.sources
@@ -214,7 +216,7 @@ def test_разбор_записан_в_registry_json(tmp_path, monkeypatch):
     client.post("/login", data={"token": "секрет"})
 
     client.post(
-        "/sources/incoming/parse", data={"name": "модули.zip"}, follow_redirects=False
+        "/api/v1/sources/incoming/parse", json={"name": "модули.zip"}, follow_redirects=False
     )
     # Ждём «готово» у задания: публикация памяти, корня и registry.json теперь
     # завершается до возврата `add_modules`.
@@ -242,8 +244,8 @@ def test_ноль_отобранных_файлов_не_даёт_разобра
     состарить(метаданные)
 
     client.post(
-        "/sources/incoming/parse",
-        data={"name": "метаданные.zip"},
+        "/api/v1/sources/incoming/parse",
+        json={"name": "метаданные.zip"},
         follow_redirects=False,
     )
 
@@ -265,11 +267,11 @@ def test_копирующийся_файл_обработчик_не_берёт(
     # `состарить` намеренно не зовём: файл только что записан.
 
     ответ = client.post(
-        "/sources/incoming/parse", data={"name": "свежий.zip"}, follow_redirects=False
+        "/api/v1/sources/incoming/parse", json={"name": "свежий.zip"}, follow_redirects=False
     )
 
-    assert ответ.status_code == 303
-    текст = client.get("/sources").text
+    assert ответ.status_code == 409
+    текст = json.dumps(client.get("/api/v1/sources/admin").json(), ensure_ascii=False)
     assert "копирование ещё" in текст
     assert "Розница:modules" not in registry.sources
 
@@ -284,15 +286,15 @@ def test_занятость_объясняется(tmp_path, monkeypatch):
     assert scanner.try_start("другая.zip") == (True, ())
     try:
         ответ = client.post(
-            "/sources/incoming/parse",
-            data={"name": "модули.zip"},
+            "/api/v1/sources/incoming/parse",
+            json={"name": "модули.zip"},
             follow_redirects=False,
         )
     finally:
         scanner.finish("другая.zip")
 
-    assert ответ.status_code == 303
-    текст = client.get("/sources").text
+    assert ответ.status_code == 409
+    текст = json.dumps(client.get("/api/v1/sources/admin").json(), ensure_ascii=False)
     assert "уже идёт разбор" in текст
     assert "Розница:modules" not in registry.sources
 
@@ -315,7 +317,7 @@ def test_падение_проверки_места_названо_своей_п
     monkeypatch.setattr("mcp1c.intake.enough_space", нет_прав)
 
     client.post(
-        "/sources/incoming/parse", data={"name": "модули.zip"}, follow_redirects=False
+        "/api/v1/sources/incoming/parse", json={"name": "модули.zip"}, follow_redirects=False
     )
 
     текст = дождаться(client, lambda t: "свободное место" in t)
@@ -348,7 +350,7 @@ def test_сканирование_идёт_не_в_цикле_событий(tmp
 
     monkeypatch.setattr(IncomingScanner, "scan", подмена)
 
-    client.get("/sources")
+    client.get("/api/v1/sources/admin")
 
     assert где_считали == ["поток"]
 
@@ -381,7 +383,7 @@ def test_запись_неудачи_идёт_не_в_цикле_событий(
     monkeypatch.setattr(IncomingScanner, "note_failure", подмена)
 
     client.post(
-        "/sources/incoming/parse", data={"name": "битый.zip"}, follow_redirects=False
+        "/api/v1/sources/incoming/parse", json={"name": "битый.zip"}, follow_redirects=False
     )
 
     assert где_писали == ["поток"]
@@ -409,7 +411,10 @@ def test_снятие_источника_идёт_не_в_цикле_событ�
 
     monkeypatch.setattr(Registry, "remove", подмена)
 
-    client.post("/sources/remove", data={"id": "Розница"}, follow_redirects=False)
+    client.post(
+        "/api/v1/sources/remove",
+        json={"id": "Розница", "confirmation": "Розница"},
+    )
 
     assert где_снимали == ["поток"]
     assert "Розница" not in registry.sources
@@ -421,7 +426,7 @@ def дождаться(client, условие, таймаут: float = 20.0) -> 
     предел = time.monotonic() + таймаут
     текст = ""
     while time.monotonic() < предел:
-        текст = client.get("/sources").text
+        текст = json.dumps(client.get("/api/v1/sources/admin").json(), ensure_ascii=False)
         if условие(текст):
             return текст
         time.sleep(0.05)

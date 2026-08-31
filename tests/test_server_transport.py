@@ -179,6 +179,52 @@ def test_http_по_умолчанию_слушает_loopback_и_не_довер
     }
 
 
+def test_http_доверяет_proxy_по_native_runtime_переменной(tmp_path, monkeypatch):
+    class FakeRegistry:
+        configurations = [object()]
+
+        def __init__(self, data):
+            self.data = data
+
+        def startup(self):
+            return []
+
+        def snapshot(self):
+            return self
+
+    параметры = {}
+    monkeypatch.setenv("MCP1C_ACCESS", "https-proxy")
+    monkeypatch.setattr(server_module, "Registry", FakeRegistry)
+    monkeypatch.setattr(
+        server_module, "build_server", lambda registry, **kwargs: object()
+    )
+    monkeypatch.setattr(
+        server_module,
+        "_run_streamable_http",
+        lambda server, **kwargs: параметры.update(kwargs),
+    )
+
+    assert server_module.main(["--data", str(tmp_path)]) == 0
+    assert параметры["trust_proxy_headers"] is True
+
+
+def test_require_tokens_останавливает_сервер_до_registry(tmp_path, monkeypatch):
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    monkeypatch.delenv("ADMIN_TOKEN", raising=False)
+    monkeypatch.setattr(
+        server_module,
+        "Registry",
+        lambda data: pytest.fail("Registry не должен создаваться"),
+    )
+
+    with pytest.raises(SystemExit) as ошибка:
+        server_module.main(
+            ["--data", str(tmp_path), "--require-tokens"]
+        )
+
+    assert ошибка.value.code == 2
+
+
 def test_uvicorn_доверяет_forwarded_headers_только_по_явному_флагу(monkeypatch):
     вызовы = []
 

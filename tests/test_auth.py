@@ -18,7 +18,7 @@ import hmac
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
-from mcp1c import dashboard
+from mcp1c.dashboard_runtime import DASHBOARD_ON, routes
 from mcp1c.registry import Registry
 
 from conftest import build_configuration, write_export
@@ -31,7 +31,14 @@ def client_for(tmp_path, **client_options) -> tuple[TestClient, Registry]:
     incoming.mkdir()
     registry = Registry(data_dir)
     registry.add_configuration(write_export(incoming, build_configuration()))
-    app = Starlette(routes=dashboard.routes(registry))
+    static_dir = tmp_path / "dist"
+    static_dir.mkdir()
+    (static_dir / "index.html").write_text(
+        "<!doctype html><title>Дашборд</title><p>токен</p>", encoding="utf-8"
+    )
+    app = Starlette(
+        routes=routes(registry, mode=DASHBOARD_ON, static_dir=static_dir)
+    )
     base_url = str(client_options.get("base_url", "http://testserver")).rstrip("/")
     headers = dict(client_options.get("headers", {}))
     headers.setdefault("origin", base_url)
@@ -44,29 +51,32 @@ def test_без_api_token_чтение_открыто(tmp_path, monkeypatch):
     monkeypatch.delenv("API_TOKEN", raising=False)
     client, _ = client_for(tmp_path)
 
-    assert client.get("/").status_code == 200
-    assert "ТестоваяКонфигурация" in client.get("/").text
+    response = client.get("/api/v1/dashboard/bootstrap")
+
+    assert response.status_code == 200
+    assert response.json()["summary"]["configurations"] == 1
 
 
 def test_с_api_token_чтение_закрыто(tmp_path, monkeypatch):
     monkeypatch.setenv("API_TOKEN", "reader-token")
     client, _ = client_for(tmp_path)
 
-    response = client.get("/")
+    response = client.get("/api/v1/dashboard/bootstrap")
 
     assert response.status_code == 401
-    # Имя конфигурации — уже сведение о клиенте, его быть не должно.
-    assert "ТестоваяКонфигурация" not in response.text
+    assert "summary" not in response.json()
 
 
 def test_токен_чтения_в_заголовке_открывает_доступ(tmp_path, monkeypatch):
     monkeypatch.setenv("API_TOKEN", "reader-token")
     client, _ = client_for(tmp_path)
 
-    response = client.get("/", headers={"x-api-token": "reader-token"})
+    response = client.get(
+        "/api/v1/dashboard/bootstrap", headers={"x-api-token": "reader-token"}
+    )
 
     assert response.status_code == 200
-    assert "ТестоваяКонфигурация" in response.text
+    assert response.json()["summary"]["configurations"] == 1
 
 
 def test_bearer_тоже_принимается(tmp_path, monkeypatch):
@@ -74,7 +84,10 @@ def test_bearer_тоже_принимается(tmp_path, monkeypatch):
     monkeypatch.setenv("API_TOKEN", "reader-token")
     client, _ = client_for(tmp_path)
 
-    response = client.get("/", headers={"authorization": "Bearer reader-token"})
+    response = client.get(
+        "/api/v1/dashboard/bootstrap",
+        headers={"authorization": "Bearer reader-token"},
+    )
 
     assert response.status_code == 200
 
@@ -83,7 +96,9 @@ def test_неверный_токен_чтения_не_пускает(tmp_path, 
     monkeypatch.setenv("API_TOKEN", "reader-token")
     client, _ = client_for(tmp_path)
 
-    assert client.get("/", headers={"x-api-token": "wrong-token"}).status_code == 401
+    assert client.get(
+        "/api/v1/dashboard/bootstrap", headers={"x-api-token": "wrong-token"}
+    ).status_code == 401
 
 
 def test_вход_по_токену_чтения_даёт_сессию_без_прав_записи(tmp_path, monkeypatch):
@@ -94,12 +109,18 @@ def test_вход_по_токену_чтения_даёт_сессию_без_п
 
     client.post("/login", data={"token": "reader-token"})
 
-    assert client.get("/").status_code == 200
-    # Читатель видит страницы, но не формы правки.
-    assert "Завести псевдоним" not in client.get("/dictionary").text
+    assert client.get("/api/v1/dashboard/bootstrap").status_code == 200
+    assert client.get("/api/v1/dashboard/bootstrap").json()["permissions"] == {
+        "read": True,
+        "admin": False,
+    }
     отказ = client.post(
-        "/dictionary/alias",
-        data={"phrase": "склад", "targets": "Справочник.Контрагенты"},
+        "/api/v1/dictionary/aliases",
+        json={
+            "phrase": "склад",
+            "targets": ["Справочник.Контрагенты"],
+            "config": "ТестоваяКонфигурация",
+        },
     )
     assert отказ.status_code == 403
     assert registry.dictionary.aliases == {}
@@ -137,13 +158,16 @@ def test_вход_по_админскому_токену_даёт_и_чтени�
 
     client.post("/login", data={"token": "admin-token"})
 
-    assert client.get("/").status_code == 200
+    assert client.get("/api/v1/dashboard/bootstrap").status_code == 200
     ответ = client.post(
-        "/dictionary/alias",
-        data={"phrase": "склад", "targets": "Справочник.Контрагенты"},
-        follow_redirects=False,
+        "/api/v1/dictionary/aliases",
+        json={
+            "phrase": "склад",
+            "targets": ["Справочник.Контрагенты"],
+            "config": "ТестоваяКонфигурация",
+        },
     )
-    assert ответ.status_code == 303
+    assert ответ.status_code == 200
 
 
 def test_админский_токен_работает_и_как_токен_чтения(tmp_path, monkeypatch):
@@ -152,7 +176,9 @@ def test_админский_токен_работает_и_как_токен_ч�
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
     client, _ = client_for(tmp_path)
 
-    assert client.get("/", headers={"x-api-token": "admin-token"}).status_code == 200
+    assert client.get(
+        "/api/v1/dashboard/bootstrap", headers={"x-api-token": "admin-token"}
+    ).status_code == 200
 
 
 def test_страница_входа_доступна_без_токена(tmp_path, monkeypatch):
@@ -180,9 +206,9 @@ def test_кириллический_токен_в_заголовке_не_рон
 
     # Заголовок с кириллицей не собрать — клиент отвергнет его сам, поэтому
     # проверяем то, что достижимо: без заголовка отказ, через форму — вход.
-    assert client.get("/").status_code == 401
+    assert client.get("/api/v1/dashboard/bootstrap").status_code == 401
     client.post("/login", data={"token": "секрет"})
-    assert client.get("/").status_code == 200
+    assert client.get("/api/v1/dashboard/bootstrap").status_code == 200
 
 
 def test_все_пути_авторизации_сравнивают_токены_constant_time(
@@ -210,19 +236,22 @@ def test_все_пути_авторизации_сравнивают_токен�
         (
             "чтение",
             lambda: dashboard_client.get(
-                "/", headers={"x-api-token": "reader-token"}
+                "/api/v1/dashboard/bootstrap", headers={"x-api-token": "reader-token"}
             ),
             200,
         ),
         (
             "администрирование",
             lambda: dashboard_client.post(
-                "/dictionary/alias",
+                "/api/v1/dictionary/aliases",
                 headers={"x-api-token": "admin-token"},
-                data={"phrase": "склад", "targets": "Справочник.Контрагенты"},
-                follow_redirects=False,
+                json={
+                    "phrase": "склад",
+                    "targets": ["Справочник.Контрагенты"],
+                    "config": "ТестоваяКонфигурация",
+                },
             ),
-            303,
+            200,
         ),
         (
             "вход",

@@ -1,4 +1,4 @@
-"""JSON API карточек сохраняет буквальный ответ MCP и classic UI."""
+"""JSON API карточек сохраняет буквальный ответ MCP и безопасный HTML."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
 from mcp1c import tools
-from mcp1c.dashboard import render_markdown
-from mcp1c.dashboard_runtime import DASHBOARD_SPA, routes
+from mcp1c.dashboard_backend import render_markdown
+from mcp1c.dashboard_runtime import DASHBOARD_ON, routes
 from mcp1c.registry import Registry
 
 from conftest import build_configuration, write_export, write_syntax
@@ -19,7 +19,7 @@ def _client(registry: Registry, tmp_path) -> TestClient:
         Starlette(
             routes=routes(
                 registry,
-                mode=DASHBOARD_SPA,
+                mode=DASHBOARD_ON,
                 static_dir=tmp_path / "dashboard-dist",
             )
         )
@@ -137,7 +137,7 @@ def test_object_card_api_объясняет_отсутствующий_registry(
     assert "Не загружено ни одной конфигурации" in response.json()["error"]
 
 
-def test_card_api_неизвестную_подробность_нормализует_как_classic(tmp_path):
+def test_card_api_неизвестную_подробность_нормализует_к_fields(tmp_path):
     registry = _registry(tmp_path)
 
     with _client(registry, tmp_path) as client:

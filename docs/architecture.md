@@ -21,8 +21,9 @@ src/mcp1c/
 ├── index_cache.py        проверяемый расходный кэш
 ├── intake.py             безопасный разбор incoming-архивов
 ├── dictionary.py         встроенный и локальный словарь
-├── dashboard.py          классический HTML и общие операции UI
-└── dashboard_runtime.py  выбор off/classic/spa и API SPA
+├── dashboard_backend.py  auth, загрузка, задания и общие операции SPA
+├── dashboard_runtime.py  режим on/off, JSON API и раздача SPA
+└── runtime_config.py     проверка dashboard/access и Docker-токенов
 ```
 
 `server.py` — единственный слой, зависящий от официального MCP SDK.
@@ -133,14 +134,14 @@ npm run build
 Compose без запуска контейнера:
 
 ```bash
-docker compose -f docker-compose.yml config --quiet
-docker compose -f docker-compose.yml -f docker-compose.classic.yml config --quiet
-docker compose -f docker-compose.yml -f docker-compose.dashboard.yml config --quiet
+docker compose -f compose.yaml config --quiet
 ```
 
-Docker runtime проверяется каждым из трёх режимов: сборка, состояние `healthy`,
-UID/GID процесса, запись в `/data`, `/health`, наличие или отсутствие UI и
-сохранение Registry после пересоздания.
+Docker runtime проверяется четырьмя сочетаниями одного image ID:
+`on/off` × `local/https-proxy`. В каждом запуске проверяются состояние
+`healthy`, UID/GID процесса, запись в `/data`, `/health`, MCP, наличие или
+отсутствие UI и сохранение Registry после пересоздания. Порт хоста остаётся
+привязан к loopback; внешний HTTPS proxy не входит в Compose.
 
 ## Измерения
 

@@ -489,7 +489,7 @@ def чистый_журнал_загрузок():
     Он намеренно глобальный — это состояние процесса, а не данных, — поэтому
     изоляцию обеспечивает фикстура, а не устройство модуля.
     """
-    from mcp1c import dashboard
+    from mcp1c import dashboard_backend as dashboard
 
     dashboard._JOBS.clear()
     yield

@@ -113,7 +113,7 @@ def test_дашборд_не_рвёт_цитату_на_пустой_строк�
     """Пустая строка внутри цитаты пишется одним знаком `>` без пробела.
     `render_markdown` узнавал только `«> »` с пробелом, и оговорка на странице
     разваливалась на три блока с абзацами `&gt;` между ними."""
-    from mcp1c.dashboard import render_markdown
+    from mcp1c.dashboard_backend import render_markdown
 
     html = render_markdown("> Первая строка.\n>\n> Вторая строка.")
 

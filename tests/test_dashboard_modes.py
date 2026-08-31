@@ -8,9 +8,8 @@ from starlette.testclient import TestClient
 
 from mcp1c import tools
 from mcp1c.dashboard_runtime import (
-    DASHBOARD_CLASSIC,
     DASHBOARD_OFF,
-    DASHBOARD_SPA,
+    DASHBOARD_ON,
     DashboardModeError,
     dashboard_mode,
     routes,
@@ -18,14 +17,14 @@ from mcp1c.dashboard_runtime import (
 from mcp1c.registry import Registry
 
 
-def test_по_умолчанию_остаётся_классический_дашборд(monkeypatch):
+def test_по_умолчанию_включён_современный_дашборд(monkeypatch):
     monkeypatch.delenv("MCP1C_DASHBOARD", raising=False)
 
-    assert dashboard_mode() == DASHBOARD_CLASSIC
+    assert dashboard_mode() == DASHBOARD_ON
 
 
-@pytest.mark.parametrize("mode", [DASHBOARD_OFF, DASHBOARD_CLASSIC, DASHBOARD_SPA])
-def test_поддерживаются_три_явных_режима(monkeypatch, mode):
+@pytest.mark.parametrize("mode", [DASHBOARD_ON, DASHBOARD_OFF])
+def test_поддерживаются_два_явных_режима(monkeypatch, mode):
     monkeypatch.setenv("MCP1C_DASHBOARD", mode)
 
     assert dashboard_mode() == mode
@@ -34,7 +33,7 @@ def test_поддерживаются_три_явных_режима(monkeypatch
 def test_опечатка_в_режиме_останавливает_запуск(monkeypatch):
     monkeypatch.setenv("MCP1C_DASHBOARD", "react")
 
-    with pytest.raises(DashboardModeError, match="off, classic, spa"):
+    with pytest.raises(DashboardModeError, match="on, off"):
         dashboard_mode()
 
 
@@ -44,21 +43,12 @@ def test_off_не_регистрирует_ни_html_ни_api(tmp_path):
     assert routes(registry, mode=DASHBOARD_OFF) == []
 
 
-def test_classic_оставляет_прежние_маршруты(tmp_path):
-    registry = Registry(tmp_path / "data")
-    paths = [route.path for route in routes(registry, mode=DASHBOARD_CLASSIC)]
-
-    assert "/" in paths
-    assert "/sources" in paths
-    assert "/api/v1/dashboard/bootstrap" not in paths
-
-
 def test_spa_отдаёт_api_и_понятный_ответ_без_сборки(tmp_path):
     registry = Registry(tmp_path / "data")
     app = Starlette(
         routes=routes(
             registry,
-            mode=DASHBOARD_SPA,
+            mode=DASHBOARD_ON,
             static_dir=tmp_path / "dashboard-dist",
         )
     )
@@ -70,7 +60,7 @@ def test_spa_отдаёт_api_и_понятный_ответ_без_сборки
     assert bootstrap.status_code == 200
     assert bootstrap.json() == {
         "api_version": "v1",
-        "dashboard_mode": "spa",
+        "dashboard_mode": "on",
         "server": {"status": "ok", "version": "1.3.0"},
         "permissions": {"read": True, "admin": False},
         "authentication": {
@@ -97,7 +87,7 @@ def test_spa_раздаёт_index_и_маршруты_клиента(tmp_path):
         "<!doctype html><title>Новый дашборд</title><div id=app></div>",
         encoding="utf-8",
     )
-    app = Starlette(routes=routes(registry, mode=DASHBOARD_SPA, static_dir=static_dir))
+    app = Starlette(routes=routes(registry, mode=DASHBOARD_ON, static_dir=static_dir))
 
     with TestClient(app) as client:
         root = client.get("/")
@@ -118,7 +108,7 @@ def test_spa_оставляет_единую_серверную_проверку
     static_dir = tmp_path / "dashboard-dist"
     static_dir.mkdir()
     (static_dir / "index.html").write_text("<div id=root></div>", encoding="utf-8")
-    app = Starlette(routes=routes(registry, mode=DASHBOARD_SPA, static_dir=static_dir))
+    app = Starlette(routes=routes(registry, mode=DASHBOARD_ON, static_dir=static_dir))
 
     with TestClient(app) as client:
         page = client.get("/login")
@@ -152,7 +142,7 @@ def test_spa_без_сессии_перенаправляет_прямую_сс�
     static_dir = tmp_path / "dashboard-dist"
     static_dir.mkdir()
     (static_dir / "index.html").write_text("<div id=root></div>", encoding="utf-8")
-    app = Starlette(routes=routes(registry, mode=DASHBOARD_SPA, static_dir=static_dir))
+    app = Starlette(routes=routes(registry, mode=DASHBOARD_ON, static_dir=static_dir))
 
     with TestClient(app) as client:
         denied = client.get("/sources", follow_redirects=False)
@@ -172,7 +162,7 @@ def test_spa_api_источников_требует_токен_чтения(tmp
     app = Starlette(
         routes=routes(
             registry,
-            mode=DASHBOARD_SPA,
+            mode=DASHBOARD_ON,
             static_dir=tmp_path / "dashboard-dist",
         )
     )
@@ -197,7 +187,7 @@ def test_bootstrap_считает_синтетические_источники(
     app = Starlette(
         routes=routes(
             реестр_с_кодом,
-            mode=DASHBOARD_SPA,
+            mode=DASHBOARD_ON,
             static_dir=tmp_path / "dashboard-dist",
         )
     )
@@ -224,7 +214,7 @@ def test_sources_api_группирует_конфигурацию_модули_
     app = Starlette(
         routes=routes(
             registry,
-            mode=DASHBOARD_SPA,
+            mode=DASHBOARD_ON,
             static_dir=tmp_path / "dashboard-dist",
         )
     )
@@ -283,7 +273,7 @@ def test_sources_api_при_двойной_смене_поколения_про�
     app = Starlette(
         routes=routes(
             registry,
-            mode=DASHBOARD_SPA,
+            mode=DASHBOARD_ON,
             static_dir=tmp_path / "dashboard-dist",
         )
     )

@@ -36,7 +36,7 @@ from starlette.responses import JSONResponse, PlainTextResponse, RedirectRespons
 
 from . import __version__, tools
 from .auth import same_token
-from .dashboard import MAX_UPLOAD, can_read
+from .dashboard_backend import MAX_UPLOAD, can_read
 from .dashboard_runtime import routes as dashboard_routes
 from .process_restart import RestartController
 from .reference_provider import (
@@ -47,6 +47,13 @@ from .reference_provider import (
     ReferenceService,
 )
 from .registry import Registry, RegistryError
+from .runtime_config import (
+    ACCESS_HTTPS_PROXY,
+    AccessModeError,
+    TokenConfigurationError,
+    access_mode,
+    require_tokens,
+)
 
 # Лимит файла и лимит HTTP-тела различаются: multipart добавляет служебные
 # заголовки и разделители. Остальные значения соответствуют цене операций:
@@ -973,7 +980,22 @@ def main(argv: list[str] | None = None) -> int:
             "используется Docker-образом"
         ),
     )
+    parser.add_argument(
+        "--require-tokens",
+        action="store_true",
+        help=(
+            "до старта потребовать два разных безопасных API_TOKEN и "
+            "ADMIN_TOKEN; используется официальным Docker-образом"
+        ),
+    )
     args = parser.parse_args(argv)
+
+    try:
+        access = access_mode()
+        if args.require_tokens:
+            require_tokens()
+    except (AccessModeError, TokenConfigurationError) as error:
+        parser.error(str(error))
 
     if args.require_writable_data:
         try:
@@ -1005,7 +1027,9 @@ def main(argv: list[str] | None = None) -> int:
             server,
             host=args.host,
             port=args.port,
-            trust_proxy_headers=args.trust_proxy_headers,
+            trust_proxy_headers=(
+                args.trust_proxy_headers or access == ACCESS_HTTPS_PROXY
+            ),
         )
     return 0
 

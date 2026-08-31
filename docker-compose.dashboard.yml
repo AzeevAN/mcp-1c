@@ -1,8 +1,0 @@
-services:
-  mcp1c:
-    build:
-      context: .
-      target: runtime-dashboard
-    image: mcp1c:dashboard
-    environment:
-      MCP1C_DASHBOARD: spa

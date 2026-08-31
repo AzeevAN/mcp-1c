@@ -16,7 +16,7 @@ MCP, там разметка несёт структуру — обратные 
 
 from __future__ import annotations
 
-from mcp1c.dashboard import render_markdown
+from mcp1c.dashboard_backend import render_markdown
 
 
 def test_заголовки_разных_уровней():
@@ -78,51 +78,3 @@ def test_звёздочка_в_обычном_тексте_не_считаетс
 
 def test_пустой_текст():
     assert render_markdown("") == ""
-
-
-def _client(tmp_path):
-    from starlette.applications import Starlette
-    from starlette.testclient import TestClient
-
-    from mcp1c import dashboard
-    from mcp1c.registry import Registry
-
-    from conftest import build_configuration, write_export
-
-    data_dir = tmp_path / "data"
-    incoming = tmp_path / "incoming"
-    data_dir.mkdir()
-    incoming.mkdir()
-    registry = Registry(data_dir)
-    registry.add_configuration(write_export(incoming, build_configuration()))
-    return TestClient(Starlette(routes=dashboard.routes(registry)))
-
-
-def test_карточка_объекта_разобрана(tmp_path):
-    client = _client(tmp_path)
-
-    ответ = client.get(
-        "/object?config=ТестоваяКонфигурация&name=Справочник.Контрагенты"
-    )
-
-    assert ответ.status_code == 200
-    assert "<h1>" in ответ.text
-    assert "<code>Справочник.Контрагенты</code>" in ответ.text
-    # Сырых маркеров быть не должно.
-    assert "# Справочник" not in ответ.text
-
-
-def test_переключатель_показывает_исходный_текст(tmp_path):
-    """Дашборд — инструмент проверки: буквальный ответ агенту должен быть виден."""
-    client = _client(tmp_path)
-
-    разобрано = client.get(
-        "/object?config=ТестоваяКонфигурация&name=Справочник.Контрагенты"
-    ).text
-    сыро = client.get(
-        "/object?config=ТестоваяКонфигурация&name=Справочник.Контрагенты&raw=1"
-    ).text
-
-    assert "как есть" in разобрано
-    assert "# Справочник" in сыро
-    assert "<h1>" not in сыро.split("</style>")[-1]

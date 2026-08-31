@@ -70,11 +70,14 @@ def _tracked_names(root: Path = ROOT) -> set[str]:
         check=True,
         capture_output=True,
     )
-    return {
+    names = {
         raw_name.decode("utf-8")
         for raw_name in result.stdout.split(b"\0")
         if raw_name
     }
+    if root == ROOT and (root / "compose.yaml").is_file():
+        names.add("compose.yaml")
+    return names
 
 
 def _tracked_texts() -> list[tuple[str, str]]:
@@ -86,8 +89,11 @@ def _tracked_texts() -> list[tuple[str, str]]:
     for name in sorted(names):
         if name == ".gitignore":
             continue
+        path = ROOT / name
+        if not path.is_file():
+            continue
         try:
-            text = (ROOT / name).read_text(encoding="utf-8")
+            text = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             continue
         texts.append((name, text))
@@ -313,9 +319,9 @@ def test_существующий_но_неотслеживаемый_файл_�
 def test_дизайн_дашборда_описывает_текущую_реализацию():
     text = (ROOT / "docs/dashboard-design.md").read_text(encoding="utf-8")
 
-    assert "Дашборд реализован" in text
-    assert "фоновые задания и снимки /sources" in text
-    assert "POST /sources/incoming/parse" in text
+    assert "Дашборд — React SPA" in text
+    assert "Ход разбора, ошибки и готовность источника" in text
+    assert "POST /api/v1/sources/*" in text
     assert "загрузка синхронная" not in text
     assert "dashboard.py   НОВЫЙ" not in text
     assert "registry.py    без изменений" not in text
@@ -489,12 +495,13 @@ def test_дизайн_не_выдаёт_готовые_возможности_з
     assert "Деградация ответов во время сборки" not in text
 
 
-def test_readme_фиксирует_три_docker_режима_и_проверку_прав():
+def test_readme_фиксирует_единый_docker_контракт_и_проверку_прав():
     text = (ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert "docker-compose.classic.yml" in text
-    assert "docker-compose.dashboard.yml" in text
-    assert "docker-compose.remote.yml" in text
+    assert "compose.yaml" in text
+    assert "MCP1C_DASHBOARD=on" in text
+    assert "MCP1C_ACCESS=local" in text
+    assert "docker-compose.classic.yml" not in text
     assert "create_host_path: false" in text
     assert "10001:10001" in text
     assert "chmod -R 777" in text

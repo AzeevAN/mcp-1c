@@ -6,13 +6,9 @@ import logging
 from pathlib import Path
 
 import pytest
-from starlette.applications import Starlette
-from starlette.responses import PlainTextResponse
-from starlette.routing import Route
 
-from conftest import живой_клиент
 from module_samples import v8_container_bytes
-from mcp1c import cli, dashboard, tools
+from mcp1c import cli, tools
 from mcp1c.form_reader import MAX_BYTES
 from mcp1c.registry import STATUS_ERROR
 
@@ -147,107 +143,6 @@ def test_публичный_список_ограничен_двадцатью_�
     assert [problem.address for problem in coverage.problems] == [
         f"ОбщаяФорма.Форма{index:02d}" for index in range(20)
     ]
-
-
-def test_лимит_адресов_не_скрывает_точный_агрегат_категории(
-    tmp_path, реестр_из_кода, monkeypatch, capsys
-):
-    root = tmp_path / "code"
-    root.mkdir()
-    for index in range(25):
-        _write(
-            root,
-            f"CommonForm.Форма{index:02d}.Form",
-            _container(form=b"{,19}"),
-        )
-    registry = реестр_из_кода(root)
-    monkeypatch.setattr(cli, "_registry", lambda _args: registry)
-
-    coverage = tools.sources_snapshot(registry).code[0].coverage
-    mcp = tools.list_configurations(registry)
-    assert cli.main(["reg-list"]) == 0
-    command = capsys.readouterr().out
-    page = _dashboard_text(registry)
-
-    assert dict(coverage.problem_categories)["invalid_syntax"] == 25
-    for output in (mcp, command):
-        assert "invalid_syntax=25" in output
-        assert "Ещё проблем: 5" in output
-    assert "Таблица покрытия: структуры форм" in page
-    assert "Детальный разбор сохранён в" in page
-    assert "invalid_syntax=25" not in page
-    assert "Ещё проблем: 5" not in page
-
-
-def _dashboard_text(registry) -> str:
-    async def health(_request):
-        return PlainTextResponse("ok")
-
-    app = Starlette(routes=dashboard.routes(registry) + [Route("/health", health)])
-    return живой_клиент(app).get("/sources").text
-
-
-def test_mcp_и_cli_сохраняют_подробности_а_sources_показывает_таблицы(
-    tmp_path, реестр_из_кода, monkeypatch, capsys
-):
-    root = tmp_path / "code"
-    root.mkdir()
-    for index in range(25):
-        _write(
-            root,
-            f"CommonForm.Форма{index:02d}.Form",
-            _container(form=b"{99}"),
-        )
-    registry = реестр_из_кода(root)
-    monkeypatch.setattr(cli, "_registry", lambda _args: registry)
-
-    mcp = tools.list_configurations(registry)
-    assert cli.main(["reg-list"]) == 0
-    command = capsys.readouterr().out
-    page = _dashboard_text(registry)
-
-    for output in (mcp, command):
-        warning = output.index("ВНИМАНИЕ: покрытие кода неполно")
-        counters = output.index(
-            "Структуры форм: полностью 0, частично 25, не прочитано 0"
-        )
-        first = output.index("unknown_marker")
-        assert warning < counters < first
-        assert "ОбщаяФорма.Форма00" in output
-        assert "ОбщаяФорма.Форма19" in output
-        assert "ОбщаяФорма.Форма20" not in output
-        assert "Ещё проблем: 5" in output
-        assert "готов с ограничениями" in output
-
-    assert "готов с ограничениями" in page
-    assert "Таблица покрытия: модули и процедуры" in page
-    assert "Таблица покрытия: структуры форм" in page
-    assert "Таблица покрытия: модули форм" in page
-    assert "25 из 25" in page
-    assert "100,0%" in page
-    assert "ОбщаяФорма.Форма00" not in page
-    assert "unknown_marker" not in page
-    assert "Ещё проблем" not in page
-    assert "data/logs/" in page
-
-
-def test_sources_показывает_нулевой_знаменатель_без_деления_на_ноль(
-    tmp_path, реестр_из_кода
-):
-    root = tmp_path / "code"
-    root.mkdir()
-    _write(
-        root,
-        "CommonModules/Пустой/Ext/Module.bsl",
-        "",
-    )
-    registry = реестр_из_кода(root)
-
-    page = _dashboard_text(registry)
-
-    assert "Процедуры" in page
-    assert "0 из 0" in page
-    assert "—" in page
 
 
 @pytest.mark.parametrize("detail", ["fields", "full"])

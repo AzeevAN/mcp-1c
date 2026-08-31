@@ -1,4 +1,4 @@
-"""JSON API страницы «Запросы» сохраняет поисковый контракт classic UI."""
+"""JSON API страницы «Запросы» сохраняет поисковый контракт сервера."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import pytest
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
-from mcp1c.dashboard import MAX_QUERY_PHRASES
-from mcp1c.dashboard_runtime import DASHBOARD_SPA, routes
+from mcp1c.dashboard_backend import MAX_QUERY_PHRASES
+from mcp1c.dashboard_runtime import DASHBOARD_ON, routes
 from mcp1c.registry import Registry
 from mcp1c.search import MAX_QUERY_CHARS
 
@@ -19,7 +19,7 @@ def _client(registry: Registry, tmp_path) -> TestClient:
         Starlette(
             routes=routes(
                 registry,
-                mode=DASHBOARD_SPA,
+                mode=DASHBOARD_ON,
                 static_dir=tmp_path / "dashboard-dist",
             )
         )

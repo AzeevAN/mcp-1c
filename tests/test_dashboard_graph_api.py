@@ -1,4 +1,4 @@
-"""JSON API «Связей» сохраняет окрестность и раскладку classic UI."""
+"""JSON API «Связей» сохраняет окрестность и серверную раскладку."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import pytest
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
-from mcp1c.dashboard_runtime import DASHBOARD_SPA, routes
+from mcp1c.dashboard_runtime import DASHBOARD_ON, routes
 from mcp1c.graph_view import DEFAULT_LIMIT, bounds, neighbourhood
 from mcp1c.model import Configuration, Field, MetadataObject
 from mcp1c.registry import Registry
@@ -19,7 +19,7 @@ def _client(registry: Registry, tmp_path) -> TestClient:
         Starlette(
             routes=routes(
                 registry,
-                mode=DASHBOARD_SPA,
+                mode=DASHBOARD_ON,
                 static_dir=tmp_path / "dashboard-dist",
             )
         )
@@ -204,7 +204,9 @@ def test_graph_api_требует_токен_чтения(tmp_path, monkeypatch)
     ("given", "expected"),
     [("не число", DEFAULT_LIMIT), ("0", DEFAULT_LIMIT), ("900", 400)],
 )
-def test_graph_api_нормализует_предел_как_classic(tmp_path, given, expected):
+def test_graph_api_нормализует_предел_к_безопасному_диапазону(
+    tmp_path, given, expected
+):
     registry = _registry(tmp_path)
 
     with _client(registry, tmp_path) as client:

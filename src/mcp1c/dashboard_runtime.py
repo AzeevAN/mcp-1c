@@ -1,4 +1,4 @@
-"""Переключаемая оболочка дашборда: off, classic или React SPA.
+"""Переключаемая оболочка современного дашборда: on или off.
 
 Предметные данные и запись остаются в том же процессе ``Registry``. React
 получает только HTTP API и никогда не монтирует ``data/`` самостоятельно.
@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import secrets
 import shutil
 import tempfile
 from pathlib import Path
@@ -20,15 +21,26 @@ from starlette.formparsers import MultiPartException
 from starlette.requests import Request
 from starlette.responses import (
     FileResponse,
-    HTMLResponse,
     JSONResponse,
     PlainTextResponse,
     RedirectResponse,
 )
 from starlette.routing import Route
 
-from . import __version__, coverage_log, dashboard as classic_dashboard, tools
-from .dashboard import _authorized, _csrf_denied, _session_level, can_read
+from . import __version__, coverage_log, dashboard_backend, tools
+from .auth import same_token
+from .dashboard_backend import (
+    COOKIE,
+    LEVEL_ADMIN,
+    LEVEL_READ,
+    _SESSIONS,
+    _admin_token,
+    _api_token,
+    _authorized,
+    _csrf_denied,
+    _session_level,
+    can_read,
+)
 from .dictionary import ANY_CONFIGURATION, SOURCE_BUILTIN
 from .graph_view import DEFAULT_LIMIT as DEFAULT_GRAPH_LIMIT
 from .graph_view import bounds as graph_bounds
@@ -53,12 +65,14 @@ from .reference_provider import (
     ReferenceValidationError,
 )
 from .render import DETAIL_LEVELS
+from .runtime_config import (
+    DASHBOARD_MODES,
+    DASHBOARD_OFF,
+    DASHBOARD_ON,
+    DashboardModeError,
+    dashboard_mode,
+)
 from .search import MAX_QUERY_CHARS
-
-DASHBOARD_OFF = "off"
-DASHBOARD_CLASSIC = "classic"
-DASHBOARD_SPA = "spa"
-DASHBOARD_MODES = (DASHBOARD_OFF, DASHBOARD_CLASSIC, DASHBOARD_SPA)
 
 SPA_PAGE_PATHS = (
     "/",
@@ -71,25 +85,6 @@ SPA_PAGE_PATHS = (
     "/object",
     "/syntax",
 )
-
-
-class DashboardModeError(ValueError):
-    """В окружении указан неизвестный режим дашборда."""
-
-
-def dashboard_mode() -> str:
-    """Прочитать режим один раз при сборке приложения.
-
-    ``classic`` остаётся значением по умолчанию на переходный период: обычное
-    обновление сервера не должно неожиданно убирать знакомый интерфейс.
-    """
-    mode = os.environ.get("MCP1C_DASHBOARD", DASHBOARD_CLASSIC).strip().lower()
-    if mode not in DASHBOARD_MODES:
-        raise DashboardModeError(
-            "MCP1C_DASHBOARD должен быть одним из: off, classic, spa. "
-            f"Получено: {mode or '<пусто>'}."
-        )
-    return mode
 
 
 def _source_payload(source: tools.SourceStateRow | None) -> dict | None:
@@ -255,7 +250,7 @@ def _admin_sources_payload(prepared) -> dict:
         )
     return {
         "api_version": "v1",
-        "limits": {"upload_bytes": classic_dashboard.MAX_UPLOAD},
+        "limits": {"upload_bytes": dashboard_backend.MAX_UPLOAD},
         "configuration_names": configurations,
         "jobs": [_job_payload(job) for job in reversed(prepared.jobs)],
         "incoming": incoming,
@@ -295,11 +290,11 @@ def _queries_setup_payload(registry: Registry) -> dict:
                 "label": _QUERY_SCOPE_LABELS[scope],
                 "requires_configuration": scope != "syntax",
             }
-            for scope in classic_dashboard.SCOPES
+            for scope in dashboard_backend.SCOPES
         ],
         "limits": {
-            "phrases": classic_dashboard.MAX_QUERY_PHRASES,
-            "phrase_chars": classic_dashboard.MAX_QUERY_CHARS,
+            "phrases": dashboard_backend.MAX_QUERY_PHRASES,
+            "phrase_chars": dashboard_backend.MAX_QUERY_CHARS,
             "results_per_phrase": 5,
         },
         "availability": {
@@ -336,12 +331,12 @@ def _query_results_payload(
                             if scope == "syntax"
                             else hit.doc.id
                         ),
-                        "kind": classic_dashboard._kind_title(
+                        "kind": dashboard_backend._kind_title(
                             scope, hit.doc.kind
                         ),
                         "score": hit.score,
                         "reason": hit.reason,
-                        "card_url": classic_dashboard._card_link(
+                        "card_url": dashboard_backend._card_link(
                             scope, config, hit
                         ),
                     }
@@ -351,7 +346,7 @@ def _query_results_payload(
                     {
                         "title": getattr(hit.doc.payload, "address", "")
                         or hit.doc.id,
-                        "reason": classic_dashboard._hidden_reason(
+                        "reason": dashboard_backend._hidden_reason(
                             hit.doc.payload
                         ),
                     }
@@ -374,9 +369,9 @@ def _card_payload(
     name: str,
     detail: str,
 ) -> dict:
-    """Карточка тем же вызовом и тем же Markdown-рендерером, что в classic."""
+    """Карточка тем же вызовом и тем же Markdown-рендерером, что получает MCP."""
     normalized_detail = detail if detail in DETAIL_LEVELS else "fields"
-    markdown = classic_dashboard._card_text(
+    markdown = dashboard_backend._card_text(
         registry, kind, config, name, normalized_detail
     )
     names = list(registry.snapshot().configuration_names)
@@ -391,7 +386,7 @@ def _card_payload(
         "detail": normalized_detail,
         "detail_levels": list(DETAIL_LEVELS),
         "markdown": markdown,
-        "html": classic_dashboard.render_markdown(markdown),
+        "html": dashboard_backend.render_markdown(markdown),
     }
 
 
@@ -405,7 +400,7 @@ def _graph_payload(
     name: str,
     limit: int,
 ) -> dict:
-    """Окрестность с готовой серверной раскладкой для classic и SPA."""
+    """Окрестность с готовой серверной раскладкой для SPA."""
     names = list(registry.snapshot().configuration_names)
     selected = config if config in names else (names[0] if names else "")
     payload = {
@@ -461,8 +456,8 @@ def _graph_payload(
             "degree": node.degree,
             "x": node.x,
             "y": node.y,
-            "color": classic_dashboard.KIND_COLORS.get(
-                node.kind, classic_dashboard.KIND_FALLBACK
+            "color": dashboard_backend.KIND_COLORS.get(
+                node.kind, dashboard_backend.KIND_FALLBACK
             ),
             "graph_url": (
                 f"/graph?config={quote(context.name)}"
@@ -494,8 +489,8 @@ def _graph_payload(
         "kinds": [
             {
                 "kind": kind,
-                "color": classic_dashboard.KIND_COLORS.get(
-                    kind, classic_dashboard.KIND_FALLBACK
+                "color": dashboard_backend.KIND_COLORS.get(
+                    kind, dashboard_backend.KIND_FALLBACK
                 ),
             }
             for kind in kinds
@@ -548,7 +543,7 @@ def _dictionary_payload(
         "configuration": selected,
         "aliases": aliases,
         # Встроенные группы не раскрываются построчно и не снимаются на месте —
-        # classic UI показывает для них только число по тому же контракту.
+        # Встроенные правила показываются только агрегированным числом.
         "synonym_groups": [list(group) for group in dictionary.synonym_groups],
         "stats": {
             "local_synonym_groups": stats["своих групп синонимов"],
@@ -613,7 +608,7 @@ def _spa_routes(
         return JSONResponse(
             {
                 "api_version": "v1",
-                "dashboard_mode": DASHBOARD_SPA,
+                "dashboard_mode": DASHBOARD_ON,
                 "server": {"status": "ok", "version": __version__},
                 "permissions": {
                     "read": True,
@@ -663,7 +658,7 @@ def _spa_routes(
         raw_phrases = payload.get("phrases")
         if not isinstance(config, str) or not isinstance(scope, str):
             return _json_error("config и scope должны быть строками.", 422)
-        if scope not in classic_dashboard.SCOPES:
+        if scope not in dashboard_backend.SCOPES:
             return _json_error(f"Неизвестная область поиска: {scope or '<пусто>'}.", 422)
         if not isinstance(raw_phrases, list) or not all(
             isinstance(phrase, str) for phrase in raw_phrases
@@ -672,24 +667,24 @@ def _spa_routes(
         phrases = [phrase.strip() for phrase in raw_phrases if phrase.strip()]
         if not phrases:
             return _json_error("Не указано ни одной фразы.", 422)
-        if len(phrases) > classic_dashboard.MAX_QUERY_PHRASES:
+        if len(phrases) > dashboard_backend.MAX_QUERY_PHRASES:
             return _json_error(
                 "За один прогон принимается не более "
-                f"{classic_dashboard.MAX_QUERY_PHRASES} фраз.",
+                f"{dashboard_backend.MAX_QUERY_PHRASES} фраз.",
                 422,
             )
         if any(
-            len(phrase) > classic_dashboard.MAX_QUERY_CHARS
+            len(phrase) > dashboard_backend.MAX_QUERY_CHARS
             for phrase in phrases
         ):
             return _json_error(
                 "Каждая поисковая фраза должна содержать не более "
-                f"{classic_dashboard.MAX_QUERY_CHARS} символов.",
+                f"{dashboard_backend.MAX_QUERY_CHARS} символов.",
                 422,
             )
         try:
             results = await run_in_threadpool(
-                classic_dashboard._run_queries,
+                dashboard_backend._run_queries,
                 registry,
                 config or None,
                 scope,
@@ -781,7 +776,7 @@ def _spa_routes(
         targets = [target.strip() for target in raw_targets if target.strip()]
         try:
             normalized, saved_targets = await run_in_threadpool(
-                classic_dashboard._apply_dictionary_change,
+                dashboard_backend._apply_dictionary_change,
                 registry,
                 lambda dictionary: dictionary.add_alias(
                     phrase, targets, config or None
@@ -814,7 +809,7 @@ def _spa_routes(
             return _json_error("Неизвестная область псевдонима.", 422)
         try:
             removed = await run_in_threadpool(
-                classic_dashboard._apply_dictionary_change,
+                dashboard_backend._apply_dictionary_change,
                 registry,
                 lambda dictionary: dictionary.remove_alias(
                     phrase, None if scope == ANY_CONFIGURATION else scope
@@ -838,7 +833,7 @@ def _spa_routes(
             return _json_error("words должен быть списком строк.", 422)
         try:
             group = await run_in_threadpool(
-                classic_dashboard._apply_dictionary_change,
+                dashboard_backend._apply_dictionary_change,
                 registry,
                 lambda dictionary: dictionary.add_synonyms(words),
             )
@@ -860,7 +855,7 @@ def _spa_routes(
             return _json_error("words должен быть списком строк.", 422)
         try:
             removed = await run_in_threadpool(
-                classic_dashboard._apply_dictionary_change,
+                dashboard_backend._apply_dictionary_change,
                 registry,
                 lambda dictionary: dictionary.remove_synonyms(words),
             )
@@ -900,7 +895,7 @@ def _spa_routes(
         if denied is not None:
             return denied
         prepared = await run_in_threadpool(
-            classic_dashboard._prepare_sources_page,
+            dashboard_backend._prepare_sources_page,
             registry,
             authorized=True,
         )
@@ -914,10 +909,10 @@ def _spa_routes(
         if denied is not None:
             return denied
         try:
-            form = await classic_dashboard._limited_upload_form(request)
-        except classic_dashboard._UploadTooLarge:
+            form = await dashboard_backend._limited_upload_form(request)
+        except dashboard_backend._UploadTooLarge:
             return _json_error(
-                f"Файл больше {classic_dashboard.MAX_UPLOAD // 1024 // 1024} МБ.",
+                f"Файл больше {dashboard_backend.MAX_UPLOAD // 1024 // 1024} МБ.",
                 413,
             )
         except MultiPartException:
@@ -941,37 +936,37 @@ def _spa_routes(
 
         directory = tempfile.mkdtemp()
         target = Path(directory) / name
-        job = classic_dashboard._start_job(name, 0)
+        job = dashboard_backend._start_job(name, 0)
         try:
             size = 0
             with target.open("wb") as output:
                 while True:
-                    chunk = await uploaded.read(classic_dashboard.CHUNK)
+                    chunk = await uploaded.read(dashboard_backend.CHUNK)
                     if not chunk:
                         break
                     size += len(chunk)
                     job["size"] = size
-                    if size > classic_dashboard.MAX_UPLOAD:
-                        raise classic_dashboard._UploadTooLarge
+                    if size > dashboard_backend.MAX_UPLOAD:
+                        raise dashboard_backend._UploadTooLarge
                     output.write(chunk)
-        except classic_dashboard._UploadTooLarge:
+        except dashboard_backend._UploadTooLarge:
             shutil.rmtree(directory, ignore_errors=True)
-            classic_dashboard._JOBS.remove(job)
+            dashboard_backend._JOBS.remove(job)
             await form.close()
             return _json_error(
-                f"Файл больше {classic_dashboard.MAX_UPLOAD // 1024 // 1024} МБ.",
+                f"Файл больше {dashboard_backend.MAX_UPLOAD // 1024 // 1024} МБ.",
                 413,
             )
         except OSError as error:
             shutil.rmtree(directory, ignore_errors=True)
-            classic_dashboard._JOBS.remove(job)
+            dashboard_backend._JOBS.remove(job)
             await form.close()
             return _json_error(f"Не удалось принять файл: {error}", 500)
         await form.close()
 
         task = asyncio.create_task(
             run_in_threadpool(
-                classic_dashboard._run_job,
+                dashboard_backend._run_job,
                 registry,
                 job,
                 directory,
@@ -980,8 +975,8 @@ def _spa_routes(
                 allow_truncated=allow_truncated,
             )
         )
-        classic_dashboard._ФОНОВЫЕ.add(task)
-        task.add_done_callback(classic_dashboard._ФОНОВЫЕ.discard)
+        dashboard_backend._ФОНОВЫЕ.add(task)
+        task.add_done_callback(dashboard_backend._ФОНОВЫЕ.discard)
         return JSONResponse({"job": _job_payload(job)}, status_code=202)
 
     async def parse_incoming_api(request: Request) -> JSONResponse:
@@ -997,15 +992,15 @@ def _spa_routes(
         name = Path(raw_name).name
         if not name or name != raw_name:
             return _json_error("Входящая выгрузка не найдена.", 404)
-        scanner = classic_dashboard._scanner(registry)
+        scanner = dashboard_backend._scanner(registry)
         archive = registry.incoming_dir / name
         if not archive.is_file():
             return _json_error("Входящая выгрузка не найдена.", 404)
 
         busy = scanner.running
         if busy:
-            job = classic_dashboard._start_job(name, archive.stat().st_size)
-            job["state"] = classic_dashboard.JOB_FAILED
+            job = dashboard_backend._start_job(name, archive.stat().st_size)
+            job["state"] = dashboard_backend.JOB_FAILED
             job["error"] = (
                 "уже идёт разбор другой выгрузки ("
                 + ", ".join(sorted(busy))
@@ -1016,8 +1011,8 @@ def _spa_routes(
                 status_code=409,
             )
         if scanner.дописывается(archive):
-            job = classic_dashboard._start_job(name, archive.stat().st_size)
-            job["state"] = classic_dashboard.JOB_FAILED
+            job = dashboard_backend._start_job(name, archive.stat().st_size)
+            job["state"] = dashboard_backend.JOB_FAILED
             job["error"] = (
                 f"{name}: файл изменялся только что — похоже, копирование ещё "
                 f"идёт. Повторите через {int(SETTLE_SECONDS)} с."
@@ -1027,11 +1022,11 @@ def _spa_routes(
                 status_code=409,
             )
 
-        job = classic_dashboard._start_job(name, archive.stat().st_size)
+        job = dashboard_backend._start_job(name, archive.stat().st_size)
         try:
             await run_in_threadpool(intake.planned_size, archive)
         except Exception as error:
-            job["state"] = classic_dashboard.JOB_FAILED
+            job["state"] = dashboard_backend.JOB_FAILED
             job["error"] = f"{archive.name}: не похоже на zip-архив ({error})"
             await run_in_threadpool(scanner.note_failure, archive, job["error"])
             return JSONResponse(
@@ -1041,7 +1036,7 @@ def _spa_routes(
 
         configuration = str(payload.get("configuration", "")).strip()
         if configuration and configuration not in registry.snapshot().configurations:
-            job["state"] = classic_dashboard.JOB_FAILED
+            job["state"] = dashboard_backend.JOB_FAILED
             job["error"] = (
                 f"конфигурации «{configuration}» нет в реестре — выберите "
                 "загруженную конфигурацию."
@@ -1054,7 +1049,7 @@ def _spa_routes(
 
         started, busy = scanner.try_start(name)
         if not started:
-            job["state"] = classic_dashboard.JOB_FAILED
+            job["state"] = dashboard_backend.JOB_FAILED
             job["error"] = (
                 "уже идёт разбор другой выгрузки ("
                 + ", ".join(busy)
@@ -1066,7 +1061,7 @@ def _spa_routes(
             )
         task = asyncio.create_task(
             run_in_threadpool(
-                classic_dashboard._run_incoming,
+                dashboard_backend._run_incoming,
                 registry,
                 scanner,
                 job,
@@ -1074,8 +1069,8 @@ def _spa_routes(
                 configuration or None,
             )
         )
-        classic_dashboard._ФОНОВЫЕ.add(task)
-        task.add_done_callback(classic_dashboard._ФОНОВЫЕ.discard)
+        dashboard_backend._ФОНОВЫЕ.add(task)
+        task.add_done_callback(dashboard_backend._ФОНОВЫЕ.discard)
         return JSONResponse({"job": _job_payload(job)}, status_code=202)
 
     async def clear_jobs_api(request: Request) -> JSONResponse:
@@ -1084,12 +1079,12 @@ def _spa_routes(
             return denied
         completed = [
             job
-            for job in classic_dashboard._JOBS
+            for job in dashboard_backend._JOBS
             if job["state"]
-            in (classic_dashboard.JOB_DONE, classic_dashboard.JOB_FAILED)
+            in (dashboard_backend.JOB_DONE, dashboard_backend.JOB_FAILED)
         ]
         for job in completed:
-            classic_dashboard._JOBS.remove(job)
+            dashboard_backend._JOBS.remove(job)
         return JSONResponse({"cleared": len(completed)})
 
     async def remove_source_api(request: Request) -> JSONResponse:
@@ -1280,16 +1275,57 @@ def _spa_routes(
         Route(path, spa_page, methods=["GET"], name=f"dashboard_spa_{index}")
         for index, path in enumerate(SPA_PAGE_PATHS)
     )
-    # Сессионная cookie пока остаётся общим контрактом двух интерфейсов.
-    # Страницу входа рисует SPA, а проверку токена и logout выполняет прежний
-    # серверный код: так новый UI не заводит второй набор полномочий.
-    from .dashboard import routes as classic_routes
+    async def login(request: Request):
+        """Обменять токен на серверную cookie-сессию SPA."""
+        if not _admin_token() and not _api_token():
+            return PlainTextResponse(
+                "Вход выключен: не задан ни ADMIN_TOKEN, ни API_TOKEN.", 404
+            )
+        form = await request.form()
+        given = str(form.get("token", ""))
+        if same_token(given, _admin_token()):
+            level = LEVEL_ADMIN
+        elif same_token(given, _api_token()):
+            level = LEVEL_READ
+        else:
+            return PlainTextResponse("Неверный токен.", status_code=403)
+
+        session = secrets.token_urlsafe(32)
+        _SESSIONS[session] = level
+        response = RedirectResponse(
+            "/sources" if level == LEVEL_ADMIN else "/", status_code=303
+        )
+        response.set_cookie(
+            COOKIE,
+            session,
+            httponly=True,
+            samesite="strict",
+            secure=request.url.scheme == "https",
+            path="/",
+        )
+        return response
+
+    async def logout(request: Request):
+        """Закрыть cookie-сессию с обязательной same-origin проверкой."""
+        denied = _csrf_denied(request)
+        if denied is not None:
+            return denied
+        _SESSIONS.pop(request.cookies.get(COOKIE, ""), None)
+        response = RedirectResponse("/login", status_code=303)
+        response.delete_cookie(
+            COOKIE,
+            path="/",
+            secure=request.url.scheme == "https",
+            httponly=True,
+            samesite="strict",
+        )
+        return response
 
     result.extend(
-        route
-        for route in classic_routes(registry, reference=reference)
-        if (route.path == "/login" and "POST" in (route.methods or set()))
-        or route.path == "/logout"
+        (
+            Route("/login", login, methods=["POST"], name="dashboard_login"),
+            Route("/logout", logout, methods=["POST"], name="dashboard_logout"),
+        )
     )
     return result
 
@@ -1298,7 +1334,7 @@ def _reference_routes(
     reference: ReferenceService,
     restart: RestartController,
 ) -> list[Route]:
-    """Общий API статуса, файла и controlled restart для classic и SPA."""
+    """API статуса, файла и управляемого перезапуска для SPA."""
 
     def unique_param(request: Request, name: str, *, maximum: int) -> str | None:
         values = request.query_params.getlist(name)
@@ -1416,11 +1452,7 @@ def _reference_routes(
         return JSONResponse(reference.payload(detailed=_authorized(request)))
 
     async def reference_upload_api(request: Request) -> JSONResponse:
-        wants_html = "text/html" in request.headers.get("accept", "")
-
         def denied_response(message: str, status_code: int):
-            if wants_html:
-                return PlainTextResponse(message, status_code=status_code)
             return _json_error(message, status_code)
 
         denied = _mutation_denied(request, action="Загрузка общей справки")
@@ -1431,12 +1463,12 @@ def _reference_routes(
                 "Загрузка выключена: база подключена по внешнему пути.", 409
             )
         try:
-            form = await classic_dashboard._limited_upload_form(
+            form = await dashboard_backend._limited_upload_form(
                 request,
                 MAX_REFERENCE_ARTIFACT_BYTES,
                 allowed_fields=frozenset(),
             )
-        except classic_dashboard._UploadTooLarge:
+        except dashboard_backend._UploadTooLarge:
             return denied_response(
                 f"Файл больше {MAX_REFERENCE_ARTIFACT_BYTES // 1024 // 1024} МБ.",
                 413,
@@ -1471,12 +1503,12 @@ def _reference_routes(
             size = 0
             with temporary.open("wb") as output:
                 while True:
-                    chunk = await uploaded.read(classic_dashboard.CHUNK)
+                    chunk = await uploaded.read(dashboard_backend.CHUNK)
                     if not chunk:
                         break
                     size += len(chunk)
                     if size > MAX_REFERENCE_ARTIFACT_BYTES:
-                        raise classic_dashboard._UploadTooLarge
+                        raise dashboard_backend._UploadTooLarge
                     output.write(chunk)
                 output.flush()
                 os.fsync(output.fileno())
@@ -1485,8 +1517,6 @@ def _reference_routes(
                 reference.install_candidate, temporary
             )
             temporary = None
-            if wants_html:
-                return RedirectResponse("/sources", status_code=303)
             return JSONResponse(
                 {
                     "reference": reference.payload(detailed=True),
@@ -1494,7 +1524,7 @@ def _reference_routes(
                 },
                 status_code=201,
             )
-        except classic_dashboard._UploadTooLarge:
+        except dashboard_backend._UploadTooLarge:
             return denied_response(
                 f"Файл больше {MAX_REFERENCE_ARTIFACT_BYTES // 1024 // 1024} МБ.",
                 413,
@@ -1509,11 +1539,7 @@ def _reference_routes(
                 temporary.unlink(missing_ok=True)
 
     async def reference_remove_api(request: Request):
-        wants_html = "text/html" in request.headers.get("accept", "")
-
         def denied_response(message: str, status_code: int):
-            if wants_html:
-                return PlainTextResponse(message, status_code=status_code)
             return _json_error(message, status_code)
 
         denied = _mutation_denied(request, action="Удаление общей справки")
@@ -1523,12 +1549,8 @@ def _reference_routes(
             return denied_response(
                 "Удаление выключено: база подключена по внешнему пути.", 409
             )
-        if wants_html:
-            form = await request.form()
-            confirmation = str(form.get("confirmation", ""))
-        else:
-            payload = await _json_body(request)
-            confirmation = str(payload.get("confirmation", ""))
+        payload = await _json_body(request)
+        confirmation = str(payload.get("confirmation", ""))
         if confirmation != REFERENCE_ARTIFACT_NAME:
             return denied_response(
                 f"Для удаления подтвердите точное имя {REFERENCE_ARTIFACT_NAME}.", 400
@@ -1540,8 +1562,6 @@ def _reference_routes(
             return denied_response(str(error), status_code)
         except OSError:
             return denied_response("Не удалось удалить каноническую базу.", 500)
-        if wants_html:
-            return RedirectResponse("/sources", status_code=303)
         return JSONResponse(
             {
                 "removed": REFERENCE_ARTIFACT_NAME,
@@ -1553,11 +1573,7 @@ def _reference_routes(
         )
 
     async def restart_api(request: Request):
-        wants_html = "text/html" in request.headers.get("accept", "")
-
         def denied_response(message: str, status_code: int):
-            if wants_html:
-                return PlainTextResponse(message, status_code=status_code)
             return _json_error(message, status_code)
 
         denied = _mutation_denied(request, action="Перезапуск сервера")
@@ -1575,15 +1591,6 @@ def _reference_routes(
             return denied_response("Перезапуск уже запрошен.", 409)
 
         background = BackgroundTask(restart.terminate_after_response)
-        if wants_html:
-            page = classic_dashboard._layout(
-                "Перезапуск",
-                "<h2>Сервер перезапускается</h2>"
-                "<p>MCP-сеансы и вход в дашборд будут созданы заново. "
-                "После восстановления откройте страницу «Источники».</p>"
-                "<p><a href='/login?next=/sources'>Проверить состояние</a></p>",
-            )
-            return HTMLResponse(page.body, status_code=202, background=background)
         return JSONResponse(
             {"state": "restarting", "runtime_id": restart.runtime_id},
             status_code=202,
@@ -1642,7 +1649,7 @@ def routes(
     selected = dashboard_mode() if mode is None else mode
     if selected not in DASHBOARD_MODES:
         raise DashboardModeError(
-            "Режим дашборда должен быть одним из: off, classic, spa."
+            "Режим дашборда должен быть одним из: on, off."
         )
     if selected == DASHBOARD_OFF:
         return []
@@ -1650,17 +1657,6 @@ def routes(
         reference = ReferenceService.discover(registry.data_dir)
     if restart is None:
         restart = RestartController(enabled=False)
-    if selected == DASHBOARD_CLASSIC:
-        from .dashboard import routes as classic_routes
-
-        return [
-            *classic_routes(
-                registry,
-                reference=reference,
-                restart_available=restart.enabled,
-            ),
-            *_reference_routes(reference, restart),
-        ]
     root = static_dir or Path(
         os.environ.get("MCP1C_DASHBOARD_DIST", "dashboard/dist")
     )

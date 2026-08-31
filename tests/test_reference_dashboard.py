@@ -7,7 +7,7 @@ from starlette.applications import Starlette
 from mcp1c.process_restart import RestartController
 
 from conftest import живой_клиент
-from mcp1c.dashboard_runtime import DASHBOARD_CLASSIC, DASHBOARD_SPA, routes
+from mcp1c.dashboard_runtime import DASHBOARD_ON, routes
 from mcp1c.reference_provider import ReferenceService
 from mcp1c.registry import Registry
 
@@ -43,7 +43,7 @@ def _client(
         Starlette(
             routes=routes(
                 registry,
-                mode=DASHBOARD_SPA,
+                mode=DASHBOARD_ON,
                 reference=reference,
                 restart=restart,
             )
@@ -388,94 +388,3 @@ def test_повторный_restart_не_планируется_дважды(tmp
 
     assert first.status_code == 202
     assert second.status_code == 409
-
-
-def test_classic_показывает_статус_и_одну_общую_форму(tmp_path, monkeypatch):
-    monkeypatch.delenv("API_TOKEN", raising=False)
-    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
-    registry = Registry(tmp_path / "data")
-    reference = ReferenceService.discover(registry.data_dir)
-    client = живой_клиент(
-        Starlette(
-            routes=routes(
-                registry,
-                mode=DASHBOARD_CLASSIC,
-                reference=reference,
-            )
-        )
-    )
-    _login(client)
-
-    page = client.get("/sources")
-
-    assert page.status_code == 200
-    assert "Локальная общая справка" in page.text
-    assert "не загружена" in page.text
-    assert "общей форме «Загрузить»" in page.text
-    assert ".zip,.hbk,.json,.mcp1cref" in page.text
-    assert page.text.count("<input type=file") == 1
-
-
-def test_classic_общая_форма_принимает_подписанный_bundle_без_javascript(
-    tmp_path, monkeypatch
-):
-    monkeypatch.delenv("API_TOKEN", raising=False)
-    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
-    source = build_reference_database(tmp_path / "source.sqlite3")
-    signer = _trusted_signer(monkeypatch)
-    artifact = _artifact(tmp_path, source, signer)
-    registry = Registry(tmp_path / "data")
-    reference = ReferenceService.discover(registry.data_dir)
-    client = живой_клиент(
-        Starlette(
-            routes=routes(
-                registry,
-                mode=DASHBOARD_CLASSIC,
-                reference=reference,
-            )
-        )
-    )
-    _login(client)
-
-    response = client.post(
-        "/sources",
-        headers={"accept": "text/html"},
-        files={"file": ("reference.mcp1cref", artifact.read_bytes())},
-        follow_redirects=False,
-    )
-
-    assert response.status_code == 303
-    assert response.headers["location"] == "/sources"
-    page = client.get("/sources")
-    assert "ожидает перезапуска" in page.text
-
-
-def test_classic_удаляет_базу_и_предлагает_restart(tmp_path, monkeypatch):
-    monkeypatch.delenv("API_TOKEN", raising=False)
-    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
-    registry = Registry(tmp_path / "data")
-    reference, _, _ = _installed_reference(registry, tmp_path, monkeypatch)
-    restart = RestartController(enabled=True, terminate=lambda: None, delay=60)
-    client = живой_клиент(
-        Starlette(
-            routes=routes(
-                registry,
-                mode=DASHBOARD_CLASSIC,
-                reference=reference,
-                restart=restart,
-            )
-        )
-    )
-    _login(client)
-
-    response = client.post(
-        "/api/v1/reference/remove",
-        headers={"accept": "text/html"},
-        data={"confirmation": "reference.mcp1cref"},
-        follow_redirects=False,
-    )
-
-    assert response.status_code == 303
-    page = client.get("/sources")
-    assert "База удалена и будет отключена" in page.text
-    assert "Перезапустить сервер и применить изменение" in page.text

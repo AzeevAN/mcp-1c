@@ -29,7 +29,7 @@ def test_дашборд_рисует_блок_кода_моноширинным(
     внутристрочный код, но ограждённые блоки печатал абзацами: сигнатуры и
     примеры теряли и моноширинный вид, и отступы. Дефект ровесник самого
     `render_markdown` — карточка справки состоит из таких блоков."""
-    from mcp1c.dashboard import render_markdown
+    from mcp1c.dashboard_backend import render_markdown
 
     html = render_markdown(
         "Текст до.\n```bsl\nЕсли Истина Тогда\n    Сообщить(1);\nКонецЕсли;\n```\nТекст после."
@@ -45,7 +45,7 @@ def test_незакрытый_блок_кода_не_съедает_остато
     """Разметку пишем мы сами, но карточка собирается из текста справки, и
     тройная кавычка может прийти оттуда. Проглотить хвост страницы молча
     нельзя — это тот же класс, что незакрытая таблица в справке."""
-    from mcp1c.dashboard import render_markdown
+    from mcp1c.dashboard_backend import render_markdown
 
     html = render_markdown("```bsl\nСообщить(1);\n\nОбычный абзац, блок не закрыт.")
 
@@ -55,7 +55,7 @@ def test_незакрытый_блок_кода_не_съедает_остато
 
 def test_внутри_блока_кода_разметка_не_разбирается():
     """Звёздочка и решётка в коде — часть кода, а не markdown."""
-    from mcp1c.dashboard import render_markdown
+    from mcp1c.dashboard_backend import render_markdown
 
     html = render_markdown("```\n# не заголовок\n- не список\n```")
 

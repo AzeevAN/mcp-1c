@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from conftest import build_configuration, write_export
-from mcp1c import dashboard, tools
+from mcp1c import tools
 from mcp1c.cli import main
 from mcp1c.dashboard_runtime import _sources_payload
 from mcp1c.extension_runtime import ExtensionRuntimeError, load_extension_runtime
@@ -132,23 +132,6 @@ def test_cli_reg_add_распознаёт_runtime_json(tmp_path, capsys):
     restored = Registry(tmp_path / "data")
     assert restored.restore() == []
     assert "ТестоваяКонфигурация" in restored.extension_runtime
-
-
-def test_дашборд_публикует_runtime_отдельно_от_корпусов_кода(tmp_path):
-    registry = _registry(tmp_path)
-    path = _write(tmp_path / "runtime.json", _snapshot())
-
-    dashboard._index_source(registry, path, ".json")
-    payload = _sources_payload(tools.sources_snapshot(registry), admin=True)
-
-    (configuration,) = payload["configurations"]
-    assert configuration["extension_runtime"]["kind"] == KIND_EXTENSION_RUNTIME
-    assert configuration["extension_runtime"]["items_total"] == 3
-    assert all(
-        corpus["id"] != "ТестоваяКонфигурация:extension-runtime"
-        for corpus in configuration["corpora"]
-    )
-    assert configuration["corpora"][0]["source"] is None
 
 
 def test_list_extensions_без_снимка_говорит_unknown(tmp_path):

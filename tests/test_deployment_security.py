@@ -1,21 +1,35 @@
-"""Сетевой профиль не открывает MCP наружу неявно."""
+"""Один Compose сохраняет fail-closed границы публичного Docker-запуска."""
 
 from pathlib import Path
 
 
 ROOT = Path(__file__).parents[1]
+COMPOSE = ROOT / "compose.yaml"
+
+
+def _compose() -> str:
+    return COMPOSE.read_text(encoding="utf-8")
 
 
 def test_compose_по_умолчанию_публикует_порт_только_на_loopback():
-    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    compose = _compose()
 
     assert '"127.0.0.1:${MCP1C_PORT:-5001}:8000"' in compose
     assert '- "5001:8000"' not in compose
     assert '"0.0.0.0:5001:8000"' not in compose
 
 
+def test_compose_получает_готовый_образ_и_ничего_не_собирает():
+    compose = _compose()
+
+    assert "image: ${MCP1C_IMAGE:-ghcr.io/azeevan/mcp-1c:2.0.0}" in compose
+    assert "build:" not in compose
+    assert "runtime-core" not in compose
+    assert "runtime-dashboard" not in compose
+
+
 def test_compose_не_создаёт_data_с_непредсказуемым_владельцем():
-    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    compose = _compose()
 
     assert "source: ${MCP1C_DATA_DIR:-./data}" in compose
     assert "target: /data" in compose
@@ -24,7 +38,7 @@ def test_compose_не_создаёт_data_с_непредсказуемым_вл
     assert "- ./data:/data" not in compose
 
 
-def test_образ_фиксирует_uid_и_gid_пользователя_данных():
+def test_образ_фиксирует_uid_и_gid_и_fail_closed_запуск():
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
 
     assert "groupadd --gid 10001 mcp1c" in dockerfile
@@ -32,22 +46,40 @@ def test_образ_фиксирует_uid_и_gid_пользователя_да�
     assert "--shell /usr/sbin/nologin mcp1c" in dockerfile
     assert "USER 10001:10001" in dockerfile
     assert '"--require-writable-data"' in dockerfile
+    assert '"--require-tokens"' in dockerfile
 
 
-def test_три_режима_дашборда_заданы_явными_compose_файлами():
-    base = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
-    classic = (ROOT / "docker-compose.classic.yml").read_text(encoding="utf-8")
-    spa = (ROOT / "docker-compose.dashboard.yml").read_text(encoding="utf-8")
+def test_образ_содержит_один_runtime_и_современный_ui():
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
 
-    assert "MCP1C_DASHBOARD: off" in base
-    assert "MCP1C_DASHBOARD: classic" in classic
-    assert "target: runtime-core" in classic
-    assert "MCP1C_DASHBOARD: spa" in spa
-    assert "target: runtime-dashboard" in spa
+    assert "FROM runtime-base AS runtime\n" in dockerfile
+    assert "MCP1C_DASHBOARD=on" in dockerfile
+    assert "MCP1C_ACCESS=local" in dockerfile
+    assert "AS runtime-core" not in dockerfile
+    assert "AS runtime-dashboard" not in dockerfile
+
+
+def test_compose_задаёт_два_режима_без_override_файлов():
+    compose = _compose()
+
+    assert "MCP1C_DASHBOARD: ${MCP1C_DASHBOARD:-on}" in compose
+    assert "MCP1C_ACCESS: ${MCP1C_ACCESS:-local}" in compose
+    assert not (ROOT / "docker-compose.classic.yml").exists()
+    assert not (ROOT / "docker-compose.dashboard.yml").exists()
+    assert not (ROOT / "docker-compose.remote.yml").exists()
+
+
+def test_compose_всегда_требует_оба_токена():
+    compose = _compose()
+
+    assert "API_TOKEN: ${API_TOKEN:?" in compose
+    assert "ADMIN_TOKEN: ${ADMIN_TOKEN:?" in compose
+    assert "API_TOKEN: ${API_TOKEN:-}" not in compose
+    assert "ADMIN_TOKEN: ${ADMIN_TOKEN:-}" not in compose
 
 
 def test_compose_сохраняет_защитные_ограничения_процесса():
-    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    compose = _compose()
 
     assert "init: true" in compose
     assert "no-new-privileges:true" in compose
@@ -58,18 +90,9 @@ def test_compose_сохраняет_защитные_ограничения_пр
 
 
 def test_compose_передаёт_настройки_необязательной_общей_справки():
-    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    compose = _compose()
 
     assert (
         "MCP1C_REFERENCE_ARTIFACT: ${MCP1C_REFERENCE_ARTIFACT:-}" in compose
     )
     assert "MCP1C_REFERENCE_TRUST_UNSIGNED" not in compose
-
-
-def test_remote_override_требует_оба_токена_и_явно_доверяет_proxy():
-    remote = (ROOT / "docker-compose.remote.yml").read_text(encoding="utf-8")
-
-    assert "${API_TOKEN:?" in remote
-    assert "${ADMIN_TOKEN:?" in remote
-    assert "--trust-proxy-headers" in remote
-    assert "5001:8000" not in remote

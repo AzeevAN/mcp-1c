@@ -19,7 +19,7 @@ def test_readme_не_выдаёт_локальный_registry_за_состав_
     readme = _read("README.md")
     state = readme.split("## Состояние", 1)[1].split("## Навигация", 1)[0]
 
-    assert "2026-08-30" in state
+    assert "2026-08-31" in state
     assert "| Тесты |" in state
     assert "| Конфигурации |" not in state
     assert "group_by(.kind)" not in state

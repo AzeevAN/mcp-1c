@@ -9,7 +9,8 @@ from starlette.applications import Starlette
 from starlette import formparsers
 from starlette.testclient import TestClient
 
-from mcp1c import dashboard
+from mcp1c import dashboard_backend as dashboard
+from mcp1c.dashboard_runtime import DASHBOARD_ON, routes
 from mcp1c.registry import Registry
 
 
@@ -21,7 +22,7 @@ def client_for(tmp_path, *, same_origin: bool = True) -> tuple[TestClient, Regis
     registry = Registry(tmp_path / "data")
     headers = SAME_ORIGIN if same_origin else None
     client = TestClient(
-        Starlette(routes=dashboard.routes(registry)),
+        Starlette(routes=routes(registry, mode=DASHBOARD_ON)),
         base_url=BASE_URL,
         headers=headers,
     )
@@ -48,7 +49,7 @@ def test_multipart_отвергает_второй_file_part(
     )
 
     response = client.post(
-        "/sources",
+        "/api/v1/sources/upload",
         files=[
             ("file", ("выгрузка.zip", b"first")),
             ("extra", ("добавка.zip", b"second")),
@@ -94,7 +95,7 @@ def test_multipart_останавливает_file_part_до_запуска_об
     )
 
     response = client.post(
-        "/sources",
+        "/api/v1/sources/upload",
         files={"file": ("выгрузка.zip", b"123456789")},
     )
 
@@ -105,26 +106,26 @@ def test_multipart_останавливает_file_part_до_запуска_об
 
 
 _MUTATIONS = (
-    ("/sources", {"files": {"file": ("выгрузка.zip", b"zip")}}),
-    ("/sources/remove", {"data": {"id": "СинтетическаяКонфигурация"}}),
-    ("/sources/forget", {"data": {"path": "sources/test.zip"}}),
-    ("/sources/jobs/clear", {}),
-    ("/sources/incoming/parse", {"data": {"name": "выгрузка.zip"}}),
+    ("/api/v1/sources/upload", {"files": {"file": ("выгрузка.zip", b"zip")}}),
+    ("/api/v1/sources/remove", {"json": {"id": "СинтетическаяКонфигурация"}}),
+    ("/api/v1/sources/forget", {"json": {"path": "sources/test.zip"}}),
+    ("/api/v1/sources/jobs/clear", {}),
+    ("/api/v1/sources/incoming/parse", {"json": {"name": "выгрузка.zip"}}),
     (
-        "/dictionary/alias",
-        {"data": {"phrase": "проверка", "targets": "Справочник.Объекты"}},
+        "/api/v1/dictionary/aliases",
+        {"json": {"phrase": "проверка", "targets": ["Справочник.Объекты"]}},
     ),
     (
-        "/dictionary/alias/remove",
-        {"data": {"phrase": "проверка"}},
+        "/api/v1/dictionary/aliases/remove",
+        {"json": {"phrase": "проверка"}},
     ),
     (
-        "/dictionary/synonyms",
-        {"data": {"words": "проверка проверять"}},
+        "/api/v1/dictionary/synonyms",
+        {"json": {"words": ["проверка", "проверять"]}},
     ),
     (
-        "/dictionary/synonyms/remove",
-        {"data": {"words": "проверка проверять"}},
+        "/api/v1/dictionary/synonyms/remove",
+        {"json": {"words": ["проверка", "проверять"]}},
     ),
     ("/logout", {}),
 )
@@ -158,8 +159,8 @@ def test_cookie_mutation_без_origin_и_referer_отклоняется(
     login(client)
 
     response = client.post(
-        "/dictionary/alias",
-        data={"phrase": "проверка", "targets": "Справочник.Объекты"},
+        "/api/v1/dictionary/aliases",
+        json={"phrase": "проверка", "targets": ["Справочник.Объекты"]},
         follow_redirects=False,
     )
 
@@ -173,12 +174,12 @@ def test_cookie_mutation_принимает_same_origin(tmp_path, monkeypatch) -
     login(client)
 
     response = client.post(
-        "/dictionary/alias",
-        data={"phrase": "проверка", "targets": "Справочник.Объекты"},
+        "/api/v1/dictionary/aliases",
+        json={"phrase": "проверка", "targets": ["Справочник.Объекты"]},
         follow_redirects=False,
     )
 
-    assert response.status_code == 303
+    assert response.status_code == 200
     assert registry.dictionary.aliases_for(None, with_builtin=False)["проверка"] == [
         "Справочник.Объекты"
     ]
@@ -192,13 +193,13 @@ def test_cookie_mutation_принимает_same_origin_referer(
     login(client)
 
     response = client.post(
-        "/dictionary/alias",
+        "/api/v1/dictionary/aliases",
         headers={"referer": f"{BASE_URL}/dictionary"},
-        data={"phrase": "проверка", "targets": "Справочник.Объекты"},
+        json={"phrase": "проверка", "targets": ["Справочник.Объекты"]},
         follow_redirects=False,
     )
 
-    assert response.status_code == 303
+    assert response.status_code == 200
     assert registry.dictionary.aliases_for(None, with_builtin=False)["проверка"] == [
         "Справочник.Объекты"
     ]
@@ -212,16 +213,16 @@ def test_явный_admin_token_не_зависит_от_cookie_csrf(
     login(client)
 
     response = client.post(
-        "/dictionary/alias",
+        "/api/v1/dictionary/aliases",
         headers={
             "origin": "https://sibling.example.test",
             "x-api-token": "admin-token",
         },
-        data={"phrase": "проверка", "targets": "Справочник.Объекты"},
+        json={"phrase": "проверка", "targets": ["Справочник.Объекты"]},
         follow_redirects=False,
     )
 
-    assert response.status_code == 303
+    assert response.status_code == 200
     assert registry.dictionary.aliases_for(None, with_builtin=False)["проверка"] == [
         "Справочник.Объекты"
     ]

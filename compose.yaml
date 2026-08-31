@@ -1,0 +1,38 @@
+services:
+  mcp1c:
+    # Release-файл получает готовый образ. Для локальной проверки разработчик
+    # сначала собирает тот же target и подменяет только MCP1C_IMAGE.
+    image: ${MCP1C_IMAGE:-ghcr.io/azeevan/mcp-1c:2.0.0}
+    pull_policy: missing
+    container_name: mcp1c
+    restart: unless-stopped
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    ports:
+      # Даже за внешним HTTPS proxy backend остаётся доступен только хосту.
+      - "127.0.0.1:${MCP1C_PORT:-5001}:8000"
+    volumes:
+      - type: bind
+        source: ${MCP1C_DATA_DIR:-./data}
+        target: /data
+        bind:
+          create_host_path: false
+          selinux: Z
+    environment:
+      # Официальный образ не стартует без двух разных безопасных токенов.
+      API_TOKEN: ${API_TOKEN:?Укажите API_TOKEN в .env}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:?Укажите ADMIN_TOKEN в .env}
+      # Современный дашборд включён по умолчанию; `off` оставляет только MCP.
+      MCP1C_DASHBOARD: ${MCP1C_DASHBOARD:-on}
+      # `https-proxy` доверяет X-Forwarded-* от внешнего локального TLS proxy.
+      MCP1C_ACCESS: ${MCP1C_ACCESS:-local}
+      MCP1C_REFERENCE_ARTIFACT: ${MCP1C_REFERENCE_ARTIFACT:-}
+      MCP1C_ALLOW_SELF_RESTART: ${MCP1C_ALLOW_SELF_RESTART:-1}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

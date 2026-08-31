@@ -9,7 +9,7 @@ from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
 from conftest import build_configuration, write_export
-from mcp1c import dashboard
+from mcp1c.dashboard_runtime import DASHBOARD_ON, routes
 from mcp1c.dictionary import Dictionary
 from mcp1c.registry import Registry
 
@@ -83,7 +83,7 @@ def test_параллельные_admin_правки_сериализованы_
     incoming.mkdir()
     registry = Registry(data_dir)
     registry.add_configuration(write_export(incoming, build_configuration()))
-    app = Starlette(routes=dashboard.routes(registry))
+    app = Starlette(routes=routes(registry, mode=DASHBOARD_ON))
     clients = [TestClient(app), TestClient(app)]
 
     настоящий_add_alias = Dictionary.add_alias
@@ -141,14 +141,13 @@ def test_параллельные_admin_правки_сериализованы_
 
     def добавить(client: TestClient, phrase: str, target: str) -> None:
         response = client.post(
-            "/dictionary/alias",
+            "/api/v1/dictionary/aliases",
             headers={"x-api-token": "secret"},
-            data={
+            json={
                 "phrase": phrase,
-                "targets": target,
+                "targets": [target],
                 "config": "ТестоваяКонфигурация",
             },
-            follow_redirects=False,
         )
         with замок_ответов:
             ответы.append(response.status_code)
@@ -167,7 +166,7 @@ def test_параллельные_admin_правки_сериализованы_
             client.close()
 
     assert ошибки == []
-    assert sorted(ответы) == [303, 303]
+    assert sorted(ответы) == [200, 200]
     assert максимум_мутаций == 1
     assert максимум == 1
 

@@ -1,9 +1,0 @@
-services:
-  mcp1c:
-    # Классический HTML обслуживает тот же Python-процесс; новый образ не нужен.
-    build:
-      context: .
-      target: runtime-core
-    image: mcp1c:latest
-    environment:
-      MCP1C_DASHBOARD: classic

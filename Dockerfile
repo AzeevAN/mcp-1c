@@ -44,14 +44,11 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
 ENTRYPOINT ["python", "-m", "mcp1c.server"]
 CMD ["--host", "0.0.0.0", "--port", "8000", "--data", "/data", "--require-writable-data"]
 
-# Опциональный образ с React-статикой. Он остаётся однопроцессным и читает
-# Registry только через API того же MCP-сервера.
-FROM runtime-base AS runtime-dashboard
+# Единственный runtime содержит готовую SPA-статику, но регистрирует UI только
+# при MCP1C_DASHBOARD=on. Node и node_modules в этот слой не переходят.
+FROM runtime-base AS runtime
 COPY --from=dashboard-build --chown=10001:10001 /dashboard/dist /app/dashboard/dist
-ENV MCP1C_DASHBOARD=spa \
+ENV MCP1C_DASHBOARD=on \
+    MCP1C_ACCESS=local \
     MCP1C_DASHBOARD_DIST=/app/dashboard/dist
-
-# Финальный target по умолчанию не содержит React и запускается без UI.
-# Классический HTML включается Compose-override без отдельной сборки.
-FROM runtime-base AS runtime-core
-ENV MCP1C_DASHBOARD=off
+CMD ["--host", "0.0.0.0", "--port", "8000", "--data", "/data", "--require-writable-data", "--require-tokens"]

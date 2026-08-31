@@ -10,7 +10,7 @@
 производные индексы. Всё состояние конкретной установки находится в отдельном
 каталоге `data/` и не попадает в git.
 
-## Состояние — 2026-08-30
+## Состояние — 2026-08-31
 
 | Контур | Состояние |
 |---|---|
@@ -19,15 +19,15 @@
 | Код и расширения | процедуры, тела, формы, места вызовов, происхождение объектов и полей; отдельный сеансовый снимок активности |
 | Синтаксис | объединённые справки нескольких версий платформы |
 | Общая справка | опциональный подписанный `.mcp1cref`; без доверенного артефакта две дополнительные ручки не регистрируются |
-| Дашборд | рабочая SPA и классический совместимый UI |
-| Авторизация | `API_TOKEN` на чтение, `ADMIN_TOKEN` на запись |
-| Тесты | `.venv/bin/python -m pytest`, 1762 |
+| Дашборд | современная SPA включена по умолчанию; `on` либо `off` |
+| Авторизация Docker | два разных обязательных токена: `API_TOKEN` на чтение, `ADMIN_TOKEN` на запись |
+| Тесты | `.venv/bin/python -m pytest`, 1680 |
 
 Воспроизводимый прогон:
 
 ```bash
 .venv/bin/pip install --require-hashes -r requirements-dev-lock.txt
-.venv/bin/python -m pytest          # 1762 теста (прогон 2026-08-30)
+.venv/bin/python -m pytest          # 1680 тестов (прогон 2026-08-31)
 ```
 
 ## Навигация
@@ -35,7 +35,7 @@
 | Раздел | Где читать |
 |---|---|
 | Полный Docker/Linux runbook | [ниже в этом README](#запуск-в-docker) |
-| Дашборд: classic и SPA | [dashboard/README.md](dashboard/README.md) |
+| Современный дашборд | [dashboard/README.md](dashboard/README.md) |
 | Конфигурации MCP-клиентов | [docs/clients.md](docs/clients.md) |
 | Все инструменты и порядок вызовов | [docs/tools.md](docs/tools.md) |
 | Источники, CLI, bench и ручной сервер | [docs/operations.md](docs/operations.md) |
@@ -69,37 +69,31 @@
 # Запуск в Docker
 
 Ниже описан полный путь от чистого Linux-сервера до работающего контейнера.
-Критичные шаги не вынесены во внешнюю документацию: права, три режима, токены,
-healthcheck и удалённый HTTPS можно настроить по этому разделу.
+Критичные шаги не вынесены во внешнюю документацию: права, обязательные токены,
+режим дашборда, healthcheck и удалённый HTTPS настраиваются по этому разделу.
 
 ## Что запускается
 
-Базовый [docker-compose.yml](docker-compose.yml):
+Единственный пользовательский [compose.yaml](compose.yaml):
 
-- собирает target `runtime-core`;
+- получает готовый образ `ghcr.io/azeevan/mcp-1c:2.0.0` без локальной сборки;
 - запускает процесс как UID/GID `10001:10001`;
 - монтирует подготовленный каталог хоста в `/data`;
 - публикует порт только на `127.0.0.1`;
 - включает `no-new-privileges` и удаляет все Linux capabilities;
 - ограничивает Docker JSON-логи тремя файлами по 10 МиБ;
-- запускает MCP без дашборда.
+- требует два разных безопасных токена до старта;
+- запускает современный дашборд по умолчанию.
 
-Два override-файла включают интерфейс:
-
-| Вариант | Дополнительный файл | Образ |
-|---|---|---|
-| Без дашборда | нет | `mcp1c:latest`, `runtime-core` |
-| Классический дашборд | `docker-compose.classic.yml` | тот же `runtime-core` |
-| SPA | `docker-compose.dashboard.yml` | `mcp1c:dashboard`, `runtime-dashboard` |
-
-`docker-compose.remote.yml` добавляется последним к любому варианту, если
-сервер доступен с другой машины через HTTPS reverse proxy.
+Один образ работает с `MCP1C_DASHBOARD=on|off`; серверный HTML удалён. Для внешнего
+доступа за уже настроенным HTTPS reverse proxy используется
+`MCP1C_ACCESS=https-proxy`; отдельного Compose-файла и встроенного proxy нет.
 
 ## Требования
 
 - 64-битный Linux или Docker Desktop;
 - Docker Engine с Compose v2 (`docker compose`, не старый `docker-compose`);
-- Git и `curl` для установки и проверки;
+- `curl` для получения Compose и проверки;
 - свободный локальный порт `5001` либо другое значение `MCP1C_PORT`;
 - место под исходники и индексы в отдельном каталоге.
 
@@ -108,7 +102,6 @@ healthcheck и удалённый HTTPS можно настроить по эт�
 ```bash
 docker version
 docker compose version
-git --version
 curl --version
 ```
 
@@ -116,20 +109,19 @@ curl --version
 группу `docker` фактически даёт административные права на машину; принимайте
 это решение осознанно или запускайте команды Docker через `sudo`.
 
-## 1. Получить проект
+## 1. Получить Compose
 
 ```bash
-git clone https://github.com/AzeevAN/mcp-1c.git
+mkdir mcp-1c
 cd mcp-1c
+curl --fail --show-error --location --output compose.yaml \
+  https://raw.githubusercontent.com/AzeevAN/mcp-1c/v2.0.0/compose.yaml
+curl --fail --show-error --location --output .env.example \
+  https://raw.githubusercontent.com/AzeevAN/mcp-1c/v2.0.0/.env.example
 ```
 
-Для обновления существующей установки используйте только ожидаемую ветку и
-проверяйте изменения перед сборкой:
-
-```bash
-git status --short --branch
-git pull --ff-only
-```
+Исходники и Node для обычного запуска не нужны. Точный release-тег в URL и
+`MCP1C_IMAGE` не дают незаметно перейти на другую версию.
 
 ## 2. Подготовить окружение
 
@@ -142,13 +134,16 @@ cp .env.example .env
 ```dotenv
 MCP1C_DATA_DIR=/srv/mcp1c/data
 MCP1C_PORT=5001
-API_TOKEN=
-ADMIN_TOKEN=
+MCP1C_IMAGE=ghcr.io/azeevan/mcp-1c:2.0.0
+MCP1C_DASHBOARD=on
+MCP1C_ACCESS=local
+API_TOKEN=<первый случайный токен>
+ADMIN_TOKEN=<второй случайный токен>
 ```
 
-Для локального loopback-запуска токены можно оставить пустыми. Для сервера,
-к которому обращаются другие машины, оба токена обязательны и должны быть
-разными.
+Официальный образ не запускается без обоих токенов даже на localhost. Значения
+должны различаться, содержать не менее 32 печатных ASCII-символов без пробелов
+и не быть примерами из документации.
 
 Сгенерируйте два значения и вручную перенесите их в `.env`:
 
@@ -159,6 +154,11 @@ python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 
 `.env` находится в `.gitignore`. Не добавляйте реальные токены в Compose,
 README, shell history или конфиги, которые публикуются вместе с проектом.
+Ограничьте чтение файла:
+
+```bash
+chmod 0600 .env
+```
 
 Переменные:
 
@@ -166,15 +166,18 @@ README, shell history или конфиги, которые публикуютс
 |---|---|---|
 | `MCP1C_DATA_DIR` | bind source на машине Docker | `./data` |
 | `MCP1C_PORT` | loopback-порт хоста | `5001` |
-| `API_TOKEN` | чтение MCP и дашборда | пусто: чтение открыто достигшему адреса клиенту |
-| `ADMIN_TOKEN` | загрузка, удаление, incoming, словарь, reload | пусто: маршруты записи отключены |
-| `MCP1C_DASHBOARD` | `off`, `classic`, `spa` | задаётся выбранным Compose-файлом |
-| `MCP1C_DASHBOARD_DIST` | готовая статика SPA | внутри образа `/app/dashboard/dist` |
+| `MCP1C_IMAGE` | готовый OCI-образ или точный digest | `ghcr.io/azeevan/mcp-1c:2.0.0` |
+| `API_TOKEN` | чтение MCP и дашборда | обязателен |
+| `ADMIN_TOKEN` | загрузка, удаление, incoming, словарь, reload | обязателен и отличается от `API_TOKEN` |
+| `MCP1C_DASHBOARD` | `on` — SPA, `off` — без UI | `on` |
+| `MCP1C_ACCESS` | `local` либо `https-proxy` | `local` |
 | `MCP1C_REFERENCE_ARTIFACT` | `off`, пусто либо путь к `.mcp1cref` внутри контейнера | пусто: управляемый `data/reference/reference.mcp1cref` |
 | `MCP1C_ALLOW_SELF_RESTART` | разрешить admin-дашборду завершить процесс для возврата внешним supervisor | Compose: `1`; bare-запуск: выключено |
 
-`MCP1C_DASHBOARD` не нужно записывать в `.env`: явный override делает режим
-видимым в самой команде запуска.
+Прежнее значение `spa` переименовано в `on`. У удалённого серверного
+HTML-режима прямой замены нет: выберите `on` для SPA либо `off` без UI.
+`https-proxy` не открывает порт наружу и не запускает TLS — он только разрешает
+серверу доверять заголовкам от внешнего proxy на той же машине.
 
 Обхода подписи в публикуемом runtime нет: неподписанная SQLite всегда получает
 `untrusted` и не открывается сервером.
@@ -335,7 +338,7 @@ sudo install -o 10001 -g 10001 -m 0640 \
 Каноническая SQLite schema v1 не входит в репозиторий и не собирается этим
 проектом. Она доставляется внутри одного подписанного ZIP-артефакта с
 однозначным расширением `.mcp1cref`. При управляемом пути администратор выбирает
-такой файл в общей форме «Загрузить источник» на странице «Источники» в classic
+такой файл в общей форме «Загрузить источник» на странице «Источники» в SPA
 или SPA. Та же форма принимает ZIP/HBK/JSON, а по расширению направляет
 `.mcp1cref` в отдельный справочный адаптер, не смешивая его с Registry. Обычный
 `.zip` по-прежнему относится только к Registry.
@@ -404,7 +407,7 @@ supervisor не мог погасить себя окончательно.
 управлением оператора и отключает загрузку и удаление из дашборда. Значение `off`
 полностью отключает адаптер.
 
-Страница «Общая справка» доступна из навигации classic и SPA с правом чтения.
+Страница «Общая справка» доступна из навигации SPA с правом чтения.
 Она вызывает тот же поиск и чтение карточки, что MCP, и ничего не изменяет. В
 состояниях `disabled`, `missing`, `untrusted`, `incompatible` и `corrupt`
 страница показывает безопасную причину и ссылку на «Источники», но не рисует
@@ -412,84 +415,45 @@ supervisor не мог погасить себя окончательно.
 
 ## 5. Проверить Compose до запуска
 
-Без дашборда:
-
 ```bash
-docker compose -f docker-compose.yml config --quiet
+docker compose config --quiet
 ```
 
-Классический дашборд:
+Отсутствие вывода и код `0` означают, что файл и обязательные переменные
+согласованы. Пустой `API_TOKEN` или `ADMIN_TOKEN` останавливает уже эту команду;
+длина, ASCII и различие проверяются повторно самим сервером до открытия порта.
+Права bind mount докажет стартовый write probe.
+
+## 6. Запустить готовый образ
 
 ```bash
-docker compose \
-  -f docker-compose.yml \
-  -f docker-compose.classic.yml \
-  config --quiet
-```
-
-SPA:
-
-```bash
-docker compose \
-  -f docker-compose.yml \
-  -f docker-compose.dashboard.yml \
-  config --quiet
-```
-
-Отсутствие вывода и код `0` означают, что Compose-файлы и переменные
-согласованы. Эта команда не проверяет права bind mount — их докажет стартовый
-write probe.
-
-## 6. Запустить один из трёх вариантов
-
-### Только MCP, без дашборда
-
-```bash
-docker compose \
-  -f docker-compose.yml \
-  up -d --build --force-recreate
-```
-
-Доступны `/mcp`, `/health` и служебный API. `/`, `/sources`, `/queries` и
-SPA-маршруты не регистрируются.
-
-### MCP и классический дашборд
-
-```bash
-docker compose \
-  -f docker-compose.yml \
-  -f docker-compose.classic.yml \
-  up -d --build --force-recreate
-```
-
-Это стабильный HTML-интерфейс без Node в runtime.
-
-### MCP и SPA
-
-```bash
-docker compose \
-  -f docker-compose.yml \
-  -f docker-compose.dashboard.yml \
-  up -d --build --force-recreate
+docker compose pull
+docker compose up -d --force-recreate
 ```
 
 Node используется только в build-stage. В рабочий образ переходят Python и
-готовые статические файлы. SPA является основным современным интерфейсом;
-классический HTML сохранён как совместимый fallback. MCP и данные при
-переключении не меняются.
+готовые статические файлы. При `MCP1C_DASHBOARD=on` доступны SPA и MCP. При
+`off` доступны `/mcp` и `/health`, а `/`, `/sources`, `/queries` и dashboard API
+не регистрируются. MCP и данные при переключении не меняются.
 
 На странице «Запросы» каждое найденное попадание объяснено одной из четырёх
 причин: точное совпадение, псевдоним из словаря, все слова запроса или часть
 слов запроса. Пустой знак «—» для найденного результата не используется;
 оценка и порядок выдачи от формулировки причины не зависят.
 
-Все команды управляют одним service `mcp1c`. Чтобы переключить режим, выполните
-другую команду `up --force-recreate`; одновременно запускать три контейнера с
-одним портом и одним `data/` не нужно.
+Чтобы переключить UI, измените `MCP1C_DASHBOARD` в `.env` и повторите
+`docker compose up -d --force-recreate`. Образ и `data/` останутся теми же.
 
-`restart` не применяет новый Dockerfile или новый frontend. После изменения
-кода используйте `up -d --build --force-recreate`. Кнопка дашборда решает
-только применение уже проверенной установки или удаления общей SQLite.
+Разработчик из исходного checkout собирает тот же единственный target отдельно,
+не добавляя `build` в пользовательский Compose:
+
+```bash
+docker build --target runtime -t mcp1c:dev .
+MCP1C_IMAGE=mcp1c:dev docker compose up -d --force-recreate
+```
+
+`restart` не применяет новый образ или frontend. Кнопка дашборда решает только
+применение уже проверенной установки или удаления общей SQLite.
 
 ## 7. Проверить работающий контейнер
 
@@ -510,8 +474,8 @@ curl --fail --show-error http://127.0.0.1:5001/health
 }
 ```
 
-Счётчики зависят от ваших источников. Без токена `/health` не раскрывает их
-имена; с токеном чтения возвращает подробный состав.
+Счётчики зависят от ваших источников. Открытый `/health` не раскрывает их имена;
+с токеном чтения возвращает подробный состав.
 
 Проверка пользователя и write-контракта без вывода предметных данных:
 
@@ -528,17 +492,13 @@ docker compose exec mcp1c sh -c '
 
 Ожидается `uid=10001(mcp1c) gid=10001(mcp1c)` и код завершения `0`.
 
-Для классического дашборда:
-
-```bash
-curl --fail --show-error http://127.0.0.1:5001/
-```
-
-Для SPA тот же адрес должен вернуть HTML, а asset — существовать в образе:
+При `on` asset существует в образе, а запрос с токеном возвращает HTML:
 
 ```bash
 docker compose exec mcp1c test -f /app/dashboard/dist/index.html
-curl --fail --show-error http://127.0.0.1:5001/
+curl --fail --show-error \
+  --header "X-Api-Token: $API_TOKEN" \
+  http://127.0.0.1:5001/
 ```
 
 В режиме без UI запрос `/` должен вернуть `404`; это ожидаемая проверка, а не
@@ -547,43 +507,20 @@ curl --fail --show-error http://127.0.0.1:5001/
 ## 8. Удалённый сервер через HTTPS
 
 Backend намеренно остаётся на `127.0.0.1`. Наружу его публикует TLS reverse
-proxy на той же машине. Remote override:
+proxy на той же машине. В `.env` выберите:
 
-- требует непустые и разные по назначению `API_TOKEN` и `ADMIN_TOKEN` ещё при
-  разборе Compose;
-- сохраняет loopback bind;
-- включает доверие к `X-Forwarded-*` только для этого контура.
-
-Без дашборда:
-
-```bash
-docker compose \
-  -f docker-compose.yml \
-  -f docker-compose.remote.yml \
-  up -d --build --force-recreate
+```dotenv
+MCP1C_ACCESS=https-proxy
 ```
 
-Классический дашборд:
+Затем примените тот же единственный файл:
 
 ```bash
-docker compose \
-  -f docker-compose.yml \
-  -f docker-compose.classic.yml \
-  -f docker-compose.remote.yml \
-  up -d --build --force-recreate
+docker compose up -d --force-recreate
 ```
 
-SPA:
-
-```bash
-docker compose \
-  -f docker-compose.yml \
-  -f docker-compose.dashboard.yml \
-  -f docker-compose.remote.yml \
-  up -d --build --force-recreate
-```
-
-Последовательность файлов важна: базовый, выбранный UI, затем remote.
+Режим сохраняет loopback bind и включает доверие к `X-Forwarded-*` только для
+этого контура. Токены обязательны независимо от режима доступа и UI.
 
 Минимальный Caddyfile после настройки DNS и открытия портов 80/443:
 
@@ -595,7 +532,7 @@ mcp.example.com {
 
 Клиент подключается к `https://mcp.example.com/mcp`. Порт `5001` в firewall
 наружу не открывается. Не добавляйте `0.0.0.0:5001:8000` и не включайте
-`--trust-proxy-headers` при прямом доступе клиента к backend: иначе клиент
+`MCP1C_ACCESS=https-proxy` при прямом доступе клиента к backend: иначе клиент
 сможет подделать схему запроса.
 
 Проверка с сервера:
@@ -618,23 +555,16 @@ curl --fail --show-error https://mcp.example.com/health
 Посмотреть итоговую конфигурацию выбранного режима:
 
 ```bash
-docker compose \
-  -f docker-compose.yml \
-  -f docker-compose.dashboard.yml \
-  config
+docker compose config
 ```
 
 Не публикуйте этот вывод: он содержит значения переменных окружения.
 
-Обновление кода:
+Обновление на образ, уже указанный в `.env`:
 
 ```bash
-git status --short --branch
-git pull --ff-only
-docker compose \
-  -f docker-compose.yml \
-  -f docker-compose.classic.yml \
-  up -d --build --force-recreate
+docker compose pull
+docker compose up -d --force-recreate
 docker compose ps
 docker compose logs --tail 100 mcp1c
 ```
@@ -716,17 +646,19 @@ Healthcheck внутри образа обращается к `127.0.0.1:8000`; 
 Задан `API_TOKEN`, но клиент не передал его или передал другое значение.
 Проверьте запрос из [docs/clients.md](docs/clients.md#токен-чтения).
 
-### `404` на загрузке или reload
+### Контейнер не стартует из-за токенов
 
-Пустой `ADMIN_TOKEN` намеренно отключает изменяющие маршруты. Заполните `.env`
-и пересоздайте контейнер; простая правка файла окружения не меняет уже
-запущенный процесс.
+Официальный образ проверяет оба токена до открытия порта. Заполните `.env`
+разными значениями по правилам выше и пересоздайте контейнер; простая правка
+файла окружения не меняет уже запущенный процесс. Только bare-запуск без
+`--require-tokens` сохраняет старый локальный контракт, где пустой
+`ADMIN_TOKEN` отключает изменяющие маршруты ответом 404.
 
 ### `413 Request Entity Too Large`
 
 Сервер принимает файл до 500 МиБ и multipart-тело до 501 МиБ только на
-`/sources` и `/api/v1/sources/upload`. Если файл меньше, ищите меньший предел
-в reverse proxy. Повышать общий лимит `/mcp` и прочих API не нужно.
+`/api/v1/sources/upload`. Если файл меньше, ищите меньший предел в reverse
+proxy. Повышать общий лимит `/mcp` и прочих API не нужно.
 
 ### Источник лежит в `bootstrap`, но не появился
 
@@ -759,6 +691,11 @@ PYTHONPATH=src .venv/bin/python -m mcp1c.server \
 позволяет осознанно читать готовый Registry с read-only носителя. Если нужны
 загрузка, словарь и административные операции, добавьте флаг и устраните все
 ошибки проверки до старта.
+
+Bare-запуск также принимает `MCP1C_DASHBOARD=on|off` (по умолчанию `on`) и
+`MCP1C_ACCESS=local|https-proxy` (по умолчанию `local`). Флаг
+`--require-tokens` включает ту же строгую проверку `API_TOKEN` и `ADMIN_TOKEN`,
+что всегда действует в официальном образе.
 
 ---
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from starlette.applications import Starlette
 
 from conftest import build_configuration, живой_клиент, write_export
-from mcp1c.dashboard_runtime import DASHBOARD_SPA, routes
+from mcp1c.dashboard_runtime import DASHBOARD_ON, routes
 from mcp1c.dictionary import ANY_CONFIGURATION, SOURCE_BUILTIN
 from mcp1c.registry import Registry
 
@@ -22,7 +22,7 @@ def _registry(tmp_path, *names: str) -> Registry:
 
 
 def _client(registry: Registry):
-    return живой_клиент(Starlette(routes=routes(registry, mode=DASHBOARD_SPA)))
+    return живой_клиент(Starlette(routes=routes(registry, mode=DASHBOARD_ON)))
 
 
 def _login(client, token: str = "admin-token") -> None:

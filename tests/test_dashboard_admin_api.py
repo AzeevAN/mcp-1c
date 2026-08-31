@@ -14,14 +14,14 @@ from conftest import (
     состарить,
     write_export,
 )
-from mcp1c import dashboard
-from mcp1c.dashboard_runtime import DASHBOARD_SPA, routes
+from mcp1c import dashboard_backend as dashboard
+from mcp1c.dashboard_runtime import DASHBOARD_ON, routes
 from mcp1c.registry import Registry
 
 
 def _client(registry: Registry):
     return живой_клиент(
-        Starlette(routes=routes(registry, mode=DASHBOARD_SPA))
+        Starlette(routes=routes(registry, mode=DASHBOARD_ON))
     )
 
 

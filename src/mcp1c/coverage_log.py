@@ -65,14 +65,21 @@ def _problem_sort_key(item) -> tuple:
 
 
 def build_payload(loaded: "LoadedModules") -> dict[str, Any]:
-    """Полный безопасный снимок того же поколения, что публичные агрегаты."""
+    """Полный снимок покрытия одного поколения.
+
+    Агрегаты совпадают с публичными. Строки проблем в журнале сохраняют
+    относительный путь неадресуемого файла; MCP и CLI этот путь не показывают.
+    """
     # Локальный импорт разрывает зависимость: registry вызывает запись
     # журнала, а tools уже импортирует типы registry для публичных ответов.
     from . import tools
 
     source = loaded.source
     coverage = tools._code_coverage(loaded, include_problem_rows=False)
-    problems = sorted(tools._iter_code_problems(loaded), key=_problem_sort_key)
+    problems = sorted(
+        tools._iter_code_problems(loaded, sanitize=False),
+        key=_problem_sort_key,
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "kind": KIND,

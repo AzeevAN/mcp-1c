@@ -97,6 +97,27 @@ def test_json_schema_v1_содержит_identity_таблицы_и_полные
     assert json.loads(coverage_log.log_path(registry.data_dir, source.id).read_text())
 
 
+def test_журнал_называет_неадресуемый_файл(tmp_path, архив_кода):
+    registry, root = _registry(tmp_path)
+    relative = "ExternalDataSources/Источник/Ext/Module.bsl"
+    _write(root, relative, "Процедура А()\nКонецПроцедуры")
+    source = registry.add_modules(архив_кода(root), configuration="Пример")
+    payload = coverage_log.load_current(registry.data_dir, source)
+    public = tools.sources_snapshot(registry).code[0].coverage
+
+    assert payload is not None
+    unknown = next(
+        row for row in payload["problems"] if row["category"] == "unknown_address"
+    )
+    assert relative in unknown["reason"]
+    assert public is not None
+    public_unknown = next(
+        item for item in public.problems if item.category == "unknown_address"
+    )
+    assert relative not in public_unknown.reason
+    assert public_unknown.reason == "канонический адрес не доказан"
+
+
 def test_у_основного_корпуса_и_расширения_разные_актуальные_журналы(
     tmp_path, архив_кода
 ):

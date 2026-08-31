@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from module_samples import v8_container_bytes
-from mcp1c import modules_index
+from mcp1c import modules_index, tools
 from mcp1c.module_catalog import ModuleCatalog, build_catalog
 from mcp1c.module_content import LocatorIdentity, read_bsl
 
@@ -106,6 +106,8 @@ def test_каждый_кандидат_попадает_ровно_в_одну_�
     assert "Процедура Б" not in repr(catalog)
     unknown = next(p for p in catalog.problems if p.category == "unknown_address")
     assert unknown.address is None and unknown.ordinal > 0
+    assert "Unknown.Объект.Module.txt" in unknown.reason
+    assert "неподдержанный вид плоской выгрузки" in unknown.reason
 
 
 def test_пустой_txt_сохраняет_локатор_а_пустой_container_только_форму(tmp_path):
@@ -149,6 +151,56 @@ def test_семантически_битый_cache_каталога_станов
         first[2] = (kind, relative.replace(name, name.lower()), entry)
     state["entries"][0] = tuple(first)
 
+    assert ModuleCatalog.from_state(state, catalog.identity) is None
+
+
+def test_unknown_address_в_кэше_сохраняет_относительный_путь(tmp_path):
+    relative = "ExternalDataSources/Источник/Ext/Module.bsl"
+    _write(tmp_path, relative, "Процедура А() КонецПроцедуры")
+
+    catalog = build_catalog(tmp_path, _identity())
+    unknown = next(p for p in catalog.problems if p.category == "unknown_address")
+    restored = ModuleCatalog.from_state(catalog.to_state(), catalog.identity)
+
+    assert relative in unknown.reason
+    assert "неизвестный вид объекта метаданных" in unknown.reason
+    assert restored is not None
+    restored_unknown = next(
+        p for p in restored.problems if p.category == "unknown_address"
+    )
+    assert restored_unknown.reason == unknown.reason
+
+
+def test_журнал_проблем_называет_файл_а_публичный_ответ_нет(tmp_path):
+    relative = "ExternalDataSources/Источник/Ext/Module.bsl"
+    _write(tmp_path, relative, "Процедура А() КонецПроцедуры")
+    catalog = build_catalog(tmp_path, _identity())
+    forms = modules_index.Формы.построить(tmp_path, каталог=catalog)
+
+    class _Loaded:
+        каталог = catalog
+        формы = forms
+
+    public = list(tools._iter_code_problems(_Loaded()))
+    journal = list(tools._iter_code_problems(_Loaded(), sanitize=False))
+
+    assert [item.reason for item in public] == ["канонический адрес не доказан"]
+    assert relative in journal[0].reason
+    assert journal[0].reason != public[0].reason
+
+
+def test_кэш_без_причины_unknown_address_это_miss(tmp_path):
+    _write(tmp_path, "Unknown.Объект.Module.txt", "Процедура Б() КонецПроцедуры")
+    catalog = build_catalog(tmp_path, _identity())
+    unknown = next(p for p in catalog.problems if p.category == "unknown_address")
+    state = copy.deepcopy(catalog.to_state())
+    state["outcomes"] = [
+        (ordinal, category, address)
+        for ordinal, category, address, _reason in state["outcomes"]
+    ]
+
+    assert "Unknown.Объект.Module.txt" in unknown.reason
+    assert "неподдержанный вид плоской выгрузки" in unknown.reason
     assert ModuleCatalog.from_state(state, catalog.identity) is None
 
 

@@ -119,6 +119,11 @@ def test_четыре_транспорта_дают_один_virtual_tree_и_saf
                 assert stream.read() == payload
         assert tree.verify_stable(tree.fingerprint()) is True
 
+    assert trees[0].source_sha256() == staged.sha256
+    assert trees[1].source_sha256() == staged.sha256
+    assert trees[2].source_sha256() == staged.sha256
+    assert len(trees[3].source_sha256()) == 64
+
     assert staged.origin_name == "demo-export.zip"
     assert [tree.transport for tree in trees] == [
         CandidateTransport.BROWSER,

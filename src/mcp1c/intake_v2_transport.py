@@ -728,6 +728,7 @@ class ZipExportTree:
         self._source = source
         self._archive = archive
         self._closed = False
+        self._source_sha256: str | None = None
 
     @staticmethod
     def _inspect(
@@ -783,6 +784,32 @@ class ZipExportTree:
 
     def fingerprint(self) -> str:
         return self._fingerprint
+
+    def source_sha256(self) -> str:
+        with self._lock:
+            if self._closed:
+                raise TransportError("ZIP tree уже закрыт")
+            if self._source_sha256 is not None:
+                return self._source_sha256
+            source, identity = _open_regular_file(self.path)
+            if identity != self._identity:
+                source.close()
+                raise TransportUnstableError(
+                    "ZIP изменился после фиксации снимка"
+                )
+            digest = hashlib.sha256()
+            try:
+                with source:
+                    for block in iter(lambda: source.read(_READ_CHUNK), b""):
+                        digest.update(block)
+            except OSError as error:
+                raise TransportError("ZIP недоступен для расчёта SHA-256") from error
+            if self._current_identity() != self._identity:
+                raise TransportUnstableError(
+                    "ZIP изменился во время расчёта SHA-256"
+                )
+            self._source_sha256 = digest.hexdigest()
+            return self._source_sha256
 
     def _current_identity(self) -> tuple[int, int, int, int] | None:
         try:
@@ -1087,6 +1114,7 @@ class DirectoryExportTree:
         )
         self._paths = tuple(sorted(self._snapshot.members))
         self._lock = threading.RLock()
+        self._source_sha256: str | None = None
 
     def paths(self) -> tuple[str, ...]:
         return self._paths
@@ -1100,6 +1128,49 @@ class DirectoryExportTree:
 
     def fingerprint(self) -> str:
         return self._snapshot.fingerprint
+
+    def source_sha256(self) -> str:
+        with self._lock:
+            if self._source_sha256 is not None:
+                return self._source_sha256
+            # Состав уже проверен при создании snapshot. Новый счётчик нужен
+            # лишь для фактически прочитанных байтов; повторный список всех
+            # членов здесь дал бы лишний пик памяти на больших выгрузках.
+            budget = ResourceBudget(
+                self._limits,
+                "канонический снимок каталога",
+            )
+            digest = hashlib.sha256(b"mcp1c-directory-snapshot-v1\0")
+            for path in self._paths:
+                encoded_path = path.encode("utf-8")
+                digest.update(len(encoded_path).to_bytes(8, "big"))
+                digest.update(encoded_path)
+                member = self._snapshot.members[path]
+                digest.update(member.size.to_bytes(8, "big"))
+                stream, identity = _open_directory_member(self.root, path)
+                if identity != member.identity:
+                    stream.close()
+                    raise TransportUnstableError(
+                        "read-only каталог изменился при расчёте SHA-256"
+                    )
+                with _TransportReader(
+                    stream,
+                    budget,
+                    path,
+                    lock=self._lock,
+                    failure_message=(
+                        "файл read-only каталога изменился при расчёте SHA-256"
+                    ),
+                    failure_type=TransportUnstableError,
+                ) as reader:
+                    for block in iter(lambda: reader.read(_READ_CHUNK), b""):
+                        digest.update(block)
+            if not self.verify_stable(self._snapshot.fingerprint):
+                raise TransportUnstableError(
+                    "read-only каталог изменился при расчёте SHA-256"
+                )
+            self._source_sha256 = digest.hexdigest()
+            return self._source_sha256
 
     def verify_stable(self, expected: str) -> bool:
         if not isinstance(expected, str) or expected != self._snapshot.fingerprint:

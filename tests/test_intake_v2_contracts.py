@@ -93,6 +93,9 @@ def test_virtual_tree_задаёт_один_потоковый_контракт_
         def fingerprint(self) -> str:
             return "c" * 64
 
+        def source_sha256(self) -> str:
+            return "d" * 64
+
         def verify_stable(self, expected: str) -> bool:
             return expected == self.fingerprint()
 

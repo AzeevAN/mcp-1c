@@ -407,6 +407,9 @@ def _supported(
     canonical_kind: str,
     aliases: Iterable[str],
     layers: Iterable[LayerKind],
+    *,
+    base_adapter: str = "",
+    extended_adapter: str = "",
 ) -> MetadataKindSpec:
     aliases = tuple(aliases)
     return MetadataKindSpec(
@@ -416,6 +419,8 @@ def _supported(
         layers=frozenset(layers),
         layouts=frozenset({"tree", *(("flat",) if aliases else ())}),
         aliases=frozenset(aliases),
+        base_adapter=base_adapter,
+        extended_adapter=extended_adapter,
     )
 
 
@@ -437,124 +442,141 @@ _BASE_CONTENT = frozenset(
     {LayerKind.BASE_STRUCTURE, LayerKind.CODE, LayerKind.FORMS}
 )
 
+
+def _base(
+    source_name: str,
+    canonical_kind: str,
+    aliases: Iterable[str],
+    layers: Iterable[LayerKind] = _BASE_CONTENT,
+    *,
+    extended_adapter: str = "",
+) -> MetadataKindSpec:
+    return _supported(
+        source_name,
+        canonical_kind,
+        aliases,
+        layers,
+        base_adapter="schema_v1",
+        extended_adapter=extended_adapter,
+    )
+
+
 # Flat aliases перечислены только для уже доказанной грамматики из
 # ``module_address``. Наличие tree-вида само по себе не доказывает имя его
 # плоского представления; неизвестный вариант останется диагностируемым.
 DEFAULT_KIND_SPECS = (
-    _supported("Catalogs", "Справочник", ("Catalog",), _BASE_CONTENT),
-    _supported("Documents", "Документ", ("Document",), _BASE_CONTENT),
-    _supported(
+    _base("Catalogs", "Справочник", ("Catalog",)),
+    _base("Documents", "Документ", ("Document",)),
+    _base(
         "InformationRegisters",
         "РегистрСведений",
         ("InformationRegister",),
-        _BASE_CONTENT,
     ),
-    _supported(
+    _base(
         "AccumulationRegisters",
         "РегистрНакопления",
         ("AccumulationRegister",),
-        _BASE_CONTENT,
     ),
-    _supported(
+    _base(
         "AccountingRegisters",
         "РегистрБухгалтерии",
         (),
-        _BASE_CONTENT,
     ),
-    _supported(
+    _base(
         "CalculationRegisters",
         "РегистрРасчета",
         (),
-        _BASE_CONTENT,
     ),
-    _supported("Constants", "Константа", ("Constant",), _BASE_CONTENT),
-    _supported("Enums", "Перечисление", ("Enum",), _BASE_CONTENT),
-    _supported(
+    _base("Constants", "Константа", ("Constant",)),
+    _base("Enums", "Перечисление", ("Enum",)),
+    _base(
         "ChartsOfCharacteristicTypes",
         "ПланВидовХарактеристик",
         ("ChartOfCharacteristicTypes",),
-        _BASE_CONTENT,
     ),
-    _supported(
+    _base(
         "ChartsOfAccounts",
         "ПланСчетов",
         (),
-        _BASE_CONTENT,
     ),
-    _supported(
+    _base(
         "ChartsOfCalculationTypes",
         "ПланВидовРасчета",
         (),
-        _BASE_CONTENT,
     ),
-    _supported(
+    _base(
         "ExchangePlans",
         "ПланОбмена",
         ("ExchangePlan",),
         (*_BASE_CONTENT, LayerKind.EXTENDED_STRUCTURE),
+        extended_adapter="exchange_plan",
     ),
-    _supported(
+    _base(
         "BusinessProcesses",
         "БизнесПроцесс",
         (),
-        _BASE_CONTENT,
     ),
-    _supported("Tasks", "Задача", (), _BASE_CONTENT),
-    _supported(
+    _base("Tasks", "Задача", ()),
+    _base(
         "DefinedTypes",
         "ОпределяемыйТип",
         (),
         (LayerKind.BASE_STRUCTURE,),
     ),
-    _supported(
+    _base(
         "CommonModules",
         "ОбщийМодуль",
         ("CommonModule",),
         (LayerKind.BASE_STRUCTURE, LayerKind.CODE),
     ),
-    _supported(
+    _base(
         "EventSubscriptions",
         "ПодпискаНаСобытие",
         (),
         (LayerKind.BASE_STRUCTURE,),
     ),
-    _supported(
+    _base(
         "ScheduledJobs",
         "РегламентноеЗадание",
         (),
         (LayerKind.BASE_STRUCTURE,),
     ),
-    _supported("Reports", "Отчет", ("Report",), _BASE_CONTENT),
-    _supported("DataProcessors", "Обработка", ("DataProcessor",), _BASE_CONTENT),
+    _base("Reports", "Отчет", ("Report",)),
+    _base("DataProcessors", "Обработка", ("DataProcessor",)),
     _supported(
         "DocumentJournals",
         "ЖурналДокументов",
         ("DocumentJournal",),
         (LayerKind.EXTENDED_STRUCTURE, LayerKind.CODE, LayerKind.FORMS),
+        extended_adapter="document_journal",
     ),
     _supported(
         "CommonAttributes",
         "ОбщийРеквизит",
         (),
         (LayerKind.EXTENDED_STRUCTURE,),
+        extended_adapter="common_attribute",
     ),
     _supported(
         "SessionParameters",
         "ПараметрСеанса",
         (),
         (LayerKind.EXTENDED_STRUCTURE,),
+        extended_adapter="session_parameter",
     ),
     _supported(
         "CommonForms",
         "ОбщаяФорма",
         ("CommonForm",),
         (LayerKind.EXTENDED_STRUCTURE, LayerKind.CODE, LayerKind.FORMS),
+        extended_adapter="common_form",
     ),
     _supported(
         "Bots",
         "Бот",
         (),
         (LayerKind.EXTENDED_STRUCTURE, LayerKind.CODE),
+        extended_adapter="bot",
     ),
     _supported(
         "CommonCommands",
@@ -1177,7 +1199,8 @@ def collect_source_b(
             shutil.rmtree(temporary, ignore_errors=True)
 
 
-def _open_member(root: Path, relative_path: str) -> BinaryIO:
+def open_collection_member(root: Path, relative_path: str) -> BinaryIO:
+    """Открыть payload через dirfd, не следуя ни по одному symlink пути."""
     relative_path = _relative_path(relative_path, "relative_path")
     try:
         before = root.lstat()
@@ -1221,7 +1244,7 @@ def _open_member(root: Path, relative_path: str) -> BinaryIO:
 
 def _read_json_member(root: Path, relative_path: str) -> object:
     try:
-        with _open_member(root, relative_path) as source:
+        with open_collection_member(root, relative_path) as source:
             payload = source.read(_MANIFEST_LIMIT + 1)
     except CollectionError:
         raise
@@ -1238,7 +1261,7 @@ def _read_json_member(root: Path, relative_path: str) -> object:
 def _verify_artifact(root: Path, artifact: CollectionArtifact) -> None:
     digest = hashlib.sha256()
     total = 0
-    with _open_member(root, artifact.relative_path) as source:
+    with open_collection_member(root, artifact.relative_path) as source:
         for block in iter(lambda: source.read(_READ_CHUNK), b""):
             total += len(block)
             if total > artifact.size:
@@ -1258,7 +1281,7 @@ def _read_role_artifact(
     total = 0
     chunks: list[bytes] = []
     try:
-        with _open_member(root, artifact.relative_path) as raw:
+        with open_collection_member(root, artifact.relative_path) as raw:
             with gzip.GzipFile(fileobj=raw, mode="rb") as source:
                 while True:
                     block = source.read(min(_READ_CHUNK, artifact.size - total + 1))
@@ -1325,5 +1348,6 @@ __all__ = [
     "SELECTION_VERSION",
     "collect_source_b",
     "load_collection",
+    "open_collection_member",
     "read_role_member",
 ]

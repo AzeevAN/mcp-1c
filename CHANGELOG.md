@@ -43,6 +43,23 @@
   `roles=error`, не уничтожая code/forms; transport/stability failure отменяет
   весь staging. Manifest сохраняет полный probe и после удаления исходного ZIP
   fail-closed проверяет размеры, SHA-256, gzip и отсутствие symlink.
+- Первый структурный converter будущего intake строит schema-v1-compatible
+  базовую проекцию в существующей модели `Configuration` и отдельный
+  недублирующий extended-слой. `MetadataKindSpec` явно выбирает base/extended
+  adapter; общие реквизиты и параметры сеанса получают типизированные payload,
+  полные типы, кодовые адреса и разрешаемые relations. Фактические модули и
+  формы базовых объектов сохраняются overlays без копирования полей. Известный
+  битый XML останавливает преобразование, неизвестные свойства дают bounded
+  info и не меняют semantic hash; чтение collection не следует по symlink.
+
+### Найдено
+
+- `AutoUse`, `AuthenticationSeparation`, `UsersSeparation` и
+  `ConfigurationExtensionsSeparation` общего реквизита в файловой выгрузке —
+  не булевы флаги: они хранят режимы `Use`, `DontUse` и `Separate`. Булевыми
+  остаются, например, `ExtendedEdit` и `FillFromFillingValue`. Это подтверждено
+  read-only разбором 15 обезличенных дескрипторов; адаптер сохраняет режимы без
+  ложного преобразования в `true|false`.
 
 ## [2.0.1] — 2026-09-01
 

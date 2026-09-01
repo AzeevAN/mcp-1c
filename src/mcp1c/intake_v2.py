@@ -532,6 +532,8 @@ class MetadataKindSpec:
     layers: frozenset[LayerKind] = field(default_factory=frozenset)
     layouts: frozenset[str] = field(default_factory=frozenset)
     aliases: frozenset[str] = field(default_factory=frozenset)
+    base_adapter: str = ""
+    extended_adapter: str = ""
 
     def __post_init__(self) -> None:
         _required_text(self.source_name, "source_name")
@@ -553,14 +555,28 @@ class MetadataKindSpec:
             raise IntakeV2ContractError("aliases должен быть frozenset[str]")
         if self.source_name in self.aliases:
             raise IntakeV2ContractError("aliases не должен повторять source_name")
+        for value, label in (
+            (self.base_adapter, "base_adapter"),
+            (self.extended_adapter, "extended_adapter"),
+        ):
+            if not isinstance(value, str) or value.strip() != value:
+                raise IntakeV2ContractError(
+                    f"{label} должен быть строковым идентификатором"
+                )
         if self.policy is not MetadataKindPolicy.SUPPORTED and (
-            self.layers or self.layouts
+            self.layers or self.layouts or self.base_adapter or self.extended_adapter
         ):
             raise IntakeV2ContractError(
-                "deferred/ignored вид не объявляет поддержанные слои или layouts"
+                "deferred/ignored вид не объявляет поддержанные слои, layouts или adapters"
             )
         if self.policy is MetadataKindPolicy.SUPPORTED and not self.layers:
             raise IntakeV2ContractError("supported вид обязан объявить слои")
+        if self.base_adapter and LayerKind.BASE_STRUCTURE not in self.layers:
+            raise IntakeV2ContractError("base_adapter требует слой base_structure")
+        if self.extended_adapter and LayerKind.EXTENDED_STRUCTURE not in self.layers:
+            raise IntakeV2ContractError(
+                "extended_adapter требует слой extended_structure"
+            )
 
     def supports(self, layer: LayerKind) -> bool:
         return self.policy is MetadataKindPolicy.SUPPORTED and layer in self.layers

@@ -12,6 +12,16 @@ export type ReferenceSearchParams = {
   limit?: number;
 };
 
+export type ReferenceAvailability = {
+  status: "available" | "unavailable" | "unknown";
+  platform: string | null;
+  reason: string;
+  introduced: string | null;
+  removed: string | null;
+  known_present_in: string | null;
+  evidence: Array<Record<string, string>>;
+};
+
 export type ReferenceHit = {
   id: string;
   matched_section_id: string | null;
@@ -21,7 +31,7 @@ export type ReferenceHit = {
   title_en: string;
   signature: string;
   access_scope: string;
-  availability: { status: string; platform: string | null; reason: string };
+  availability: ReferenceAvailability;
   score: number;
   reason: string;
 };
@@ -32,6 +42,7 @@ export type ReferenceSearchResponse = {
   kind: string | null;
   platform: string | null;
   results: ReferenceHit[];
+  has_more: boolean;
   unavailable_matches: ReferenceHit[];
 };
 
@@ -54,9 +65,10 @@ export type ReferenceItemResponse = {
     source_key: string;
     source_path: string;
   };
-  availability: { status: string; platform: string | null; reason: string };
+  availability: ReferenceAvailability;
   content_format: "markdown";
   content: string;
+  html: string;
   continuation: {
     offset: number;
     next_offset: number;

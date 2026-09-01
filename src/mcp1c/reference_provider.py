@@ -60,6 +60,59 @@ TRUSTED_REFERENCE_PUBLIC_KEYS: dict[str, bytes] = {
     ),
 }
 
+# Идентификаторы остаются частью машинного контракта, а подписи дают
+# дашборду и описаниям MCP один общий человекочитаемый словарь.
+REFERENCE_DOMAIN_TITLES: dict[str, str] = {
+    "bsl": "Встроенный язык (BSL)",
+    "query": "Язык запросов",
+    "dcs": "Выражения СКД",
+    "dcs_ui": "Интерфейс СКД",
+    "configurator": "Конфигуратор",
+    "development_tools": "Инструменты разработки",
+    "legacy": "Устаревшие инструменты",
+}
+
+REFERENCE_DOMAIN_ORDER = (
+    "bsl",
+    "query",
+    "dcs",
+    "dcs_ui",
+    "configurator",
+    "development_tools",
+    "legacy",
+)
+
+REFERENCE_DOMAIN_DESCRIPTIONS: dict[str, str] = {
+    "bsl": "Конструкции языка, правила и практические шаблоны BSL.",
+    "query": "Функции, операторы и конструкции языка запросов 1С.",
+    "dcs": "Функции и выражения системы компоновки данных.",
+    "dcs_ui": "Настройка и использование интерфейса СКД.",
+    "configurator": "Команды и возможности Конфигуратора.",
+    "development_tools": "Команды вспомогательных инструментов разработки.",
+    "legacy": "Архивные материалы по устаревшим инструментам.",
+}
+
+REFERENCE_KIND_TITLES: dict[str, str] = {
+    "book_index": "Указатель книги",
+    "bsl_auxiliary": "Дополнительный материал BSL",
+    "bsl_construct": "Конструкция BSL",
+    "bsl_guidance": "Рекомендация по BSL",
+    "bsl_template": "Шаблон BSL",
+    "legacy": "Архивный материал",
+    "module_context": "Контекст модуля",
+    "source_rule": "Правило исходного кода",
+    "config_operator": "Команда Конфигуратора",
+    "dcs_article": "Статья о СКД",
+    "dcs_function": "Функция СКД",
+    "dcs_function_group": "Группа функций СКД",
+    "term_dictionary": "Термин словаря",
+    "dcs_ui_article": "Статья об интерфейсе СКД",
+    "devtool_operator": "Команда инструмента разработки",
+    "legacy_ui_designer": "Устаревший редактор интерфейса",
+    "query_function": "Функция языка запросов",
+    "query_keyword": "Оператор языка запросов",
+}
+
 # Schema runtime-слоя публична: адаптер обязан отвергать похожую SQLite с
 # недостающими или подменёнными таблицами до выполнения предметных запросов.
 EXPECTED_COLUMNS: dict[str, tuple[str, ...]] = {
@@ -660,6 +713,7 @@ class ReferenceProvider:
         self._observations = self._group_rows(
             "SELECT * FROM observations ORDER BY item_id, source_key"
         )
+        self._catalog = self._build_catalog()
         documents, payloads, domain_payloads = self._documents()
         cached = index_cache.load_blob(
             cache_path,
@@ -684,6 +738,97 @@ class ReferenceProvider:
         else:
             self.index, self.domain_indices = restored
             self.index_cache_state = "hit"
+
+    @staticmethod
+    def _catalog_scope(scopes: set[str]) -> str:
+        if "default" in scopes:
+            return "default"
+        if "explicit" in scopes:
+            return "explicit"
+        return "hidden"
+
+    def _build_catalog(self) -> dict[str, Any]:
+        domains: dict[str, dict[str, Any]] = {}
+        kinds: dict[tuple[str, str], dict[str, Any]] = {}
+        for item in self._items.values():
+            domain = item["domain"]
+            kind = item["kind"]
+            scope = item["access_scope"]
+            domain_entry = domains.setdefault(
+                domain, {"items": 0, "scopes": set()}
+            )
+            domain_entry["items"] += 1
+            domain_entry["scopes"].add(scope)
+            kind_entry = kinds.setdefault(
+                (domain, kind), {"items": 0, "scopes": set()}
+            )
+            kind_entry["items"] += 1
+            kind_entry["scopes"].add(scope)
+
+        domain_rows = [
+            {
+                "id": domain,
+                "title": REFERENCE_DOMAIN_TITLES.get(domain, domain),
+                "description": REFERENCE_DOMAIN_DESCRIPTIONS.get(domain, ""),
+                "access_scope": self._catalog_scope(entry["scopes"]),
+                "items": entry["items"],
+            }
+            for domain, entry in domains.items()
+        ]
+        order = {domain: index for index, domain in enumerate(REFERENCE_DOMAIN_ORDER)}
+        domain_rows.sort(
+            key=lambda row: (
+                order.get(row["id"], len(order)),
+                row["title"].casefold(),
+                row["id"],
+            )
+        )
+        kind_rows = [
+            {
+                "id": kind,
+                "domain": domain,
+                "title": REFERENCE_KIND_TITLES.get(kind, kind),
+                "access_scope": self._catalog_scope(entry["scopes"]),
+                "items": entry["items"],
+            }
+            for (domain, kind), entry in kinds.items()
+        ]
+        kind_rows.sort(
+            key=lambda row: (
+                REFERENCE_DOMAIN_TITLES.get(row["domain"], row["domain"]).casefold(),
+                row["title"].casefold(),
+                row["id"],
+            )
+        )
+
+        raw_versions = {
+            row[0]
+            for row in self._connection.execute(
+                "SELECT platform_version FROM sources "
+                "WHERE platform_version IS NOT NULL AND platform_version != '' "
+                "UNION SELECT version FROM version_facts WHERE version != ''"
+            )
+        }
+        versions: list[tuple[tuple[int, ...], str]] = []
+        for value in raw_versions:
+            try:
+                versions.append((_release(value), value))
+            except ReferenceQueryError:
+                continue
+        versions.sort(reverse=True)
+        return {
+            "domains": domain_rows,
+            "kinds": kind_rows,
+            "platform_versions": [value for _, value in versions],
+        }
+
+    def catalog(self) -> dict[str, Any]:
+        """Вернуть доступные фильтры без догадок о составе конкретной базы."""
+        return {
+            "domains": [dict(row) for row in self._catalog["domains"]],
+            "kinds": [dict(row) for row in self._catalog["kinds"]],
+            "platform_versions": list(self._catalog["platform_versions"]),
+        }
 
     def close(self) -> None:
         with self._lock:
@@ -821,12 +966,6 @@ class ReferenceProvider:
             return None
 
     def availability(self, item_id: str, platform: str | None) -> dict[str, Any]:
-        if platform is None:
-            return {
-                "status": "unknown", "platform": None,
-                "reason": "Целевая версия платформы не указана.", "evidence": [],
-            }
-        target = _release(platform)
         facts = self._facts.get(item_id, [])
         observations = self._observations.get(item_id, [])
         introduced = sorted(
@@ -842,34 +981,85 @@ class ReferenceProvider:
             }
             for row in facts
         ]
-        if introduced and target < introduced[0]:
-            return {
-                "status": "unavailable", "platform": platform,
-                "reason": f"Элемент появился в {_version_text(introduced[0])}.",
-                "evidence": evidence,
-            }
-        if removed and target >= removed[0]:
-            return {
-                "status": "unavailable", "platform": platform,
-                "reason": f"Элемент удалён начиная с {_version_text(removed[0])}.",
-                "evidence": evidence,
-            }
-        if introduced:
-            return {
-                "status": "available", "platform": platform,
-                "reason": f"Подтверждена версия появления {_version_text(introduced[0])}.",
-                "evidence": evidence,
-            }
         present = []
         for observation in observations:
             version_value = observation["platform_version"]
             if observation["presence"] != "present" or not version_value:
                 continue
-            version = _release(version_value)
-            if version <= target:
-                present.append((version, observation))
-        if present and not removed:
-            version, observation = max(present, key=lambda value: value[0])
+            present.append((_release(version_value), observation))
+        present.sort(key=lambda value: value[0])
+
+        introduced_text = _version_text(introduced[0]) if introduced else None
+        removed_text = _version_text(removed[0]) if removed else None
+        known_present_in = _version_text(present[0][0]) if present else None
+        summary = {
+            "introduced": introduced_text,
+            "removed": removed_text,
+            "known_present_in": known_present_in,
+        }
+
+        if platform is None:
+            if introduced_text and removed_text:
+                reason = (
+                    f"Подтверждена версия появления {introduced_text}; "
+                    f"элемент удалён начиная с {removed_text}. "
+                    "Целевая версия платформы не указана."
+                )
+            elif introduced_text:
+                reason = (
+                    f"Подтверждена версия появления {introduced_text}. "
+                    "Целевая версия платформы не указана."
+                )
+            elif known_present_in:
+                reason = (
+                    f"Элемент присутствует в полном снимке {known_present_in}. "
+                    "Точная версия появления не установлена. "
+                    "Целевая версия платформы не указана."
+                )
+                observation = present[0][1]
+                evidence.append({
+                    "kind": "observation", "presence": "present",
+                    "version": observation["platform_version"],
+                    "ref": observation["evidence_ref"],
+                })
+            elif removed_text:
+                reason = (
+                    f"Элемент удалён начиная с {removed_text}. "
+                    "Точная версия появления не установлена. "
+                    "Целевая версия платформы не указана."
+                )
+            else:
+                reason = (
+                    "Данных о версии появления нет. "
+                    "Целевая версия платформы не указана."
+                )
+            return {
+                "status": "unknown", "platform": None, "reason": reason,
+                "evidence": evidence, **summary,
+            }
+
+        target = _release(platform)
+        if introduced and target < introduced[0]:
+            return {
+                "status": "unavailable", "platform": platform,
+                "reason": f"Элемент появился в {_version_text(introduced[0])}.",
+                "evidence": evidence, **summary,
+            }
+        if removed and target >= removed[0]:
+            return {
+                "status": "unavailable", "platform": platform,
+                "reason": f"Элемент удалён начиная с {_version_text(removed[0])}.",
+                "evidence": evidence, **summary,
+            }
+        if introduced:
+            return {
+                "status": "available", "platform": platform,
+                "reason": f"Подтверждена версия появления {_version_text(introduced[0])}.",
+                "evidence": evidence, **summary,
+            }
+        applicable = [value for value in present if value[0] <= target]
+        if applicable and not removed:
+            version, observation = applicable[-1]
             return {
                 "status": "available", "platform": platform,
                 "reason": f"Элемент присутствует в полном снимке {_version_text(version)}.",
@@ -877,12 +1067,12 @@ class ReferenceProvider:
                     "kind": "observation", "presence": "present",
                     "version": observation["platform_version"],
                     "ref": observation["evidence_ref"],
-                }],
+                }], **summary,
             }
         return {
             "status": "unknown", "platform": platform,
             "reason": "Для этой версии нет достаточного факта или версионного снимка.",
-            "evidence": evidence,
+            "evidence": evidence, **summary,
         }
 
     @staticmethod
@@ -908,6 +1098,36 @@ class ReferenceProvider:
             raise ReferenceQueryError("query не должен быть пустым.")
         if not 1 <= limit <= 50:
             raise ReferenceQueryError("limit должен быть от 1 до 50.")
+        domains = {row["id"] for row in self._catalog["domains"]}
+        if domain and domain not in domains:
+            allowed = ", ".join(sorted(domains))
+            raise ReferenceQueryError(
+                f"Неизвестный domain {domain!r}. Допустимые значения: {allowed}."
+            )
+        kinds = {
+            row["id"]
+            for row in self._catalog["kinds"]
+            if not domain or row["domain"] == domain
+        }
+        if kind and kind not in kinds:
+            allowed = ", ".join(sorted(kinds))
+            boundary = f" в domain {domain!r}" if domain else ""
+            raise ReferenceQueryError(
+                f"Неизвестный kind {kind!r}{boundary}. "
+                f"Допустимые значения: {allowed}."
+            )
+
+        # Сам выбор полностью закрытого домена уже является явным намерением.
+        # Для дополнительных карточек внутри смешанного домена по-прежнему
+        # требуется include_explicit, чтобы они не загрязняли обычную выдачу.
+        selected_domain = next(
+            (row for row in self._catalog["domains"] if row["id"] == domain),
+            None,
+        )
+        effective_explicit = include_explicit or (
+            selected_domain is not None
+            and selected_domain["access_scope"] == "explicit"
+        )
 
         def predicate(doc: Doc) -> bool:
             target = doc.payload
@@ -915,7 +1135,7 @@ class ReferenceProvider:
             return (
                 (not domain or target.domain == domain)
                 and (not kind or target.kind == kind)
-                and self._visible(target, include_explicit, include_hidden)
+                and self._visible(target, effective_explicit, include_hidden)
             )
 
         search_index = self.domain_indices.get(domain, self.index) if domain else self.index
@@ -941,13 +1161,14 @@ class ReferenceProvider:
             }
             if version["status"] == "unavailable":
                 unavailable.append(result)
-            elif len(available) < limit:
+            elif len(available) <= limit:
                 available.append(result)
-            if len(available) >= limit and len(unavailable) >= min(3, limit):
+            if len(available) > limit and len(unavailable) >= min(3, limit):
                 break
         return {
             "query": query, "domain": domain, "kind": kind, "platform": platform,
-            "results": available,
+            "results": available[:limit],
+            "has_more": len(available) > limit,
             "unavailable_matches": unavailable[: min(3, limit)],
         }
 
@@ -1277,6 +1498,7 @@ class ReferenceService:
         return {
             "api_version": "v1",
             "active": self.status.payload(detailed=detailed),
+            "catalog": self.provider.catalog() if self.provider is not None else None,
             "pending": (
                 self.pending_status.payload(detailed=detailed)
                 if self.pending_status is not None else None

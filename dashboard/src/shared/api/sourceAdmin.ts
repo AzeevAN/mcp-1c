@@ -31,9 +31,28 @@ export type ReferenceState = {
   action?: "activate" | "remove" | null;
 };
 
+export type ReferenceCatalog = {
+  domains: Array<{
+    id: string;
+    title: string;
+    description: string;
+    access_scope: "default" | "explicit" | "hidden";
+    items: number;
+  }>;
+  kinds: Array<{
+    id: string;
+    domain: string;
+    title: string;
+    access_scope: "default" | "explicit" | "hidden";
+    items: number;
+  }>;
+  platform_versions: string[];
+};
+
 export type ReferenceAdminState = {
   api_version: "v1";
   active: ReferenceState;
+  catalog: ReferenceCatalog | null;
   pending: ReferenceState | null;
   managed_upload: boolean;
   managed_file_present: boolean;

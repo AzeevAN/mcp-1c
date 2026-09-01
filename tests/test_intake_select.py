@@ -46,8 +46,9 @@ def test_в_иерархической_берём_модули_и_формы():
 
 
 def test_иерархический_отбор_сохраняет_доказательства_контейнерных_форм():
-    # v5 добавляет производный каталог происхождения и сохраняет весь отбор v4.
-    assert SELECTION_VERSION == 5
+    # v6 исключает частично поддержанные SettingsStorages и сохраняет
+    # остальные правила отбора v5.
+    assert SELECTION_VERSION == 6
     for name in (
         "Documents/Заказ/Forms/Основная.xml",
         "Documents/Заказ/Forms/Основная/Ext/Form.bin",
@@ -70,7 +71,6 @@ def test_иерархический_отбор_сохраняет_доказат
         "HTTPServices/Сервис/Forms/Ложная/Ext/Form.bin",
         "WebServices/Сервис/Forms/Ложная.xml",
         "Sequences/Порядок/Forms/Ложная/Ext/Form.bin",
-        "SettingsStorages/Настройки/Forms/Ложная.xml",
         "Other/Form.xml",
     ],
 )
@@ -85,6 +85,28 @@ def test_балласт_не_берём():
         "Catalogs/Товары.xml",
     ):
         assert not is_wanted(имя, FORMAT_TREE), имя
+
+
+@pytest.mark.parametrize(
+    ("name", "format"),
+    [
+        ("SettingsStorages/Настройки.xml", FORMAT_TREE),
+        ("SettingsStorages/Настройки/Ext/ManagerModule.bsl", FORMAT_TREE),
+        ("SettingsStorages/Настройки/Forms/Сохранение.xml", FORMAT_TREE),
+        (
+            "SettingsStorages/Настройки/Forms/Сохранение/Ext/Form.xml",
+            FORMAT_TREE,
+        ),
+        (
+            "SettingsStorages/Настройки/Forms/Сохранение/Ext/Form/Module.bsl",
+            FORMAT_TREE,
+        ),
+        ("SettingsStorage.Настройки.ManagerModule.txt", FORMAT_FLAT),
+        ("SettingsStorage.Настройки.Form.Сохранение.Form", FORMAT_FLAT),
+    ],
+)
+def test_хранилища_настроек_целиком_исключены_из_текущего_приёма(name, format):
+    assert not is_wanted(name, format)
 
 
 def test_скомпилированный_общий_модуль_берётся_только_в_плоском_формате():

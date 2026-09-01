@@ -274,6 +274,30 @@ def test_filter_criteria_из_tree_получает_канонический_а�
     ].form_evidence == ("descriptor", "form_bin", "form_xml", "module")
 
 
+def test_старый_корень_не_публикует_частичные_хранилища_настроек(tmp_path):
+    _write(
+        tmp_path,
+        "SettingsStorages/Настройки/Ext/ManagerModule.bsl",
+        "Процедура Сохранить() КонецПроцедуры",
+    )
+    _write(
+        tmp_path,
+        "SettingsStorages/Настройки/Forms/Сохранение/Ext/Form/Module.bsl",
+        "Процедура Записать() КонецПроцедуры",
+    )
+    _write(
+        tmp_path,
+        "Catalogs/Объект/Ext/ObjectModule.bsl",
+        "Процедура Поддержанная() КонецПроцедуры",
+    )
+
+    catalog = build_catalog(tmp_path, _identity())
+
+    assert list(catalog.entries) == ["Справочник.Объект.МодульОбъекта"]
+    assert catalog.coverage.total_candidates == 1
+    assert not catalog.problems
+
+
 def test_каталог_неизменяем_и_порядок_не_зависит_от_создания(tmp_path):
     _write(tmp_path, "CommonModule.Б.Module.txt", "Процедура Б() КонецПроцедуры")
     _write(tmp_path, "CommonModule.А.Module.txt", "Процедура А() КонецПроцедуры")

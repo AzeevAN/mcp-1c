@@ -1443,6 +1443,7 @@ def _reference_routes(
                 max_chars=max_chars,
                 platform=platform,
             )
+            result["html"] = dashboard_backend.render_markdown(result["content"])
         except ReferenceQueryError as error:
             return _json_error(str(error), 400)
         return JSONResponse(result)

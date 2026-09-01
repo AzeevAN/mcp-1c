@@ -13,6 +13,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Callable, Mapping
 
+from .intake import is_intentionally_ignored
 from .module_address import (
     FlatNameError,
     адрес_модуля,
@@ -705,7 +706,11 @@ def catalog_files(root: Path) -> tuple[Path, ...]:
     return tuple(
         path
         for path in sorted(root.rglob("*"))
-        if path.is_file() and path.name != CATALOG_FILE
+        if (
+            path.is_file()
+            and path.name != CATALOG_FILE
+            and not is_intentionally_ignored(path.relative_to(root).as_posix())
+        )
     )
 
 
@@ -717,7 +722,11 @@ def build_catalog(
     progress: Callable[[int, int], None] | None = None,
 ) -> ModuleCatalog:
     """Перечислить источник один раз и вернуть неизменяемый снимок."""
-    snapshot = catalog_files(root) if files is None else files
+    snapshot = catalog_files(root) if files is None else tuple(
+        path
+        for path in files
+        if not is_intentionally_ignored(path.relative_to(root).as_posix())
+    )
     if progress is not None:
         progress(0, len(snapshot))
     candidates = []

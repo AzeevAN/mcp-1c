@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from module_samples import v8_container_bytes
 from mcp1c.intake_v2 import CandidateTransport
 from mcp1c.intake_v2_collector import DEFAULT_KIND_SPECS, collect_source_b
 from mcp1c.intake_v2_probe import probe_export
@@ -96,6 +97,7 @@ def _configuration(
     unknown: bool = False,
     journal: bool = False,
     bindings: bool = False,
+    common_forms: bool = False,
 ) -> bytes:
     extra = "<FutureFlag>Enabled</FutureFlag>" if unknown else ""
     properties = (
@@ -127,6 +129,14 @@ def _configuration(
             "<EventSubscription>ProcedureMissing</EventSubscription>"
             "<EventSubscription>Unresolved</EventSubscription>"
             "<ScheduledJob>Refresh</ScheduledJob>"
+        )
+    if common_forms:
+        children += (
+            "<CommonForm>Workspace</CommonForm>"
+            "<CommonForm>Container</CommonForm>"
+            "<CommonForm>Unreadable</CommonForm>"
+            "<CommonForm>DescriptorOnly</CommonForm>"
+            "<CommonForm>Flat</CommonForm>"
         )
     return _document("Configuration", properties, children)
 
@@ -364,6 +374,37 @@ def _scheduled_job() -> bytes:
     return _document("ScheduledJob", properties)
 
 
+def _common_form(name: str) -> bytes:
+    properties = (
+        f"<Name>{name}</Name>"
+        f"<Synonym>{_localized('Общая форма')}</Synonym>"
+        "<Comment>Синтетическая общая форма</Comment>"
+        f"<Explanation>{_localized('Пояснение формы')}</Explanation>"
+        f"<ExtendedPresentation>{_localized('Расширенное представление')}</ExtendedPresentation>"
+        "<FormType>Managed</FormType><IncludeHelpInContents>true</IncludeHelpInContents>"
+        "<UsePurposes><v8:Value>PlatformApplication</v8:Value>"
+        "<v8:Value>MobilePlatformClient</v8:Value></UsePurposes>"
+        "<UseStandardCommands>false</UseStandardCommands>"
+    )
+    root = _document("CommonForm", properties).decode()
+    return root.replace("<CommonForm>", f'<CommonForm uuid="uuid-{name}">').encode()
+
+
+def _common_form_xml() -> bytes:
+    return (
+        '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform">'
+        '<Attributes><Attribute name="Filter"><Columns>'
+        '<Column name="NestedColumn"/></Columns></Attribute></Attributes>'
+        '<Events><Event name="OnOpen">OnOpen</Event></Events>'
+        '<ChildItems><InputField name="FilterField">'
+        '<Events><Event name="OnChange">OnChange</Event></Events>'
+        '<ExtendedTooltip name="GeneratedTooltip"/>'
+        '</InputField><UsualGroup name="Pages"><Button name="Refresh">'
+        '<Events><Event name="Click">Refresh</Event></Events>'
+        '</Button></UsualGroup></ChildItems></Form>'
+    ).encode()
+
+
 class MemoryTree:
     transport = CandidateTransport.INCOMING
     origin_name = "synthetic.zip"
@@ -409,6 +450,8 @@ def _collection(
     bindings: bool = False,
     plan_auto_record: str = "Allow",
     plan_content: bool = True,
+    common_forms: bool = False,
+    common_form_external_module: bytes | None = None,
     schedule: bytes = b"<Schedule><Period>60</Period></Schedule>",
 ):
     payloads = {
@@ -416,11 +459,12 @@ def _collection(
             unknown=unknown,
             journal=journal,
             bindings=bindings,
+            common_forms=common_forms,
         ),
         "Catalogs/Items.xml": _catalog(unknown=unknown),
         "Catalogs/Items/Ext/ObjectModule.bsl": b"procedure Demo() endprocedure",
         "Catalogs/Items/Forms/Card.xml": b"<form-descriptor/>",
-        "Catalogs/Items/Forms/Card/Ext/Form/Form.xml": b"<form/>",
+        "Catalogs/Items/Forms/Card/Ext/Form.xml": b"<form/>",
         "CommonAttributes/Tenant.xml": _common_attribute(unresolved=unresolved),
         "SessionParameters/Tenant.xml": _session_parameter(),
     }
@@ -436,7 +480,7 @@ def _collection(
                     b"procedure Run() endprocedure"
                 ),
                 "DocumentJournals/Ledger/Forms/Card.xml": b"<form-descriptor/>",
-                "DocumentJournals/Ledger/Forms/Card/Ext/Form/Form.xml": b"<form/>",
+                "DocumentJournals/Ledger/Forms/Card/Ext/Form.xml": b"<form/>",
                 "DocumentJournals/Ledger/Forms/Card/Ext/Form/Module.bsl": b"procedure Form() endprocedure",
                 "DocumentJournals/Ledger/Templates/Print.xml": b"<template-descriptor/>",
                 "DocumentJournals/Ledger/Templates/Print/Ext/Template.xml": b"<template/>",
@@ -456,7 +500,7 @@ def _collection(
                     b"procedure Run() endprocedure"
                 ),
                 "ExchangePlans/Nodes/Forms/Card.xml": b"<form-descriptor/>",
-                "ExchangePlans/Nodes/Forms/Card/Ext/Form/Form.xml": b"<form/>",
+                "ExchangePlans/Nodes/Forms/Card/Ext/Form.xml": b"<form/>",
                 "ExchangePlans/Nodes/Forms/Card/Ext/Form/Module.bsl": (
                     b"procedure FormMethod() endprocedure"
                 ),
@@ -486,6 +530,41 @@ def _collection(
             payloads[
                 "ExchangePlans/Nodes/Ext/Content.xml"
             ] = _exchange_plan_content(plan_auto_record)
+    if common_forms:
+        payloads.update(
+            {
+                "CommonForms/Workspace.xml": _common_form("Workspace"),
+                "CommonForms/Workspace/Ext/Form.xml": _common_form_xml(),
+                "CommonForms/Workspace/Ext/Form/Module.bsl": (
+                    "Процедура OnOpen()\nКонецПроцедуры\n"
+                    "Процедура OnChange()\nКонецПроцедуры\n"
+                    "Процедура Refresh()\nКонецПроцедуры\n"
+                ).encode(),
+                "CommonForms/Container.xml": _common_form("Container"),
+                "CommonForms/Container/Ext/Form.bin": v8_container_bytes(
+                    [
+                        ("form", b"{19}"),
+                        (
+                            "module",
+                            b"procedure ContainerHandler() endprocedure",
+                        ),
+                    ]
+                ),
+                "CommonForms/Unreadable.xml": _common_form("Unreadable"),
+                "CommonForms/Unreadable/Ext/Form.bin": b"broken",
+                "CommonForms/DescriptorOnly.xml": _common_form("DescriptorOnly"),
+                "CommonForm.Flat.Form": v8_container_bytes(
+                    [
+                        ("form", b"{19}"),
+                        ("module", b"procedure FlatHandler() endprocedure"),
+                    ]
+                ),
+            }
+        )
+        if common_form_external_module is not None:
+            payloads[
+                "CommonForms/Container/Ext/Form/Module.bsl"
+            ] = common_form_external_module
     if malformed:
         payloads[malformed] = b"<MetaDataObject><broken>"
     tree = MemoryTree(payloads)
@@ -504,6 +583,7 @@ def test_metadata_kind_spec_выбирает_структурный_adapter():
     assert specs["ExchangePlans"].extended_adapter == "exchange_plan"
     assert specs["EventSubscriptions"].extended_adapter == "event_subscription"
     assert specs["ScheduledJobs"].extended_adapter == "scheduled_job"
+    assert specs["CommonForms"].extended_adapter == "common_form"
     assert specs["CommonCommands"].base_adapter == ""
     assert specs["CommonCommands"].extended_adapter == ""
 
@@ -940,3 +1020,132 @@ def test_schedule_xml_меняет_raw_sha_но_не_semantic_hashes(tmp_path):
         for item in (*first_collection.diagnostics, *first.diagnostics)
         for example in item.examples
     )
+
+
+def test_common_form_сохраняет_descriptor_структуру_модуль_и_handlers(tmp_path):
+    FormStructureState = _symbol("FormStructureState")
+    FormModuleState = _symbol("FormModuleState")
+    CommonFormPayload = _symbol("CommonFormPayload")
+    convert_collection = _symbol("convert_collection")
+
+    result = convert_collection(_collection(tmp_path, common_forms=True))
+    form = result.extended.get("ОбщаяФорма.Workspace")
+
+    assert form is not None and isinstance(form.payload, CommonFormPayload)
+    assert form.payload.uuid == "uuid-Workspace"
+    assert form.payload.form_type == "Managed"
+    assert form.payload.explanation == "Пояснение формы"
+    assert form.payload.extended_presentation == "Расширенное представление"
+    assert form.payload.include_help_in_contents is True
+    assert form.payload.use_purposes == (
+        "PlatformApplication",
+        "MobilePlatformClient",
+    )
+    assert form.payload.use_standard_commands is False
+    assert form.payload.structure_state is FormStructureState.READY
+    assert form.payload.module_state is FormModuleState.READY
+    assert form.payload.attributes == ("Filter",)
+    assert form.payload.elements == ("FilterField", "Pages", "Refresh")
+    assert [
+        (
+            item.element,
+            item.event,
+            item.handler,
+            item.binding.state.value,
+            item.binding.procedure_address,
+        )
+        for item in form.payload.events
+    ] == [
+        (None, "OnOpen", "OnOpen", "resolved", "ОбщаяФорма.Workspace::OnOpen"),
+        (
+            "FilterField",
+            "OnChange",
+            "OnChange",
+            "resolved",
+            "ОбщаяФорма.Workspace::OnChange",
+        ),
+        (
+            "Refresh",
+            "Click",
+            "Refresh",
+            "resolved",
+            "ОбщаяФорма.Workspace::Refresh",
+        ),
+    ]
+    assert form.modules == ("ОбщаяФорма.Workspace",)
+    assert form.forms == ("ОбщаяФорма.Workspace",)
+
+
+def test_common_form_явно_различает_partial_unreadable_descriptor_only(tmp_path):
+    FormStructureState = _symbol("FormStructureState")
+    FormModuleState = _symbol("FormModuleState")
+    convert_collection = _symbol("convert_collection")
+
+    result = convert_collection(_collection(tmp_path, common_forms=True))
+    container = result.extended.get("ОбщаяФорма.Container")
+    unreadable = result.extended.get("ОбщаяФорма.Unreadable")
+    descriptor_only = result.extended.get("ОбщаяФорма.DescriptorOnly")
+    flat = result.extended.get("ОбщаяФорма.Flat")
+
+    assert container.payload.structure_state is FormStructureState.PARTIAL
+    assert container.payload.module_state is FormModuleState.READY
+    assert container.payload.container_marker == 19
+    assert container.payload.attributes == ()
+    assert container.payload.elements == ()
+    assert container.payload.events == ()
+
+    assert unreadable.payload.structure_state is FormStructureState.UNREADABLE
+    assert unreadable.payload.module_state is FormModuleState.UNREADABLE
+    assert descriptor_only.payload.structure_state is FormStructureState.DESCRIPTOR_ONLY
+    assert descriptor_only.payload.module_state is FormModuleState.MISSING
+    assert flat.payload.structure_state is FormStructureState.PARTIAL
+    assert flat.payload.module_state is FormModuleState.READY
+    assert flat.payload.container_marker == 19
+    assert {
+        item.signature
+        for item in result.diagnostics
+        if item.code == "form_coverage"
+    } == {"descriptor_only", "module_missing", "partial", "unreadable"}
+
+
+def test_common_form_не_скрывает_конфликт_модулей(tmp_path):
+    FormModuleState = _symbol("FormModuleState")
+    convert_collection = _symbol("convert_collection")
+
+    result = convert_collection(
+        _collection(
+            tmp_path,
+            common_forms=True,
+            common_form_external_module=(
+                b"procedure DifferentHandler() endprocedure"
+            ),
+        )
+    )
+
+    form = result.extended.get("ОбщаяФорма.Container")
+    assert form is not None
+    assert form.payload.module_state is FormModuleState.UNREADABLE
+    assert any(
+        item.code == "ambiguous_code_module"
+        and item.signature == "CommonForm"
+        for item in result.diagnostics
+    )
+
+
+def test_common_form_локализует_битый_form_xml(tmp_path):
+    FormStructureState = _symbol("FormStructureState")
+    FormModuleState = _symbol("FormModuleState")
+    convert_collection = _symbol("convert_collection")
+
+    result = convert_collection(
+        _collection(
+            tmp_path,
+            common_forms=True,
+            malformed="CommonForms/Workspace/Ext/Form.xml",
+        )
+    )
+
+    form = result.extended.get("ОбщаяФорма.Workspace")
+    assert form is not None
+    assert form.payload.structure_state is FormStructureState.UNREADABLE
+    assert form.payload.module_state is FormModuleState.READY

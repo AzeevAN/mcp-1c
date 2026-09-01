@@ -745,10 +745,11 @@ def _form_address(path: str, spec: MetadataKindSpec) -> str | None:
     if spec.source_name == "CommonForms":
         if len(parts) == 2 and PurePosixPath(parts[1]).suffix == ".xml":
             return f"{spec.canonical_kind}.{PurePosixPath(parts[1]).stem}"
-        if len(parts) == 5 and parts[2:4] == ("Ext", "Form") and parts[4] in {
-            "Form.xml",
-            "Form.bin",
-        }:
+        if (
+            len(parts) == 4
+            and parts[2] == "Ext"
+            and parts[3] in {"Form.xml", "Form.bin"}
+        ):
             return f"{spec.canonical_kind}.{parts[1]}"
         return None
     if (
@@ -761,10 +762,10 @@ def _form_address(path: str, spec: MetadataKindSpec) -> str | None:
             f"{PurePosixPath(parts[3]).stem}"
         )
     if (
-        len(parts) == 7
+        len(parts) == 6
         and parts[2] == "Forms"
-        and parts[4:6] == ("Ext", "Form")
-        and parts[6] in {"Form.xml", "Form.bin"}
+        and parts[4] == "Ext"
+        and parts[5] in {"Form.xml", "Form.bin"}
     ):
         return f"{spec.canonical_kind}.{parts[1]}.Форма.{parts[3]}"
     return None

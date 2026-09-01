@@ -116,7 +116,7 @@ def _tree(**extra: bytes) -> MemoryTree:
         "Catalogs/Demo.xml": b"<catalog/>",
         "Catalogs/Demo/Ext/ObjectModule.bsl": b"procedure Demo() endprocedure",
         "Catalogs/Demo/Forms/Main.xml": b"<form-descriptor/>",
-        "Catalogs/Demo/Forms/Main/Ext/Form/Form.xml": b"<form/>",
+        "Catalogs/Demo/Forms/Main/Ext/Form.xml": b"<form/>",
         "Catalogs/Demo/Forms/Main/Ext/Form/Module.bsl": b"procedure Form() endprocedure",
         "Roles/Reader.xml": _role("Reader"),
         "Roles/Reader/Ext/Rights.xml": _rights(),
@@ -157,7 +157,7 @@ def test_collector_одним_проходом_сохраняет_metadata_code_
         "Catalogs/Demo.xml",
         "Catalogs/Demo/Ext/ObjectModule.bsl",
         "Catalogs/Demo/Forms/Main.xml",
-        "Catalogs/Demo/Forms/Main/Ext/Form/Form.xml",
+        "Catalogs/Demo/Forms/Main/Ext/Form.xml",
         "Catalogs/Demo/Forms/Main/Ext/Form/Module.bsl",
         "Roles/Reader.xml",
         "Roles/Reader/Ext/Rights.xml",
@@ -204,7 +204,7 @@ def test_collector_сохраняет_mixed_tree_и_flat_без_глобальн
             "Catalog.Flat.ObjectModule.txt": b"flat",
             "Catalog.Flat.Form.Main.Form": b"container",
             "Catalogs/Tree/Ext/ObjectModule.bsl": b"tree",
-            "Catalogs/Tree/Forms/Main/Ext/Form/Form.bin": b"binary-form",
+            "Catalogs/Tree/Forms/Main/Ext/Form.bin": b"binary-form",
         }
     )
 
@@ -216,7 +216,7 @@ def test_collector_сохраняет_mixed_tree_и_flat_без_глобальн
     }
     assert {item.source_path for item in result.forms} == {
         "Catalog.Flat.Form.Main.Form",
-        "Catalogs/Tree/Forms/Main/Ext/Form/Form.bin",
+        "Catalogs/Tree/Forms/Main/Ext/Form.bin",
     }
 
 

@@ -17,6 +17,10 @@ MAX_BYTES = 16 * 1024 * 1024
 MAX_DEPTH = 128
 MAX_TOKENS = 2_000_000
 KNOWN_MARKERS = frozenset({19, 20, 23, 25, 26, 27})
+_BASE64_PREFIX = "#base64:"
+_BASE64_ALPHABET = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
+)
 
 
 class FormReadError(ValueError):
@@ -164,6 +168,27 @@ def read_form(payload: bytes) -> FormReadResult:
                 index += 1
             else:
                 raise _error("truncated", "строковая лексема form оборвана")
+            continue
+
+        if text.startswith(_BASE64_PREFIX, index):
+            token()
+            первое_корневое = начать_значение()
+            if первое_корневое:
+                raise _error(
+                    "invalid_marker",
+                    "маркер form обязан быть первым целым числом корневой записи",
+                )
+            index += len(_BASE64_PREFIX)
+            # 1С переносит base64 по строкам. Читаем его одной
+            # bounded-лексемой, не декодируя и не копируя payload.
+            while index < size and text[index] not in "{},\"":
+                current = text[index]
+                if not current.isspace() and current not in _BASE64_ALPHABET:
+                    raise _error(
+                        "invalid_token",
+                        "base64-лексема form содержит недопустимый символ",
+                    )
+                index += 1
             continue
 
         start = index

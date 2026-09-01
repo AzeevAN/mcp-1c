@@ -29,6 +29,23 @@ def test_неизвестный_marker_остаётся_частичным_а_н
     assert result.category == "unknown_marker"
 
 
+def test_многострочный_base64_остаётся_одной_лексемой():
+    result = read_form(
+        b"{26,#base64:AgFT\r\nOLAFa7ACtU0K\n"
+        b"bO4uca29HkfTrNRsiEms6KKeXFhJtSKWz30v==,1}"
+    )
+
+    assert result.marker == 26
+    assert result.tokens == 7
+
+
+def test_base64_не_принимает_постороннюю_лексему():
+    with pytest.raises(FormReadError) as caught:
+        read_form(b"{26,#base64:AA?AA,1}")
+
+    assert caught.value.category == "invalid_token"
+
+
 @pytest.mark.parametrize(
     ("payload", "category"),
     [

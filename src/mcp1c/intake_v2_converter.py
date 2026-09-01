@@ -17,6 +17,12 @@ from types import MappingProxyType
 from typing import Iterable, Mapping
 
 from .bsl_lex import нормализовать, разобрать
+from .form_reader import FormReadError, read_form
+from .form_structure import (
+    FormStructureError,
+    parse_form_descriptor,
+    parse_form_xml,
+)
 from .intake_v2 import LayerKind, MetadataKindSpec
 from .intake_v2_collector import (
     DEFAULT_KIND_SPECS,
@@ -27,6 +33,7 @@ from .intake_v2_collector import (
     open_collection_member,
 )
 from .model import Configuration, Field, MetadataObject, TabularPart
+from .v8container import V8Container, V8ContainerError, V8ResourceLimitError
 
 
 _NS_MDCLASSES = "http://v8.1c.ru/8.3/MDClasses"
@@ -280,6 +287,44 @@ class ScheduledJobPayload:
     restart_count_on_failure: int | None
     restart_interval_on_failure: int | None
     binding: CodeBinding
+
+
+class FormStructureState(str, Enum):
+    READY = "ready"
+    PARTIAL = "partial"
+    UNREADABLE = "unreadable"
+    DESCRIPTOR_ONLY = "descriptor_only"
+
+
+class FormModuleState(str, Enum):
+    READY = "ready"
+    MISSING = "module_missing"
+    UNREADABLE = "unreadable"
+
+
+@dataclass(frozen=True, slots=True)
+class FormEventBinding:
+    element: str | None
+    event: str
+    handler: str
+    binding: CodeBinding
+
+
+@dataclass(frozen=True, slots=True)
+class CommonFormPayload:
+    uuid: str = ""
+    form_type: str = ""
+    explanation: str = ""
+    extended_presentation: str = ""
+    include_help_in_contents: bool | None = None
+    use_purposes: tuple[str, ...] = ()
+    use_standard_commands: bool | None = None
+    structure_state: FormStructureState = FormStructureState.DESCRIPTOR_ONLY
+    module_state: FormModuleState = FormModuleState.MISSING
+    container_marker: int | None = None
+    attributes: tuple[str, ...] = ()
+    elements: tuple[str, ...] = ()
+    events: tuple[FormEventBinding, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -819,6 +864,21 @@ _SCHEDULED_JOB_PROPERTIES = frozenset(
         "Description",
         "RestartCountOnFailure",
         "RestartIntervalOnFailure",
+    }
+)
+_COMMON_FORM_PROPERTIES = frozenset(
+    {
+        "Name",
+        "Synonym",
+        "Comment",
+        "Explanation",
+        "ExtendedPresentation",
+        "FormType",
+        "IncludeHelpInContents",
+        "UsePurposes",
+        "UseStandardCommands",
+        "ExtendedConfigurationObject",
+        "ObjectBelonging",
     }
 )
 
@@ -1685,13 +1745,18 @@ class _DigestReader:
         return payload
 
 
-def _parse_xml(collection: CollectionResult, artifact: CollectionArtifact) -> ET.Element:
+def _parse_xml(
+    collection: CollectionResult,
+    artifact: CollectionArtifact,
+    *,
+    invalid_xml: type[Exception] = ConversionError,
+) -> ET.Element:
     try:
         with open_collection_member(collection.root, artifact.relative_path) as source:
             reader = _DigestReader(source)
             root = ET.parse(reader).getroot()
     except ET.ParseError as error:
-        raise ConversionError(
+        raise invalid_xml(
             f"{artifact.source_path}: XML не разбирается"
         ) from error
     except ConversionError:
@@ -1709,34 +1774,29 @@ def _parse_xml(collection: CollectionResult, artifact: CollectionArtifact) -> ET
     return root
 
 
-def _read_code_text(
+def _read_artifact_bytes(
     collection: CollectionResult,
     artifact: CollectionArtifact,
-) -> str:
+) -> bytes:
     try:
         with open_collection_member(collection.root, artifact.relative_path) as source:
             payload = source.read(artifact.size + 1)
     except CollectionError as error:
         raise ConversionError(
-            f"{artifact.source_path}: payload модуля небезопасен"
+            f"{artifact.source_path}: payload артефакта небезопасен"
         ) from error
     except OSError as error:
         raise ConversionError(
-            f"{artifact.source_path}: payload модуля недоступен"
+            f"{artifact.source_path}: payload артефакта недоступен"
         ) from error
     if (
         len(payload) != artifact.size
         or hashlib.sha256(payload).hexdigest() != artifact.sha256
     ):
         raise ConversionError(
-            f"{artifact.source_path}: модуль изменился после collection"
+            f"{artifact.source_path}: payload изменился после collection"
         )
-    try:
-        return нормализовать(payload.decode("utf-8-sig"))
-    except UnicodeDecodeError as error:
-        raise ConversionError(
-            f"{artifact.source_path}: модуль не является UTF-8"
-        ) from error
+    return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -1745,6 +1805,7 @@ class _ModuleSymbols:
     procedures: Mapping[str, str]
     ambiguous: frozenset[str] = frozenset()
     readable: bool = True
+    content_sha256: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -1754,13 +1815,37 @@ class _ModuleSymbols:
         )
 
 
-def _common_module_symbols(
+def _module_symbols_from_payload(
+    address: str,
+    payload: bytes,
+) -> _ModuleSymbols:
+    try:
+        text = нормализовать(payload.decode("utf-8-sig"))
+    except UnicodeDecodeError:
+        return _ModuleSymbols(address, {}, readable=False)
+    procedures: dict[str, str] = {}
+    ambiguous: set[str] = set()
+    for procedure in разобрать(text):
+        procedure_key = procedure.имя.casefold()
+        if procedure_key in procedures:
+            ambiguous.add(procedure_key)
+            continue
+        procedures[procedure_key] = procedure.имя
+    return _ModuleSymbols(
+        address,
+        procedures,
+        frozenset(ambiguous),
+        content_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+    )
+
+
+def _binding_module_symbols(
     collection: CollectionResult,
     diagnostics: _Diagnostics,
 ) -> Mapping[str, _ModuleSymbols]:
     grouped: dict[str, list[CollectionArtifact]] = {}
     for artifact in collection.code:
-        if artifact.source_name != "CommonModules":
+        if artifact.source_name not in {"CommonModules", "CommonForms"}:
             continue
         grouped.setdefault(artifact.address.casefold(), []).append(artifact)
 
@@ -1768,9 +1853,14 @@ def _common_module_symbols(
     for key, artifacts in sorted(grouped.items()):
         canonical = sorted((item.address for item in artifacts), key=_order)[0]
         if len({item.sha256 for item in artifacts}) != 1:
+            source_kind = (
+                "CommonForm"
+                if artifacts[0].source_name == "CommonForms"
+                else "CommonModule"
+            )
             diagnostics.add(
                 "ambiguous_code_module",
-                "CommonModule",
+                source_kind,
                 canonical,
                 severity="warning",
             )
@@ -1780,20 +1870,9 @@ def _common_module_symbols(
         if not artifact.source_path.endswith((".bsl", ".txt")):
             result[key] = _ModuleSymbols(canonical, {}, readable=False)
             continue
-        text = _read_code_text(collection, artifact)
-        procedures: dict[str, str] = {}
-        ambiguous: set[str] = set()
-        for procedure in разобрать(text):
-            procedure_key = procedure.имя.casefold()
-            previous = procedures.get(procedure_key)
-            if previous is not None:
-                ambiguous.add(procedure_key)
-                continue
-            procedures[procedure_key] = procedure.имя
-        result[key] = _ModuleSymbols(
+        result[key] = _module_symbols_from_payload(
             canonical,
-            procedures,
-            frozenset(ambiguous),
+            _read_artifact_bytes(collection, artifact),
         )
     return MappingProxyType(result)
 
@@ -1930,6 +2009,293 @@ def _scheduled_job(
     )
 
 
+def _resolve_form_binding(
+    raw: str,
+    module_address: str,
+    module: _ModuleSymbols | None,
+    diagnostics: _Diagnostics,
+    owner: str,
+) -> CodeBinding:
+    if not raw:
+        binding = CodeBinding(raw, BindingState.UNRESOLVED)
+    elif module is None:
+        binding = CodeBinding(
+            raw,
+            BindingState.MODULE_MISSING,
+            module_address=module_address,
+        )
+    elif not module.readable or raw.casefold() in module.ambiguous:
+        binding = CodeBinding(
+            raw,
+            BindingState.UNRESOLVED,
+            module_address=module.address,
+        )
+    else:
+        procedure = module.procedures.get(raw.casefold())
+        if procedure is None:
+            binding = CodeBinding(
+                raw,
+                BindingState.PROCEDURE_MISSING,
+                module_address=module.address,
+            )
+        else:
+            binding = CodeBinding(
+                raw,
+                BindingState.RESOLVED,
+                module_address=module.address,
+                procedure_address=f"{module.address}::{procedure}",
+            )
+    if binding.state is not BindingState.RESOLVED:
+        diagnostics.add(
+            "unresolved_form_handler",
+            binding.state.value,
+            owner,
+            severity="warning",
+        )
+    return binding
+
+
+def _one_representation(
+    artifacts: list[CollectionArtifact],
+    label: str,
+) -> CollectionArtifact | None:
+    if not artifacts:
+        return None
+    if len({item.sha256 for item in artifacts}) != 1:
+        raise ConversionError(f"{label}: конфликтуют представления формы")
+    return sorted(artifacts, key=lambda item: item.source_path)[0]
+
+
+def _common_form_object(
+    collection: CollectionResult,
+    address: str,
+    form_artifacts: list[CollectionArtifact],
+    modules: Mapping[str, _ModuleSymbols],
+    diagnostics: _Diagnostics,
+) -> ExtendedObject:
+    descriptors: list[CollectionArtifact] = []
+    form_xml: list[CollectionArtifact] = []
+    containers: list[CollectionArtifact] = []
+    for artifact in form_artifacts:
+        parts = PurePosixPath(artifact.source_path).parts
+        if len(parts) == 2 and artifact.source_path.endswith(".xml"):
+            descriptors.append(artifact)
+        elif parts[-2:] == ("Ext", "Form.xml"):
+            form_xml.append(artifact)
+        elif parts[-2:] == ("Ext", "Form.bin") or (
+            len(parts) == 1 and artifact.source_path.endswith(".Form")
+        ):
+            containers.append(artifact)
+
+    descriptor_artifact = _one_representation(descriptors, address)
+    form_xml_artifact = _one_representation(form_xml, address)
+    container_artifact = _one_representation(containers, address)
+    name = address.split(".", 1)[1]
+    synonym = ""
+    comment = ""
+    uuid = ""
+    form_type = ""
+    explanation = ""
+    extended_presentation = ""
+    include_help_in_contents: bool | None = None
+    use_purposes: tuple[str, ...] = ()
+    use_standard_commands: bool | None = None
+    if descriptor_artifact is not None:
+        root = _parse_xml(collection, descriptor_artifact)
+        _node, properties, _children = _descriptor(
+            root, "CommonForm", descriptor_artifact.source_path
+        )
+        _unknown_properties(
+            properties,
+            _COMMON_FORM_PROPERTIES,
+            diagnostics,
+            "CommonForm",
+        )
+        descriptor = parse_form_descriptor(root)
+        descriptor_name = _required_text(
+            _child(properties, "Name"),
+            f"{descriptor_artifact.source_path}.Name",
+        )
+        if descriptor_name.casefold() != name.casefold():
+            raise ConversionError("имя общей формы не совпадает с адресом")
+        name = descriptor_name
+        synonym = _localized(_child(properties, "Synonym"))
+        comment = _text(_child(properties, "Comment"))
+        uuid = descriptor.uuid or ""
+        form_type = _text(_child(properties, "FormType"))
+        explanation = _localized(_child(properties, "Explanation"))
+        extended_presentation = _localized(
+            _child(properties, "ExtendedPresentation")
+        )
+        include_help_in_contents = _bool(
+            _child(properties, "IncludeHelpInContents"),
+            f"{descriptor_artifact.source_path}.IncludeHelpInContents",
+        )
+        use_purposes = _leaf_texts(_child(properties, "UsePurposes"))
+        use_standard_commands = _bool(
+            _child(properties, "UseStandardCommands"),
+            f"{descriptor_artifact.source_path}.UseStandardCommands",
+        )
+
+    attributes: tuple[str, ...] = ()
+    elements: tuple[str, ...] = ()
+    parsed_events = ()
+    marker: int | None = None
+    embedded_module: _ModuleSymbols | None = None
+    container_unreadable = False
+    if form_xml_artifact is not None:
+        try:
+            structure = parse_form_xml(
+                _parse_xml(
+                    collection,
+                    form_xml_artifact,
+                    invalid_xml=FormStructureError,
+                )
+            )
+        except FormStructureError:
+            structure_state = FormStructureState.UNREADABLE
+        else:
+            structure_state = FormStructureState.READY
+            attributes = structure.attributes
+            elements = structure.elements
+            parsed_events = structure.events
+    elif container_artifact is not None:
+        try:
+            payload = _read_artifact_bytes(collection, container_artifact)
+            with V8Container(payload) as container:
+                if "module" in container:
+                    embedded_module = _module_symbols_from_payload(
+                        address,
+                        container.read("module"),
+                    )
+                result = read_form(container.read("form"))
+        except (
+            KeyError,
+            FormReadError,
+            V8ContainerError,
+            V8ResourceLimitError,
+        ):
+            structure_state = FormStructureState.UNREADABLE
+            container_unreadable = True
+        else:
+            structure_state = FormStructureState.PARTIAL
+            marker = result.marker
+    else:
+        structure_state = FormStructureState.DESCRIPTOR_ONLY
+
+    module = modules.get(address.casefold())
+    if module is not None and embedded_module is not None:
+        if (
+            not module.readable
+            or not embedded_module.readable
+            or module.content_sha256 != embedded_module.content_sha256
+        ):
+            diagnostics.add(
+                "ambiguous_code_module",
+                "CommonForm",
+                address,
+                severity="warning",
+            )
+            module = _ModuleSymbols(address, {}, readable=False)
+    elif embedded_module is not None:
+        module = embedded_module
+    module_state = (
+        FormModuleState.UNREADABLE
+        if module is None and container_unreadable
+        else FormModuleState.MISSING
+        if module is None
+        else FormModuleState.READY
+        if module.readable
+        else FormModuleState.UNREADABLE
+    )
+    if structure_state is not FormStructureState.READY:
+        diagnostics.add(
+            "form_coverage",
+            structure_state.value,
+            address,
+            severity=(
+                "warning"
+                if structure_state is FormStructureState.UNREADABLE
+                else "info"
+            ),
+        )
+    if module_state is not FormModuleState.READY:
+        diagnostics.add(
+            "form_coverage",
+            module_state.value,
+            address,
+            severity="warning",
+        )
+    events = tuple(
+        FormEventBinding(
+            event.element,
+            event.event,
+            event.handler,
+            _resolve_form_binding(
+                event.handler,
+                address,
+                module,
+                diagnostics,
+                address,
+            ),
+        )
+        for event in parsed_events
+    )
+    return ExtendedObject(
+        full_name=address,
+        kind="ОбщаяФорма",
+        name=name,
+        synonym=synonym,
+        comment=comment,
+        code_address=address,
+        payload=CommonFormPayload(
+            uuid=uuid,
+            form_type=form_type,
+            explanation=explanation,
+            extended_presentation=extended_presentation,
+            include_help_in_contents=include_help_in_contents,
+            use_purposes=use_purposes,
+            use_standard_commands=use_standard_commands,
+            structure_state=structure_state,
+            module_state=module_state,
+            container_marker=marker,
+            attributes=attributes,
+            elements=elements,
+            events=events,
+        ),
+    )
+
+
+def _common_form_objects(
+    collection: CollectionResult,
+    modules: Mapping[str, _ModuleSymbols],
+    diagnostics: _Diagnostics,
+) -> dict[str, ExtendedObject]:
+    grouped: dict[str, tuple[str, list[CollectionArtifact]]] = {}
+    for artifact in (*collection.forms, *collection.code):
+        if artifact.source_name != "CommonForms":
+            continue
+        key = artifact.address.casefold()
+        current = grouped.get(key)
+        if current is None:
+            grouped[key] = artifact.address, []
+            current = grouped[key]
+        elif current[0] != artifact.address:
+            raise ConversionError("адреса общих форм различаются только регистром")
+        if artifact.kind is ArtifactKind.FORMS:
+            current[1].append(artifact)
+    return {
+        address: _common_form_object(
+            collection,
+            address,
+            artifacts,
+            modules,
+            diagnostics,
+        )
+        for _key, (address, artifacts) in sorted(grouped.items())
+    }
+
+
 def _is_descriptor(artifact: CollectionArtifact, spec: MetadataKindSpec) -> bool:
     parts = PurePosixPath(artifact.source_path).parts
     if len(parts) == 2:
@@ -1944,11 +2310,17 @@ def _known_supplementary_metadata(
     artifact: CollectionArtifact,
     spec: MetadataKindSpec,
 ) -> bool:
-    if spec.extended_adapter not in {"document_journal", "exchange_plan"}:
+    if spec.extended_adapter not in {
+        "common_form",
+        "document_journal",
+        "exchange_plan",
+    }:
         return False
     parts = PurePosixPath(artifact.source_path).parts
     if parts[-2:] == ("Ext", "Help.xml"):
         return True
+    if spec.extended_adapter == "common_form":
+        return False
     if len(parts) >= 4 and parts[2] == "Templates":
         return parts[-1].endswith(".xml")
     return (
@@ -2235,9 +2607,9 @@ def convert_collection(
     needs_binding_resolver = any(
         item.source_name in {"EventSubscriptions", "ScheduledJobs"}
         for item in collection.metadata
-    )
+    ) or any(item.source_name == "CommonForms" for item in collection.artifacts)
     module_symbols = (
-        _common_module_symbols(collection, diagnostics)
+        _binding_module_symbols(collection, diagnostics)
         if needs_binding_resolver
         else MappingProxyType({})
     )
@@ -2328,6 +2700,7 @@ def convert_collection(
             extended_objects[obj.full_name] = obj
         elif spec.extended_adapter and spec.extended_adapter not in {
             "common_attribute",
+            "common_form",
             "document_journal",
             "event_subscription",
             "exchange_plan",
@@ -2341,6 +2714,15 @@ def convert_collection(
 
     if exchange_plan_contents:
         raise ConversionError("Content.xml не соответствует descriptor плана обмена")
+
+    for name, obj in _common_form_objects(
+        collection,
+        module_symbols,
+        diagnostics,
+    ).items():
+        if name in extended_objects:
+            raise ConversionError(f"дублируется extended object {name}")
+        extended_objects[name] = obj
 
     _attach_content(collection, base, extended_objects, diagnostics)
     _resolve_relations(extended_objects, base, diagnostics)
@@ -2361,6 +2743,7 @@ __all__ = [
     "BindingState",
     "CodeBinding",
     "CommonAttributePayload",
+    "CommonFormPayload",
     "ConversionDiagnostic",
     "ConversionError",
     "DocumentJournalPayload",
@@ -2373,6 +2756,9 @@ __all__ = [
     "JournalColumnReference",
     "JournalCommand",
     "JournalStandardAttribute",
+    "FormEventBinding",
+    "FormModuleState",
+    "FormStructureState",
     "MetadataRelation",
     "RelationState",
     "ScheduledJobPayload",

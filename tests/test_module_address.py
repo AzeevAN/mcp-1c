@@ -33,15 +33,17 @@ from mcp1c.module_address import адрес_модуля, путь_модуля,
      "ЖурналДокументов.ОтчетыКомитенту.Форма.ФормаСписка"),
 ]
 
-# У CommonCommands и SettingsStorages на обеих живых выгрузках подтверждён
-# ровно один тип файла модуля — суффикс в адресе ничего не различает. Адаптер
-# SettingsStorages остаётся обратимым для старых корней, но текущие
+# У CommonCommands и SettingsStorages ровно один тип файла подтверждён на
+# обеих живых выгрузках. Для Bot один модуль задан официальной моделью, а
+# tree-путь Ext/Module.bsl принят по зафиксированному фактическому handoff.
+# Адаптер SettingsStorages остаётся обратимым для старых корней, но текущие
 # intake/catalog не пропускают этот вид в продуктовую выдачу.
 ПАРЫ_ОДИН_МОДУЛЬ = [
     ("CommonCommands/ИнформацияИПоддержка/Ext/CommandModule.bsl",
      "ОбщаяКоманда.ИнформацияИПоддержка"),
     ("SettingsStorages/ХранилищеОбщихНастроек/Ext/ManagerModule.bsl",
      "ХранилищеНастроек.ХранилищеОбщихНастроек"),
+    ("Bots/ДемоБот/Ext/Module.bsl", "Бот.ДемоБот"),
 ]
 
 # Sequences добавлен только после живого примера пути на обезличенной
@@ -168,3 +170,6 @@ def test_неожиданный_файл_для_вида_с_одним_моду�
 
     with pytest.raises(ValueError, match="CommandModule.bsl"):
         адрес_модуля("CommonCommands/Штука/Ext/ObjectModule.bsl")
+
+    with pytest.raises(ValueError, match="Module.bsl"):
+        адрес_модуля("Bots/Штука/Ext/ObjectModule.bsl")

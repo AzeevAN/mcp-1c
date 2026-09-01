@@ -220,6 +220,38 @@ def test_collector_сохраняет_mixed_tree_и_flat_без_глобальн
     }
 
 
+def test_collector_бота_принимает_только_доказанный_tree_layout(tmp_path):
+    tree = MemoryTree(
+        {
+            "Configuration.xml": _configuration(),
+            "Bots/Assistant.xml": b"<bot/>",
+            "Bots/Assistant/Ext/Module.bsl": b"procedure Reply() endprocedure",
+            "Bots/Assistant/Ext/ObjectModule.bsl": b"unsupported-tree",
+            "Bot.Flat.Module.txt": b"unsupported-flat",
+        }
+    )
+
+    result = _collect(tree, tmp_path / "bot")
+
+    assert {
+        (item.source_path, item.address)
+        for item in result.artifacts
+        if item.source_name == "Bots"
+    } == {
+        ("Bots/Assistant.xml", ""),
+        ("Bots/Assistant/Ext/Module.bsl", "Бот.Assistant"),
+    }
+    assert "Bots/Assistant/Ext/ObjectModule.bsl" not in tree.open_count
+    assert "Bot.Flat.Module.txt" not in tree.open_count
+    assert {
+        (item.code, item.signature)
+        for item in result.diagnostics
+    } >= {
+        ("unsupported_layout", "Bots"),
+        ("unsupported_layout", "Bot"),
+    }
+
+
 def test_collector_применяет_supported_deferred_ignored_без_чтения(tmp_path):
     DEFAULT_KIND_SPECS = _symbol("DEFAULT_KIND_SPECS")
     by_name = {spec.source_name: spec for spec in DEFAULT_KIND_SPECS}

@@ -98,6 +98,7 @@ def _configuration(
     journal: bool = False,
     bindings: bool = False,
     common_forms: bool = False,
+    bots: bool = False,
 ) -> bytes:
     extra = "<FutureFlag>Enabled</FutureFlag>" if unknown else ""
     properties = (
@@ -138,6 +139,8 @@ def _configuration(
             "<CommonForm>DescriptorOnly</CommonForm>"
             "<CommonForm>Flat</CommonForm>"
         )
+    if bots:
+        children += "<Bot>Assistant</Bot>"
     return _document("Configuration", properties, children)
 
 
@@ -405,6 +408,19 @@ def _common_form_xml() -> bytes:
     ).encode()
 
 
+def _bot(*, predefined: str = "true", unknown: bool = False) -> bytes:
+    extra = "<FutureBotProperty>value</FutureBotProperty>" if unknown else ""
+    properties = (
+        "<Name>Assistant</Name>"
+        f"<Synonym>{_localized('Бот-помощник')}</Synonym>"
+        "<Comment>Синтетический бот</Comment>"
+        "<Picture><v8:Ref>CommonPicture.Bot</v8:Ref></Picture>"
+        f"<Predefined>{predefined}</Predefined>{extra}"
+    )
+    root = _document("Bot", properties, "<Form>Invented</Form>").decode()
+    return root.replace("<Bot>", '<Bot uuid="uuid-Assistant">').encode()
+
+
 class MemoryTree:
     transport = CandidateTransport.INCOMING
     origin_name = "synthetic.zip"
@@ -452,6 +468,11 @@ def _collection(
     plan_content: bool = True,
     common_forms: bool = False,
     common_form_external_module: bytes | None = None,
+    bots: bool = False,
+    bot_module: bool = True,
+    bot_module_name: str = "Assistant",
+    bot_unknown: bool = False,
+    bot_predefined: str = "true",
     schedule: bytes = b"<Schedule><Period>60</Period></Schedule>",
 ):
     payloads = {
@@ -460,6 +481,7 @@ def _collection(
             journal=journal,
             bindings=bindings,
             common_forms=common_forms,
+            bots=bots,
         ),
         "Catalogs/Items.xml": _catalog(unknown=unknown),
         "Catalogs/Items/Ext/ObjectModule.bsl": b"procedure Demo() endprocedure",
@@ -565,6 +587,15 @@ def _collection(
             payloads[
                 "CommonForms/Container/Ext/Form/Module.bsl"
             ] = common_form_external_module
+    if bots:
+        payloads["Bots/Assistant.xml"] = _bot(
+            predefined=bot_predefined,
+            unknown=bot_unknown,
+        )
+        if bot_module:
+            payloads[f"Bots/{bot_module_name}/Ext/Module.bsl"] = (
+                b"procedure Reply() endprocedure"
+            )
     if malformed:
         payloads[malformed] = b"<MetaDataObject><broken>"
     tree = MemoryTree(payloads)
@@ -584,6 +615,8 @@ def test_metadata_kind_spec_выбирает_структурный_adapter():
     assert specs["EventSubscriptions"].extended_adapter == "event_subscription"
     assert specs["ScheduledJobs"].extended_adapter == "scheduled_job"
     assert specs["CommonForms"].extended_adapter == "common_form"
+    assert specs["Bots"].extended_adapter == "bot"
+    assert specs["Bots"].layouts == frozenset({"tree"})
     assert specs["CommonCommands"].base_adapter == ""
     assert specs["CommonCommands"].extended_adapter == ""
 
@@ -1149,3 +1182,66 @@ def test_common_form_локализует_битый_form_xml(tmp_path):
     assert form is not None
     assert form.payload.structure_state is FormStructureState.UNREADABLE
     assert form.payload.module_state is FormModuleState.READY
+
+
+def test_bot_сохраняет_descriptor_и_фактический_модуль(tmp_path):
+    BotPayload = _symbol("BotPayload")
+    BotModuleState = _symbol("BotModuleState")
+    convert_collection = _symbol("convert_collection")
+
+    result = convert_collection(_collection(tmp_path, bots=True))
+    bot = result.extended.get("Бот.Assistant")
+
+    assert bot is not None and isinstance(bot.payload, BotPayload)
+    assert bot.payload.uuid == "uuid-Assistant"
+    assert bot.payload.picture == ("CommonPicture.Bot",)
+    assert bot.payload.predefined is True
+    assert bot.payload.module_state is BotModuleState.PRESENT
+    assert bot.code_address == "Бот.Assistant"
+    assert bot.modules == ("Бот.Assistant",)
+    assert bot.forms == ()
+    assert bot.relations == ()
+    assert any(
+        item.code == "unknown_child" and item.signature == "Bot"
+        for item in result.diagnostics
+    )
+
+
+def test_bot_явно_показывает_отсутствие_модуля_и_unknown(tmp_path):
+    BotModuleState = _symbol("BotModuleState")
+    convert_collection = _symbol("convert_collection")
+
+    result = convert_collection(
+        _collection(tmp_path, bots=True, bot_module=False, bot_unknown=True)
+    )
+    bot = result.extended.get("Бот.Assistant")
+
+    assert bot is not None
+    assert bot.payload.module_state is BotModuleState.MISSING
+    assert {
+        (item.code, item.signature)
+        for item in result.diagnostics
+    } >= {
+        ("bot_coverage", "module_missing"),
+        ("unknown_property", "Bot"),
+    }
+
+
+def test_bot_не_угадывает_неверный_predefined(tmp_path):
+    convert_collection = _symbol("convert_collection")
+    ConversionError = _symbol("ConversionError")
+
+    with pytest.raises(ConversionError, match="Predefined"):
+        convert_collection(
+            _collection(tmp_path, bots=True, bot_predefined="sometimes")
+        )
+
+
+def test_bot_не_скрывает_расхождение_регистра_descriptor_и_модуля(tmp_path):
+    convert_collection = _symbol("convert_collection")
+    ConversionError = _symbol("ConversionError")
+
+    with pytest.raises(ConversionError, match="адрес модуля бота"):
+        convert_collection(
+            _collection(tmp_path, bots=True, bot_module_name="assistant")
+        )

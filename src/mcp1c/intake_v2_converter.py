@@ -327,6 +327,19 @@ class CommonFormPayload:
     events: tuple[FormEventBinding, ...] = ()
 
 
+class BotModuleState(str, Enum):
+    PRESENT = "present"
+    MISSING = "module_missing"
+
+
+@dataclass(frozen=True, slots=True)
+class BotPayload:
+    uuid: str = ""
+    picture: tuple[str, ...] = ()
+    predefined: bool | None = None
+    module_state: BotModuleState = BotModuleState.MISSING
+
+
 @dataclass(frozen=True, slots=True)
 class ExtendedObject:
     full_name: str
@@ -881,6 +894,12 @@ _COMMON_FORM_PROPERTIES = frozenset(
         "ObjectBelonging",
     }
 )
+_BOT_PROPERTIES = _BASE_HEAD | {
+    "Picture",
+    "Predefined",
+    "ExtendedConfigurationObject",
+    "ObjectBelonging",
+}
 
 
 def _property_value(element: ET.Element, kind: str, where: str) -> object:
@@ -2296,6 +2315,63 @@ def _common_form_objects(
     }
 
 
+def _bot(
+    root: ET.Element,
+    module_addresses: Mapping[str, str],
+    diagnostics: _Diagnostics,
+    where: str,
+) -> ExtendedObject:
+    node, properties, children = _descriptor(root, "Bot", where)
+    _unknown_properties(properties, _BOT_PROPERTIES, diagnostics, "Bot")
+    name = _required_text(_child(properties, "Name"), f"{where}.Name")
+    parts = PurePosixPath(where).parts
+    if (
+        len(parts) != 2
+        or parts[0] != "Bots"
+        or PurePosixPath(parts[1]).stem != name
+    ):
+        raise ConversionError("имя бота не совпадает с адресом")
+    full_name = f"Бот.{name}"
+    for child in children if children is not None else ():
+        diagnostics.add("unknown_child", "Bot", _tag(child))
+    uuid = next(
+        (
+            value.strip()
+            for key, value in node.attrib.items()
+            if key.rsplit("}", 1)[-1].lower() == "uuid" and value.strip()
+        ),
+        "",
+    )
+    module_address = module_addresses.get(full_name.casefold())
+    if module_address is not None and module_address != full_name:
+        raise ConversionError("адрес модуля бота не совпадает с descriptor")
+    module_state = BotModuleState.PRESENT if module_address else BotModuleState.MISSING
+    if module_state is BotModuleState.MISSING:
+        diagnostics.add(
+            "bot_coverage",
+            module_state.value,
+            full_name,
+            severity="warning",
+        )
+    return ExtendedObject(
+        full_name=full_name,
+        kind="Бот",
+        name=name,
+        synonym=_localized(_child(properties, "Synonym")),
+        comment=_text(_child(properties, "Comment")),
+        code_address=full_name,
+        payload=BotPayload(
+            uuid=uuid,
+            picture=_leaf_texts(_child(properties, "Picture")),
+            predefined=_bool(
+                _child(properties, "Predefined"),
+                f"{where}.Predefined",
+            ),
+            module_state=module_state,
+        ),
+    )
+
+
 def _is_descriptor(artifact: CollectionArtifact, spec: MetadataKindSpec) -> bool:
     parts = PurePosixPath(artifact.source_path).parts
     if len(parts) == 2:
@@ -2613,6 +2689,15 @@ def convert_collection(
         if needs_binding_resolver
         else MappingProxyType({})
     )
+    bot_module_addresses: dict[str, str] = {}
+    for item in collection.code:
+        if item.source_name != "Bots":
+            continue
+        key = item.address.casefold()
+        previous = bot_module_addresses.get(key)
+        if previous is not None and previous != item.address:
+            raise ConversionError("адреса модулей ботов различаются только регистром")
+        bot_module_addresses[key] = item.address
 
     for artifact in collection.metadata:
         if artifact.source_path == "Configuration.xml":
@@ -2698,7 +2783,18 @@ def convert_collection(
             if obj.full_name in extended_objects:
                 raise ConversionError(f"дублируется extended object {obj.full_name}")
             extended_objects[obj.full_name] = obj
+        elif spec.extended_adapter == "bot":
+            obj = _bot(
+                root,
+                bot_module_addresses,
+                diagnostics,
+                artifact.source_path,
+            )
+            if obj.full_name in extended_objects:
+                raise ConversionError(f"дублируется extended object {obj.full_name}")
+            extended_objects[obj.full_name] = obj
         elif spec.extended_adapter and spec.extended_adapter not in {
+            "bot",
             "common_attribute",
             "common_form",
             "document_journal",
@@ -2739,6 +2835,8 @@ def convert_collection(
 
 
 __all__ = [
+    "BotModuleState",
+    "BotPayload",
     "AutoRecordPolicy",
     "BindingState",
     "CodeBinding",

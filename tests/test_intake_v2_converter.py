@@ -19,6 +19,7 @@ NS = "http://v8.1c.ru/8.3/MDClasses"
 NS_V8 = "http://v8.1c.ru/8.1/data/core"
 NS_XS = "http://www.w3.org/2001/XMLSchema"
 NS_CFG = "http://v8.1c.ru/8.1/data/enterprise/current-config"
+NS_EXTERNAL_PROPERTIES = "http://v8.1c.ru/8.3/xcf/extrnprops"
 
 
 def _symbol(name: str):
@@ -90,7 +91,12 @@ def _document(
     ).encode()
 
 
-def _configuration(*, unknown: bool = False, journal: bool = False) -> bytes:
+def _configuration(
+    *,
+    unknown: bool = False,
+    journal: bool = False,
+    bindings: bool = False,
+) -> bytes:
     extra = "<FutureFlag>Enabled</FutureFlag>" if unknown else ""
     properties = (
         "<Name>DemoConfiguration</Name>"
@@ -111,6 +117,16 @@ def _configuration(*, unknown: bool = False, journal: bool = False) -> bytes:
         children += (
             "<Document>Invoice</Document>"
             "<DocumentJournal>Ledger</DocumentJournal>"
+        )
+    if bindings:
+        children += (
+            "<ExchangePlan>Nodes</ExchangePlan>"
+            "<CommonModule>Handlers</CommonModule>"
+            "<EventSubscription>Resolved</EventSubscription>"
+            "<EventSubscription>ModuleMissing</EventSubscription>"
+            "<EventSubscription>ProcedureMissing</EventSubscription>"
+            "<EventSubscription>Unresolved</EventSubscription>"
+            "<ScheduledJob>Refresh</ScheduledJob>"
         )
     return _document("Configuration", properties, children)
 
@@ -267,6 +283,87 @@ def _document_journal(*, malformed_reference: bool = False) -> bytes:
     )
 
 
+def _exchange_plan() -> bytes:
+    properties = (
+        "<Name>Nodes</Name>"
+        f"<Synonym>{_localized('Узлы')}</Synonym>"
+        "<Comment>Синтетический план обмена</Comment>"
+        "<DistributedInfoBase>true</DistributedInfoBase>"
+        "<CodeLength>9</CodeLength><CodeAllowedLength>Variable</CodeAllowedLength>"
+        "<DescriptionLength>120</DescriptionLength>"
+        f"<ListPresentation>{_localized('Список узлов')}</ListPresentation>"
+        "<DefaultObjectForm>ExchangePlan.Nodes.Form.Card</DefaultObjectForm>"
+        "<UseStandardCommands>true</UseStandardCommands>"
+        "<IncludeConfigurationExtensions>false</IncludeConfigurationExtensions>"
+        "<IncludeHelpInContents>true</IncludeHelpInContents>"
+        "<InputByString><Field>ExchangePlan.Nodes.StandardAttribute.Code</Field>"
+        "</InputByString>"
+    )
+    tabular = (
+        "<TabularSection><Properties><Name>Lines</Name>"
+        f"<Synonym>{_localized('Строки')}</Synonym></Properties><ChildObjects>"
+        f"{_field('Amount', _type('xs:decimal', digits=15, fraction_digits=2))}"
+        "</ChildObjects></TabularSection>"
+    )
+    command = (
+        "<Command><Properties><Name>Refresh</Name>"
+        f"<Synonym>{_localized('Обновить')}</Synonym>"
+        "<ModifiesData>false</ModifiesData><Representation>Auto</Representation>"
+        "</Properties></Command>"
+    )
+    children = (
+        f"{_field('Address', _type('xs:string', string_length=80))}"
+        f"{tabular}{command}<Form>Card</Form><Template>Message</Template>"
+    )
+    return _document("ExchangePlan", properties, children)
+
+
+def _exchange_plan_content(auto_record: str = "Allow") -> bytes:
+    return (
+        f'<ExchangePlanContent xmlns="{NS_EXTERNAL_PROPERTIES}" xmlns:v8="{NS_V8}">'
+        "<Item><Metadata>Catalog.Items</Metadata>"
+        f"<AutoRecord>{auto_record}</AutoRecord></Item>"
+        "<Item><Metadata>Document.Missing</Metadata>"
+        "<AutoRecord>Deny</AutoRecord></Item>"
+        "</ExchangePlanContent>"
+    ).encode()
+
+
+def _common_module() -> bytes:
+    properties = (
+        "<Name>Handlers</Name>"
+        f"<Synonym>{_localized('Обработчики')}</Synonym>"
+        "<Global>false</Global><Server>true</Server>"
+        "<ClientManagedApplication>false</ClientManagedApplication>"
+        "<ServerCall>true</ServerCall><Privileged>false</Privileged>"
+        "<ExternalConnection>true</ExternalConnection>"
+        "<ReturnValuesReuse>DontUse</ReturnValuesReuse>"
+    )
+    return _document("CommonModule", properties)
+
+
+def _event_subscription(name: str, handler: str) -> bytes:
+    properties = (
+        f"<Name>{name}</Name><Comment>Синтетическая подписка</Comment>"
+        "<Source><v8:Type>cfg:CatalogObject.Items</v8:Type></Source>"
+        "<Event>BeforeWrite</Event>"
+        f"<Handler>{handler}</Handler>"
+    )
+    return _document("EventSubscription", properties)
+
+
+def _scheduled_job() -> bytes:
+    properties = (
+        "<Name>Refresh</Name><Comment>Синтетическое задание</Comment>"
+        "<MethodName>CommonModule.Handlers.RunJob</MethodName>"
+        "<Description>Обновляет синтетический индекс</Description>"
+        "<Use>true</Use><Predefined>false</Predefined><Key>refresh</Key>"
+        "<RestartCountOnFailure>3</RestartCountOnFailure>"
+        "<RestartIntervalOnFailure>60</RestartIntervalOnFailure>"
+    )
+    return _document("ScheduledJob", properties)
+
+
 class MemoryTree:
     transport = CandidateTransport.INCOMING
     origin_name = "synthetic.zip"
@@ -309,9 +406,17 @@ def _collection(
     malformed: str = "",
     journal: bool = False,
     malformed_journal_reference: bool = False,
+    bindings: bool = False,
+    plan_auto_record: str = "Allow",
+    plan_content: bool = True,
+    schedule: bytes = b"<Schedule><Period>60</Period></Schedule>",
 ):
     payloads = {
-        "Configuration.xml": _configuration(unknown=unknown, journal=journal),
+        "Configuration.xml": _configuration(
+            unknown=unknown,
+            journal=journal,
+            bindings=bindings,
+        ),
         "Catalogs/Items.xml": _catalog(unknown=unknown),
         "Catalogs/Items/Ext/ObjectModule.bsl": b"procedure Demo() endprocedure",
         "Catalogs/Items/Forms/Card.xml": b"<form-descriptor/>",
@@ -337,6 +442,50 @@ def _collection(
                 "DocumentJournals/Ledger/Templates/Print/Ext/Template.xml": b"<template/>",
             }
         )
+    if bindings:
+        payloads.update(
+            {
+                "ExchangePlans/Nodes.xml": _exchange_plan(),
+                "ExchangePlans/Nodes/Ext/ObjectModule.bsl": (
+                    b"procedure ObjectMethod() endprocedure"
+                ),
+                "ExchangePlans/Nodes/Ext/ManagerModule.bsl": (
+                    b"procedure ManagerMethod() endprocedure"
+                ),
+                "ExchangePlans/Nodes/Commands/Refresh/Ext/CommandModule.bsl": (
+                    b"procedure Run() endprocedure"
+                ),
+                "ExchangePlans/Nodes/Forms/Card.xml": b"<form-descriptor/>",
+                "ExchangePlans/Nodes/Forms/Card/Ext/Form/Form.xml": b"<form/>",
+                "ExchangePlans/Nodes/Forms/Card/Ext/Form/Module.bsl": (
+                    b"procedure FormMethod() endprocedure"
+                ),
+                "ExchangePlans/Nodes/Templates/Message.xml": b"<template/>",
+                "CommonModules/Handlers.xml": _common_module(),
+                "CommonModules/Handlers/Ext/Module.bsl": (
+                    "Процедура OnWrite() Экспорт\nКонецПроцедуры\n"
+                    "Процедура RunJob() Экспорт\nКонецПроцедуры\n"
+                ).encode(),
+                "EventSubscriptions/Resolved.xml": _event_subscription(
+                    "Resolved", "CommonModule.Handlers.OnWrite"
+                ),
+                "EventSubscriptions/ModuleMissing.xml": _event_subscription(
+                    "ModuleMissing", "CommonModule.Absent.OnWrite"
+                ),
+                "EventSubscriptions/ProcedureMissing.xml": _event_subscription(
+                    "ProcedureMissing", "CommonModule.Handlers.Absent"
+                ),
+                "EventSubscriptions/Unresolved.xml": _event_subscription(
+                    "Unresolved", ""
+                ),
+                "ScheduledJobs/Refresh.xml": _scheduled_job(),
+                "ScheduledJobs/Refresh/Ext/Schedule.xml": schedule,
+            }
+        )
+        if plan_content:
+            payloads[
+                "ExchangePlans/Nodes/Ext/Content.xml"
+            ] = _exchange_plan_content(plan_auto_record)
     if malformed:
         payloads[malformed] = b"<MetaDataObject><broken>"
     tree = MemoryTree(payloads)
@@ -353,6 +502,8 @@ def test_metadata_kind_spec_выбирает_структурный_adapter():
     assert specs["SessionParameters"].extended_adapter == "session_parameter"
     assert specs["ExchangePlans"].base_adapter == "schema_v1"
     assert specs["ExchangePlans"].extended_adapter == "exchange_plan"
+    assert specs["EventSubscriptions"].extended_adapter == "event_subscription"
+    assert specs["ScheduledJobs"].extended_adapter == "scheduled_job"
     assert specs["CommonCommands"].base_adapter == ""
     assert specs["CommonCommands"].extended_adapter == ""
 
@@ -645,3 +796,147 @@ def test_document_journal_отвергает_неточную_field_ref(tmp_path
                 malformed_journal_reference=True,
             )
         )
+
+
+def test_exchange_plan_сохраняет_base_content_и_весь_фактический_контент(tmp_path):
+    ExchangePlanPayload = _symbol("ExchangePlanPayload")
+    convert_collection = _symbol("convert_collection")
+
+    result = convert_collection(_collection(tmp_path, bindings=True))
+    base = result.base.get("ПланОбмена.Nodes")
+    plan = result.extended.get("ПланОбмена.Nodes")
+
+    assert base is not None and plan is not None
+    assert base.props["distributed_infobase"] is True
+    assert [field.name for field in base.attributes] == ["Address"]
+    assert [part.name for part in base.tabular_parts] == ["Lines"]
+    assert plan.base_object is True
+    assert isinstance(plan.payload, ExchangePlanPayload)
+    assert plan.payload.code_length == 9
+    assert plan.payload.description_length == 120
+    assert plan.payload.default_object_form == "ПланОбмена.Nodes.Форма.Card"
+    assert plan.payload.input_by_string == (
+        "ExchangePlan.Nodes.StandardAttribute.Code",
+    )
+    assert [item.name for item in plan.payload.commands] == ["Refresh"]
+    assert plan.payload.forms == ("Card",)
+    assert plan.payload.templates == ("Message",)
+    assert [
+        (item.raw, item.target, item.auto_record.value)
+        for item in plan.payload.content
+    ] == [
+        ("Catalog.Items", "Справочник.Items", "Allow"),
+        ("Document.Missing", "Документ.Missing", "Deny"),
+    ]
+    assert plan.modules == (
+        "ПланОбмена.Nodes.Команда.Refresh",
+        "ПланОбмена.Nodes.МодульМенеджера",
+        "ПланОбмена.Nodes.МодульОбъекта",
+        "ПланОбмена.Nodes.Форма.Card",
+    )
+    assert plan.forms == ("ПланОбмена.Nodes.Форма.Card",)
+    assert {
+        (relation.target, relation.state.value) for relation in plan.relations
+    } >= {
+        ("Справочник.Items", "resolved"),
+        ("Документ.Missing", "unresolved"),
+    }
+
+
+def test_exchange_plan_отвергает_неизвестную_политику_autorecord(tmp_path):
+    ConversionError = _symbol("ConversionError")
+    convert_collection = _symbol("convert_collection")
+
+    with pytest.raises(ConversionError, match="AutoRecord"):
+        convert_collection(
+            _collection(tmp_path, bindings=True, plan_auto_record="Maybe")
+        )
+
+
+def test_exchange_plan_требует_content_xml(tmp_path):
+    ConversionError = _symbol("ConversionError")
+    convert_collection = _symbol("convert_collection")
+
+    with pytest.raises(ConversionError, match="Content.xml"):
+        convert_collection(
+            _collection(tmp_path, bindings=True, plan_content=False)
+        )
+
+
+def test_subscription_resolver_различает_четыре_состояния(tmp_path):
+    BindingState = _symbol("BindingState")
+    EventSubscriptionPayload = _symbol("EventSubscriptionPayload")
+    convert_collection = _symbol("convert_collection")
+
+    result = convert_collection(_collection(tmp_path, bindings=True))
+    expected = {
+        "Resolved": BindingState.RESOLVED,
+        "ModuleMissing": BindingState.MODULE_MISSING,
+        "ProcedureMissing": BindingState.PROCEDURE_MISSING,
+        "Unresolved": BindingState.UNRESOLVED,
+    }
+    for name, state in expected.items():
+        subscription = result.extended.get(f"ПодпискаНаСобытие.{name}")
+        assert subscription is not None
+        assert isinstance(subscription.payload, EventSubscriptionPayload)
+        assert subscription.payload.binding.state is state
+        assert subscription.modules == () and subscription.forms == ()
+
+    resolved = result.extended.get("ПодпискаНаСобытие.Resolved")
+    assert resolved.payload.binding.raw == "CommonModule.Handlers.OnWrite"
+    assert resolved.payload.binding.module_address == "ОбщийМодуль.Handlers"
+    assert (
+        resolved.payload.binding.procedure_address
+        == "ОбщийМодуль.Handlers::OnWrite"
+    )
+    base = result.base.get("ПодпискаНаСобытие.Resolved")
+    assert base.props["source"] == ["Справочник.Items"]
+    assert base.props["event"] == "BeforeWrite"
+    assert base.props["handler"] == "CommonModule.Handlers.OnWrite"
+    assert [(item.kind, item.target, item.state.value) for item in resolved.relations] == [
+        ("event_source", "Справочник.Items", "resolved")
+    ]
+
+
+def test_scheduled_job_сохраняет_restart_и_разрешённый_метод(tmp_path):
+    ScheduledJobPayload = _symbol("ScheduledJobPayload")
+    convert_collection = _symbol("convert_collection")
+
+    result = convert_collection(_collection(tmp_path, bindings=True))
+    job = result.extended.get("РегламентноеЗадание.Refresh")
+
+    assert job is not None and isinstance(job.payload, ScheduledJobPayload)
+    assert job.base_object is True
+    assert job.payload.description == "Обновляет синтетический индекс"
+    assert job.payload.restart_count_on_failure == 3
+    assert job.payload.restart_interval_on_failure == 60
+    assert job.payload.binding.raw == "CommonModule.Handlers.RunJob"
+    assert job.payload.binding.state.value == "resolved"
+    assert job.payload.binding.procedure_address == "ОбщийМодуль.Handlers::RunJob"
+    assert job.modules == () and job.forms == ()
+
+
+def test_schedule_xml_меняет_raw_sha_но_не_semantic_hashes(tmp_path):
+    convert_collection = _symbol("convert_collection")
+    first_collection = _collection(
+        tmp_path / "first",
+        bindings=True,
+        schedule=b"<Schedule><Period>60</Period></Schedule>",
+    )
+    second_collection = _collection(
+        tmp_path / "second",
+        bindings=True,
+        schedule=b"<Schedule><Period>120</Period></Schedule>",
+    )
+
+    first = convert_collection(first_collection)
+    second = convert_collection(second_collection)
+
+    assert first_collection.probe.raw_sha256 != second_collection.probe.raw_sha256
+    assert first.base_content_sha256 == second.base_content_sha256
+    assert first.extended_content_sha256 == second.extended_content_sha256
+    assert not any(
+        "Schedule.xml" in example
+        for item in (*first_collection.diagnostics, *first.diagnostics)
+        for example in item.examples
+    )

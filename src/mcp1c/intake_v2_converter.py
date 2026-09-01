@@ -16,6 +16,7 @@ from pathlib import PurePosixPath
 from types import MappingProxyType
 from typing import Iterable, Mapping
 
+from .bsl_lex import нормализовать, разобрать
 from .intake_v2 import LayerKind, MetadataKindSpec
 from .intake_v2_collector import (
     DEFAULT_KIND_SPECS,
@@ -29,6 +30,7 @@ from .model import Configuration, Field, MetadataObject, TabularPart
 
 
 _NS_MDCLASSES = "http://v8.1c.ru/8.3/MDClasses"
+_NS_EXTERNAL_PROPERTIES = "http://v8.1c.ru/8.3/xcf/extrnprops"
 _MAX_DIAGNOSTIC_EXAMPLES = 3
 
 
@@ -39,6 +41,21 @@ class ConversionError(RuntimeError):
 class RelationState(str, Enum):
     RESOLVED = "resolved"
     UNRESOLVED = "unresolved"
+
+
+class AutoRecordPolicy(str, Enum):
+    ALLOW = "Allow"
+    DENY = "Deny"
+
+
+class BindingState(str, Enum):
+    """Состояние ссылки metadata на процедуру общего модуля."""
+
+    UNAVAILABLE = "unavailable"
+    RESOLVED = "resolved"
+    UNRESOLVED = "unresolved"
+    MODULE_MISSING = "module_missing"
+    PROCEDURE_MISSING = "procedure_missing"
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,6 +206,80 @@ class DocumentJournalPayload:
     commands: tuple[JournalCommand, ...] = ()
     forms: tuple[str, ...] = ()
     templates: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ExchangePlanContentItem:
+    raw: str
+    target: str
+    auto_record: AutoRecordPolicy
+
+
+@dataclass(frozen=True, slots=True)
+class ExchangePlanPayload:
+    """Свойства source B сверх schema-v1-проекции плана обмена."""
+
+    based_on: tuple[str, ...] = ()
+    characteristics: str = ""
+    choice_data_get_mode_on_input_by_string: str = ""
+    choice_history_on_input: str = ""
+    choice_mode: str = ""
+    code_allowed_length: str = ""
+    code_length: int | None = None
+    create_on_input: str = ""
+    data_history: str = ""
+    data_lock_control_mode: str = ""
+    data_lock_fields: tuple[str, ...] = ()
+    default_presentation: str = ""
+    description_length: int | None = None
+    edit_type: str = ""
+    execute_after_write_data_history_version_processing: bool | None = None
+    explanation: str = ""
+    extended_list_presentation: str = ""
+    extended_object_presentation: str = ""
+    full_text_search: str = ""
+    full_text_search_on_input_by_string: str = ""
+    include_configuration_extensions: bool | None = None
+    include_help_in_contents: bool | None = None
+    input_by_string: tuple[str, ...] = ()
+    list_presentation: str = ""
+    object_presentation: str = ""
+    quick_choice: bool | None = None
+    search_string_mode_on_input_by_string: str = ""
+    update_data_history_immediately_after_write: bool | None = None
+    use_standard_commands: bool | None = None
+    default_choice_form: str = ""
+    auxiliary_choice_form: str = ""
+    default_list_form: str = ""
+    auxiliary_list_form: str = ""
+    default_object_form: str = ""
+    auxiliary_object_form: str = ""
+    standard_attributes: tuple[JournalStandardAttribute, ...] = ()
+    commands: tuple[JournalCommand, ...] = ()
+    forms: tuple[str, ...] = ()
+    templates: tuple[str, ...] = ()
+    content: tuple[ExchangePlanContentItem, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class CodeBinding:
+    raw: str
+    state: BindingState
+    module_address: str = ""
+    procedure_address: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class EventSubscriptionPayload:
+    binding: CodeBinding
+
+
+@dataclass(frozen=True, slots=True)
+class ScheduledJobPayload:
+    description: str
+    restart_count_on_failure: int | None
+    restart_interval_on_failure: int | None
+    binding: CodeBinding
 
 
 @dataclass(frozen=True, slots=True)
@@ -383,6 +474,41 @@ _REFERENCE_KINDS = {
     "DocumentJournal": "ЖурналДокументов",
 }
 
+# В Source подписки платформа пишет не вид metadata, а runtime-тип объекта.
+# Суффикс нельзя отрезать эвристикой: ``DefinedType`` оканчивается на Type,
+# а ``DocumentJournalManager`` и ``ConstantValueManager`` имеют разные
+# основы. Закрытая таблица составлена по фактическим source-B дескрипторам.
+_RUNTIME_REFERENCE_KINDS = {
+    "AccountingRegisterManager": "AccountingRegister",
+    "AccountingRegisterRecordSet": "AccountingRegister",
+    "AccumulationRegisterManager": "AccumulationRegister",
+    "AccumulationRegisterRecordSet": "AccumulationRegister",
+    "BusinessProcessManager": "BusinessProcess",
+    "BusinessProcessObject": "BusinessProcess",
+    "CalculationRegisterManager": "CalculationRegister",
+    "CalculationRegisterRecordSet": "CalculationRegister",
+    "CatalogManager": "Catalog",
+    "CatalogObject": "Catalog",
+    "ChartOfAccountsManager": "ChartOfAccounts",
+    "ChartOfAccountsObject": "ChartOfAccounts",
+    "ChartOfCalculationTypesManager": "ChartOfCalculationTypes",
+    "ChartOfCalculationTypesObject": "ChartOfCalculationTypes",
+    "ChartOfCharacteristicTypesManager": "ChartOfCharacteristicTypes",
+    "ChartOfCharacteristicTypesObject": "ChartOfCharacteristicTypes",
+    "ConstantValueManager": "Constant",
+    "DataProcessorManager": "DataProcessor",
+    "DefinedType": "DefinedType",
+    "DocumentJournalManager": "DocumentJournal",
+    "DocumentManager": "Document",
+    "DocumentObject": "Document",
+    "ExchangePlanObject": "ExchangePlan",
+    "InformationRegisterManager": "InformationRegister",
+    "InformationRegisterRecordSet": "InformationRegister",
+    "ReportManager": "Report",
+    "TaskManager": "Task",
+    "TaskObject": "Task",
+}
+
 
 def _reference(value: str) -> str:
     if not value or "." not in value:
@@ -410,6 +536,7 @@ def _type_name(value: str) -> str:
         kind, tail = value.removeprefix("cfg:").split(".", 1)
         if kind.endswith("Ref"):
             kind = kind[:-3]
+        kind = _RUNTIME_REFERENCE_KINDS.get(kind, kind)
         public_kind = _REFERENCE_KINDS.get(kind)
         if public_kind:
             return f"{public_kind}.{tail}"
@@ -628,6 +755,73 @@ _BASE_PROPERTIES: dict[str, dict[str, tuple[str, str]]] = {
     },
 }
 
+_EXCHANGE_PLAN_PROPERTIES = frozenset(
+    {
+        "AuxiliaryChoiceForm",
+        "AuxiliaryListForm",
+        "AuxiliaryObjectForm",
+        "BasedOn",
+        "Characteristics",
+        "ChoiceDataGetModeOnInputByString",
+        "ChoiceHistoryOnInput",
+        "ChoiceMode",
+        "CodeAllowedLength",
+        "CodeLength",
+        "CreateOnInput",
+        "DataHistory",
+        "DataLockControlMode",
+        "DataLockFields",
+        "DefaultChoiceForm",
+        "DefaultListForm",
+        "DefaultObjectForm",
+        "DefaultPresentation",
+        "DescriptionLength",
+        "EditType",
+        "ExecuteAfterWriteDataHistoryVersionProcessing",
+        "Explanation",
+        "ExtendedListPresentation",
+        "ExtendedObjectPresentation",
+        "FullTextSearch",
+        "FullTextSearchOnInputByString",
+        "IncludeConfigurationExtensions",
+        "IncludeHelpInContents",
+        "InputByString",
+        "ListPresentation",
+        "ObjectPresentation",
+        "QuickChoice",
+        "SearchStringModeOnInputByString",
+        "StandardAttributes",
+        "UpdateDataHistoryImmediatelyAfterWrite",
+        "UseStandardCommands",
+    }
+)
+_EVENT_SUBSCRIPTION_PROPERTIES = frozenset(
+    {
+        "Name",
+        "Synonym",
+        "Comment",
+        "Source",
+        "Event",
+        "Handler",
+        "ExtendedConfigurationObject",
+        "ObjectBelonging",
+    }
+)
+_SCHEDULED_JOB_PROPERTIES = frozenset(
+    {
+        "Name",
+        "Synonym",
+        "Comment",
+        "MethodName",
+        "Use",
+        "Predefined",
+        "Key",
+        "Description",
+        "RestartCountOnFailure",
+        "RestartIntervalOnFailure",
+    }
+)
+
 
 def _property_value(element: ET.Element, kind: str, where: str) -> object:
     if kind == "bool":
@@ -683,6 +877,14 @@ def _base_object(
     )
     property_specs = _BASE_PROPERTIES.get(expected_kind, {})
     known = _BASE_HEAD | property_specs.keys()
+    if spec.extended_adapter == "exchange_plan":
+        # Эти поля принадлежат typed extended payload и потому не являются
+        # неизвестными только из-за узкой schema-v1-проекции base.
+        known = known | _EXCHANGE_PLAN_PROPERTIES
+    elif spec.extended_adapter == "event_subscription":
+        known = known | _EVENT_SUBSCRIPTION_PROPERTIES
+    elif spec.extended_adapter == "scheduled_job":
+        known = known | _SCHEDULED_JOB_PROPERTIES
     if expected_kind in {"Constant", "DefinedType", "ChartOfCharacteristicTypes"}:
         known = known | {"Type"}
         value_type = _type_description(_child(properties, "Type"))
@@ -1265,6 +1467,211 @@ def resolve_journal_column_types(
     return tuple(result)
 
 
+def _metadata_fields(element: ET.Element | None) -> tuple[str, ...]:
+    if element is None:
+        return ()
+    return tuple(_text(item) for item in element if _text(item))
+
+
+def _exchange_plan_content(
+    root: ET.Element,
+    diagnostics: _Diagnostics,
+    where: str,
+) -> tuple[ExchangePlanContentItem, ...]:
+    if (
+        _namespace(root) != _NS_EXTERNAL_PROPERTIES
+        or _tag(root) != "ExchangePlanContent"
+    ):
+        raise ConversionError(f"{where}: неверный корень ExchangePlanContent")
+    content: list[ExchangePlanContentItem] = []
+    seen: set[str] = set()
+    for element in root:
+        if _tag(element) != "Item":
+            diagnostics.add(
+                "unknown_child",
+                "ExchangePlanContent",
+                _tag(element),
+            )
+            continue
+        _unknown_properties(
+            element,
+            {"Metadata", "AutoRecord"},
+            diagnostics,
+            "ExchangePlanContent.Item",
+        )
+        raw = _required_text(
+            _child(element, "Metadata"), f"{where}.Item.Metadata"
+        )
+        auto_record_raw = _required_text(
+            _child(element, "AutoRecord"), f"{where}.Item.AutoRecord"
+        )
+        try:
+            auto_record = AutoRecordPolicy(auto_record_raw)
+        except ValueError as error:
+            raise ConversionError(
+                f"{where}.Item.AutoRecord: ожидается Allow или Deny"
+            ) from error
+        key = raw.casefold()
+        if key in seen:
+            raise ConversionError(f"{where}: Metadata дублируется в Content")
+        seen.add(key)
+        content.append(
+            ExchangePlanContentItem(
+                raw=raw,
+                target=_reference(raw),
+                auto_record=auto_record,
+            )
+        )
+    return tuple(sorted(content, key=lambda item: _order(item.raw)))
+
+
+def _exchange_plan(
+    root: ET.Element,
+    content_root: ET.Element,
+    diagnostics: _Diagnostics,
+    where: str,
+    content_where: str,
+) -> ExtendedObject:
+    _node, properties, children = _descriptor(root, "ExchangePlan", where)
+    name = _required_text(_child(properties, "Name"), f"{where}.Name")
+    full_name = f"ПланОбмена.{name}"
+    _unknown_properties(
+        properties,
+        _BASE_HEAD | {"DistributedInfoBase"} | _EXCHANGE_PLAN_PROPERTIES,
+        diagnostics,
+        "ExchangePlan",
+    )
+    commands: list[JournalCommand] = []
+    forms: list[str] = []
+    templates: list[str] = []
+    for item in children if children is not None else ():
+        kind = _tag(item)
+        if kind == "Command":
+            commands.append(
+                _journal_command(item, diagnostics, f"{where}.Command")
+            )
+        elif kind == "Form":
+            forms.append(_required_text(item, f"{where}.Form"))
+        elif kind == "Template":
+            templates.append(_required_text(item, f"{where}.Template"))
+        elif kind not in {"Attribute", "TabularSection"}:
+            diagnostics.add("unknown_child", "ExchangePlan", kind)
+
+    based_on = tuple(
+        _reference(value) for value in _leaf_texts(_child(properties, "BasedOn"))
+    )
+    content = _exchange_plan_content(content_root, diagnostics, content_where)
+    text = lambda key: _text(_child(properties, key))
+    form = lambda key: _content_address(text(key))
+    standard_attributes_element = _child(properties, "StandardAttributes")
+    payload = ExchangePlanPayload(
+        based_on=based_on,
+        characteristics=text("Characteristics"),
+        choice_data_get_mode_on_input_by_string=text(
+            "ChoiceDataGetModeOnInputByString"
+        ),
+        choice_history_on_input=text("ChoiceHistoryOnInput"),
+        choice_mode=text("ChoiceMode"),
+        code_allowed_length=text("CodeAllowedLength"),
+        code_length=_int(_child(properties, "CodeLength"), f"{where}.CodeLength"),
+        create_on_input=text("CreateOnInput"),
+        data_history=text("DataHistory"),
+        data_lock_control_mode=text("DataLockControlMode"),
+        data_lock_fields=_metadata_fields(_child(properties, "DataLockFields")),
+        default_presentation=text("DefaultPresentation"),
+        description_length=_int(
+            _child(properties, "DescriptionLength"),
+            f"{where}.DescriptionLength",
+        ),
+        edit_type=text("EditType"),
+        execute_after_write_data_history_version_processing=_bool(
+            _child(properties, "ExecuteAfterWriteDataHistoryVersionProcessing"),
+            f"{where}.ExecuteAfterWriteDataHistoryVersionProcessing",
+        ),
+        explanation=_localized(_child(properties, "Explanation")),
+        extended_list_presentation=_localized(
+            _child(properties, "ExtendedListPresentation")
+        ),
+        extended_object_presentation=_localized(
+            _child(properties, "ExtendedObjectPresentation")
+        ),
+        full_text_search=text("FullTextSearch"),
+        full_text_search_on_input_by_string=text("FullTextSearchOnInputByString"),
+        include_configuration_extensions=_bool(
+            _child(properties, "IncludeConfigurationExtensions"),
+            f"{where}.IncludeConfigurationExtensions",
+        ),
+        include_help_in_contents=_bool(
+            _child(properties, "IncludeHelpInContents"),
+            f"{where}.IncludeHelpInContents",
+        ),
+        input_by_string=_metadata_fields(_child(properties, "InputByString")),
+        list_presentation=_localized(_child(properties, "ListPresentation")),
+        object_presentation=_localized(_child(properties, "ObjectPresentation")),
+        quick_choice=_bool(
+            _child(properties, "QuickChoice"), f"{where}.QuickChoice"
+        ),
+        search_string_mode_on_input_by_string=text(
+            "SearchStringModeOnInputByString"
+        ),
+        update_data_history_immediately_after_write=_bool(
+            _child(properties, "UpdateDataHistoryImmediatelyAfterWrite"),
+            f"{where}.UpdateDataHistoryImmediatelyAfterWrite",
+        ),
+        use_standard_commands=_bool(
+            _child(properties, "UseStandardCommands"),
+            f"{where}.UseStandardCommands",
+        ),
+        default_choice_form=form("DefaultChoiceForm"),
+        auxiliary_choice_form=form("AuxiliaryChoiceForm"),
+        default_list_form=form("DefaultListForm"),
+        auxiliary_list_form=form("AuxiliaryListForm"),
+        default_object_form=form("DefaultObjectForm"),
+        auxiliary_object_form=form("AuxiliaryObjectForm"),
+        standard_attributes=tuple(
+            _journal_standard_attribute(
+                item,
+                diagnostics,
+                f"{where}.StandardAttribute",
+            )
+            for item in (
+                standard_attributes_element
+                if standard_attributes_element is not None
+                else ()
+            )
+            if _tag(item) == "StandardAttribute"
+        ),
+        commands=tuple(commands),
+        forms=tuple(forms),
+        templates=tuple(templates),
+        content=content,
+    )
+    relations = [
+        MetadataRelation("based_on", target, RelationState.UNRESOLVED)
+        for target in based_on
+    ]
+    relations.extend(
+        MetadataRelation(
+            "exchange_content",
+            item.target,
+            RelationState.UNRESOLVED,
+            (("auto_record", item.auto_record.value),),
+        )
+        for item in content
+    )
+    return ExtendedObject(
+        full_name=full_name,
+        kind="ПланОбмена",
+        name=name,
+        synonym=_localized(_child(properties, "Synonym")),
+        comment=text("Comment"),
+        code_address=full_name,
+        base_object=True,
+        payload=payload,
+        relations=tuple(relations),
+    )
+
+
 class _DigestReader:
     def __init__(self, source):
         self.source = source
@@ -1302,6 +1709,227 @@ def _parse_xml(collection: CollectionResult, artifact: CollectionArtifact) -> ET
     return root
 
 
+def _read_code_text(
+    collection: CollectionResult,
+    artifact: CollectionArtifact,
+) -> str:
+    try:
+        with open_collection_member(collection.root, artifact.relative_path) as source:
+            payload = source.read(artifact.size + 1)
+    except CollectionError as error:
+        raise ConversionError(
+            f"{artifact.source_path}: payload модуля небезопасен"
+        ) from error
+    except OSError as error:
+        raise ConversionError(
+            f"{artifact.source_path}: payload модуля недоступен"
+        ) from error
+    if (
+        len(payload) != artifact.size
+        or hashlib.sha256(payload).hexdigest() != artifact.sha256
+    ):
+        raise ConversionError(
+            f"{artifact.source_path}: модуль изменился после collection"
+        )
+    try:
+        return нормализовать(payload.decode("utf-8-sig"))
+    except UnicodeDecodeError as error:
+        raise ConversionError(
+            f"{artifact.source_path}: модуль не является UTF-8"
+        ) from error
+
+
+@dataclass(frozen=True, slots=True)
+class _ModuleSymbols:
+    address: str
+    procedures: Mapping[str, str]
+    ambiguous: frozenset[str] = frozenset()
+    readable: bool = True
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "procedures",
+            MappingProxyType(dict(self.procedures)),
+        )
+
+
+def _common_module_symbols(
+    collection: CollectionResult,
+    diagnostics: _Diagnostics,
+) -> Mapping[str, _ModuleSymbols]:
+    grouped: dict[str, list[CollectionArtifact]] = {}
+    for artifact in collection.code:
+        if artifact.source_name != "CommonModules":
+            continue
+        grouped.setdefault(artifact.address.casefold(), []).append(artifact)
+
+    result: dict[str, _ModuleSymbols] = {}
+    for key, artifacts in sorted(grouped.items()):
+        canonical = sorted((item.address for item in artifacts), key=_order)[0]
+        if len({item.sha256 for item in artifacts}) != 1:
+            diagnostics.add(
+                "ambiguous_code_module",
+                "CommonModule",
+                canonical,
+                severity="warning",
+            )
+            result[key] = _ModuleSymbols(canonical, {}, readable=False)
+            continue
+        artifact = artifacts[0]
+        if not artifact.source_path.endswith((".bsl", ".txt")):
+            result[key] = _ModuleSymbols(canonical, {}, readable=False)
+            continue
+        text = _read_code_text(collection, artifact)
+        procedures: dict[str, str] = {}
+        ambiguous: set[str] = set()
+        for procedure in разобрать(text):
+            procedure_key = procedure.имя.casefold()
+            previous = procedures.get(procedure_key)
+            if previous is not None:
+                ambiguous.add(procedure_key)
+                continue
+            procedures[procedure_key] = procedure.имя
+        result[key] = _ModuleSymbols(
+            canonical,
+            procedures,
+            frozenset(ambiguous),
+        )
+    return MappingProxyType(result)
+
+
+def _resolve_binding(
+    raw: str,
+    modules: Mapping[str, _ModuleSymbols],
+    diagnostics: _Diagnostics,
+    owner: str,
+) -> CodeBinding:
+    parts = raw.split(".") if raw else []
+    if (
+        len(parts) != 3
+        or parts[0] != "CommonModule"
+        or not parts[1]
+        or not parts[2]
+    ):
+        binding = CodeBinding(raw, BindingState.UNRESOLVED)
+    else:
+        requested_module = f"ОбщийМодуль.{parts[1]}"
+        module = modules.get(requested_module.casefold())
+        if module is None:
+            binding = CodeBinding(
+                raw,
+                BindingState.MODULE_MISSING,
+                module_address=requested_module,
+            )
+        elif not module.readable or parts[2].casefold() in module.ambiguous:
+            binding = CodeBinding(
+                raw,
+                BindingState.UNRESOLVED,
+                module_address=module.address,
+            )
+        else:
+            procedure = module.procedures.get(parts[2].casefold())
+            if procedure is None:
+                binding = CodeBinding(
+                    raw,
+                    BindingState.PROCEDURE_MISSING,
+                    module_address=module.address,
+                )
+            else:
+                binding = CodeBinding(
+                    raw,
+                    BindingState.RESOLVED,
+                    module_address=module.address,
+                    procedure_address=f"{module.address}::{procedure}",
+                )
+    if binding.state is not BindingState.RESOLVED:
+        diagnostics.add(
+            "unresolved_code_binding",
+            binding.state.value,
+            owner,
+            severity="warning",
+        )
+    return binding
+
+
+def _event_subscription(
+    root: ET.Element,
+    modules: Mapping[str, _ModuleSymbols],
+    diagnostics: _Diagnostics,
+    where: str,
+) -> ExtendedObject:
+    _node, properties, _children = _descriptor(
+        root, "EventSubscription", where
+    )
+    _unknown_properties(
+        properties,
+        _EVENT_SUBSCRIPTION_PROPERTIES,
+        diagnostics,
+        "EventSubscription",
+    )
+    name = _required_text(_child(properties, "Name"), f"{where}.Name")
+    full_name = f"ПодпискаНаСобытие.{name}"
+    sources = _type_description(_child(properties, "Source")).types
+    handler = _text(_child(properties, "Handler"))
+    return ExtendedObject(
+        full_name=full_name,
+        kind="ПодпискаНаСобытие",
+        name=name,
+        synonym=_localized(_child(properties, "Synonym")),
+        comment=_text(_child(properties, "Comment")),
+        base_object=True,
+        payload=EventSubscriptionPayload(
+            _resolve_binding(handler, modules, diagnostics, full_name)
+        ),
+        relations=tuple(
+            MetadataRelation(
+                "event_source",
+                source,
+                RelationState.UNRESOLVED,
+            )
+            for source in sources
+        ),
+    )
+
+
+def _scheduled_job(
+    root: ET.Element,
+    modules: Mapping[str, _ModuleSymbols],
+    diagnostics: _Diagnostics,
+    where: str,
+) -> ExtendedObject:
+    _node, properties, _children = _descriptor(root, "ScheduledJob", where)
+    _unknown_properties(
+        properties,
+        _SCHEDULED_JOB_PROPERTIES,
+        diagnostics,
+        "ScheduledJob",
+    )
+    name = _required_text(_child(properties, "Name"), f"{where}.Name")
+    full_name = f"РегламентноеЗадание.{name}"
+    method = _text(_child(properties, "MethodName"))
+    return ExtendedObject(
+        full_name=full_name,
+        kind="РегламентноеЗадание",
+        name=name,
+        synonym=_localized(_child(properties, "Synonym")),
+        comment=_text(_child(properties, "Comment")),
+        base_object=True,
+        payload=ScheduledJobPayload(
+            description=_text(_child(properties, "Description")),
+            restart_count_on_failure=_int(
+                _child(properties, "RestartCountOnFailure"),
+                f"{where}.RestartCountOnFailure",
+            ),
+            restart_interval_on_failure=_int(
+                _child(properties, "RestartIntervalOnFailure"),
+                f"{where}.RestartIntervalOnFailure",
+            ),
+            binding=_resolve_binding(method, modules, diagnostics, full_name),
+        ),
+    )
+
+
 def _is_descriptor(artifact: CollectionArtifact, spec: MetadataKindSpec) -> bool:
     parts = PurePosixPath(artifact.source_path).parts
     if len(parts) == 2:
@@ -1316,14 +1944,40 @@ def _known_supplementary_metadata(
     artifact: CollectionArtifact,
     spec: MetadataKindSpec,
 ) -> bool:
-    if spec.extended_adapter != "document_journal":
+    if spec.extended_adapter not in {"document_journal", "exchange_plan"}:
         return False
     parts = PurePosixPath(artifact.source_path).parts
     if parts[-2:] == ("Ext", "Help.xml"):
         return True
     if len(parts) >= 4 and parts[2] == "Templates":
         return parts[-1].endswith(".xml")
-    return False
+    return (
+        spec.extended_adapter == "exchange_plan"
+        and len(parts) == 4
+        and parts[0] == "ExchangePlans"
+        and parts[2:] == ("Ext", "Content.xml")
+    )
+
+
+def _exchange_plan_content_artifacts(
+    collection: CollectionResult,
+) -> dict[str, CollectionArtifact]:
+    result: dict[str, CollectionArtifact] = {}
+    for artifact in collection.metadata:
+        if artifact.source_name != "ExchangePlans":
+            continue
+        parts = PurePosixPath(artifact.source_path).parts
+        if not (
+            len(parts) == 4
+            and parts[0] == "ExchangePlans"
+            and parts[2:] == ("Ext", "Content.xml")
+        ):
+            continue
+        key = parts[1].casefold()
+        if key in result:
+            raise ConversionError("дублируется Content.xml плана обмена")
+        result[key] = artifact
+    return result
 
 
 def _configuration(
@@ -1577,6 +2231,16 @@ def convert_collection(
         diagnostics,
     )
     extended_objects: dict[str, ExtendedObject] = {}
+    exchange_plan_contents = _exchange_plan_content_artifacts(collection)
+    needs_binding_resolver = any(
+        item.source_name in {"EventSubscriptions", "ScheduledJobs"}
+        for item in collection.metadata
+    )
+    module_symbols = (
+        _common_module_symbols(collection, diagnostics)
+        if needs_binding_resolver
+        else MappingProxyType({})
+    )
 
     for artifact in collection.metadata:
         if artifact.source_path == "Configuration.xml":
@@ -1622,15 +2286,61 @@ def convert_collection(
             if obj.full_name in extended_objects:
                 raise ConversionError(f"дублируется extended object {obj.full_name}")
             extended_objects[obj.full_name] = obj
+        elif spec.extended_adapter == "exchange_plan":
+            properties = _descriptor(root, "ExchangePlan", artifact.source_path)[1]
+            name = _required_text(
+                _child(properties, "Name"), f"{artifact.source_path}.Name"
+            )
+            content_artifact = exchange_plan_contents.pop(name.casefold(), None)
+            if content_artifact is None:
+                raise ConversionError(
+                    f"{artifact.source_path}: отсутствует обязательный Content.xml"
+                )
+            obj = _exchange_plan(
+                root,
+                _parse_xml(collection, content_artifact),
+                diagnostics,
+                artifact.source_path,
+                content_artifact.source_path,
+            )
+            if obj.full_name in extended_objects:
+                raise ConversionError(f"дублируется extended object {obj.full_name}")
+            extended_objects[obj.full_name] = obj
+        elif spec.extended_adapter == "event_subscription":
+            obj = _event_subscription(
+                root,
+                module_symbols,
+                diagnostics,
+                artifact.source_path,
+            )
+            if obj.full_name in extended_objects:
+                raise ConversionError(f"дублируется extended object {obj.full_name}")
+            extended_objects[obj.full_name] = obj
+        elif spec.extended_adapter == "scheduled_job":
+            obj = _scheduled_job(
+                root,
+                module_symbols,
+                diagnostics,
+                artifact.source_path,
+            )
+            if obj.full_name in extended_objects:
+                raise ConversionError(f"дублируется extended object {obj.full_name}")
+            extended_objects[obj.full_name] = obj
         elif spec.extended_adapter and spec.extended_adapter not in {
             "common_attribute",
             "document_journal",
+            "event_subscription",
+            "exchange_plan",
+            "scheduled_job",
             "session_parameter",
         }:
             raise ConversionError(
                 f"для {spec.source_name} не реализован adapter "
                 f"{spec.extended_adapter}"
             )
+
+    if exchange_plan_contents:
+        raise ConversionError("Content.xml не соответствует descriptor плана обмена")
 
     _attach_content(collection, base, extended_objects, diagnostics)
     _resolve_relations(extended_objects, base, diagnostics)
@@ -1647,10 +2357,16 @@ def convert_collection(
 
 
 __all__ = [
+    "AutoRecordPolicy",
+    "BindingState",
+    "CodeBinding",
     "CommonAttributePayload",
     "ConversionDiagnostic",
     "ConversionError",
     "DocumentJournalPayload",
+    "EventSubscriptionPayload",
+    "ExchangePlanContentItem",
+    "ExchangePlanPayload",
     "ExtendedObject",
     "ExtendedStructure",
     "JournalColumn",
@@ -1659,6 +2375,7 @@ __all__ = [
     "JournalStandardAttribute",
     "MetadataRelation",
     "RelationState",
+    "ScheduledJobPayload",
     "SessionParameterPayload",
     "StructureConversion",
     "TypeDescription",

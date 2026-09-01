@@ -76,7 +76,7 @@
 
 Единственный пользовательский [compose.yaml](compose.yaml):
 
-- получает готовый образ `ghcr.io/azeevan/mcp-1c:2.0.0` без локальной сборки;
+- получает готовый образ `ghcr.io/azeevan/mcp-1c:2.0.1` без локальной сборки;
 - запускает процесс как UID/GID `10001:10001`;
 - монтирует подготовленный каталог хоста в `/data`;
 - публикует порт только на `127.0.0.1`;
@@ -92,7 +92,7 @@
 Есть два поддержанных способа получить этот образ:
 
 1. Обычный пользователь скачивает готовый
-   `ghcr.io/azeevan/mcp-1c:2.0.0` и запускает один `compose.yaml` по инструкции
+   `ghcr.io/azeevan/mcp-1c:2.0.1` и запускает один `compose.yaml` по инструкции
    ниже.
 2. Разработчик собирает локальный тег из чистого checkout командой
    `python3 tools/build_image.py mcp1c:local`, указывает
@@ -132,9 +132,9 @@ curl --version
 mkdir mcp-1c
 cd mcp-1c
 curl --fail --show-error --location --output compose.yaml \
-  https://raw.githubusercontent.com/AzeevAN/mcp-1c/v2.0.0/compose.yaml
+  https://raw.githubusercontent.com/AzeevAN/mcp-1c/v2.0.1/compose.yaml
 curl --fail --show-error --location --output .env.example \
-  https://raw.githubusercontent.com/AzeevAN/mcp-1c/v2.0.0/.env.example
+  https://raw.githubusercontent.com/AzeevAN/mcp-1c/v2.0.1/.env.example
 ```
 
 Исходники и Node для обычного запуска не нужны. Точный release-тег в URL и
@@ -155,7 +155,7 @@ cp .env.example .env
 ```dotenv
 MCP1C_DATA_DIR=/srv/mcp1c/data
 MCP1C_PORT=5001
-MCP1C_IMAGE=ghcr.io/azeevan/mcp-1c:2.0.0
+MCP1C_IMAGE=ghcr.io/azeevan/mcp-1c:2.0.1
 MCP1C_DASHBOARD=on
 MCP1C_ACCESS=local
 API_TOKEN=<первый случайный токен>
@@ -187,7 +187,7 @@ chmod 0600 .env
 |---|---|---|
 | `MCP1C_DATA_DIR` | bind source на машине Docker | `./data` |
 | `MCP1C_PORT` | loopback-порт хоста | `5001` |
-| `MCP1C_IMAGE` | готовый OCI-образ или точный digest | `ghcr.io/azeevan/mcp-1c:2.0.0` |
+| `MCP1C_IMAGE` | готовый OCI-образ или точный digest | `ghcr.io/azeevan/mcp-1c:2.0.1` |
 | `API_TOKEN` | чтение MCP и дашборда | обязателен |
 | `ADMIN_TOKEN` | загрузка, удаление, incoming, словарь, reload | обязателен и отличается от `API_TOKEN` |
 | `MCP1C_DASHBOARD` | `on` — SPA, `off` — без UI | `on` |
@@ -314,10 +314,9 @@ ZIP из `incoming/` не создаёт конфигурацию в Registry: �
 `SettingsStorages` в текущий приём source B намеренно не входят целиком:
 дескрипторы, `Form.xml`, модуль менеджера и модули форм отбрасываются до
 coverage и не создают ошибку или статус частичного разбора. Прежний частичный
-приём одного BSL без структуры удалён; полная поддержка хранилищ настроек
-отложена до единого контракта объекта, форм и модулей. Поэтому источники,
-разобранные до `selection_version=6`, требуют явного повторного разбора, но
-сервер не изменяет рабочие данные автоматически.
+приём одного BSL без структуры удалён. Поэтому источники, разобранные до
+`selection_version=6`, требуют явного повторного разбора, но сервер не изменяет
+рабочие данные автоматически.
 
 Основную файловую выгрузку разбирайте раньше выгрузок расширений. Доказательство
 расширения привязано к SHA-256 обоих архивов и сохраняется вместе с его кодом;

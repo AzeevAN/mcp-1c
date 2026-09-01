@@ -105,7 +105,7 @@ def test_балласт_не_берём():
         ("SettingsStorage.Настройки.Form.Сохранение.Form", FORMAT_FLAT),
     ],
 )
-def test_хранилища_настроек_целиком_исключены_до_полного_контракта(name, format):
+def test_хранилища_настроек_целиком_исключены_из_текущего_приёма(name, format):
     assert not is_wanted(name, format)
 
 

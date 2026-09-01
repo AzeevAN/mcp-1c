@@ -56,8 +56,8 @@ _ВИДЫ = {
     "BusinessProcesses": "БизнесПроцесс", "Tasks": "Задача",
     "ExchangePlans": "ПланОбмена", "CommonForms": "ОбщаяФорма",
     # Добавлено по сверке на живых выгрузках. SettingsStorages оставлен только
-    # как обратимый адресный адаптер старых selection-корней и шов будущего
-    # полного контракта; текущий intake и module catalog отбрасывают его раньше.
+    # как обратимый адресный адаптер старых selection-корней; текущий intake и
+    # module catalog отбрасывают его раньше.
     "CommonCommands": "ОбщаяКоманда", "Constants": "Константа",
     "ChartsOfCharacteristicTypes": "ПланВидовХарактеристик",
     "SettingsStorages": "ХранилищеНастроек", "WebServices": "WebСервис",

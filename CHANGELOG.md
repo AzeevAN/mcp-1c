@@ -32,6 +32,17 @@
   `current|duplicate|reparse|different_snapshot|foreign_identity` сравнивают
   semantic hashes только с активным поколением; имя файла и `Version` не
   выбирают parser и не считаются доказательством новизны.
+- Единый source-B collector будущего intake за один проход потоково сохраняет
+  атомарный и проверяемый staging `metadata|code|forms`, одинаково принимает
+  доказанные tree/flat-представления в mixed-выгрузке и применяет декларации
+  `MetadataKindSpec`. Известные `deferred|ignored` и `Schedule.xml` не читаются,
+  неизвестные metadata/layout дают только агрегированную info-диагностику.
+  Точные пары role XML канонизируются и сжимаются без materialization всего
+  ролевого корпуса: сохраняются explicit `true|false`, полные пути,
+  RLS/templates/field и пустые роли. Локальная ошибка роли даёт
+  `roles=error`, не уничтожая code/forms; transport/stability failure отменяет
+  весь staging. Manifest сохраняет полный probe и после удаления исходного ZIP
+  fail-closed проверяет размеры, SHA-256, gzip и отсутствие symlink.
 
 ## [2.0.1] — 2026-09-01
 

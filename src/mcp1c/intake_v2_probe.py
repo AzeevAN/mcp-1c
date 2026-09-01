@@ -145,6 +145,40 @@ class CandidateProbe:
             )
         return BoundCandidate(candidate_id, identity, self.raw_sha256, self)
 
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "source_kind": self.source_kind.value,
+            "internal_name": self.internal_name,
+            "configuration_version": self.configuration_version,
+            "layout": self.layout.value,
+            "wrapper": self.wrapper,
+            "raw_sha256": self.raw_sha256,
+            "snapshot_fingerprint": self.snapshot_fingerprint,
+            "transport": self.transport.value,
+            "origin_name": self.origin_name,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: object) -> CandidateProbe:
+        if not isinstance(raw, dict):
+            raise ProbeError("probe должен быть объектом")
+        try:
+            return cls(
+                source_kind=SourceKind(raw["source_kind"]),
+                internal_name=raw["internal_name"],
+                configuration_version=raw.get("configuration_version", ""),
+                layout=ExportLayout(raw["layout"]),
+                wrapper=raw.get("wrapper", ""),
+                raw_sha256=raw["raw_sha256"],
+                snapshot_fingerprint=raw["snapshot_fingerprint"],
+                transport=CandidateTransport(raw["transport"]),
+                origin_name=raw["origin_name"],
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            if isinstance(error, ProbeError):
+                raise
+            raise ProbeError("probe содержит неверные поля") from error
+
 
 @dataclass(frozen=True, slots=True)
 class BoundCandidate:

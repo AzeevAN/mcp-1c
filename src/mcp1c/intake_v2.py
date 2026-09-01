@@ -531,6 +531,7 @@ class MetadataKindSpec:
     policy: MetadataKindPolicy
     layers: frozenset[LayerKind] = field(default_factory=frozenset)
     layouts: frozenset[str] = field(default_factory=frozenset)
+    aliases: frozenset[str] = field(default_factory=frozenset)
 
     def __post_init__(self) -> None:
         _required_text(self.source_name, "source_name")
@@ -545,6 +546,13 @@ class MetadataKindSpec:
             isinstance(layout, str) and layout for layout in self.layouts
         ):
             raise IntakeV2ContractError("layouts должен быть frozenset[str]")
+        if not isinstance(self.aliases, frozenset) or not all(
+            isinstance(alias, str) and alias and alias.strip() == alias
+            for alias in self.aliases
+        ):
+            raise IntakeV2ContractError("aliases должен быть frozenset[str]")
+        if self.source_name in self.aliases:
+            raise IntakeV2ContractError("aliases не должен повторять source_name")
         if self.policy is not MetadataKindPolicy.SUPPORTED and (
             self.layers or self.layouts
         ):

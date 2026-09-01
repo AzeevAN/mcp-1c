@@ -90,7 +90,7 @@ def _document(
     ).encode()
 
 
-def _configuration(*, unknown: bool = False) -> bytes:
+def _configuration(*, unknown: bool = False, journal: bool = False) -> bytes:
     extra = "<FutureFlag>Enabled</FutureFlag>" if unknown else ""
     properties = (
         "<Name>DemoConfiguration</Name>"
@@ -107,6 +107,11 @@ def _configuration(*, unknown: bool = False) -> bytes:
         "<CommonAttribute>Tenant</CommonAttribute>"
         "<SessionParameter>Tenant</SessionParameter>"
     )
+    if journal:
+        children += (
+            "<Document>Invoice</Document>"
+            "<DocumentJournal>Ledger</DocumentJournal>"
+        )
     return _document("Configuration", properties, children)
 
 
@@ -194,6 +199,74 @@ def _session_parameter() -> bytes:
     return _document("SessionParameter", properties)
 
 
+def _base_document() -> bytes:
+    properties = (
+        "<Name>Invoice</Name>"
+        f"<Synonym>{_localized('Документ')}</Synonym>"
+        "<Posting>Allow</Posting><NumberLength>11</NumberLength>"
+    )
+    children = _field(
+        "Amount",
+        _type("xs:decimal", digits=15, fraction_digits=2),
+        synonym="Сумма",
+    )
+    return _document("Document", properties, children)
+
+
+def _document_journal(*, malformed_reference: bool = False) -> bytes:
+    bad_reference = (
+        "Document.Invoice.Broken.Amount"
+        if malformed_reference
+        else "Document.Invoice.Attribute.Missing"
+    )
+    properties = (
+        "<Name>Ledger</Name>"
+        f"<Synonym>{_localized('Журнал')}</Synonym>"
+        "<Comment>Синтетический журнал</Comment>"
+        f"<ListPresentation>{_localized('Список журнала')}</ListPresentation>"
+        f"<ExtendedListPresentation>{_localized('Полный список')}</ExtendedListPresentation>"
+        "<DefaultForm>DocumentJournal.Ledger.Form.Card</DefaultForm>"
+        "<RegisteredDocuments><v8:Item>Document.Invoice</v8:Item>"
+        "<v8:Item>Document.Missing</v8:Item></RegisteredDocuments>"
+        "<StandardAttributes><StandardAttribute name=\"Date\">"
+        f"<Synonym>{_localized('Дата')}</Synonym>"
+        "<Comment>Дата документа</Comment><PasswordMode>false</PasswordMode>"
+        "<Format/><EditFormat/><ToolTip/><MarkNegatives>false</MarkNegatives>"
+        "<Mask/><MultiLine>false</MultiLine><ExtendedEdit>false</ExtendedEdit>"
+        "<FillFromFillingValue>false</FillFromFillingValue>"
+        "<FillChecking>ShowError</FillChecking><QuickChoice>Auto</QuickChoice>"
+        "<CreateOnInput>Use</CreateOnInput><DataHistory>Use</DataHistory>"
+        "<FullTextSearch>Use</FullTextSearch>"
+        "<TypeReductionMode>Transform</TypeReductionMode>"
+        "</StandardAttribute></StandardAttributes>"
+    )
+    columns = (
+        "<Column><Properties><Name>Amount</Name>"
+        f"<Synonym>{_localized('Сумма')}</Synonym>"
+        "<Indexing>IndexWithAdditionalOrder</Indexing>"
+        "<References><v8:Item>Document.Invoice.Attribute.Amount</v8:Item>"
+        "</References></Properties></Column>"
+        "<Column><Properties><Name>Empty</Name><References/>"
+        "</Properties></Column>"
+        "<Column><Properties><Name>Missing</Name>"
+        f"<References><v8:Item>{bad_reference}</v8:Item></References>"
+        "</Properties></Column>"
+    )
+    command = (
+        "<Command><Properties><Name>Refresh</Name>"
+        f"<Synonym>{_localized('Обновить')}</Synonym>"
+        f"<CommandParameterType><v8:Type>cfg:DocumentRef.Invoice</v8:Type>"
+        "</CommandParameterType><Group>CommandGroup.NavigationPanel</Group>"
+        "<ModifiesData>false</ModifiesData><Representation>Auto</Representation>"
+        "</Properties></Command>"
+    )
+    return _document(
+        "DocumentJournal",
+        properties,
+        columns + command + "<Form>Card</Form><Template>Print</Template>",
+    )
+
+
 class MemoryTree:
     transport = CandidateTransport.INCOMING
     origin_name = "synthetic.zip"
@@ -234,9 +307,11 @@ def _collection(
     unknown: bool = False,
     unresolved: int = 0,
     malformed: str = "",
+    journal: bool = False,
+    malformed_journal_reference: bool = False,
 ):
     payloads = {
-        "Configuration.xml": _configuration(unknown=unknown),
+        "Configuration.xml": _configuration(unknown=unknown, journal=journal),
         "Catalogs/Items.xml": _catalog(unknown=unknown),
         "Catalogs/Items/Ext/ObjectModule.bsl": b"procedure Demo() endprocedure",
         "Catalogs/Items/Forms/Card.xml": b"<form-descriptor/>",
@@ -244,6 +319,24 @@ def _collection(
         "CommonAttributes/Tenant.xml": _common_attribute(unresolved=unresolved),
         "SessionParameters/Tenant.xml": _session_parameter(),
     }
+    if journal:
+        payloads.update(
+            {
+                "Documents/Invoice.xml": _base_document(),
+                "DocumentJournals/Ledger.xml": _document_journal(
+                    malformed_reference=malformed_journal_reference
+                ),
+                "DocumentJournals/Ledger/Ext/ManagerModule.bsl": b"procedure Manager() endprocedure",
+                "DocumentJournals/Ledger/Commands/Refresh/Ext/CommandModule.bsl": (
+                    b"procedure Run() endprocedure"
+                ),
+                "DocumentJournals/Ledger/Forms/Card.xml": b"<form-descriptor/>",
+                "DocumentJournals/Ledger/Forms/Card/Ext/Form/Form.xml": b"<form/>",
+                "DocumentJournals/Ledger/Forms/Card/Ext/Form/Module.bsl": b"procedure Form() endprocedure",
+                "DocumentJournals/Ledger/Templates/Print.xml": b"<template-descriptor/>",
+                "DocumentJournals/Ledger/Templates/Print/Ext/Template.xml": b"<template/>",
+            }
+        )
     if malformed:
         payloads[malformed] = b"<MetaDataObject><broken>"
     tree = MemoryTree(payloads)
@@ -431,3 +524,124 @@ def test_converter_не_следует_по_symlink_внутри_collection(tmp_
 
     with pytest.raises(ConversionError, match="символ|обычн"):
         convert_collection(collection)
+
+
+def test_document_journal_хранит_свойства_и_пустую_графу(tmp_path):
+    DocumentJournalPayload = _symbol("DocumentJournalPayload")
+    convert_collection = _symbol("convert_collection")
+
+    result = convert_collection(_collection(tmp_path, journal=True))
+    journal = result.extended.get("ЖурналДокументов.Ledger")
+
+    assert journal is not None and isinstance(journal.payload, DocumentJournalPayload)
+    assert journal.payload.list_presentation == "Список журнала"
+    assert journal.payload.extended_list_presentation == "Полный список"
+    assert journal.payload.default_form == "ЖурналДокументов.Ledger.Форма.Card"
+    assert journal.payload.registered_documents == (
+        "Документ.Invoice",
+        "Документ.Missing",
+    )
+    assert journal.payload.standard_attributes[0].name == "Date"
+    assert journal.payload.standard_attributes[0].type_reduction_mode == "Transform"
+    assert journal.payload.standard_attributes[0].password_mode is False
+    assert journal.payload.standard_attributes[0].full_text_search == "Use"
+    assert [column.name for column in journal.payload.columns] == [
+        "Amount",
+        "Empty",
+        "Missing",
+    ]
+    assert journal.payload.columns[1].references == ()
+    assert (
+        journal.payload.columns[0].indexing
+        == "ИндексироватьСДопУпорядочиванием"
+    )
+    assert result.base.get("ЖурналДокументов.Ledger") is None
+
+
+def test_document_journal_разрешает_типы_граф_без_копирования(tmp_path):
+    convert_collection = _symbol("convert_collection")
+    resolve_journal_column_types = _symbol("resolve_journal_column_types")
+
+    result = convert_collection(_collection(tmp_path, journal=True))
+    journal = result.extended.get("ЖурналДокументов.Ledger")
+    assert journal is not None
+    amount, empty, missing = journal.payload.columns
+
+    assert amount.references[0].raw == "Document.Invoice.Attribute.Amount"
+    assert amount.references[0].target == "Документ.Invoice.Amount"
+    assert resolve_journal_column_types(result.base, amount) == ("Число",)
+    assert resolve_journal_column_types(result.base, empty) == ()
+    assert resolve_journal_column_types(result.base, missing) == ()
+    assert [field.name for field in result.base.get("Документ.Invoice").attributes] == [
+        "Amount"
+    ]
+
+
+def test_document_journal_связывает_состав_формы_и_весь_код(tmp_path):
+    convert_collection = _symbol("convert_collection")
+
+    result = convert_collection(_collection(tmp_path, journal=True))
+    journal = result.extended.get("ЖурналДокументов.Ledger")
+    assert journal is not None
+
+    assert journal.payload.forms == ("Card",)
+    assert journal.payload.templates == ("Print",)
+    assert [command.name for command in journal.payload.commands] == ["Refresh"]
+    assert journal.payload.commands[0].parameter_type.types == (
+        "Документ.Invoice",
+    )
+    assert journal.payload.commands[0].modifies_data is False
+    assert journal.modules == (
+        "ЖурналДокументов.Ledger.Команда.Refresh",
+        "ЖурналДокументов.Ledger.МодульМенеджера",
+        "ЖурналДокументов.Ledger.Форма.Card",
+    )
+    assert journal.forms == ("ЖурналДокументов.Ledger.Форма.Card",)
+    assert not any(
+        item.code == "unhandled_metadata_member"
+        and item.signature == "DocumentJournals"
+        for item in result.diagnostics
+    )
+
+
+def test_document_journal_диагностирует_отсутствующие_цели(tmp_path):
+    convert_collection = _symbol("convert_collection")
+
+    result = convert_collection(_collection(tmp_path, journal=True))
+    journal = result.extended.get("ЖурналДокументов.Ledger")
+    assert journal is not None
+    unresolved = [
+        relation for relation in journal.relations if relation.state.value == "unresolved"
+    ]
+
+    assert {(item.kind, item.target) for item in unresolved} == {
+        ("column_field", "Документ.Invoice.Missing"),
+        ("registers_document", "Документ.Missing"),
+    }
+    assert {
+        (item.kind, item.target)
+        for item in journal.relations
+        if item.state.value == "resolved"
+    } == {
+        ("column_field", "Документ.Invoice.Amount"),
+        ("registers_document", "Документ.Invoice"),
+    }
+    diagnostic = next(
+        item for item in result.diagnostics if item.code == "unresolved_relation"
+    )
+    # Ещё один unresolved даёт общий реквизит базовой синтетической фикстуры.
+    assert diagnostic.count == 3
+
+
+def test_document_journal_отвергает_неточную_field_ref(tmp_path):
+    ConversionError = _symbol("ConversionError")
+    convert_collection = _symbol("convert_collection")
+
+    with pytest.raises(ConversionError, match="field ref"):
+        convert_collection(
+            _collection(
+                tmp_path,
+                journal=True,
+                malformed_journal_reference=True,
+            )
+        )

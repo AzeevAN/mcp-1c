@@ -116,6 +116,82 @@ class SessionParameterPayload:
 
 
 @dataclass(frozen=True, slots=True)
+class JournalStandardAttribute:
+    name: str
+    synonym: str = ""
+    comment: str = ""
+    password_mode: bool | None = None
+    format: str = ""
+    edit_format: str = ""
+    tooltip: str = ""
+    mark_negatives: bool | None = None
+    mask: str = ""
+    multi_line: bool | None = None
+    extended_edit: bool | None = None
+    min_value: str = ""
+    max_value: str = ""
+    fill_from_filling_value: bool | None = None
+    fill_value: str = ""
+    fill_checking: str = ""
+    choice_form: str = ""
+    choice_history_on_input: str = ""
+    quick_choice: str = ""
+    create_on_input: str = ""
+    data_history: str = ""
+    full_text_search: str = ""
+    link_by_type: str = ""
+    type_reduction_mode: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class JournalColumnReference:
+    raw: str
+    target: str
+
+
+@dataclass(frozen=True, slots=True)
+class JournalColumn:
+    name: str
+    synonym: str = ""
+    comment: str = ""
+    indexing: str = ""
+    references: tuple[JournalColumnReference, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class JournalCommand:
+    name: str
+    synonym: str = ""
+    comment: str = ""
+    parameter_type: TypeDescription = TypeDescription()
+    group: str = ""
+    modifies_data: bool | None = None
+    parameter_use_mode: str = ""
+    representation: str = ""
+    shortcut: str = ""
+    tooltip: str = ""
+    picture: tuple[str, ...] = ()
+    server_unavailable_behavior: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentJournalPayload:
+    list_presentation: str = ""
+    extended_list_presentation: str = ""
+    explanation: str = ""
+    default_form: str = ""
+    auxiliary_form: str = ""
+    use_standard_commands: bool | None = None
+    include_help_in_contents: bool | None = None
+    registered_documents: tuple[str, ...] = ()
+    standard_attributes: tuple[JournalStandardAttribute, ...] = ()
+    columns: tuple[JournalColumn, ...] = ()
+    commands: tuple[JournalCommand, ...] = ()
+    forms: tuple[str, ...] = ()
+    templates: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class ExtendedObject:
     full_name: str
     kind: str
@@ -304,6 +380,7 @@ _REFERENCE_KINDS = {
     "DataProcessor": "Обработка",
     "SessionParameter": "ПараметрСеанса",
     "CommonAttribute": "ОбщийРеквизит",
+    "DocumentJournal": "ЖурналДокументов",
 }
 
 
@@ -312,6 +389,18 @@ def _reference(value: str) -> str:
         return value
     kind, tail = value.split(".", 1)
     return f"{_REFERENCE_KINDS.get(kind, kind)}.{tail}"
+
+
+_CONTENT_SEGMENTS = {
+    "Form": "Форма",
+    "Command": "Команда",
+    "Template": "Макет",
+}
+
+
+def _content_address(value: str) -> str:
+    parts = _reference(value).split(".")
+    return ".".join(_CONTENT_SEGMENTS.get(part, part) for part in parts)
 
 
 def _type_name(value: str) -> str:
@@ -331,7 +420,9 @@ def _type_description(element: ET.Element | None) -> TypeDescription:
     if element is None:
         return TypeDescription()
     raw_types = tuple(
-        _text(item) for item in element if _tag(item) == "Type" and _text(item)
+        _text(item)
+        for item in element
+        if _tag(item) in {"Type", "TypeSet"} and _text(item)
     )
     string = _child(element, "StringQualifiers")
     number = _child(element, "NumberQualifiers")
@@ -727,9 +818,9 @@ def _common_attribute(
     payload = CommonAttributePayload(
         value_type=_type_description(_child(properties, "Type")),
         password_mode=_bool(_child(properties, "PasswordMode"), f"{where}.PasswordMode"),
-        format=text("Format"),
-        edit_format=text("EditFormat"),
-        tooltip=text("ToolTip"),
+        format=_localized(_child(properties, "Format")),
+        edit_format=_localized(_child(properties, "EditFormat")),
+        tooltip=_localized(_child(properties, "ToolTip")),
         mark_negatives=_bool(_child(properties, "MarkNegatives"), f"{where}.MarkNegatives"),
         mask=text("Mask"),
         multi_line=_bool(_child(properties, "MultiLine"), f"{where}.MultiLine"),
@@ -831,6 +922,349 @@ def _session_parameter(root: ET.Element, where: str) -> ExtendedObject:
     )
 
 
+_JOURNAL_STANDARD_PROPERTIES = frozenset(
+    {
+        "Synonym",
+        "Comment",
+        "PasswordMode",
+        "Format",
+        "EditFormat",
+        "ToolTip",
+        "MarkNegatives",
+        "Mask",
+        "MultiLine",
+        "ExtendedEdit",
+        "MinValue",
+        "MaxValue",
+        "FillFromFillingValue",
+        "FillValue",
+        "FillChecking",
+        "ChoiceForm",
+        "ChoiceHistoryOnInput",
+        "ChoiceParameterLinks",
+        "ChoiceParameters",
+        "QuickChoice",
+        "CreateOnInput",
+        "DataHistory",
+        "FullTextSearch",
+        "LinkByType",
+        "TypeReductionMode",
+    }
+)
+
+
+def _journal_standard_attribute(
+    element: ET.Element,
+    diagnostics: _Diagnostics,
+    where: str,
+) -> JournalStandardAttribute:
+    name = element.get("name", "").strip()
+    if not name:
+        raise ConversionError(f"{where}: у StandardAttribute нет name")
+    _unknown_properties(
+        element,
+        _JOURNAL_STANDARD_PROPERTIES,
+        diagnostics,
+        "DocumentJournal.StandardAttribute",
+    )
+    for container_name in ("ChoiceParameterLinks", "ChoiceParameters"):
+        container = _child(element, container_name)
+        if container is not None and len(container):
+            diagnostics.add(
+                "unknown_property_content",
+                f"DocumentJournal.StandardAttribute.{container_name}",
+                name,
+            )
+    text = lambda key: _text(_child(element, key))
+    return JournalStandardAttribute(
+        name=name,
+        synonym=_localized(_child(element, "Synonym")),
+        comment=text("Comment"),
+        password_mode=_bool(
+            _child(element, "PasswordMode"), f"{where}.PasswordMode"
+        ),
+        format=_localized(_child(element, "Format")),
+        edit_format=_localized(_child(element, "EditFormat")),
+        tooltip=_localized(_child(element, "ToolTip")),
+        mark_negatives=_bool(
+            _child(element, "MarkNegatives"), f"{where}.MarkNegatives"
+        ),
+        mask=text("Mask"),
+        multi_line=_bool(_child(element, "MultiLine"), f"{where}.MultiLine"),
+        extended_edit=_bool(
+            _child(element, "ExtendedEdit"), f"{where}.ExtendedEdit"
+        ),
+        min_value=text("MinValue"),
+        max_value=text("MaxValue"),
+        fill_from_filling_value=_bool(
+            _child(element, "FillFromFillingValue"),
+            f"{where}.FillFromFillingValue",
+        ),
+        fill_value=text("FillValue"),
+        fill_checking=text("FillChecking"),
+        choice_form=_content_address(text("ChoiceForm")),
+        choice_history_on_input=text("ChoiceHistoryOnInput"),
+        quick_choice=text("QuickChoice"),
+        create_on_input=text("CreateOnInput"),
+        data_history=text("DataHistory"),
+        full_text_search=text("FullTextSearch"),
+        link_by_type=text("LinkByType"),
+        type_reduction_mode=text("TypeReductionMode"),
+    )
+
+
+def _journal_field_reference(value: str, where: str) -> JournalColumnReference:
+    parts = value.split(".")
+    if len(parts) != 4 or parts[0] != "Document" or parts[2] != "Attribute":
+        raise ConversionError(
+            f"{where}: field ref должен иметь вид "
+            "Document.<name>.Attribute.<name>"
+        )
+    if not parts[1] or not parts[3]:
+        raise ConversionError(f"{where}: field ref содержит пустое имя")
+    return JournalColumnReference(
+        raw=value,
+        target=f"Документ.{parts[1]}.{parts[3]}",
+    )
+
+
+def _journal_column(
+    element: ET.Element,
+    diagnostics: _Diagnostics,
+    where: str,
+) -> JournalColumn:
+    properties = _child(element, "Properties")
+    if properties is None:
+        raise ConversionError(f"{where}: у Column нет Properties")
+    _unknown_properties(
+        properties,
+        {"Name", "Synonym", "Comment", "Indexing", "References"},
+        diagnostics,
+        "DocumentJournal.Column",
+    )
+    name = _required_text(_child(properties, "Name"), f"{where}.Name")
+    references_element = _child(properties, "References")
+    references = tuple(
+        _journal_field_reference(value, f"{where}.{name}")
+        for value in _leaf_texts(references_element)
+    )
+    indexing_raw = _text(_child(properties, "Indexing"))
+    return JournalColumn(
+        name=name,
+        synonym=_localized(_child(properties, "Synonym")),
+        comment=_text(_child(properties, "Comment")),
+        indexing=_INDEXING.get(indexing_raw, indexing_raw),
+        references=references,
+    )
+
+
+_JOURNAL_COMMAND_PROPERTIES = frozenset(
+    {
+        "Name",
+        "Synonym",
+        "Comment",
+        "CommandParameterType",
+        "Group",
+        "ModifiesData",
+        "OnMainServerUnavalableBehavior",
+        "ParameterUseMode",
+        "Picture",
+        "Representation",
+        "Shortcut",
+        "ToolTip",
+    }
+)
+
+
+def _journal_command(
+    element: ET.Element,
+    diagnostics: _Diagnostics,
+    where: str,
+) -> JournalCommand:
+    properties = _child(element, "Properties")
+    if properties is None:
+        raise ConversionError(f"{where}: у Command нет Properties")
+    _unknown_properties(
+        properties,
+        _JOURNAL_COMMAND_PROPERTIES,
+        diagnostics,
+        "DocumentJournal.Command",
+    )
+    name = _required_text(_child(properties, "Name"), f"{where}.Name")
+    picture = _child(properties, "Picture")
+    picture_values = _leaf_texts(picture)
+    if not picture_values and _text(picture):
+        picture_values = (_text(picture),)
+    return JournalCommand(
+        name=name,
+        synonym=_localized(_child(properties, "Synonym")),
+        comment=_text(_child(properties, "Comment")),
+        parameter_type=_type_description(
+            _child(properties, "CommandParameterType")
+        ),
+        group=_content_address(_text(_child(properties, "Group"))),
+        modifies_data=_bool(
+            _child(properties, "ModifiesData"), f"{where}.ModifiesData"
+        ),
+        parameter_use_mode=_text(_child(properties, "ParameterUseMode")),
+        representation=_text(_child(properties, "Representation")),
+        shortcut=_text(_child(properties, "Shortcut")),
+        tooltip=_localized(_child(properties, "ToolTip")),
+        picture=picture_values,
+        server_unavailable_behavior=_text(
+            _child(properties, "OnMainServerUnavalableBehavior")
+        ),
+    )
+
+
+_JOURNAL_PROPERTIES = frozenset(
+    {
+        "Name",
+        "Synonym",
+        "Comment",
+        "ListPresentation",
+        "ExtendedListPresentation",
+        "Explanation",
+        "DefaultForm",
+        "AuxiliaryForm",
+        "UseStandardCommands",
+        "IncludeHelpInContents",
+        "RegisteredDocuments",
+        "StandardAttributes",
+    }
+)
+
+
+def _document_journal(
+    root: ET.Element,
+    diagnostics: _Diagnostics,
+    where: str,
+) -> ExtendedObject:
+    _node, properties, children = _descriptor(root, "DocumentJournal", where)
+    name = _required_text(_child(properties, "Name"), f"{where}.Name")
+    full_name = f"ЖурналДокументов.{name}"
+    _unknown_properties(
+        properties,
+        _JOURNAL_PROPERTIES,
+        diagnostics,
+        "DocumentJournal",
+    )
+    registered_documents = tuple(
+        _reference(value)
+        for value in _leaf_texts(_child(properties, "RegisteredDocuments"))
+    )
+    standard_attributes_element = _child(properties, "StandardAttributes")
+    standard_attributes = tuple(
+        _journal_standard_attribute(
+            item,
+            diagnostics,
+            f"{where}.StandardAttribute",
+        )
+        for item in (
+            standard_attributes_element
+            if standard_attributes_element is not None
+            else ()
+        )
+        if _tag(item) == "StandardAttribute"
+    )
+    columns: list[JournalColumn] = []
+    commands: list[JournalCommand] = []
+    forms: list[str] = []
+    templates: list[str] = []
+    for item in children if children is not None else ():
+        kind = _tag(item)
+        if kind == "Column":
+            columns.append(
+                _journal_column(item, diagnostics, f"{where}.Column")
+            )
+        elif kind == "Command":
+            commands.append(
+                _journal_command(item, diagnostics, f"{where}.Command")
+            )
+        elif kind == "Form":
+            forms.append(_required_text(item, f"{where}.Form"))
+        elif kind == "Template":
+            templates.append(_required_text(item, f"{where}.Template"))
+        else:
+            diagnostics.add("unknown_child", "DocumentJournal", kind)
+    payload = DocumentJournalPayload(
+        list_presentation=_localized(_child(properties, "ListPresentation")),
+        extended_list_presentation=_localized(
+            _child(properties, "ExtendedListPresentation")
+        ),
+        explanation=_localized(_child(properties, "Explanation")),
+        default_form=_content_address(_text(_child(properties, "DefaultForm"))),
+        auxiliary_form=_content_address(
+            _text(_child(properties, "AuxiliaryForm"))
+        ),
+        use_standard_commands=_bool(
+            _child(properties, "UseStandardCommands"),
+            f"{where}.UseStandardCommands",
+        ),
+        include_help_in_contents=_bool(
+            _child(properties, "IncludeHelpInContents"),
+            f"{where}.IncludeHelpInContents",
+        ),
+        registered_documents=registered_documents,
+        standard_attributes=standard_attributes,
+        columns=tuple(columns),
+        commands=tuple(commands),
+        forms=tuple(forms),
+        templates=tuple(templates),
+    )
+    relations = [
+        MetadataRelation(
+            "registers_document",
+            target,
+            RelationState.UNRESOLVED,
+        )
+        for target in registered_documents
+    ]
+    for column in columns:
+        relations.extend(
+            MetadataRelation(
+                "column_field",
+                reference.target,
+                RelationState.UNRESOLVED,
+                (("column", column.name),),
+            )
+            for reference in column.references
+        )
+    return ExtendedObject(
+        full_name=full_name,
+        kind="ЖурналДокументов",
+        name=name,
+        synonym=_localized(_child(properties, "Synonym")),
+        comment=_text(_child(properties, "Comment")),
+        code_address=full_name,
+        payload=payload,
+        relations=tuple(relations),
+    )
+
+
+def resolve_journal_column_types(
+    base: Configuration,
+    column: JournalColumn,
+) -> tuple[str, ...]:
+    """Получить типы графы через base fields, не копируя их в журнал."""
+    if not isinstance(base, Configuration) or not isinstance(column, JournalColumn):
+        raise ConversionError("нужны Configuration и JournalColumn")
+    fields_by_address = {
+        f"{obj.full_name}.{path}".casefold(): field
+        for obj in base.objects.values()
+        for path, field in obj.all_fields()
+    }
+    result: list[str] = []
+    for reference in column.references:
+        field = fields_by_address.get(reference.target.casefold())
+        if field is None:
+            continue
+        for type_name in field.types:
+            if type_name not in result:
+                result.append(type_name)
+    return tuple(result)
+
+
 class _DigestReader:
     def __init__(self, source):
         self.source = source
@@ -878,6 +1312,20 @@ def _is_descriptor(artifact: CollectionArtifact, spec: MetadataKindSpec) -> bool
     return prefix in spec.aliases
 
 
+def _known_supplementary_metadata(
+    artifact: CollectionArtifact,
+    spec: MetadataKindSpec,
+) -> bool:
+    if spec.extended_adapter != "document_journal":
+        return False
+    parts = PurePosixPath(artifact.source_path).parts
+    if parts[-2:] == ("Ext", "Help.xml"):
+        return True
+    if len(parts) >= 4 and parts[2] == "Templates":
+        return parts[-1].endswith(".xml")
+    return False
+
+
 def _configuration(
     root: ET.Element,
     collection: CollectionResult,
@@ -912,6 +1360,11 @@ def _resolve_relations(
     diagnostics: _Diagnostics,
 ) -> None:
     targets = {name.casefold() for name in base.objects}
+    targets.update(
+        f"{obj.full_name}.{path}".casefold()
+        for obj in base.objects.values()
+        for path, _field_value in obj.all_fields()
+    )
     targets.update(name.casefold() for name in objects)
     for name, item in tuple(objects.items()):
         relations = []
@@ -1133,6 +1586,8 @@ def convert_collection(
             diagnostics.add("unknown_metadata", artifact.source_name, artifact.source_path)
             continue
         if not _is_descriptor(artifact, spec):
+            if _known_supplementary_metadata(artifact, spec):
+                continue
             diagnostics.add(
                 "unhandled_metadata_member",
                 spec.source_name,
@@ -1162,8 +1617,14 @@ def convert_collection(
             if obj.full_name in extended_objects:
                 raise ConversionError(f"дублируется extended object {obj.full_name}")
             extended_objects[obj.full_name] = obj
+        elif spec.extended_adapter == "document_journal":
+            obj = _document_journal(root, diagnostics, artifact.source_path)
+            if obj.full_name in extended_objects:
+                raise ConversionError(f"дублируется extended object {obj.full_name}")
+            extended_objects[obj.full_name] = obj
         elif spec.extended_adapter and spec.extended_adapter not in {
             "common_attribute",
+            "document_journal",
             "session_parameter",
         }:
             raise ConversionError(
@@ -1189,12 +1650,18 @@ __all__ = [
     "CommonAttributePayload",
     "ConversionDiagnostic",
     "ConversionError",
+    "DocumentJournalPayload",
     "ExtendedObject",
     "ExtendedStructure",
+    "JournalColumn",
+    "JournalColumnReference",
+    "JournalCommand",
+    "JournalStandardAttribute",
     "MetadataRelation",
     "RelationState",
     "SessionParameterPayload",
     "StructureConversion",
     "TypeDescription",
     "convert_collection",
+    "resolve_journal_column_types",
 ]

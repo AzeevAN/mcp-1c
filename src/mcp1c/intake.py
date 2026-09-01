@@ -24,6 +24,25 @@ _TREE_FORM_FOLDERS = {
 # Плоская: модуль в `.txt`, код формы — записью внутри контейнера `.Form`.
 _FLAT_SUFFIXES = {".txt", ".Form"}
 
+# Хранилища настроек пока не являются поддержанным объектом полного разбора.
+# Брать только их BSL означало бы публиковать код без дескриптора и структуры
+# форм. Отбрасываем весь вид до coverage; вернётся он одним целым вместе с
+# metadata XML, формами и модулями.
+_IGNORED_TREE_FOLDERS = {"SettingsStorages"}
+_IGNORED_FLAT_PREFIXES = ("SettingsStorage.",)
+
+
+def is_intentionally_ignored(name: str) -> bool:
+    """Известный вид вне текущего продуктового coverage."""
+    путь = PurePosixPath(name)
+    return (
+        bool(путь.parts and путь.parts[0] in _IGNORED_TREE_FOLDERS)
+        or (
+            len(путь.parts) == 1
+            and путь.name.startswith(_IGNORED_FLAT_PREFIXES)
+        )
+    )
+
 
 def _скомпилированный_общий_модуль(name: str) -> bool:
     """Канонические имена скомпилированного общего модуля.
@@ -83,6 +102,8 @@ def is_wanted(name: str, формат: str) -> bool:
     if путь.parts and путь.parts[0] == "__MACOSX":
         return False
     if путь.name.startswith("._"):
+        return False
+    if is_intentionally_ignored(name):
         return False
     if формат == FORMAT_FLAT:
         if путь.name.endswith(".Template.txt"):
@@ -305,7 +326,11 @@ def enough_space(нужно: int, каталог: Path) -> tuple[bool, int]:
 # происхождения структуры. Исходные XML объектов по-прежнему не сохраняются,
 # но старый корень без нового каталога нельзя считать разобранным по текущему
 # правилу: восстановить доказательство после удаления ZIP уже неоткуда.
-SELECTION_VERSION = 5
+#
+# 6: SettingsStorages целиком исключены до будущего полного контракта. Старый
+# корень мог содержать их модули, поэтому без явного переразбора его нельзя
+# выдавать за результат текущего отбора.
+SELECTION_VERSION = 6
 
 
 def extract(архив: Path, корень: Path) -> tuple[int, int]:

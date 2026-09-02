@@ -549,7 +549,7 @@ class GenerationBundleStore:
         return self.data_dir / _safe_relative(relative, "generation path")
 
     def _validate_path_chain(
-        self, path: Path, *, allow_missing_leaf: bool = False
+        self, path: Path, *, allow_missing_tail: bool = False
     ) -> None:
         try:
             relative = path.relative_to(self.data_dir)
@@ -565,7 +565,10 @@ class GenerationBundleStore:
                 try:
                     value = current.lstat()
                 except FileNotFoundError:
-                    if allow_missing_leaf and position == len(relative.parts) - 1:
+                    # Удаление идемпотентно: если не существует любой части
+                    # хвоста, целевой путь тоже отсутствует. Все реально
+                    # существующие предки до неё уже проверены на symlink.
+                    if allow_missing_tail:
                         return
                     raise
                 if stat.S_ISLNK(value.st_mode):
@@ -1005,7 +1008,7 @@ class GenerationBundleStore:
             return
         root = self._absolute(pointer.root_path)
         try:
-            self._validate_path_chain(root, allow_missing_leaf=True)
+            self._validate_path_chain(root, allow_missing_tail=True)
         except BundleStoreError as error:
             raise RecoveryBlocked(str(error)) from error
         if root.exists():
@@ -1019,7 +1022,7 @@ class GenerationBundleStore:
         if path.parent != self.root or not path.name.startswith(".staging-"):
             raise RecoveryBlocked("generation WAL содержит чужой staging")
         try:
-            self._validate_path_chain(path, allow_missing_leaf=True)
+            self._validate_path_chain(path, allow_missing_tail=True)
         except BundleStoreError as error:
             raise RecoveryBlocked(str(error)) from error
         if path.exists():

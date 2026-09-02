@@ -25,6 +25,7 @@ import logging
 import os
 import re
 import shutil
+import stat
 import tempfile
 import threading
 import time
@@ -3864,6 +3865,207 @@ class Registry:
     ) -> None:
         """Точка crash-теста сразу после durable pointer switch."""
 
+    def _after_legacy_files_removed(
+        self, _pointer: GenerationPointer
+    ) -> None:
+        """Точка crash-теста до снятия legacy-строк Registry."""
+
+    def _managed_legacy_location(
+        self,
+        source: Source,
+    ) -> tuple[tuple[str, ...], str, bool] | None:
+        """Вернуть только принадлежащее Registry legacy-положение.
+
+        `keep_source=False` оставляет в Source внешний путь. Native commit
+        снимает такую строку с учёта, но не получает права удалять файл
+        пользователя. Для managed-каталогов принимаются только точные
+        раскладки старого Registry без вложенных или родительских сегментов.
+        """
+        stored = Path(source.stored_path)
+        if not source.stored_path or stored.is_absolute():
+            return None
+        parts = stored.parts
+        if source.kind == KIND_CONFIGURATION:
+            if len(parts) != 3 or parts[:2] != ("sources", "configurations"):
+                return None
+            return ("sources", "configurations"), parts[-1], False
+        elif source.kind == KIND_MODULES:
+            expected = Path("modules") / index_cache.safe_name(
+                source.id.removesuffix(":modules")
+            )
+            if stored != expected:
+                return None
+            return ("modules",), parts[-1], True
+        return None
+
+    def _remove_managed_legacy_source(self, source: Source) -> bool:
+        """Удалить managed-путь через `dir_fd`, не следуя symlink.
+
+        `False` означает внешний или неизвестный путь: строка Registry будет
+        снята, но этот файл принадлежит пользователю и не удаляется.
+        """
+        location = self._managed_legacy_location(source)
+        if location is None:
+            return False
+        parents, name, directory = location
+        opened: list[int] = []
+        try:
+            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(self.data_dir, flags)
+            opened.append(descriptor)
+            for segment in parents:
+                descriptor = os.open(segment, flags, dir_fd=descriptor)
+                opened.append(descriptor)
+            parent_fd = opened[-1]
+            try:
+                info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                return True
+            if stat.S_ISLNK(info.st_mode):
+                os.unlink(name, dir_fd=parent_fd)
+            elif directory:
+                if not stat.S_ISDIR(info.st_mode):
+                    raise RegistryError(
+                        f"Legacy-каталог кода имеет неожиданный тип: {source.stored_path}"
+                    )
+                shutil.rmtree(name, dir_fd=parent_fd)
+            else:
+                if not stat.S_ISREG(info.st_mode):
+                    raise RegistryError(
+                        f"Legacy-источник имеет неожиданный тип: {source.stored_path}"
+                    )
+                os.unlink(name, dir_fd=parent_fd)
+            os.fsync(parent_fd)
+            return True
+        except FileNotFoundError:
+            return True
+        except RegistryError:
+            raise
+        except OSError as error:
+            raise RegistryError(
+                f"Legacy-путь не удалён безопасно: {source.stored_path}"
+            ) from error
+        finally:
+            for descriptor in reversed(opened):
+                os.close(descriptor)
+
+    def _legacy_cleanup_payload(
+        self,
+        pointer: GenerationPointer,
+    ) -> tuple[
+        dict[str, object],
+        tuple[tuple[Source, dict[str, object]], ...],
+    ]:
+        """Прочитать точные legacy-строки только у active native pointer."""
+        try:
+            payload: object = json.loads(
+                self.registry_path.read_text(encoding="utf-8")
+            )
+            pointers = self._generation_pointers_from_payload(payload)
+        except (OSError, UnicodeError, json.JSONDecodeError, BundleStoreError) as error:
+            raise RegistryError(
+                "legacy cleanup не может проверить active Registry pointer"
+            ) from error
+        if not isinstance(payload, dict):
+            raise RegistryError("legacy cleanup получил неверный Registry")
+        if pointers.get(pointer.identity.grouping_key) != pointer:
+            return payload, ()
+        raw_sources = payload.get("sources")
+        if not isinstance(raw_sources, list):
+            raise RegistryError("legacy cleanup получил неверный список sources")
+        configuration = pointer.identity.configuration_name
+        expected = {
+            (configuration, KIND_CONFIGURATION),
+            (f"{configuration}:modules", KIND_MODULES),
+        }
+        records: list[tuple[Source, dict[str, object]]] = []
+        try:
+            for raw in raw_sources:
+                if not isinstance(raw, dict):
+                    raise TypeError("Source должен быть объектом")
+                records.append((Source.from_dict(raw), dict(raw)))
+        except (AttributeError, KeyError, TypeError, ValueError) as error:
+            raise RegistryError("legacy cleanup не может прочитать Source") from error
+        selected = tuple(
+            (source, raw)
+            for source, raw in records
+            if (source.id, source.kind) in expected
+        )
+        if len({source.id for source, _raw in selected}) != len(selected):
+            raise RegistryError("legacy cleanup обнаружил дубли Source")
+        return payload, selected
+
+    def _cleanup_legacy_sources(self, pointer: GenerationPointer) -> int:
+        """После native commit удалить legacy base/code с recovery через строки.
+
+        Сначала удаляются только точные managed-файлы, затем атомарно исчезают
+        их строки. Поэтому авария до второго шага оставляет в `registry.json`
+        полный план повторной очистки; авария после него уже не оставляет
+        файлов. Расширения и внешний `keep_source=False` вход не затрагиваются.
+        """
+        if pointer.identity.source_kind is not SourceKind.CONFIGURATION:
+            return 0
+        with self._modules_cache_lock:
+            with self._lock:
+                if (
+                    self._generation_pointers.get(pointer.identity.grouping_key)
+                    != pointer
+                ):
+                    return 0
+                _payload, records = self._legacy_cleanup_payload(pointer)
+                if not records:
+                    return 0
+                memory_sources = {
+                    source.id: self.sources.get(source.id)
+                    for source, _raw in records
+                }
+                modules_id = f"{pointer.identity.configuration_name}:modules"
+                self._следующее_поколение_модулей(modules_id)
+                self._module_operations.pop(modules_id, None)
+
+            for source, _raw in records:
+                self._remove_managed_legacy_source(source)
+                if source.kind == KIND_MODULES:
+                    try:
+                        coverage_log.remove(self.data_dir, source.id)
+                    except OSError:
+                        pass
+            self._after_legacy_files_removed(pointer)
+
+            with self._lock:
+                if (
+                    self._generation_pointers.get(pointer.identity.grouping_key)
+                    != pointer
+                ):
+                    return 0
+                payload, current_records = self._legacy_cleanup_payload(pointer)
+                captured = {source.id: raw for source, raw in records}
+                removable = {
+                    source.id
+                    for source, raw in current_records
+                    if captured.get(source.id) == raw
+                }
+                if not removable:
+                    return 0
+                raw_sources = payload["sources"]
+                assert isinstance(raw_sources, list)
+                payload["sources"] = [
+                    raw
+                    for raw in raw_sources
+                    if not (
+                        isinstance(raw, dict)
+                        and raw.get("id") in removable
+                        and captured.get(raw.get("id")) == raw
+                    )
+                ]
+                payload["saved_at"] = _now()
+                self._write_registry_payload(payload)
+                for source_id in removable:
+                    if self.sources.get(source_id) is memory_sources[source_id]:
+                        self.sources.pop(source_id, None)
+                return len(removable)
+
     def _build_native_generation_runtime(
         self,
         root: Path,
@@ -4085,6 +4287,15 @@ class Registry:
                 self._generation_store.remove_pointer_root(previous)
                 self._generation_store.remove_staging(prepared.staging_path)
                 self._generation_store.clear_recovery()
+                try:
+                    self._cleanup_legacy_sources(pointer)
+                except Exception as error:
+                    # Native pointer и runtime уже durable. Строки legacy
+                    # остаются recovery-планом и будут повторены при restore.
+                    logger.warning(
+                        "Очистка legacy после native commit отложена: %s",
+                        error,
+                    )
                 self._save_native_runtime_cache(prepared_runtime)
                 return pointer
             except Exception:
@@ -4379,7 +4590,10 @@ class Registry:
 
         for source, expected_generation in отложенный_код:
             configuration = self._владелец_источника_кода(source)
-            if configuration in native_configurations:
+            if (
+                source.kind == KIND_MODULES
+                and configuration in native_configurations
+            ):
                 continue
             stored = self._absolute(source.stored_path)
             if not stored.exists():
@@ -4390,6 +4604,14 @@ class Registry:
                 if configuration is not None
                 else None
             )
+            if expected is None and configuration in native_configurations:
+                with self._lock:
+                    loaded_configuration = self.configurations.get(configuration)
+                    expected = (
+                        loaded_configuration.source
+                        if loaded_configuration is not None
+                        else None
+                    )
             if configuration is None or expected is None:
                 problems.append(
                     f"{source.id}: индекс кода не поднят — "
@@ -4420,6 +4642,16 @@ class Registry:
                 problems += self._apply_syntax(dict(self.syntax_versions))
             except Exception as error:
                 problems.append(f"слитый вид не собран: {error}")
+        for pointer in pointers.values():
+            if pointer.identity.source_kind is not SourceKind.CONFIGURATION:
+                continue
+            try:
+                self._cleanup_legacy_sources(pointer)
+            except Exception as error:
+                problems.append(
+                    f"{pointer.identity.configuration_name}: legacy cleanup "
+                    f"отложен — {error}"
+                )
         return problems
 
     def bootstrap(self) -> list[str]:

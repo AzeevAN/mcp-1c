@@ -88,6 +88,38 @@ def test_native_commit_атомарно_подключает_структуру_
     assert (registry.data_dir / pointer.root_path).is_dir()
 
 
+def test_native_compiled_модуль_поднимается_из_warm_кэша(
+    tmp_path,
+    monkeypatch,
+):
+    _collection_value, generation = _materialized(
+        tmp_path,
+        "compiled-cache",
+        compiled_module=True,
+    )
+    registry = Registry(tmp_path / "data")
+    registry.publish_generation(
+        registry.stage_generation(generation.manifest, generation.payloads)
+    )
+    published = registry.modules["DemoConfiguration:modules"]
+    assert published.каталог.entries["ОбщийМодуль.Sealed"].compiled is True
+
+    restarted = Registry(registry.data_dir)
+
+    def reject_cold_rebuild(*_args, **_kwargs):
+        pytest.fail("compiled member native generation обязан подняться из кэша")
+
+    monkeypatch.setattr(
+        restarted,
+        "_построить_индекс_кода",
+        reject_cold_rebuild,
+    )
+
+    assert restarted.restore() == []
+    restored = restarted.modules["DemoConfiguration:modules"]
+    assert restored.каталог.entries["ОбщийМодуль.Sealed"].compiled is True
+
+
 def test_runtime_failure_до_commit_сохраняет_прежний_pointer_и_runtime(
     tmp_path,
     monkeypatch,

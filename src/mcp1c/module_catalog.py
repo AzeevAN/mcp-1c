@@ -375,7 +375,10 @@ class ModuleCatalog:
             }
             for entry in entries.values():
                 generation_entry = entry.module_kind == "generation"
-                if generation_entry and not identity.source_id.endswith(":modules"):
+                if generation_entry and not (
+                    identity.source_id.endswith(":modules")
+                    or ":ext:" in identity.source_id
+                ):
                     return None
                 if entry.address_collision and not entry.conflict:
                     return None
@@ -393,7 +396,7 @@ class ModuleCatalog:
                 if entry.locator is not None:
                     if generation_entry:
                         if (
-                            entry.locator.kind != "file"
+                            entry.locator.kind not in {"file", "compiled"}
                             or not entry.locator.relative_path.startswith(
                                 "payload/code/"
                             )

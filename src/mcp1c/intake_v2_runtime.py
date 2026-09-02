@@ -421,7 +421,10 @@ def _catalog(
         compiled = code_member[1] if code_member is not None else False
         entries[address] = CatalogEntry(
             address=address,
-            module_kind="compiled" if compiled else "generation",
+            # Физический вид тела уже несут locator.kind и compiled. Здесь
+            # важно сохранить происхождение: ordinal-путь generation нельзя
+            # повторно адресовать как legacy flat/tree при чтении warm-кэша.
+            module_kind="generation",
             locator=(
                 (
                     ModuleLocator.compiled(member.relative_path)

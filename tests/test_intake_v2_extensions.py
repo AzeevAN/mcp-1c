@@ -519,6 +519,44 @@ def test_restore_поднимает_native_расширение_после_legac
     )
 
 
+def test_restore_поднимает_код_native_расширения_из_warm_кэша(
+    tmp_path,
+    monkeypatch,
+):
+    _base_collection, base = _materialized(tmp_path, "base-cache")
+    _extension_collection, extension = _materialized(
+        tmp_path,
+        "extension-cache",
+        configuration_name="DemoExtension",
+        extension=True,
+    )
+    registry = Registry(tmp_path / "data")
+    registry.publish_generation(
+        registry.stage_generation(base.manifest, base.payloads)
+    )
+    registry.publish_generation(
+        registry.stage_generation(extension.manifest, extension.payloads)
+    )
+
+    restarted = Registry(registry.data_dir)
+
+    def reject_cold_rebuild(*_args, **_kwargs):
+        pytest.fail("код native-расширения обязан подняться из warm-кэша")
+
+    monkeypatch.setattr(
+        restarted,
+        "_построить_индекс_кода",
+        reject_cold_rebuild,
+    )
+
+    assert restarted.restore() == []
+    restored = restarted.resolve(
+        "DemoConfiguration",
+        extension="DemoExtension",
+    )
+    assert restored.extension is not None and restored.extension.готов
+
+
 def test_extension_publish_CAS_отклоняет_смену_родителя(tmp_path, monkeypatch):
     _base_collection, base = _materialized(tmp_path, "base-parent")
     _extension_collection, extension = _materialized(

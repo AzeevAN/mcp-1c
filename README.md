@@ -22,13 +22,13 @@
 | Роли | объявленные права из native generation; без готового слоя две role-ручки отсутствуют |
 | Дашборд | современная SPA включена по умолчанию; `on` либо `off` |
 | Авторизация Docker | два разных обязательных токена: `API_TOKEN` на чтение, `ADMIN_TOKEN` на запись |
-| Тесты | `.venv/bin/python -m pytest`, 1919 |
+| Тесты | `.venv/bin/python -m pytest`, 1921 |
 
 Воспроизводимый прогон:
 
 ```bash
 .venv/bin/pip install --require-hashes -r requirements-dev-lock.txt
-.venv/bin/python -m pytest          # 1919 тестов (прогон 2026-09-02)
+.venv/bin/python -m pytest          # 1921 тест (прогон 2026-09-02)
 ```
 
 ## Навигация
@@ -359,6 +359,9 @@ descriptor остаётся доступен, список прав пуст, т
 пути, что и tree-вариант, а `Role.Name.xml`/`Role.Name.Rights.xml` — к единому
 role snapshot. Скомпилированный `CommonModule.Name.Module` остаётся
 скомпилированным member и не декодируется как текстовый BSL.
+Расходный индекс такого member и индекс кода native-расширения поднимаются из
+warm-кэша; отсутствие или повреждение кэша приводит к безопасной пересборке из
+активного generation snapshot.
 
 `start` принимает только `candidate_id`, `action`, необязательные `job_id` для
 возобновления и `parent_configuration`. Произвольного файлового пути в HTTP-

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import shutil
+import zipfile
 
 import pytest
 
@@ -28,6 +30,24 @@ def _materialized(tmp_path, name: str, **collection_options):
         generation_id=f"generation-{name}",
     )
     return collection, generation
+
+
+def _rewrite_manifest(target, **changes):
+    with zipfile.ZipFile(target) as archive:
+        members = {
+            item.filename: archive.read(item.filename)
+            for item in archive.infolist()
+        }
+    manifest = json.loads(members["manifest.json"])
+    manifest.update(changes)
+    members["manifest.json"] = json.dumps(
+        manifest,
+        ensure_ascii=False,
+    ).encode("utf-8")
+    with zipfile.ZipFile(target, "w") as archive:
+        for name, content in members.items():
+            archive.writestr(name, content)
+    return target
 
 
 def test_native_commit_атомарно_подключает_структуру_код_и_формы(
@@ -89,6 +109,56 @@ def test_native_commit_атомарно_подключает_структуру_
         config="DemoConfiguration",
     )
     assert (registry.data_dir / pointer.root_path).is_dir()
+
+
+@pytest.mark.parametrize(
+    ("manifest_changes", "allow_truncated"),
+    [
+        ({"truncated": True}, True),
+        ({"predefined_available": False}, False),
+    ],
+    ids=("truncated", "predefined-unavailable"),
+)
+def test_native_base_не_принимает_неполную_schema_v1(
+    tmp_path,
+    manifest_changes,
+    allow_truncated,
+):
+    _collection_value, generation = _materialized(tmp_path, "complete-base")
+    registry = Registry(tmp_path / "data")
+    registry.publish_generation(
+        registry.stage_generation(generation.manifest, generation.payloads)
+    )
+    before = registry.active_generation_pointer(generation.manifest.identity)
+    source = tmp_path / "source-a-incomplete"
+    source.mkdir()
+    target = _rewrite_manifest(
+        write_export(
+            source,
+            Configuration(
+                name="DemoConfiguration",
+                objects={
+                    "Справочник.Replacement": MetadataObject(
+                        full_name="Справочник.Replacement",
+                        kind="Справочник",
+                        name="Replacement",
+                    )
+                },
+            ),
+        ),
+        **manifest_changes,
+    )
+
+    with pytest.raises(RegistryError, match="неполную schema v1"):
+        registry.add_configuration(
+            target,
+            allow_truncated=allow_truncated,
+        )
+
+    assert registry.active_generation_pointer(generation.manifest.identity) == before
+    assert registry.resolve("DemoConfiguration").configuration.config.get(
+        "Справочник.Items"
+    ) is not None
 
 
 def test_native_compiled_модуль_поднимается_из_warm_кэша(

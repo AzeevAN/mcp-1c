@@ -1677,6 +1677,15 @@ class Registry:
             ExportIdentity.configuration(config.name)
         ):
             raise RegistryError("schema v1 относится к другой active generation")
+        if not config.is_complete:
+            # Canonical base намеренно одинаков для Source A и Source B и не
+            # несёт transport-признаки полноты. Пока эти признаки не входят в
+            # generation-контракт, публикация потеряла бы их после restart и
+            # превратила бы неполный источник в якобы полный.
+            raise RegistryError(
+                "неполную schema v1 нельзя наложить на native generation: "
+                "активное поколение и его указатель оставлены без изменений"
+            )
 
         semantic = base_layer_data(config)
         payload = LayerPayload(LayerKind.BASE_STRUCTURE, semantic)

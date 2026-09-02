@@ -391,7 +391,11 @@ def resolve_extension_structure(
     folded = {name.casefold(): name for name in configuration.objects}
     for name, item in extension.own_objects.items():
         canonical = folded.get(name.casefold())
-        if canonical is not None and base.source_format not in {"json", "xml"}:
+        if canonical is not None and base.source_format not in {
+            "json",
+            "xml",
+            "schema-v1",
+        }:
             raise ExtensionResolutionError(
                 f"собственный объект расширения конфликтует с базой: {name}"
             )

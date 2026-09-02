@@ -17,6 +17,7 @@ from .intake_v2 import (
     GenerationManifest,
     LayerKind,
     LayerManifest,
+    LayerSourceProfile,
     LayerState,
     SourceKind,
 )
@@ -491,6 +492,15 @@ def build_generation_runtime(
     )
     assert base is not None
     configuration = configuration_from_base_layer(base.semantic)
+    if (
+        base_layer.provenance is not None
+        and base_layer.provenance.profile is LayerSourceProfile.SCHEMA_V1
+    ):
+        # Canonical base одинаков для синхронных Source A и Source B, поэтому
+        # происхождение живёт в манифесте слоя. Resolver расширений использует
+        # его, чтобы отличать уже видимую schema-v1 проекцию собственного
+        # объекта от настоящего конфликта двух native-объектов.
+        configuration.source_format = "schema-v1"
     expected_name = (
         manifest.identity.configuration_name
         if manifest.identity.source_kind is SourceKind.CONFIGURATION

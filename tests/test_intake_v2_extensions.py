@@ -464,6 +464,60 @@ def test_registry_сохраняет_extension_generation_при_строгой_
     assert restored.extension_resolution.relations[0].state.value == "target_missing"
 
 
+def test_schema_v1_поверх_native_сохраняет_проекцию_собственного_объекта(
+    tmp_path,
+):
+    _base_collection, base = _materialized(tmp_path, "base-source-a")
+    _extension_collection, extension = _materialized(
+        tmp_path,
+        "extension-source-a",
+        configuration_name="DemoExtension",
+        extension=True,
+    )
+    registry = Registry(tmp_path / "data")
+    registry.publish_generation(
+        registry.stage_generation(base.manifest, base.payloads)
+    )
+    registry.publish_generation(
+        registry.stage_generation(extension.manifest, extension.payloads)
+    )
+    source = tmp_path / "source-a"
+    source.mkdir()
+    projected = _object("Own", "OwnField")
+    projected.props["periodicity"] = "В пределах дня"
+
+    registry.add_configuration(
+        write_export(
+            source,
+            _configuration(
+                "DemoConfiguration",
+                _object("Items", "Title"),
+                projected,
+            ),
+        )
+    )
+
+    resolved = registry.resolve(
+        "DemoConfiguration",
+        extension="DemoExtension",
+    )
+    assert resolved.configuration.config.source_format == "schema-v1"
+    assert resolved.extension_resolution is not None
+    assert resolved.extension_resolution.configuration.objects[
+        "Справочник.Own"
+    ].props != projected.props
+
+    restarted = Registry(registry.data_dir)
+    assert restarted.restore() == []
+    restored = restarted.resolve(
+        "DemoConfiguration",
+        extension="DemoExtension",
+    )
+    assert restored.configuration.config.source_format == "schema-v1"
+    assert restored.extension_resolution is not None
+    assert "Справочник.Own" in restored.extension_resolution.configuration.objects
+
+
 def test_extension_publish_требует_существующего_родителя(tmp_path):
     _collection_value, extension = _materialized(
         tmp_path,

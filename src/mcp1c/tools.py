@@ -241,6 +241,7 @@ class CodeStateRow:
     source_id: str = ""
     journal: str = ""
     phase: str = "missing"
+    diagnostic: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -791,6 +792,15 @@ def _safe_code_error(error: str) -> str:
     return error
 
 
+def _safe_admin_code_error(error: str) -> str:
+    """Оставить техническую причину, но убрать приватное имя origin."""
+    marker = "индекс кода не построился — "
+    _origin, separator, reason = error.partition(marker)
+    if separator:
+        return _safe_code_error(marker + reason)
+    return _safe_code_error(error)
+
+
 def _loaded_partial_warning(
     loaded: LoadedModules, *, corpus: str = ""
 ) -> str | None:
@@ -1135,6 +1145,11 @@ def _code_state_rows(
             return "error"
         return "building"
 
+    def diagnostic(view: _CodeView) -> str:
+        if view.capture.status != STATUS_ERROR:
+            return ""
+        return _safe_admin_code_error(view.capture.error)
+
     rows: list[CodeStateRow] = []
     for snapshot in capture.rows:
         source_id, journal_path = journal(snapshot.modules)
@@ -1151,6 +1166,7 @@ def _code_state_rows(
                 source_id,
                 journal_path,
                 phase(snapshot.modules),
+                diagnostic(snapshot.modules),
             )
         )
         for extension_name, view in snapshot.extensions:
@@ -1163,6 +1179,7 @@ def _code_state_rows(
                 source_id,
                 journal_path,
                 phase(view),
+                diagnostic(view),
             ))
     return tuple(rows)
 

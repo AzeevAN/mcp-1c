@@ -198,6 +198,7 @@ def _sources_payload(
                         if corpus.journal and corpus.source_id
                         else ""
                     ),
+                    "error": corpus.diagnostic if admin else "",
                 }
             )
         configurations.append(

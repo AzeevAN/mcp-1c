@@ -237,6 +237,12 @@ function CorpusCard({
       </header>
 
       <p className="corpus-state">{corpus.state}</p>
+      {corpus.phase === "error" && corpus.error && (
+        <div className="admin-feedback is-danger corpus-diagnostic" role="alert">
+          <ServerCrash size={18} aria-hidden="true" />
+          <span><strong>Техническая причина:</strong> {corpus.error}</span>
+        </div>
+      )}
 
       {expanded && (
         <div className="corpus-details">

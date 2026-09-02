@@ -49,7 +49,7 @@ from conftest import (
     modules_configuration_xml,
     write_export,
 )
-from mcp1c import intake, modules_index
+from mcp1c import coverage_log, index_cache, intake, modules_index, search
 from mcp1c.registry import (
     KIND_EXTENSION,
     KIND_MODULES,
@@ -544,7 +544,7 @@ def test_без_выгрузки_кода_состояния_модулей_не
 
 
 def test_отказ_фоновой_сборки_не_остаётся_вечным_строится(
-    tmp_path_factory, корень_кода, monkeypatch
+    tmp_path_factory, корень_кода, monkeypatch, caplog
 ):
     рабочий = tmp_path_factory.mktemp("реестр")
     реестр = _реестр_с_конфигурацией(рабочий)
@@ -558,12 +558,109 @@ def test_отказ_фоновой_сборки_не_остаётся_вечны
 
     monkeypatch.setattr(modules_index.Оглавление, "построить", staticmethod(падает))
     заново = Registry(реестр.data_dir)
-    assert not заново.startup()
+    with caplog.at_level("ERROR", logger="mcp1c.registry"):
+        assert not заново.startup()
 
     _дождаться(lambda: заново.sources["Пример:modules"].status == STATUS_ERROR)
     источник = заново.sources["Пример:modules"]
     assert "не влезло" in источник.error
     assert заново.resolve("Пример").modules.готов is False
+    assert "Фоновая сборка индекса кода" in caplog.text
+    assert "MemoryError: не влезло" in caplog.text
+
+
+def test_параллельные_cold_miss_восстанавливают_все_корпуса(
+    tmp_path_factory,
+    корень_кода,
+    monkeypatch,
+):
+    рабочий = tmp_path_factory.mktemp("параллельный-cold")
+    реестр = _реестр_с_конфигурацией(рабочий)
+    реестр.add_modules(
+        _архив_кода(корень_кода, рабочий / "base.zip"),
+        configuration="Пример",
+    )
+    реестр.add_modules(
+        _архив_расширения(корень_кода, рабочий / "extension.zip"),
+        configuration="Пример",
+    )
+    реестр.save()
+    источники = (
+        реестр.sources["Пример:modules"],
+        реестр.sources["Пример:ext:Доп"],
+    )
+    for источник in источники:
+        for вид in реестр.CACHE_KINDS[источник.kind]:
+            реестр._cache_path(источник.id, вид).unlink(missing_ok=True)
+
+    class ГоночныйОбщийСтеммер:
+        def __init__(self):
+            self.barrier = threading.Barrier(2)
+            self.lock = threading.Lock()
+            self.calls = 0
+            self.owner = 0
+
+        def stemWord(self, token: str) -> str:
+            with self.lock:
+                if self.calls >= 2:
+                    return token
+                self.calls += 1
+                owner = threading.get_ident()
+                self.owner = owner
+            self.barrier.wait(timeout=3)
+            if self.owner != owner:
+                raise IndexError("string index out of range")
+            return token
+
+    class БезопасныйСтеммер:
+        def stemWord(self, token: str) -> str:
+            return token
+
+    monkeypatch.setattr(
+        search,
+        "_STEMMER",
+        ГоночныйОбщийСтеммер(),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        search,
+        "_STEMMER_FACTORY",
+        БезопасныйСтеммер,
+        raising=False,
+    )
+    monkeypatch.setattr(search, "_STEMMER_LOCAL", threading.local(), raising=False)
+    with search._STEM_CACHE_LOCK:
+        search._STEM_CACHE.clear()
+
+    заново = Registry(реестр.data_dir)
+    assert заново.startup() == []
+    ids = tuple(источник.id for источник in источники)
+    _дождаться(
+        lambda: all(
+            заново.sources[source_id].status in {"ready", "error"}
+            for source_id in ids
+        )
+    )
+
+    assert [заново.sources[source_id].status for source_id in ids] == [
+        "ready",
+        "ready",
+    ]
+    assert all(заново.modules[source_id].готов for source_id in ids)
+    assert all(
+        coverage_log.load_current(заново.data_dir, заново.sources[source_id])
+        is not None
+        for source_id in ids
+    )
+    for source_id in ids:
+        source = заново.sources[source_id]
+        for вид in заново.CACHE_KINDS[source.kind]:
+            header = json.loads(
+                заново._cache_path(source_id, вид)
+                .read_bytes()
+                .split(b"\n", 1)[0]
+            )
+            assert header["code"] == index_cache._code_digest()
 
 
 def test_повторный_startup_не_запускает_вторую_сборку(

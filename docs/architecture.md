@@ -232,6 +232,15 @@ MODULES_ROOT=/путь/к/выгрузке
 Измеритель печатает JSON-агрегаты `procedures`, `calls`, `forms`, `elements` и
 `event_rows`, не выводя имя или путь корпуса.
 
+Потокобезопасность Snowball и цена thread-local сравниваются с общим
+lock на одинаковых read-only копиях. Каждый повтор — отдельный
+процесс, выход не содержит имён и путей:
+
+```bash
+.venv/bin/python tools/lab/measure_stemmer_concurrency.py \
+  --modules-root /tmp/corpus-a --modules-root /tmp/corpus-b --repeat 3
+```
+
 Исторический снимок прототипа от 2026-08-20 отделён от текущих агрегатов в
 [modules-provider-design.md](modules-provider-design.md). Он сохраняет цену
 четырёх слоёв индекса и причины выбора компактных структур.

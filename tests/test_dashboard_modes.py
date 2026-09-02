@@ -14,7 +14,7 @@ from mcp1c.dashboard_runtime import (
     dashboard_mode,
     routes,
 )
-from mcp1c.registry import Registry
+from mcp1c.registry import STATUS_ERROR, Registry
 
 
 def test_по_умолчанию_включён_современный_дашборд(monkeypatch):
@@ -258,6 +258,55 @@ def test_sources_api_группирует_конфигурацию_модули_
     assert journal.status_code == 200
     assert journal.json()["schema_version"] == 1
     assert journal.json()["kind"] == "module_coverage"
+
+
+def test_sources_api_показывает_безопасную_причину_только_admin(
+    tmp_path,
+    корень_кода,
+    реестр_из_кода,
+    monkeypatch,
+):
+    monkeypatch.setenv("API_TOKEN", "read-token")
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    registry = реестр_из_кода(корень_кода, name="Пример")
+    loaded = registry.resolve("Пример").modules
+    raw = (
+        "private-export.zip: индекс кода не построился — "
+        "IndexError: string index out of range"
+    )
+    with registry._lock:
+        loaded.готов = False
+        loaded.source.status = STATUS_ERROR
+        loaded.source.error = raw
+    app = Starlette(
+        routes=routes(
+            registry,
+            mode=DASHBOARD_ON,
+            static_dir=tmp_path / "dashboard-dist",
+        )
+    )
+
+    with TestClient(app) as client:
+        reader = client.get(
+            "/api/v1/sources",
+            headers={"x-api-token": "read-token"},
+        ).json()
+        admin = client.get(
+            "/api/v1/sources",
+            headers={"x-api-token": "admin-token"},
+        ).json()
+
+    reader_corpus = reader["configurations"][0]["corpora"][0]
+    admin_corpus = admin["configurations"][0]["corpora"][0]
+    assert reader_corpus["error"] == ""
+    assert admin_corpus["error"] == (
+        "индекс кода не построился — "
+        "IndexError: string index out of range"
+    )
+    assert "private-export.zip" not in admin_corpus["error"]
+    assert admin_corpus["journal"] == ""
+    assert admin_corpus["journal_url"] == ""
+    assert loaded.source.error == raw
 
 
 def test_sources_api_при_двойной_смене_поколения_просит_повторить(

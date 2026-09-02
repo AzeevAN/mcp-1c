@@ -10,7 +10,7 @@
 производные индексы. Всё состояние конкретной установки находится в отдельном
 каталоге `data/` и не попадает в git.
 
-## Состояние — 2026-09-02
+## Состояние — 2026-09-03
 
 | Контур | Состояние |
 |---|---|
@@ -22,13 +22,13 @@
 | Роли | объявленные права из native generation; без готового слоя две role-ручки отсутствуют |
 | Дашборд | современная SPA включена по умолчанию; `on` либо `off` |
 | Авторизация Docker | два разных обязательных токена: `API_TOKEN` на чтение, `ADMIN_TOKEN` на запись |
-| Тесты | `.venv/bin/python -m pytest`, 1927 |
+| Тесты | `.venv/bin/python -m pytest`, 1931 |
 
 Воспроизводимый прогон:
 
 ```bash
 .venv/bin/pip install --require-hashes -r requirements-dev-lock.txt
-.venv/bin/python -m pytest          # 1927 тестов (прогон 2026-09-02)
+.venv/bin/python -m pytest          # 1931 тест (прогон 2026-09-03)
 ```
 
 ## Навигация
@@ -363,6 +363,23 @@ role snapshot. Скомпилированный `CommonModule.Name.Module` ос�
 Расходный индекс такого member и индекс кода native-расширения поднимаются из
 warm-кэша; отсутствие или повреждение кэша приводит к безопасной пересборке из
 активного generation snapshot.
+Параллельные cold-пересборки используют отдельный Snowball stemmer на
+поток: сам stemmer изменяет внутреннее состояние, а общий экземпляр
+вызывал редкий `IndexError`. На двух read-only CoW-копиях 2026-09-02
+thread-local и сериализация lock вернули один digest. Их p50/p95:
+66,860/67,096 и 66,547/68,393 с; steady RSS — 327,4/335,1 и
+295,7/299,0 МиБ. Воспроизводимая команда:
+
+```bash
+.venv/bin/python tools/lab/measure_stemmer_concurrency.py \
+  --modules-root /tmp/corpus-a --modules-root /tmp/corpus-b --repeat 3
+```
+
+Если фоновая сборка всё же падает, `Source.error` хранит raw-причину,
+server log получает traceback, а административная страница «Источники»
+показывает bounded техническую причину без имени исходного ZIP.
+Обычный read-only ответ сохраняет обезличенную ошибку. Старый coverage-
+журнал при `status=error` не выдаётся за актуальный.
 
 `start` принимает только `candidate_id`, `action`, необязательные `job_id` для
 возобновления и `parent_configuration`. Произвольного файлового пути в HTTP-

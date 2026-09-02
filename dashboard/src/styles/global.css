@@ -1544,6 +1544,17 @@ h2 {
   line-height: 1.6;
 }
 
+.corpus-diagnostic {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.corpus-diagnostic svg {
+  flex: 0 0 auto;
+}
+
 .source-facts {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

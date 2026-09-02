@@ -27,7 +27,7 @@ import unicodedata
 from bisect import bisect_left
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass, field
-from threading import Lock
+from threading import Lock, local
 from typing import Iterable
 
 import numpy as np
@@ -168,11 +168,23 @@ def tokenize(text: str) -> list[str]:
     return split_identifier(text)
 
 
-_STEMMER = snowballstemmer.stemmer("russian")
+_STEMMER_FACTORY = lambda: snowballstemmer.stemmer("russian")
+_STEMMER_LOCAL = local()
 # Основы кэшируются: словарь имён конфигурации — тысячи уникальных токенов на
 # десятки тысяч вхождений, и один и тот же токен стеммится многократно.
 _STEM_CACHE: OrderedDict[str, str] = OrderedDict()
 _STEM_CACHE_LOCK = Lock()
+
+
+def _thread_stemmer():
+    stemmer = getattr(_STEMMER_LOCAL, "stemmer", None)
+    if stemmer is None:
+        # BaseStemmer меняет current/cursor/limit/bra/ket на каждом слове.
+        # Отдельный экземпляр сохраняет параллельность cold-пересборок без
+        # общей блокировки и не позволяет потокам портить состояние друг друга.
+        stemmer = _STEMMER_FACTORY()
+        _STEMMER_LOCAL.stemmer = stemmer
+    return stemmer
 
 
 def stem(token: str) -> str:
@@ -190,9 +202,7 @@ def stem(token: str) -> str:
             _STEM_CACHE[token] = got
             return got
 
-    # Стеммер не держим под общей блокировкой: два потока могут независимо
-    # вычислить одну основу, но остальные запросы в это время не ждут.
-    got = _STEMMER.stemWord(token)
+    got = _thread_stemmer().stemWord(token)
     with _STEM_CACHE_LOCK:
         existing = _STEM_CACHE.pop(token, None)
         _STEM_CACHE[token] = existing if existing is not None else got

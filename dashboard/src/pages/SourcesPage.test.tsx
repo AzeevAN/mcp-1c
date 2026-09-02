@@ -43,6 +43,7 @@ const corpus = (id: string, label: string, kind: "modules" | "extension") => ({
   coverage,
   journal: "logs/code-test.json",
   journal_url: `/api/v1/sources/coverage?source_id=${id}`,
+  error: "",
 });
 
 const configurationSource = (id: string) => ({
@@ -259,6 +260,39 @@ it("показывает загруженный снимок активност�
   const composition = screen.getByLabelText("Состав конфигурации");
   expect(within(composition).getByText("Снимок активности расширений")).toBeInTheDocument();
   expect(within(composition).getByText("загружен")).toBeInTheDocument();
+});
+
+it("показывает администратору техническую причину ошибки корпуса", async () => {
+  const fetchMock = vi.mocked(fetch);
+  const regularFetch = fetchMock.getMockImplementation()!;
+  fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const response = await regularFetch(input, init);
+    if (String(input) !== "/api/v1/sources") return response;
+    const payload = await response.json();
+    payload.configurations[0].corpora[0] = {
+      ...payload.configurations[0].corpora[0],
+      phase: "error",
+      state: "ошибка — подробности ошибки доступны в журнале сервера",
+      coverage: null,
+      journal: "",
+      journal_url: "",
+      error: "индекс кода не построился — IndexError: string index out of range",
+    };
+    return { ...response, json: async () => payload };
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  render(
+    <MemoryRouter initialEntries={["/sources"]}>
+      <QueryClientProvider client={client}>
+        <SourcesPage />
+      </QueryClientProvider>
+    </MemoryRouter>,
+  );
+
+  expect(await screen.findByText(/IndexError: string index out of range/)).toBeInTheDocument();
+  expect(screen.queryByText(/private-export\.zip/)).not.toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "Открыть JSON-журнал" })).not.toBeInTheDocument();
 });
 
 it("повторяет чтение снимка после временного 409", async () => {

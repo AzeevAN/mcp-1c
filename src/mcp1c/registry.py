@@ -2413,7 +2413,8 @@ class Registry:
             ) from error
         except Exception as error:
             raise RegistryError(
-                f"{метка}: индекс кода не построился — {error}"
+                f"{метка}: индекс кода не построился — "
+                f"{type(error).__name__}: {error}"
             ) from error
         return modules_index.Индексы(
             оглавление=оглавление,
@@ -3009,6 +3010,10 @@ class Registry:
                     source, готовые, persist=False
                 )
         except Exception as error:
+            logger.exception(
+                "Фоновая сборка индекса кода %s завершилась ошибкой.",
+                source_id,
+            )
             with self._lock:
                 if self._поколение_актуально(source, поколение, строится):
                     source.status = STATUS_ERROR

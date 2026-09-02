@@ -46,6 +46,7 @@ export type CodeCorpus = {
   coverage: Coverage | null;
   journal: string;
   journal_url: string;
+  error: string;
 };
 
 export type ConfigurationSource = {

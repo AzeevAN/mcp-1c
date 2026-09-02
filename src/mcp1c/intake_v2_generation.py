@@ -50,7 +50,7 @@ from .v8container import V8Container, V8ContainerError, V8ResourceLimitError
 
 
 GENERATION_FORMAT_VERSION = 1
-GENERATION_PARSER_VERSION = 1
+GENERATION_PARSER_VERSION = 2
 _READ_CHUNK = 1 << 20
 _MAX_FORM_CONTAINER_SIZE = 64 << 20
 
@@ -90,6 +90,7 @@ class _ModuleBody:
     size: int
     sha256: str
     source_path: Path
+    compiled: bool = False
     local_relative: str = ""
 
 
@@ -164,7 +165,11 @@ def _module_bodies(
             raise GenerationMaterializationError(
                 "адреса модулей различаются только регистром"
             )
-        if previous.sha256 != body.sha256 or previous.size != body.size:
+        if (
+            previous.sha256 != body.sha256
+            or previous.size != body.size
+            or previous.compiled != body.compiled
+        ):
             raise GenerationMaterializationError(
                 f"{body.address}: конфликтуют тела одного модуля"
             )
@@ -172,10 +177,11 @@ def _module_bodies(
     for artifact in collection.code:
         add(
             _ModuleBody(
-                artifact.address,
-                artifact.size,
-                artifact.sha256,
-                collection.root / artifact.relative_path,
+                address=artifact.address,
+                size=artifact.size,
+                sha256=artifact.sha256,
+                source_path=collection.root / artifact.relative_path,
+                compiled=artifact.source_path.endswith(".Module"),
             )
         )
 
@@ -204,10 +210,11 @@ def _module_bodies(
         _write(temporary / relative, module)
         add(
             _ModuleBody(
-                artifact.address,
-                len(module),
-                digest,
-                temporary / relative,
+                address=artifact.address,
+                size=len(module),
+                sha256=digest,
+                source_path=temporary / relative,
+                compiled=False,
                 local_relative=relative,
             )
         )
@@ -223,9 +230,10 @@ def _code_layer(
     sources: list[_SourceSpec] = []
     modules: list[dict[str, object]] = []
     for ordinal, body in enumerate(bodies):
+        suffix = ".Module" if body.compiled else ".bsl"
         member = LayerMember(
             key=body.address,
-            relative_path=f"payload/code/{ordinal:08d}.bsl",
+            relative_path=f"payload/code/{ordinal:08d}{suffix}",
             size=body.size,
             sha256=body.sha256,
         )
@@ -242,6 +250,7 @@ def _code_layer(
                 "address": body.address,
                 "size": body.size,
                 "sha256": body.sha256,
+                "compiled": body.compiled,
             }
         )
     return _LayerBuild(

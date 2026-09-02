@@ -34,11 +34,12 @@ from .intake_v2_registry import (
 )
 
 
-_CACHE_FORMAT = 2
+_CACHE_FORMAT = 3
 _MAX_CACHE_BYTES = 512 * 1024 * 1024
 _MAX_ROLE_XML_BYTES = 256 * 1024 * 1024
 _MAX_ROLE_NAME = 512
 _MAX_TEXT = 16 * 1024 * 1024
+_MAX_FIELDS_PER_RESTRICTION = 1024
 _DESCRIPTOR_NAMESPACE = "http://v8.1c.ru/8.3/MDClasses"
 _CORE_NAMESPACE = "http://v8.1c.ru/8.1/data/core"
 _RIGHTS_NAMESPACE = "http://v8.1c.ru/8.2/roles"
@@ -108,13 +109,13 @@ class RoleDescriptor:
 @dataclass(frozen=True, slots=True)
 class RoleRestriction:
     condition: str
-    field: str = ""
+    fields: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
 class RoleRestrictionReference:
     id: int
-    field: str
+    fields: tuple[str, ...]
     chars: int
     bytes: int
 
@@ -145,7 +146,7 @@ class RoleTextPage:
     total_bytes: int
     offset: int
     next_offset: int | None
-    field: str = ""
+    fields: tuple[str, ...] = ()
     template: str = ""
     target: str = ""
     right: str = ""
@@ -544,9 +545,14 @@ CREATE TABLE rights (
 CREATE TABLE restrictions (
     id INTEGER PRIMARY KEY,
     right_id INTEGER NOT NULL REFERENCES rights(id),
-    condition_id INTEGER NOT NULL REFERENCES conditions(id),
-    field_target_id INTEGER REFERENCES targets(id)
+    condition_id INTEGER NOT NULL REFERENCES conditions(id)
 );
+CREATE TABLE restriction_fields (
+    restriction_id INTEGER NOT NULL REFERENCES restrictions(id),
+    ordinal INTEGER NOT NULL,
+    field_target_id INTEGER NOT NULL REFERENCES targets(id),
+    PRIMARY KEY(restriction_id, ordinal)
+) WITHOUT ROWID;
 CREATE TABLE templates (
     id INTEGER PRIMARY KEY,
     role_id INTEGER NOT NULL REFERENCES roles(id),
@@ -558,8 +564,8 @@ CREATE TABLE templates (
 CREATE INDEX rights_by_target ON rights(target_id, right_name_id, value, conditional, role_id);
 CREATE INDEX rights_by_role ON rights(role_id, target_id, right_name_id);
 CREATE INDEX restrictions_by_right ON restrictions(right_id);
-CREATE UNIQUE INDEX restrictions_unique
-    ON restrictions(right_id, condition_id, COALESCE(field_target_id, 0));
+CREATE INDEX restriction_fields_by_target
+    ON restriction_fields(field_target_id, restriction_id);
 """
 
 
@@ -629,20 +635,27 @@ def _insert_right(
         condition = _text(
             _single(restriction, "condition", "ограничение права"),
             "условие ограничения",
+            required=False,
         )
         fields = _children(restriction, "field")
-        if len(fields) > 1:
-            raise RoleAccessError("ограничение права дублирует field")
-        field_id = (
-            _id_for(connection, "targets", _text(fields[0], "field ограничения"))
-            if fields
-            else None
+        if len(fields) > _MAX_FIELDS_PER_RESTRICTION:
+            raise RoleAccessError("ограничение права содержит слишком много field")
+        cursor = connection.execute(
+            "INSERT INTO restrictions(right_id,condition_id) VALUES (?,?)",
+            (right_id, _condition_id(connection, condition)),
         )
-        connection.execute(
-            "INSERT OR IGNORE INTO restrictions(right_id,condition_id,field_target_id) "
-            "VALUES (?,?,?)",
-            (right_id, _condition_id(connection, condition), field_id),
-        )
+        restriction_id = int(cursor.lastrowid)
+        for ordinal, field in enumerate(fields):
+            field_id = _id_for(
+                connection,
+                "targets",
+                _text(field, "field ограничения"),
+            )
+            connection.execute(
+                "INSERT INTO restriction_fields"
+                "(restriction_id,ordinal,field_target_id) VALUES (?,?,?)",
+                (restriction_id, ordinal, field_id),
+            )
 
 
 def _parse_rights(
@@ -1141,21 +1154,37 @@ class RoleAccessIndex:
                 # Обычная страница возвращает только размер и ссылку. Даже
                 # локальная строка результата не должна содержать огромный RLS.
                 content_column = "c.content" if include_restrictions else "''"
-                for raw in self._connection.execute(
+                restriction_rows = self._connection.execute(
                     "SELECT x.id,x.right_id,length(c.content) AS chars,"
                     "length(CAST(c.content AS BLOB)) AS bytes,"
-                    f"{content_column} AS content,t.path AS field FROM restrictions x "
+                    f"{content_column} AS content FROM restrictions x "
                     "JOIN conditions c ON c.id=x.condition_id "
-                    "LEFT JOIN targets t ON t.id=x.field_target_id "
                     f"WHERE x.right_id IN ({placeholders}) "
                     "ORDER BY x.right_id,x.id",
                     ids,
+                ).fetchall()
+                fields_by_restriction: dict[int, list[str]] = {
+                    int(raw["id"]): [] for raw in restriction_rows
+                }
+                for field_row in self._connection.execute(
+                    "SELECT f.restriction_id,t.path FROM restriction_fields f "
+                    "JOIN restrictions x ON x.id=f.restriction_id "
+                    "JOIN targets t ON t.id=f.field_target_id "
+                    f"WHERE x.right_id IN ({placeholders}) "
+                    "ORDER BY f.restriction_id,f.ordinal",
+                    ids,
                 ):
+                    fields_by_restriction[int(field_row["restriction_id"])].append(
+                        str(field_row["path"])
+                    )
+                for raw in restriction_rows:
                     right_id = int(raw["right_id"])
+                    restriction_id = int(raw["id"])
+                    fields = tuple(fields_by_restriction[restriction_id])
                     restriction_refs[right_id].append(
                         RoleRestrictionReference(
-                            id=int(raw["id"]),
-                            field=str(raw["field"] or ""),
+                            id=restriction_id,
+                            fields=fields,
                             chars=int(raw["chars"]),
                             bytes=int(raw["bytes"]),
                         )
@@ -1164,7 +1193,7 @@ class RoleAccessIndex:
                         restrictions[right_id].append(
                             RoleRestriction(
                                 str(raw["content"]),
-                                str(raw["field"] or ""),
+                                fields,
                             )
                         )
             templates: tuple[tuple[str, str], ...] = ()
@@ -1274,20 +1303,19 @@ class RoleAccessIndex:
             query = (
                 "SELECT substr(c.content,?,?) AS content,length(c.content) AS chars,"
                 "length(CAST(c.content AS BLOB)) AS bytes,"
-                "f.path AS field,t.path AS target,n.name AS right_name "
+                "t.path AS target,n.name AS right_name "
                 "FROM restrictions x JOIN conditions c ON c.id=x.condition_id "
                 "JOIN rights r ON r.id=x.right_id "
                 "JOIN roles p ON p.id=r.role_id "
                 "JOIN targets t ON t.id=r.target_id "
                 "JOIN right_names n ON n.id=r.right_name_id "
-                "LEFT JOIN targets f ON f.id=x.field_target_id "
                 "WHERE x.id=? AND p.name_key=?"
             )
         else:
             query = (
                 "SELECT substr(c.content,?,?) AS content,length(c.content) AS chars,"
                 "length(CAST(c.content AS BLOB)) AS bytes,"
-                "'' AS field,'' AS target,'' AS right_name,p.name AS template "
+                "'' AS target,'' AS right_name,p.name AS template "
                 "FROM templates p JOIN conditions c ON c.id=p.condition_id "
                 "JOIN roles r ON r.id=p.role_id "
                 "WHERE p.id=? AND r.name_key=?"
@@ -1302,6 +1330,19 @@ class RoleAccessIndex:
                     descriptor.name.casefold(),
                 ),
             ).fetchone()
+            fields = (
+                tuple(
+                    str(field_row["path"])
+                    for field_row in self._connection.execute(
+                        "SELECT t.path FROM restriction_fields f "
+                        "JOIN targets t ON t.id=f.field_target_id "
+                        "WHERE f.restriction_id=? ORDER BY f.ordinal",
+                        (reference_id,),
+                    )
+                )
+                if kind == "restriction" and row is not None
+                else ()
+            )
         if row is None:
             raise KeyError(reference_id)
         content = str(row["content"])
@@ -1318,7 +1359,7 @@ class RoleAccessIndex:
             total_bytes=int(row["bytes"]),
             offset=offset,
             next_offset=next_offset,
-            field=str(row["field"] or ""),
+            fields=fields,
             template=str(row["template"] if kind == "template" else ""),
             target=str(row["target"] or ""),
             right=str(row["right_name"] or ""),

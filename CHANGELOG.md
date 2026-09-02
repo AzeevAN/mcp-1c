@@ -39,10 +39,18 @@
   неизвестные metadata/layout дают только агрегированную info-диагностику.
   Точные пары role XML канонизируются и сжимаются без materialization всего
   ролевого корпуса: сохраняются explicit `true|false`, полные пути,
-  RLS/templates/field и пустые роли. Локальная ошибка роли даёт
+  RLS/templates/fields и пустые роли. Локальная ошибка роли даёт
   `roles=error`, не уничтожая code/forms; transport/stability failure отменяет
   весь staging. Manifest сохраняет полный probe и после удаления исходного ZIP
   fail-closed проверяет размеры, SHA-256, gzip и отсутствие symlink.
+- Плоская source-B раскладка теперь приводит `Role.Name.xml` и
+  `Role.Name.Rights.xml` к тому же каноническому снимку, что tree-вариант,
+  принимает доказанные descriptors новых видов и обязательный
+  `ExchangePlan.Name.Content.xml`, но не выдаёт `Help`, `Predefined`, формы и
+  макеты за descriptor. `Sequence.Name.RecordSetModule.txt` получает точный
+  адрес, а бинарный `CommonModule.Name.Module` сохраняется с locator
+  `compiled` и не декодируется как UTF-8 BSL. Версии V2 selection и generation
+  parser подняты до 2, чтобы прежний неполный снимок не считался эквивалентным.
 - Первый структурный converter будущего intake строит schema-v1-compatible
   базовую проекцию в существующей модели `Configuration` и отдельный
   недублирующий extended-слой. `MetadataKindSpec` явно выбирает base/extended
@@ -198,7 +206,10 @@
   SQLite `RoleAccessIndex` прямо из сохранённого snapshot, без повторного
   чтения исходного ZIP и без materialization всего корпуса в Python-объекты.
   Индекс дедуплицирует цели, виды прав и тексты условий, сохраняет descriptor,
-  explicit `true|false`, полные дочерние пути, RLS и шаблоны, поддерживает
+  explicit `true|false`, полные дочерние пути, RLS и шаблоны. Одно
+  `restrictionByCondition` хранится одной записью, все его `field` — отдельным
+  упорядоченным массивом `fields`, а пустой `condition` остаётся условным
+  доказательством. Индекс поддерживает
   прямую пагинацию и обратный подбор ролей по точному объекту и операциям.
   Условные права учитываются только по opt-in, `false` никогда не даёт доступ,
   а минимальный набор объявляется только для доказанного покрытия явными
@@ -244,6 +255,30 @@
 
 ### Найдено
 
+- В обезличенной плоской файловой выгрузке 29 `Rights.xml` содержат 875
+  `restrictionByCondition`, 10 шаблонов и 162 `field`. У 26 ограничений больше
+  одного поля, максимум — 9; 25 `condition` пусты. Значит, прежняя модель
+  одного необязательного `field` теряла реальные данные, а пустая строка не
+  означает отсутствие самого ограничения. На том же архиве максимальный
+  condition занимает 209 684 байта, p95 nearest-rank — 1 188 байт. Основной
+  tree acceptance-корпус повторно дал прежние 745 870 / 237 375 байт; замер
+  2026-09-02 воспроизводится без извлечения и вывода имён:
+
+  ```bash
+  .venv/bin/python tools/lab/measure_role_restrictions.py /path/to/export.zip
+  ```
+- Плоский `CommonModule.Name.Module` — скомпилированное бинарное тело, а не
+  текстовый BSL. Копирование его в generation member с суффиксом `.bsl`
+  приводило к ошибке UTF-8 только при построении runtime; правильный контракт
+  сохраняет `.Module` и `ModuleLocator.compiled`. У XML descriptor роли
+  `ElementTree.canonicalize(rewrite_prefixes=True)` на Python 3.12 также может
+  породить недопустимое `xmlns:n=""`; канонизация без переписывания префиксов
+  остаётся валидной и повторно разбирается стандартным parser.
+- В плоской раскладке `Kind.Name.xml` является descriptor, а соседние
+  `Kind.Name.Help.xml`, `Predefined`, `Form` и `Template` — отдельные payload.
+  Попытка разобрать любой XML с тем же префиксом как descriptor ломает
+  converter; текущий intake читает только точный descriptor и доказанный
+  supplement плана обмена, а макеты остаются вне текущего предметного слоя.
 - В файловой выгрузке descriptor роли содержит UUID, имя, комментарий и
   мультиязычный `Synonym`, причём `item/lang/content` принадлежат пространству
   имён `http://v8.1c.ru/8.1/data/core`. Три default-флага находятся не в

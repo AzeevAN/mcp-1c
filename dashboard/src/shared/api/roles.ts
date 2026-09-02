@@ -49,7 +49,7 @@ export type DeclaredRightRow = {
   value: boolean;
   state: "explicit_false" | "unconditional_true" | "conditional_true";
   restrictions: Array<{
-    field: string;
+    fields: string[];
     chars: number;
     bytes: number;
     ref: string;
@@ -99,7 +99,7 @@ export type RoleRestrictionResponse = RoleBase & {
   mode?: "restriction" | "template";
   role?: string;
   restriction_ref?: string;
-  field?: string;
+  fields?: string[];
   template?: string;
   target?: string;
   right?: string;

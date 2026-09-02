@@ -381,6 +381,27 @@
   overflow-wrap: anywhere;
 }
 
+.role-restriction-fields {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.role-restriction-fields ul {
+  display: grid;
+  gap: 0.3rem;
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.role-restriction-fields code {
+  overflow-wrap: anywhere;
+}
+
+.role-restriction-empty {
+  margin: 0;
+  color: var(--text-muted);
+}
+
 .role-object-mode {
   display: grid;
   grid-template-columns: minmax(280px, 370px) minmax(0, 1fr);

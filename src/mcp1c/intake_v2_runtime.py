@@ -284,33 +284,48 @@ def _ready_payload(
     return payload
 
 
-def _code_members(payload: LayerPayload | None) -> dict[str, LayerMember]:
+def _code_members(
+    payload: LayerPayload | None,
+) -> dict[str, tuple[LayerMember, bool]]:
     if payload is None:
         return {}
     modules = payload.semantic.get("modules")
     if not isinstance(modules, list):
         raise GenerationRuntimeError("code.modules должен быть массивом")
     members = {member.key: member for member in payload.members}
-    declared: dict[str, tuple[int, str]] = {}
+    declared: dict[str, tuple[int, str, bool]] = {}
     for index, value in enumerate(modules):
         raw = _mapping(value, f"code.modules[{index}]")
-        _exact_keys(raw, {"address", "size", "sha256"}, f"code.modules[{index}]")
+        _exact_keys(
+            raw,
+            {"address", "size", "sha256", "compiled"},
+            f"code.modules[{index}]",
+        )
         address = _text(raw["address"], f"code.modules[{index}].address", required=True)
         size = raw["size"]
         digest = raw["sha256"]
+        compiled = raw["compiled"]
         if isinstance(size, bool) or not isinstance(size, int) or size < 0:
             raise GenerationRuntimeError("code module size некорректен")
         if not isinstance(digest, str):
             raise GenerationRuntimeError("code module sha256 некорректен")
+        if type(compiled) is not bool:
+            raise GenerationRuntimeError("code module compiled некорректен")
         if address in declared:
             raise GenerationRuntimeError("code дублирует адрес модуля")
-        declared[address] = (size, digest)
+        declared[address] = (size, digest, compiled)
     if set(declared) != set(members):
         raise GenerationRuntimeError("code semantic и members расходятся")
+    result: dict[str, tuple[LayerMember, bool]] = {}
     for address, member in members.items():
-        if declared[address] != (member.size, member.sha256):
+        size, digest, compiled = declared[address]
+        if (size, digest) != (member.size, member.sha256):
             raise GenerationRuntimeError("code semantic и member identity расходятся")
-    return members
+        expected_suffix = ".Module" if compiled else ".bsl"
+        if not member.relative_path.endswith(expected_suffix):
+            raise GenerationRuntimeError("code member не совпадает с compiled")
+        result[address] = (member, compiled)
+    return result
 
 
 def _form_kind(source_path: str) -> tuple[str, bool]:
@@ -401,17 +416,23 @@ def _catalog(
         set(code_members) | set(form_members),
         key=lambda value: (value.casefold(), value),
     ):
-        member = code_members.get(address)
+        code_member = code_members.get(address)
+        member = code_member[0] if code_member is not None else None
+        compiled = code_member[1] if code_member is not None else False
         entries[address] = CatalogEntry(
             address=address,
-            module_kind="generation",
+            module_kind="compiled" if compiled else "generation",
             locator=(
-                ModuleLocator.file(member.relative_path)
+                (
+                    ModuleLocator.compiled(member.relative_path)
+                    if compiled
+                    else ModuleLocator.file(member.relative_path)
+                )
                 if member is not None
                 else None
             ),
             is_form=address in form_members,
-            compiled=False,
+            compiled=compiled,
             form_sources=form_members.get(address, ()),
             diagnostics=(),
             conflict=False,
@@ -420,9 +441,12 @@ def _catalog(
         )
     outcomes: list[CandidateOutcome] = []
     ordinal = 0
+    compiled_total = 0
     for address in sorted(code_members, key=lambda value: (value.casefold(), value)):
         ordinal += 1
-        outcomes.append(CandidateOutcome(ordinal, "indexed", address))
+        category = "compiled" if code_members[address][1] else "indexed"
+        compiled_total += category == "compiled"
+        outcomes.append(CandidateOutcome(ordinal, category, address))
     for address, sources in sorted(
         form_members.items(), key=lambda item: (item[0].casefold(), item[0])
     ):
@@ -436,7 +460,8 @@ def _catalog(
         problems=(),
         coverage=CatalogCoverage(
             total_candidates=ordinal,
-            indexed=ordinal,
+            indexed=ordinal - compiled_total,
+            compiled=compiled_total,
         ),
     )
 

@@ -36,7 +36,10 @@ def anyio_backend():
     return "asyncio"
 
 
-def _roles(condition: str = "Allowed = true"):
+def _roles(
+    condition: str = "Allowed = true",
+    fields: tuple[str, ...] = (),
+):
     return (
         (
             "Reader",
@@ -73,8 +76,8 @@ def _roles(condition: str = "Allowed = true"):
                 ((
                     "Catalog.Orders",
                     (
-                        _right("Read", True, condition=condition),
-                        _right("Update", True, condition=condition),
+                        _right("Read", True, condition=condition, fields=fields),
+                        _right("Update", True, condition=condition, fields=fields),
                     ),
                 ),),
                 templates=(("SyntheticTemplate", condition),),
@@ -413,7 +416,13 @@ async def test_get_role_access_пагинирует_и_rls_читается_бе
         tmp_path / "source",
         configuration="DemoConfiguration",
         generation_id="generation-1",
-        roles=_roles(condition),
+        roles=_roles(
+            condition,
+            fields=(
+                "Catalog.Orders.Attribute.Code",
+                "Catalog.Orders.Attribute.Number",
+            ),
+        ),
     )
     server = _server(registry, tmp_path)
     client = _client(registry, tmp_path)
@@ -441,6 +450,11 @@ async def test_get_role_access_пагинирует_и_rls_читается_бе
     right = mcp["rights"][0]
     assert right["state"] == "conditional_true"
     assert right["restrictions"][0]["chars"] == len(condition)
+    assert right["restrictions"][0]["fields"] == [
+        "Catalog.Orders.Attribute.Code",
+        "Catalog.Orders.Attribute.Number",
+    ]
+    assert "field" not in right["restrictions"][0]
     assert "condition" not in right["restrictions"][0]
     restriction_ref = right["restrictions"][0]["ref"]
 
@@ -459,6 +473,11 @@ async def test_get_role_access_пагинирует_и_rls_читается_бе
             await server.call_tool("get_role_access", restriction_arguments)
         )
         assert page["mode"] == "restriction"
+        assert page["fields"] == [
+            "Catalog.Orders.Attribute.Code",
+            "Catalog.Orders.Attribute.Number",
+        ]
+        assert "field" not in page
         assert len(page["content"]) <= 256
         chunks.append(page["content"])
         cursor = page["page"]["next_cursor"]

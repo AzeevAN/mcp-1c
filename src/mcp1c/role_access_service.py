@@ -408,7 +408,7 @@ def _text_payload(
         "mode": page.kind,
         "role": page.role,
         "restriction_ref": restriction_ref,
-        "field": page.field,
+        "fields": list(page.fields),
         "template": page.template,
         "target": page.target,
         "right": page.right,
@@ -557,7 +557,7 @@ def get_role_access_payload(
                 "state": _right_state(right),
                 "restrictions": [
                     {
-                        "field": item.field,
+                        "fields": list(item.fields),
                         "chars": item.chars,
                         "bytes": item.bytes,
                         "ref": _reference(

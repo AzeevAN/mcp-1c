@@ -476,6 +476,8 @@ def _collection(
     bot_unknown: bool = False,
     bot_predefined: str = "true",
     schedule: bytes = b"<Schedule><Period>60</Period></Schedule>",
+    flat_mandatory: bool = False,
+    compiled_module: bool = False,
 ):
     payloads = {
         "Configuration.xml": _configuration(
@@ -606,6 +608,40 @@ def _collection(
             payloads[f"Bots/{bot_module_name}/Ext/Module.bsl"] = (
                 b"procedure Reply() endprocedure"
             )
+    if flat_mandatory:
+        replacements = {
+            "CommonAttributes/Tenant.xml": "CommonAttribute.Tenant.xml",
+            "SessionParameters/Tenant.xml": "SessionParameter.Tenant.xml",
+        }
+        if bindings:
+            replacements.update(
+                {
+                    "EventSubscriptions/Resolved.xml": (
+                        "EventSubscription.Resolved.xml"
+                    ),
+                    "EventSubscriptions/ModuleMissing.xml": (
+                        "EventSubscription.ModuleMissing.xml"
+                    ),
+                    "EventSubscriptions/ProcedureMissing.xml": (
+                        "EventSubscription.ProcedureMissing.xml"
+                    ),
+                    "EventSubscriptions/Unresolved.xml": (
+                        "EventSubscription.Unresolved.xml"
+                    ),
+                    "ScheduledJobs/Refresh.xml": "ScheduledJob.Refresh.xml",
+                    "ScheduledJobs/Refresh/Ext/Schedule.xml": (
+                        "ScheduledJob.Refresh.Schedule.xml"
+                    ),
+                    "ExchangePlans/Nodes.xml": "ExchangePlan.Nodes.xml",
+                    "ExchangePlans/Nodes/Ext/Content.xml": (
+                        "ExchangePlan.Nodes.Content.xml"
+                    ),
+                }
+            )
+        for source, target in replacements.items():
+            payloads[target] = payloads.pop(source)
+    if compiled_module:
+        payloads["CommonModule.Sealed.Module"] = b"\xffcompiled"
     if malformed:
         payloads[malformed] = b"<MetaDataObject><broken>"
     tree = MemoryTree(payloads)
@@ -696,6 +732,22 @@ def test_common_objects_имеют_типизированный_payload(tmp_path
         "Справочник.Items",
     )
     assert session.modules == () and session.forms == ()
+
+
+def test_flat_обязательные_виды_дают_тот_же_semantic_result(tmp_path):
+    convert_collection = _symbol("convert_collection")
+
+    tree = convert_collection(_collection(tmp_path / "tree", bindings=True))
+    flat = convert_collection(
+        _collection(
+            tmp_path / "flat",
+            bindings=True,
+            flat_mandatory=True,
+        )
+    )
+
+    assert flat.base_content_sha256 == tree.base_content_sha256
+    assert flat.extended_content_sha256 == tree.extended_content_sha256
 
 
 def test_common_attribute_хранит_edges_а_не_копирует_поле(tmp_path):

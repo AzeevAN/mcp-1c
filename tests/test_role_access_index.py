@@ -72,8 +72,14 @@ def _descriptor(
     ).encode()
 
 
-def _restriction(condition: str, *, field: str = "") -> str:
-    field_xml = f"<field>{field}</field>" if field else ""
+def _restriction(
+    condition: str,
+    *,
+    field: str = "",
+    fields: tuple[str, ...] = (),
+) -> str:
+    selected_fields = fields or ((field,) if field else ())
+    field_xml = "".join(f"<field>{item}</field>" for item in selected_fields)
     return (
         "<restrictionByCondition>"
         f"{field_xml}<condition>{condition}</condition>"
@@ -81,8 +87,19 @@ def _restriction(condition: str, *, field: str = "") -> str:
     )
 
 
-def _right(name: str, value: bool, *, condition: str = "", field: str = "") -> str:
-    restriction = _restriction(condition, field=field) if condition else ""
+def _right(
+    name: str,
+    value: bool,
+    *,
+    condition: str | None = None,
+    field: str = "",
+    fields: tuple[str, ...] = (),
+) -> str:
+    restriction = (
+        _restriction(condition, field=field, fields=fields)
+        if condition is not None
+        else ""
+    )
     return (
         f"<right><name>{name}</name><value>{str(value).lower()}</value>"
         f"{restriction}</right>"
@@ -308,8 +325,8 @@ def test_index_сохраняет_descriptor_права_rls_шаблоны_и_п
             ("Catalog.Orders.Attribute.Code", "Update", False),
         ]
         assert page.rights[0].restrictions[0].condition == "Allowed = true"
-        assert page.rights[0].restrictions[0].field == (
-            "Catalog.Orders.Attribute.Code"
+        assert page.rights[0].restrictions[0].fields == (
+            "Catalog.Orders.Attribute.Code",
         )
         compact_page = index.role_access("Analyst", offset=0, limit=10)
         assert compact_page.rights[0].conditional is True
@@ -325,6 +342,58 @@ def test_index_сохраняет_descriptor_права_rls_шаблоны_и_п
         assert index.summary.restrictions == 1
         assert index.summary.templates == 1
         assert index.summary.conditions == 2
+    finally:
+        index.close()
+
+
+def test_index_сохраняет_одно_rls_с_несколькими_fields_и_пустым_condition(
+    tmp_path,
+):
+    fields = (
+        "Catalog.Orders.Attribute.Code",
+        "Catalog.Orders.Attribute.Number",
+    )
+    layer, _saved = _role_layer(
+        tmp_path / "generation",
+        ((
+            "MultiField",
+            _descriptor(
+                "MultiField",
+                uuid="33333333-3333-3333-3333-333333333333",
+            ),
+            _rights(((
+                "Catalog.Orders",
+                (_right("Read", True, condition="", fields=fields),),
+            ),)),
+        ),),
+    )
+
+    index = _open(tmp_path / "generation", layer, tmp_path / "roles.sqlite")
+    try:
+        page = index.role_access(
+            "MultiField",
+            include_restrictions=True,
+            offset=0,
+            limit=10,
+        )
+        right = page.rights[0]
+        assert right.conditional is True
+        assert len(right.restrictions) == 1
+        assert right.restrictions[0].condition == ""
+        assert right.restrictions[0].fields == fields
+        assert len(right.restriction_refs) == 1
+        assert right.restriction_refs[0].fields == fields
+
+        text = index.read_text(
+            "MultiField",
+            "restriction",
+            right.restriction_refs[0].id,
+        )
+        assert text.content == ""
+        assert text.fields == fields
+        assert text.next_offset is None
+        assert index.summary.restrictions == 1
+        assert index.summary.conditions == 1
     finally:
         index.close()
 

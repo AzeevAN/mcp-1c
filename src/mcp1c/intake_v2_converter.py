@@ -2430,8 +2430,13 @@ def _is_descriptor(artifact: CollectionArtifact, spec: MetadataKindSpec) -> bool
         return parts[0] == spec.source_name and parts[1].endswith(".xml")
     if len(parts) != 1 or not artifact.source_path.endswith(".xml"):
         return False
-    prefix = artifact.source_path.split(".", 1)[0]
-    return prefix in spec.aliases
+    flat = artifact.source_path.split(".")
+    return (
+        len(flat) == 3
+        and flat[0] in spec.aliases
+        and bool(flat[1])
+        and flat[2] == "xml"
+    )
 
 
 def _known_supplementary_metadata(

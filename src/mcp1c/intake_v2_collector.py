@@ -34,7 +34,7 @@ from .intake_v2_probe import CandidateProbe, ProbeError
 
 
 COLLECTION_FORMAT_VERSION = 1
-SELECTION_VERSION = 1
+SELECTION_VERSION = 2
 _READ_CHUNK = 1 << 20
 _MANIFEST_LIMIT = 64 * 1024 * 1024
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -520,7 +520,7 @@ DEFAULT_KIND_SPECS = (
     _base(
         "DefinedTypes",
         "ОпределяемыйТип",
-        (),
+        ("DefinedType",),
         (LayerKind.BASE_STRUCTURE,),
     ),
     _base(
@@ -532,14 +532,14 @@ DEFAULT_KIND_SPECS = (
     _base(
         "EventSubscriptions",
         "ПодпискаНаСобытие",
-        (),
+        ("EventSubscription",),
         (LayerKind.BASE_STRUCTURE, LayerKind.EXTENDED_STRUCTURE),
         extended_adapter="event_subscription",
     ),
     _base(
         "ScheduledJobs",
         "РегламентноеЗадание",
-        (),
+        ("ScheduledJob",),
         (LayerKind.BASE_STRUCTURE, LayerKind.EXTENDED_STRUCTURE),
         extended_adapter="scheduled_job",
     ),
@@ -555,14 +555,14 @@ DEFAULT_KIND_SPECS = (
     _supported(
         "CommonAttributes",
         "ОбщийРеквизит",
-        (),
+        ("CommonAttribute",),
         (LayerKind.EXTENDED_STRUCTURE,),
         extended_adapter="common_attribute",
     ),
     _supported(
         "SessionParameters",
         "ПараметрСеанса",
-        (),
+        ("SessionParameter",),
         (LayerKind.EXTENDED_STRUCTURE,),
         extended_adapter="session_parameter",
     ),
@@ -594,43 +594,53 @@ DEFAULT_KIND_SPECS = (
     ),
     _supported("WebServices", "WebСервис", ("WebService",), (LayerKind.CODE,)),
     _supported("HTTPServices", "HTTPСервис", ("HTTPService",), (LayerKind.CODE,)),
-    _supported("Sequences", "Последовательность", (), (LayerKind.CODE,)),
+    _supported(
+        "Sequences",
+        "Последовательность",
+        ("Sequence",),
+        (LayerKind.CODE,),
+    ),
     _inactive(
         "Subsystems",
         "Подсистема",
         MetadataKindPolicy.DEFERRED,
-        (),
+        ("Subsystem",),
     ),
     _inactive(
         "XDTOPackages",
         "ПакетXDTO",
         MetadataKindPolicy.DEFERRED,
-        (),
+        ("XDTOPackage",),
     ),
     _inactive(
         "WSReferences",
         "WSСсылка",
         MetadataKindPolicy.DEFERRED,
-        (),
+        ("WSReference",),
     ),
     *(
         _inactive(source, canonical, MetadataKindPolicy.IGNORED, aliases)
         for source, canonical, aliases in (
             ("SettingsStorages", "ХранилищеНастроек", ("SettingsStorage",)),
-            ("Languages", "Язык", ()),
-            ("Styles", "Стиль", ()),
-            ("StyleItems", "ЭлементСтиля", ()),
-            ("CommonPictures", "ОбщаяКартинка", ()),
-            ("CommandGroups", "ГруппаКоманд", ()),
-            ("FunctionalOptions", "ФункциональнаяОпция", ()),
+            ("Languages", "Язык", ("Language",)),
+            ("Styles", "Стиль", ("Style",)),
+            ("StyleItems", "ЭлементСтиля", ("StyleItem",)),
+            ("CommonPictures", "ОбщаяКартинка", ("CommonPicture",)),
+            ("CommandGroups", "ГруппаКоманд", ("CommandGroup",)),
+            (
+                "FunctionalOptions",
+                "ФункциональнаяОпция",
+                ("FunctionalOption",),
+            ),
             (
                 "FunctionalOptionsParameters",
                 "ПараметрФункциональнойОпции",
-                (),
+                ("FunctionalOptionsParameter",),
             ),
             ("Numerators", "Нумератор", ()),
-            ("CommonTemplates", "ОбщийМакет", ()),
+            ("CommonTemplates", "ОбщийМакет", ("CommonTemplate",)),
             ("ExternalDataSources", "ВнешнийИсточникДанных", ()),
+            ("Interfaces", "Интерфейс", ("Interface",)),
         )
     ),
 )
@@ -720,6 +730,32 @@ def _spec_for(
         return tree_specs.get(parts[0])
     flat_kind = parts[0].split(".", 1)[0]
     return flat_specs.get(flat_kind)
+
+
+def _flat_metadata_path(
+    path: str,
+    spec: MetadataKindSpec,
+) -> str | None:
+    """Вернуть только доказанный descriptor или обязательный supplement."""
+    if "/" in path:
+        return None
+    parts = path.split(".")
+    if (
+        len(parts) == 3
+        and parts[0] in spec.aliases
+        and bool(parts[1])
+        and parts[2] == "xml"
+    ):
+        return path
+    if (
+        spec.source_name == "ExchangePlans"
+        and len(parts) == 4
+        and parts[0] == "ExchangePlan"
+        and bool(parts[1])
+        and parts[2:] == ["Content", "xml"]
+    ):
+        return f"ExchangePlans/{parts[1]}/Ext/Content.xml"
+    return None
 
 
 def _flat_code_address(path: str) -> str | None:
@@ -828,17 +864,36 @@ def _copy_artifact(
     )
 
 
-def _role_path_kind(path: str) -> tuple[str, str] | None:
+def _role_path_kind(path: str) -> tuple[str, str, str] | None:
     parts = PurePosixPath(path).parts
     if len(parts) == 2 and parts[0] == "Roles" and parts[1].endswith(".xml"):
         name = parts[1][:-4]
-        return ("descriptor", name) if name else None
+        return ("descriptor", name, path) if name else None
     if len(parts) == 4 and parts[0] == "Roles" and parts[2:] == (
         "Ext",
         "Rights.xml",
     ):
-        return ("rights", parts[1]) if parts[1] else None
+        return ("rights", parts[1], path) if parts[1] else None
+    if len(parts) == 1 and path.startswith("Role."):
+        if path.endswith(".Rights.xml"):
+            name = path[len("Role.") : -len(".Rights.xml")]
+            if name:
+                return ("rights", name, f"Roles/{name}/Ext/Rights.xml")
+        elif path.endswith(".xml"):
+            name = path[len("Role.") : -len(".xml")]
+            if name:
+                return ("descriptor", name, f"Roles/{name}.xml")
     return None
+
+
+def _is_schedule_payload(path: str) -> bool:
+    if path.endswith("/Ext/Schedule.xml"):
+        return True
+    return (
+        "/" not in path
+        and path.startswith("ScheduledJob.")
+        and path.endswith(".Schedule.xml")
+    )
 
 
 def _canonicalize_role(
@@ -863,7 +918,10 @@ def _canonicalize_role(
                     from_file=source,
                     out=writer,
                     with_comments=False,
-                    rewrite_prefixes=True,
+                    # ElementTree 3.12 при rewrite_prefixes=True добавляет
+                    # xmlns:n="" для обычных атрибутов (например version),
+                    # а затем сам же не может прочитать полученный XML.
+                    rewrite_prefixes=False,
                 )
     except ET.ParseError:
         target.unlink(missing_ok=True)
@@ -1006,14 +1064,19 @@ def collect_source_b(
                 continue
             role_path = _role_path_kind(source_path)
             if role_path is not None:
-                role_kind, role_name = role_path
+                role_kind, role_name, canonical_role_path = role_path
                 if role_kind == "descriptor":
                     role_descriptors.add(role_name)
                 else:
                     role_rights.add(role_name)
                 try:
                     role_artifacts.append(
-                        _canonicalize_role(tree, raw_path, source_path, temporary)
+                        _canonicalize_role(
+                            tree,
+                            raw_path,
+                            canonical_role_path,
+                            temporary,
+                        )
                     )
                 except ET.ParseError as error:
                     role_errors.append((source_path, f"XML не разбирается: {error}"))
@@ -1025,7 +1088,7 @@ def collect_source_b(
                     source_path,
                 )
                 continue
-            if source_path.endswith("/Ext/Schedule.xml"):
+            if _is_schedule_payload(source_path):
                 continue
             if (
                 source_path.startswith("__MACOSX/")
@@ -1130,12 +1193,18 @@ def collect_source_b(
                     )
                 continue
 
+            metadata_source_path = source_path
+            if "/" not in source_path and source_path.endswith(".xml"):
+                normalized = _flat_metadata_path(source_path, spec)
+                if normalized is None:
+                    continue
+                metadata_source_path = normalized
             if source_path.endswith(".xml") and spec.layers & _STRUCTURE_LAYERS:
                 artifacts.append(
                     _copy_artifact(
                         tree,
                         raw_path,
-                        source_path,
+                        metadata_source_path,
                         temporary,
                         ArtifactKind.METADATA,
                         spec.source_name,

@@ -53,7 +53,15 @@ const access = {
     name: "Read",
     value: true,
     state: "conditional_true",
-    restrictions: [{ field: "", chars: 6000, bytes: 6000, ref: "restriction-ref" }],
+    restrictions: [{
+      fields: [
+        "Catalog.Orders.Attribute.Code",
+        "Catalog.Orders.Attribute.Number",
+      ],
+      chars: 6000,
+      bytes: 6000,
+      ref: "restriction-ref",
+    }],
   }],
   templates_total: 0,
   templates: [],
@@ -147,7 +155,10 @@ it("открывается без config, выбирает роль и не по
         mode: "restriction",
         role: "Reader",
         restriction_ref: "restriction-ref",
-        field: "",
+        fields: [
+          "Catalog.Orders.Attribute.Code",
+          "Catalog.Orders.Attribute.Number",
+        ],
         template: "",
         target: "Catalog.Orders",
         right: "Read",
@@ -178,10 +189,52 @@ it("открывается без config, выбирает роль и не по
   expect(screen.getByText("Условный true · RLS")).toBeInTheDocument();
   expect(screen.getByText(/Default-флаги — свидетельство/)).toBeInTheDocument();
   expect(screen.queryByText("SyntheticAllowed(x)")).not.toBeInTheDocument();
+  expect(screen.queryByText("Catalog.Orders.Attribute.Code")).not.toBeInTheDocument();
 
   fireEvent.click(screen.getByRole("button", { name: "Показать RLS" }));
   expect(await screen.findByText("SyntheticAllowed(x)")).toBeInTheDocument();
+  expect(screen.getByText("Catalog.Orders.Attribute.Code")).toBeInTheDocument();
+  expect(screen.getByText("Catalog.Orders.Attribute.Number")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Дочитать RLS" })).toBeInTheDocument();
+});
+
+it("объясняет пустое условие RLS и всё равно показывает его fields", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+    const url = new URL(String(input), "http://dashboard.test");
+    if (url.pathname === "/api/v1/roles/access") return response(access);
+    if (url.pathname === "/api/v1/roles/restriction") {
+      return response({
+        ...base,
+        mode: "restriction",
+        role: "Reader",
+        restriction_ref: "restriction-ref",
+        fields: [
+          "Catalog.Orders.Attribute.Code",
+          "Catalog.Orders.Attribute.Number",
+        ],
+        template: "",
+        target: "Catalog.Orders",
+        right: "Read",
+        content: "",
+        total_chars: 0,
+        total_bytes: 0,
+        page: { offset: 0, max_chars: 2000, returned_chars: 0, next_cursor: null },
+      });
+    }
+    return response(catalog);
+  }));
+  renderPage();
+
+  await screen.findByRole("option", { name: "Чтение" });
+  fireEvent.change(screen.getByRole("combobox", { name: "Роль" }), {
+    target: { value: "Reader" },
+  });
+  await screen.findByText("Catalog.Orders");
+  fireEvent.click(screen.getByRole("button", { name: "Показать RLS" }));
+
+  expect(await screen.findByText("Условие RLS пустое.")).toBeInTheDocument();
+  expect(screen.getByText("Catalog.Orders.Attribute.Code")).toBeInTheDocument();
+  expect(screen.getByText("Catalog.Orders.Attribute.Number")).toBeInTheDocument();
 });
 
 it("заменяет страницу большой роли и различает explicit false", async () => {

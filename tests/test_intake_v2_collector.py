@@ -6,6 +6,7 @@ import hashlib
 import importlib
 import io
 import zipfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -218,6 +219,118 @@ def test_collector_сохраняет_mixed_tree_и_flat_без_глобальн
         "Catalog.Flat.Form.Main.Form",
         "Catalogs/Tree/Forms/Main/Ext/Form.bin",
     }
+
+
+def test_collector_нормализует_роли_плоской_выгрузки(tmp_path):
+    read_role_member = _symbol("read_role_member")
+    tree = MemoryTree(
+        {
+            "Configuration.xml": _configuration(),
+            "Role.Reader.xml": _role("Reader"),
+            "Role.Reader.Rights.xml": _rights(),
+            "Role.Empty.xml": _role("Empty"),
+            "Role.Empty.Rights.xml": (
+                b'<Rights xmlns="http://v8.1c.ru/8.2/roles" version="2.20"/>'
+            ),
+        }
+    )
+
+    result = _collect(tree, tmp_path / "flat-roles")
+
+    assert result.roles.state is LayerState.READY
+    assert result.roles.roles_total == 2
+    assert {item.source_path for item in result.roles.artifacts} == {
+        "Roles/Reader.xml",
+        "Roles/Reader/Ext/Rights.xml",
+        "Roles/Empty.xml",
+        "Roles/Empty/Ext/Rights.xml",
+    }
+    assert b"setForNewObjects" in read_role_member(
+        result, "Roles/Reader.xml"
+    )
+    assert b"Catalog.Demo" in read_role_member(
+        result, "Roles/Reader/Ext/Rights.xml"
+    )
+    ET.fromstring(read_role_member(result, "Roles/Reader.xml"))
+
+
+def test_collector_принимает_доказанные_flat_виды_без_unknown(tmp_path):
+    ArtifactKind = _symbol("ArtifactKind")
+    tree = MemoryTree(
+        {
+            "Configuration.xml": _configuration(),
+            "DefinedType.Value.xml": b"<defined-type/>",
+            "CommonAttribute.Tenant.xml": b"<common-attribute/>",
+            "SessionParameter.Tenant.xml": b"<session-parameter/>",
+            "EventSubscription.Write.xml": b"<event-subscription/>",
+            "ScheduledJob.Refresh.xml": b"<scheduled-job/>",
+            "ScheduledJob.Refresh.Schedule.xml": b"<schedule/>",
+            "Sequence.Documents.RecordSetModule.txt": (
+                b"procedure Register() endprocedure"
+            ),
+            "AccumulationRegister.Balance.Help.xml": b"<help/>",
+            "Catalog.Products.Predefined.xml": b"<predefined/>",
+            "Catalog.Products.Form.List.xml": b"<form-descriptor/>",
+            "Catalog.Products.Template.Layout.xml": b"<template/>",
+            "Subsystem.Future.xml": b"<deferred/>",
+            "XDTOPackage.Future.xml": b"<deferred/>",
+            "WSReference.Future.xml": b"<deferred/>",
+            "CommonPicture.Logo.xml": b"<ignored/>",
+            "CommonTemplate.Layout.xml": b"<ignored/>",
+            "CommandGroup.Tools.xml": b"<ignored/>",
+            "FunctionalOption.Feature.xml": b"<ignored/>",
+            "FunctionalOptionsParameter.Value.xml": b"<ignored/>",
+            "Language.Russian.xml": b"<ignored/>",
+            "Style.Default.xml": b"<ignored/>",
+            "StyleItem.Color.xml": b"<ignored/>",
+            "Interface.Main.xml": b"<ignored/>",
+        }
+    )
+
+    result = _collect(tree, tmp_path / "flat-kinds")
+
+    assert {
+        (item.source_name, item.kind, item.source_path)
+        for item in result.artifacts
+    } == {
+        ("Configuration", ArtifactKind.METADATA, "Configuration.xml"),
+        ("DefinedTypes", ArtifactKind.METADATA, "DefinedType.Value.xml"),
+        (
+            "CommonAttributes",
+            ArtifactKind.METADATA,
+            "CommonAttribute.Tenant.xml",
+        ),
+        (
+            "SessionParameters",
+            ArtifactKind.METADATA,
+            "SessionParameter.Tenant.xml",
+        ),
+        (
+            "EventSubscriptions",
+            ArtifactKind.METADATA,
+            "EventSubscription.Write.xml",
+        ),
+        (
+            "ScheduledJobs",
+            ArtifactKind.METADATA,
+            "ScheduledJob.Refresh.xml",
+        ),
+        (
+            "Sequences",
+            ArtifactKind.CODE,
+            "Sequence.Documents.RecordSetModule.txt",
+        ),
+    }
+    assert not any(
+        item.code in {"unsupported_metadata", "unsupported_layout"}
+        for item in result.diagnostics
+    )
+    assert not any(
+        item.source_path.endswith(
+            (".Help.xml", ".Predefined.xml", ".Form.List.xml", ".Template.Layout.xml")
+        )
+        for item in result.artifacts
+    )
 
 
 def test_collector_бота_принимает_только_доказанный_tree_layout(tmp_path):

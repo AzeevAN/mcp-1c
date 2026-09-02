@@ -18,6 +18,7 @@ MATRIX = [
     ("CommonModule.Сервис.Module.txt", "ОбщийМодуль.Сервис", "module"),
     ("Catalog.Объект.ManagerModule.txt", "Справочник.Объект.МодульМенеджера", "manager_module"),
     ("InformationRegister.Регистр.RecordSetModule.txt", "РегистрСведений.Регистр.МодульНабораЗаписей", "recordset_module"),
+    ("Sequence.Документы.RecordSetModule.txt", "Последовательность.Документы.МодульНабораЗаписей", "recordset_module"),
     ("CommonForm.Основная.Form", "ОбщаяФорма.Основная", "common_form_container"),
     ("CommonForm.Основная.Form.Module.txt", "ОбщаяФорма.Основная", "common_form_text"),
     ("CommonCommand.Открыть.CommandModule.txt", "ОбщаяКоманда.Открыть", "common_command"),
@@ -28,7 +29,7 @@ MATRIX = [
 
 
 @pytest.mark.parametrize("filename,address,pattern", MATRIX)
-def test_двенадцать_доказанных_форм_имени(filename, address, pattern):
+def test_доказанные_формы_имени(filename, address, pattern):
     parsed = разобрать_плоское_имя(filename)
 
     assert parsed.address == address
@@ -54,6 +55,7 @@ KIND_EXAMPLES = {
     "HTTPService": ("HTTPService.Пример.Module.txt", "HTTPСервис"),
     "InformationRegister": ("InformationRegister.Пример.RecordSetModule.txt", "РегистрСведений"),
     "Report": ("Report.Пример.ObjectModule.txt", "Отчет"),
+    "Sequence": ("Sequence.Пример.RecordSetModule.txt", "Последовательность"),
     "WebService": ("WebService.Пример.Module.txt", "WebСервис"),
 }
 
@@ -75,6 +77,7 @@ ALLOWED_PATTERNS = {
     "HTTPService": {"module"},
     "InformationRegister": {"manager_module", "object_command", "object_form_container", "object_form_text", "recordset_module"},
     "Report": {"manager_module", "object_command", "object_form_container", "object_form_text", "object_module"},
+    "Sequence": {"recordset_module"},
     "WebService": {"module"},
 }
 
@@ -102,7 +105,7 @@ ALL_PATTERNS = frozenset().union(*ALLOWED_PATTERNS.values())
 
 
 @pytest.mark.parametrize("kind,example", KIND_EXAMPLES.items())
-def test_все_восемнадцать_видов_адресуются(kind, example):
+def test_все_доказанные_виды_адресуются(kind, example):
     filename, public_kind = example
     parsed = разобрать_плоское_имя(filename)
 
@@ -118,8 +121,8 @@ def test_все_восемнадцать_видов_адресуются(kind, e
         for pattern in sorted(patterns)
     ],
 )
-def test_ровно_сорок_девять_подтверждённых_сочетаний_принимаются(kind, pattern):
-    assert sum(map(len, ALLOWED_PATTERNS.values())) == 49
+def test_ровно_пятьдесят_подтверждённых_сочетаний_принимаются(kind, pattern):
+    assert sum(map(len, ALLOWED_PATTERNS.values())) == 50
     parsed = разобрать_плоское_имя(_filename_for(kind, pattern))
 
     assert parsed.pattern == pattern

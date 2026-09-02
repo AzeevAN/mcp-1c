@@ -108,6 +108,38 @@ def test_materializer_строит_пять_слоёв_и_generation_переж�
     assert (registry.data_dir / pointer.root_path / "payload/code").is_dir()
 
 
+def test_materializer_сохраняет_compiled_модуль_не_выдавая_его_за_bsl(tmp_path):
+    load_layer_payload = _symbol("load_layer_payload")
+    collection = _collection(
+        tmp_path / "source-compiled",
+        compiled_module=True,
+    )
+    materialized = _materialized(tmp_path, "compiled", collection)
+    payload = load_layer_payload(
+        materialized.payloads[LayerKind.CODE].manifest_path
+    )
+    semantic = next(
+        item
+        for item in payload.semantic["modules"]
+        if item["address"] == "ОбщийМодуль.Sealed"
+    )
+    member = next(
+        item for item in payload.members if item.key == "ОбщийМодуль.Sealed"
+    )
+
+    assert semantic["compiled"] is True
+    assert member.relative_path.endswith(".Module")
+
+    registry = Registry(tmp_path / "data-compiled")
+    registry.publish_generation(
+        registry.stage_generation(materialized.manifest, materialized.payloads)
+    )
+    loaded = registry.modules["DemoConfiguration:modules"]
+    entry = loaded.каталог.entries["ОбщийМодуль.Sealed"]
+    assert entry.compiled is True
+    assert entry.locator is not None and entry.locator.kind == "compiled"
+
+
 def test_hashes_разделяют_изменение_кода_и_декларации_формы(tmp_path):
     first = _materialized(
         tmp_path,

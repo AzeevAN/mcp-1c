@@ -344,6 +344,19 @@ export function RolesPage() {
                     </header>
                     {restriction.isPending && <span>Читаем окно RLS…</span>}
                     {restriction.isError && <div role="alert">{errorText(restriction.error)}</div>}
+                    {restriction.data?.fields && restriction.data.fields.length > 0 && (
+                      <div className="role-restriction-fields">
+                        <strong>Поля ограничения</strong>
+                        <ul>
+                          {restriction.data.fields.map((field, index) => (
+                            <li key={`${index}:${field}`}><code>{field}</code></li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {restriction.data?.total_chars === 0 && (
+                      <p className="role-restriction-empty">Условие RLS пустое.</p>
+                    )}
                     {restrictionContent && <pre>{restrictionContent}</pre>}
                     {restriction.data?.page?.next_cursor && (
                       <button type="button" onClick={continueRestriction}>Дочитать RLS</button>

@@ -126,6 +126,7 @@ _ПЛОСКИЕ_ВИДЫ = {
     "HTTPService": "HTTPСервис",
     "InformationRegister": "РегистрСведений",
     "Report": "Отчет",
+    "Sequence": "Последовательность",
     "WebService": "WebСервис",
 }
 
@@ -137,7 +138,7 @@ _ПЛОСКИЕ_СУФФИКСЫ = {
     "ValueManagerModule": "МодульМенеджераЗначения",
 }
 
-# 18 видов и 13 синтаксических pattern дают не декартов продукт, а ровно 49
+# 19 видов и 13 синтаксических pattern дают не декартов продукт, а ровно 50
 # подтверждённых сочетаний. Например, `CommonForm.X.Module.txt` синтаксически
 # похож на общий модуль, но в измеренном формате форма имеет только `.Form`
 # и `.Form.Module.txt`; принять похожее имя значило бы создать ложный адрес.
@@ -159,6 +160,7 @@ _ПЛОСКИЕ_PATTERN_BY_KIND = {
     "HTTPService": {"module"},
     "InformationRegister": {"manager_module", "object_command", "object_form_container", "object_form_text", "recordset_module"},
     "Report": {"manager_module", "object_command", "object_form_container", "object_form_text", "object_module"},
+    "Sequence": {"recordset_module"},
     "WebService": {"module"},
 }
 

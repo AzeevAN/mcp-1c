@@ -13,6 +13,7 @@ import pytest
 from mcp1c.intake_v2 import CandidateJobState, DurableCandidateStore, SourceKind
 from mcp1c.intake_v2_operations import IntakeCoordinator
 from mcp1c.intake_v2_transport import BrowserStagingStore
+from mcp1c.resource_limits import ResourceLimits
 from test_intake_v2_collector import _configuration
 
 
@@ -126,6 +127,48 @@ def test_refresh_объединяет_browser_и_incoming_по_internal_identity
     ).refresh()
     assert [item.candidate_id for item in restarted.candidates] == [
         item.candidate_id for item in snapshot.candidates
+    ]
+
+
+def test_refresh_не_блокирует_крупный_игнорируемый_parent_configuration(
+    tmp_path,
+):
+    CandidateCatalog = _symbol("CandidateCatalog")
+    IntakeLifecycle = _symbol("IntakeLifecycle")
+
+    managed, browser, _records, operations = _backend(tmp_path)
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    with zipfile.ZipFile(incoming / "candidate.zip", "w") as archive:
+        archive.writestr("Configuration.xml", _configuration("DemoConfiguration"))
+        archive.writestr(
+            "CommonModules/Demo/Ext/Module.bsl",
+            b"procedure Demo()\nendprocedure",
+        )
+        # ParentConfigurations — доказанный балласт: collector его не
+        # читает, поэтому размер не должен блокировать discovery.
+        archive.writestr(
+            "Ext/ParentConfigurations/Supply.cf",
+            b"C" * 2048,
+        )
+
+    snapshot = IntakeLifecycle(
+        CandidateCatalog(managed / "catalog"),
+        browser,
+        operations,
+        incoming_root=incoming,
+        limits=ResourceLimits(
+            max_entries=20,
+            max_entry_bytes=1024,
+            max_total_bytes=1024,
+            max_compression_ratio=50,
+        ),
+        directory_settle_seconds=0,
+    ).refresh()
+
+    assert snapshot.issues == ()
+    assert [item.probe.internal_name for item in snapshot.candidates] == [
+        "DemoConfiguration"
     ]
 
 

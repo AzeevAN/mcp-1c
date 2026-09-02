@@ -173,7 +173,11 @@ def _http_body_limit(scope) -> int:
             return HTTP_BODY_LIMIT_LOGIN
         if path == "/queries":
             return HTTP_BODY_LIMIT_QUERIES
-        if path in ("/sources", "/api/v1/sources/upload"):
+        if path in (
+            "/sources",
+            "/api/v1/sources/upload",
+            "/api/v1/sources/intake/upload",
+        ):
             return HTTP_BODY_LIMIT_UPLOAD
         if path == "/api/v1/reference/upload":
             return HTTP_BODY_LIMIT_REFERENCE

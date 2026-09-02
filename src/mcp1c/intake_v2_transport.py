@@ -192,19 +192,23 @@ def _read_small_regular_file(path: Path, limit: int) -> bytes:
             os.close(descriptor)
 
 
-def _resource_budget(
-    limits: ResourceLimits,
-    label: str,
-    members: Iterable[tuple[str, int, int]],
-) -> ResourceBudget:
+def _read_budget(limits: ResourceLimits, label: str) -> ResourceBudget:
     if not isinstance(limits, ResourceLimits):
         raise TypeError("limits должен быть ResourceLimits")
-    budget = ResourceBudget(limits, label)
+    return ResourceBudget(limits, label)
+
+
+def _validate_opened_member(
+    budget: ResourceBudget,
+    name: str,
+    size: int,
+    compressed_size: int,
+) -> None:
+    """Проверить бюджет только для выбранного разборщиком элемента."""
     try:
-        budget.validate_members(members)
+        budget.validate_members(((name, size, compressed_size),))
     except ResourceLimitError as error:
         raise TransportLimitError(str(error)) from error
-    return budget
 
 
 @dataclass(frozen=True, slots=True)
@@ -727,14 +731,7 @@ class ZipExportTree:
         try:
             archive = zipfile.ZipFile(source)
             members = self._inspect(archive, limits)
-            budget = _resource_budget(
-                limits,
-                "ZIP файловой выгрузки",
-                (
-                    (path, member.size, member.compressed_size)
-                    for path, member in members.items()
-                ),
-            )
+            budget = _read_budget(limits, "ZIP файловой выгрузки")
         except (zipfile.BadZipFile, OSError, EOFError) as error:
             if archive is not None:
                 archive.close()
@@ -877,6 +874,12 @@ class ZipExportTree:
                     raise TransportUnstableError(
                         "ZIP изменился после фиксации снимка"
                     )
+                _validate_opened_member(
+                    self._budget,
+                    path,
+                    actual.size,
+                    actual.compressed_size,
+                )
                 member_stream = self._archive.open(info)
                 return _TransportReader(
                     member_stream,
@@ -969,11 +972,10 @@ def _scan_directory(
     root_fd, root_identity = _open_directory_root(root)
     members: dict[str, _DirectoryMember] = {}
     entries_total = 0
-    bytes_total = 0
     latest_mtime_ns = root_identity[3]
 
     def visit(directory_fd: int, prefix: tuple[str, ...]) -> None:
-        nonlocal entries_total, bytes_total, latest_mtime_ns
+        nonlocal entries_total, latest_mtime_ns
         try:
             with os.scandir(directory_fd) as iterator:
                 entries = sorted(iterator, key=lambda item: item.name)
@@ -1027,15 +1029,6 @@ def _scan_directory(
                     "read-only каталог содержит специальный файл"
                 )
             member = _DirectoryMember(info.st_size, _identity(info))
-            if member.size > limits.max_entry_bytes:
-                raise TransportLimitError(
-                    "файл read-only каталога превышает предел размера"
-                )
-            bytes_total += member.size
-            if bytes_total > limits.max_total_bytes:
-                raise TransportLimitError(
-                    "суммарный размер read-only каталога превышает предел"
-                )
             members[normalized] = member
 
     try:
@@ -1047,11 +1040,7 @@ def _scan_directory(
         raise TransportUnstableError(
             "read-only каталог ещё изменяется; повторите проверку позже"
         )
-    budget = _resource_budget(
-        limits,
-        "каталог файловой выгрузки",
-        ((path, member.size, member.size) for path, member in members.items()),
-    )
+    budget = _read_budget(limits, "каталог файловой выгрузки")
 
     def fingerprint_parts() -> Iterable[object]:
         yield "directory"
@@ -1158,13 +1147,6 @@ class DirectoryExportTree:
         with self._lock:
             if self._source_sha256 is not None:
                 return self._source_sha256
-            # Состав уже проверен при создании snapshot. Новый счётчик нужен
-            # лишь для фактически прочитанных байтов; повторный список всех
-            # членов здесь дал бы лишний пик памяти на больших выгрузках.
-            budget = ResourceBudget(
-                self._limits,
-                "канонический снимок каталога",
-            )
             digest = hashlib.sha256(b"mcp1c-directory-snapshot-v1\0")
             for path in self._paths:
                 encoded_path = path.encode("utf-8")
@@ -1178,18 +1160,14 @@ class DirectoryExportTree:
                     raise TransportUnstableError(
                         "read-only каталог изменился при расчёте SHA-256"
                     )
-                with _TransportReader(
-                    stream,
-                    budget,
-                    path,
-                    lock=self._lock,
-                    failure_message=(
+                try:
+                    with stream:
+                        for block in iter(lambda: stream.read(_READ_CHUNK), b""):
+                            digest.update(block)
+                except OSError as error:
+                    raise TransportUnstableError(
                         "файл read-only каталога изменился при расчёте SHA-256"
-                    ),
-                    failure_type=TransportUnstableError,
-                ) as reader:
-                    for block in iter(lambda: reader.read(_READ_CHUNK), b""):
-                        digest.update(block)
+                    ) from error
             if not self.verify_stable(self._snapshot.fingerprint):
                 raise TransportUnstableError(
                     "read-only каталог изменился при расчёте SHA-256"
@@ -1222,6 +1200,16 @@ class DirectoryExportTree:
             raise TransportUnstableError(
                 "read-only каталог изменился после фиксации снимка"
             )
+        try:
+            _validate_opened_member(
+                self._budget,
+                path,
+                expected.size,
+                expected.size,
+            )
+        except Exception:
+            stream.close()
+            raise
         return _TransportReader(
             stream,
             self._budget,

@@ -34,6 +34,15 @@ export type IntakePreview = {
   };
   base_generation_id: string | null;
   candidate_generation_id: string;
+  extension_impacts?: {
+    total: number;
+    items: Array<{
+      extension: string;
+      target: string;
+      state: "resolved" | "target_missing";
+    }>;
+    truncated: boolean;
+  };
   layers: Array<{
     kind: "base_structure" | "extended_structure" | "code" | "forms" | "roles";
     decision: "apply" | "preserve";
@@ -128,11 +137,14 @@ export function useIntakeJob(jobId: string) {
 export function startConfigIntake(
   candidateId: string,
   action: IntakeAction,
+  parentConfiguration = "",
 ): Promise<{ job: IntakeJob }> {
-  return intakeRequest("/api/v1/sources/intake/start", {
+  const body: Record<string, string> = {
     candidate_id: candidateId,
     action,
-  });
+  };
+  if (parentConfiguration) body.parent_configuration = parentConfiguration;
+  return intakeRequest("/api/v1/sources/intake/start", body);
 }
 
 export function confirmConfigIntake(jobId: string): Promise<{ job: IntakeJob }> {

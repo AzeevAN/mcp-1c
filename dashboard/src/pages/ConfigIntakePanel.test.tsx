@@ -28,6 +28,15 @@ const preview = {
   },
   base_generation_id: null,
   candidate_generation_id: "generation-001",
+  extension_impacts: {
+    total: 1,
+    items: [{
+      extension: "СинтетическоеРасширение",
+      target: "Справочник.Удалённый",
+      state: "target_missing",
+    }],
+    truncated: false,
+  },
   layers: [
     {
       kind: "base_structure",
@@ -159,6 +168,7 @@ it("показывает semantic preview и публикует только п�
   expect(within(dialog).getByText("Базовая структура")).toBeInTheDocument();
   expect(within(dialog).getByText("Роли")).toBeInTheDocument();
   expect(within(dialog).getByText("12 элементов")).toBeInTheDocument();
+  expect(within(dialog).getByText("цель отсутствует в новой базе", { exact: false })).toBeInTheDocument();
   expect(requests).toContainEqual({
     path: "/api/v1/sources/intake/start",
     body: { candidate_id: "candidate-001", action: "create" },
@@ -214,4 +224,82 @@ it("принимает полный ZIP как durable candidate и обновл
 
   expect(await screen.findByText("СинтетическаяКонфигурация")).toBeInTheDocument();
   expect(open).toHaveBeenCalledWith("POST", "/api/v1/sources/intake/upload");
+});
+
+it("для расширения требует выбрать родительскую конфигурацию", async () => {
+  const extensionCandidate = {
+    ...candidate,
+    id: "candidate-extension",
+    source_kind: "extension",
+    internal_name: "СинтетическоеРасширение",
+    origin_name: "extension.zip",
+    requires_parent: true,
+    actions: ["update_full"],
+  };
+  const requests: Array<{ path: string; body: unknown }> = [];
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input);
+    const body = init?.body ? JSON.parse(String(init.body)) : null;
+    requests.push({ path, body });
+    if (path === "/api/v1/sources/intake") {
+      return response({
+        api_version: "v1",
+        configuration_names: ["ПерваяКонфигурация", "РодительскаяКонфигурация"],
+        candidates: [extensionCandidate],
+        groups: [{
+          source_kind: "extension",
+          internal_name: extensionCandidate.internal_name,
+          candidate_ids: [extensionCandidate.id],
+        }],
+        issues: [],
+        jobs: [],
+      });
+    }
+    if (path === "/api/v1/sources/intake/start") {
+      return response({
+        job: {
+          job_id: "job-extension",
+          candidate_id: extensionCandidate.id,
+          state: "ready",
+          stage: "ready",
+          error: "",
+          preview: null,
+          commit: null,
+        },
+      }, 202);
+    }
+    if (path === "/api/v1/sources/intake/jobs/job-extension") {
+      return response({
+        job: {
+          job_id: "job-extension",
+          candidate_id: extensionCandidate.id,
+          state: "parsing",
+          stage: "collecting",
+          error: "",
+          preview: null,
+          commit: null,
+        },
+      });
+    }
+    throw new Error(`Неожиданный запрос ${path}`);
+  }));
+  renderPanel();
+
+  expect(await screen.findByText("СинтетическоеРасширение")).toBeInTheDocument();
+  const action = screen.getByRole("button", { name: "Обновить полностью" });
+  expect(action).toBeDisabled();
+  fireEvent.change(screen.getByRole("combobox", { name: "Родительская конфигурация" }), {
+    target: { value: "РодительскаяКонфигурация" },
+  });
+  expect(action).toBeEnabled();
+  fireEvent.click(action);
+
+  expect(requests).toContainEqual({
+    path: "/api/v1/sources/intake/start",
+    body: {
+      candidate_id: "candidate-extension",
+      action: "update_full",
+      parent_configuration: "РодительскаяКонфигурация",
+    },
+  });
 });

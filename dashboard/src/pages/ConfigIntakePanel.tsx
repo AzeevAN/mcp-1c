@@ -67,6 +67,11 @@ const layoutLabels: Record<IntakeCandidate["layout"], string> = {
   mixed: "смешанная раскладка",
 };
 
+const extensionImpactLabels = {
+  resolved: "цель найдена",
+  target_missing: "цель отсутствует в новой базе",
+};
+
 function formatBytes(value: number) {
   if (value < 1024 * 1024) return `${Math.max(1, Math.round(value / 1024))} КБ`;
   return `${(value / 1024 / 1024).toFixed(1).replace(".0", "")} МБ`;
@@ -84,13 +89,16 @@ function stateTone(state: IntakeLayerVersion["state"]): StatusTone {
 
 function CandidateRow({
   candidate,
+  configurationNames,
   busy,
   onStart,
 }: {
   candidate: IntakeCandidate;
+  configurationNames: string[];
   busy: boolean;
-  onStart: (candidate: IntakeCandidate, action: IntakeAction) => void;
+  onStart: (candidate: IntakeCandidate, action: IntakeAction, parent: string) => void;
 }) {
+  const [parent, setParent] = useState("");
   return (
     <article className="intake-candidate">
       <span className="incoming-file-icon"><FileArchive size={20} aria-hidden="true" /></span>
@@ -103,19 +111,35 @@ function CandidateRow({
         </small>
       </span>
       <div className="intake-candidate-actions">
+        {candidate.requires_parent && (
+          <label className="intake-parent-select">
+            <span>Родительская конфигурация</span>
+            <select
+              aria-label="Родительская конфигурация"
+              value={parent}
+              disabled={busy || configurationNames.length === 0}
+              onChange={(event) => setParent(event.target.value)}
+            >
+              <option value="">Выберите конфигурацию</option>
+              {configurationNames.map((name) => (
+                <option value={name} key={name}>{name}</option>
+              ))}
+            </select>
+          </label>
+        )}
         {candidate.actions.map((action) => (
           <button
             className={action === "update_full" || action === "create" ? "button-primary" : "button-secondary"}
             type="button"
             key={action}
-            disabled={busy}
-            onClick={() => onStart(candidate, action)}
+            disabled={busy || (candidate.requires_parent && !parent)}
+            onClick={() => onStart(candidate, action, parent)}
           >
             {actionLabels[action]}
           </button>
         ))}
-        {candidate.requires_parent && candidate.actions.length === 0 && (
-          <small>Выберите родительскую конфигурацию после подключения поддержки расширений.</small>
+        {candidate.requires_parent && configurationNames.length === 0 && (
+          <small>Сначала загрузите родительскую конфигурацию.</small>
         )}
       </div>
     </article>
@@ -183,6 +207,19 @@ function PreviewDialog({
                 </article>
               ))}
             </div>
+            {preview.extension_impacts && preview.extension_impacts.total > 0 && (
+              <section className="intake-extension-impacts" aria-label="Влияние на расширения">
+                <strong>Перепроверка расширений</strong>
+                {preview.extension_impacts.items.map((item) => (
+                  <p key={`${item.extension}:${item.target}`}>
+                    <code>{item.extension}</code> · <code>{item.target}</code> · {extensionImpactLabels[item.state]}
+                  </p>
+                ))}
+                {preview.extension_impacts.truncated && (
+                  <small>Показаны первые {preview.extension_impacts.items.length} из {preview.extension_impacts.total} связей.</small>
+                )}
+              </section>
+            )}
             <footer>
               <button className="button-secondary" type="button" onClick={onClose}>Вернуться без публикации</button>
               <button className="button-primary" type="button" onClick={onConfirm} disabled={pending}>
@@ -270,12 +307,16 @@ export function ConfigIntakePanel() {
     }
   };
 
-  const start = async (candidate: IntakeCandidate, action: IntakeAction) => {
+  const start = async (
+    candidate: IntakeCandidate,
+    action: IntakeAction,
+    parent: string,
+  ) => {
     setStarting(true);
     setDialogError("");
     setFeedback(null);
     try {
-      const result = await startConfigIntake(candidate.id, action);
+      const result = await startConfigIntake(candidate.id, action, parent);
       setActiveJobId(result.job.job_id);
       queryClient.setQueryData(
         ["sources", "intake", "job", result.job.job_id],
@@ -399,9 +440,10 @@ export function ConfigIntakePanel() {
                   return candidate ? (
                     <CandidateRow
                       candidate={candidate}
+                      configurationNames={intake.data.configuration_names}
                       busy={starting}
                       key={candidate.id}
-                      onStart={(item, action) => void start(item, action)}
+                      onStart={(item, action, parent) => void start(item, action, parent)}
                     />
                   ) : null;
                 })}

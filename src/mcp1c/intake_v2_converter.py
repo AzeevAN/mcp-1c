@@ -23,7 +23,7 @@ from .form_structure import (
     parse_form_descriptor,
     parse_form_xml,
 )
-from .intake_v2 import LayerKind, MetadataKindSpec
+from .intake_v2 import LayerKind, MetadataKindSpec, SourceKind
 from .intake_v2_collector import (
     DEFAULT_KIND_SPECS,
     ArtifactKind,
@@ -33,6 +33,7 @@ from .intake_v2_collector import (
     open_collection_member,
 )
 from .model import Configuration, Field, MetadataObject, TabularPart
+from .intake_v2_extensions import ExtensionStructure as NativeExtensionStructure
 from .v8container import V8Container, V8ContainerError, V8ResourceLimitError
 
 
@@ -358,18 +359,26 @@ class ExtendedObject:
 @dataclass(frozen=True, slots=True)
 class ExtendedStructure:
     objects: Mapping[str, ExtendedObject]
+    extension_structure: NativeExtensionStructure | None = None
 
     def __post_init__(self) -> None:
         ordered = dict(sorted(self.objects.items(), key=lambda item: _order(item[0])))
         if any(key != value.full_name for key, value in ordered.items()):
             raise ConversionError("ключ extended object не совпадает с full_name")
         object.__setattr__(self, "objects", MappingProxyType(ordered))
+        if self.extension_structure is not None and not isinstance(
+            self.extension_structure, NativeExtensionStructure
+        ):
+            raise ConversionError("extension_structure имеет неверный тип")
 
     def __len__(self) -> int:
         return len(self.objects)
 
     def get(self, full_name: str) -> ExtendedObject | None:
         return self.objects.get(full_name)
+
+    def to_layer_data(self) -> dict[str, object]:
+        return extended_layer_data(self)
 
 
 @dataclass(frozen=True, slots=True)
@@ -727,7 +736,15 @@ _SCHEMA_KINDS = {
     "DataProcessors": "DataProcessor",
 }
 
-_BASE_HEAD = frozenset({"Name", "Synonym", "Comment"})
+_BASE_HEAD = frozenset(
+    {
+        "Name",
+        "Synonym",
+        "Comment",
+        "ExtendedConfigurationObject",
+        "ObjectBelonging",
+    }
+)
 _BASE_PROPERTIES: dict[str, dict[str, tuple[str, str]]] = {
     "Catalog": {
         "Hierarchical": ("hierarchical", "bool"),
@@ -1036,6 +1053,41 @@ def _base_object(
         elif child_kind not in {"Command", "Form", "Template", "AddressingAttribute"}:
             diagnostics.add("unknown_child", expected_kind, child_kind)
     return obj
+
+
+def _borrowed_field_targets(
+    root: ET.Element,
+    spec: MetadataKindSpec,
+    object_name: str,
+    where: str,
+) -> tuple[str, ...]:
+    """Сохранить доказанные borrowed children по иерархическому адресу."""
+    expected_kind = _SCHEMA_KINDS[spec.source_name]
+    _node, _properties, children = _descriptor(root, expected_kind, where)
+    targets: list[str] = []
+    for child in children if children is not None else ():
+        child_kind = _tag(child)
+        properties = _child(child, "Properties")
+        if properties is None:
+            continue
+        name = _text(_child(properties, "Name"))
+        if child_kind in {"Attribute", "Dimension", "Resource"}:
+            if name and _text(_child(properties, "ObjectBelonging")):
+                targets.append(f"{object_name}.{name}")
+            continue
+        if child_kind != "TabularSection" or not name:
+            continue
+        part_children = _child(child, "ChildObjects")
+        for item in part_children if part_children is not None else ():
+            item_properties = _child(item, "Properties")
+            if item_properties is None:
+                continue
+            field_name = _text(_child(item_properties, "Name"))
+            if field_name and _text(
+                _child(item_properties, "ObjectBelonging")
+            ):
+                targets.append(f"{object_name}.{name}.{field_name}")
+    return tuple(sorted(targets, key=_order))
 
 
 _COMMON_ATTRIBUTE_PROPERTIES = frozenset(
@@ -2441,6 +2493,9 @@ def _configuration(
         "Vendor",
         "Version",
         "CompatibilityMode",
+        "NamePrefix",
+        "ObjectBelonging",
+        "ConfigurationExtensionPurpose",
     }
     _unknown_properties(properties, known, diagnostics, "Configuration")
     name = _required_text(_child(properties, "Name"), "Configuration.Name")
@@ -2685,6 +2740,11 @@ def extended_layer_data(extended: ExtendedStructure) -> dict[str, object]:
     if not isinstance(extended, ExtendedStructure):
         raise TypeError("extended должен быть ExtendedStructure")
     return {
+        "extension_structure": (
+            extended.extension_structure.to_layer_dict()
+            if extended.extension_structure is not None
+            else None
+        ),
         "objects": [
             {
                 "full_name": value.full_name,
@@ -2737,6 +2797,9 @@ def convert_collection(
         diagnostics,
     )
     extended_objects: dict[str, ExtendedObject] = {}
+    own_objects: dict[str, MetadataObject] = {}
+    borrowed_overlays: dict[str, MetadataObject] = {}
+    borrowed_field_targets: set[str] = set()
     exchange_plan_contents = _exchange_plan_content_artifacts(collection)
     needs_binding_resolver = any(
         item.source_name in {"EventSubscriptions", "ScheduledJobs"}
@@ -2779,6 +2842,28 @@ def convert_collection(
             if obj.full_name in base.objects:
                 raise ConversionError(f"дублируется base object {obj.full_name}")
             base.objects[obj.full_name] = obj
+            if collection.probe.source_kind is SourceKind.EXTENSION:
+                expected_kind = _SCHEMA_KINDS[spec.source_name]
+                properties = _descriptor(
+                    root,
+                    expected_kind,
+                    artifact.source_path,
+                )[1]
+                target = (
+                    borrowed_overlays
+                    if _text(_child(properties, "ObjectBelonging"))
+                    else own_objects
+                )
+                target[obj.full_name] = obj
+                if target is borrowed_overlays:
+                    borrowed_field_targets.update(
+                        _borrowed_field_targets(
+                            root,
+                            spec,
+                            obj.full_name,
+                            artifact.source_path,
+                        )
+                    )
         if spec.extended_adapter == "common_attribute":
             obj = _common_attribute(root, diagnostics, artifact.source_path)
             if obj.full_name in extended_objects:
@@ -2880,7 +2965,21 @@ def convert_collection(
 
     _attach_content(collection, base, extended_objects, diagnostics)
     _resolve_relations(extended_objects, base, diagnostics)
-    extended = ExtendedStructure(extended_objects)
+    extension_structure = None
+    if collection.probe.source_kind is SourceKind.EXTENSION:
+        extension_structure = NativeExtensionStructure(
+            name=base.name,
+            # Родитель является transport binding и хранится в identity
+            # generation, а не угадывается из XML расширения.
+            parent_configuration="",
+            own_objects=own_objects,
+            borrowed_overlays=borrowed_overlays,
+            borrowed_field_targets=tuple(borrowed_field_targets),
+        )
+    extended = ExtendedStructure(
+        extended_objects,
+        extension_structure=extension_structure,
+    )
     return StructureConversion(
         base=base,
         extended=extended,

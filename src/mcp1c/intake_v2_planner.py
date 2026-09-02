@@ -259,8 +259,12 @@ def plan_intake(
         allowed = frozenset(LayerKind)
     else:
         if active is None:
-            raise PlannerError("для обновления нужна существующая конфигурация")
-        if active.identity != candidate.identity:
+            if not (
+                action is IntakeAction.UPDATE_FULL
+                and candidate.identity.source_kind is SourceKind.EXTENSION
+            ):
+                raise PlannerError("для обновления нужна существующая конфигурация")
+        elif active.identity != candidate.identity:
             raise PlannerError("личность кандидата не совпадает с целью")
         allowed = (
             _CONTENT_LAYERS

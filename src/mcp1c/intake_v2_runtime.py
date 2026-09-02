@@ -12,7 +12,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
-from .intake_v2 import GenerationManifest, LayerKind, LayerManifest, LayerState
+from . import index_cache
+from .intake_v2 import (
+    GenerationManifest,
+    LayerKind,
+    LayerManifest,
+    LayerState,
+    SourceKind,
+)
+from .intake_v2_extensions import ExtensionResolutionError, ExtensionStructure
 from .intake_v2_registry import (
     BundleStoreError,
     LayerMember,
@@ -44,6 +52,7 @@ class NativeGenerationRuntime:
     code_items_total: int
     locator_generation: int
     roles: LoadedRoleAccess | None
+    extension_structure: ExtensionStructure | None = None
 
 
 def _mapping(value: object, label: str) -> Mapping[str, object]:
@@ -454,14 +463,44 @@ def build_generation_runtime(
     )
     assert base is not None
     configuration = configuration_from_base_layer(base.semantic)
-    expected_name = manifest.identity.configuration_name
+    expected_name = (
+        manifest.identity.configuration_name
+        if manifest.identity.source_kind is SourceKind.CONFIGURATION
+        else manifest.identity.extension_name
+    )
     if not expected_name or configuration.name != expected_name:
         raise GenerationRuntimeError(
             "base_structure.name не совпадает с generation identity"
         )
+    extended = _ready_payload(
+        root,
+        layers,
+        LayerKind.EXTENDED_STRUCTURE,
+        required=manifest.identity.source_kind is SourceKind.EXTENSION,
+    )
+    extension_structure = None
+    if manifest.identity.source_kind is SourceKind.EXTENSION:
+        assert extended is not None
+        try:
+            extension_structure = ExtensionStructure.from_layer_dict(
+                extended.semantic.get("extension_structure"),
+                configuration,
+                parent_configuration=manifest.identity.parent_configuration,
+            )
+        except ExtensionResolutionError as error:
+            raise GenerationRuntimeError(
+                f"extended_structure: {error}"
+            ) from error
     code = _ready_payload(root, layers, LayerKind.CODE, required=False)
     forms = _ready_payload(root, layers, LayerKind.FORMS, required=False)
-    source_id = f"{configuration.name}:modules"
+    source_id = (
+        f"{configuration.name}:modules"
+        if manifest.identity.source_kind is SourceKind.CONFIGURATION
+        else (
+            f"{manifest.identity.parent_configuration}:ext:"
+            f"{index_cache.safe_name(manifest.identity.extension_name)}"
+        )
+    )
     code_sha256, locator_generation = _code_identity(layers)
     catalog = _catalog(
         code,
@@ -481,6 +520,7 @@ def build_generation_runtime(
         ),
         locator_generation=locator_generation,
         roles=roles,
+        extension_structure=extension_structure,
     )
 
 

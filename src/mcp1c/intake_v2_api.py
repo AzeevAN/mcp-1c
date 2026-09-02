@@ -15,6 +15,7 @@ from typing import BinaryIO
 from .intake_v2 import (
     CandidateJobState,
     DurableCandidateStore,
+    ExportIdentity,
     LayerManifest,
     SourceKind,
 )
@@ -29,6 +30,9 @@ from .intake_v2_planner import IntakeAction, LayerVersion
 from .intake_v2_registry import GenerationView
 from .intake_v2_transport import BrowserStagingStore
 from .registry import Registry, RegistryError
+
+
+_MAX_EXTENSION_IMPACT_ITEMS = 200
 
 
 class IntakeApiError(RuntimeError):
@@ -115,7 +119,9 @@ class IntakeApiService:
         configuration_names: frozenset[str] | None = None,
     ) -> list[str]:
         if candidate.probe.source_kind is SourceKind.EXTENSION:
-            return []
+            # Родитель выбирается при start. До этого можно обещать только
+            # полную первую загрузку/замену отдельного extension layer.
+            return [IntakeAction.UPDATE_FULL.value]
         if configuration_names is None:
             configuration_names = frozenset(
                 self.registry.snapshot().configuration_names
@@ -210,12 +216,36 @@ class IntakeApiService:
             raise
 
     def _active(
-        self, candidate: DiscoveredCandidate, action: IntakeAction
+        self,
+        candidate: DiscoveredCandidate,
+        action: IntakeAction,
+        *,
+        parent_configuration: str = "",
     ) -> GenerationView | None:
         if candidate.probe.source_kind is SourceKind.EXTENSION:
-            raise IntakeApiConflict(
-                "Операции расширения станут доступны после выбора и проверки родителя."
+            if action is IntakeAction.CREATE:
+                raise IntakeApiConflict(
+                    "Расширение загружается действием update_full, а не create."
+                )
+            if not parent_configuration:
+                raise IntakeApiConflict("Для расширения обязателен родитель.")
+            snapshot = self.registry.snapshot()
+            if parent_configuration not in snapshot.configuration_names:
+                raise IntakeApiConflict(
+                    f"Родитель расширения не загружен: {parent_configuration}."
+                )
+            identity = ExportIdentity.extension(
+                candidate.probe.internal_name,
+                parent_configuration=parent_configuration,
             )
+            generation = snapshot.generation(identity)
+            if generation is not None:
+                return generation.view
+            if action is IntakeAction.UPDATE_CONTENT:
+                raise IntakeApiConflict(
+                    "Для update сначала нужен существующий extension generation."
+                )
+            return None
         configuration = candidate.probe.internal_name
         exists = configuration in self.registry.snapshot().configuration_names
         if action is IntakeAction.CREATE:
@@ -274,7 +304,11 @@ class IntakeApiService:
             if preview.plan.action is not selected_action:
                 raise IntakeApiConflict("Action не совпадает с готовым preview.")
             raise IntakeApiConflict("Job уже содержит готовый preview.")
-        active = self._active(candidate, selected_action)
+        active = self._active(
+            candidate,
+            selected_action,
+            parent_configuration=parent_configuration,
+        )
         try:
             self.lifecycle.start(
                 job_id,
@@ -362,6 +396,26 @@ class IntakeApiService:
                 }
                 for layer in preview.plan.layers
             ],
+        }
+        impacts = tuple(
+            item
+            for item in self.registry.preview_extension_relations(
+                preview.materialized.root,
+                preview.materialized.manifest,
+            )
+            if item.state.value == "target_missing"
+        )
+        payload["preview"]["extension_impacts"] = {
+            "total": len(impacts),
+            "items": [
+                {
+                    "extension": item.extension,
+                    "target": item.target,
+                    "state": item.state.value,
+                }
+                for item in impacts[:_MAX_EXTENSION_IMPACT_ITEMS]
+            ],
+            "truncated": len(impacts) > _MAX_EXTENSION_IMPACT_ITEMS,
         }
         try:
             result = self.lifecycle.operations.load_commit(job_id)

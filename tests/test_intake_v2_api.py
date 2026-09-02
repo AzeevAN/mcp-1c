@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from starlette.applications import Starlette
 
-from conftest import живой_клиент
+from conftest import build_configuration, write_export, живой_клиент
 from mcp1c.dashboard_runtime import DASHBOARD_ON, routes
 from mcp1c.intake_v2 import DurableCandidateStore
 from mcp1c.intake_v2_lifecycle import CandidateCatalog, IntakeLifecycle
@@ -47,6 +47,71 @@ def _archive(name: str = "DemoConfiguration") -> bytes:
 def _write_archive(path: Path, name: str = "DemoConfiguration") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(_archive(name))
+
+
+def _write_extension_archive(path: Path, name: str = "DemoExtension") -> None:
+    descriptor = (
+        '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">'
+        "<Configuration><Properties>"
+        f"<Name>{name}</Name><Version>1.0</Version>"
+        "<NamePrefix>Demo_</NamePrefix>"
+        "<ObjectBelonging>Adopted</ObjectBelonging>"
+        "<ConfigurationExtensionPurpose>AddOn</ConfigurationExtensionPurpose>"
+        "<CompatibilityMode></CompatibilityMode>"
+        "</Properties><ChildObjects/></Configuration></MetaDataObject>"
+    ).encode()
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("Configuration.xml", descriptor)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload.getvalue())
+
+
+def test_extension_full_требует_родителя_и_проходит_preview_confirm(tmp_path):
+    IntakeApiConflict = _symbol("IntakeApiConflict")
+    registry = Registry(tmp_path / "data")
+    source = tmp_path / "base"
+    source.mkdir()
+    registry.add_configuration(
+        write_export(
+            source,
+            build_configuration(name="DemoConfiguration"),
+        ),
+        keep_source=False,
+    )
+    _write_extension_archive(registry.incoming_dir / "extension.zip")
+    service = _service(registry)
+    snapshot = service.snapshot()
+    candidate = snapshot["candidates"][0]
+
+    assert candidate["source_kind"] == "extension"
+    assert candidate["requires_parent"] is True
+    assert candidate["actions"] == ["update_full"]
+    with pytest.raises(IntakeApiConflict, match="родител"):
+        service.start(candidate["id"], "update_full")
+
+    work = service.start(
+        candidate["id"],
+        "update_full",
+        job_id="job-extension",
+        parent_configuration="DemoConfiguration",
+    )
+    service.prepare(work)
+    preview = service.job_payload(work.job_id)["preview"]
+    assert preview["identity"] == {
+        "source_kind": "extension",
+        "configuration_name": "",
+        "extension_name": "DemoExtension",
+        "parent_configuration": "DemoConfiguration",
+    }
+    assert preview["no_op"] is False
+
+    committed = service.confirm(work.job_id)
+    assert committed["commit"]["no_op"] is False
+    identity = service.lifecycle.operations.load_preview(
+        work.job_id
+    ).materialized.manifest.identity
+    assert registry.active_generation_pointer(identity) is not None
 
 
 def _service(registry: Registry):
@@ -210,6 +275,11 @@ def test_create_строит_preview_и_публикует_только_посл
     assert preview["stage"] == "done"
     assert preview["preview"]["action"] == "create"
     assert preview["preview"]["no_op"] is False
+    assert preview["preview"]["extension_impacts"] == {
+        "total": 0,
+        "items": [],
+        "truncated": False,
+    }
     assert {layer["decision"] for layer in preview["preview"]["layers"]} == {
         "apply"
     }

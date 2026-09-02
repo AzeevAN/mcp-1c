@@ -69,12 +69,23 @@ from .intake_v2_registry import (
     RecoveryBlocked,
     StagedGeneration,
     legacy_generation_view,
+    load_layer_payload,
     native_generation_view,
+)
+from .intake_v2_extensions import (
+    ExtensionRelation,
+    ExtensionResolution,
+    ExtensionResolutionError,
+    ExtensionStructure,
+    resolve_extension_relation_map,
+    resolve_extension_relations,
+    resolve_extension_structure,
 )
 from .intake_v2_runtime import (
     GenerationRuntimeError,
     NativeGenerationRuntime,
     build_generation_runtime,
+    configuration_from_base_layer,
 )
 from .loader import ExportError, load
 from .model import Configuration
@@ -628,9 +639,11 @@ class _PreparedNativeRuntime:
     """Полностью построенный пакет до durable pointer switch."""
 
     runtime: NativeGenerationRuntime
-    configuration: LoadedConfiguration
+    configuration: LoadedConfiguration | None
     module_source: Source | None
     module_indices: modules_index.Индексы | None
+    parent_configuration: LoadedConfiguration | None = None
+    extension_relations: tuple[ExtensionRelation, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -745,11 +758,18 @@ class RegistrySnapshot:
 
     def extension_names(self, configuration: str) -> tuple[str, ...]:
         prefix = f"{configuration}:ext:"
-        return tuple(
+        legacy = {
             source_id[len(prefix):]
             for source_id, source in self.sources.items()
             if source.kind == KIND_EXTENSION and source_id.startswith(prefix)
-        )
+        }
+        native = {
+            generation.manifest.identity.extension_name
+            for generation in self.generations.values()
+            if generation.manifest.identity.source_kind is SourceKind.EXTENSION
+            and generation.manifest.identity.parent_configuration == configuration
+        }
+        return tuple(sorted(legacy | native, key=lambda value: (value.casefold(), value)))
 
     def generation(
         self, identity: ExportIdentity
@@ -816,6 +836,8 @@ class ResolvedContext:
     extension: LoadedModules | None = None
     extension_runtime: LoadedExtensionRuntime | None = None
     roles: LoadedRoleAccess | None = None
+    extension_roles: LoadedRoleAccess | None = None
+    extension_resolution: ExtensionResolution | None = None
 
     @property
     def name(self) -> str:
@@ -1021,6 +1043,12 @@ class Registry:
         # большой прямой/обратный индекс остаётся файловой SQLite, а не
         # коллекцией Python-объектов в памяти.
         self.roles: dict[str, LoadedRoleAccess] = {}
+        # Native extension snapshot хранит структуру и роли отдельно от базы.
+        # Проверенные hard edges пересчитываются при смене базы одним проходом;
+        # merged Configuration строится только для явно выбранного расширения.
+        self.extension_structures: dict[str, ExtensionStructure] = {}
+        self.extension_relations: dict[str, tuple[ExtensionRelation, ...]] = {}
+        self.extension_roles: dict[str, LoadedRoleAccess] = {}
         # Сильная ссылка нужна не потоку (он живёт сам), а повторному
         # `startup()`: пока предыдущая сборка ещё идёт, reload не должен
         # запускать второй разбор того же корпуса и удваивать расход памяти.
@@ -3623,11 +3651,15 @@ class Registry:
                 runtime = self.extension_runtime.get(selected_name)
                 extension_key = None
                 расширение = None
+                extension_structure = None
+                extension_roles = None
                 if extension is not None:
                     extension_key = (
                         f"{selected_name}:ext:{index_cache.safe_name(extension)}"
                     )
                     расширение = self.modules.get(extension_key)
+                    extension_structure = self.extension_structures.get(extension_key)
+                    extension_roles = self.extension_roles.get(extension_key)
                 cached = self._relation_cache.get(selected_name)
                 if (
                     cached is not None
@@ -3641,6 +3673,15 @@ class Registry:
 
             if relation is None:
                 relation, hidden = self._compute_relation(loaded, syntax)
+            extension_resolution = None
+            if extension_structure is not None:
+                try:
+                    extension_resolution = resolve_extension_structure(
+                        loaded.config,
+                        extension_structure,
+                    )
+                except ExtensionResolutionError as error:
+                    raise RegistryError(str(error)) from error
 
             with self._lock:
                 unchanged = (
@@ -3651,7 +3692,13 @@ class Registry:
                     and self.extension_runtime.get(selected_name) is runtime
                     and (
                         extension_key is None
-                        or self.modules.get(extension_key) is расширение
+                        or (
+                            self.modules.get(extension_key) is расширение
+                            and self.extension_structures.get(extension_key)
+                            is extension_structure
+                            and self.extension_roles.get(extension_key)
+                            is extension_roles
+                        )
                     )
                     and (
                         requested_name is not None
@@ -3675,6 +3722,8 @@ class Registry:
                     extension=расширение,
                     extension_runtime=runtime,
                     roles=roles,
+                    extension_roles=extension_roles,
+                    extension_resolution=extension_resolution,
                 )
 
         raise RegistryError(
@@ -3908,6 +3957,66 @@ class Registry:
                 raise RegistryError("active generation изменился до composition")
         return self._generation_store.payload_sources(pointer)
 
+    def preview_extension_relations(
+        self,
+        generation_root: str | Path,
+        manifest: GenerationManifest,
+    ) -> tuple[ExtensionRelation, ...]:
+        """Показать влияние кандидата базы без чтения extension ZIP.
+
+        Читается только уже материализованный ``base_structure`` кандидата и
+        малые сохранённые карты borrowed edges активных расширений.
+        """
+        if not isinstance(manifest, GenerationManifest):
+            raise TypeError("manifest должен быть GenerationManifest")
+        if manifest.identity.source_kind is not SourceKind.CONFIGURATION:
+            return ()
+        layer = next(
+            (
+                item
+                for item in manifest.layers
+                if item.kind is LayerKind.BASE_STRUCTURE
+            ),
+            None,
+        )
+        if (
+            layer is None
+            or layer.state is not LayerState.READY
+            or not layer.relative_path
+        ):
+            raise RegistryError("preview базы не содержит готовый base_structure")
+        try:
+            payload = load_layer_payload(Path(generation_root) / layer.relative_path)
+            candidate = configuration_from_base_layer(payload.semantic)
+        except (OSError, ValueError, BundleStoreError, GenerationRuntimeError) as error:
+            raise RegistryError("base_structure preview не прочитан") from error
+        with self._lock:
+            structures = {
+                source_id: structure
+                for source_id, structure in self.extension_structures.items()
+                if structure.parent_configuration == candidate.name
+            }
+        try:
+            relation_map = resolve_extension_relation_map(candidate, structures)
+        except ExtensionResolutionError as error:
+            raise RegistryError(str(error)) from error
+        relations = [
+            relation
+            for source_id in sorted(relation_map)
+            for relation in relation_map[source_id]
+        ]
+        return tuple(
+            sorted(
+                relations,
+                key=lambda item: (
+                    item.extension.casefold(),
+                    item.extension,
+                    item.target.casefold(),
+                    item.target,
+                ),
+            )
+        )
+
     def _after_generation_pointer_switch(
         self, _pointer: GenerationPointer
     ) -> None:
@@ -4118,22 +4227,28 @@ class Registry:
         self,
         root: Path,
         manifest: GenerationManifest,
-    ) -> _PreparedNativeRuntime | None:
+    ) -> _PreparedNativeRuntime:
         """Построить полный runtime до изменения active pointer.
 
-        Расширения подключаются отдельным resolver этапа 10. Их pointer уже
-        атомарен, но он не имеет права молча заменить runtime основной
-        конфигурации. Для основной конфигурации любой отказ оставляет старый
-        обслуживаемый снимок целиком.
+        Для расширения parent уже должен обслуживаться Registry. Его структура
+        не заменяет базовую: до commit проверяются только сохранённые borrowed
+        edges, а код и роли получают отдельный ключ.
         """
-        if manifest.identity.source_kind is not SourceKind.CONFIGURATION:
-            return None
+        identity = manifest.identity
+        cache_owner = (
+            identity.configuration_name
+            if identity.source_kind is SourceKind.CONFIGURATION
+            else (
+                f"{identity.parent_configuration}:ext:"
+                f"{index_cache.safe_name(identity.extension_name)}"
+            )
+        )
         try:
             runtime = build_generation_runtime(
                 root,
                 manifest,
                 role_cache_path=self._cache_path(
-                    manifest.identity.configuration_name,
+                    cache_owner,
                     "roles.sqlite",
                 ),
             )
@@ -4144,34 +4259,62 @@ class Registry:
 
         config = runtime.configuration
         pointer = GenerationPointer.for_manifest(manifest)
-        source = Source(
-            id=config.name,
-            kind=KIND_CONFIGURATION,
-            origin=manifest.origin_name,
-            sha256=runtime.base_sha256,
-            loaded_at=_now(),
-            platform=config.platform,
-            status=STATUS_READY,
-            items_total=len(config),
-            stored_path=pointer.root_path,
-            selection_version=manifest.selection_version,
-        )
-        loaded_configuration = LoadedConfiguration(
-            source=source,
-            config=config,
-            graph=Graph(config),
-            # До commit кэш нового поколения читать можно, а записывать
-            # нельзя: неудачный preview не должен вытеснить warm-кэш active.
-            index=self._configuration_index(config, source, write_cache=False),
-            field_index=self._field_index(config, source, write_cache=False),
-        )
+        loaded_configuration = None
+        parent_configuration = None
+        extension_relations: tuple[ExtensionRelation, ...] = ()
+        if identity.source_kind is SourceKind.CONFIGURATION:
+            source = Source(
+                id=config.name,
+                kind=KIND_CONFIGURATION,
+                origin=manifest.origin_name,
+                sha256=runtime.base_sha256,
+                loaded_at=_now(),
+                platform=config.platform,
+                status=STATUS_READY,
+                items_total=len(config),
+                stored_path=pointer.root_path,
+                selection_version=manifest.selection_version,
+            )
+            loaded_configuration = LoadedConfiguration(
+                source=source,
+                config=config,
+                graph=Graph(config),
+                # До commit кэш нового поколения читать можно, а записывать
+                # нельзя: неудачный preview не должен вытеснить warm-кэш active.
+                index=self._configuration_index(config, source, write_cache=False),
+                field_index=self._field_index(config, source, write_cache=False),
+            )
+        else:
+            with self._lock:
+                parent = self.configurations.get(identity.parent_configuration)
+            if parent is None:
+                raise RegistryError(
+                    f"Для расширения {identity.extension_name} не загружен "
+                    f"родитель {identity.parent_configuration}."
+                )
+            parent_configuration = parent
+            if runtime.extension_structure is None:
+                raise RegistryError(
+                    f"{manifest.origin_name}: extension structure не построен"
+                )
+            try:
+                extension_relations = resolve_extension_relations(
+                    parent.config,
+                    runtime.extension_structure,
+                )
+            except ExtensionResolutionError as error:
+                raise RegistryError(str(error)) from error
 
         module_source: Source | None = None
         module_indices: modules_index.Индексы | None = None
         if runtime.catalog is not None:
             module_source = Source(
                 id=runtime.catalog.identity.source_id,
-                kind=KIND_MODULES,
+                kind=(
+                    KIND_MODULES
+                    if identity.source_kind is SourceKind.CONFIGURATION
+                    else KIND_EXTENSION
+                ),
                 origin=manifest.origin_name,
                 sha256=runtime.code_sha256,
                 loaded_at=_now(),
@@ -4180,7 +4323,11 @@ class Registry:
                 stored_path=pointer.root_path,
                 selection_version=manifest.selection_version,
                 locator_generation=runtime.locator_generation,
-                code_version=config.version,
+                code_version=(
+                    config.version
+                    if identity.source_kind is SourceKind.CONFIGURATION
+                    else parent.config.version
+                ),
             )
             module_indices = modules_index.поднять_индексы(
                 self,
@@ -4201,15 +4348,15 @@ class Registry:
             loaded_configuration,
             module_source,
             module_indices,
+            parent_configuration,
+            extension_relations,
         )
 
     def _native_runtime_maps(
         self,
-        prepared: _PreparedNativeRuntime | None,
+        prepared: _PreparedNativeRuntime,
         root: Path,
     ) -> tuple[LoadedConfiguration | None, LoadedModules | None]:
-        if prepared is None:
-            return None, None
         loaded_modules = None
         if prepared.module_source is not None:
             assert prepared.module_indices is not None
@@ -4222,25 +4369,28 @@ class Registry:
 
     def _save_native_runtime_cache(
         self,
-        prepared: _PreparedNativeRuntime | None,
+        prepared: _PreparedNativeRuntime,
     ) -> None:
         """Best-effort кэш уже опубликованного runtime."""
-        if prepared is None:
-            return
-        source = prepared.configuration.source
+        source = (
+            prepared.configuration.source
+            if prepared.configuration is not None
+            else None
+        )
         try:
-            index_cache.save(
-                prepared.configuration.index,
-                self._cache_path(source.id, "objects"),
-                source_sha256=source.sha256,
-                kind="objects",
-            )
-            index_cache.save(
-                prepared.configuration.field_index,
-                self._cache_path(source.id, "fields"),
-                source_sha256=source.sha256,
-                kind="fields",
-            )
+            if source is not None and prepared.configuration is not None:
+                index_cache.save(
+                    prepared.configuration.index,
+                    self._cache_path(source.id, "objects"),
+                    source_sha256=source.sha256,
+                    kind="objects",
+                )
+                index_cache.save(
+                    prepared.configuration.field_index,
+                    self._cache_path(source.id, "fields"),
+                    source_sha256=source.sha256,
+                    kind="fields",
+                )
             if (
                 prepared.module_source is not None
                 and prepared.module_indices is not None
@@ -4331,6 +4481,26 @@ class Registry:
                     staged.root,
                     manifest,
                 )
+                replacement_relations: dict[
+                    str, tuple[ExtensionRelation, ...]
+                ] = {}
+                if prepared_runtime.configuration is not None:
+                    candidate_base = prepared_runtime.configuration.config
+                    with self._lock:
+                        structures = {
+                            source_id: structure
+                            for source_id, structure in self.extension_structures.items()
+                            if structure.parent_configuration == candidate_base.name
+                        }
+                    try:
+                        replacement_relations = dict(
+                            resolve_extension_relation_map(
+                                candidate_base,
+                                structures,
+                            )
+                        )
+                    except ExtensionResolutionError as error:
+                        raise RegistryError(str(error)) from error
                 self._generation_store.promote(staged)
                 runtime_root = self.data_dir / pointer.root_path
                 loaded_configuration, loaded_modules = self._native_runtime_maps(
@@ -4341,6 +4511,16 @@ class Registry:
                     if expectation_changed():
                         raise GenerationPublishConflict(
                             "active generation изменился после построения preview"
+                        )
+                    if (
+                        prepared_runtime.parent_configuration is not None
+                        and self.configurations.get(
+                            manifest.identity.parent_configuration
+                        )
+                        is not prepared_runtime.parent_configuration
+                    ):
+                        raise GenerationPublishConflict(
+                            "родитель расширения изменился во время публикации"
                         )
                     next_pointers = dict(self._generation_pointers)
                     next_pointers[key] = pointer
@@ -4361,7 +4541,30 @@ class Registry:
                             self.roles.pop(name, None)
                         else:
                             self.roles[name] = prepared_runtime.runtime.roles
+                        self.extension_relations.update(replacement_relations)
                         self._relation_cache.pop(name, None)
+                    else:
+                        identity = manifest.identity
+                        extension_key = (
+                            f"{identity.parent_configuration}:ext:"
+                            f"{index_cache.safe_name(identity.extension_name)}"
+                        )
+                        if loaded_modules is None:
+                            self.modules.pop(extension_key, None)
+                        else:
+                            self.modules[extension_key] = loaded_modules
+                        structure = prepared_runtime.runtime.extension_structure
+                        assert structure is not None
+                        self.extension_structures[extension_key] = structure
+                        self.extension_relations[extension_key] = (
+                            prepared_runtime.extension_relations
+                        )
+                        if prepared_runtime.runtime.roles is None:
+                            self.extension_roles.pop(extension_key, None)
+                        else:
+                            self.extension_roles[extension_key] = (
+                                prepared_runtime.runtime.roles
+                            )
                     self._after_generation_pointer_switch(pointer)
                 self._generation_store.write_recovery(
                     replace(prepared, phase=RecoveryPhase.POINTER_SWITCHED)
@@ -4526,28 +4729,37 @@ class Registry:
 
         pointers = self._generation_pointers_from_payload(payload)
         manifests: dict[tuple[str, ...], GenerationManifest] = {}
-        native_runtime: dict[
-            tuple[str, ...],
-            tuple[_PreparedNativeRuntime, LoadedConfiguration, LoadedModules | None],
-        ] = {}
         for key, pointer in pointers.items():
             manifest = self._generation_store.verify(pointer)
             manifests[key] = manifest
+
+        native_runtime: dict[
+            tuple[str, ...],
+            tuple[
+                _PreparedNativeRuntime,
+                LoadedConfiguration | None,
+                LoadedModules | None,
+            ],
+        ] = {}
+        # Родители поднимаются первыми независимо от порядка JSON-строк.
+        for key, manifest in manifests.items():
+            if manifest.identity.source_kind is not SourceKind.CONFIGURATION:
+                continue
+            pointer = pointers[key]
             prepared = self._build_native_generation_runtime(
                 self.data_dir / pointer.root_path,
                 manifest,
             )
-            if prepared is not None:
-                loaded_configuration, loaded_modules = self._native_runtime_maps(
-                    prepared,
-                    self.data_dir / pointer.root_path,
-                )
-                assert loaded_configuration is not None
-                native_runtime[key] = (
-                    prepared,
-                    loaded_configuration,
-                    loaded_modules,
-                )
+            loaded_configuration, loaded_modules = self._native_runtime_maps(
+                prepared,
+                self.data_dir / pointer.root_path,
+            )
+            assert loaded_configuration is not None
+            native_runtime[key] = (
+                prepared,
+                loaded_configuration,
+                loaded_modules,
+            )
         with self._lock:
             self._generation_pointers = pointers
             self._generation_manifests = manifests
@@ -4568,6 +4780,41 @@ class Registry:
                 else:
                     self.roles[name] = _prepared.runtime.roles
                 self._relation_cache.pop(name, None)
+
+        for key, manifest in manifests.items():
+            if manifest.identity.source_kind is not SourceKind.EXTENSION:
+                continue
+            pointer = pointers[key]
+            prepared = self._build_native_generation_runtime(
+                self.data_dir / pointer.root_path,
+                manifest,
+            )
+            loaded_configuration, loaded_modules = self._native_runtime_maps(
+                prepared,
+                self.data_dir / pointer.root_path,
+            )
+            assert loaded_configuration is None
+            native_runtime[key] = (prepared, None, loaded_modules)
+            identity = manifest.identity
+            extension_key = (
+                f"{identity.parent_configuration}:ext:"
+                f"{index_cache.safe_name(identity.extension_name)}"
+            )
+            structure = prepared.runtime.extension_structure
+            assert structure is not None
+            with self._lock:
+                if loaded_modules is None:
+                    self.modules.pop(extension_key, None)
+                else:
+                    self.modules[extension_key] = loaded_modules
+                self.extension_structures[extension_key] = structure
+                self.extension_relations[extension_key] = (
+                    prepared.extension_relations
+                )
+                if prepared.runtime.roles is None:
+                    self.extension_roles.pop(extension_key, None)
+                else:
+                    self.extension_roles[extension_key] = prepared.runtime.roles
 
         for prepared, _configuration, _modules in native_runtime.values():
             self._save_native_runtime_cache(prepared)

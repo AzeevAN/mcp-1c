@@ -2082,6 +2082,41 @@ h2 {
   gap: 8px;
 }
 
+.intake-parent-select {
+  display: grid;
+  gap: 3px;
+  min-width: 210px;
+}
+
+.intake-parent-select > span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.intake-parent-select select {
+  min-height: 34px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 0 30px 0 9px;
+  color: var(--ink-900);
+  background: var(--surface);
+}
+
+.intake-extension-impacts {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+  border: 1px solid #f1c98a;
+  border-radius: 10px;
+  padding: 11px 12px;
+  background: var(--surface-amber);
+}
+
+.intake-extension-impacts p {
+  margin: 0;
+  font-size: 11px;
+}
+
 .intake-resumable {
   display: flex;
   flex-wrap: wrap;

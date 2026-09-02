@@ -442,13 +442,7 @@ def test_collector_нулевые_роли_ready_и_переживают_уда�
     assert (target / restored.code[0].relative_path).read_bytes() == b"code"
 
 
-@pytest.mark.parametrize(
-    "extra",
-    [
-        {"Roles/Broken.xml": b"<broken"},
-        {"Roles/Orphan.xml": _role("Orphan")},
-    ],
-)
+@pytest.mark.parametrize("extra", [{"Roles/Broken.xml": b"<broken"}])
 def test_collector_локальная_ошибка_roles_не_ломает_code_и_не_оставляет_payload(
     tmp_path, extra
 ):
@@ -467,6 +461,43 @@ def test_collector_локальная_ошибка_roles_не_ломает_code_
     assert result.roles.artifacts == ()
     assert len(result.code) == 1
     assert (tmp_path / "role-error" / result.code[0].relative_path).is_file()
+
+
+def test_collector_сохраняет_descriptor_без_rights_как_пустую_роль(tmp_path):
+    load_collection = _symbol("load_collection")
+    tree = MemoryTree(
+        {
+            "Configuration.xml": _configuration(),
+            "Roles/Empty.xml": _role("Empty"),
+        }
+    )
+    target = tmp_path / "descriptor-only-role"
+
+    result = _collect(tree, target)
+    tree.payloads.clear()
+    restored = load_collection(target)
+
+    assert result.roles.state is restored.roles.state is LayerState.READY
+    assert restored.roles.roles_total == 1
+    assert [item.source_path for item in restored.roles.artifacts] == [
+        "Roles/Empty.xml"
+    ]
+
+
+def test_collector_rights_без_descriptor_оставляет_ролевой_слой_error(tmp_path):
+    result = _collect(
+        MemoryTree(
+            {
+                "Configuration.xml": _configuration(),
+                "Roles/Orphan/Ext/Rights.xml": _rights(),
+            }
+        ),
+        tmp_path / "rights-without-descriptor",
+    )
+
+    assert result.roles.state is LayerState.ERROR
+    assert "descriptor" in result.roles.error
+    assert result.roles.artifacts == ()
 
 
 @pytest.mark.parametrize("failure", ["transport", "unstable"])

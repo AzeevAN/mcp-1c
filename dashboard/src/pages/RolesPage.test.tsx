@@ -198,6 +198,35 @@ it("открывается без config, выбирает роль и не по
   expect(screen.getByRole("button", { name: "Дочитать RLS" })).toBeInTheDocument();
 });
 
+it("показывает неизвестные default-флаги descriptor-only роли без false", async () => {
+  const descriptorOnly = {
+    ...role,
+    name: "DescriptorOnly",
+    default_flags: {
+      ...role.default_flags,
+      set_for_new_objects: null,
+      set_for_attributes_by_default: null,
+      independent_rights_of_child_objects: null,
+    },
+  };
+  vi.stubGlobal("fetch", vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+    const url = new URL(String(input), "http://dashboard.test");
+    if (url.pathname === "/api/v1/roles/access") {
+      return response({
+        ...access,
+        role: descriptorOnly,
+        rights: [],
+        rights_total: 0,
+      });
+    }
+    return response({ ...catalog, roles: [descriptorOnly] });
+  }));
+  renderPage("/roles?config=Отраслевая%20конфигурация&role=DescriptorOnly");
+
+  await waitFor(() => expect(screen.getAllByText("не задано")).toHaveLength(3));
+  expect(screen.queryByText("Новые объекты: false")).not.toBeInTheDocument();
+});
+
 it("объясняет пустое условие RLS и всё равно показывает его fields", async () => {
   vi.stubGlobal("fetch", vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
     const url = new URL(String(input), "http://dashboard.test");

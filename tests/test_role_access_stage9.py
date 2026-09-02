@@ -498,6 +498,43 @@ async def test_get_role_access_пагинирует_и_rls_читается_бе
     assert api_page.json()["content"] == condition[:256]
 
 
+async def test_descriptor_only_роль_возвращает_null_флаги_и_пустые_права(
+    tmp_path,
+):
+    registry = Registry(tmp_path / "data")
+    _publish(
+        registry,
+        tmp_path / "source",
+        configuration="DemoConfiguration",
+        generation_id="generation-1",
+        roles=((
+            "DescriptorOnly",
+            _descriptor(
+                "DescriptorOnly",
+                uuid="88888888-8888-8888-8888-888888888888",
+            ),
+            None,
+        ),),
+    )
+
+    payload = _tool_json(
+        await _server(registry, tmp_path).call_tool(
+            "get_role_access",
+            {"config": "DemoConfiguration", "role": "DescriptorOnly"},
+        )
+    )
+
+    assert payload["state"] == "ready"
+    assert payload["rights"] == []
+    assert payload["rights_total"] == 0
+    assert payload["role"]["default_flags"] == {
+        "set_for_new_objects": None,
+        "set_for_attributes_by_default": None,
+        "independent_rights_of_child_objects": None,
+        "resolver_effect": "evidence_only",
+    }
+
+
 async def test_missing_и_error_ограничены_если_каталог_включён_другой_конфигурацией(
     tmp_path,
 ):

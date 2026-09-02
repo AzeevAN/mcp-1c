@@ -34,7 +34,7 @@ from .intake_v2_probe import CandidateProbe, ProbeError
 
 
 COLLECTION_FORMAT_VERSION = 1
-SELECTION_VERSION = 2
+SELECTION_VERSION = 3
 _READ_CHUNK = 1 << 20
 _MANIFEST_LIMIT = 64 * 1024 * 1024
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -971,15 +971,12 @@ def _ready_roles(
     descriptors: set[str],
     rights: set[str],
 ) -> RoleSnapshot:
-    missing_rights = sorted(descriptors - rights)
     missing_descriptors = sorted(rights - descriptors)
-    if missing_rights or missing_descriptors:
-        parts: list[str] = []
-        if missing_rights:
-            parts.append(f"нет Rights.xml: {', '.join(missing_rights[:3])}")
-        if missing_descriptors:
-            parts.append(f"нет descriptor: {', '.join(missing_descriptors[:3])}")
-        raise ValueError("неполные пары role XML; " + "; ".join(parts))
+    if missing_descriptors:
+        raise ValueError(
+            "неполные пары role XML; нет descriptor: "
+            + ", ".join(missing_descriptors[:3])
+        )
     ordered = tuple(sorted(artifacts, key=lambda item: item.source_path))
     snapshot = RoleSnapshot(
         state=LayerState.READY,

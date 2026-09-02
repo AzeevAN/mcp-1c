@@ -40,6 +40,11 @@ function stateClass(state: DeclaredRightRow["state"]) {
   return "is-allowed";
 }
 
+function defaultFlag(value: boolean | null) {
+  if (value === null) return "не задано";
+  return value ? "true" : "false";
+}
+
 function pageLabel(offset: number, limit: number, returned: number, total: number) {
   const page = Math.floor(offset / Math.max(limit, 1)) + 1;
   return `Страница ${page} · показано ${returned} из ${total}`;
@@ -295,9 +300,9 @@ export function RolesPage() {
                       </span>
                     </div>
                     <div className="role-flags">
-                      <span>Новые объекты: <strong>{access.data.role.default_flags.set_for_new_objects ? "true" : "false"}</strong></span>
-                      <span>Реквизиты по умолчанию: <strong>{access.data.role.default_flags.set_for_attributes_by_default ? "true" : "false"}</strong></span>
-                      <span>Независимые дочерние: <strong>{access.data.role.default_flags.independent_rights_of_child_objects ? "true" : "false"}</strong></span>
+                      <span>Новые объекты: <strong>{defaultFlag(access.data.role.default_flags.set_for_new_objects)}</strong></span>
+                      <span>Реквизиты по умолчанию: <strong>{defaultFlag(access.data.role.default_flags.set_for_attributes_by_default)}</strong></span>
+                      <span>Независимые дочерние: <strong>{defaultFlag(access.data.role.default_flags.independent_rights_of_child_objects)}</strong></span>
                     </div>
                     <div className="role-rights-list">
                       {(access.data.rights || []).map((right) => (

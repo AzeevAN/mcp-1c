@@ -245,7 +245,7 @@ def test_role_error_не_отменяет_остальные_готовые_сл
     tree = MemoryTree(
         {
             "Configuration.xml": _configuration(),
-            "Roles/Reader.xml": _role("Reader"),
+            "Roles/Reader/Ext/Rights.xml": _rights(),
         }
     )
     collection = collect_source_b(tree, probe_export(tree), tmp_path / "source")

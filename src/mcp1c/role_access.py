@@ -102,9 +102,9 @@ class RoleDescriptor:
     synonyms: tuple[tuple[str, str], ...]
     comment: str
     xml_version: str
-    set_for_new_objects: bool
-    set_for_attributes_by_default: bool
-    independent_rights_of_child_objects: bool
+    set_for_new_objects: bool | None
+    set_for_attributes_by_default: bool | None
+    independent_rights_of_child_objects: bool | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -529,9 +529,13 @@ CREATE TABLE roles (
     uuid TEXT NOT NULL UNIQUE,
     comment TEXT NOT NULL,
     xml_version TEXT NOT NULL,
-    set_for_new INTEGER NOT NULL CHECK(set_for_new IN (0, 1)),
-    set_for_attributes INTEGER NOT NULL CHECK(set_for_attributes IN (0, 1)),
-    independent_children INTEGER NOT NULL CHECK(independent_children IN (0, 1))
+    set_for_new INTEGER CHECK(set_for_new IS NULL OR set_for_new IN (0, 1)),
+    set_for_attributes INTEGER CHECK(
+        set_for_attributes IS NULL OR set_for_attributes IN (0, 1)
+    ),
+    independent_children INTEGER CHECK(
+        independent_children IS NULL OR independent_children IN (0, 1)
+    )
 );
 CREATE TABLE role_synonyms (
     role_id INTEGER NOT NULL REFERENCES roles(id),
@@ -782,12 +786,13 @@ def _artifact_rows(payload: LayerPayload) -> dict[str, tuple[int, str]]:
         if source_path in result:
             raise RoleAccessError("roles semantic дублирует source_path")
         result[source_path] = size, digest
-    if len(result) != total * 2:
-        raise RoleAccessError("roles semantic не содержит точные пары XML")
     return result
 
 
-def _role_pairs(paths: Iterable[str], roles_total: int) -> tuple[tuple[str, str, str], ...]:
+def _role_pairs(
+    paths: Iterable[str],
+    roles_total: int,
+) -> tuple[tuple[str, str, str | None], ...]:
     descriptors: dict[str, str] = {}
     rights: dict[str, str] = {}
     for source_path in paths:
@@ -799,10 +804,12 @@ def _role_pairs(paths: Iterable[str], roles_total: int) -> tuple[tuple[str, str,
             rights[parts[1]] = source_path
         else:
             raise RoleAccessError("roles layer содержит посторонний member")
-    if set(descriptors) != set(rights) or len(descriptors) != roles_total:
-        raise RoleAccessError("roles layer не содержит точные пары descriptor/Rights")
+    if not set(rights) <= set(descriptors) or len(descriptors) != roles_total:
+        raise RoleAccessError(
+            "roles layer содержит Rights без descriptor или неверный roles_total"
+        )
     return tuple(
-        (name, descriptors[name], rights[name])
+        (name, descriptors[name], rights.get(name))
         for name in sorted(descriptors, key=lambda value: (value.casefold(), value))
     )
 
@@ -844,13 +851,16 @@ def _build_database(
                 cursor = connection.execute(
                     "INSERT INTO roles(name,name_key,uuid,comment,xml_version,"
                     "set_for_new,set_for_attributes,independent_children) "
-                    "VALUES (?,?,?,?,?,0,0,0)",
+                    "VALUES (?,?,?,?,?,?,?,?)",
                     (
                         descriptor.name,
                         descriptor.name.casefold(),
                         descriptor.uuid,
                         descriptor.comment,
                         descriptor.xml_version,
+                        None,
+                        None,
+                        None,
                     ),
                 )
                 role_id = int(cursor.lastrowid)
@@ -858,22 +868,23 @@ def _build_database(
                     "INSERT INTO role_synonyms(role_id,language,content) VALUES (?,?,?)",
                     ((role_id, language, content) for language, content in descriptor.synonyms),
                 )
-                rights_member = members[rights_path]
-                rights_size, rights_sha = artifacts[rights_path]
-                try:
-                    with _verified_xml_stream(
-                        root, rights_member, rights_size, rights_sha
-                    ) as stream:
-                        flags = _parse_rights(stream, connection, role_id)
-                except (OSError, EOFError, gzip.BadGzipFile) as error:
-                    raise RoleAccessError(
-                        f"rights member {rights_path} повреждён"
-                    ) from error
-                connection.execute(
-                    "UPDATE roles SET set_for_new=?,set_for_attributes=?,"
-                    "independent_children=? WHERE id=?",
-                    (*map(int, flags), role_id),
-                )
+                if rights_path is not None:
+                    rights_member = members[rights_path]
+                    rights_size, rights_sha = artifacts[rights_path]
+                    try:
+                        with _verified_xml_stream(
+                            root, rights_member, rights_size, rights_sha
+                        ) as stream:
+                            flags = _parse_rights(stream, connection, role_id)
+                    except (OSError, EOFError, gzip.BadGzipFile) as error:
+                        raise RoleAccessError(
+                            f"rights member {rights_path} повреждён"
+                        ) from error
+                    connection.execute(
+                        "UPDATE roles SET set_for_new=?,set_for_attributes=?,"
+                        "independent_children=? WHERE id=?",
+                        (*map(int, flags), role_id),
+                    )
             connection.execute(
                 "INSERT INTO meta(key,value) VALUES ('stamp',?)", (_stamp(layer),)
             )
@@ -1086,9 +1097,21 @@ class RoleAccessIndex:
                 synonyms=tuple(synonyms[int(row["id"])]),
                 comment=str(row["comment"]),
                 xml_version=str(row["xml_version"]),
-                set_for_new_objects=bool(row["set_for_new"]),
-                set_for_attributes_by_default=bool(row["set_for_attributes"]),
-                independent_rights_of_child_objects=bool(row["independent_children"]),
+                set_for_new_objects=(
+                    None
+                    if row["set_for_new"] is None
+                    else bool(row["set_for_new"])
+                ),
+                set_for_attributes_by_default=(
+                    None
+                    if row["set_for_attributes"] is None
+                    else bool(row["set_for_attributes"])
+                ),
+                independent_rights_of_child_objects=(
+                    None
+                    if row["independent_children"] is None
+                    else bool(row["independent_children"])
+                ),
             )
             for row in rows
         }

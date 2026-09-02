@@ -10,9 +10,9 @@ export type RoleDescriptor = {
   comment_truncated: boolean;
   xml_version: string;
   default_flags: {
-    set_for_new_objects: boolean;
-    set_for_attributes_by_default: boolean;
-    independent_rights_of_child_objects: boolean;
+    set_for_new_objects: boolean | null;
+    set_for_attributes_by_default: boolean | null;
+    independent_rights_of_child_objects: boolean | null;
     resolver_effect: "evidence_only";
   };
 };

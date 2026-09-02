@@ -149,7 +149,7 @@ def _rights(
 
 def _role_layer(
     root: Path,
-    roles: tuple[tuple[str, bytes, bytes], ...],
+    roles: tuple[tuple[str, bytes, bytes | None], ...],
 ) -> tuple[LayerManifest, dict[str, bytes]]:
     root.mkdir(parents=True)
     semantic_artifacts = []
@@ -157,10 +157,10 @@ def _role_layer(
     saved: dict[str, bytes] = {}
     member_ordinal = 0
     for name, descriptor, rights in roles:
-        for source_path, raw in (
-            (f"Roles/{name}.xml", descriptor),
-            (f"Roles/{name}/Ext/Rights.xml", rights),
-        ):
+        artifacts = [(f"Roles/{name}.xml", descriptor)]
+        if rights is not None:
+            artifacts.append((f"Roles/{name}/Ext/Rights.xml", rights))
+        for source_path, raw in artifacts:
             compressed = gzip.compress(raw, compresslevel=1, mtime=0)
             relative_path = f"payload/roles/{member_ordinal:08d}.xml.gz"
             member_ordinal += 1
@@ -211,7 +211,7 @@ def _open(root: Path, layer: LayerManifest, cache: Path):
 
 def _generation(
     root: Path,
-    roles: tuple[tuple[str, bytes, bytes], ...],
+    roles: tuple[tuple[str, bytes, bytes | None], ...],
     *,
     generation_id: str,
     configuration_name: str = "DemoConfiguration",
@@ -355,6 +355,35 @@ def test_index_сохраняет_descriptor_права_rls_шаблоны_и_п
         assert index.summary.restrictions == 1
         assert index.summary.templates == 1
         assert index.summary.conditions == 2
+    finally:
+        index.close()
+
+
+def test_index_сохраняет_descriptor_only_роль_с_неизвестными_default_флагами(
+    tmp_path,
+):
+    layer, _saved = _role_layer(
+        tmp_path / "generation",
+        ((
+            "DescriptorOnly",
+            _descriptor(
+                "DescriptorOnly",
+                uuid="88888888-8888-8888-8888-888888888888",
+                synonyms=(("ru", "Роль без файла прав"),),
+            ),
+            None,
+        ),),
+    )
+
+    index = _open(tmp_path / "generation", layer, tmp_path / "roles.sqlite")
+    try:
+        role = index.get_role("DescriptorOnly")
+        assert role.set_for_new_objects is None
+        assert role.set_for_attributes_by_default is None
+        assert role.independent_rights_of_child_objects is None
+        assert index.role_access("DescriptorOnly").rights == ()
+        assert index.summary.roles == 1
+        assert index.summary.rights == 0
     finally:
         index.close()
 

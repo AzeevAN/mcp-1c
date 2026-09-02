@@ -2595,7 +2595,10 @@ def _field_data(value: Field) -> dict[str, object]:
     }
 
 
-def _base_data(base: Configuration) -> dict[str, object]:
+def base_layer_data(base: Configuration) -> dict[str, object]:
+    """Вернуть канонические данные только базового структурного слоя."""
+    if not isinstance(base, Configuration):
+        raise TypeError("base должен быть Configuration")
     objects = []
     for value in sorted(base.objects.values(), key=lambda item: _order(item.full_name)):
         objects.append(
@@ -2644,6 +2647,61 @@ def _base_data(base: Configuration) -> dict[str, object]:
         "vendor": base.vendor,
         "schema_version": base.schema_version,
         "objects": objects,
+    }
+
+
+def _extended_payload_data(value: object | None) -> object:
+    """Отделить metadata-декларации от производных code/forms-состояний."""
+    if isinstance(value, EventSubscriptionPayload):
+        return {"binding": {"raw": value.binding.raw}}
+    if isinstance(value, ScheduledJobPayload):
+        return {
+            "description": value.description,
+            "restart_count_on_failure": value.restart_count_on_failure,
+            "restart_interval_on_failure": value.restart_interval_on_failure,
+            "binding": {"raw": value.binding.raw},
+        }
+    if isinstance(value, CommonFormPayload):
+        return {
+            "uuid": value.uuid,
+            "form_type": value.form_type,
+            "explanation": value.explanation,
+            "extended_presentation": value.extended_presentation,
+            "include_help_in_contents": value.include_help_in_contents,
+            "use_purposes": list(value.use_purposes),
+            "use_standard_commands": value.use_standard_commands,
+        }
+    if isinstance(value, BotPayload):
+        return {
+            "uuid": value.uuid,
+            "picture": list(value.picture),
+            "predefined": value.predefined,
+        }
+    return _canonical(value)
+
+
+def extended_layer_data(extended: ExtendedStructure) -> dict[str, object]:
+    """Вернуть канонические metadata-данные без тел кода и разбора форм."""
+    if not isinstance(extended, ExtendedStructure):
+        raise TypeError("extended должен быть ExtendedStructure")
+    return {
+        "objects": [
+            {
+                "full_name": value.full_name,
+                "kind": value.kind,
+                "name": value.name,
+                "synonym": value.synonym,
+                "comment": value.comment,
+                "code_address": value.code_address,
+                "base_object": value.base_object,
+                "payload": _extended_payload_data(value.payload),
+                # Наличие формы у объекта — структурная связь metadata;
+                # содержимое формы и состояние её модуля живут в своих слоях.
+                "forms": list(value.forms),
+                "relations": _canonical(value.relations),
+            }
+            for value in extended.objects.values()
+        ]
     }
 
 
@@ -2826,9 +2884,11 @@ def convert_collection(
     return StructureConversion(
         base=base,
         extended=extended,
-        base_content_sha256=_sha256(_base_data(base), b"mcp1c-base-structure-v1\0"),
+        base_content_sha256=_sha256(
+            base_layer_data(base), b"mcp1c-base-structure-v1\0"
+        ),
         extended_content_sha256=_sha256(
-            extended.objects, b"mcp1c-extended-structure-v1\0"
+            extended_layer_data(extended), b"mcp1c-extended-structure-v1\0"
         ),
         diagnostics=diagnostics.freeze(),
     )
@@ -2863,6 +2923,8 @@ __all__ = [
     "SessionParameterPayload",
     "StructureConversion",
     "TypeDescription",
+    "base_layer_data",
     "convert_collection",
+    "extended_layer_data",
     "resolve_journal_column_types",
 ]

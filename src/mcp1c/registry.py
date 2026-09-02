@@ -61,6 +61,7 @@ from .intake_v2_registry import (
     GenerationBundleStore,
     GenerationPointer,
     GenerationView,
+    LayerPayloadSource,
     RecoveryBlocked,
     StagedGeneration,
     legacy_generation_view,
@@ -3677,7 +3678,7 @@ class Registry:
     def stage_generation(
         self,
         manifest: GenerationManifest,
-        payloads: Mapping[LayerKind, str | Path],
+        payloads: Mapping[LayerKind, str | Path | LayerPayloadSource],
     ) -> StagedGeneration:
         """Подготовить проверяемый bundle, не меняя active pointer."""
         return self._generation_store.stage(manifest, payloads)

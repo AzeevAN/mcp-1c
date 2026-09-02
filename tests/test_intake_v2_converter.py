@@ -467,6 +467,8 @@ def _collection(
     plan_auto_record: str = "Allow",
     plan_content: bool = True,
     common_forms: bool = False,
+    common_form_xml: bytes | None = None,
+    common_form_module: bytes | None = None,
     common_form_external_module: bytes | None = None,
     bots: bool = False,
     bot_module: bool = True,
@@ -556,12 +558,20 @@ def _collection(
         payloads.update(
             {
                 "CommonForms/Workspace.xml": _common_form("Workspace"),
-                "CommonForms/Workspace/Ext/Form.xml": _common_form_xml(),
+                "CommonForms/Workspace/Ext/Form.xml": (
+                    _common_form_xml()
+                    if common_form_xml is None
+                    else common_form_xml
+                ),
                 "CommonForms/Workspace/Ext/Form/Module.bsl": (
-                    "Процедура OnOpen()\nКонецПроцедуры\n"
-                    "Процедура OnChange()\nКонецПроцедуры\n"
-                    "Процедура Refresh()\nКонецПроцедуры\n"
-                ).encode(),
+                    (
+                        "Процедура OnOpen()\nКонецПроцедуры\n"
+                        "Процедура OnChange()\nКонецПроцедуры\n"
+                        "Процедура Refresh()\nКонецПроцедуры\n"
+                    ).encode()
+                    if common_form_module is None
+                    else common_form_module
+                ),
                 "CommonForms/Container.xml": _common_form("Container"),
                 "CommonForms/Container/Ext/Form.bin": v8_container_bytes(
                     [

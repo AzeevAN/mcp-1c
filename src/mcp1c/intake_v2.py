@@ -589,6 +589,7 @@ class LayerManifest:
     kind: LayerKind
     state: LayerState
     content_sha256: str = ""
+    payload_sha256: str = ""
     relative_path: str = ""
     items_total: int = 0
     error: str = ""
@@ -603,13 +604,19 @@ class LayerManifest:
             raise IntakeV2ContractError("error должен быть строкой")
         if self.state is LayerState.READY:
             _sha256(self.content_sha256, "content_sha256")
+            _sha256(self.payload_sha256, "payload_sha256", allow_empty=True)
             _relative_manifest_path(self.relative_path)
             if self.error:
                 raise IntakeV2ContractError("ready layer не должен содержать error")
             return
         _sha256(self.content_sha256, "content_sha256", allow_empty=True)
         _relative_manifest_path(self.relative_path, allow_empty=True)
-        if self.content_sha256 or self.relative_path or self.items_total:
+        if (
+            self.content_sha256
+            or self.payload_sha256
+            or self.relative_path
+            or self.items_total
+        ):
             raise IntakeV2ContractError(
                 "error/unavailable layer не должен ссылаться на старый payload"
             )
@@ -619,7 +626,7 @@ class LayerManifest:
             raise IntakeV2ContractError("unavailable layer не должен содержать error")
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        result = {
             "kind": self.kind.value,
             "state": self.state.value,
             "content_sha256": self.content_sha256,
@@ -627,6 +634,9 @@ class LayerManifest:
             "items_total": self.items_total,
             "error": self.error,
         }
+        if self.payload_sha256:
+            result["payload_sha256"] = self.payload_sha256
+        return result
 
     @classmethod
     def from_dict(cls, raw: object) -> LayerManifest:
@@ -637,6 +647,7 @@ class LayerManifest:
                 kind=LayerKind(raw["kind"]),
                 state=LayerState(raw["state"]),
                 content_sha256=raw.get("content_sha256", ""),
+                payload_sha256=raw.get("payload_sha256", ""),
                 relative_path=raw.get("relative_path", ""),
                 items_total=raw.get("items_total", 0),
                 error=raw.get("error", ""),

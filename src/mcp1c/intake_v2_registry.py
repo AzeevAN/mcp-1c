@@ -36,6 +36,7 @@ from .intake_v2 import (
 
 _HASH_BLOCK_SIZE = 1 << 20
 _MAX_MANIFEST_SIZE = 1 << 20
+_MAX_LAYER_MANIFEST_SIZE = 128 << 20
 
 
 class BundleStoreError(RuntimeError):
@@ -82,6 +83,31 @@ def _layer_prefix(kind: LayerKind) -> bytes:
     return b"mcp1c-layer-v1\0" + kind.value.encode("ascii") + b"\0"
 
 
+def _semantic_prefix(kind: LayerKind) -> bytes:
+    if kind is LayerKind.BASE_STRUCTURE:
+        return b"mcp1c-base-structure-v1\0"
+    if kind is LayerKind.EXTENDED_STRUCTURE:
+        return b"mcp1c-extended-structure-v1\0"
+    return b"mcp1c-" + kind.value.encode("ascii") + b"-v1\0"
+
+
+def _canonical_json_bytes(value: object) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def hash_layer_semantic(kind: LayerKind, semantic: object) -> str:
+    if isinstance(semantic, Mapping):
+        semantic = dict(semantic)
+    return hashlib.sha256(
+        _semantic_prefix(kind) + _canonical_json_bytes(semantic)
+    ).hexdigest()
+
+
 def _hash_stream(kind: LayerKind, stream: BinaryIO) -> str:
     digest = hashlib.sha256(_layer_prefix(kind))
     for block in iter(lambda: stream.read(_HASH_BLOCK_SIZE), b""):
@@ -94,7 +120,7 @@ def _stat_identity(value: os.stat_result) -> tuple[int, int, int, int]:
 
 
 def hash_layer_payload(kind: LayerKind, path: str | Path) -> str:
-    """Потоковый semantic hash канонического payload без materialization."""
+    """Потоковый физический hash envelope без materialization в памяти."""
     path = Path(path)
     try:
         before = path.lstat()
@@ -201,10 +227,168 @@ class StagedGeneration:
     pointer: GenerationPointer
 
 
+def _sha256_value(value: object, label: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(char not in "0123456789abcdef" for char in value)
+    ):
+        raise BundleStoreError(f"{label} должен быть sha256")
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class LayerMember:
+    key: str
+    relative_path: str
+    size: int
+    sha256: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.key, str) or not self.key:
+            raise BundleStoreError("layer member key должен быть строкой")
+        _safe_relative(self.relative_path, "layer member path")
+        if isinstance(self.size, bool) or not isinstance(self.size, int) or self.size < 0:
+            raise BundleStoreError("layer member size должен быть неотрицательным")
+        _sha256_value(self.sha256, "layer member sha256")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "key": self.key,
+            "relative_path": self.relative_path,
+            "size": self.size,
+            "sha256": self.sha256,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: object) -> LayerMember:
+        if not isinstance(raw, dict):
+            raise BundleStoreError("layer member должен быть объектом")
+        if set(raw) != {"key", "relative_path", "size", "sha256"}:
+            raise BundleStoreError("layer member содержит неизвестные поля")
+        try:
+            return cls(
+                key=raw["key"],
+                relative_path=raw["relative_path"],
+                size=raw["size"],
+                sha256=raw["sha256"],
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            if isinstance(error, BundleStoreError):
+                raise
+            raise BundleStoreError("layer member содержит неверные поля") from error
+
+
+@dataclass(frozen=True, slots=True)
+class LayerPayload:
+    kind: LayerKind
+    semantic: Mapping[str, object]
+    members: tuple[LayerMember, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, LayerKind):
+            raise BundleStoreError("layer payload kind должен быть LayerKind")
+        if not isinstance(self.semantic, Mapping):
+            raise BundleStoreError("layer semantic должен быть mapping")
+        if not isinstance(self.members, tuple) or not all(
+            isinstance(member, LayerMember) for member in self.members
+        ):
+            raise BundleStoreError("layer members должен быть tuple")
+        ordered = tuple(sorted(self.members, key=lambda member: member.key))
+        if len({member.key for member in ordered}) != len(ordered):
+            raise BundleStoreError("layer payload дублирует member key")
+        if len({member.relative_path for member in ordered}) != len(ordered):
+            raise BundleStoreError("layer payload дублирует member path")
+        prefix = ("payload", self.kind.value)
+        if any(PurePosixPath(member.relative_path).parts[:2] != prefix for member in ordered):
+            raise BundleStoreError("layer member должен лежать в payload своего слоя")
+        object.__setattr__(self, "semantic", MappingProxyType(dict(self.semantic)))
+        object.__setattr__(self, "members", ordered)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "format_version": 1,
+            "kind": self.kind.value,
+            "semantic": dict(self.semantic),
+            "members": [member.to_dict() for member in self.members],
+        }
+
+    def to_json_bytes(self) -> bytes:
+        return _canonical_json_bytes(self.to_dict()) + b"\n"
+
+    @classmethod
+    def from_json_bytes(cls, raw: bytes) -> LayerPayload:
+        try:
+            value = json.loads(raw.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as error:
+            raise BundleStoreError("layer payload не является JSON") from error
+        if not isinstance(value, dict) or value.get("format_version") != 1:
+            raise BundleStoreError("layer payload имеет неизвестный формат")
+        if set(value) != {"format_version", "kind", "semantic", "members"}:
+            raise BundleStoreError("layer payload содержит неизвестные поля")
+        members = value.get("members")
+        semantic = value.get("semantic")
+        if not isinstance(members, list) or not isinstance(semantic, dict):
+            raise BundleStoreError("layer payload содержит неверные поля")
+        try:
+            payload = cls(
+                kind=LayerKind(value["kind"]),
+                semantic=semantic,
+                members=tuple(LayerMember.from_dict(member) for member in members),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            if isinstance(error, BundleStoreError):
+                raise
+            raise BundleStoreError("layer payload содержит неверные поля") from error
+        if payload.to_json_bytes() != raw:
+            raise BundleStoreError("layer payload должен быть каноническим JSON")
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
+class LayerMemberSource:
+    member: LayerMember
+    source_path: Path
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "source_path", Path(self.source_path))
+
+
+@dataclass(frozen=True, slots=True)
+class LayerPayloadSource:
+    manifest_path: Path
+    members: tuple[LayerMemberSource, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "manifest_path", Path(self.manifest_path))
+        if not isinstance(self.members, tuple) or not all(
+            isinstance(member, LayerMemberSource) for member in self.members
+        ):
+            raise BundleStoreError("member sources должен быть tuple")
+
+
+def _read_bounded(path: Path, limit: int, label: str) -> bytes:
+    try:
+        with path.open("rb") as stream:
+            raw = stream.read(limit + 1)
+    except OSError as error:
+        raise BundleStoreError(f"{label} недоступен") from error
+    if len(raw) > limit:
+        raise BundleStoreError(f"{label} превышает предел")
+    return raw
+
+
+def load_layer_payload(path: str | Path) -> LayerPayload:
+    return LayerPayload.from_json_bytes(
+        _read_bounded(Path(path), _MAX_LAYER_MANIFEST_SIZE, "layer payload")
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class GenerationLayerView:
     state: LayerState
     content_sha256: str = ""
+    payload_sha256: str = ""
     source_sha256: str = ""
     items_total: int = 0
     error: str = ""
@@ -273,6 +457,7 @@ def native_generation_view(manifest: GenerationManifest) -> GenerationView:
         layer.kind: GenerationLayerView(
             state=layer.state,
             content_sha256=layer.content_sha256,
+            payload_sha256=layer.payload_sha256,
             items_total=layer.items_total,
             error=layer.error,
         )
@@ -441,10 +626,106 @@ class GenerationBundleStore:
         _sync_directory(target.parent)
         return digest.hexdigest()
 
+    def _copy_member(
+        self,
+        source: Path,
+        target: Path,
+        expected: LayerMember,
+    ) -> None:
+        try:
+            before = source.lstat()
+            if not stat.S_ISREG(before.st_mode):
+                raise BundleStoreError("layer member должен быть обычным файлом")
+            descriptor = os.open(
+                source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            )
+            target.parent.mkdir(parents=True, exist_ok=True)
+            digest = hashlib.sha256()
+            total = 0
+            try:
+                opened = os.fstat(descriptor)
+                if not stat.S_ISREG(opened.st_mode):
+                    raise BundleStoreError("layer member должен быть обычным файлом")
+                with os.fdopen(descriptor, "rb", closefd=False) as input_stream:
+                    with target.open("xb") as output_stream:
+                        for block in iter(
+                            lambda: input_stream.read(_HASH_BLOCK_SIZE), b""
+                        ):
+                            total += len(block)
+                            digest.update(block)
+                            output_stream.write(block)
+                        output_stream.flush()
+                        os.fsync(output_stream.fileno())
+                after = os.fstat(descriptor)
+            finally:
+                os.close(descriptor)
+            current = source.lstat()
+        except BundleStoreError:
+            raise
+        except OSError as error:
+            raise BundleStoreError("не удалось сохранить layer member") from error
+        if not (
+            _stat_identity(before)
+            == _stat_identity(opened)
+            == _stat_identity(after)
+            == _stat_identity(current)
+        ):
+            raise BundleStoreError("layer member изменился во время staging")
+        if total != expected.size or digest.hexdigest() != expected.sha256:
+            raise BundleStoreError(
+                f"member {expected.key}: контрольная сумма или размер не совпали"
+            )
+        _sync_directory(target.parent)
+
+    def _stage_envelope(
+        self,
+        temporary: Path,
+        kind: LayerKind,
+        layer: LayerManifest,
+        source: LayerPayloadSource,
+    ) -> None:
+        if not layer.payload_sha256:
+            raise BundleStoreError(
+                f"{kind.value}: envelope-слой обязан объявить payload_sha256"
+            )
+        target = temporary / _safe_relative(
+            layer.relative_path, "relative_path слоя"
+        )
+        actual = self._copy_layer(kind, source.manifest_path, target)
+        if actual != layer.payload_sha256:
+            raise BundleStoreError(
+                f"{kind.value}: контрольная сумма envelope не совпала"
+            )
+        payload = load_layer_payload(target)
+        if payload.kind is not kind:
+            raise BundleStoreError(f"{kind.value}: envelope относится к другому слою")
+        if hash_layer_semantic(kind, payload.semantic) != layer.content_sha256:
+            raise BundleStoreError(
+                f"{kind.value}: смысловая контрольная сумма не совпала"
+            )
+        supplied: dict[str, LayerMemberSource] = {}
+        for item in source.members:
+            if item.member.key in supplied:
+                raise BundleStoreError(f"{kind.value}: дублируется member source")
+            supplied[item.member.key] = item
+        expected = {member.key: member for member in payload.members}
+        if set(supplied) != set(expected) or any(
+            supplied[key].member != member for key, member in expected.items()
+        ):
+            raise BundleStoreError(
+                f"{kind.value}: member sources не совпадают с envelope"
+            )
+        for key, member in sorted(expected.items()):
+            self._copy_member(
+                supplied[key].source_path,
+                temporary / member.relative_path,
+                member,
+            )
+
     def stage(
         self,
         manifest: GenerationManifest,
-        payloads: Mapping[LayerKind, str | Path],
+        payloads: Mapping[LayerKind, str | Path | LayerPayloadSource],
     ) -> StagedGeneration:
         if not isinstance(manifest, GenerationManifest):
             raise TypeError("manifest должен быть GenerationManifest")
@@ -486,14 +767,22 @@ class GenerationBundleStore:
         )
         try:
             for kind, layer in sorted(ready.items(), key=lambda item: item[0].value):
-                target = temporary / _safe_relative(
-                    layer.relative_path, "relative_path слоя"
-                )
-                actual = self._copy_layer(kind, Path(payloads[kind]), target)
-                if actual != layer.content_sha256:
-                    raise BundleStoreError(
-                        f"{kind.value}: контрольная сумма payload не совпала"
+                source = payloads[kind]
+                if isinstance(source, LayerPayloadSource):
+                    self._stage_envelope(temporary, kind, layer, source)
+                else:
+                    if layer.payload_sha256:
+                        raise BundleStoreError(
+                            f"{kind.value}: envelope требует LayerPayloadSource"
+                        )
+                    target = temporary / _safe_relative(
+                        layer.relative_path, "relative_path слоя"
                     )
+                    actual = self._copy_layer(kind, Path(source), target)
+                    if actual != layer.content_sha256:
+                        raise BundleStoreError(
+                            f"{kind.value}: контрольная сумма payload не совпала"
+                        )
             manifest_path = temporary / "manifest.json"
             with manifest_path.open("xb") as stream:
                 stream.write(manifest.to_json_bytes())
@@ -580,12 +869,49 @@ class GenerationBundleStore:
         for layer in manifest.layers:
             if layer.state is not LayerState.READY:
                 continue
+            if not layer.payload_sha256:
+                with self._open_member(root, layer.relative_path) as stream:
+                    actual = _hash_stream(layer.kind, stream)
+                if actual != layer.content_sha256:
+                    raise BundleStoreError(
+                        f"{layer.kind.value}: контрольная сумма payload не совпала"
+                    )
+                continue
             with self._open_member(root, layer.relative_path) as stream:
-                actual = _hash_stream(layer.kind, stream)
-            if actual != layer.content_sha256:
+                raw = stream.read(_MAX_LAYER_MANIFEST_SIZE + 1)
+            if len(raw) > _MAX_LAYER_MANIFEST_SIZE:
                 raise BundleStoreError(
-                    f"{layer.kind.value}: контрольная сумма payload не совпала"
+                    f"{layer.kind.value}: envelope превышает предел"
                 )
+            actual_payload = hashlib.sha256(
+                _layer_prefix(layer.kind) + raw
+            ).hexdigest()
+            if actual_payload != layer.payload_sha256:
+                raise BundleStoreError(
+                    f"{layer.kind.value}: контрольная сумма envelope не совпала"
+                )
+            payload = LayerPayload.from_json_bytes(raw)
+            if payload.kind is not layer.kind:
+                raise BundleStoreError(
+                    f"{layer.kind.value}: envelope относится к другому слою"
+                )
+            if hash_layer_semantic(layer.kind, payload.semantic) != layer.content_sha256:
+                raise BundleStoreError(
+                    f"{layer.kind.value}: смысловая контрольная сумма не совпала"
+                )
+            for member in payload.members:
+                with self._open_member(root, member.relative_path) as stream:
+                    digest = hashlib.sha256()
+                    total = 0
+                    for block in iter(
+                        lambda: stream.read(_HASH_BLOCK_SIZE), b""
+                    ):
+                        total += len(block)
+                        digest.update(block)
+                if total != member.size or digest.hexdigest() != member.sha256:
+                    raise BundleStoreError(
+                        f"member {member.key}: контрольная сумма или размер не совпали"
+                    )
         return manifest
 
     def promote(self, staged: StagedGeneration) -> None:
@@ -691,11 +1017,17 @@ __all__ = [
     "GenerationView",
     "LayerKind",
     "LayerManifest",
+    "LayerMember",
+    "LayerMemberSource",
+    "LayerPayload",
+    "LayerPayloadSource",
     "LayerState",
     "RecoveryBlocked",
     "StagedGeneration",
     "decide_recovery",
     "hash_layer_payload",
+    "hash_layer_semantic",
     "legacy_generation_view",
+    "load_layer_payload",
     "native_generation_view",
 ]

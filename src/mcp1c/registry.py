@@ -47,6 +47,25 @@ from .extension_runtime import (
     load_extension_runtime,
 )
 from .graph import Graph
+from .intake_v2 import (
+    ExportIdentity,
+    GenerationManifest,
+    LayerKind,
+    RecoveryAction,
+    RecoveryPhase,
+    RecoveryRecord,
+    decide_recovery,
+)
+from .intake_v2_registry import (
+    BundleStoreError,
+    GenerationBundleStore,
+    GenerationPointer,
+    GenerationView,
+    RecoveryBlocked,
+    StagedGeneration,
+    legacy_generation_view,
+    native_generation_view,
+)
 from .loader import ExportError, load
 from .model import Configuration
 from .module_content import LocatorIdentity
@@ -863,6 +882,8 @@ class Registry:
         # у расширения свой ключ и своя жизнь, а не подкаталог конфигурации.
         self.extensions_dir = self.data_dir / "extensions"
         self.registry_path = self.data_dir / "registry.json"
+        self._generation_store = GenerationBundleStore(self.data_dir)
+        self.generation_recovery_path = self._generation_store.recovery_path
         # Малый write-ahead marker делает рокировку каталога кода
         # восстанавливаемой после SIGKILL между rename и registry.json.
         self._module_swap_path = self.data_dir / ".modules-swap.json"
@@ -870,6 +891,14 @@ class Registry:
         self.dictionary = Dictionary.load(self.dictionary_path)
 
         self._lock = threading.RLock()
+        # Staging разных кандидатов может идти параллельно, но pointer и общий
+        # WAL переключаются только одним publisher за раз.
+        self._generation_mutation_lock = threading.Lock()
+        self._generation_pointers: dict[tuple[str, ...], GenerationPointer] = {}
+        self._generation_manifests: dict[
+            tuple[str, ...], GenerationManifest
+        ] = {}
+        self._generation_recovery_blocked = False
         # Правка словаря — одна операция от изменения объекта до публикации
         # перечитанных таблиц. Обычный `_lock` на дисковой записи держать нельзя,
         # поэтому writers сериализуются отдельным реентерабельным замком.
@@ -3583,19 +3612,232 @@ class Registry:
 
     # ------------------------------------------------------------- диск
 
+    def _registry_payload(
+        self,
+        generation_pointers: Mapping[
+            tuple[str, ...], GenerationPointer
+        ] | None = None,
+    ) -> dict[str, object]:
+        pointers = (
+            self._generation_pointers
+            if generation_pointers is None
+            else generation_pointers
+        )
+        payload: dict[str, object] = {
+            "registry_version": REGISTRY_VERSION,
+            "saved_at": _now(),
+            "sources": [source.to_dict() for source in self.sources.values()],
+        }
+        if pointers:
+            payload["generation_manifests"] = [
+                pointer.to_dict()
+                for _key, pointer in sorted(pointers.items())
+            ]
+        return payload
+
+    def _write_registry_payload(self, payload: Mapping[str, object]) -> None:
+        """Durable atomic replace общего Registry pointer."""
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        temporary = self.registry_path.with_suffix(".tmp")
+        try:
+            with temporary.open("w", encoding="utf-8") as stream:
+                json.dump(payload, stream, ensure_ascii=False, indent=1)
+                stream.flush()
+                os.fsync(stream.fileno())
+            temporary.replace(self.registry_path)
+            descriptor = os.open(
+                self.data_dir,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+            )
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    @staticmethod
+    def _generation_pointers_from_payload(
+        payload: object,
+    ) -> dict[tuple[str, ...], GenerationPointer]:
+        if not isinstance(payload, dict):
+            raise BundleStoreError("registry.json должен быть объектом")
+        raw_pointers = payload.get("generation_manifests", [])
+        if not isinstance(raw_pointers, list):
+            raise BundleStoreError("generation_manifests должен быть массивом")
+        result: dict[tuple[str, ...], GenerationPointer] = {}
+        for raw in raw_pointers:
+            pointer = GenerationPointer.from_dict(raw)
+            key = pointer.identity.grouping_key
+            if key in result:
+                raise BundleStoreError("registry дублирует generation identity")
+            result[key] = pointer
+        return result
+
+    def stage_generation(
+        self,
+        manifest: GenerationManifest,
+        payloads: Mapping[LayerKind, str | Path],
+    ) -> StagedGeneration:
+        """Подготовить проверяемый bundle, не меняя active pointer."""
+        return self._generation_store.stage(manifest, payloads)
+
+    def active_generation_pointer(
+        self, identity: ExportIdentity
+    ) -> GenerationPointer | None:
+        if not isinstance(identity, ExportIdentity):
+            raise TypeError("identity должен быть ExportIdentity")
+        with self._lock:
+            return self._generation_pointers.get(identity.grouping_key)
+
+    def active_generation(
+        self, identity: ExportIdentity
+    ) -> GenerationManifest | None:
+        if not isinstance(identity, ExportIdentity):
+            raise TypeError("identity должен быть ExportIdentity")
+        with self._lock:
+            return self._generation_manifests.get(identity.grouping_key)
+
+    def _after_generation_pointer_switch(
+        self, _pointer: GenerationPointer
+    ) -> None:
+        """Точка crash-теста сразу после durable pointer switch."""
+
+    def publish_generation(self, staged: StagedGeneration) -> GenerationPointer:
+        """Переключить active manifest и убрать только detached поколение."""
+        manifest = self._generation_store.verify(staged)
+        pointer = staged.pointer
+        key = pointer.identity.grouping_key
+        with self._generation_mutation_lock:
+            with self._lock:
+                previous = self._generation_pointers.get(key)
+                if previous is not None and previous.generation_id == pointer.generation_id:
+                    raise RegistryError("generation_id уже является активным")
+            prepared = self._generation_store.recovery_for(
+                previous,
+                staged,
+                RecoveryPhase.PREPARED,
+            )
+            self._generation_store.write_recovery(prepared)
+            try:
+                self._generation_store.promote(staged)
+                with self._lock:
+                    next_pointers = dict(self._generation_pointers)
+                    next_pointers[key] = pointer
+                    self._write_registry_payload(
+                        self._registry_payload(next_pointers)
+                    )
+                    self._generation_pointers = next_pointers
+                    self._generation_manifests[key] = manifest
+                    self._after_generation_pointer_switch(pointer)
+                self._generation_store.write_recovery(
+                    replace(prepared, phase=RecoveryPhase.POINTER_SWITCHED)
+                )
+                self._generation_store.remove_pointer_root(previous)
+                self._generation_store.remove_staging(prepared.staging_path)
+                self._generation_store.clear_recovery()
+                return pointer
+            except Exception:
+                # Обычный отказ откатывается сразу. SIGKILL/SystemExit
+                # намеренно оставляют WAL для следующего процесса.
+                self.recover_generation_publish()
+                with self._lock:
+                    if self._generation_pointers.get(key) == pointer:
+                        # Pointer уже durable: recovery успешно закончил
+                        # housekeeping, поэтому повторять принятую операцию
+                        # опаснее, чем вернуть её фактический результат.
+                        return pointer
+                raise
+
+    def recover_generation_publish(self) -> list[str]:
+        """По WAL доказуемо оставить старое или завершить новое поколение."""
+        recovery = self._generation_store.read_recovery()
+        if recovery is None:
+            return []
+        try:
+            payload: object = {}
+            if self.registry_path.exists():
+                payload = json.loads(self.registry_path.read_text(encoding="utf-8"))
+            pointers = self._generation_pointers_from_payload(payload)
+        except (OSError, json.JSONDecodeError, BundleStoreError) as error:
+            raise RecoveryBlocked(
+                "generation recovery неоднозначен: registry pointer не читается"
+            ) from error
+        key = recovery.staged.identity.grouping_key
+        current = pointers.get(key)
+        previous_id = (
+            recovery.previous.generation_id if recovery.previous else None
+        )
+        current_id = current.generation_id if current else None
+        action = decide_recovery(
+            current_id,
+            RecoveryRecord(
+                previous_generation=previous_id,
+                staged_generation=recovery.staged.generation_id,
+                phase=recovery.phase,
+            ),
+        )
+        if current_id == recovery.staged.generation_id and current != recovery.staged:
+            action = RecoveryAction.BLOCK
+        if (
+            recovery.previous is not None
+            and current_id == recovery.previous.generation_id
+            and current != recovery.previous
+        ):
+            action = RecoveryAction.BLOCK
+        if action is RecoveryAction.BLOCK:
+            raise RecoveryBlocked(
+                "generation recovery неоднозначен: active pointer не равен старому или новому"
+            )
+        if action is RecoveryAction.ROLLBACK_STAGING:
+            self._generation_store.remove_pointer_root(recovery.staged)
+            self._generation_store.remove_staging(recovery.staging_path)
+            self._generation_store.clear_recovery()
+            with self._lock:
+                if recovery.previous is None:
+                    self._generation_pointers.pop(key, None)
+                    self._generation_manifests.pop(key, None)
+            return [
+                f"generation {recovery.staged.generation_id}: staging откачен"
+            ]
+
+        manifest = self._generation_store.verify(recovery.staged)
+        self._generation_store.remove_pointer_root(recovery.previous)
+        self._generation_store.remove_staging(recovery.staging_path)
+        self._generation_store.clear_recovery()
+        with self._lock:
+            self._generation_pointers[key] = recovery.staged
+            self._generation_manifests[key] = manifest
+        return [
+            f"generation {recovery.staged.generation_id}: публикация завершена"
+        ]
+
+    def generation_view(self, configuration: str) -> GenerationView:
+        identity = ExportIdentity.configuration(configuration)
+        with self._lock:
+            manifest = self._generation_manifests.get(identity.grouping_key)
+            if manifest is not None:
+                return native_generation_view(manifest)
+            loaded = self.configurations.get(configuration)
+            if loaded is None:
+                raise RegistryError(f"Конфигурация не загружена: {configuration}.")
+            modules = self.modules.get(f"{configuration}:modules")
+            code_source = (
+                modules.source
+                if modules is not None and modules.готов
+                else None
+            )
+            return legacy_generation_view(
+                identity,
+                base_sha256=loaded.source.sha256,
+                base_items_total=loaded.source.items_total,
+                code_sha256=code_source.sha256 if code_source else "",
+                code_items_total=code_source.items_total if code_source else 0,
+            )
+
     def save(self) -> None:
         with self._lock:
-            self.data_dir.mkdir(parents=True, exist_ok=True)
-            payload = {
-                "registry_version": REGISTRY_VERSION,
-                "saved_at": _now(),
-                "sources": [s.to_dict() for s in self.sources.values()],
-            }
-            tmp = self.registry_path.with_suffix(".tmp")
-            tmp.write_text(
-                json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8"
-            )
-            tmp.replace(self.registry_path)
+            self._write_registry_payload(self._registry_payload())
 
     def mutate_dictionary(
         self,
@@ -3638,6 +3880,14 @@ class Registry:
                 f"registry.json версии {payload.get('registry_version')}, "
                 f"ожидается {REGISTRY_VERSION} — источники будут перечитаны заново."
             ]
+
+        pointers = self._generation_pointers_from_payload(payload)
+        manifests: dict[tuple[str, ...], GenerationManifest] = {}
+        for key, pointer in pointers.items():
+            manifests[key] = self._generation_store.verify(pointer)
+        with self._lock:
+            self._generation_pointers = pointers
+            self._generation_manifests = manifests
 
         # Код восстанавливается вторым проходом: порядок строк в
         # registry.json не является контрактом, а модули/расширение
@@ -3959,20 +4209,26 @@ class Registry:
         # Словарь перечитывается первым: правки в нём должны применяться
         # перезагрузкой, без пересборки образа и рестарта контейнера.
         self.reload_dictionary()
+        try:
+            messages = self.recover_generation_publish()
+        except RecoveryBlocked as error:
+            self._generation_recovery_blocked = True
+            return [str(error)]
         # Foreground-публикация держит тот же lock от staging кэша до
         # registry.json. Startup либо ждёт её завершения в живом процессе,
         # либо восстанавливает journal, оставшийся после SIGKILL.
-        messages: list[str] = []
+        module_messages: list[str] = []
         # Живой foreground writer уже сам завершит или откатит операцию;
         # startup не ждёт его тяжёлую запись кэша. После SIGKILL mutex
         # свободен, и новый процесс забирает journal без ожидания.
         if self._modules_cache_lock.acquire(blocking=False):
             try:
-                messages = self._восстановить_рокировку_кода()
+                module_messages = self._восстановить_рокировку_кода()
                 self._подмести_временный_кэш_модулей()
             finally:
                 self._modules_cache_lock.release()
-        self._module_recovery_blocked = bool(messages)
+        messages += module_messages
+        self._module_recovery_blocked = bool(module_messages)
         if self._module_recovery_blocked:
             self._заблокировать_источники_кода_после_ошибки_рокировки()
         messages += self.restore()

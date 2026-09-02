@@ -80,6 +80,7 @@ from .loader import ExportError, load
 from .model import Configuration
 from .module_content import LocatorIdentity
 from .resource_limits import ResourceLimitError
+from .role_access import LoadedRoleAccess
 from .search_keys import coverage as search_keys_coverage
 from .search import (
     SearchIndex,
@@ -814,6 +815,7 @@ class ResolvedContext:
     modules: LoadedModules | None = None
     extension: LoadedModules | None = None
     extension_runtime: LoadedExtensionRuntime | None = None
+    roles: LoadedRoleAccess | None = None
 
     @property
     def name(self) -> str:
@@ -1015,6 +1017,10 @@ class Registry:
         # выгрузка кода, у расширений их может быть несколько, и `resolve()`
         # достаёт нужную запись напрямую по составленному ключу.
         self.modules: dict[str, LoadedModules] = {}
+        # Ролевой provider принадлежит тому же native generation, но его
+        # большой прямой/обратный индекс остаётся файловой SQLite, а не
+        # коллекцией Python-объектов в памяти.
+        self.roles: dict[str, LoadedRoleAccess] = {}
         # Сильная ссылка нужна не потоку (он живёт сам), а повторному
         # `startup()`: пока предыдущая сборка ещё идёт, reload не должен
         # запускать второй разбор того же корпуса и удваивать расход памяти.
@@ -1310,6 +1316,9 @@ class Registry:
                     self._cache_path(source_id, kind).name
                     for kind in self.CACHE_KINDS[KIND_MODULES]
                 )
+            roles = layers.get(LayerKind.ROLES)
+            if roles is not None and roles.state is LayerState.READY:
+                names.add(self._cache_path(configuration, "roles.sqlite").name)
         return names
 
     def _drop_cache(self, source_id: str, kind: str) -> None:
@@ -3520,6 +3529,7 @@ class Registry:
 
                 if текущий.kind == KIND_CONFIGURATION:
                     self.configurations.pop(sid, None)
+                    self.roles.pop(sid, None)
                     self._relation_cache.pop(sid, None)
                 elif текущий.kind in (KIND_MODULES, KIND_EXTENSION):
                     pass
@@ -3604,6 +3614,7 @@ class Registry:
                     )
                 modules_key = f"{selected_name}:modules"
                 modules = self.modules.get(modules_key)
+                roles = self.roles.get(selected_name)
                 runtime = self.extension_runtime.get(selected_name)
                 extension_key = None
                 расширение = None
@@ -3631,6 +3642,7 @@ class Registry:
                     self.configurations.get(selected_name) is loaded
                     and self.syntax is syntax
                     and self.modules.get(modules_key) is modules
+                    and self.roles.get(selected_name) is roles
                     and self.extension_runtime.get(selected_name) is runtime
                     and (
                         extension_key is None
@@ -3657,6 +3669,7 @@ class Registry:
                     modules=modules,
                     extension=расширение,
                     extension_runtime=runtime,
+                    roles=roles,
                 )
 
         raise RegistryError(
@@ -4111,7 +4124,14 @@ class Registry:
         if manifest.identity.source_kind is not SourceKind.CONFIGURATION:
             return None
         try:
-            runtime = build_generation_runtime(root, manifest)
+            runtime = build_generation_runtime(
+                root,
+                manifest,
+                role_cache_path=self._cache_path(
+                    manifest.identity.configuration_name,
+                    "roles.sqlite",
+                ),
+            )
         except GenerationRuntimeError as error:
             raise RegistryError(
                 f"{manifest.origin_name}: runtime поколения не построен — {error}"
@@ -4332,6 +4352,10 @@ class Registry:
                             self.modules.pop(modules_key, None)
                         else:
                             self.modules[modules_key] = loaded_modules
+                        if prepared_runtime.runtime.roles is None:
+                            self.roles.pop(name, None)
+                        else:
+                            self.roles[name] = prepared_runtime.runtime.roles
                         self._relation_cache.pop(name, None)
                     self._after_generation_pointer_switch(pointer)
                 self._generation_store.write_recovery(
@@ -4534,6 +4558,10 @@ class Registry:
                     self.modules.pop(modules_key, None)
                 else:
                     self.modules[modules_key] = loaded_modules
+                if _prepared.runtime.roles is None:
+                    self.roles.pop(name, None)
+                else:
+                    self.roles[name] = _prepared.runtime.roles
                 self._relation_cache.pop(name, None)
 
         for prepared, _configuration, _modules in native_runtime.values():

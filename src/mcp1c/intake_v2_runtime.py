@@ -28,6 +28,7 @@ from .module_catalog import (
     ModuleCatalog,
 )
 from .module_content import LocatorIdentity, ModuleLocator
+from .role_access import LoadedRoleAccess, load_role_access
 
 
 class GenerationRuntimeError(ValueError):
@@ -42,6 +43,7 @@ class NativeGenerationRuntime:
     code_sha256: str
     code_items_total: int
     locator_generation: int
+    roles: LoadedRoleAccess | None
 
 
 def _mapping(value: object, label: str) -> Mapping[str, object]:
@@ -433,6 +435,8 @@ def _catalog(
 def build_generation_runtime(
     root: str | Path,
     manifest: GenerationManifest,
+    *,
+    role_cache_path: str | Path | None = None,
 ) -> NativeGenerationRuntime:
     """Собрать чистую runtime-проекцию до публикации поколения."""
     if not isinstance(manifest, GenerationManifest):
@@ -464,6 +468,7 @@ def build_generation_runtime(
         forms,
         LocatorIdentity(source_id, code_sha256, locator_generation),
     )
+    roles = load_role_access(root, manifest, role_cache_path)
     return NativeGenerationRuntime(
         configuration=configuration,
         base_sha256=base_layer.content_sha256,
@@ -475,6 +480,7 @@ def build_generation_runtime(
             else 0
         ),
         locator_generation=locator_generation,
+        roles=roles,
     )
 
 

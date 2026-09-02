@@ -6,8 +6,11 @@ import shutil
 
 import pytest
 
+from conftest import write_export
+from mcp1c.intake_v2 import LayerKind, LayerSourceProfile
 from mcp1c.intake_v2_converter import convert_collection
 from mcp1c.intake_v2_generation import materialize_generation
+from mcp1c.model import Configuration, Field, MetadataObject
 from mcp1c.registry import Registry, RegistryError
 from mcp1c.tools import get_procedure
 from test_intake_v2_converter import _collection
@@ -118,6 +121,71 @@ def test_native_compiled_модуль_поднимается_из_warm_кэша(
     assert restarted.restore() == []
     restored = restarted.modules["DemoConfiguration:modules"]
     assert restored.каталог.entries["ОбщийМодуль.Sealed"].compiled is True
+
+
+def test_schema_v1_после_native_заменяет_только_base_и_переживает_restart(
+    tmp_path,
+):
+    _collection_value, generation = _materialized(
+        tmp_path,
+        "source-a-update",
+        common_forms=True,
+    )
+    registry = Registry(tmp_path / "data")
+    registry.publish_generation(
+        registry.stage_generation(generation.manifest, generation.payloads)
+    )
+    previous_pointer = registry.active_generation_pointer(
+        generation.manifest.identity
+    )
+    previous_layers = {
+        layer.kind: layer for layer in generation.manifest.layers
+    }
+    incoming = tmp_path / "source-a"
+    incoming.mkdir()
+    source_a = Configuration(
+        name="DemoConfiguration",
+        version="2.0",
+        source_format="json",
+        objects={
+            "Справочник.Replacement": MetadataObject(
+                full_name="Справочник.Replacement",
+                kind="Справочник",
+                name="Replacement",
+                attributes=[Field("Code", types=["Строка"])],
+            )
+        },
+    )
+
+    registry.add_configuration(write_export(incoming, source_a))
+
+    current_pointer = registry.active_generation_pointer(
+        generation.manifest.identity
+    )
+    assert current_pointer is not None and current_pointer != previous_pointer
+    current = registry.active_generation(generation.manifest.identity)
+    current_layers = {layer.kind: layer for layer in current.layers}
+    assert current_layers[LayerKind.BASE_STRUCTURE].provenance.profile is (
+        LayerSourceProfile.SCHEMA_V1
+    )
+    for kind in (
+        LayerKind.EXTENDED_STRUCTURE,
+        LayerKind.CODE,
+        LayerKind.FORMS,
+        LayerKind.ROLES,
+    ):
+        assert current_layers[kind] == previous_layers[kind]
+    context = registry.resolve("DemoConfiguration")
+    assert context.configuration.config.get("Справочник.Replacement") is not None
+    assert context.modules is not None and context.modules.готов
+    assert context.roles is not None and context.roles.ready
+
+    restarted = Registry(registry.data_dir)
+    assert restarted.restore() == []
+    restored = restarted.resolve("DemoConfiguration")
+    assert restored.configuration.config.get("Справочник.Replacement") is not None
+    assert restored.modules is not None and restored.modules.готов
+    assert restored.roles is not None and restored.roles.ready
 
 
 def test_runtime_failure_до_commit_сохраняет_прежний_pointer_и_runtime(

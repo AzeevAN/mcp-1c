@@ -22,13 +22,13 @@
 | Роли | объявленные права из native generation; без готового слоя две role-ручки отсутствуют |
 | Дашборд | современная SPA включена по умолчанию; `on` либо `off` |
 | Авторизация Docker | два разных обязательных токена: `API_TOKEN` на чтение, `ADMIN_TOKEN` на запись |
-| Тесты | `.venv/bin/python -m pytest`, 1921 |
+| Тесты | `.venv/bin/python -m pytest`, 1923 |
 
 Воспроизводимый прогон:
 
 ```bash
 .venv/bin/pip install --require-hashes -r requirements-dev-lock.txt
-.venv/bin/python -m pytest          # 1921 тест (прогон 2026-09-02)
+.venv/bin/python -m pytest          # 1923 теста (прогон 2026-09-02)
 ```
 
 ## Навигация
@@ -37,6 +37,7 @@
 |---|---|
 | Полный Docker/Linux runbook | [ниже в этом README](#запуск-в-docker) |
 | Современный дашборд | [dashboard/README.md](dashboard/README.md) |
+| Загрузка конфигураций и расширений | [docs/configuration-loading.md](docs/configuration-loading.md) |
 | Конфигурации MCP-клиентов | [docs/clients.md](docs/clients.md) |
 | Все инструменты и порядок вызовов | [docs/tools.md](docs/tools.md) |
 | Источники, CLI, bench и ручной сервер | [docs/operations.md](docs/operations.md) |

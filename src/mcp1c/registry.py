@@ -49,9 +49,13 @@ from .extension_runtime import (
 )
 from .graph import Graph
 from .intake_v2 import (
+    CandidateTransport,
     ExportIdentity,
     GenerationManifest,
     LayerKind,
+    LayerManifest,
+    LayerProvenance,
+    LayerSourceProfile,
     LayerState,
     RecoveryAction,
     RecoveryPhase,
@@ -59,15 +63,19 @@ from .intake_v2 import (
     SourceKind,
     decide_recovery,
 )
+from .intake_v2_converter import base_layer_data
 from .intake_v2_registry import (
     BundleStoreError,
     GenerationBundleStore,
     GenerationConflictError,
     GenerationPointer,
     GenerationView,
+    LayerPayload,
     LayerPayloadSource,
     RecoveryBlocked,
     StagedGeneration,
+    hash_layer_payload,
+    hash_layer_semantic,
     legacy_generation_view,
     load_layer_payload,
     native_generation_view,
@@ -1559,6 +1567,7 @@ class Registry:
         expected_id: str = "",
         known_origin: str = "",
         allow_truncated: bool = False,
+        source_transport: CandidateTransport = CandidateTransport.LOCAL_FILE,
     ) -> Source:
         source_path = Path(path)
         # При restore сохранённая строка registry.json — ожидание, а не
@@ -1582,6 +1591,19 @@ class Registry:
             raise RegistryError(
                 f"{source_path.name}: идентификатор конфигурации «{config.name}» "
                 f"не совпал с registry.json («{expected_id}»)."
+            )
+
+        identity = ExportIdentity.configuration(config.name)
+        previous = self.active_generation_pointer(identity)
+        active = self.active_generation(identity)
+        if previous is not None and active is not None:
+            return self._replace_native_base(
+                config,
+                previous=previous,
+                active=active,
+                origin=known_origin or source_path.name,
+                digest=digest,
+                transport=source_transport,
             )
 
         stored = (
@@ -1629,6 +1651,108 @@ class Registry:
             self.sources[source.id] = source
             self._relation_cache.pop(config.name, None)
         return source
+
+    def _replace_native_base(
+        self,
+        config: Configuration,
+        *,
+        previous: GenerationPointer,
+        active: GenerationManifest,
+        origin: str,
+        digest: str,
+        transport: CandidateTransport,
+    ) -> Source:
+        """Заменить schema-v1 base, не смешивая его с остальными слоями.
+
+        После первой полной Source B загрузки Registry больше не держит
+        отдельный legacy-источник структуры. Поэтому следующая быстрая
+        schema-v1 загрузка обязана стать новым native generation: иначе она
+        видна лишь до рестарта, после чего старый base из manifest молча
+        возвращается. Остальные слои берутся только из проверенного active
+        bundle и заново из исходного ZIP не читаются.
+        """
+        if not isinstance(transport, CandidateTransport):
+            raise TypeError("source_transport должен быть CandidateTransport")
+        if previous.identity != active.identity or active.identity != (
+            ExportIdentity.configuration(config.name)
+        ):
+            raise RegistryError("schema v1 относится к другой active generation")
+
+        semantic = base_layer_data(config)
+        payload = LayerPayload(LayerKind.BASE_STRUCTURE, semantic)
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        temporary = Path(
+            tempfile.mkdtemp(prefix=".schema-v1-base-", dir=self.data_dir)
+        )
+        staged: StagedGeneration | None = None
+        try:
+            payload_path = temporary / "base_structure.json"
+            with payload_path.open("xb") as stream:
+                stream.write(payload.to_json_bytes())
+                stream.flush()
+                os.fsync(stream.fileno())
+            base = LayerManifest(
+                kind=LayerKind.BASE_STRUCTURE,
+                state=LayerState.READY,
+                content_sha256=hash_layer_semantic(
+                    LayerKind.BASE_STRUCTURE,
+                    semantic,
+                ),
+                payload_sha256=hash_layer_payload(
+                    LayerKind.BASE_STRUCTURE,
+                    payload_path,
+                ),
+                relative_path="layers/base_structure.json",
+                items_total=len(config),
+                provenance=LayerProvenance(
+                    profile=LayerSourceProfile.SCHEMA_V1,
+                    transport=transport,
+                    origin_name=origin,
+                    raw_sha256=digest,
+                    parser_version=1,
+                    selection_version=1,
+                ),
+            )
+            layers = tuple(
+                base if layer.kind is LayerKind.BASE_STRUCTURE else layer
+                for layer in active.layers
+            )
+            if not any(
+                layer.kind is LayerKind.BASE_STRUCTURE for layer in active.layers
+            ):
+                raise RegistryError("active generation не содержит base_structure")
+            manifest = GenerationManifest(
+                format_version=active.format_version,
+                generation_id=f"schema-v1-{uuid.uuid4().hex}",
+                identity=active.identity,
+                parser_version=active.parser_version,
+                selection_version=active.selection_version,
+                source_transport=transport,
+                origin_name=origin,
+                raw_sha256=digest,
+                layers=layers,
+            )
+            sources = dict(self.generation_payload_sources(previous))
+            sources[LayerKind.BASE_STRUCTURE] = LayerPayloadSource(payload_path)
+            staged = self.stage_generation(manifest, sources)
+            pointer = self.publish_generation(
+                staged,
+                expected_previous=previous,
+            )
+            staged = None
+            with self._lock:
+                loaded = self.configurations.get(config.name)
+                current = self._generation_pointers.get(active.identity.grouping_key)
+            if loaded is None or current != pointer:
+                raise RegistryError("schema-v1 generation опубликована не полностью")
+            return loaded.source
+        finally:
+            if staged is not None:
+                try:
+                    self.discard_staged_generation(staged)
+                except (OSError, BundleStoreError):
+                    pass
+            shutil.rmtree(temporary, ignore_errors=True)
 
     def add_extension_runtime(
         self,

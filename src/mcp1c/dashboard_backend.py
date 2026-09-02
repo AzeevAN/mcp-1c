@@ -21,6 +21,7 @@ from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 from . import tools
 from .auth import same_token
+from .intake_v2 import CandidateTransport
 from .loader import ExportError
 from .registry import (
     KIND_EXTENSION,
@@ -255,7 +256,11 @@ def _index_source(
     elif suffix == ".json":
         registry.add_extension_runtime(path)
     else:
-        registry.add_configuration(path, allow_truncated=allow_truncated)
+        registry.add_configuration(
+            path,
+            allow_truncated=allow_truncated,
+            source_transport=CandidateTransport.BROWSER,
+        )
     registry.save()
 
 def _run_job(

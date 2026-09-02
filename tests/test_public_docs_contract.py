@@ -93,3 +93,25 @@ def test_публичные_документы_описывают_role_tools_api
     assert "tools/lab/measure_role_restrictions.py" in changelog
     assert "745 870" in changelog
     assert "237 375" in changelog
+
+
+def test_инструкция_загрузки_разделяет_source_a_source_b_и_публикацию():
+    instruction = _read("docs/configuration-loading.md")
+    readme = _read("README.md")
+
+    for required in (
+        "Быстрая базовая загрузка",
+        "Полная загрузка",
+        "Создать конфигурацию",
+        "Обновить код, формы и роли",
+        "Обновить полностью",
+        "Предпросмотр",
+        "Опубликовать",
+        "data/incoming/",
+        "MCP1C_CONFIG_SOURCE",
+        "parent_configuration",
+        "legacy",
+        "manifest",
+    ):
+        assert required in instruction
+    assert "docs/configuration-loading.md" in readme

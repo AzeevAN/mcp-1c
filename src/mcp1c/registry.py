@@ -671,6 +671,26 @@ class RegistryExtensionRuntimeSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class RegistryGenerationSnapshot:
+    """Неизменяемая согласованная пара active pointer и его manifest."""
+
+    pointer: GenerationPointer
+    manifest: GenerationManifest
+
+    def __post_init__(self) -> None:
+        if self.pointer.identity != self.manifest.identity:
+            raise RegistryError("generation snapshot смешивает identity")
+        if self.pointer.generation_id != self.manifest.generation_id:
+            raise RegistryError("generation snapshot смешивает поколения")
+        if self.pointer.manifest_sha256 != self.manifest.sha256:
+            raise RegistryError("generation snapshot смешивает pointer и manifest")
+
+    @property
+    def view(self) -> GenerationView:
+        return native_generation_view(self.manifest)
+
+
+@dataclass(frozen=True, slots=True)
 class RegistrySnapshot:
     """Один структурный снимок реестра, целиком снятый под его lock.
 
@@ -688,6 +708,7 @@ class RegistrySnapshot:
     sources: Mapping[str, SourceSnapshot]
     modules: Mapping[str, RegistryCodeSnapshot]
     extension_runtime: Mapping[str, RegistryExtensionRuntimeSnapshot]
+    generations: Mapping[tuple[str, ...], RegistryGenerationSnapshot]
     _owner: object = field(repr=False, compare=False)
     _source_identities: tuple[Source, ...] = field(repr=False, compare=False)
     _fingerprint: tuple = field(repr=False, compare=False)
@@ -702,6 +723,41 @@ class RegistrySnapshot:
             source_id[len(prefix):]
             for source_id, source in self.sources.items()
             if source.kind == KIND_EXTENSION and source_id.startswith(prefix)
+        )
+
+    def generation(
+        self, identity: ExportIdentity
+    ) -> RegistryGenerationSnapshot | None:
+        if not isinstance(identity, ExportIdentity):
+            raise TypeError("identity должен быть ExportIdentity")
+        return self.generations.get(identity.grouping_key)
+
+    def generation_view(self, configuration: str) -> GenerationView:
+        """Вернуть native или legacy view только из этого frozen snapshot."""
+        identity = ExportIdentity.configuration(configuration)
+        native = self.generation(identity)
+        if native is not None:
+            return native.view
+        loaded = self.configurations.get(configuration)
+        if loaded is None:
+            raise RegistryError(f"Конфигурация не загружена: {configuration}.")
+        base_source = self.sources.get(loaded.source.id)
+        if base_source is None:
+            raise RegistryError(
+                f"Снимок конфигурации повреждён: {configuration}."
+            )
+        modules = self.modules.get(f"{configuration}:modules")
+        code_source = (
+            modules.source
+            if modules is not None and modules.ready
+            else None
+        )
+        return legacy_generation_view(
+            identity,
+            base_sha256=base_source.sha256,
+            base_items_total=base_source.items_total,
+            code_sha256=code_source.sha256 if code_source else "",
+            code_items_total=code_source.items_total if code_source else 0,
         )
 
 
@@ -966,6 +1022,14 @@ class Registry:
 
     def _snapshot_fingerprint_locked(self) -> tuple:
         """Дешёвый CAS-маркер всех полей, видимых через ``snapshot``."""
+        generation_rows = tuple(
+            (
+                key,
+                pointer,
+                self._generation_manifests.get(key),
+            )
+            for key, pointer in sorted(self._generation_pointers.items())
+        )
         source_rows = tuple(
             (source.id, id(source), SourceSnapshot.capture(source))
             for source in sorted(self.sources.values(), key=lambda item: item.id)
@@ -1011,6 +1075,7 @@ class Registry:
             source_rows,
             module_rows,
             runtime_rows,
+            generation_rows,
         )
 
     def snapshot(self) -> RegistrySnapshot:
@@ -1035,6 +1100,17 @@ class Registry:
                     snapshot=loaded.snapshot,
                 )
                 for name, loaded in sorted(self.extension_runtime.items())
+            }
+            if set(self._generation_pointers) != set(self._generation_manifests):
+                raise RegistryError(
+                    "runtime Registry содержит несогласованные generation maps"
+                )
+            generations = {
+                key: RegistryGenerationSnapshot(
+                    pointer,
+                    self._generation_manifests[key],
+                )
+                for key, pointer in sorted(self._generation_pointers.items())
             }
             code_ids = sorted(
                 {
@@ -1106,6 +1182,14 @@ class Registry:
                     )
                     for name, loaded in sorted(self.extension_runtime.items())
                 ),
+                tuple(
+                    (
+                        key,
+                        generation.pointer,
+                        generation.manifest,
+                    )
+                    for key, generation in generations.items()
+                ),
             )
             return RegistrySnapshot(
                 configurations=MappingProxyType(configurations),
@@ -1114,6 +1198,7 @@ class Registry:
                 sources=MappingProxyType(sources),
                 modules=MappingProxyType(modules),
                 extension_runtime=MappingProxyType(runtime),
+                generations=MappingProxyType(generations),
                 _owner=self,
                 # Сильные ссылки исключают ABA через повторное использование
                 # Python ``id`` после remove/re-add между snapshot и CAS.

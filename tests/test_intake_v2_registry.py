@@ -190,6 +190,44 @@ def test_publish_переключает_pointer_и_оставляет_тольк
     assert restarted.active_generation(second.identity) == second
 
 
+def test_registry_snapshot_фиксирует_одну_пару_pointer_manifest(tmp_path):
+    manifest, payloads = _manifest(tmp_path, "generation-001")
+    registry = Registry(tmp_path / "data")
+    registry.publish_generation(registry.stage_generation(manifest, payloads))
+
+    snapshot = registry.snapshot()
+    generation = snapshot.generations[manifest.identity.grouping_key]
+
+    assert generation.pointer == registry.active_generation_pointer(manifest.identity)
+    assert generation.manifest == manifest
+    assert generation.pointer.generation_id == generation.manifest.generation_id
+    with pytest.raises(TypeError):
+        snapshot.generations[manifest.identity.grouping_key] = generation
+
+
+def test_generation_publish_инвалидирует_старый_registry_snapshot(tmp_path):
+    first, first_payloads = _manifest(tmp_path, "generation-001")
+    second, second_payloads = _manifest(
+        tmp_path, "generation-002", suffix="-changed"
+    )
+    registry = Registry(tmp_path / "data")
+    registry.publish_generation(registry.stage_generation(first, first_payloads))
+    old_snapshot = registry.snapshot()
+
+    registry.publish_generation(registry.stage_generation(second, second_payloads))
+    new_snapshot = registry.snapshot()
+
+    assert not registry.snapshot_is_current(old_snapshot)
+    assert (
+        old_snapshot.generations[first.identity.grouping_key].manifest.generation_id
+        == "generation-001"
+    )
+    assert (
+        new_snapshot.generations[first.identity.grouping_key].manifest.generation_id
+        == "generation-002"
+    )
+
+
 def test_publish_до_pointer_failure_восстанавливает_старое_поколение(
     tmp_path, monkeypatch
 ):
@@ -317,8 +355,10 @@ def test_legacy_view_ничего_не_выдумывает_и_не_создаё
     restarted = Registry(data)
     assert restarted.restore() == []
     view = restarted.generation_view("LegacyConfiguration")
+    snapshot_view = restarted.snapshot().generation_view("LegacyConfiguration")
 
     assert view.origin is GenerationOrigin.LEGACY
+    assert snapshot_view == view
     assert view.manifest is None
     assert view.layers[LayerKind.BASE_STRUCTURE].state is LayerState.READY
     assert view.layers[LayerKind.EXTENDED_STRUCTURE].state is LayerState.UNAVAILABLE

@@ -12,6 +12,16 @@ from mcp1c.dashboard_runtime import DEFAULT_DASHBOARD_DIST
 ROOT = Path(__file__).parents[1]
 
 
+def test_spa_объявляет_встроенный_favicon_без_отдельного_http_запроса() -> None:
+    for path in (
+        ROOT / "dashboard" / "index.html",
+        DEFAULT_DASHBOARD_DIST / "index.html",
+    ):
+        index = path.read_text(encoding="utf-8")
+        assert 'rel="icon"' in index
+        assert 'href="data:image/svg+xml,' in index
+
+
 def test_package_data_включает_index_и_assets() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     patterns = project["tool"]["setuptools"]["package-data"]["mcp1c"]

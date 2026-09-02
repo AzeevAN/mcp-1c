@@ -723,6 +723,7 @@ class IntakeCoordinator:
         tree: VirtualExportTree,
         *,
         parent_configuration: str = "",
+        expected_probe: CandidateProbe | None = None,
     ) -> ExportCandidate:
         job = self.records.load_job(job_id)
         if job.state is CandidateJobState.ACCEPTED:
@@ -730,8 +731,11 @@ class IntakeCoordinator:
         elif job.state is not CandidateJobState.PROBING:
             raise OperationError("probe допустим только для accepted/probing job")
         try:
+            current_probe = probe_export(tree)
+            if expected_probe is not None and current_probe != expected_probe:
+                raise OperationError("candidate изменился после on-demand refresh")
             candidate = self._candidate(
-                probe_export(tree),
+                current_probe,
                 job.candidate_id,
                 parent_configuration,
             )

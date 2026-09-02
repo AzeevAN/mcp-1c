@@ -165,6 +165,29 @@ def test_browser_staging_принимает_ровно_лимит_и_удаля�
     assert not any("candidate-large" in path.name for path in store.root.rglob("*"))
 
 
+def test_browser_staging_отвергает_подмену_payload_того_же_размера(tmp_path):
+    BrowserStagingStore = _symbol("BrowserStagingStore")
+    TransportError = _symbol("TransportError")
+
+    first_path = tmp_path / "first.zip"
+    second_path = tmp_path / "second.zip"
+    first = _write_zip(first_path, {"Configuration.xml": b"first"})
+    second = _write_zip(second_path, {"Configuration.xml": b"other"})
+    assert len(first) == len(second)
+
+    store = BrowserStagingStore(tmp_path / "managed", max_upload_bytes=len(first))
+    store.accept(
+        "candidate-tampered",
+        "demo.zip",
+        io.BytesIO(first),
+        expected_size=len(first),
+    )
+    (store.payloads_dir / "candidate-tampered.upload").write_bytes(second)
+
+    with pytest.raises(TransportError, match="SHA|подмен|поврежд"):
+        store.open_tree("candidate-tampered")
+
+
 def test_browser_staging_проверяет_место_до_копирования(tmp_path, monkeypatch):
     BrowserStagingStore = _symbol("BrowserStagingStore")
     TransportLimitError = _symbol("TransportLimitError")

@@ -538,6 +538,24 @@ class BrowserStagingStore:
             raise TransportError("payload browser staging повреждён")
         return record
 
+    def candidate_ids(self) -> tuple[str, ...]:
+        """Перечислить ids полностью принятых uploads без чтения payload."""
+        self._reject_symlinks(self.records_dir)
+        try:
+            return tuple(
+                sorted(
+                    path.stem
+                    for path in self.records_dir.iterdir()
+                    if path.is_file() and path.suffix == ".json"
+                )
+            )
+        except OSError as error:
+            raise TransportError("browser staging недоступен") from error
+
+    def list_uploads(self) -> tuple[StagedUpload, ...]:
+        """Вернуть только полностью принятые uploads в стабильном порядке."""
+        return tuple(self.load(candidate_id) for candidate_id in self.candidate_ids())
+
     def open_tree(
         self,
         candidate_id: str,
@@ -545,12 +563,19 @@ class BrowserStagingStore:
         limits: ResourceLimits = ARCHIVE_LIMITS,
     ) -> ZipExportTree:
         record = self.load(candidate_id)
-        return ZipExportTree(
+        tree = ZipExportTree(
             self._payload_path(record.candidate_id),
             transport=CandidateTransport.BROWSER,
             origin_name=record.origin_name,
             limits=limits,
         )
+        try:
+            if tree.source_sha256() != record.sha256:
+                raise TransportError("payload browser staging не совпадает с SHA-256")
+            return tree
+        except Exception:
+            tree.close()
+            raise
 
     def discard(self, candidate_id: str) -> None:
         candidate_id = _candidate_id(candidate_id)

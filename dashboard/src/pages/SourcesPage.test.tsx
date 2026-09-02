@@ -60,6 +60,37 @@ const configurationSource = (id: string) => ({
 let referenceAdminState: Record<string, unknown>;
 let runtimeAdminState: { self_restart: boolean };
 
+function intakeSnapshot(withCandidate = false) {
+  const candidates = withCandidate
+    ? [{
+        id: "candidate-incoming",
+        transport: "incoming",
+        source_kind: "configuration",
+        internal_name: "Отраслевая конфигурация А",
+        configuration_version: "2.0",
+        layout: "tree",
+        origin_name: "полная-выгрузка.zip",
+        raw_sha256: "a".repeat(64),
+        requires_parent: false,
+        actions: ["update", "update_full"],
+      }]
+    : [];
+  return {
+    api_version: "v1",
+    configuration_names: ["Отраслевая конфигурация А", "Отраслевая конфигурация Б"],
+    candidates,
+    groups: withCandidate
+      ? [{
+          source_kind: "configuration",
+          internal_name: "Отраслевая конфигурация А",
+          candidate_ids: ["candidate-incoming"],
+        }]
+      : [],
+    issues: [],
+    jobs: [],
+  };
+}
+
 beforeEach(() => {
   referenceAdminState = {
     api_version: "v1",
@@ -112,6 +143,9 @@ beforeEach(() => {
             runtime: runtimeAdminState,
           }),
         };
+      }
+      if (path === "/api/v1/sources/intake") {
+        return { ok: true, json: async () => intakeSnapshot(true) };
       }
       return {
         ok: true,
@@ -258,7 +292,7 @@ it("повторяет чтение снимка после временного
   ).toHaveLength(2);
 });
 
-it("показывает администратору компактную загрузку, выбор конфигурации и подтверждение удаления", async () => {
+it("показывает администратору два явных пути загрузки и подтверждение удаления", async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const { container } = render(
     <MemoryRouter initialEntries={["/sources"]}>
@@ -273,11 +307,16 @@ it("показывает администратору компактную за�
   expect(screen.getByText("Каноническая база не загружена.")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Загрузить справочную базу" })).not.toBeInTheDocument();
   expect(screen.getByText(/загрузка через общую форму выше/)).toBeInTheDocument();
+  expect(await screen.findByRole("region", { name: "Полная файловая выгрузка" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Обновить код, формы и роли" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Обновить полностью" })).toBeEnabled();
   const truncated = screen.getByRole("checkbox", { name: /Разрешить неполную тестовую выгрузку/ });
   fireEvent.click(truncated);
   expect(truncated).toBeChecked();
 
-  const input = container.querySelector<HTMLInputElement>('input[type="file"]');
+  const input = container.querySelector<HTMLInputElement>(
+    'input[accept=".zip,.hbk,.json,.mcp1cref"]',
+  );
   const file = new File(["synthetic"], "структура.zip", { type: "application/zip" });
   fireEvent.change(input!, { target: { files: [file] } });
   expect(screen.getByText("структура.zip")).toBeInTheDocument();
@@ -289,13 +328,6 @@ it("показывает администратору компактную за�
   expect(screen.getByRole("button", { name: "Проверить и сохранить" })).toBeEnabled();
   expect(screen.queryByRole("checkbox", { name: /Разрешить неполную тестовую выгрузку/ })).not.toBeInTheDocument();
   expect(input).toHaveAttribute("accept", ".zip,.hbk,.json,.mcp1cref");
-
-  const parse = screen.getByRole("button", { name: "Разобрать" });
-  expect(parse).toBeDisabled();
-  fireEvent.change(screen.getByRole("combobox", { name: "Родительская конфигурация" }), {
-    target: { value: "Отраслевая конфигурация Б" },
-  });
-  expect(parse).toBeEnabled();
 
   fireEvent.click(screen.getByRole("button", { name: "Удалить" }));
   expect(screen.getByRole("dialog", { name: "Удалить «Отраслевая конфигурация А»?" })).toBeInTheDocument();
@@ -408,6 +440,9 @@ it("удаляет файл вне реестра через простое по
           }),
         };
       }
+      if (path === "/api/v1/sources/intake") {
+        return { ok: true, json: async () => intakeSnapshot() };
+      }
       return {
         ok: true,
         json: async () => ({
@@ -489,6 +524,9 @@ it("обновляет корпуса после перехода фоновой
           }),
         };
       }
+      if (path === "/api/v1/sources/intake") {
+        return { ok: true, json: async () => intakeSnapshot() };
+      }
       sourceRequests += 1;
       return {
         ok: true,
@@ -555,6 +593,9 @@ it("сохраняет полное длинное имя конфигураци
             snapshot_error: "",
           }),
         };
+      }
+      if (path === "/api/v1/sources/intake") {
+        return { ok: true, json: async () => intakeSnapshot() };
       }
       return {
         ok: true,

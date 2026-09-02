@@ -1,0 +1,217 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { fireEvent, render, screen, within } from "@testing-library/react";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+
+import { ConfigIntakePanel } from "./ConfigIntakePanel";
+
+const candidate = {
+  id: "candidate-001",
+  transport: "browser",
+  source_kind: "configuration",
+  internal_name: "СинтетическаяКонфигурация",
+  configuration_version: "2.0",
+  layout: "tree",
+  origin_name: "configuration.zip",
+  raw_sha256: "a".repeat(64),
+  requires_parent: false,
+  actions: ["create"],
+};
+
+const preview = {
+  action: "create",
+  no_op: false,
+  identity: {
+    source_kind: "configuration",
+    configuration_name: "СинтетическаяКонфигурация",
+    extension_name: "",
+    parent_configuration: "",
+  },
+  base_generation_id: null,
+  candidate_generation_id: "generation-001",
+  layers: [
+    {
+      kind: "base_structure",
+      decision: "apply",
+      reason: "added",
+      current: null,
+      candidate: {
+        state: "ready",
+        content_sha256: "b".repeat(64),
+        items_total: 12,
+        error: "",
+      },
+    },
+    {
+      kind: "roles",
+      decision: "apply",
+      reason: "added",
+      current: null,
+      candidate: {
+        state: "ready",
+        content_sha256: "c".repeat(64),
+        items_total: 3,
+        error: "",
+      },
+    },
+  ],
+};
+
+function response(payload: unknown, status = 200): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => payload,
+  } as Response;
+}
+
+function snapshot(candidates = [candidate]) {
+  return {
+    api_version: "v1",
+    configuration_names: [],
+    candidates,
+    groups: candidates.length
+      ? [{ source_kind: "configuration", internal_name: candidate.internal_name, candidate_ids: candidates.map((item) => item.id) }]
+      : [],
+    issues: [],
+    jobs: [],
+  };
+}
+
+function renderPanel() {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  render(
+    <QueryClientProvider client={client}>
+      <ConfigIntakePanel />
+    </QueryClientProvider>,
+  );
+  return client;
+}
+
+beforeEach(() => {
+  vi.restoreAllMocks();
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+it("показывает semantic preview и публикует только после отдельного confirm", async () => {
+  const requests: Array<{ path: string; body: unknown }> = [];
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input);
+    const body = init?.body ? JSON.parse(String(init.body)) : null;
+    requests.push({ path, body });
+    if (path === "/api/v1/sources/intake") return response(snapshot());
+    if (path === "/api/v1/sources/intake/start") {
+      return response({
+        job: {
+          job_id: "job-001",
+          candidate_id: candidate.id,
+          state: "ready",
+          stage: "ready",
+          error: "",
+          preview: null,
+          commit: null,
+        },
+      }, 202);
+    }
+    if (path === "/api/v1/sources/intake/jobs/job-001") {
+      return response({
+        job: {
+          job_id: "job-001",
+          candidate_id: candidate.id,
+          state: "done",
+          stage: "done",
+          error: "",
+          preview,
+          commit: null,
+        },
+      });
+    }
+    if (path === "/api/v1/sources/intake/confirm") {
+      return response({
+        job: {
+          job_id: "job-001",
+          candidate_id: candidate.id,
+          state: "done",
+          stage: "done",
+          error: "",
+          preview,
+          commit: {
+            no_op: false,
+            generation_id: "generation-001",
+            manifest_sha256: "d".repeat(64),
+            applied_layers: ["base_structure", "roles"],
+          },
+        },
+      });
+    }
+    throw new Error(`Неожиданный запрос ${path}`);
+  }));
+  renderPanel();
+
+  expect(await screen.findByText("СинтетическаяКонфигурация")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Создать конфигурацию" }));
+
+  const dialog = await screen.findByRole("dialog", { name: "Проверка изменений" });
+  expect(within(dialog).getByText("Базовая структура")).toBeInTheDocument();
+  expect(within(dialog).getByText("Роли")).toBeInTheDocument();
+  expect(within(dialog).getByText("12 элементов")).toBeInTheDocument();
+  expect(requests).toContainEqual({
+    path: "/api/v1/sources/intake/start",
+    body: { candidate_id: "candidate-001", action: "create" },
+  });
+  expect(requests.some(({ path }) => path.endsWith("/confirm"))).toBe(false);
+
+  fireEvent.click(within(dialog).getByRole("button", { name: "Опубликовать изменения" }));
+  expect(await screen.findByRole("status")).toHaveTextContent("Поколение опубликовано");
+  expect(requests).toContainEqual({
+    path: "/api/v1/sources/intake/confirm",
+    body: { job_id: "job-001" },
+  });
+});
+
+it("принимает полный ZIP как durable candidate и обновляет список", async () => {
+  let uploaded = false;
+  const open = vi.fn();
+  const send = vi.fn((body: Document | XMLHttpRequestBodyInit | null) => {
+    expect(body).toBeInstanceOf(FormData);
+    uploaded = true;
+    queueMicrotask(() => listeners.load?.(new Event("load")));
+  });
+  const listeners: Record<string, EventListener | undefined> = {};
+  class XMLHttpRequestMock {
+    status = 201;
+    response = { candidate };
+    responseType = "";
+    upload = { addEventListener: vi.fn() };
+    open = open;
+    send = send;
+    setRequestHeader = vi.fn();
+    addEventListener(type: string, listener: EventListener) {
+      listeners[type] = listener;
+    }
+  }
+  vi.stubGlobal("XMLHttpRequest", XMLHttpRequestMock);
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    if (String(input) !== "/api/v1/sources/intake") {
+      throw new Error(`Неожиданный запрос ${String(input)}`);
+    }
+    return response(snapshot(uploaded ? [candidate] : []));
+  }));
+  renderPanel();
+
+  expect(await screen.findByText("Кандидатов пока нет")).toBeInTheDocument();
+  const input = document.querySelector<HTMLInputElement>('input[accept=".zip"]');
+  fireEvent.change(input!, {
+    target: {
+      files: [new File(["synthetic"], "configuration.zip", { type: "application/zip" })],
+    },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Принять ZIP" }));
+
+  expect(await screen.findByText("СинтетическаяКонфигурация")).toBeInTheDocument();
+  expect(open).toHaveBeenCalledWith("POST", "/api/v1/sources/intake/upload");
+});

@@ -1,14 +1,11 @@
 import {
   AlertCircle,
-  Archive,
   BookOpen,
   Check,
   CheckCircle2,
   CircleOff,
   Copy,
-  FileArchive,
   FileUp,
-  FolderInput,
   LoaderCircle,
   RotateCw,
   Trash2,
@@ -28,10 +25,10 @@ import {
   waitForServerRestart,
   useAdminSources,
   useClearJobs,
-  useParseIncoming,
   useRemoveReference,
 } from "../shared/api/sourceAdmin";
 import { StatusBadge, type StatusTone } from "../shared/ui/StatusBadge";
+import { ConfigIntakePanel } from "./ConfigIntakePanel";
 
 function formatBytes(value: number) {
   if (value < 1024 * 1024) return `${Math.max(1, Math.round(value / 1024))} КБ`;
@@ -46,13 +43,6 @@ function errorMessage(error: unknown) {
 function jobTone(job: AdminJob): StatusTone {
   if (job.state === "готово") return "success";
   if (job.state === "ошибка") return "danger";
-  return "info";
-}
-
-function incomingTone(state: string): StatusTone {
-  if (state === "разобрано") return "success";
-  if (state === "разбор не удался") return "danger";
-  if (state === "обновлённая выгрузка" || state === "отбор устарел") return "warning";
   return "info";
 }
 
@@ -332,7 +322,6 @@ export function SourcesAdminPanel({
 }) {
   const admin = useAdminSources(true);
   const queryClient = useQueryClient();
-  const parseIncoming = useParseIncoming();
   const fileInput = useRef<HTMLInputElement>(null);
   const refreshedTerminalJobs = useRef("");
   const [file, setFile] = useState<File | null>(null);
@@ -341,8 +330,6 @@ export function SourcesAdminPanel({
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [feedback, setFeedback] = useState<{ tone: "success" | "danger"; text: string } | null>(null);
-  const [configurationByFile, setConfigurationByFile] = useState<Record<string, string>>({});
-  const [activeIncoming, setActiveIncoming] = useState("");
   const terminalJobsSignature = (admin.data?.jobs ?? [])
     .filter((job) => job.state === "готово" || job.state === "ошибка")
     .map((job, index) => `${index}\u0000${job.name}\u0000${job.size}\u0000${job.state}\u0000${job.error}`)
@@ -439,21 +426,6 @@ export function SourcesAdminPanel({
     }
   };
 
-  const parse = async (name: string) => {
-    const names = admin.data?.configuration_names ?? [];
-    const configuration = configurationByFile[name] || (names.length === 1 ? names[0] : "");
-    setActiveIncoming(name);
-    setFeedback(null);
-    try {
-      await parseIncoming.mutateAsync({ name, configuration });
-      setFeedback({ tone: "success", text: `Разбор «${name}» запущен.` });
-    } catch (error) {
-      setFeedback({ tone: "danger", text: errorMessage(error) });
-    } finally {
-      setActiveIncoming("");
-    }
-  };
-
   if (admin.isPending) {
     return <section className="admin-loading"><span className="loading-dot" />Загружаем административные действия…</section>;
   }
@@ -463,7 +435,6 @@ export function SourcesAdminPanel({
   }
 
   const data = admin.data;
-  const configurationNames = data.configuration_names;
   const referenceFile = file?.name.toLowerCase().endsWith(".mcp1cref") ?? false;
 
   return (
@@ -480,12 +451,14 @@ export function SourcesAdminPanel({
       {feedback && <div className={`admin-feedback is-${feedback.tone}`} role="status">{feedback.text}</div>}
       {data.snapshot_error && <div className="admin-feedback is-danger">{data.snapshot_error}</div>}
 
+      <ConfigIntakePanel />
+
       <section className="admin-card upload-card">
         <header className="admin-card-heading">
           <span className="admin-card-icon"><FileUp size={21} aria-hidden="true" /></span>
           <div>
-            <h3>Загрузить источник</h3>
-            <p>Registry — до {formatBytes(data.limits.upload_bytes)}; артефакт общей справки — {data.reference ? `до ${formatBytes(data.reference.limits.upload_bytes)}` : "недоступен"}.</p>
+            <h3>Базовая структура и справки</h3>
+            <p>Schema v1, HBK, снимок активности или общая справка — до {formatBytes(data.limits.upload_bytes)}.</p>
           </div>
         </header>
 
@@ -538,7 +511,7 @@ export function SourcesAdminPanel({
             <p><strong>Активность расширений:</strong> файл <code>СнимокРасширений_*.json</code> из отдельной обработки снимка.</p>
             <p><strong>Справка платформы:</strong> точный файл <code>shcntx_ru.hbk</code>; другие похожие HBK его не заменяют.</p>
             <p><strong>Общая справка:</strong> подписанный <code>.mcp1cref</code> с канонической SQLite schema v1; после проверки потребуется перезапуск сервера.</p>
-            <p><strong>Большая выгрузка модулей и расширений:</strong> положите ZIP в <code>{data.incoming_dir}</code> и запустите разбор в следующем блоке.</p>
+            <p><strong>Полная файловая выгрузка:</strong> используйте отдельный двухфазный блок выше; ZIP больше 500 МиБ положите в <code>{data.incoming_dir}</code>.</p>
           </div>
         </details>
       </section>
@@ -551,68 +524,6 @@ export function SourcesAdminPanel({
           restartAvailable={data.runtime?.self_restart ?? false}
         />
       )}
-
-      <section className="admin-card incoming-card">
-        <header className="admin-card-heading is-spread">
-          <span className="admin-card-icon"><FolderInput size={21} aria-hidden="true" /></span>
-          <div>
-            <h3>Входящие выгрузки</h3>
-            <p>Большие ZIP из <code>{data.incoming_dir}</code>. Сканируется только сам каталог, без вложенных папок.</p>
-          </div>
-          <span className="count-pill">{data.incoming.length} {data.incoming.length === 1 ? "файл" : "файлов"}</span>
-        </header>
-
-        {!data.incoming_exists ? (
-          <div className="admin-empty"><Archive size={24} /><span><strong>Каталог ещё не создан</strong><small>Создайте или смонтируйте <code>{data.incoming_dir}</code>.</small></span></div>
-        ) : data.incoming.length === 0 ? (
-          <div className="admin-empty"><Archive size={24} /><span><strong>Входящих файлов нет</strong><small>ZIP появится здесь после копирования в <code>{data.incoming_dir}</code>.</small></span></div>
-        ) : (
-          <div className="incoming-list">
-            {data.incoming.map((item) => {
-              const selectedConfiguration = configurationByFile[item.name] || (configurationNames.length === 1 ? configurationNames[0] : "");
-              const needsChoice = configurationNames.length > 1 && !selectedConfiguration;
-              return (
-                <article className="incoming-row" key={item.name}>
-                  <span className="incoming-file-icon"><FileArchive size={20} aria-hidden="true" /></span>
-                  <span className="incoming-file-copy">
-                    <strong>{item.name}</strong>
-                    <small>{formatBytes(item.size)}{item.detail ? ` · ${item.detail}` : ""}</small>
-                  </span>
-                  <StatusBadge tone={incomingTone(item.state)}>{item.state}</StatusBadge>
-                  <div className="incoming-action">
-                    {configurationNames.length > 1 && item.can_parse && (
-                      <label>
-                        <span>Родительская конфигурация</span>
-                        <select
-                          value={selectedConfiguration}
-                          onChange={(event) => setConfigurationByFile((current) => ({ ...current, [item.name]: event.target.value }))}
-                        >
-                          <option value="">Выберите конфигурацию</option>
-                          {configurationNames.map((name) => <option key={name}>{name}</option>)}
-                        </select>
-                      </label>
-                    )}
-                    {configurationNames.length === 1 && item.can_parse && <small>Будет привязано к «{configurationNames[0]}»</small>}
-                    <button
-                      className="button-secondary"
-                      type="button"
-                      disabled={!item.can_parse || needsChoice || activeIncoming === item.name}
-                      onClick={() => parse(item.name)}
-                    >
-                      {activeIncoming === item.name ? <LoaderCircle className="is-spinning" size={16} /> : item.action === "reparse" ? <RotateCw size={16} /> : <Archive size={16} />}
-                      {item.action === "reparse" ? "Переразобрать" : "Разобрать"}
-                    </button>
-                  </div>
-                </article>
-              );
-            })}
-          </div>
-        )}
-        {!configurationNames.length && data.incoming.length > 0 && (
-          <div className="admin-callout"><AlertCircle size={18} /><span>Сначала загрузите структуру конфигурации: без неё серверу не к чему привязать код, модули форм и расширения.</span></div>
-        )}
-        <div className="admin-callout is-info"><AlertCircle size={18} /><span>Человек выбирает только родительскую конфигурацию. Основной код или расширение сервер определяет из содержимого выгрузки, а не из имени ZIP.</span></div>
-      </section>
 
       {data.orphans.length > 0 && (
         <section className="admin-card orphan-card">

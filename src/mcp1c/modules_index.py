@@ -2056,6 +2056,7 @@ def поднять_индексы(
     *,
     source_sha256: str | None = None,
     selection_version: int | None = None,
+    locator_generation: int | None = None,
 ) -> "Индексы | None":
     """Поднять все четыре структуры из кэша проекта. `None` — кэш не годится
     хотя бы для одной из них, тогда собирать нужно все четыре заново:
@@ -2080,7 +2081,9 @@ def поднять_индексы(
             return None
         selection_version = источник.selection_version
     сигнатура = f"{source_sha256}:selection={selection_version}"
-    generation = 0 if источник is None else источник.locator_generation
+    generation = (
+        0 if источник is None else источник.locator_generation
+    ) if locator_generation is None else locator_generation
     if type(generation) is not int or generation <= 0:
         return None
     expected_identity = LocatorIdentity(source_id, source_sha256, generation)

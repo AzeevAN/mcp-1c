@@ -374,6 +374,9 @@ class ModuleCatalog:
                 "module": ("file", ""),
             }
             for entry in entries.values():
+                generation_entry = entry.module_kind == "generation"
+                if generation_entry and not identity.source_id.endswith(":modules"):
+                    return None
                 if entry.address_collision and not entry.conflict:
                     return None
                 if entry.conflict != ("conflict" in entry.diagnostics):
@@ -387,10 +390,17 @@ class ModuleCatalog:
                     return None
                 if not entry.is_form and entry.form_sources:
                     return None
-                if entry.locator is not None and _address_for_locator(
-                    entry.locator
-                ) != entry.address:
-                    return None
+                if entry.locator is not None:
+                    if generation_entry:
+                        if (
+                            entry.locator.kind != "file"
+                            or not entry.locator.relative_path.startswith(
+                                "payload/code/"
+                            )
+                        ):
+                            return None
+                    elif _address_for_locator(entry.locator) != entry.address:
+                        return None
                 seen_sources: set[tuple[str, tuple[str, str, str]]] = set()
                 for source in entry.form_sources:
                     expected_locator = allowed_sources.get(source.kind)
@@ -405,7 +415,12 @@ class ModuleCatalog:
                     if source_key in seen_sources:
                         return None
                     seen_sources.add(source_key)
-                    if _address_for_locator(source.locator) != entry.address:
+                    if generation_entry:
+                        if not source.locator.relative_path.startswith(
+                            "payload/forms/"
+                        ):
+                            return None
+                    elif _address_for_locator(source.locator) != entry.address:
                         return None
 
             for outcome in outcomes:

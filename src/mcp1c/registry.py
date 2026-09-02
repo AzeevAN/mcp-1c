@@ -51,9 +51,11 @@ from .intake_v2 import (
     ExportIdentity,
     GenerationManifest,
     LayerKind,
+    LayerState,
     RecoveryAction,
     RecoveryPhase,
     RecoveryRecord,
+    SourceKind,
     decide_recovery,
 )
 from .intake_v2_registry import (
@@ -66,6 +68,11 @@ from .intake_v2_registry import (
     StagedGeneration,
     legacy_generation_view,
     native_generation_view,
+)
+from .intake_v2_runtime import (
+    GenerationRuntimeError,
+    NativeGenerationRuntime,
+    build_generation_runtime,
 )
 from .loader import ExportError, load
 from .model import Configuration
@@ -606,6 +613,16 @@ class LoadedModules:
         if self.готов and self.оглавление is not None and self.прогресс == (0, 0):
             всего = len(self.оглавление.модули)
             self.прогресс = (всего, всего)
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedNativeRuntime:
+    """Полностью построенный пакет до durable pointer switch."""
+
+    runtime: NativeGenerationRuntime
+    configuration: LoadedConfiguration
+    module_source: Source | None
+    module_indices: modules_index.Индексы | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1256,11 +1273,37 @@ class Registry:
 
     def _cached_names(self) -> set[str]:
         """Имена файлов, которые кэшу разрешено иметь прямо сейчас."""
-        return {
+        names = {
             self._cache_path(source.id, kind).name
             for source in self.sources.values()
             for kind in self.CACHE_KINDS.get(source.kind, ())
         }
+        # Native runtime не дублирует Source в registry.json: его identity и
+        # hashes уже находятся в generation manifest. Расходный кэш всё же
+        # принадлежит активному поколению и не должен сноситься sweep после
+        # успешного restore.
+        for manifest in self._generation_manifests.values():
+            if manifest.identity.source_kind is not SourceKind.CONFIGURATION:
+                continue
+            configuration = manifest.identity.configuration_name
+            layers = {layer.kind: layer for layer in manifest.layers}
+            base = layers.get(LayerKind.BASE_STRUCTURE)
+            if base is not None and base.state is LayerState.READY:
+                names.update(
+                    self._cache_path(configuration, kind).name
+                    for kind in self.CACHE_KINDS[KIND_CONFIGURATION]
+                )
+            if any(
+                layers.get(kind) is not None
+                and layers[kind].state is LayerState.READY
+                for kind in (LayerKind.CODE, LayerKind.FORMS)
+            ):
+                source_id = f"{configuration}:modules"
+                names.update(
+                    self._cache_path(source_id, kind).name
+                    for kind in self.CACHE_KINDS[KIND_MODULES]
+                )
+        return names
 
     def _drop_cache(self, source_id: str, kind: str) -> None:
         """Снести все файлы расходного кэша, какие позволяет том.
@@ -1275,7 +1318,13 @@ class Registry:
             except OSError:
                 continue
 
-    def _configuration_index(self, config: Configuration, source: Source) -> SearchIndex:
+    def _configuration_index(
+        self,
+        config: Configuration,
+        source: Source,
+        *,
+        write_cache: bool = True,
+    ) -> SearchIndex:
         path = self._cache_path(source.id, "objects")
         synonyms = self.dictionary.synonyms()
         aliases = self.dictionary.aliases_for(config.name)
@@ -1292,10 +1341,17 @@ class Registry:
             return cached
 
         index = index_configuration(config, synonyms=synonyms, aliases=aliases)
-        index_cache.save(index, path, source_sha256=source.sha256, kind="objects")
+        if write_cache:
+            index_cache.save(index, path, source_sha256=source.sha256, kind="objects")
         return index
 
-    def _field_index(self, config: Configuration, source: Source) -> SearchIndex:
+    def _field_index(
+        self,
+        config: Configuration,
+        source: Source,
+        *,
+        write_cache: bool = True,
+    ) -> SearchIndex:
         path = self._cache_path(source.id, "fields")
         synonyms = self.dictionary.synonyms()
 
@@ -1314,7 +1370,8 @@ class Registry:
                 return cached
 
         index = index_fields(config, synonyms=synonyms)
-        index_cache.save(index, path, source_sha256=source.sha256, kind="fields")
+        if write_cache:
+            index_cache.save(index, path, source_sha256=source.sha256, kind="fields")
         return index
 
     def _syntax_index(self, syntax: SyntaxIndex, source: Source) -> SearchIndex:
@@ -2089,6 +2146,7 @@ class Registry:
         identity: LocatorIdentity | None = None,
         прогресс: Callable[[int, str, int, int], None] | None = None,
         файлы_каталога: tuple[Path, ...] | None = None,
+        каталог: modules_index.ModuleCatalog | None = None,
     ) -> modules_index.Индексы:
         """Все четыре структуры провайдера `modules` по коду на `корень`.
 
@@ -2112,7 +2170,7 @@ class Registry:
                 )
 
             p = этап(1, "оглавление")
-            каталог = modules_index.build_catalog(
+            каталог = каталог or modules_index.build_catalog(
                 корень,
                 identity or LocatorIdentity("direct", "direct", 0),
                 files=файлы_каталога,
@@ -3806,6 +3864,142 @@ class Registry:
     ) -> None:
         """Точка crash-теста сразу после durable pointer switch."""
 
+    def _build_native_generation_runtime(
+        self,
+        root: Path,
+        manifest: GenerationManifest,
+    ) -> _PreparedNativeRuntime | None:
+        """Построить полный runtime до изменения active pointer.
+
+        Расширения подключаются отдельным resolver этапа 10. Их pointer уже
+        атомарен, но он не имеет права молча заменить runtime основной
+        конфигурации. Для основной конфигурации любой отказ оставляет старый
+        обслуживаемый снимок целиком.
+        """
+        if manifest.identity.source_kind is not SourceKind.CONFIGURATION:
+            return None
+        try:
+            runtime = build_generation_runtime(root, manifest)
+        except GenerationRuntimeError as error:
+            raise RegistryError(
+                f"{manifest.origin_name}: runtime поколения не построен — {error}"
+            ) from error
+
+        config = runtime.configuration
+        pointer = GenerationPointer.for_manifest(manifest)
+        source = Source(
+            id=config.name,
+            kind=KIND_CONFIGURATION,
+            origin=manifest.origin_name,
+            sha256=runtime.base_sha256,
+            loaded_at=_now(),
+            platform=config.platform,
+            status=STATUS_READY,
+            items_total=len(config),
+            stored_path=pointer.root_path,
+            selection_version=manifest.selection_version,
+        )
+        loaded_configuration = LoadedConfiguration(
+            source=source,
+            config=config,
+            graph=Graph(config),
+            # До commit кэш нового поколения читать можно, а записывать
+            # нельзя: неудачный preview не должен вытеснить warm-кэш active.
+            index=self._configuration_index(config, source, write_cache=False),
+            field_index=self._field_index(config, source, write_cache=False),
+        )
+
+        module_source: Source | None = None
+        module_indices: modules_index.Индексы | None = None
+        if runtime.catalog is not None:
+            module_source = Source(
+                id=runtime.catalog.identity.source_id,
+                kind=KIND_MODULES,
+                origin=manifest.origin_name,
+                sha256=runtime.code_sha256,
+                loaded_at=_now(),
+                status=STATUS_READY,
+                items_total=runtime.code_items_total,
+                stored_path=pointer.root_path,
+                selection_version=manifest.selection_version,
+                locator_generation=runtime.locator_generation,
+                code_version=config.version,
+            )
+            module_indices = modules_index.поднять_индексы(
+                self,
+                module_source.id,
+                source_sha256=module_source.sha256,
+                selection_version=module_source.selection_version,
+                locator_generation=module_source.locator_generation,
+            )
+            if module_indices is None:
+                module_indices = self._построить_индекс_кода(
+                    manifest.origin_name,
+                    root,
+                    identity=runtime.catalog.identity,
+                    каталог=runtime.catalog,
+                )
+        return _PreparedNativeRuntime(
+            runtime,
+            loaded_configuration,
+            module_source,
+            module_indices,
+        )
+
+    def _native_runtime_maps(
+        self,
+        prepared: _PreparedNativeRuntime | None,
+        root: Path,
+    ) -> tuple[LoadedConfiguration | None, LoadedModules | None]:
+        if prepared is None:
+            return None, None
+        loaded_modules = None
+        if prepared.module_source is not None:
+            assert prepared.module_indices is not None
+            loaded_modules = self._готовые_модули(
+                prepared.module_source,
+                root,
+                prepared.module_indices,
+            )
+        return prepared.configuration, loaded_modules
+
+    def _save_native_runtime_cache(
+        self,
+        prepared: _PreparedNativeRuntime | None,
+    ) -> None:
+        """Best-effort кэш уже опубликованного runtime."""
+        if prepared is None:
+            return
+        source = prepared.configuration.source
+        try:
+            index_cache.save(
+                prepared.configuration.index,
+                self._cache_path(source.id, "objects"),
+                source_sha256=source.sha256,
+                kind="objects",
+            )
+            index_cache.save(
+                prepared.configuration.field_index,
+                self._cache_path(source.id, "fields"),
+                source_sha256=source.sha256,
+                kind="fields",
+            )
+            if (
+                prepared.module_source is not None
+                and prepared.module_indices is not None
+            ):
+                modules_index.сохранить_индексы(
+                    self,
+                    prepared.module_source.id,
+                    prepared.module_indices,
+                    source_sha256=prepared.module_source.sha256,
+                    selection_version=prepared.module_source.selection_version,
+                )
+        except (OSError, TypeError, ValueError):
+            # Кэш расходный: pointer и runtime уже опубликованы, поэтому
+            # следующий запуск просто построит его заново.
+            return
+
     def publish_generation(
         self,
         staged: StagedGeneration,
@@ -3823,6 +4017,18 @@ class Registry:
         manifest = self._generation_store.verify(staged)
         pointer = staged.pointer
         key = pointer.identity.grouping_key
+        # Быстрый отказ до тяжёлой сборки. Повторный CAS под mutation lock
+        # остаётся обязательным: pointer мог смениться сразу после проверки.
+        with self._lock:
+            current = self._generation_pointers.get(key)
+        if (
+            expected_previous is not _EXPECTED_GENERATION_UNSET
+            and current != expected_previous
+        ):
+            self._generation_store.discard(staged)
+            raise RegistryError(
+                "active generation изменился после построения preview"
+            )
         with self._generation_mutation_lock:
             with self._lock:
                 previous = self._generation_pointers.get(key)
@@ -3843,7 +4049,18 @@ class Registry:
             )
             self._generation_store.write_recovery(prepared)
             try:
+                # WAL появляется до тяжёлой сборки runtime: SIGKILL не
+                # оставит бесхозный staging без доказуемого recovery-path.
+                prepared_runtime = self._build_native_generation_runtime(
+                    staged.root,
+                    manifest,
+                )
                 self._generation_store.promote(staged)
+                runtime_root = self.data_dir / pointer.root_path
+                loaded_configuration, loaded_modules = self._native_runtime_maps(
+                    prepared_runtime,
+                    runtime_root,
+                )
                 with self._lock:
                     next_pointers = dict(self._generation_pointers)
                     next_pointers[key] = pointer
@@ -3852,6 +4069,15 @@ class Registry:
                     )
                     self._generation_pointers = next_pointers
                     self._generation_manifests[key] = manifest
+                    if loaded_configuration is not None:
+                        name = loaded_configuration.config.name
+                        self.configurations[name] = loaded_configuration
+                        modules_key = f"{name}:modules"
+                        if loaded_modules is None:
+                            self.modules.pop(modules_key, None)
+                        else:
+                            self.modules[modules_key] = loaded_modules
+                        self._relation_cache.pop(name, None)
                     self._after_generation_pointer_switch(pointer)
                 self._generation_store.write_recovery(
                     replace(prepared, phase=RecoveryPhase.POINTER_SWITCHED)
@@ -3859,6 +4085,7 @@ class Registry:
                 self._generation_store.remove_pointer_root(previous)
                 self._generation_store.remove_staging(prepared.staging_path)
                 self._generation_store.clear_recovery()
+                self._save_native_runtime_cache(prepared_runtime)
                 return pointer
             except Exception:
                 # Обычный отказ откатывается сразу. SIGKILL/SystemExit
@@ -4006,11 +4233,53 @@ class Registry:
 
         pointers = self._generation_pointers_from_payload(payload)
         manifests: dict[tuple[str, ...], GenerationManifest] = {}
+        native_runtime: dict[
+            tuple[str, ...],
+            tuple[_PreparedNativeRuntime, LoadedConfiguration, LoadedModules | None],
+        ] = {}
         for key, pointer in pointers.items():
-            manifests[key] = self._generation_store.verify(pointer)
+            manifest = self._generation_store.verify(pointer)
+            manifests[key] = manifest
+            prepared = self._build_native_generation_runtime(
+                self.data_dir / pointer.root_path,
+                manifest,
+            )
+            if prepared is not None:
+                loaded_configuration, loaded_modules = self._native_runtime_maps(
+                    prepared,
+                    self.data_dir / pointer.root_path,
+                )
+                assert loaded_configuration is not None
+                native_runtime[key] = (
+                    prepared,
+                    loaded_configuration,
+                    loaded_modules,
+                )
         with self._lock:
             self._generation_pointers = pointers
             self._generation_manifests = manifests
+            for _key, (
+                _prepared,
+                loaded_configuration,
+                loaded_modules,
+            ) in native_runtime.items():
+                name = loaded_configuration.config.name
+                self.configurations[name] = loaded_configuration
+                modules_key = f"{name}:modules"
+                if loaded_modules is None:
+                    self.modules.pop(modules_key, None)
+                else:
+                    self.modules[modules_key] = loaded_modules
+                self._relation_cache.pop(name, None)
+
+        for prepared, _configuration, _modules in native_runtime.values():
+            self._save_native_runtime_cache(prepared)
+
+        native_configurations = {
+            manifest.identity.configuration_name
+            for manifest in manifests.values()
+            if manifest.identity.source_kind is SourceKind.CONFIGURATION
+        }
 
         # Код восстанавливается вторым проходом: порядок строк в
         # registry.json не является контрактом, а модули/расширение
@@ -4038,6 +4307,13 @@ class Registry:
                 KIND_EXTENSION,
                 KIND_EXTENSION_RUNTIME,
             ):
+                continue
+            if (
+                source.kind == KIND_CONFIGURATION
+                and source.id in native_configurations
+            ):
+                # Legacy-файл сохраняется до отдельного crash-safe cleanup,
+                # но не может подменить уже проверенный native runtime.
                 continue
             stored = self._absolute(source.stored_path)
             if not stored.exists():
@@ -4102,11 +4378,13 @@ class Registry:
                 problems.append(f"{source.id}: {error}")
 
         for source, expected_generation in отложенный_код:
+            configuration = self._владелец_источника_кода(source)
+            if configuration in native_configurations:
+                continue
             stored = self._absolute(source.stored_path)
             if not stored.exists():
                 problems.append(f"{source.id}: файл источника пропал ({stored})")
                 continue
-            configuration = self._владелец_источника_кода(source)
             expected = (
                 конфигурации_этого_restore.get(configuration)
                 if configuration is not None

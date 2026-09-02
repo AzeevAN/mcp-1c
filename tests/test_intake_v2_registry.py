@@ -38,13 +38,27 @@ def _manifest(tmp_path, generation_id: str, *, suffix: str = ""):
     GenerationManifest = _symbol("GenerationManifest")
     LayerKind = _symbol("LayerKind")
     LayerManifest = _symbol("LayerManifest")
+    LayerPayload = _symbol("LayerPayload")
+    LayerPayloadSource = _symbol("LayerPayloadSource")
     LayerState = _symbol("LayerState")
     hash_layer_payload = _symbol("hash_layer_payload")
+    hash_layer_semantic = _symbol("hash_layer_semantic")
 
     base = tmp_path / f"base{suffix}.json"
     code = tmp_path / f"code{suffix}.json"
-    base.write_bytes(f'{{"name":"Demo{suffix}"}}'.encode())
-    code.write_bytes(f'{{"modules":["Module{suffix}"]}}'.encode())
+    base_semantic = {
+        "name": "DemoConfiguration",
+        "synonym": f"Demo{suffix}",
+        "version": "1.0",
+        "vendor": "Example",
+        "schema_version": "1",
+        "objects": [],
+    }
+    code_semantic = {"modules": []}
+    base.write_bytes(
+        LayerPayload(LayerKind.BASE_STRUCTURE, base_semantic).to_json_bytes()
+    )
+    code.write_bytes(LayerPayload(LayerKind.CODE, code_semantic).to_json_bytes())
     manifest = GenerationManifest(
         format_version=1,
         generation_id=generation_id,
@@ -58,9 +72,10 @@ def _manifest(tmp_path, generation_id: str, *, suffix: str = ""):
             LayerManifest(
                 kind=LayerKind.BASE_STRUCTURE,
                 state=LayerState.READY,
-                content_sha256=hash_layer_payload(
-                    LayerKind.BASE_STRUCTURE, base
+                content_sha256=hash_layer_semantic(
+                    LayerKind.BASE_STRUCTURE, base_semantic
                 ),
+                payload_sha256=hash_layer_payload(LayerKind.BASE_STRUCTURE, base),
                 relative_path="layers/base-structure.json",
                 items_total=1,
             ),
@@ -75,9 +90,10 @@ def _manifest(tmp_path, generation_id: str, *, suffix: str = ""):
             LayerManifest(
                 kind=LayerKind.CODE,
                 state=LayerState.READY,
-                content_sha256=hash_layer_payload(LayerKind.CODE, code),
+                content_sha256=hash_layer_semantic(LayerKind.CODE, code_semantic),
+                payload_sha256=hash_layer_payload(LayerKind.CODE, code),
                 relative_path="layers/code.json",
-                items_total=1,
+                items_total=0,
             ),
             LayerManifest(
                 kind=LayerKind.ROLES,
@@ -87,8 +103,8 @@ def _manifest(tmp_path, generation_id: str, *, suffix: str = ""):
         ),
     )
     return manifest, {
-        LayerKind.BASE_STRUCTURE: base,
-        LayerKind.CODE: code,
+        LayerKind.BASE_STRUCTURE: LayerPayloadSource(base),
+        LayerKind.CODE: LayerPayloadSource(code),
     }
 
 

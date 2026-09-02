@@ -598,6 +598,23 @@ class DurableCandidateStore:
         except IntakeV2ContractError as error:
             raise CandidateStoreError("candidate store содержит неверный job") from error
 
+    def list_jobs(self) -> tuple[CandidateJob, ...]:
+        """Прочитать все durable job в детерминированном порядке."""
+        try:
+            job_ids: list[str] = []
+            for path in self.jobs_dir.iterdir():
+                if path.is_symlink():
+                    raise CandidateStoreError(
+                        "candidate store содержит символическую ссылку"
+                    )
+                if path.is_file() and path.suffix == ".json":
+                    job_ids.append(_safe_identifier(path.stem, "job_id"))
+        except CandidateStoreError:
+            raise
+        except OSError as error:
+            raise CandidateStoreError("candidate store недоступен") from error
+        return tuple(self.load_job(job_id) for job_id in sorted(job_ids))
+
 
 @dataclass(frozen=True, slots=True)
 class MetadataKindSpec:

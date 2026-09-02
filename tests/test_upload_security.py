@@ -107,6 +107,18 @@ def test_multipart_останавливает_file_part_до_запуска_об
 
 _MUTATIONS = (
     ("/api/v1/sources/upload", {"files": {"file": ("выгрузка.zip", b"zip")}}),
+    (
+        "/api/v1/sources/intake/upload",
+        {"files": {"file": ("выгрузка.zip", b"zip")}},
+    ),
+    (
+        "/api/v1/sources/intake/start",
+        {"json": {"candidate_id": "candidate", "action": "create"}},
+    ),
+    (
+        "/api/v1/sources/intake/confirm",
+        {"json": {"job_id": "job"}},
+    ),
     ("/api/v1/sources/remove", {"json": {"id": "СинтетическаяКонфигурация"}}),
     ("/api/v1/sources/forget", {"json": {"path": "sources/test.zip"}}),
     ("/api/v1/sources/jobs/clear", {}),

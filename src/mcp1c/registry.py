@@ -62,6 +62,7 @@ from .intake_v2 import (
 from .intake_v2_registry import (
     BundleStoreError,
     GenerationBundleStore,
+    GenerationConflictError,
     GenerationPointer,
     GenerationView,
     LayerPayloadSource,
@@ -96,6 +97,7 @@ from .v8container import V8ContainerError
 
 REGISTRY_VERSION = 1
 _EXPECTED_GENERATION_UNSET = object()
+_EXPECTED_GENERATION_VIEW_UNSET = object()
 
 _DictionaryMutationResult = TypeVar("_DictionaryMutationResult")
 
@@ -127,6 +129,10 @@ _RE_PLATFORM = re.compile(r"\b(\d+\.\d+\.\d+(?:\.\d+)?)\b")
 
 class RegistryError(Exception):
     """Источник не загружается или запрошено то, чего нет."""
+
+
+class GenerationPublishConflict(RegistryError, GenerationConflictError):
+    """Active generation или legacy view изменились после preview."""
 
 
 class _ModuleOperationCancelled(RegistryError):
@@ -3848,6 +3854,30 @@ class Registry:
         with self._lock:
             return self._generation_manifests.get(identity.grouping_key)
 
+    def _generation_view_locked(
+        self, identity: ExportIdentity
+    ) -> GenerationView | None:
+        """Native либо legacy view identity; вызывается только под `_lock`."""
+        manifest = self._generation_manifests.get(identity.grouping_key)
+        if manifest is not None:
+            return native_generation_view(manifest)
+        if identity.source_kind is not SourceKind.CONFIGURATION:
+            return None
+        loaded = self.configurations.get(identity.configuration_name)
+        if loaded is None:
+            return None
+        modules = self.modules.get(f"{identity.configuration_name}:modules")
+        code_source = (
+            modules.source if modules is not None and modules.готов else None
+        )
+        return legacy_generation_view(
+            identity,
+            base_sha256=loaded.source.sha256,
+            base_items_total=loaded.source.items_total,
+            code_sha256=code_source.sha256 if code_source else "",
+            code_items_total=code_source.items_total if code_source else 0,
+        )
+
     def generation_payload_sources(
         self, pointer: GenerationPointer
     ) -> Mapping[LayerKind, LayerPayloadSource]:
@@ -4209,6 +4239,9 @@ class Registry:
         expected_previous: GenerationPointer | None | object = (
             _EXPECTED_GENERATION_UNSET
         ),
+        expected_active: GenerationView | None | object = (
+            _EXPECTED_GENERATION_VIEW_UNSET
+        ),
     ) -> GenerationPointer:
         """Переключить active manifest и убрать только detached поколение."""
         if expected_previous is not _EXPECTED_GENERATION_UNSET and (
@@ -4216,30 +4249,46 @@ class Registry:
             and not isinstance(expected_previous, GenerationPointer)
         ):
             raise TypeError("expected_previous должен быть GenerationPointer или None")
+        if expected_active is not _EXPECTED_GENERATION_VIEW_UNSET and (
+            expected_active is not None
+            and not isinstance(expected_active, GenerationView)
+        ):
+            raise TypeError("expected_active должен быть GenerationView или None")
         manifest = self._generation_store.verify(staged)
         pointer = staged.pointer
         key = pointer.identity.grouping_key
-        # Быстрый отказ до тяжёлой сборки. Повторный CAS под mutation lock
-        # остаётся обязательным: pointer мог смениться сразу после проверки.
-        with self._lock:
-            current = self._generation_pointers.get(key)
         if (
-            expected_previous is not _EXPECTED_GENERATION_UNSET
-            and current != expected_previous
+            isinstance(expected_active, GenerationView)
+            and expected_active.identity != pointer.identity
         ):
+            raise TypeError("expected_active относится к другой identity")
+
+        def expectation_changed() -> bool:
+            previous = self._generation_pointers.get(key)
+            return (
+                expected_previous is not _EXPECTED_GENERATION_UNSET
+                and previous != expected_previous
+            ) or (
+                expected_active is not _EXPECTED_GENERATION_VIEW_UNSET
+                and self._generation_view_locked(pointer.identity) != expected_active
+            )
+
+        # Быстрый отказ до тяжёлой сборки. Повторный CAS под mutation lock
+        # остаётся обязательным: pointer или legacy view могли смениться сразу
+        # после проверки.
+        with self._lock:
+            changed = expectation_changed()
+        if changed:
             self._generation_store.discard(staged)
-            raise RegistryError(
+            raise GenerationPublishConflict(
                 "active generation изменился после построения preview"
             )
         with self._generation_mutation_lock:
             with self._lock:
                 previous = self._generation_pointers.get(key)
-                if (
-                    expected_previous is not _EXPECTED_GENERATION_UNSET
-                    and previous != expected_previous
-                ):
+                if expectation_changed():
                     self._generation_store.discard(staged)
-                    raise RegistryError(
+                    raise GenerationPublishConflict(
                         "active generation изменился после построения preview"
                     )
                 if previous is not None and previous.generation_id == pointer.generation_id:
@@ -4264,6 +4313,10 @@ class Registry:
                     runtime_root,
                 )
                 with self._lock:
+                    if expectation_changed():
+                        raise GenerationPublishConflict(
+                            "active generation изменился после построения preview"
+                        )
                     next_pointers = dict(self._generation_pointers)
                     next_pointers[key] = pointer
                     self._write_registry_payload(

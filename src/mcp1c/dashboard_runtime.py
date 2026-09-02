@@ -45,6 +45,19 @@ from .dictionary import ANY_CONFIGURATION, SOURCE_BUILTIN
 from .graph_view import DEFAULT_LIMIT as DEFAULT_GRAPH_LIMIT
 from .graph_view import bounds as graph_bounds
 from .graph_view import neighbourhood
+from .intake_v2_api import (
+    IntakeApiConflict,
+    IntakeApiError,
+    IntakeApiNotFound,
+    IntakeApiService,
+    IntakeWork,
+)
+from .intake_v2_lifecycle import LifecycleError
+from .intake_v2_operations import OperationConflict, OperationError
+from .intake_v2_transport import (
+    TransportError,
+    TransportLimitError,
+)
 from .registry import (
     KIND_EXTENSION,
     KIND_MODULES,
@@ -589,8 +602,36 @@ def _spa_routes(
     static_dir: Path,
     reference: ReferenceService,
     restart: RestartController,
+    intake: IntakeApiService | None,
 ) -> list[Route]:
     static_dir = static_dir.resolve()
+    current_intake = intake
+    intake_tasks: set[asyncio.Task[None]] = set()
+    intake_start_lock = asyncio.Lock()
+
+    def intake_service() -> IntakeApiService:
+        nonlocal current_intake
+        if current_intake is None:
+            configured = os.environ.get("MCP1C_CONFIG_SOURCE", "").strip()
+            current_intake = IntakeApiService.for_registry(
+                registry,
+                local_source=Path(configured) if configured else None,
+            )
+        return current_intake
+
+    def intake_task_done(task: asyncio.Task[None]) -> None:
+        intake_tasks.discard(task)
+        if not task.cancelled():
+            task.exception()
+
+    async def run_intake_work(
+        service: IntakeApiService, work: IntakeWork
+    ) -> None:
+        try:
+            await run_in_threadpool(service.prepare, work)
+        except Exception:
+            # Application service уже сохранил bounded error в durable job.
+            return
 
     async def bootstrap(request: Request) -> JSONResponse:
         if not can_read(request):
@@ -904,6 +945,153 @@ def _spa_routes(
         payload["reference"] = reference.payload(detailed=True)
         payload["runtime"] = {"self_restart": restart.enabled}
         return JSONResponse(payload)
+
+    async def intake_snapshot_api(request: Request) -> JSONResponse:
+        denied = _admin_denied(request, action="Просмотр кандидатов")
+        if denied is not None:
+            return denied
+        try:
+            payload = await run_in_threadpool(intake_service().snapshot)
+        except (
+            IntakeApiError,
+            LifecycleError,
+            OperationError,
+            RegistryError,
+        ) as error:
+            return _json_error(str(error), 409)
+        return JSONResponse(payload)
+
+    async def intake_upload_api(request: Request) -> JSONResponse:
+        denied = _mutation_denied(request, action="Загрузка кандидата")
+        if denied is not None:
+            return denied
+        service = intake_service()
+        try:
+            form = await dashboard_backend._limited_upload_form(
+                request,
+                service.lifecycle.browser.max_upload_bytes,
+                allowed_fields=frozenset(),
+            )
+        except dashboard_backend._UploadTooLarge:
+            limit = service.lifecycle.browser.max_upload_bytes // 1024 // 1024
+            return _json_error(f"Файл больше {limit} МБ.", 413)
+        except MultiPartException:
+            return _json_error(
+                "Некорректная multipart-форма: разрешён один ZIP в поле `file`.",
+                400,
+            )
+        uploaded = form.get("file")
+        if not isinstance(uploaded, UploadFile) or not uploaded.filename:
+            await form.close()
+            return _json_error("Файл не выбран.", 400)
+        name = Path(uploaded.filename).name
+        if Path(name).suffix.lower() != ".zip":
+            await form.close()
+            return _json_error("Принимается только ZIP файловой выгрузки.", 400)
+        try:
+            await uploaded.seek(0)
+            candidate = await run_in_threadpool(
+                service.accept_upload,
+                name,
+                uploaded.file,
+                expected_size=uploaded.size,
+            )
+        except TransportLimitError as error:
+            return _json_error(str(error), 413)
+        except (LifecycleError, TransportError, ValueError) as error:
+            return _json_error(str(error), 422)
+        finally:
+            await form.close()
+        return JSONResponse({"candidate": candidate}, status_code=201)
+
+    async def intake_start_api(request: Request) -> JSONResponse:
+        denied = _mutation_denied(request, action="Запуск разбора")
+        if denied is not None:
+            return denied
+        payload = await _json_body(request)
+        allowed = {"candidate_id", "action", "job_id", "parent_configuration"}
+        if set(payload) - allowed:
+            return _json_error("Получены неизвестные поля запроса.", 422)
+        candidate_id = payload.get("candidate_id")
+        action = payload.get("action")
+        job_id = payload.get("job_id", "")
+        parent = payload.get("parent_configuration", "")
+        if not all(
+            isinstance(value, str)
+            for value in (candidate_id, action, job_id, parent)
+        ):
+            return _json_error("Поля запроса должны быть строками.", 422)
+        service = intake_service()
+        async with intake_start_lock:
+            if any(not task.done() for task in intake_tasks):
+                return _json_error(
+                    "Одновременно выполняется только одна тяжёлая операция intake.",
+                    409,
+                )
+            try:
+                work = await run_in_threadpool(
+                    service.start,
+                    candidate_id,
+                    action,
+                    job_id=job_id,
+                    parent_configuration=parent,
+                )
+            except IntakeApiNotFound as error:
+                return _json_error(str(error), 404)
+            except (IntakeApiConflict, LifecycleError) as error:
+                return _json_error(str(error), 409)
+            except IntakeApiError as error:
+                return _json_error(str(error), 422)
+            task = asyncio.create_task(run_intake_work(service, work))
+            intake_tasks.add(task)
+            task.add_done_callback(intake_task_done)
+        return JSONResponse(
+            {"job": service.job_payload(work.job_id)},
+            status_code=202,
+        )
+
+    async def intake_job_api(request: Request) -> JSONResponse:
+        denied = _admin_denied(request, action="Просмотр операции")
+        if denied is not None:
+            return denied
+        try:
+            payload = await run_in_threadpool(
+                intake_service().job_payload,
+                request.path_params.get("job_id", ""),
+            )
+        except IntakeApiNotFound as error:
+            return _json_error(str(error), 404)
+        except (IntakeApiError, LifecycleError, OperationError) as error:
+            return _json_error(str(error), 409)
+        return JSONResponse({"job": payload})
+
+    async def intake_confirm_api(request: Request) -> JSONResponse:
+        denied = _mutation_denied(request, action="Публикация preview")
+        if denied is not None:
+            return denied
+        payload = await _json_body(request)
+        if set(payload) != {"job_id"} or not isinstance(
+            payload.get("job_id"), str
+        ):
+            return _json_error("Нужен единственный строковый job_id.", 422)
+        async with intake_start_lock:
+            if any(not task.done() for task in intake_tasks):
+                return _json_error(
+                    "Нельзя публиковать preview во время другой тяжёлой операции.",
+                    409,
+                )
+            try:
+                job = await run_in_threadpool(
+                    intake_service().confirm,
+                    payload["job_id"],
+                )
+            except IntakeApiNotFound as error:
+                return _json_error(str(error), 404)
+            except (IntakeApiConflict, OperationConflict) as error:
+                return _json_error(str(error), 409)
+            except (IntakeApiError, LifecycleError, OperationError) as error:
+                return _json_error(str(error), 422)
+        return JSONResponse({"job": job})
 
     async def upload_source_api(request: Request) -> JSONResponse:
         denied = _mutation_denied(request, action="Загрузка")
@@ -1234,6 +1422,36 @@ def _spa_routes(
             admin_sources_api,
             methods=["GET"],
             name="dashboard_sources_admin",
+        ),
+        Route(
+            "/api/v1/sources/intake",
+            intake_snapshot_api,
+            methods=["GET"],
+            name="dashboard_intake_snapshot",
+        ),
+        Route(
+            "/api/v1/sources/intake/upload",
+            intake_upload_api,
+            methods=["POST"],
+            name="dashboard_intake_upload",
+        ),
+        Route(
+            "/api/v1/sources/intake/start",
+            intake_start_api,
+            methods=["POST"],
+            name="dashboard_intake_start",
+        ),
+        Route(
+            "/api/v1/sources/intake/jobs/{job_id}",
+            intake_job_api,
+            methods=["GET"],
+            name="dashboard_intake_job",
+        ),
+        Route(
+            "/api/v1/sources/intake/confirm",
+            intake_confirm_api,
+            methods=["POST"],
+            name="dashboard_intake_confirm",
         ),
         Route(
             "/api/v1/sources/upload",
@@ -1646,6 +1864,7 @@ def routes(
     static_dir: Path | None = None,
     reference: ReferenceService | None = None,
     restart: RestartController | None = None,
+    intake: IntakeApiService | None = None,
 ) -> list[Route]:
     """Вернуть ровно один UI-контур, не затрагивая ``/mcp`` и ``/health``."""
     selected = dashboard_mode() if mode is None else mode
@@ -1664,6 +1883,6 @@ def routes(
         Path(configured_dist) if configured_dist else DEFAULT_DASHBOARD_DIST
     )
     return [
-        *_spa_routes(registry, root, reference, restart),
+        *_spa_routes(registry, root, reference, restart, intake),
         *_reference_routes(reference, restart),
     ]

@@ -38,6 +38,7 @@ from .intake_v2_generation import MaterializedGeneration, materialize_generation
 from .intake_v2_planner import IntakeAction, IntakePlan, plan_intake
 from .intake_v2_probe import CandidateProbe, probe_export
 from .intake_v2_registry import (
+    GenerationConflictError,
     GenerationLayerView,
     GenerationOrigin,
     GenerationPointer,
@@ -887,6 +888,49 @@ class IntakeCoordinator:
                 raise
             raise OperationError(message) from error
 
+    def resume(
+        self,
+        job_id: str,
+        tree: VirtualExportTree,
+        *,
+        expected_action: IntakeAction,
+    ) -> IntakePreview:
+        """Возобновить parsing только с его durable request."""
+        request = self._load_request(job_id)
+        if request.action is not expected_action:
+            raise OperationError("action не совпадает с durable request")
+        return self.prepare(
+            job_id,
+            tree,
+            action=request.action,
+            active=request.active,
+            generation_id=request.generation_id,
+        )
+
+    def fail(self, job_id: str, error: Exception) -> CandidateJob:
+        """Зафиксировать отказ до входа в ``prepare`` и убрать partial work."""
+        job = self.records.load_job(job_id)
+        if job.state is CandidateJobState.FAILED:
+            return job
+        if job.state is CandidateJobState.DONE:
+            raise OperationError("готовую job нельзя перевести в failed")
+        message = self._error_text(error)
+        self._discard_preview(job_id)
+        work = self.work_dir / job_id
+        if work.is_symlink():
+            raise OperationError("operation work не может быть символической ссылкой")
+        try:
+            if work.exists():
+                shutil.rmtree(work)
+                _sync_directory(self.work_dir)
+        except OSError as cleanup_error:
+            message = (
+                f"{message}; cleanup: {self._error_text(cleanup_error)}"
+            )[:2048]
+        return self._save_job(
+            job.transition(CandidateJobState.FAILED, error=message)
+        )
+
     def load_preview(self, job_id: str) -> IntakePreview:
         job = self.records.load_job(job_id)
         if job.state is not CandidateJobState.DONE or job.result != job_id:
@@ -1032,6 +1076,7 @@ class IntakeCoordinator:
             pointer = publisher.publish_generation(
                 staged,
                 expected_previous=expected,
+                expected_active=preview.active,
             )
         except Exception as error:
             current = publisher.active_generation_pointer(preview.plan.identity)
@@ -1051,6 +1096,8 @@ class IntakeCoordinator:
                     raise OperationConflict(
                         "active generation изменился после построения preview"
                     ) from error
+                if isinstance(error, GenerationConflictError):
+                    raise OperationConflict(str(error)) from error
                 message = self._error_text(error)
                 raise OperationError(message) from error
         if pointer != target:

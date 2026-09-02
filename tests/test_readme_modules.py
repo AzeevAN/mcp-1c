@@ -102,10 +102,12 @@ def test_документация_различает_zip_структуры_и_�
         assert "СтруктураКонфигурации_*.zip" in text
         assert "data/incoming/" in text
 
-    assert "только `data/incoming/`" in readme
-    assert "без родительской конфигурации" in dashboard
-    assert "не передаётся через форму «Загрузить»" in operations
-    assert "кнопка «Разобрать» не показывается" in operations
+    for text in (readme, dashboard, operations):
+        assert "/api/v1/sources/intake/upload" in text
+        assert "read-only" in text
+    assert "без родительской" in dashboard
+    assert "Произвольный путь в HTTP не принимается" in operations
+    assert "/api/v1/sources/intake/confirm" in operations
 
 
 def test_readme_фиксирует_холодный_и_тёплый_замер_памяти_контейнера():

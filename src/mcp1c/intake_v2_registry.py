@@ -47,6 +47,10 @@ class RecoveryBlocked(BundleStoreError):
     """WAL и active pointer не позволяют доказать старое или новое состояние."""
 
 
+class GenerationConflictError(RuntimeError):
+    """Publisher сообщает, что состояние после preview уже изменилось."""
+
+
 class GenerationOrigin(str, Enum):
     NATIVE = "native"
     LEGACY = "legacy"
@@ -1048,6 +1052,7 @@ __all__ = [
     "CandidateTransport",
     "ExportIdentity",
     "GenerationBundleStore",
+    "GenerationConflictError",
     "GenerationLayerView",
     "GenerationManifest",
     "GenerationOrigin",

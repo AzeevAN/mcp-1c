@@ -26,7 +26,9 @@ from .intake_v2 import (
     CandidateTransport,
     ExportCandidate,
 )
-from .intake_v2_operations import IntakeCoordinator, OperationError
+from .intake_v2_operations import IntakeCoordinator, IntakePreview, OperationError
+from .intake_v2_planner import IntakeAction
+from .intake_v2_registry import GenerationView
 from .intake_v2_probe import CandidateProbe, ProbeError, probe_export
 from .intake_v2_transport import (
     BrowserStagingStore,
@@ -817,6 +819,39 @@ class IntakeLifecycle:
                     )
             except (OperationError, ProbeError, TransportError) as error:
                 raise LifecycleConflict(str(error)) from error
+
+    def prepare(
+        self,
+        job_id: str,
+        *,
+        action: IntakeAction,
+        active: GenerationView | None,
+        generation_id: str,
+    ) -> IntakePreview:
+        """Построить preview из server-side locator, не принимая путь."""
+        job = self.operations.records.load_job(job_id)
+        discovered = self.catalog.load(job.candidate_id)
+        with self._open(discovered.locator) as tree:
+            return self.operations.prepare(
+                job_id,
+                tree,
+                action=action,
+                active=active,
+                generation_id=generation_id,
+            )
+
+    def resume(
+        self, job_id: str, *, expected_action: IntakeAction
+    ) -> IntakePreview:
+        """Возобновить оборванный parse с ранее сохранёнными параметрами."""
+        job = self.operations.records.load_job(job_id)
+        discovered = self.catalog.load(job.candidate_id)
+        with self._open(discovered.locator) as tree:
+            return self.operations.resume(
+                job_id,
+                tree,
+                expected_action=expected_action,
+            )
 
 
 __all__ = [

@@ -9,6 +9,7 @@ from dataclasses import replace
 
 import pytest
 
+from conftest import build_configuration, write_export
 from mcp1c.intake_v2 import (
     CandidateJobState,
     DurableCandidateStore,
@@ -345,3 +346,104 @@ def test_noop_commit_не_создаёт_staging_а_устаревший_preview
     with pytest.raises(KeyError):
         coordinator.load_commit("job-003")
     assert registry.active_generation(stale.plan.identity) == competitor_manifest
+
+
+def test_commit_атомарно_отклоняет_смену_legacy_после_preview(tmp_path):
+    IntakeCoordinator = _symbol("IntakeCoordinator")
+    OperationConflict = _symbol("OperationConflict")
+
+    root, uploads, records = _stores(tmp_path)
+    coordinator = IntakeCoordinator(root / "operations", records)
+    _accepted(uploads, coordinator)
+    registry = Registry(tmp_path / "data")
+    legacy_input = tmp_path / "legacy-input"
+    legacy_input.mkdir()
+    registry.add_configuration(
+        write_export(
+            legacy_input,
+            build_configuration(name="DemoConfiguration", version="1.0"),
+        ),
+        keep_source=False,
+    )
+    active = registry.generation_view("DemoConfiguration")
+    with uploads.open_tree("candidate-001") as tree:
+        preview = coordinator.prepare(
+            "job-001",
+            tree,
+            action=IntakeAction.UPDATE_FULL,
+            active=active,
+            generation_id="generation-001",
+        )
+
+    registry.add_configuration(
+        write_export(
+            legacy_input,
+            build_configuration(name="DemoConfiguration", version="2.0"),
+        ),
+        keep_source=False,
+    )
+    changed = registry.generation_view("DemoConfiguration")
+    assert changed != active
+
+    with pytest.raises(OperationConflict, match="active generation изменился"):
+        coordinator.confirm("job-001", registry)
+
+    assert registry.active_generation(preview.plan.identity) is None
+    assert registry.generation_view("DemoConfiguration") == changed
+    assert not tuple((registry.data_dir / "generations").glob(".staging-*"))
+
+
+def test_commit_перепроверяет_legacy_в_точке_переключения_pointer(
+    tmp_path, monkeypatch
+):
+    IntakeCoordinator = _symbol("IntakeCoordinator")
+    OperationConflict = _symbol("OperationConflict")
+
+    root, uploads, records = _stores(tmp_path)
+    coordinator = IntakeCoordinator(root / "operations", records)
+    _accepted(uploads, coordinator)
+    registry = Registry(tmp_path / "data")
+    legacy_input = tmp_path / "legacy-input"
+    legacy_input.mkdir()
+    registry.add_configuration(
+        write_export(
+            legacy_input,
+            build_configuration(name="DemoConfiguration", version="1.0"),
+        ),
+        keep_source=False,
+    )
+    active = registry.generation_view("DemoConfiguration")
+    with uploads.open_tree("candidate-001") as tree:
+        preview = coordinator.prepare(
+            "job-001",
+            tree,
+            action=IntakeAction.UPDATE_FULL,
+            active=active,
+            generation_id="generation-001",
+        )
+
+    real_build = registry._build_native_generation_runtime
+
+    def change_legacy_during_publish(root_path, manifest):
+        prepared = real_build(root_path, manifest)
+        registry.add_configuration(
+            write_export(
+                legacy_input,
+                build_configuration(name="DemoConfiguration", version="2.0"),
+            ),
+            keep_source=False,
+        )
+        return prepared
+
+    monkeypatch.setattr(
+        registry,
+        "_build_native_generation_runtime",
+        change_legacy_during_publish,
+    )
+
+    with pytest.raises(OperationConflict, match="active generation изменился"):
+        coordinator.confirm("job-001", registry)
+
+    assert registry.active_generation(preview.plan.identity) is None
+    assert registry.generation_view("DemoConfiguration") != active
+    assert not tuple((registry.data_dir / "generations").glob(".staging-*"))

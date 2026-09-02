@@ -30,6 +30,8 @@ services:
       # `https-proxy` доверяет X-Forwarded-* от внешнего локального TLS proxy.
       MCP1C_ACCESS: ${MCP1C_ACCESS:-local}
       MCP1C_REFERENCE_ARTIFACT: ${MCP1C_REFERENCE_ARTIFACT:-}
+      # Путь уже внутри контейнера; сам bind mount оператор добавляет как ro.
+      MCP1C_CONFIG_SOURCE: ${MCP1C_CONFIG_SOURCE:-}
       MCP1C_ALLOW_SELF_RESTART: ${MCP1C_ALLOW_SELF_RESTART:-1}
     logging:
       driver: json-file

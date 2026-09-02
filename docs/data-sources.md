@@ -73,8 +73,10 @@ source-B проход сохраняет точные пары descriptor/`Right
 проверяется до открытия; повреждённый кэш перестраивается из того же snapshot.
 Каждый `restrictionByCondition` сохраняется одной записью, его прямые `field`
 остаются упорядоченным массивом `fields`, а пустой `condition` не теряет
-признак условного права. Tree- и доказанная flat-раскладки приводятся к одному
-каноническому role snapshot.
+признак условного права; то же правило действует для пустого условия
+`restrictionTemplate`. Пустой `Synonym/item/lang` хранится как пустой языковой
+код, если `content` присутствует. Tree- и доказанная flat-раскладки приводятся
+к одному каноническому role snapshot.
 
 MCP `find_roles_for_access`/`get_role_access`, read-only API
 `GET /api/v1/roles*` и SPA `/roles` используют один backend-resolver и одну

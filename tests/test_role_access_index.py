@@ -346,6 +346,58 @@ def test_index_сохраняет_descriptor_права_rls_шаблоны_и_п
         index.close()
 
 
+def test_index_сохраняет_синоним_роли_без_языкового_кода(tmp_path):
+    layer, _saved = _role_layer(
+        tmp_path / "generation",
+        ((
+            "NeutralSynonym",
+            _descriptor(
+                "NeutralSynonym",
+                uuid="55555555-5555-5555-5555-555555555555",
+                synonyms=(("", "Синоним без языкового кода"),),
+            ),
+            _rights(),
+        ),),
+    )
+
+    index = _open(tmp_path / "generation", layer, tmp_path / "roles.sqlite")
+    try:
+        role = index.get_role("NeutralSynonym")
+        assert role.synonyms == (("", "Синоним без языкового кода"),)
+    finally:
+        index.close()
+
+
+def test_index_сохраняет_шаблон_ограничения_с_пустым_condition(tmp_path):
+    layer, _saved = _role_layer(
+        tmp_path / "generation",
+        ((
+            "EmptyTemplate",
+            _descriptor(
+                "EmptyTemplate",
+                uuid="66666666-6666-6666-6666-666666666666",
+            ),
+            _rights(templates=(("SyntheticTemplate", ""),)),
+        ),),
+    )
+
+    index = _open(tmp_path / "generation", layer, tmp_path / "roles.sqlite")
+    try:
+        page = index.role_templates("EmptyTemplate")
+        assert page.total == 1
+        assert page.templates[0].name == "SyntheticTemplate"
+        text = index.read_text(
+            "EmptyTemplate",
+            "template",
+            page.templates[0].id,
+        )
+        assert text.content == ""
+        assert text.total_chars == 0
+        assert text.next_offset is None
+    finally:
+        index.close()
+
+
 def test_index_сохраняет_одно_rls_с_несколькими_fields_и_пустым_condition(
     tmp_path,
 ):

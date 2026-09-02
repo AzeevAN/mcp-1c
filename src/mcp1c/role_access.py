@@ -341,7 +341,11 @@ def _parse_descriptor(stream: BinaryIO, expected_name: str) -> _ParsedDescriptor
         raise RoleAccessError("descriptor роли дублирует Synonym")
     if synonym_nodes:
         for item in _children(synonym_nodes[0], "item"):
-            language = _text(_single(item, "lang", "синоним роли"), "язык")
+            language = _text(
+                _single(item, "lang", "синоним роли"),
+                "язык",
+                required=False,
+            )
             content = _text(
                 _single(item, "content", "синоним роли"), "текст синонима"
             )
@@ -700,6 +704,7 @@ def _parse_rights(
                 condition = _text(
                     _single(element, "condition", "шаблон ограничения"),
                     "условие шаблона ограничения",
+                    required=False,
                 )
                 condition_id = _condition_id(connection, condition)
                 existing = connection.execute(

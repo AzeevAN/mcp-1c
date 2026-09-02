@@ -53,6 +53,20 @@ class CandidateJobState(str, Enum):
     FAILED = "failed"
 
 
+class CandidateJobStage(str, Enum):
+    """Durable checkpoint внутри крупных состояний server-side job."""
+
+    ACCEPTED = "accepted"
+    PROBING = "probing"
+    READY = "ready"
+    COLLECTING = "collecting"
+    CONVERTING = "converting"
+    MATERIALIZING = "materializing"
+    PLANNING = "planning"
+    DONE = "done"
+    FAILED = "failed"
+
+
 class MetadataKindPolicy(str, Enum):
     SUPPORTED = "supported"
     DEFERRED = "deferred"
@@ -314,6 +328,23 @@ _JOB_TRANSITIONS = MappingProxyType(
     }
 )
 
+_JOB_DEFAULT_STAGE = MappingProxyType(
+    {
+        CandidateJobState.ACCEPTED: CandidateJobStage.ACCEPTED,
+        CandidateJobState.PROBING: CandidateJobStage.PROBING,
+        CandidateJobState.READY: CandidateJobStage.READY,
+        CandidateJobState.PARSING: CandidateJobStage.COLLECTING,
+        CandidateJobState.DONE: CandidateJobStage.DONE,
+        CandidateJobState.FAILED: CandidateJobStage.FAILED,
+    }
+)
+_PARSING_STAGES = (
+    CandidateJobStage.COLLECTING,
+    CandidateJobStage.CONVERTING,
+    CandidateJobStage.MATERIALIZING,
+    CandidateJobStage.PLANNING,
+)
+
 
 @dataclass(frozen=True, slots=True)
 class CandidateJob:
@@ -324,6 +355,7 @@ class CandidateJob:
     state: CandidateJobState
     error: str = ""
     result: str = ""
+    stage: CandidateJobStage | None = None
 
     def __post_init__(self) -> None:
         _safe_identifier(self.job_id, "job_id")
@@ -332,6 +364,17 @@ class CandidateJob:
             raise IntakeV2ContractError("state должен быть CandidateJobState")
         if not isinstance(self.error, str) or not isinstance(self.result, str):
             raise IntakeV2ContractError("error и result должны быть строками")
+        if self.stage is None:
+            object.__setattr__(self, "stage", _JOB_DEFAULT_STAGE[self.state])
+        if not isinstance(self.stage, CandidateJobStage):
+            raise IntakeV2ContractError("stage должен быть CandidateJobStage")
+        allowed_stages = (
+            frozenset(_PARSING_STAGES)
+            if self.state is CandidateJobState.PARSING
+            else frozenset({_JOB_DEFAULT_STAGE[self.state]})
+        )
+        if self.stage not in allowed_stages:
+            raise IntakeV2ContractError("stage не соответствует состоянию job")
         if self.state is CandidateJobState.FAILED and not self.error:
             raise IntakeV2ContractError("failed job обязан содержать error")
         if self.state is not CandidateJobState.FAILED and self.error:
@@ -351,7 +394,30 @@ class CandidateJob:
             raise IntakeV2ContractError(
                 f"недопустимый переход job: {self.state.value} -> {target}"
             )
-        return replace(self, state=state, error=error, result=result)
+        return replace(
+            self,
+            state=state,
+            error=error,
+            result=result,
+            stage=_JOB_DEFAULT_STAGE[state],
+        )
+
+    def checkpoint(self, stage: CandidateJobStage) -> CandidateJob:
+        """Сохранить продвижение parse без выдуманного перехода состояния."""
+        if self.state is not CandidateJobState.PARSING or stage not in _PARSING_STAGES:
+            raise IntakeV2ContractError(
+                "checkpoint допустим только для parsing job"
+            )
+        assert isinstance(self.stage, CandidateJobStage)
+        if _PARSING_STAGES.index(stage) < _PARSING_STAGES.index(self.stage):
+            raise IntakeV2ContractError("checkpoint не может двигаться назад")
+        return replace(self, stage=stage)
+
+    def restart_parsing(self) -> CandidateJob:
+        """Начать безопасную пересборку managed staging после рестарта."""
+        if self.state is not CandidateJobState.PARSING:
+            raise IntakeV2ContractError("restart допустим только для parsing job")
+        return replace(self, stage=CandidateJobStage.COLLECTING)
 
     def to_dict(self) -> dict[str, str]:
         return {
@@ -360,6 +426,7 @@ class CandidateJob:
             "state": self.state.value,
             "error": self.error,
             "result": self.result,
+            "stage": self.stage.value,
         }
 
     @classmethod
@@ -373,6 +440,11 @@ class CandidateJob:
                 state=CandidateJobState(raw["state"]),
                 error=raw.get("error", ""),
                 result=raw.get("result", ""),
+                stage=(
+                    CandidateJobStage(raw["stage"])
+                    if "stage" in raw
+                    else None
+                ),
             )
         except (KeyError, TypeError, ValueError) as error:
             if isinstance(error, IntakeV2ContractError):
@@ -864,6 +936,7 @@ def decide_recovery(
 
 __all__ = [
     "CandidateJob",
+    "CandidateJobStage",
     "CandidateJobState",
     "CandidateStoreError",
     "CandidateTransport",

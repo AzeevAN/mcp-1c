@@ -128,6 +128,17 @@
   expected-pointer CAS не позволяет устаревшему preview затереть конкурентную
   публикацию и удаляет неприменимый staging. Большие preserved members
   хэшируются один раз при копировании, без предварительного второго прохода.
+- Durable backend операции связывает probe, один source-B collector, converter,
+  materializer и planner в единое построение preview без публикации Registry.
+  Candidate и semantic diff переживают рестарт вместе с проверяемыми ссылками
+  на managed payload; выбранные action, active snapshot и generation
+  закрепляются атомарным request до тяжёлой работы, а coarse-состояние job
+  дополнено checkpoint текущей фазы. После аварийного завершения новый процесс
+  принимает только исходные параметры и безопасно пересобирает собственный
+  staging; обычная ошибка атомарно сохраняется как `failed` и не оставляет
+  частичного preview. Большие тела при восстановлении preview не хэшируются
+  повторно: до commit сверяются envelope и размеры members, а полные SHA
+  проверяет существующий generation staging.
 
 ### Найдено
 

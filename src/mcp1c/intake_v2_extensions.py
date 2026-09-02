@@ -390,10 +390,29 @@ def resolve_extension_structure(
     configuration = copy.deepcopy(base)
     folded = {name.casefold(): name for name in configuration.objects}
     for name, item in extension.own_objects.items():
-        if name.casefold() in folded:
+        canonical = folded.get(name.casefold())
+        if canonical is not None and base.source_format not in {"json", "xml"}:
             raise ExtensionResolutionError(
                 f"собственный объект расширения конфликтует с базой: {name}"
             )
+        if canonical is not None:
+            base_fields = {
+                path.casefold()
+                for path, _field in configuration.objects[canonical].all_fields()
+            }
+            extension_fields = {
+                path.casefold() for path, _field in item.all_fields()
+            }
+            if base_fields != extension_fields:
+                raise ExtensionResolutionError(
+                    "собственный объект расширения и его проекция schema v1 "
+                    f"содержат разный набор полей: {name}"
+                )
+            # Legacy schema v1 снимается из runtime-конфигурации и уже видит
+            # активные собственные объекты расширений. При доказанном полном
+            # совпадении адресов native-снимок расширения точнее: он сохраняет
+            # происхождение и исходные XML-значения свойств.
+            del configuration.objects[canonical]
         configuration.objects[name] = copy.deepcopy(item)
         folded[name.casefold()] = name
     relation_by_target = {item.target: item for item in relations}

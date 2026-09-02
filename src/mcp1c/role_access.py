@@ -42,6 +42,7 @@ _MAX_TEXT = 16 * 1024 * 1024
 _MAX_FIELDS_PER_RESTRICTION = 1024
 _DESCRIPTOR_NAMESPACE = "http://v8.1c.ru/8.3/MDClasses"
 _CORE_NAMESPACE = "http://v8.1c.ru/8.1/data/core"
+_READABLE_NAMESPACE = "http://v8.1c.ru/8.3/xcf/readable"
 _RIGHTS_NAMESPACE = "http://v8.1c.ru/8.2/roles"
 
 # Операции означают только проверку одноимённого базового права платформы.
@@ -313,17 +314,32 @@ def _parse_descriptor(stream: BinaryIO, expected_name: str) -> _ParsedDescriptor
         raise RoleAccessError("descriptor роли содержит неверный XML") from error
     if _local(root.tag) != "MetaDataObject":
         raise RoleAccessError("descriptor роли имеет неверный корень")
-    descriptor_tags = {"MetaDataObject", "Role", "Properties", "Name", "Synonym", "Comment"}
+    descriptor_tags = {
+        "MetaDataObject",
+        "Role",
+        "InternalInfo",
+        "ExtendedConfigurationObject",
+        "ObjectBelonging",
+        "Properties",
+        "Name",
+        "Synonym",
+        "Comment",
+    }
     core_tags = {"item", "lang", "content"}
+    readable_tags = {"Property", "PropertyState", "State"}
     for element in root.iter():
         local_name = _local(element.tag)
         namespace = _namespace(element.tag)
         if (
             local_name in descriptor_tags
             and namespace != _DESCRIPTOR_NAMESPACE
-        ) or (local_name in core_tags and namespace != _CORE_NAMESPACE):
+        ) or (
+            local_name in core_tags and namespace != _CORE_NAMESPACE
+        ) or (
+            local_name in readable_tags and namespace != _READABLE_NAMESPACE
+        ):
             raise RoleAccessError("descriptor роли содержит неверное пространство имён")
-        if local_name not in descriptor_tags | core_tags:
+        if local_name not in descriptor_tags | core_tags | readable_tags:
             raise RoleAccessError("descriptor роли содержит неизвестный элемент")
     role = _single(root, "Role", "descriptor роли")
     properties = _single(role, "Properties", "descriptor роли")

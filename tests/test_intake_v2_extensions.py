@@ -27,6 +27,7 @@ from mcp1c.intake_v2_probe import probe_export
 from mcp1c.model import Configuration, Field, MetadataObject
 from mcp1c.registry import Registry, RegistryError
 from mcp1c.tools import list_extensions
+from conftest import write_export
 from test_intake_v2_converter import (
     MemoryTree,
     _catalog,
@@ -123,6 +124,69 @@ def test_target_missing_исключает_orphan_overlay_но_сохраняе�
     ]
     assert not hasattr(resolved, "active")
     assert not hasattr(resolved, "disabled")
+
+
+def test_resolver_заменяет_проекцию_собственного_объекта_из_schema_v1():
+    ExtensionStructure = _symbol("ExtensionStructure")
+    resolve_extension_structure = _symbol("resolve_extension_structure")
+    projected = _object("Own", "Field")
+    projected.props["periodicity"] = "В пределах дня"
+    base = _configuration("DemoConfiguration", projected)
+    base.source_format = "json"
+    native = _object("Own", "Field")
+    native.props["periodicity"] = "WithinDay"
+    extension = ExtensionStructure(
+        name="DemoExtension",
+        parent_configuration="DemoConfiguration",
+        own_objects={native.full_name: native},
+        borrowed_overlays={},
+    )
+
+    resolved = resolve_extension_structure(base, extension)
+
+    assert resolved.configuration.objects[native.full_name].props == {
+        "periodicity": "WithinDay"
+    }
+    assert base.objects[projected.full_name].props == {
+        "periodicity": "В пределах дня"
+    }
+
+
+def test_resolver_отклоняет_рассинхрон_полей_собственного_объекта_schema_v1():
+    ExtensionStructure = _symbol("ExtensionStructure")
+    ExtensionResolutionError = _symbol("ExtensionResolutionError")
+    resolve_extension_structure = _symbol("resolve_extension_structure")
+    base = _configuration("DemoConfiguration", _object("Own", "OldField"))
+    base.source_format = "xml"
+    native = _object("Own", "NewField")
+    extension = ExtensionStructure(
+        name="DemoExtension",
+        parent_configuration="DemoConfiguration",
+        own_objects={native.full_name: native},
+        borrowed_overlays={},
+    )
+
+    with pytest.raises(ExtensionResolutionError, match="набор полей"):
+        resolve_extension_structure(base, extension)
+
+
+def test_resolver_не_маскирует_дубль_собственного_объекта_native_базы():
+    ExtensionStructure = _symbol("ExtensionStructure")
+    ExtensionResolutionError = _symbol("ExtensionResolutionError")
+    resolve_extension_structure = _symbol("resolve_extension_structure")
+    own = _object("Own", "Field")
+    extension = ExtensionStructure(
+        name="DemoExtension",
+        parent_configuration="DemoConfiguration",
+        own_objects={own.full_name: own},
+        borrowed_overlays={},
+    )
+
+    with pytest.raises(ExtensionResolutionError, match="конфликтует с базой"):
+        resolve_extension_structure(
+            _configuration("DemoConfiguration", _object("Own", "Field")),
+            extension,
+        )
 
 
 def test_исчезнувшее_заимствованное_поле_не_становится_собственным_overlay():
@@ -414,6 +478,45 @@ def test_extension_publish_требует_существующего_родит�
             registry.stage_generation(extension.manifest, extension.payloads)
         )
     assert registry.active_generation_pointer(extension.manifest.identity) is None
+
+
+def test_restore_поднимает_native_расширение_после_legacy_родителя(tmp_path):
+    incoming = tmp_path / "legacy-parent"
+    incoming.mkdir()
+    registry = Registry(tmp_path / "data")
+    registry.add_configuration(
+        write_export(
+            incoming,
+            _configuration(
+                "DemoConfiguration",
+                _object("Items", "BaseField"),
+            ),
+        )
+    )
+    _collection_value, extension = _materialized(
+        tmp_path,
+        "extension-with-legacy-parent",
+        configuration_name="DemoExtension",
+        extension=True,
+    )
+    registry.publish_generation(
+        registry.stage_generation(extension.manifest, extension.payloads)
+    )
+
+    restarted = Registry(registry.data_dir)
+    assert restarted.restore() == []
+    restored = restarted.resolve(
+        "DemoConfiguration",
+        extension="DemoExtension",
+    )
+
+    assert restored.extension is not None and restored.extension.готов
+    assert restored.extension_roles is not None and restored.extension_roles.ready
+    assert restored.extension_resolution is not None
+    assert all(
+        relation.state.value == "resolved"
+        for relation in restored.extension_resolution.relations
+    )
 
 
 def test_extension_publish_CAS_отклоняет_смену_родителя(tmp_path, monkeypatch):

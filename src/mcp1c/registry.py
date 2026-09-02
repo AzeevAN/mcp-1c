@@ -4781,6 +4781,46 @@ class Registry:
                     self.roles[name] = _prepared.runtime.roles
                 self._relation_cache.pop(name, None)
 
+        native_configurations = {
+            manifest.identity.configuration_name
+            for manifest in manifests.values()
+            if manifest.identity.source_kind is SourceKind.CONFIGURATION
+        }
+        все_источники = [
+            Source.from_dict(raw) for raw in (payload.get("sources") or [])
+        ]
+        конфигурации_этого_restore: dict[str, Source] = {}
+        legacy_родители_расширений = {
+            manifest.identity.parent_configuration
+            for manifest in manifests.values()
+            if manifest.identity.source_kind is SourceKind.EXTENSION
+            and manifest.identity.parent_configuration not in native_configurations
+        }
+        # Native-расширение может жить поверх ещё не мигрировавшей schema-v1
+        # базы. Такой родитель тоже должен быть готов до второго generation-
+        # прохода; порядок строк sources и manifests контрактом не является.
+        for source in все_источники:
+            if (
+                source.kind != KIND_CONFIGURATION
+                or source.id not in legacy_родители_расширений
+            ):
+                continue
+            stored = self._absolute(source.stored_path)
+            if not stored.exists():
+                problems.append(f"{source.id}: файл источника пропал ({stored})")
+                continue
+            try:
+                конфигурации_этого_restore[source.id] = self.add_configuration(
+                    stored,
+                    keep_source=False,
+                    known_sha256=source.sha256,
+                    expected_id=source.id,
+                    known_origin=source.origin,
+                    allow_truncated=source.incomplete,
+                )
+            except Exception as error:
+                problems.append(f"{source.id}: {error}")
+
         for key, manifest in manifests.items():
             if manifest.identity.source_kind is not SourceKind.EXTENSION:
                 continue
@@ -4819,18 +4859,9 @@ class Registry:
         for prepared, _configuration, _modules in native_runtime.values():
             self._save_native_runtime_cache(prepared)
 
-        native_configurations = {
-            manifest.identity.configuration_name
-            for manifest in manifests.values()
-            if manifest.identity.source_kind is SourceKind.CONFIGURATION
-        }
-
         # Код восстанавливается вторым проходом: порядок строк в
         # registry.json не является контрактом, а модули/расширение
         # без уже восстановленной конфигурации не имеют владельца.
-        все_источники = [
-            Source.from_dict(raw) for raw in (payload.get("sources") or [])
-        ]
         with self._lock:
             отложенный_код = [
                 (source, self._modules_generation.get(source.id, 0))
@@ -4843,8 +4874,6 @@ class Registry:
                 for source in все_источники
                 if source.kind == KIND_EXTENSION_RUNTIME
             ]
-        конфигурации_этого_restore: dict[str, Source] = {}
-
         for source in все_источники:
             if source.kind in (
                 KIND_MODULES,
@@ -4854,7 +4883,10 @@ class Registry:
                 continue
             if (
                 source.kind == KIND_CONFIGURATION
-                and source.id in native_configurations
+                and (
+                    source.id in native_configurations
+                    or source.id in конфигурации_этого_restore
+                )
             ):
                 # Legacy-файл сохраняется до отдельного crash-safe cleanup,
                 # но не может подменить уже проверенный native runtime.

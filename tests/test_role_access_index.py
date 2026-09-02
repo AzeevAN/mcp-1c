@@ -38,6 +38,7 @@ SUBJECT = "mcp1c.role_access"
 NS = "http://v8.1c.ru/8.3/MDClasses"
 CORE_NS = "http://v8.1c.ru/8.1/data/core"
 RIGHTS_NS = "http://v8.1c.ru/8.2/roles"
+READABLE_NS = "http://v8.1c.ru/8.3/xcf/readable"
 
 
 def _symbol(name: str):
@@ -58,16 +59,28 @@ def _descriptor(
     uuid: str,
     comment: str = "",
     synonyms: tuple[tuple[str, str], ...] = (("ru", "Синтетическая роль"),),
+    internal_info: bool = False,
 ) -> bytes:
     synonym = "".join(
         f"<v8:item><v8:lang>{language}</v8:lang>"
         f"<v8:content>{content}</v8:content></v8:item>"
         for language, content in synonyms
     )
+    info = (
+        "<InternalInfo>"
+        "<ExtendedConfigurationObject>SyntheticRole</ExtendedConfigurationObject>"
+        "<ObjectBelonging>Adopted</ObjectBelonging>"
+        f'<xr:Property xmlns:xr="{READABLE_NS}">'
+        "<xr:PropertyState><xr:State>Changed</xr:State></xr:PropertyState>"
+        "</xr:Property>"
+        "</InternalInfo>"
+        if internal_info
+        else ""
+    )
     return (
         f'<MetaDataObject xmlns="{NS}" xmlns:v8="{CORE_NS}" version="2.20">'
         f'<Role uuid="{uuid}">'
-        f"<Properties><Name>{name}</Name><Synonym>{synonym}</Synonym>"
+        f"{info}<Properties><Name>{name}</Name><Synonym>{synonym}</Synonym>"
         f"<Comment>{comment}</Comment></Properties></Role></MetaDataObject>"
     ).encode()
 
@@ -364,6 +377,29 @@ def test_index_сохраняет_синоним_роли_без_языково�
     try:
         role = index.get_role("NeutralSynonym")
         assert role.synonyms == (("", "Синоним без языкового кода"),)
+    finally:
+        index.close()
+
+
+def test_index_принимает_internal_info_descriptor_роли_расширения(tmp_path):
+    layer, _saved = _role_layer(
+        tmp_path / "generation",
+        ((
+            "ExtensionRole",
+            _descriptor(
+                "ExtensionRole",
+                uuid="77777777-7777-7777-7777-777777777777",
+                internal_info=True,
+            ),
+            _rights(),
+        ),),
+    )
+
+    index = _open(tmp_path / "generation", layer, tmp_path / "roles.sqlite")
+    try:
+        role = index.get_role("ExtensionRole")
+        assert role.uuid == "77777777-7777-7777-7777-777777777777"
+        assert role.synonyms == (("ru", "Синтетическая роль"),)
     finally:
         index.close()
 

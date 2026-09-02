@@ -77,6 +77,12 @@ def test_materializer_строит_пять_слоёв_и_generation_переж�
         layer.content_sha256 and layer.payload_sha256 and layer.relative_path
         for layer in materialized.manifest.layers
     )
+    assert all(
+        layer.provenance is not None
+        and layer.provenance.raw_sha256 == collection.probe.raw_sha256
+        and layer.provenance.origin_name == collection.probe.origin_name
+        for layer in materialized.manifest.layers
+    )
     code = load_layer_payload(materialized.payloads[LayerKind.CODE].manifest_path)
     forms = load_layer_payload(materialized.payloads[LayerKind.FORMS].manifest_path)
     assert {item["address"] for item in code.semantic["modules"]} >= {
@@ -223,6 +229,13 @@ def test_role_error_не_отменяет_остальные_готовые_сл
         LayerKind.ROLES: LayerState.ERROR,
     }
     assert LayerKind.ROLES not in materialized.payloads
+    roles = next(
+        layer
+        for layer in materialized.manifest.layers
+        if layer.kind is LayerKind.ROLES
+    )
+    assert roles.provenance is not None
+    assert roles.provenance.raw_sha256 == collection.probe.raw_sha256
 
     registry = Registry(tmp_path / "data-error")
     registry.publish_generation(

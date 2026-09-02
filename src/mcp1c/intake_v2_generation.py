@@ -16,6 +16,8 @@ from .intake_v2 import (
     GenerationManifest,
     LayerKind,
     LayerManifest,
+    LayerProvenance,
+    LayerSourceProfile,
     LayerState,
     SourceKind,
 )
@@ -441,6 +443,14 @@ def materialize_generation(
         }
         layers: list[LayerManifest] = []
         source_specs: dict[LayerKind, tuple[_SourceSpec, ...]] = {}
+        provenance = LayerProvenance(
+            profile=LayerSourceProfile.SOURCE_B,
+            transport=collection.probe.transport,
+            origin_name=collection.probe.origin_name,
+            raw_sha256=collection.probe.raw_sha256,
+            parser_version=GENERATION_PARSER_VERSION,
+            selection_version=collection.selection_version,
+        )
         for kind in LayerKind:
             build = builds[kind]
             if build is None:
@@ -449,6 +459,7 @@ def materialize_generation(
                         kind=kind,
                         state=LayerState.ERROR,
                         error=collection.roles.error,
+                        provenance=provenance,
                     )
                 )
                 continue
@@ -464,6 +475,7 @@ def materialize_generation(
                     payload_sha256=hash_layer_payload(kind, manifest_path),
                     relative_path=manifest_relative,
                     items_total=build.items_total,
+                    provenance=provenance,
                 )
             )
             source_specs[kind] = build.sources

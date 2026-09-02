@@ -294,6 +294,43 @@ def test_layer_manifest_не_смешивает_структуру_формы_к
         replace(layers[LayerKind.CODE], relative_path=".")
 
 
+def test_layer_provenance_переживает_merge_слоёв_разных_источников():
+    CandidateTransport = _symbol("CandidateTransport")
+    LayerKind = _symbol("LayerKind")
+    LayerManifest = _symbol("LayerManifest")
+    LayerProvenance = _symbol("LayerProvenance")
+    LayerSourceProfile = _symbol("LayerSourceProfile")
+    LayerState = _symbol("LayerState")
+
+    provenance = LayerProvenance(
+        profile=LayerSourceProfile.SOURCE_B,
+        transport=CandidateTransport.INCOMING,
+        origin_name="demo-export.zip",
+        raw_sha256="a" * 64,
+        parser_version=7,
+        selection_version=8,
+    )
+    ready = LayerManifest(
+        kind=LayerKind.CODE,
+        state=LayerState.READY,
+        content_sha256="b" * 64,
+        relative_path="layers/code.json",
+        provenance=provenance,
+    )
+    broken = LayerManifest(
+        kind=LayerKind.ROLES,
+        state=LayerState.ERROR,
+        error="непрочитан синтетический Rights.xml",
+        provenance=provenance,
+    )
+
+    assert LayerManifest.from_dict(ready.to_dict()) == ready
+    assert LayerManifest.from_dict(broken.to_dict()) == broken
+    assert ready.provenance.profile.value == "source-b"
+    with pytest.raises(ValueError, match="parser_version"):
+        replace(provenance, parser_version=0)
+
+
 def test_role_layer_различает_нулевой_ready_error_и_unavailable():
     LayerKind = _symbol("LayerKind")
     LayerManifest = _symbol("LayerManifest")

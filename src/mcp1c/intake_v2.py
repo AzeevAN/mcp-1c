@@ -67,6 +67,11 @@ class LayerKind(str, Enum):
     ROLES = "roles"
 
 
+class LayerSourceProfile(str, Enum):
+    SCHEMA_V1 = "schema-v1"
+    SOURCE_B = "source-b"
+
+
 class LayerState(str, Enum):
     READY = "ready"
     ERROR = "error"
@@ -583,6 +588,58 @@ class MetadataKindSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class LayerProvenance:
+    """Источник и версии parser, создавшие конкретный логический слой."""
+
+    profile: LayerSourceProfile
+    transport: CandidateTransport
+    origin_name: str
+    raw_sha256: str
+    parser_version: int
+    selection_version: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.profile, LayerSourceProfile):
+            raise IntakeV2ContractError("profile должен быть LayerSourceProfile")
+        if not isinstance(self.transport, CandidateTransport):
+            raise IntakeV2ContractError("transport должен быть CandidateTransport")
+        _required_text(self.origin_name, "origin_name")
+        _sha256(self.raw_sha256, "raw_sha256")
+        _positive_int(self.parser_version, "parser_version")
+        _positive_int(self.selection_version, "selection_version")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "profile": self.profile.value,
+            "transport": self.transport.value,
+            "origin_name": self.origin_name,
+            "raw_sha256": self.raw_sha256,
+            "parser_version": self.parser_version,
+            "selection_version": self.selection_version,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: object) -> LayerProvenance:
+        if not isinstance(raw, dict):
+            raise IntakeV2ContractError("provenance слоя должен быть объектом")
+        try:
+            return cls(
+                profile=LayerSourceProfile(raw["profile"]),
+                transport=CandidateTransport(raw["transport"]),
+                origin_name=raw["origin_name"],
+                raw_sha256=raw["raw_sha256"],
+                parser_version=raw["parser_version"],
+                selection_version=raw["selection_version"],
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            if isinstance(error, IntakeV2ContractError):
+                raise
+            raise IntakeV2ContractError(
+                "provenance слоя содержит неверные поля"
+            ) from error
+
+
+@dataclass(frozen=True, slots=True)
 class LayerManifest:
     """Проверяемая ссылка manifest на один канонический слой."""
 
@@ -593,6 +650,7 @@ class LayerManifest:
     relative_path: str = ""
     items_total: int = 0
     error: str = ""
+    provenance: LayerProvenance | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, LayerKind):
@@ -602,6 +660,10 @@ class LayerManifest:
         _nonnegative_int(self.items_total, "items_total")
         if not isinstance(self.error, str):
             raise IntakeV2ContractError("error должен быть строкой")
+        if self.provenance is not None and not isinstance(
+            self.provenance, LayerProvenance
+        ):
+            raise IntakeV2ContractError("provenance должен быть LayerProvenance")
         if self.state is LayerState.READY:
             _sha256(self.content_sha256, "content_sha256")
             _sha256(self.payload_sha256, "payload_sha256", allow_empty=True)
@@ -636,6 +698,8 @@ class LayerManifest:
         }
         if self.payload_sha256:
             result["payload_sha256"] = self.payload_sha256
+        if self.provenance is not None:
+            result["provenance"] = self.provenance.to_dict()
         return result
 
     @classmethod
@@ -651,6 +715,11 @@ class LayerManifest:
                 relative_path=raw.get("relative_path", ""),
                 items_total=raw.get("items_total", 0),
                 error=raw.get("error", ""),
+                provenance=(
+                    LayerProvenance.from_dict(raw["provenance"])
+                    if raw.get("provenance") is not None
+                    else None
+                ),
             )
         except (KeyError, TypeError, ValueError) as error:
             if isinstance(error, IntakeV2ContractError):
@@ -805,6 +874,8 @@ __all__ = [
     "IntakeV2ContractError",
     "LayerKind",
     "LayerManifest",
+    "LayerProvenance",
+    "LayerSourceProfile",
     "LayerState",
     "MetadataKindPolicy",
     "MetadataKindSpec",

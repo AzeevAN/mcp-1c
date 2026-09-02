@@ -21,13 +21,13 @@
 | Общая справка | опциональный подписанный `.mcp1cref`; без доверенного артефакта две дополнительные ручки не регистрируются |
 | Дашборд | современная SPA включена по умолчанию; `on` либо `off` |
 | Авторизация Docker | два разных обязательных токена: `API_TOKEN` на чтение, `ADMIN_TOKEN` на запись |
-| Тесты | `.venv/bin/python -m pytest`, 1818 |
+| Тесты | `.venv/bin/python -m pytest`, 1821 |
 
 Воспроизводимый прогон:
 
 ```bash
 .venv/bin/pip install --require-hashes -r requirements-dev-lock.txt
-.venv/bin/python -m pytest          # 1818 тестов (прогон 2026-09-02)
+.venv/bin/python -m pytest          # 1821 тест (прогон 2026-09-02)
 ```
 
 ## Навигация

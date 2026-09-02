@@ -796,6 +796,36 @@ class GenerationBundleStore:
             shutil.rmtree(temporary, ignore_errors=True)
             raise
 
+    def payload_sources(
+        self, pointer: GenerationPointer
+    ) -> Mapping[LayerKind, LayerPayloadSource]:
+        """Вернуть проверенные источники active envelope для новой staging."""
+        root = self._absolute(pointer.root_path)
+        manifest = self._load_manifest(root, pointer)
+        result: dict[LayerKind, LayerPayloadSource] = {}
+        for layer in manifest.layers:
+            if layer.state is not LayerState.READY:
+                continue
+            if not layer.payload_sha256:
+                raise BundleStoreError(
+                    f"{layer.kind.value}: active слой не имеет envelope"
+                )
+            payload = load_layer_payload(root / layer.relative_path)
+            result[layer.kind] = LayerPayloadSource(
+                root / layer.relative_path,
+                tuple(
+                    LayerMemberSource(member, root / member.relative_path)
+                    for member in payload.members
+                ),
+            )
+        return MappingProxyType(result)
+
+    def discard(self, staged: StagedGeneration) -> None:
+        """Удалить только принадлежащий store незапубликованный staging."""
+        if not isinstance(staged, StagedGeneration):
+            raise TypeError("staged должен быть StagedGeneration")
+        self.remove_staging(self._staging_relative(staged.root, self.data_dir))
+
     def _open_member(self, root: Path, relative_path: str) -> BinaryIO:
         relative_path = _safe_relative(relative_path, "member path")
         self._validate_path_chain(root)
@@ -851,21 +881,7 @@ class GenerationBundleStore:
             pointer = target
         else:
             raise TypeError("target должен быть GenerationPointer или StagedGeneration")
-        with self._open_member(root, "manifest.json") as stream:
-            raw = stream.read(_MAX_MANIFEST_SIZE + 1)
-        if len(raw) > _MAX_MANIFEST_SIZE:
-            raise BundleStoreError("generation manifest превышает предел")
-        if hashlib.sha256(raw).hexdigest() != pointer.manifest_sha256:
-            raise BundleStoreError("generation manifest: контрольная сумма не совпала")
-        try:
-            manifest = GenerationManifest.from_json_bytes(raw)
-        except ValueError as error:
-            raise BundleStoreError("generation manifest повреждён") from error
-        if (
-            manifest.identity != pointer.identity
-            or manifest.generation_id != pointer.generation_id
-        ):
-            raise BundleStoreError("generation manifest не совпадает с pointer")
+        manifest = self._load_manifest(root, pointer)
         for layer in manifest.layers:
             if layer.state is not LayerState.READY:
                 continue
@@ -912,6 +928,26 @@ class GenerationBundleStore:
                     raise BundleStoreError(
                         f"member {member.key}: контрольная сумма или размер не совпали"
                     )
+        return manifest
+
+    def _load_manifest(
+        self, root: Path, pointer: GenerationPointer
+    ) -> GenerationManifest:
+        with self._open_member(root, "manifest.json") as stream:
+            raw = stream.read(_MAX_MANIFEST_SIZE + 1)
+        if len(raw) > _MAX_MANIFEST_SIZE:
+            raise BundleStoreError("generation manifest превышает предел")
+        if hashlib.sha256(raw).hexdigest() != pointer.manifest_sha256:
+            raise BundleStoreError("generation manifest: контрольная сумма не совпала")
+        try:
+            manifest = GenerationManifest.from_json_bytes(raw)
+        except ValueError as error:
+            raise BundleStoreError("generation manifest повреждён") from error
+        if (
+            manifest.identity != pointer.identity
+            or manifest.generation_id != pointer.generation_id
+        ):
+            raise BundleStoreError("generation manifest не совпадает с pointer")
         return manifest
 
     def promote(self, staged: StagedGeneration) -> None:

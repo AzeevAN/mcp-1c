@@ -122,6 +122,12 @@
   parser/selection требует reparse, downgrade отклоняется. Новый
   `roles=error` заменяет прежние ready-права, а legacy content fail-closed
   планируется к reparse вместо недоказанного совпадения.
+- Композиция плана собирает новое независимое generation: выбранные слои
+  берутся из candidate, preserved-слои вместе с собственным provenance и
+  members потоково копируются из active bundle. No-op не создаёт staging;
+  expected-pointer CAS не позволяет устаревшему preview затереть конкурентную
+  публикацию и удаляет неприменимый staging. Большие preserved members
+  хэшируются один раз при копировании, без предварительного второго прохода.
 
 ### Найдено
 

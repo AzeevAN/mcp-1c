@@ -87,6 +87,7 @@ from .virtual_tables import TableTemplate, build_table_index
 from .v8container import V8ContainerError
 
 REGISTRY_VERSION = 1
+_EXPECTED_GENERATION_UNSET = object()
 
 _DictionaryMutationResult = TypeVar("_DictionaryMutationResult")
 
@@ -3784,19 +3785,51 @@ class Registry:
         with self._lock:
             return self._generation_manifests.get(identity.grouping_key)
 
+    def generation_payload_sources(
+        self, pointer: GenerationPointer
+    ) -> Mapping[LayerKind, LayerPayloadSource]:
+        """Открыть active bundle как источники для composition staging."""
+        if not isinstance(pointer, GenerationPointer):
+            raise TypeError("pointer должен быть GenerationPointer")
+        with self._lock:
+            current = self._generation_pointers.get(pointer.identity.grouping_key)
+            if current != pointer:
+                raise RegistryError("active generation изменился до composition")
+        return self._generation_store.payload_sources(pointer)
+
     def _after_generation_pointer_switch(
         self, _pointer: GenerationPointer
     ) -> None:
         """Точка crash-теста сразу после durable pointer switch."""
 
-    def publish_generation(self, staged: StagedGeneration) -> GenerationPointer:
+    def publish_generation(
+        self,
+        staged: StagedGeneration,
+        *,
+        expected_previous: GenerationPointer | None | object = (
+            _EXPECTED_GENERATION_UNSET
+        ),
+    ) -> GenerationPointer:
         """Переключить active manifest и убрать только detached поколение."""
+        if expected_previous is not _EXPECTED_GENERATION_UNSET and (
+            expected_previous is not None
+            and not isinstance(expected_previous, GenerationPointer)
+        ):
+            raise TypeError("expected_previous должен быть GenerationPointer или None")
         manifest = self._generation_store.verify(staged)
         pointer = staged.pointer
         key = pointer.identity.grouping_key
         with self._generation_mutation_lock:
             with self._lock:
                 previous = self._generation_pointers.get(key)
+                if (
+                    expected_previous is not _EXPECTED_GENERATION_UNSET
+                    and previous != expected_previous
+                ):
+                    self._generation_store.discard(staged)
+                    raise RegistryError(
+                        "active generation изменился после построения preview"
+                    )
                 if previous is not None and previous.generation_id == pointer.generation_id:
                     raise RegistryError("generation_id уже является активным")
             prepared = self._generation_store.recovery_for(

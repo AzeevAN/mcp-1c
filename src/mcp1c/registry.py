@@ -3769,6 +3769,10 @@ class Registry:
         """Подготовить проверяемый bundle, не меняя active pointer."""
         return self._generation_store.stage(manifest, payloads)
 
+    def discard_staged_generation(self, staged: StagedGeneration) -> None:
+        """Убрать только незапубликованный staging неудачной операции."""
+        self._generation_store.discard(staged)
+
     def active_generation_pointer(
         self, identity: ExportIdentity
     ) -> GenerationPointer | None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import io
 import zipfile
+from dataclasses import replace
 
 import pytest
 
@@ -15,6 +16,7 @@ from mcp1c.intake_v2 import (
 )
 from mcp1c.intake_v2_planner import IntakeAction
 from mcp1c.intake_v2_transport import BrowserStagingStore
+from mcp1c.registry import Registry
 from test_intake_v2_collector import _configuration
 
 
@@ -208,3 +210,138 @@ def test_аварийный_checkpoint_переживает_рестарт_и_о
     assert DurableCandidateStore(root / "records").load_job(
         "job-001"
     ).state is CandidateJobState.DONE
+
+
+def test_commit_после_аварии_распознаёт_уже_опубликованный_target(
+    tmp_path, monkeypatch
+):
+    IntakeCommitResult = _symbol("IntakeCommitResult")
+    IntakeCoordinator = _symbol("IntakeCoordinator")
+
+    root, uploads, records = _stores(tmp_path)
+    coordinator = IntakeCoordinator(root / "operations", records)
+    _accepted(uploads, coordinator)
+    with uploads.open_tree("candidate-001") as tree:
+        preview = coordinator.prepare(
+            "job-001",
+            tree,
+            action=IntakeAction.CREATE,
+            active=None,
+            generation_id="generation-001",
+        )
+    registry = Registry(tmp_path / "data")
+
+    def crash_after_publish(_pointer):
+        raise SystemExit("синтетическая авария после Registry commit")
+
+    monkeypatch.setattr(coordinator, "_after_publish", crash_after_publish)
+    with pytest.raises(SystemExit, match="после Registry commit"):
+        coordinator.confirm("job-001", registry)
+    assert registry.active_generation(preview.plan.identity) == preview.materialized.manifest
+
+    restarted = IntakeCoordinator(
+        root / "operations",
+        DurableCandidateStore(root / "records"),
+    )
+    result = restarted.confirm("job-001", registry)
+
+    assert isinstance(result, IntakeCommitResult)
+    assert result.no_op is False
+    assert result.pointer == registry.active_generation_pointer(preview.plan.identity)
+    assert result.applied_layers == set(LayerKind)
+    assert restarted.load_commit("job-001") == result
+    assert restarted.confirm("job-001", registry) == result
+
+
+def test_commit_распознаёт_тот_же_target_при_гонке_до_staging(
+    tmp_path, monkeypatch
+):
+    IntakeCoordinator = _symbol("IntakeCoordinator")
+
+    root, uploads, records = _stores(tmp_path)
+    coordinator = IntakeCoordinator(root / "operations", records)
+    _accepted(uploads, coordinator)
+    with uploads.open_tree("candidate-001") as tree:
+        preview = coordinator.prepare(
+            "job-001",
+            tree,
+            action=IntakeAction.CREATE,
+            active=None,
+            generation_id="generation-001",
+        )
+    registry = Registry(tmp_path / "data")
+    real_stage = registry.stage_generation
+
+    def win_same_target(manifest, payloads):
+        staged = real_stage(manifest, payloads)
+        registry.publish_generation(staged, expected_previous=None)
+        raise RuntimeError("синтетически проигранная гонка staging")
+
+    monkeypatch.setattr(registry, "stage_generation", win_same_target)
+    result = coordinator.confirm("job-001", registry)
+
+    assert result.no_op is False
+    assert result.pointer == registry.active_generation_pointer(preview.plan.identity)
+    assert registry.active_generation(preview.plan.identity) == preview.materialized.manifest
+
+
+def test_noop_commit_не_создаёт_staging_а_устаревший_preview_отклоняется(
+    tmp_path,
+):
+    IntakeCoordinator = _symbol("IntakeCoordinator")
+    OperationConflict = _symbol("OperationConflict")
+
+    root, uploads, records = _stores(tmp_path)
+    coordinator = IntakeCoordinator(root / "operations", records)
+    _accepted(uploads, coordinator)
+    with uploads.open_tree("candidate-001") as tree:
+        coordinator.prepare(
+            "job-001",
+            tree,
+            action=IntakeAction.CREATE,
+            active=None,
+            generation_id="generation-001",
+        )
+    registry = Registry(tmp_path / "data")
+    created = coordinator.confirm("job-001", registry)
+
+    _accepted(uploads, coordinator, "candidate-002", "job-002")
+    active = registry.generation_view("DemoConfiguration")
+    with uploads.open_tree("candidate-002") as tree:
+        no_op_preview = coordinator.prepare(
+            "job-002",
+            tree,
+            action=IntakeAction.UPDATE_FULL,
+            active=active,
+            generation_id="generation-002",
+        )
+    assert no_op_preview.plan.no_op
+    staging_before = tuple((registry.data_dir / "generations").glob(".staging-*"))
+    no_op = coordinator.confirm("job-002", registry)
+    assert no_op.no_op is True
+    assert no_op.pointer == created.pointer
+    assert tuple((registry.data_dir / "generations").glob(".staging-*")) == staging_before
+
+    _accepted(uploads, coordinator, "candidate-003", "job-003")
+    with uploads.open_tree("candidate-003") as tree:
+        stale = coordinator.prepare(
+            "job-003",
+            tree,
+            action=IntakeAction.UPDATE_FULL,
+            active=active,
+            generation_id="generation-003",
+        )
+    competitor_manifest = replace(
+        stale.materialized.manifest,
+        generation_id="generation-competitor",
+    )
+    registry.publish_generation(
+        registry.stage_generation(competitor_manifest, stale.materialized.payloads),
+        expected_previous=created.pointer,
+    )
+
+    with pytest.raises(OperationConflict, match="active generation изменился"):
+        coordinator.confirm("job-003", registry)
+    with pytest.raises(KeyError):
+        coordinator.load_commit("job-003")
+    assert registry.active_generation(stale.plan.identity) == competitor_manifest

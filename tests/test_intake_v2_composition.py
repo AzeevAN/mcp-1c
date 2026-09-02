@@ -11,7 +11,7 @@ from mcp1c.intake_v2 import LayerKind
 from mcp1c.intake_v2_converter import convert_collection
 from mcp1c.intake_v2_generation import materialize_generation
 from mcp1c.intake_v2_planner import IntakeAction, plan_intake
-from mcp1c.intake_v2_registry import native_generation_view
+from mcp1c.intake_v2_registry import legacy_generation_view, native_generation_view
 from mcp1c.registry import Registry, RegistryError
 from test_intake_v2_converter import _collection
 
@@ -138,3 +138,31 @@ def test_expected_pointer_CAS_не_затирает_конкурентную_п�
 
     assert registry.active_generation(active.manifest.identity) == competitor.manifest
     assert not stale.root.exists()
+
+
+def test_full_update_мигрирует_legacy_когда_все_слои_берутся_из_candidate(tmp_path):
+    compose_generation = _symbol("compose_generation")
+    candidate = _materialized(tmp_path, "candidate")
+    legacy = legacy_generation_view(
+        candidate.manifest.identity,
+        base_sha256="a" * 64,
+        base_items_total=10,
+        code_sha256="b" * 64,
+        code_items_total=20,
+    )
+    plan = plan_intake(
+        IntakeAction.UPDATE_FULL,
+        candidate.manifest,
+        active=legacy,
+    )
+
+    assert plan.preserved_layers == set()
+    composed = compose_generation(
+        plan,
+        candidate,
+        active_manifest=None,
+        active_payloads={},
+    )
+
+    assert composed.manifest == candidate.manifest
+    assert composed.payloads == candidate.payloads

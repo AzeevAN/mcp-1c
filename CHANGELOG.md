@@ -139,6 +139,15 @@
   частичного preview. Большие тела при восстановлении preview не хэшируются
   повторно: до commit сверяются envelope и размеры members, а полные SHA
   проверяет существующий generation staging.
+- Подтверждение preview использует тот же target manifest для физической
+  композиции и expected-pointer CAS. Semantic no-op durable фиксируется без
+  создания Registry staging; stale preview не меняет поколение. Если процесс
+  завершился после Registry commit либо конкурент успел опубликовать точно тот
+  же target до staging, повтор распознаёт результат по pointer+manifest и не
+  копирует payload второй раз. Неудачный незапубликованный staging удаляется.
+  Полное обновление legacy допускается тем же publisher только при замене всех
+  пяти слоёв; content-only с недоступными preserved legacy payload остаётся
+  fail-closed и требует полного обновления.
 
 ### Найдено
 

@@ -32,6 +32,7 @@ from .intake_v2 import (
     VirtualExportTree,
 )
 from .intake_v2_collector import collect_source_b
+from .intake_v2_composition import compose_generation, compose_manifest
 from .intake_v2_converter import convert_collection
 from .intake_v2_generation import MaterializedGeneration, materialize_generation
 from .intake_v2_planner import IntakeAction, IntakePlan, plan_intake
@@ -58,6 +59,10 @@ _IDENTIFIER_RE = re.compile(r"[A-Za-z0-9._-]+\Z")
 
 class OperationError(RuntimeError):
     """Операция intake не может продолжиться без недоказанного состояния."""
+
+
+class OperationConflict(OperationError):
+    """Active generation изменился после построения подтверждаемого preview."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +111,72 @@ class _OperationRequest:
             if isinstance(error, OperationError):
                 raise
             raise OperationError("request операции содержит неверные поля") from error
+
+
+@dataclass(frozen=True, slots=True)
+class IntakeCommitResult:
+    """Durable-результат no-op либо атомарной публикации preview."""
+
+    job_id: str
+    candidate_id: str
+    no_op: bool
+    pointer: GenerationPointer
+    applied_layers: frozenset[LayerKind]
+
+    def __post_init__(self) -> None:
+        for value, label in (
+            (self.job_id, "job_id"),
+            (self.candidate_id, "candidate_id"),
+        ):
+            if not isinstance(value, str) or not _IDENTIFIER_RE.fullmatch(value):
+                raise OperationError(f"{label} commit result имеет недопустимый формат")
+        if not isinstance(self.no_op, bool):
+            raise OperationError("no_op commit result должен быть bool")
+        if not isinstance(self.pointer, GenerationPointer):
+            raise OperationError("pointer commit result имеет неверный тип")
+        if not isinstance(self.applied_layers, frozenset) or not all(
+            isinstance(kind, LayerKind) for kind in self.applied_layers
+        ):
+            raise OperationError("applied_layers commit result имеет неверный тип")
+        if self.no_op != (not self.applied_layers):
+            raise OperationError("no_op commit result не совпадает с applied_layers")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "job_id": self.job_id,
+            "candidate_id": self.candidate_id,
+            "no_op": self.no_op,
+            "pointer": self.pointer.to_dict(),
+            "applied_layers": sorted(kind.value for kind in self.applied_layers),
+        }
+
+    @classmethod
+    def from_dict(cls, raw: object) -> IntakeCommitResult:
+        if not isinstance(raw, dict):
+            raise OperationError("commit result должен быть объектом")
+        try:
+            if set(raw) != {
+                "job_id",
+                "candidate_id",
+                "no_op",
+                "pointer",
+                "applied_layers",
+            }:
+                raise OperationError("commit result содержит неизвестные поля")
+            layers = raw["applied_layers"]
+            if not isinstance(layers, list) or len(layers) != len(set(layers)):
+                raise OperationError("applied_layers commit result должен быть массивом")
+            return cls(
+                job_id=raw["job_id"],
+                candidate_id=raw["candidate_id"],
+                no_op=raw["no_op"],
+                pointer=GenerationPointer.from_dict(raw["pointer"]),
+                applied_layers=frozenset(LayerKind(kind) for kind in layers),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            if isinstance(error, OperationError):
+                raise
+            raise OperationError("commit result содержит неверные поля") from error
 
 
 def _sync_directory(directory: Path) -> None:
@@ -404,16 +475,22 @@ class IntakeCoordinator:
         self.work_dir = self.root / "work"
         self.requests_dir = self.root / "requests"
         self.previews_dir = self.root / "previews"
+        self.commits_dir = self.root / "commits"
         self.records = records
         _ensure_directory(self.root, "operation store")
         _ensure_directory(self.work_dir, "operation work")
         _ensure_directory(self.requests_dir, "operation requests")
         _ensure_directory(self.previews_dir, "operation previews")
+        _ensure_directory(self.commits_dir, "operation commits")
         self._cleanup_temporary_records()
 
     def _cleanup_temporary_records(self) -> None:
         try:
-            for directory in (self.requests_dir, self.previews_dir):
+            for directory in (
+                self.requests_dir,
+                self.previews_dir,
+                self.commits_dir,
+            ):
                 changed = False
                 for path in directory.iterdir():
                     if path.is_symlink():
@@ -575,6 +652,35 @@ class IntakeCoordinator:
         if stored != supplied:
             raise OperationError("параметры операции изменились после её начала")
         return stored
+
+    def _save_commit(self, result: IntakeCommitResult) -> None:
+        self._write_record(
+            self.commits_dir,
+            result.job_id,
+            "intake-commit",
+            result.to_dict(),
+            limit=_MAX_REQUEST_RECORD_BYTES,
+            label="commit result",
+        )
+
+    def load_commit(self, job_id: str) -> IntakeCommitResult:
+        job = self.records.load_job(job_id)
+        if job.state is not CandidateJobState.DONE or job.result != job_id:
+            raise OperationError("job не готова к commit result")
+        payload = self._read_record(
+            self.commits_dir,
+            job_id,
+            "intake-commit",
+            limit=_MAX_REQUEST_RECORD_BYTES,
+            label="commit result",
+        )
+        result = IntakeCommitResult.from_dict(payload)
+        if result.job_id != job.job_id or result.candidate_id != job.candidate_id:
+            raise OperationError("commit result относится к другой job")
+        candidate = self.records.load_candidate(job.candidate_id)
+        if result.pointer.identity != candidate.identity:
+            raise OperationError("commit result относится к другой identity")
+        return result
 
     def create_job(self, job_id: str, candidate_id: str) -> CandidateJob:
         try:
@@ -827,9 +933,134 @@ class IntakeCoordinator:
         except Exception as error:
             raise OperationError("preview record содержит неверные поля") from error
 
+    @staticmethod
+    def _require_publisher(publisher: object) -> None:
+        required = (
+            "active_generation_pointer",
+            "active_generation",
+            "generation_payload_sources",
+            "stage_generation",
+            "publish_generation",
+        )
+        if any(not callable(getattr(publisher, name, None)) for name in required):
+            raise TypeError("publisher не реализует generation Registry contract")
+
+    @staticmethod
+    def _result(
+        preview: IntakePreview,
+        pointer: GenerationPointer,
+    ) -> IntakeCommitResult:
+        return IntakeCommitResult(
+            job_id=preview.job_id,
+            candidate_id=preview.candidate_id,
+            no_op=preview.plan.no_op,
+            pointer=pointer,
+            applied_layers=preview.plan.applied_layers,
+        )
+
+    def _after_publish(self, _pointer: GenerationPointer) -> None:
+        """Точка crash-теста между Registry commit и durable result."""
+
+    def confirm(self, job_id: str, publisher: object) -> IntakeCommitResult:
+        """CAS-подтвердить preview либо durable вернуть доказанный no-op."""
+        self._require_publisher(publisher)
+        try:
+            return self.load_commit(job_id)
+        except KeyError:
+            pass
+
+        preview = self.load_preview(job_id)
+        active_manifest = (
+            preview.active.manifest
+            if preview.active is not None
+            else None
+        )
+        target_manifest = compose_manifest(
+            preview.plan,
+            preview.materialized.manifest,
+            active_manifest=active_manifest,
+        )
+        expected = preview.expected_previous
+        current = publisher.active_generation_pointer(preview.plan.identity)
+
+        if target_manifest is None:
+            if current != expected:
+                raise OperationConflict(
+                    "active generation изменился после построения preview"
+                )
+            if current is None:
+                raise OperationError("no-op не имеет active generation")
+            result = self._result(preview, current)
+            self._save_commit(result)
+            return result
+
+        target = GenerationPointer.for_manifest(target_manifest)
+        if current == target:
+            if publisher.active_generation(preview.plan.identity) != target_manifest:
+                raise OperationConflict(
+                    "active generation pointer не совпадает с target manifest"
+                )
+            result = self._result(preview, target)
+            self._save_commit(result)
+            return result
+        if current != expected:
+            raise OperationConflict(
+                "active generation изменился после построения preview"
+            )
+
+        active_payloads: Mapping[LayerKind, LayerPayloadSource] = {}
+        if active_manifest is not None:
+            if expected is None:
+                raise OperationError("native preview не содержит expected pointer")
+            active_payloads = publisher.generation_payload_sources(expected)
+        composed = compose_generation(
+            preview.plan,
+            preview.materialized,
+            active_manifest=active_manifest,
+            active_payloads=active_payloads,
+        )
+        if composed is None or composed.manifest != target_manifest:
+            raise OperationError("physical composition не совпадает с target manifest")
+
+        staged = None
+        try:
+            staged = publisher.stage_generation(composed.manifest, composed.payloads)
+            pointer = publisher.publish_generation(
+                staged,
+                expected_previous=expected,
+            )
+        except Exception as error:
+            current = publisher.active_generation_pointer(preview.plan.identity)
+            if (
+                current == target
+                and publisher.active_generation(preview.plan.identity) == target_manifest
+            ):
+                pointer = target
+            else:
+                discard = getattr(publisher, "discard_staged_generation", None)
+                if staged is not None and callable(discard):
+                    try:
+                        discard(staged)
+                    except Exception:
+                        pass
+                if current != expected:
+                    raise OperationConflict(
+                        "active generation изменился после построения preview"
+                    ) from error
+                message = self._error_text(error)
+                raise OperationError(message) from error
+        if pointer != target:
+            raise OperationError("Registry опубликовал неожиданный generation pointer")
+        self._after_publish(pointer)
+        result = self._result(preview, pointer)
+        self._save_commit(result)
+        return result
+
 
 __all__ = [
+    "IntakeCommitResult",
     "IntakeCoordinator",
     "IntakePreview",
+    "OperationConflict",
     "OperationError",
 ]

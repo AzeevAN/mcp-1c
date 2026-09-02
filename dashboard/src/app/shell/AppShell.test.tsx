@@ -67,6 +67,7 @@ it("показывает уровень чтения, повышение пра�
 
   expect(await screen.findByText("Только чтение")).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Общая справка" })).toHaveAttribute("href", "/reference");
+  expect(screen.getByRole("link", { name: "Роли и права" })).toHaveAttribute("href", "/roles");
   expect(screen.getByRole("link", { name: /Войти как администратор/ })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: /Выйти/ })).toBeInTheDocument();
 });

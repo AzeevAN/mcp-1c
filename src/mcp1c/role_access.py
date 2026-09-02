@@ -34,7 +34,7 @@ from .intake_v2_registry import (
 )
 
 
-_CACHE_FORMAT = 1
+_CACHE_FORMAT = 2
 _MAX_CACHE_BYTES = 512 * 1024 * 1024
 _MAX_ROLE_XML_BYTES = 256 * 1024 * 1024
 _MAX_ROLE_NAME = 512
@@ -112,12 +112,53 @@ class RoleRestriction:
 
 
 @dataclass(frozen=True, slots=True)
+class RoleRestrictionReference:
+    id: int
+    field: str
+    chars: int
+    bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class RoleTemplateReference:
+    id: int
+    name: str
+    chars: int
+    bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class RoleTemplatePage:
+    templates: tuple[RoleTemplateReference, ...]
+    total: int
+    offset: int
+    next_offset: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class RoleTextPage:
+    kind: str
+    id: int
+    role: str
+    content: str
+    total_chars: int
+    total_bytes: int
+    offset: int
+    next_offset: int | None
+    field: str = ""
+    template: str = ""
+    target: str = ""
+    right: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class DeclaredRight:
     target: str
     name: str
     value: bool
     has_restrictions: bool = False
     restrictions: tuple[RoleRestriction, ...] = ()
+    restriction_refs: tuple[RoleRestrictionReference, ...] = ()
 
     @property
     def conditional(self) -> bool:
@@ -132,6 +173,7 @@ class RoleAccessPage:
     total: int
     offset: int
     next_offset: int | None
+    template_refs: tuple[RoleTemplateReference, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +208,10 @@ class RoleAccessResolution:
     minimal_role_set: tuple[str, ...]
     minimum_proof: str
     warnings: tuple[str, ...]
+    candidates_total: int = 0
+    conditional_candidates_excluded: int = 0
+    offset: int = 0
+    next_offset: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -427,6 +473,11 @@ def _source_target(full_name: str, child_path: str) -> str:
     return ".".join(root)
 
 
+def source_target(full_name: str, child_path: str = "") -> str:
+    """Публичное точное сопоставление адреса объекта и source-B пути."""
+    return _source_target(full_name, child_path)
+
+
 @lru_cache(maxsize=1)
 def _code_digest() -> str:
     digest = hashlib.sha256()
@@ -497,11 +548,12 @@ CREATE TABLE restrictions (
     field_target_id INTEGER REFERENCES targets(id)
 );
 CREATE TABLE templates (
+    id INTEGER PRIMARY KEY,
     role_id INTEGER NOT NULL REFERENCES roles(id),
     name TEXT NOT NULL,
     name_key TEXT NOT NULL,
     condition_id INTEGER NOT NULL REFERENCES conditions(id),
-    PRIMARY KEY(role_id, name_key)
+    UNIQUE(role_id, name_key)
 );
 CREATE INDEX rights_by_target ON rights(target_id, right_name_id, value, conditional, role_id);
 CREATE INDEX rights_by_role ON rights(role_id, target_id, right_name_id);
@@ -1007,8 +1059,31 @@ class RoleAccessIndex:
             for row in rows
         }
 
-    def list_roles(self) -> tuple[RoleDescriptor, ...]:
-        return tuple(self._descriptors().values())
+    def list_roles(
+        self,
+        *,
+        offset: int = 0,
+        limit: int | None = None,
+    ) -> tuple[RoleDescriptor, ...]:
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise ValueError("offset должен быть целым числом не меньше нуля")
+        if limit is None:
+            if offset:
+                raise ValueError("offset без limit не поддерживается")
+            return tuple(self._descriptors().values())
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise ValueError("limit должен быть от 1 до 100")
+        with self._lock:
+            names = tuple(
+                str(row["name"])
+                for row in self._connection.execute(
+                    "SELECT name FROM roles ORDER BY name_key,name LIMIT ? OFFSET ?",
+                    (limit, offset),
+                )
+            )
+        if not names:
+            return ()
+        return tuple(self._descriptors(names).values())
 
     def get_role(self, name: str) -> RoleDescriptor:
         if not isinstance(name, str) or not name:
@@ -1057,20 +1132,41 @@ class RoleAccessIndex:
             restrictions: dict[int, list[RoleRestriction]] = {
                 int(row["id"]): [] for row in rows
             }
-            if include_restrictions and rows:
+            restriction_refs: dict[int, list[RoleRestrictionReference]] = {
+                int(row["id"]): [] for row in rows
+            }
+            if rows:
                 ids = tuple(restrictions)
                 placeholders = ",".join("?" for _ in ids)
+                # Обычная страница возвращает только размер и ссылку. Даже
+                # локальная строка результата не должна содержать огромный RLS.
+                content_column = "c.content" if include_restrictions else "''"
                 for raw in self._connection.execute(
-                    "SELECT x.right_id,c.content,t.path AS field FROM restrictions x "
+                    "SELECT x.id,x.right_id,length(c.content) AS chars,"
+                    "length(CAST(c.content AS BLOB)) AS bytes,"
+                    f"{content_column} AS content,t.path AS field FROM restrictions x "
                     "JOIN conditions c ON c.id=x.condition_id "
                     "LEFT JOIN targets t ON t.id=x.field_target_id "
                     f"WHERE x.right_id IN ({placeholders}) "
-                    "ORDER BY x.right_id,c.content,t.path",
+                    "ORDER BY x.right_id,x.id",
                     ids,
                 ):
-                    restrictions[int(raw["right_id"])].append(
-                        RoleRestriction(str(raw["content"]), str(raw["field"] or ""))
+                    right_id = int(raw["right_id"])
+                    restriction_refs[right_id].append(
+                        RoleRestrictionReference(
+                            id=int(raw["id"]),
+                            field=str(raw["field"] or ""),
+                            chars=int(raw["chars"]),
+                            bytes=int(raw["bytes"]),
+                        )
                     )
+                    if include_restrictions:
+                        restrictions[right_id].append(
+                            RoleRestriction(
+                                str(raw["content"]),
+                                str(raw["field"] or ""),
+                            )
+                        )
             templates: tuple[tuple[str, str], ...] = ()
             if include_restrictions:
                 templates = tuple(
@@ -1090,11 +1186,143 @@ class RoleAccessIndex:
                 value=bool(row["value"]),
                 has_restrictions=bool(row["conditional"]),
                 restrictions=tuple(restrictions[int(row["id"])]),
+                restriction_refs=tuple(restriction_refs[int(row["id"])]),
             )
             for row in rows
         )
         next_offset = offset + len(rights) if offset + len(rights) < total else None
-        return RoleAccessPage(descriptor, rights, templates, total, offset, next_offset)
+        return RoleAccessPage(
+            descriptor,
+            rights,
+            templates,
+            total,
+            offset,
+            next_offset,
+            (),
+        )
+
+    def role_templates(
+        self,
+        role: str,
+        *,
+        offset: int = 0,
+        limit: int = 20,
+    ) -> RoleTemplatePage:
+        descriptor = self.get_role(role)
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise ValueError("offset должен быть целым числом не меньше нуля")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise ValueError("limit должен быть от 1 до 100")
+        with self._lock:
+            total = int(
+                self._connection.execute(
+                    "SELECT COUNT(*) FROM templates WHERE role_id="
+                    "(SELECT id FROM roles WHERE name_key=?)",
+                    (descriptor.name.casefold(),),
+                ).fetchone()[0]
+            )
+            rows = self._connection.execute(
+                "SELECT p.id,p.name,length(c.content) AS chars,"
+                "length(CAST(c.content AS BLOB)) AS bytes FROM templates p "
+                "JOIN conditions c ON c.id=p.condition_id "
+                "WHERE p.role_id=(SELECT id FROM roles WHERE name_key=?) "
+                "ORDER BY p.name_key,p.name LIMIT ? OFFSET ?",
+                (descriptor.name.casefold(), limit, offset),
+            ).fetchall()
+        templates = tuple(
+            RoleTemplateReference(
+                id=int(row["id"]),
+                name=str(row["name"]),
+                chars=int(row["chars"]),
+                bytes=int(row["bytes"]),
+            )
+            for row in rows
+        )
+        next_offset = offset + len(templates)
+        if next_offset >= total:
+            next_offset = None
+        return RoleTemplatePage(templates, total, offset, next_offset)
+
+    def read_text(
+        self,
+        role: str,
+        kind: str,
+        reference_id: int,
+        *,
+        offset: int = 0,
+        max_chars: int = 8000,
+    ) -> RoleTextPage:
+        """Прочитать одно RLS-условие или шаблон ограниченным окном."""
+        descriptor = self.get_role(role)
+        if kind not in {"restriction", "template"}:
+            raise ValueError("kind должен быть restriction|template")
+        if (
+            isinstance(reference_id, bool)
+            or not isinstance(reference_id, int)
+            or reference_id < 1
+        ):
+            raise ValueError("reference_id должен быть положительным целым")
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise ValueError("offset должен быть целым числом не меньше нуля")
+        if (
+            isinstance(max_chars, bool)
+            or not isinstance(max_chars, int)
+            or not 256 <= max_chars <= 8000
+        ):
+            raise ValueError("max_chars должен быть от 256 до 8000")
+        if kind == "restriction":
+            query = (
+                "SELECT substr(c.content,?,?) AS content,length(c.content) AS chars,"
+                "length(CAST(c.content AS BLOB)) AS bytes,"
+                "f.path AS field,t.path AS target,n.name AS right_name "
+                "FROM restrictions x JOIN conditions c ON c.id=x.condition_id "
+                "JOIN rights r ON r.id=x.right_id "
+                "JOIN roles p ON p.id=r.role_id "
+                "JOIN targets t ON t.id=r.target_id "
+                "JOIN right_names n ON n.id=r.right_name_id "
+                "LEFT JOIN targets f ON f.id=x.field_target_id "
+                "WHERE x.id=? AND p.name_key=?"
+            )
+        else:
+            query = (
+                "SELECT substr(c.content,?,?) AS content,length(c.content) AS chars,"
+                "length(CAST(c.content AS BLOB)) AS bytes,"
+                "'' AS field,'' AS target,'' AS right_name,p.name AS template "
+                "FROM templates p JOIN conditions c ON c.id=p.condition_id "
+                "JOIN roles r ON r.id=p.role_id "
+                "WHERE p.id=? AND r.name_key=?"
+            )
+        with self._lock:
+            row = self._connection.execute(
+                query,
+                (
+                    offset + 1,
+                    max_chars,
+                    reference_id,
+                    descriptor.name.casefold(),
+                ),
+            ).fetchone()
+        if row is None:
+            raise KeyError(reference_id)
+        content = str(row["content"])
+        total_chars = int(row["chars"])
+        next_offset = offset + len(content)
+        if next_offset >= total_chars:
+            next_offset = None
+        return RoleTextPage(
+            kind=kind,
+            id=reference_id,
+            role=descriptor.name,
+            content=content,
+            total_chars=total_chars,
+            total_bytes=int(row["bytes"]),
+            offset=offset,
+            next_offset=next_offset,
+            field=str(row["field"] or ""),
+            template=str(row["template"] if kind == "template" else ""),
+            target=str(row["target"] or ""),
+            right=str(row["right_name"] or ""),
+        )
 
     def find_roles_for_access(
         self,
@@ -1103,6 +1331,7 @@ class RoleAccessIndex:
         *,
         child_path: str = "",
         include_conditional: bool = False,
+        offset: int = 0,
         limit: int = 20,
     ) -> RoleAccessResolution:
         if not isinstance(operations, tuple) or not operations:
@@ -1114,6 +1343,8 @@ class RoleAccessIndex:
             raise ValueError("operation неизвестна или повторяется")
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
             raise ValueError("limit должен быть от 1 до 100")
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise ValueError("offset должен быть целым числом не меньше нуля")
         target = _source_target(full_name, child_path)
         right_to_operation = {
             right.casefold(): operation
@@ -1133,6 +1364,7 @@ class RoleAccessIndex:
                 (target.casefold(), *right_to_operation),
             ).fetchall()
         evidence: dict[str, dict[str, object]] = {}
+        conditional_excluded_roles: set[str] = set()
         for row in rows:
             role_name = str(row["role_name"])
             operation = right_to_operation[str(row["right_name"]).casefold()]
@@ -1145,6 +1377,7 @@ class RoleAccessIndex:
                 continue
             conditional = bool(row["conditional"])
             if conditional and not include_conditional:
+                conditional_excluded_roles.add(role_name)
                 continue
             item["matched"].add(operation)
             if conditional:
@@ -1221,6 +1454,13 @@ class RoleAccessIndex:
             "Default-флаги сохранены, но недоказанное наследование не участвует в подборе.",
             *(
                 (
+                    "Условные права не учитывались без явного opt-in."
+                )
+                if conditional_excluded_roles and not include_conditional
+                else ()
+            ),
+            *(
+                (
                     "Условные права являются кандидатами: фактический доступ требует "
                     "отдельной проверки RLS.",
                 )
@@ -1228,15 +1468,26 @@ class RoleAccessIndex:
                 else ()
             ),
         )
+        total = len(candidates)
+        page = tuple(candidates[offset : offset + limit])
+        next_offset = offset + len(page)
+        if next_offset >= total:
+            next_offset = None
         return RoleAccessResolution(
             source_target=target,
             checked_rights=tuple(
                 (operation, OPERATION_RIGHTS[operation]) for operation in normalized
             ),
-            candidates=tuple(candidates[:limit]),
+            candidates=page,
             minimal_role_set=minimum,
             minimum_proof=proof,
             warnings=warnings,
+            candidates_total=total,
+            conditional_candidates_excluded=len(
+                conditional_excluded_roles - set(useful)
+            ),
+            offset=offset,
+            next_offset=next_offset,
         )
 
     def close(self) -> None:

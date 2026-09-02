@@ -19,7 +19,7 @@ def test_readme_не_выдаёт_локальный_registry_за_состав_
     readme = _read("README.md")
     state = readme.split("## Состояние", 1)[1].split("## Навигация", 1)[0]
 
-    assert "2026-08-31" in state
+    assert "2026-09-02" in state
     assert "| Тесты |" in state
     assert "| Конфигурации |" not in state
     assert "group_by(.kind)" not in state
@@ -70,3 +70,26 @@ def test_data_sources_фиксирует_завершённый_провайде
     assert "не проверены — таких объектов нет" not in text
     assert "tests/test_registry_modules_provider.py" in text
     assert "python -m mcp1c.cli stats" in text
+
+
+def test_публичные_документы_описывают_role_tools_api_и_bounded_rls():
+    readme = _read("README.md")
+    tools = _read("docs/tools.md")
+    sources = _read("docs/data-sources.md")
+    dashboard = _read("dashboard/README.md")
+    changelog = _read("CHANGELOG.md").split("## [2.0.1]", 1)[0]
+
+    for text in (readme, tools):
+        assert "find_roles_for_access" in text
+        assert "get_role_access" in text
+        assert "объявленн" in text and "прав" in text
+        assert "эффектив" in text and "доступ" in text
+        assert "restriction_ref" in text
+    assert "`/roles`" in readme
+    assert "tools/list" in tools and "roles=ready" in tools
+    assert "RoleAccessIndex" in sources
+    assert "GET /api/v1/roles" in dashboard
+    assert "GET /api/v1/roles/restriction" in dashboard
+    assert "tools/lab/measure_role_restrictions.py" in changelog
+    assert "745 870" in changelog
+    assert "237 375" in changelog

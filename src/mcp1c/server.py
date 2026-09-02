@@ -21,6 +21,7 @@ import argparse
 import json
 import os
 import sys
+import threading
 import uuid
 from functools import wraps
 from pathlib import Path
@@ -28,6 +29,7 @@ from typing import Annotated, Callable, ParamSpec, TypeVar
 from urllib.parse import urlencode
 
 from mcp.server import MCPServer
+from mcp.server.subscriptions import InMemorySubscriptionBus, ToolsListChanged
 from mcp.types import CallToolResult, TextContent
 from pydantic import Field
 from starlette.concurrency import run_in_threadpool
@@ -47,6 +49,16 @@ from .reference_provider import (
     ReferenceService,
 )
 from .registry import Registry, RegistryError
+from .role_access_service import (
+    DEFAULT_PAGE_CHARS as DEFAULT_ROLE_PAGE_CHARS,
+    MAX_ACCESS_LIMIT as MAX_ROLE_ACCESS_LIMIT,
+    MAX_FIND_LIMIT as MAX_ROLE_FIND_LIMIT,
+    MAX_PAGE_CHARS as MAX_ROLE_PAGE_CHARS,
+    MIN_PAGE_CHARS as MIN_ROLE_PAGE_CHARS,
+    RoleAccessQueryError,
+    find_roles_payload,
+    get_role_access_payload,
+)
 from .runtime_config import (
     ACCESS_HTTPS_PROXY,
     AccessModeError,
@@ -340,6 +352,58 @@ PROCEDURE_LINES_PARAM = Annotated[
     ),
 ]
 
+ROLE_OPERATIONS_PARAM = Annotated[
+    list[str],
+    Field(
+        min_length=1,
+        max_length=6,
+        description=(
+            "Одна или несколько базовых операций: read, update, insert, "
+            "delete, posting, use. Ответ всегда показывает точное право "
+            "платформы, с которым сопоставлена каждая операция."
+        ),
+    ),
+]
+
+ROLE_FIND_LIMIT_PARAM = Annotated[
+    int,
+    Field(
+        ge=1,
+        le=MAX_ROLE_FIND_LIMIT,
+        strict=True,
+        description=(
+            "Число ролей-кандидатов на странице, от 1 до 20. Следующая "
+            "страница запрашивается по непрозрачному next_cursor."
+        ),
+    ),
+]
+
+ROLE_ACCESS_LIMIT_PARAM = Annotated[
+    int,
+    Field(
+        ge=1,
+        le=MAX_ROLE_ACCESS_LIMIT,
+        strict=True,
+        description=(
+            "Число объявленных прав на странице, от 1 до 100. Большая роль "
+            "никогда не возвращается одним ответом."
+        ),
+    ),
+]
+
+ROLE_MAX_CHARS_PARAM = Annotated[
+    int,
+    Field(
+        ge=MIN_ROLE_PAGE_CHARS,
+        le=MAX_ROLE_PAGE_CHARS,
+        strict=True,
+        description=(
+            "Размер одного явно запрошенного окна RLS или шаблона: от 256 "
+            "до 8000 символов. Продолжение приходит в next_cursor."
+        ),
+    ),
+]
+
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
 
@@ -375,6 +439,91 @@ def _expected_registry_errors(
             )
 
     return guarded
+
+
+def _expected_role_errors(
+    function: Callable[_P, _T],
+) -> Callable[_P, _T | CallToolResult]:
+    """Ожидаемые ошибки role-запроса остаются bounded tools/call result."""
+
+    @wraps(function)
+    def guarded(*args: _P.args, **kwargs: _P.kwargs) -> _T | CallToolResult:
+        try:
+            return function(*args, **kwargs)
+        except RegistryError as error:
+            message = _safe_registry_error_message(error)
+        except RoleAccessQueryError as error:
+            message = str(error)
+        return CallToolResult(
+            content=[TextContent(type="text", text=message)],
+            structured_content={"result": message},
+            is_error=True,
+        )
+
+    return guarded
+
+
+class MCP1CServer(MCPServer):
+    """MCPServer с атомарно меняющейся парой условных role-tools."""
+
+    def __init__(self, *args, **kwargs):
+        self._role_subscriptions = InMemorySubscriptionBus()
+        kwargs["subscriptions"] = self._role_subscriptions
+        self._role_catalog_lock = threading.RLock()
+        self._role_registry: Registry | None = None
+        self._role_tool_specs: tuple[tuple[Callable, str, str], ...] = ()
+        self._role_tools_registered = False
+        super().__init__(*args, **kwargs)
+
+    async def list_tools(self):
+        # В SDK добавление идёт по одному имени. Общий lock не даёт
+        # tools/list увидеть половину пары между add_tool/remove_tool.
+        with self._role_catalog_lock:
+            return await super().list_tools()
+
+    def configure_role_tools(
+        self,
+        registry: Registry,
+        specs: tuple[tuple[Callable, str, str], ...],
+    ) -> None:
+        self._role_registry = registry
+        self._role_tool_specs = specs
+        self._sync_role_tools()
+
+    def _sync_role_tools(self) -> bool:
+        registry = self._role_registry
+        if registry is None:
+            return False
+        required = registry.has_ready_roles()
+        with self._role_catalog_lock:
+            if required == self._role_tools_registered:
+                return False
+            if required:
+                added: list[str] = []
+                try:
+                    for function, name, description in self._role_tool_specs:
+                        super().add_tool(
+                            function,
+                            name=name,
+                            description=description,
+                        )
+                        added.append(name)
+                except Exception:
+                    for name in reversed(added):
+                        super().remove_tool(name)
+                    raise
+            else:
+                for _function, name, _description in self._role_tool_specs:
+                    super().remove_tool(name)
+            self._role_tools_registered = required
+            return True
+
+    async def refresh_role_tools(self) -> bool:
+        """Обновить каталог и уведомить подписанные современные сессии."""
+        changed = self._sync_role_tools()
+        if changed:
+            await self._role_subscriptions.publish(ToolsListChanged())
+        return changed
 
 
 INSTRUCTIONS = f"""
@@ -455,12 +604,12 @@ def build_server(
     *,
     reference: ReferenceService | None = None,
     restart: RestartController | None = None,
-) -> MCPServer:
+) -> MCP1CServer:
     if reference is None:
         reference = ReferenceService.discover(registry.data_dir)
     if restart is None:
         restart = RestartController(enabled=False)
-    server = MCPServer(
+    server = MCP1CServer(
         name=name,
         title="Структура конфигураций 1С",
         instructions=INSTRUCTIONS,
@@ -732,6 +881,129 @@ def build_server(
     ) -> str:
         return tools.get_syntax(registry, name, config, detail)
 
+    @_expected_role_errors
+    def find_roles_for_access(
+        full_name: Annotated[str, Field(
+            description=(
+                "Точное имя корневого объекта из search_objects, например "
+                "Справочник.Заказы."
+            )
+        )],
+        operations: ROLE_OPERATIONS_PARAM,
+        config: CONFIG_PARAM = None,
+        child_path: Annotated[str, Field(
+            description=(
+                "Необязательный точный source-B путь дочернего элемента "
+                "парами Вид.Имя, например Attribute.Code."
+            )
+        )] = "",
+        include_conditional: Annotated[bool, Field(
+            description=(
+                "Явно учитывать условные true с RLS как кандидатов. По "
+                "умолчанию они исключены из доказанного покрытия."
+            )
+        )] = False,
+        cursor: Annotated[str | None, Field(
+            max_length=2048,
+            description=(
+                "Непрозрачный next_cursor предыдущей страницы кандидатов; "
+                "не переносится между запросами или generation."
+            )
+        )] = None,
+        limit: ROLE_FIND_LIMIT_PARAM = 10,
+    ) -> str:
+        payload = find_roles_payload(
+            registry,
+            full_name,
+            operations,
+            config=config,
+            child_path=child_path,
+            include_conditional=include_conditional,
+            cursor=cursor,
+            limit=limit,
+        )
+        return json.dumps(payload, ensure_ascii=False, indent=2)
+
+    @_expected_role_errors
+    def get_role_access(
+        role: Annotated[str, Field(
+            max_length=512,
+            description=(
+                "Точное техническое имя роли из find_roles_for_access или "
+                "страницы /roles."
+            )
+        )],
+        config: CONFIG_PARAM = None,
+        full_name: Annotated[str, Field(
+            description=(
+                "Необязательное точное имя корневого объекта: ограничивает "
+                "страницу прав одной целью."
+            )
+        )] = "",
+        cursor: Annotated[str | None, Field(
+            max_length=2048,
+            description=(
+                "Непрозрачный next_cursor страницы прав или шаблонов; не "
+                "переносится между ролями и generation."
+            )
+        )] = None,
+        limit: ROLE_ACCESS_LIMIT_PARAM = 50,
+        restriction_ref: Annotated[str, Field(
+            max_length=2048,
+            description=(
+                "Явная ссылка restriction/template из обычной страницы. "
+                "Только с ней возвращается текст RLS; роль целиком повторно "
+                "не загружается."
+            )
+        )] = "",
+        restriction_cursor: Annotated[str | None, Field(
+            max_length=2048,
+            description=(
+                "Непрозрачный next_cursor следующего окна одного явно "
+                "открытого RLS или шаблона."
+            )
+        )] = None,
+        max_chars: ROLE_MAX_CHARS_PARAM = DEFAULT_ROLE_PAGE_CHARS,
+    ) -> str:
+        payload = get_role_access_payload(
+            registry,
+            role,
+            config=config,
+            full_name=full_name,
+            cursor=cursor,
+            limit=limit,
+            restriction_ref=restriction_ref,
+            restriction_cursor=restriction_cursor,
+            max_chars=max_chars,
+        )
+        return json.dumps(payload, ensure_ascii=False, indent=2)
+
+    server.configure_role_tools(
+        registry,
+        (
+            (
+                find_roles_for_access,
+                "find_roles_for_access",
+                "Подобрать роли по объекту и базовым операциям только из "
+                "объявленных прав. Ответ не является эффективным доступом "
+                "пользователя, показывает точное сопоставление операция → "
+                "право платформы, explicit false, безусловные и RLS-права. "
+                "Минимальный набор возвращается лишь при полном доказанном "
+                "покрытии; кандидаты идут страницами.",
+            ),
+            (
+                get_role_access,
+                "get_role_access",
+                "Прочитать объявленные права одной роли ограниченными "
+                "страницами. Обычный ответ различает explicit false, "
+                "безусловный true и условный true, но не содержит полный "
+                "RLS. Текст одного RLS или шаблона открывается только явно "
+                "по restriction_ref и дочитывается по next_cursor. Это не "
+                "эффективный доступ пользователя.",
+            ),
+        ),
+    )
+
     if reference.provider is not None:
         provider = reference.provider
 
@@ -912,6 +1184,7 @@ def _add_http_routes(
         # на это время останавливает и `/health`, и MCP-запросы. Холодная
         # сборка индексов модулей внутри `startup()` уже запускается фоном.
         messages = await run_in_threadpool(registry.startup)
+        await server.refresh_role_tools()
         # Состав источников называется тем же способом, что в `/health`:
         # иначе два ответа про одно и то же расходятся, и первым же
         # расхождением стала пустая строка вместо «справки платформы нет».
@@ -932,6 +1205,7 @@ def _add_http_routes(
         registry,
         reference=reference,
         restart=restart,
+        role_tools_refresh=server.refresh_role_tools,
     ):
         server.custom_route(
             route.path,

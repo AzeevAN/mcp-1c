@@ -11,6 +11,7 @@ import os
 import secrets
 import shutil
 import tempfile
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
@@ -77,6 +78,18 @@ from .reference_provider import (
     ReferenceService,
     ReferenceValidationError,
 )
+from .role_access_service import (
+    MAX_ACCESS_LIMIT as MAX_ROLE_ACCESS_LIMIT,
+    MAX_FIND_LIMIT as MAX_ROLE_FIND_LIMIT,
+    MAX_PAGE_CHARS as MAX_ROLE_PAGE_CHARS,
+    MAX_ROLE_LIST_LIMIT,
+    MIN_PAGE_CHARS as MIN_ROLE_PAGE_CHARS,
+    RoleAccessQueryError,
+    find_roles_payload,
+    get_role_access_payload,
+    http_status as role_http_status,
+    roles_catalog_payload,
+)
 from .render import DETAIL_LEVELS
 from .runtime_config import (
     DASHBOARD_MODES,
@@ -97,6 +110,7 @@ SPA_PAGE_PATHS = (
     "/dictionary",
     "/object",
     "/syntax",
+    "/roles",
 )
 DEFAULT_DASHBOARD_DIST = Path(__file__).resolve().with_name("dashboard_dist")
 
@@ -603,6 +617,7 @@ def _spa_routes(
     reference: ReferenceService,
     restart: RestartController,
     intake: IntakeApiService | None,
+    role_tools_refresh: Callable[[], Awaitable[bool]] | None,
 ) -> list[Route]:
     static_dir = static_dir.resolve()
     current_intake = intake
@@ -932,6 +947,169 @@ def _spa_routes(
             )
         return JSONResponse(payload)
 
+    def role_param(request: Request, name: str, *, maximum: int) -> str | None:
+        values = request.query_params.getlist(name)
+        if len(values) > 1:
+            raise RoleAccessQueryError(
+                f"Параметр {name} должен быть указан один раз."
+            )
+        if not values:
+            return None
+        value = values[0]
+        if len(value) > maximum:
+            raise RoleAccessQueryError(
+                f"Параметр {name} должен содержать не более {maximum} символов."
+            )
+        return value
+
+    def role_integer(
+        request: Request,
+        name: str,
+        *,
+        default: int,
+        minimum: int,
+        maximum: int,
+    ) -> int:
+        raw = role_param(request, name, maximum=20)
+        if raw is None:
+            return default
+        try:
+            value = int(raw)
+        except ValueError as error:
+            raise RoleAccessQueryError(
+                f"Параметр {name} должен быть целым числом."
+            ) from error
+        if not minimum <= value <= maximum:
+            raise RoleAccessQueryError(
+                f"Параметр {name} должен быть от {minimum} до {maximum}."
+            )
+        return value
+
+    def role_boolean(request: Request, name: str) -> bool:
+        raw = role_param(request, name, maximum=1)
+        if raw is None or raw == "0":
+            return False
+        if raw == "1":
+            return True
+        raise RoleAccessQueryError(f"Параметр {name} должен быть 0 или 1.")
+
+    async def roles_catalog_api(request: Request) -> JSONResponse:
+        if not can_read(request):
+            return _json_error("Нужен токен чтения.", 401)
+        try:
+            payload = await run_in_threadpool(
+                roles_catalog_payload,
+                registry,
+                config=role_param(request, "config", maximum=512) or None,
+                cursor=role_param(request, "cursor", maximum=2048) or None,
+                limit=role_integer(
+                    request,
+                    "limit",
+                    default=50,
+                    minimum=1,
+                    maximum=MAX_ROLE_LIST_LIMIT,
+                ),
+            )
+        except (RoleAccessQueryError, RegistryError) as error:
+            return _json_error(str(error), 400)
+        return JSONResponse(payload, status_code=role_http_status(payload))
+
+    async def roles_find_api(request: Request) -> JSONResponse:
+        if not can_read(request):
+            return _json_error("Нужен токен чтения.", 401)
+        try:
+            full_name = role_param(request, "full_name", maximum=1024)
+            if not full_name:
+                raise RoleAccessQueryError("Параметр full_name обязателен.")
+            operations = request.query_params.getlist("operation")
+            if not 1 <= len(operations) <= 6 or any(
+                not operation or len(operation) > 32 for operation in operations
+            ):
+                raise RoleAccessQueryError(
+                    "Нужно указать от одной до шести операций operation."
+                )
+            payload = await run_in_threadpool(
+                find_roles_payload,
+                registry,
+                full_name,
+                operations,
+                config=role_param(request, "config", maximum=512) or None,
+                child_path=role_param(request, "child_path", maximum=1024) or "",
+                include_conditional=role_boolean(request, "include_conditional"),
+                cursor=role_param(request, "cursor", maximum=2048) or None,
+                limit=role_integer(
+                    request,
+                    "limit",
+                    default=10,
+                    minimum=1,
+                    maximum=MAX_ROLE_FIND_LIMIT,
+                ),
+            )
+        except (RoleAccessQueryError, RegistryError) as error:
+            return _json_error(str(error), 400)
+        return JSONResponse(payload, status_code=role_http_status(payload))
+
+    async def roles_access_api(request: Request) -> JSONResponse:
+        if not can_read(request):
+            return _json_error("Нужен токен чтения.", 401)
+        try:
+            role = role_param(request, "role", maximum=512)
+            if not role:
+                raise RoleAccessQueryError("Параметр role обязателен.")
+            payload = await run_in_threadpool(
+                get_role_access_payload,
+                registry,
+                role,
+                config=role_param(request, "config", maximum=512) or None,
+                full_name=role_param(request, "full_name", maximum=1024) or "",
+                cursor=role_param(request, "cursor", maximum=2048) or None,
+                limit=role_integer(
+                    request,
+                    "limit",
+                    default=50,
+                    minimum=1,
+                    maximum=MAX_ROLE_ACCESS_LIMIT,
+                ),
+            )
+        except (RoleAccessQueryError, RegistryError) as error:
+            return _json_error(str(error), 400)
+        return JSONResponse(payload, status_code=role_http_status(payload))
+
+    async def roles_restriction_api(request: Request) -> JSONResponse:
+        if not can_read(request):
+            return _json_error("Нужен токен чтения.", 401)
+        try:
+            role = role_param(request, "role", maximum=512)
+            restriction_ref = role_param(
+                request,
+                "restriction_ref",
+                maximum=2048,
+            )
+            if not role or not restriction_ref:
+                raise RoleAccessQueryError(
+                    "Параметры role и restriction_ref обязательны."
+                )
+            payload = await run_in_threadpool(
+                get_role_access_payload,
+                registry,
+                role,
+                config=role_param(request, "config", maximum=512) or None,
+                restriction_ref=restriction_ref,
+                restriction_cursor=(
+                    role_param(request, "cursor", maximum=2048) or None
+                ),
+                max_chars=role_integer(
+                    request,
+                    "max_chars",
+                    default=2000,
+                    minimum=MIN_ROLE_PAGE_CHARS,
+                    maximum=MAX_ROLE_PAGE_CHARS,
+                ),
+            )
+        except (RoleAccessQueryError, RegistryError) as error:
+            return _json_error(str(error), 400)
+        return JSONResponse(payload, status_code=role_http_status(payload))
+
     async def admin_sources_api(request: Request) -> JSONResponse:
         denied = _admin_denied(request, action="Управление источниками")
         if denied is not None:
@@ -1091,6 +1269,8 @@ def _spa_routes(
                 return _json_error(str(error), 409)
             except (IntakeApiError, LifecycleError, OperationError) as error:
                 return _json_error(str(error), 422)
+        if role_tools_refresh is not None:
+            await role_tools_refresh()
         return JSONResponse({"job": job})
 
     async def upload_source_api(request: Request) -> JSONResponse:
@@ -1289,6 +1469,8 @@ def _spa_routes(
             await run_in_threadpool(registry.save)
         except RegistryError as error:
             return _json_error(str(error), 400)
+        if role_tools_refresh is not None:
+            await role_tools_refresh()
         return JSONResponse({"removed": source_id})
 
     async def forget_source_api(request: Request) -> JSONResponse:
@@ -1386,6 +1568,30 @@ def _spa_routes(
             graph_api,
             methods=["GET"],
             name="dashboard_graph",
+        ),
+        Route(
+            "/api/v1/roles",
+            roles_catalog_api,
+            methods=["GET"],
+            name="dashboard_roles_catalog",
+        ),
+        Route(
+            "/api/v1/roles/find",
+            roles_find_api,
+            methods=["GET"],
+            name="dashboard_roles_find",
+        ),
+        Route(
+            "/api/v1/roles/access",
+            roles_access_api,
+            methods=["GET"],
+            name="dashboard_roles_access",
+        ),
+        Route(
+            "/api/v1/roles/restriction",
+            roles_restriction_api,
+            methods=["GET"],
+            name="dashboard_roles_restriction",
         ),
         Route(
             "/api/v1/dictionary",
@@ -1865,6 +2071,7 @@ def routes(
     reference: ReferenceService | None = None,
     restart: RestartController | None = None,
     intake: IntakeApiService | None = None,
+    role_tools_refresh: Callable[[], Awaitable[bool]] | None = None,
 ) -> list[Route]:
     """Вернуть ровно один UI-контур, не затрагивая ``/mcp`` и ``/health``."""
     selected = dashboard_mode() if mode is None else mode
@@ -1883,6 +2090,13 @@ def routes(
         Path(configured_dist) if configured_dist else DEFAULT_DASHBOARD_DIST
     )
     return [
-        *_spa_routes(registry, root, reference, restart, intake),
+        *_spa_routes(
+            registry,
+            root,
+            reference,
+            restart,
+            intake,
+            role_tools_refresh,
+        ),
         *_reference_routes(reference, restart),
     ]

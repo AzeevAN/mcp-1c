@@ -184,10 +184,11 @@ def _generation(
     roles: tuple[tuple[str, bytes, bytes], ...],
     *,
     generation_id: str,
+    configuration_name: str = "DemoConfiguration",
 ):
     roles_layer, _saved = _role_layer(root, roles)
     base_semantic = {
-        "name": "DemoConfiguration",
+        "name": configuration_name,
         "synonym": "Синтетическая конфигурация",
         "version": "1.0",
         "vendor": "Example",
@@ -216,7 +217,7 @@ def _generation(
     manifest = GenerationManifest(
         format_version=1,
         generation_id=generation_id,
-        identity=ExportIdentity.configuration("DemoConfiguration"),
+        identity=ExportIdentity.configuration(configuration_name),
         parser_version=1,
         selection_version=1,
         source_transport=CandidateTransport.INCOMING,
@@ -285,6 +286,9 @@ def test_index_сохраняет_descriptor_права_rls_шаблоны_и_п
     index = _open(tmp_path / "generation", layer, tmp_path / "roles.sqlite")
     try:
         assert [role.name for role in index.list_roles()] == ["Analyst", "Empty"]
+        assert [
+            role.name for role in index.list_roles(offset=1, limit=1)
+        ] == ["Empty"]
         analyst = index.get_role("analyst")
         assert analyst.uuid == "11111111-1111-1111-1111-111111111111"
         assert analyst.synonyms == (("en", "Analyst"), ("ru", "Аналитик"))

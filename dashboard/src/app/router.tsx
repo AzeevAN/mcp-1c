@@ -10,6 +10,7 @@ import { GraphPage } from "../pages/GraphPage";
 import { DictionaryPage } from "../pages/DictionaryPage";
 import { ReferencePage } from "../pages/ReferencePage";
 import { ReferenceItemPage } from "../pages/ReferenceItemPage";
+import { RolesPage } from "../pages/RolesPage";
 
 export const router = createBrowserRouter([
   { path: "/login", element: <LoginPage /> },
@@ -45,6 +46,10 @@ export const router = createBrowserRouter([
       {
         path: "graph",
         element: <GraphPage />,
+      },
+      {
+        path: "roles",
+        element: <RolesPage />,
       },
       {
         path: "dictionary",

@@ -1237,6 +1237,11 @@ class Registry:
                 _fingerprint=fingerprint,
             )
 
+    def has_ready_roles(self) -> bool:
+        """Есть ли хотя бы один готовый role-provider в текущем runtime."""
+        with self._lock:
+            return any(roles.ready for roles in self.roles.values())
+
     def snapshot_is_current(self, snapshot: RegistrySnapshot) -> bool:
         """Проверить поздний CAS без раскрытия ``_lock`` потребителю."""
         if snapshot._owner is not self:

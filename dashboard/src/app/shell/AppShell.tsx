@@ -22,6 +22,7 @@ const navigation = [
   { to: "/queries", label: "Запросы", icon: SearchCode },
   { to: "/reference", label: "Общая справка", icon: Library },
   { to: "/graph", label: "Связи", icon: GitBranch },
+  { to: "/roles", label: "Роли и права", icon: ShieldCheck },
   { to: "/dictionary", label: "Словарь", icon: BookOpenText },
 ];
 

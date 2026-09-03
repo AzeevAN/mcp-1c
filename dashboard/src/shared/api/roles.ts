@@ -49,8 +49,16 @@ export type RolesCatalog = RoleBase & {
   configuration_names: string[];
   operations?: RoleOperation[];
   roles_total?: number;
+  roles_matched?: number;
+  role_query?: string;
   roles?: RoleDescriptor[];
   page?: Page;
+};
+
+export type RoleObjectFacet = {
+  kind: string;
+  kind_ru: string;
+  count: number;
 };
 
 export type DeclaredRightRow = {
@@ -116,6 +124,17 @@ export type RoleAccessResponse = RoleBase & {
   templates?: Array<{ name: string; chars: number; bytes: number; ref: string }>;
   page?: Page;
   templates_page?: Page;
+};
+
+export type RoleObjectsResponse = RoleBase & {
+  mode?: "objects";
+  role?: RoleDescriptor;
+  object_filters?: { kind: string; query: string };
+  objects_all_total?: number;
+  objects_total?: number;
+  object_facets?: RoleObjectFacet[];
+  objects?: RoleObjectSummary[];
+  page?: Page;
 };
 
 export type RoleCandidate = {
@@ -186,14 +205,40 @@ async function roleJson<T extends { state?: RoleState; error?: string }>(url: st
   return payload;
 }
 
-export function useRolesCatalog(config: string, cursor: string | null = null) {
+export function useRolesCatalog(config: string, query = "") {
   return useQuery({
-    queryKey: ["roles", "catalog", config, cursor],
+    queryKey: ["roles", "catalog", config, query],
     queryFn: () => {
-      const params = new URLSearchParams({ limit: "50" });
+      const params = new URLSearchParams({ limit: "20" });
       if (config) params.set("config", config);
-      if (cursor) params.set("cursor", cursor);
+      if (query) params.set("query", query);
       return roleJson<RolesCatalog>(`/api/v1/roles?${params}`);
+    },
+  });
+}
+
+export type RoleObjectsRequest = {
+  config: string;
+  role: string;
+  kind?: string;
+  query?: string;
+  cursor?: string;
+};
+
+export function useRoleObjects(request: RoleObjectsRequest | null) {
+  return useQuery({
+    queryKey: ["roles", "objects", request],
+    enabled: request !== null,
+    queryFn: () => {
+      const params = new URLSearchParams({
+        config: request!.config,
+        role: request!.role,
+        limit: "50",
+      });
+      if (request!.kind) params.set("kind", request!.kind);
+      if (request!.query) params.set("query", request!.query);
+      if (request!.cursor) params.set("cursor", request!.cursor);
+      return roleJson<RoleObjectsResponse>(`/api/v1/roles/objects?${params}`);
     },
   });
 }

@@ -38,6 +38,8 @@ DEFAULT_PAGE_CHARS = 2000
 MAX_FIND_LIMIT = 20
 MAX_ACCESS_LIMIT = 100
 MAX_ROLE_LIST_LIMIT = 100
+MAX_ROLE_QUERY_CHARS = 256
+MAX_OBJECT_QUERY_CHARS = 256
 MAX_CURSOR_CHARS = 2048
 MAX_NAME_CHARS = 512
 MAX_COMMENT_CHARS = 2048
@@ -959,10 +961,112 @@ def get_role_access_payload(
     }
 
 
+def role_objects_payload(
+    registry: Registry,
+    role: str,
+    *,
+    config: str | None = None,
+    kind: str = "",
+    query: str = "",
+    cursor: str | None = None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """Навигационная проекция объектов роли для SPA, не меняющая MCP-схему."""
+    if not isinstance(role, str) or not role or len(role) > MAX_NAME_CHARS:
+        raise RoleAccessQueryError("role должен быть непустым точным именем")
+    if not isinstance(kind, str) or len(kind) > MAX_NAME_CHARS:
+        raise RoleAccessQueryError("kind имеет неверный формат")
+    if not isinstance(query, str) or len(query) > MAX_OBJECT_QUERY_CHARS:
+        raise RoleAccessQueryError(
+            f"query должен содержать не более {MAX_OBJECT_QUERY_CHARS} символов"
+        )
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_ACCESS_LIMIT:
+        raise RoleAccessQueryError(f"limit должен быть от 1 до {MAX_ACCESS_LIMIT}")
+    normalized_kind = kind.strip()
+    normalized_query = " ".join(query.split())
+    selection = _selection(registry, config)
+    selected = _ready(selection)
+    if isinstance(selected, dict):
+        return selected
+    state, roles, index = selected
+    cursor_query = _fingerprint(
+        selection.configuration,
+        role,
+        normalized_kind.casefold(),
+        normalized_query.casefold(),
+        "role-object-navigation",
+    )
+    offset = _cursor_offset(
+        cursor,
+        kind="role-object-navigation",
+        generation=roles.generation_id,
+        query=cursor_query,
+    )
+    try:
+        descriptor = index.get_role(role)
+        facets = index.role_object_facets(descriptor.name)
+        page = index.role_objects(
+            descriptor.name,
+            kind=normalized_kind,
+            query=normalized_query,
+            offset=offset,
+            limit=limit,
+        )
+    except KeyError as error:
+        raise RoleAccessQueryError("Роль не найдена") from error
+    except ValueError as error:
+        raise RoleAccessQueryError(str(error)) from error
+    return {
+        **state,
+        "mode": "objects",
+        "role": _descriptor(descriptor),
+        "object_filters": {
+            "kind": normalized_kind,
+            "query": normalized_query,
+        },
+        "objects_all_total": sum(total for _, total in facets),
+        "objects_total": page.total,
+        "object_facets": [
+            {
+                "kind": source_kind,
+                "kind_ru": _SOURCE_KIND_PRESENTATION.get(
+                    source_kind,
+                    (source_kind, source_kind),
+                )[1],
+                "count": total,
+            }
+            for source_kind, total in facets
+        ],
+        "objects": [
+            _object_summary_payload(
+                index,
+                roles,
+                descriptor.name,
+                item.target,
+                item,
+                include_checks=False,
+            )
+            for item in page.objects
+        ],
+        "page": {
+            "offset": page.offset,
+            "limit": limit,
+            "returned": len(page.objects),
+            "next_cursor": _cursor(
+                "role-object-navigation",
+                roles.generation_id,
+                cursor_query,
+                page.next_offset,
+            ),
+        },
+    }
+
+
 def roles_catalog_payload(
     registry: Registry,
     *,
     config: str | None = None,
+    query: str = "",
     cursor: str | None = None,
     limit: int = 50,
 ) -> dict[str, Any]:
@@ -974,6 +1078,11 @@ def roles_catalog_payload(
         raise RoleAccessQueryError(
             f"limit должен быть от 1 до {MAX_ROLE_LIST_LIMIT}"
         )
+    if not isinstance(query, str) or len(query) > MAX_ROLE_QUERY_CHARS:
+        raise RoleAccessQueryError(
+            f"query должен содержать не более {MAX_ROLE_QUERY_CHARS} символов"
+        )
+    normalized_query = " ".join(query.split())
     names = list(registry.snapshot().configuration_names)
     if not names:
         return {
@@ -1006,22 +1115,32 @@ def roles_catalog_payload(
     if isinstance(selected, dict):
         return {**selected, "configuration_names": names}
     state, roles, index = selected
-    query = _fingerprint(selection.configuration, "roles")
+    cursor_query = _fingerprint(
+        selection.configuration,
+        normalized_query.casefold(),
+        "roles",
+    )
     offset = _cursor_offset(
         cursor,
         kind="role-list",
         generation=roles.generation_id,
-        query=query,
+        query=cursor_query,
     )
-    page = index.list_roles(offset=offset, limit=limit)
+    page, matched = index.search_roles(
+        normalized_query,
+        offset=offset,
+        limit=limit,
+    )
     next_offset = offset + len(page)
-    if next_offset >= index.summary.roles:
+    if next_offset >= matched:
         next_offset = None
     return {
         **state,
         "configuration_names": names,
         "operations": _operation_rows(OPERATION_RIGHTS),
         "roles_total": index.summary.roles,
+        "roles_matched": matched,
+        "role_query": normalized_query,
         "roles": [_descriptor(role) for role in page],
         "page": {
             "offset": offset,
@@ -1030,7 +1149,7 @@ def roles_catalog_payload(
             "next_cursor": _cursor(
                 "role-list",
                 roles.generation_id,
-                query,
+                cursor_query,
                 next_offset,
             ),
         },

@@ -68,7 +68,13 @@ const access = {
   mode: "objects",
   role,
   target: null,
+  objects_all_total: 2,
   objects_total: 2,
+  object_filters: { kind: "", query: "" },
+  object_facets: [
+    { kind: "Catalog", kind_ru: "Справочник", count: 1 },
+    { kind: "Document", kind_ru: "Документ", count: 1 },
+  ],
   objects: [{
     target: "Catalog.Orders",
     full_name: "Справочник.Orders",
@@ -258,7 +264,7 @@ beforeEach(() => {
 it("открывается без config, выбирает роль и не получает RLS до явного клика", async () => {
   vi.stubGlobal("fetch", vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
     const url = new URL(String(input), "http://dashboard.test");
-    if (url.pathname === "/api/v1/roles/access") return response(access);
+    if (url.pathname === "/api/v1/roles/objects") return response(access);
     if (url.pathname === "/api/v1/roles/restriction") {
       return response({
         ...base,
@@ -291,10 +297,7 @@ it("открывается без config, выбирает роль и не по
   expect(screen.queryByText("Читаем страницу прав…")).not.toBeInTheDocument();
   expect(screen.queryByText("Resolver проверяет объявленные права…")).not.toBeInTheDocument();
 
-  await screen.findByRole("option", { name: "Чтение" });
-  fireEvent.change(screen.getByRole("combobox", { name: "Роль" }), {
-    target: { value: "Reader" },
-  });
+  fireEvent.click(await screen.findByRole("button", { name: "Чтение" }));
   expect(await screen.findByRole("heading", { name: "Orders" })).toBeInTheDocument();
   expect(screen.getByText("Справочник")).toBeInTheDocument();
   expect(screen.getByText("С ограничением RLS")).toBeInTheDocument();
@@ -323,7 +326,7 @@ it("показывает неизвестные default-флаги descriptor-on
   };
   vi.stubGlobal("fetch", vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
     const url = new URL(String(input), "http://dashboard.test");
-    if (url.pathname === "/api/v1/roles/access") {
+    if (url.pathname === "/api/v1/roles/objects") {
       return response({
         ...access,
         role: descriptorOnly,
@@ -342,7 +345,7 @@ it("показывает неизвестные default-флаги descriptor-on
 it("объясняет пустое условие RLS и всё равно показывает его fields", async () => {
   vi.stubGlobal("fetch", vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
     const url = new URL(String(input), "http://dashboard.test");
-    if (url.pathname === "/api/v1/roles/access") return response(access);
+    if (url.pathname === "/api/v1/roles/objects") return response(access);
     if (url.pathname === "/api/v1/roles/restriction") {
       return response({
         ...base,
@@ -366,10 +369,7 @@ it("объясняет пустое условие RLS и всё равно по
   }));
   renderPage();
 
-  await screen.findByRole("option", { name: "Чтение" });
-  fireEvent.change(screen.getByRole("combobox", { name: "Роль" }), {
-    target: { value: "Reader" },
-  });
+  fireEvent.click(await screen.findByRole("button", { name: "Чтение" }));
   await screen.findByRole("heading", { name: "Orders" });
   fireEvent.click(screen.getByRole("button", { name: "Показать RLS" }));
 
@@ -381,7 +381,7 @@ it("объясняет пустое условие RLS и всё равно по
 it("заменяет страницу объектов большой роли и не показывает false", async () => {
   vi.stubGlobal("fetch", vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
     const url = new URL(String(input), "http://dashboard.test");
-    if (url.pathname === "/api/v1/roles/access") {
+    if (url.pathname === "/api/v1/roles/objects") {
       return response(url.searchParams.get("cursor") ? secondAccess : access);
     }
     return response(catalog);
@@ -397,13 +397,13 @@ it("заменяет страницу объектов большой роли �
   expect(screen.queryByText("Явный false")).not.toBeInTheDocument();
 });
 
-it("открывает дочерние права и explicit false только отдельными действиями", async () => {
+it("открывает дочерние права и audit вкладками одного модального окна", async () => {
   vi.stubGlobal("fetch", vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
     const url = new URL(String(input), "http://dashboard.test");
+    if (url.pathname === "/api/v1/roles/objects") return response(access);
     if (url.pathname === "/api/v1/roles/access") {
       if (url.searchParams.get("detail") === "children") return response(childrenAccess);
       if (url.searchParams.get("detail") === "audit") return response(auditAccess);
-      return response(access);
     }
     return response(catalog);
   }));
@@ -414,14 +414,19 @@ it("открывает дочерние права и explicit false тольк�
   expect(screen.queryByText("Явный false")).not.toBeInTheDocument();
 
   fireEvent.click(screen.getByRole("button", { name: "Показать детали Orders" }));
+  const dialog = await screen.findByRole("dialog", { name: "Права объекта Orders" });
+  expect(dialog).toBeInTheDocument();
   expect(await screen.findByText("Code")).toBeInTheDocument();
   expect(screen.getByText("Реквизит")).toBeInTheDocument();
 
-  fireEvent.click(screen.getByRole("button", { name: "Открыть технический аудит Orders" }));
+  fireEvent.click(screen.getByRole("tab", { name: "Технический аудит" }));
   expect(await screen.findByText("Явный false")).toBeInTheDocument();
+  expect(screen.getByRole("dialog", { name: "Права объекта Orders" })).toBe(dialog);
+  fireEvent.keyDown(window, { key: "Escape" });
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 });
 
-it("дочитывает каталог ролей серверными страницами", async () => {
+it("ищет роли на сервере без бесконечной кнопки подгрузки", async () => {
   const secondRole = {
     ...role,
     uuid: "22222222-2222-2222-2222-222222222222",
@@ -432,26 +437,69 @@ it("дочитывает каталог ролей серверными стра
   const firstPage = {
     ...catalog,
     roles_total: 2,
-    page: { offset: 0, limit: 1, returned: 1, next_cursor: "catalog-next" },
+    roles_matched: 2,
+    page: { offset: 0, limit: 20, returned: 1, next_cursor: "catalog-next" },
   };
-  const secondPage = {
+  const searchPage = {
     ...catalog,
     roles_total: 2,
+    roles_matched: 1,
     roles: [secondRole],
-    page: { offset: 1, limit: 1, returned: 1, next_cursor: null },
+    page: { offset: 0, limit: 20, returned: 1, next_cursor: null },
   };
   const fetchMock = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
     const url = new URL(String(input), "http://dashboard.test");
-    return response(url.searchParams.get("cursor") ? secondPage : firstPage);
+    if (url.pathname === "/api/v1/roles/objects") return response(access);
+    return response(url.searchParams.get("query") === "ред" ? searchPage : firstPage);
   });
   vi.stubGlobal("fetch", fetchMock);
   renderPage();
 
-  expect(await screen.findByRole("option", { name: "Чтение" })).toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", { name: "Загрузить ещё роли" }));
+  expect(await screen.findByRole("button", { name: "Чтение" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Загрузить ещё роли" })).not.toBeInTheDocument();
+  fireEvent.change(screen.getByRole("combobox", { name: "Поиск роли" }), {
+    target: { value: "ред" },
+  });
 
-  expect(await screen.findByRole("option", { name: "Редактирование" })).toBeInTheDocument();
-  expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("cursor=catalog-next"));
+  expect(await screen.findByRole("button", { name: "Редактирование" })).toBeInTheDocument();
+  expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("query=%D1%80%D0%B5%D0%B4"));
+});
+
+it("фильтрует объекты выбранной роли по типу и имени на сервере", async () => {
+  const fetchMock = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+    const url = new URL(String(input), "http://dashboard.test");
+    if (url.pathname === "/api/v1/roles/objects") {
+      if (url.searchParams.get("kind") === "Document") {
+        return response({
+          ...secondAccess,
+          objects_all_total: 2,
+          objects_total: 1,
+          object_filters: {
+            kind: "Document",
+            query: url.searchParams.get("query") || "",
+          },
+          object_facets: access.object_facets,
+          page: { offset: 0, limit: 50, returned: 1, next_cursor: null },
+        });
+      }
+      return response(access);
+    }
+    return response(catalog);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  renderPage("/roles?config=Отраслевая+конфигурация&role=Reader");
+
+  expect(await screen.findByRole("button", { name: "Справочник · 1" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Документ · 1" }));
+  expect(await screen.findByRole("heading", { name: "Invoice" })).toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "Orders" })).not.toBeInTheDocument();
+
+  fireEvent.change(screen.getByRole("searchbox", { name: "Поиск объекта роли" }), {
+    target: { value: "invoice" },
+  });
+  await waitFor(() => {
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringMatching(/kind=Document.*query=invoice|query=invoice.*kind=Document/));
+  });
 });
 
 it("показывает серверный resolver объект → роли и не вычисляет минимум сам", async () => {
@@ -493,17 +541,18 @@ it.each([
   renderPage();
 
   expect(await screen.findByRole("alert")).toHaveTextContent(message);
-  expect(screen.queryByRole("combobox", { name: "Роль" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("combobox", { name: "Поиск роли" })).not.toBeInTheDocument();
 });
 
-it("удерживает длинные имена ролей внутри боковой колонки", () => {
+it("удерживает поиск и модальное окно в границах страницы", () => {
   expect(rolesCss).toMatch(
-    /\.role-picker-card\s*,\s*\.role-picker-card > \*\s*,\s*\.role-picker-card select\s*\{[^}]*min-width:\s*0;/s,
+    /\.role-picker-card\s*,\s*\.role-picker-card > \*\s*,\s*\.role-picker-card input\s*\{[^}]*min-width:\s*0;/s,
   );
   expect(rolesCss).toMatch(
     /\.role-picker-card > \*\s*\{[^}]*width:\s*100%;/s,
   );
   expect(rolesCss).toMatch(
-    /\.role-picker-card select\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*100%;/s,
+    /\.role-picker-card input\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*100%;/s,
   );
+  expect(rolesCss).toMatch(/\.role-detail-dialog\s*\{[^}]*max-height:\s*min\(86vh,\s*900px\);/s);
 });

@@ -1232,6 +1232,54 @@ class RoleAccessIndex:
             return ()
         return tuple(self._descriptors(names).values())
 
+    def search_roles(
+        self,
+        query: str,
+        *,
+        offset: int = 0,
+        limit: int = 20,
+    ) -> tuple[tuple[RoleDescriptor, ...], int]:
+        """Найти роль по техническому имени или синониму без нового индекса."""
+        if not isinstance(query, str):
+            raise TypeError("query должен быть строкой")
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise ValueError("offset должен быть целым числом не меньше нуля")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise ValueError("limit должен быть от 1 до 100")
+
+        normalized = " ".join(query.casefold().split())
+        roles = tuple(self._descriptors().values())
+        if not normalized:
+            return roles[offset : offset + limit], len(roles)
+
+        ranked: list[tuple[int, str, str, RoleDescriptor]] = []
+        for role in roles:
+            values = (role.name, *(content for _, content in role.synonyms))
+            rank = 4
+            for value in values:
+                candidate = " ".join(value.casefold().split())
+                if candidate == normalized:
+                    rank = min(rank, 0)
+                elif candidate.startswith(normalized):
+                    rank = min(rank, 1)
+                elif any(word.startswith(normalized) for word in candidate.split()):
+                    rank = min(rank, 2)
+                elif normalized in candidate:
+                    rank = min(rank, 3)
+            if rank < 4:
+                russian = next(
+                    (
+                        content
+                        for language, content in role.synonyms
+                        if language.casefold().startswith("ru") and content
+                    ),
+                    role.name,
+                )
+                ranked.append((rank, russian.casefold(), role.name.casefold(), role))
+        ranked.sort(key=lambda item: item[:3])
+        matches = tuple(item[3] for item in ranked)
+        return matches[offset : offset + limit], len(matches)
+
     def get_role(self, name: str) -> RoleDescriptor:
         if not isinstance(name, str) or not name:
             raise ValueError("role должен быть непустой строкой")
@@ -1397,6 +1445,8 @@ class RoleAccessIndex:
         role: str,
         *,
         target: str = "",
+        kind: str = "",
+        query: str = "",
         offset: int = 0,
         limit: int = 50,
     ) -> RoleObjectPage:
@@ -1411,6 +1461,18 @@ class RoleAccessIndex:
         if target:
             where += " AND target_key=?"
             parameters.append(target.casefold())
+        if kind:
+            where += " AND substr(target_key,1,instr(target_key,'.')-1)=?"
+            parameters.append(kind.casefold())
+        if query:
+            escaped = (
+                " ".join(query.casefold().split())
+                .replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_")
+            )
+            where += " AND target_key LIKE ? ESCAPE '\\'"
+            parameters.append(f"%{escaped}%")
         with self._lock:
             total = int(
                 self._connection.execute(
@@ -1458,6 +1520,19 @@ class RoleAccessIndex:
         if next_offset >= total:
             next_offset = None
         return RoleObjectPage(descriptor, objects, total, offset, next_offset)
+
+    def role_object_facets(self, role: str) -> tuple[tuple[str, int], ...]:
+        """Посчитать только виды объектов, где у роли уже доказан хотя бы один true."""
+        descriptor = self.get_role(role)
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT substr(target,1,instr(target,'.')-1) AS kind,count(*) AS total "
+                "FROM role_objects WHERE role_id=(SELECT id FROM roles WHERE name_key=?) "
+                "GROUP BY substr(target_key,1,instr(target_key,'.')-1) "
+                "ORDER BY substr(target_key,1,instr(target_key,'.')-1)",
+                (descriptor.name.casefold(),),
+            ).fetchall()
+        return tuple((str(row["kind"]), int(row["total"])) for row in rows)
 
     def role_templates(
         self,

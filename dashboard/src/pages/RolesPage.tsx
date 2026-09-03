@@ -4,8 +4,15 @@ import {
   FileLock2,
   Search,
   ShieldCheck,
+  X,
 } from "lucide-react";
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import {
+  type FormEvent,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
 import {
@@ -18,6 +25,7 @@ import {
   RolesApiError,
   useFindRoles,
   useRoleAccess,
+  useRoleObjects,
   useRoleRestriction,
   useRolesCatalog,
 } from "../shared/api/roles";
@@ -68,19 +76,27 @@ export function RolesPage() {
   const requestedConfig = searchParams.get("config") || "";
   const mode = searchParams.get("mode") === "object" ? "object" : "role";
   const requestedRole = searchParams.get("role") || "";
-  const [catalogCursor, setCatalogCursor] = useState<string | null>(null);
-  const [roleOptions, setRoleOptions] = useState<RoleDescriptor[]>([]);
-  const catalog = useRolesCatalog(requestedConfig, catalogCursor);
+  const [roleQuery, setRoleQuery] = useState("");
+  const [rolePickerOpen, setRolePickerOpen] = useState(!requestedRole);
+  const deferredRoleQuery = useDeferredValue(roleQuery.trim());
+  const catalog = useRolesCatalog(requestedConfig);
+  const roleSearchQuery = rolePickerOpen ? deferredRoleQuery : "";
+  const roleSearch = useRolesCatalog(requestedConfig, roleSearchQuery);
   const effectiveConfig = requestedConfig || catalog.data?.configuration || "";
-  const [accessCursor, setAccessCursor] = useState<string | undefined>();
-  const accessRequest: RoleAccessRequest | null = (
+  const [objectCursor, setObjectCursor] = useState<string | undefined>();
+  const [selectedObjectKind, setSelectedObjectKind] = useState("");
+  const [roleObjectQuery, setRoleObjectQuery] = useState("");
+  const deferredObjectQuery = useDeferredValue(roleObjectQuery.trim());
+  const objectsRequest = (
     catalog.data?.state === "ready" && effectiveConfig && requestedRole
   ) ? {
       config: effectiveConfig,
       role: requestedRole,
-      cursor: accessCursor,
+      kind: selectedObjectKind,
+      query: deferredObjectQuery,
+      cursor: objectCursor,
     } : null;
-  const access = useRoleAccess(accessRequest);
+  const objects = useRoleObjects(objectsRequest);
   const [detailRequest, setDetailRequest] = useState<RoleAccessRequest | null>(null);
   const detail = useRoleAccess(detailRequest);
 
@@ -103,18 +119,20 @@ export function RolesPage() {
   }, [restriction.data, restrictionRequest]);
 
   useEffect(() => {
-    if (catalog.data?.state !== "ready") return;
-    const incoming = catalog.data.roles || [];
-    setRoleOptions((current) => {
-      if (!catalogCursor) return incoming;
-      const known = new Set(current.map((item) => item.uuid));
-      return [...current, ...incoming.filter((item) => !known.has(item.uuid))];
-    });
-  }, [catalog.data, catalogCursor]);
+    if (!detailRequest && !restrictionRequest) return undefined;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setDetailRequest(null);
+      setRestrictionRequest(null);
+      setRestrictionContent("");
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [detailRequest, restrictionRequest]);
 
-  const visibleRoleOptions = roleOptions.length > 0
-    ? roleOptions
-    : catalog.data?.roles || [];
+  const visibleRoleOptions = (
+    roleSearchQuery ? roleSearch.data?.roles : catalog.data?.roles
+  ) || [];
   const operationOptions = catalog.data?.operations || [];
   const operationLabels = useMemo(
     () => new Map(operationOptions.map((item) => [
@@ -124,9 +142,20 @@ export function RolesPage() {
     [operationOptions],
   );
   const selectedDescriptor = useMemo(
-    () => visibleRoleOptions.find((item) => item.name === requestedRole),
-    [requestedRole, visibleRoleOptions],
+    () => (
+      objects.data?.role
+      || catalog.data?.roles?.find((item) => item.name === requestedRole)
+      || roleSearch.data?.roles?.find((item) => item.name === requestedRole)
+    ),
+    [catalog.data?.roles, objects.data?.role, requestedRole, roleSearch.data?.roles],
   );
+  const activeDescriptor = selectedDescriptor;
+
+  useEffect(() => {
+    if (requestedRole && activeDescriptor && !roleQuery) {
+      setRoleQuery(roleLabel(activeDescriptor));
+    }
+  }, [activeDescriptor, requestedRole, roleQuery]);
 
   const updateParams = (changes: Record<string, string | null>) => {
     const next = new URLSearchParams(searchParams);
@@ -138,9 +167,11 @@ export function RolesPage() {
   };
 
   const chooseConfiguration = (config: string) => {
-    setCatalogCursor(null);
-    setRoleOptions([]);
-    setAccessCursor(undefined);
+    setRoleQuery("");
+    setRolePickerOpen(true);
+    setObjectCursor(undefined);
+    setSelectedObjectKind("");
+    setRoleObjectQuery("");
     setFindRequest(null);
     setRestrictionRequest(null);
     setRestrictionContent("");
@@ -148,12 +179,42 @@ export function RolesPage() {
     updateParams({ config, role: null, object: null });
   };
 
-  const chooseRole = (role: string) => {
-    setAccessCursor(undefined);
+  const chooseRole = (role: RoleDescriptor) => {
+    setRoleQuery(roleLabel(role));
+    setRolePickerOpen(false);
+    setObjectCursor(undefined);
+    setSelectedObjectKind("");
+    setRoleObjectQuery("");
     setRestrictionRequest(null);
     setRestrictionContent("");
     setDetailRequest(null);
-    updateParams({ role });
+    updateParams({ role: role.name });
+  };
+
+  const changeRoleQuery = (value: string) => {
+    setRoleQuery(value);
+    setRolePickerOpen(true);
+    if (!requestedRole) return;
+    setObjectCursor(undefined);
+    setSelectedObjectKind("");
+    setRoleObjectQuery("");
+    setRestrictionRequest(null);
+    setRestrictionContent("");
+    setDetailRequest(null);
+    updateParams({ role: null });
+  };
+
+  const chooseObjectKind = (kind: string) => {
+    setSelectedObjectKind(kind);
+    setObjectCursor(undefined);
+    setDetailRequest(null);
+    setRestrictionRequest(null);
+    setRestrictionContent("");
+  };
+
+  const changeObjectQuery = (value: string) => {
+    setRoleObjectQuery(value);
+    setObjectCursor(undefined);
   };
 
   const chooseMode = (nextMode: "role" | "object") => {
@@ -196,12 +257,31 @@ export function RolesPage() {
     requestedDetail: "children" | "audit",
   ) => {
     if (!effectiveConfig || !requestedRole) return;
+    setRestrictionRequest(null);
+    setRestrictionContent("");
     setDetailRequest({
       config: effectiveConfig,
       role: requestedRole,
       fullName: object.full_name,
       detail: requestedDetail,
     });
+  };
+
+  const chooseDetailMode = (requestedDetail: "children" | "audit") => {
+    if (!detailRequest) return;
+    setRestrictionRequest(null);
+    setRestrictionContent("");
+    setDetailRequest({
+      ...detailRequest,
+      detail: requestedDetail,
+      cursor: undefined,
+    });
+  };
+
+  const closeRoleModal = () => {
+    setDetailRequest(null);
+    setRestrictionRequest(null);
+    setRestrictionContent("");
   };
 
   const continueObjectDetail = () => {
@@ -211,10 +291,10 @@ export function RolesPage() {
   };
 
   const continueObjects = () => {
-    const cursor = access.data?.page?.next_cursor;
+    const cursor = objects.data?.page?.next_cursor;
     if (!cursor) return;
     setDetailRequest(null);
-    setAccessCursor(cursor);
+    setObjectCursor(cursor);
   };
 
   if (catalog.isPending) {
@@ -226,8 +306,6 @@ export function RolesPage() {
   }
 
   const data = catalog.data;
-  const activeDescriptor = access.data?.role || selectedDescriptor;
-
   return (
     <section className="roles-page page-stack">
       <header className="roles-heading">
@@ -297,29 +375,46 @@ export function RolesPage() {
             <div className="roles-workspace">
               <aside className="role-picker-card">
                 <label>
-                  <span>Роль</span>
-                  <select
-                    aria-label="Роль"
-                    value={requestedRole}
-                    onChange={(event) => chooseRole(event.target.value)}
-                  >
-                    <option value="">Выберите роль</option>
-                    {visibleRoleOptions.map((item) => (
-                      <option key={item.uuid} value={item.name}>
-                        {roleLabel(item)}
-                      </option>
-                    ))}
-                  </select>
+                  <span>Поиск роли</span>
+                  <input
+                    role="combobox"
+                    aria-label="Поиск роли"
+                    aria-expanded={rolePickerOpen}
+                    aria-controls="role-search-results"
+                    autoComplete="off"
+                    value={roleQuery}
+                    onFocus={() => setRolePickerOpen(true)}
+                    onChange={(event) => changeRoleQuery(event.target.value)}
+                    placeholder="Введите название роли"
+                  />
                 </label>
-                <small>Ролей в снимке: {data.roles_total || 0}. Список и права выдаются страницами.</small>
-                {data.page?.next_cursor && (
-                  <button
-                    type="button"
-                    disabled={catalog.isFetching}
-                    onClick={() => setCatalogCursor(data.page?.next_cursor || null)}
-                  >
-                    {catalog.isFetching ? "Читаем роли…" : "Загрузить ещё роли"}
-                  </button>
+                <small>
+                  Ролей в снимке: {data.roles_total || 0}.
+                  {deferredRoleQuery
+                    ? ` Найдено: ${roleSearch.data?.roles_matched || 0}.`
+                    : " Начните вводить имя или выберите из первых результатов."}
+                </small>
+                {rolePickerOpen && (
+                  <div className="role-search-results" id="role-search-results">
+                    {roleSearch.isFetching && <span><span className="loading-dot" />Ищем роли…</span>}
+                    {!roleSearch.isFetching && visibleRoleOptions.length === 0 && (
+                      <span>Подходящих ролей не найдено.</span>
+                    )}
+                    {visibleRoleOptions.map((item) => (
+                      <button
+                        key={item.uuid}
+                        type="button"
+                        aria-label={roleLabel(item)}
+                        onClick={() => chooseRole(item)}
+                      >
+                        <strong>{roleLabel(item)}</strong>
+                        <code>{item.name}</code>
+                      </button>
+                    ))}
+                    {roleSearch.data?.page?.next_cursor && (
+                      <small>Показаны первые 20 результатов. Уточните запрос.</small>
+                    )}
+                  </div>
                 )}
                 {activeDescriptor && (
                   <div className="role-descriptor">
@@ -339,9 +434,9 @@ export function RolesPage() {
                     <span>Сервер вернёт первую страницу объектов с доказанными правами.</span>
                   </div>
                 )}
-                {requestedRole && access.isPending && <div className="section-card"><span className="loading-dot" />Читаем страницу объектов…</div>}
-                {requestedRole && access.isError && <div className="roles-unavailable" role="alert">{errorText(access.error)}</div>}
-                {access.data?.state === "ready" && access.data.role && access.data.page && (
+                {requestedRole && objects.isPending && <div className="section-card"><span className="loading-dot" />Читаем объекты роли…</div>}
+                {requestedRole && objects.isError && <div className="roles-unavailable" role="alert">{errorText(objects.error)}</div>}
+                {objects.data?.state === "ready" && objects.data.role && objects.data.page && (
                   <>
                     <div className="role-evidence-note">
                       <ShieldCheck size={19} aria-hidden="true" />
@@ -351,12 +446,53 @@ export function RolesPage() {
                       </span>
                     </div>
                     <div className="role-flags">
-                      <span>Новые объекты: <strong>{defaultFlag(access.data.role.default_flags.set_for_new_objects)}</strong></span>
-                      <span>Реквизиты по умолчанию: <strong>{defaultFlag(access.data.role.default_flags.set_for_attributes_by_default)}</strong></span>
-                      <span>Независимые дочерние: <strong>{defaultFlag(access.data.role.default_flags.independent_rights_of_child_objects)}</strong></span>
+                      <span>Новые объекты: <strong>{defaultFlag(objects.data.role.default_flags.set_for_new_objects)}</strong></span>
+                      <span>Реквизиты по умолчанию: <strong>{defaultFlag(objects.data.role.default_flags.set_for_attributes_by_default)}</strong></span>
+                      <span>Независимые дочерние: <strong>{defaultFlag(objects.data.role.default_flags.independent_rights_of_child_objects)}</strong></span>
+                    </div>
+                    <div className="role-object-navigation">
+                      <div className="role-object-navigation-head">
+                        <div>
+                          <strong>Объекты с предоставленными правами</strong>
+                          <small>{objects.data.objects_all_total || 0} во всей роли</small>
+                        </div>
+                        <label>
+                          <span>Поиск объекта</span>
+                          <input
+                            type="search"
+                            aria-label="Поиск объекта роли"
+                            value={roleObjectQuery}
+                            onChange={(event) => changeObjectQuery(event.target.value)}
+                            placeholder="Например, ЧекККМ"
+                          />
+                        </label>
+                      </div>
+                      <div className="role-object-facets" aria-label="Тип объекта">
+                        <button
+                          type="button"
+                          aria-pressed={!selectedObjectKind}
+                          onClick={() => chooseObjectKind("")}
+                        >
+                          Все объекты · {objects.data.objects_all_total || 0}
+                        </button>
+                        {(objects.data.object_facets || []).map((facet) => (
+                          <button
+                            key={facet.kind}
+                            type="button"
+                            aria-pressed={selectedObjectKind === facet.kind}
+                            onClick={() => chooseObjectKind(facet.kind)}
+                          >
+                            {facet.kind_ru} · {facet.count}
+                          </button>
+                        ))}
+                      </div>
+                      <small>
+                        Найдено объектов: {objects.data.objects_total || 0}.
+                        Показаны только цели хотя бы с одним объявленным true.
+                      </small>
                     </div>
                     <div className="role-object-list">
-                      {(access.data.objects || []).map((object) => (
+                      {(objects.data.objects || []).map((object) => (
                         <article className="role-object-card" key={object.target}>
                           <header className="role-object-card-head">
                             <div>
@@ -433,10 +569,17 @@ export function RolesPage() {
                           </div>
                         </article>
                       ))}
+                      {(objects.data.objects || []).length === 0 && (
+                        <div className="roles-empty-state">
+                          <Search size={26} aria-hidden="true" />
+                          <strong>Подходящих объектов не найдено</strong>
+                          <span>Измените тип объекта или поисковую строку.</span>
+                        </div>
+                      )}
                     </div>
                     <div className="roles-pagination">
-                      <span>{pageLabel(access.data.page.offset, access.data.page.limit, access.data.page.returned, access.data.objects_total || 0)} объектов</span>
-                      {access.data.page.next_cursor && (
+                      <span>{pageLabel(objects.data.page.offset, objects.data.page.limit, objects.data.page.returned, objects.data.objects_total || 0)} объектов</span>
+                      {objects.data.page.next_cursor && (
                         <button
                           type="button"
                           onClick={continueObjects}
@@ -447,93 +590,133 @@ export function RolesPage() {
                     </div>
                   </>
                 )}
-                {detailRequest && (
-                  <section className="role-object-detail" aria-live="polite">
-                    {detail.isPending && <span><span className="loading-dot" />Читаем детализацию объекта…</span>}
-                    {detail.isError && <div className="roles-unavailable" role="alert">{errorText(detail.error)}</div>}
-                    {detail.data?.state === "ready" && detail.data.object && detail.data.page && (
-                      <>
-                        <header className="role-detail-heading">
-                          <div>
-                            <span>{detail.data.mode === "audit" ? "Технический аудит" : "Дочерние права"}</span>
-                            <h3>{detail.data.object.name}</h3>
-                            <code>{detail.data.object.full_name}</code>
-                          </div>
-                          {detail.data.mode === "audit" && (
-                            <StatusBadge tone="warning">Включая false</StatusBadge>
-                          )}
-                          <button type="button" onClick={() => setDetailRequest(null)}>
-                            Закрыть детали
-                          </button>
-                        </header>
-                        <div className="role-detail-list">
-                          {(detail.data.rights || []).map((right) => (
-                            <article className="role-detail-row" key={`${right.target}:${right.name}`}>
-                              <div>
-                                <span className="role-object-kind">{right.child_kind_ru || detail.data!.object!.kind_ru}</span>
-                                <strong>{right.child_name || detail.data!.object!.name}</strong>
-                                <code>{right.child_path || right.target}</code>
-                              </div>
-                              <div>
-                                <strong>{right.label_ru}</strong>
-                                <code>{right.name}</code>
-                              </div>
-                              {(detail.data!.mode === "audit" || right.state === "conditional_true") && (
-                                <span className={`role-right-state ${stateClass(right.state)}`}>
-                                  {stateLabel(right.state)}
-                                </span>
-                              )}
-                              {right.restrictions.map((item) => (
-                                <button
-                                  type="button"
-                                  aria-label="Показать RLS"
-                                  key={item.ref}
-                                  onClick={() => openRestriction(item.ref)}
-                                >
-                                  Показать RLS
-                                </button>
-                              ))}
-                            </article>
-                          ))}
-                        </div>
-                        <div className="roles-pagination">
-                          <span>{pageLabel(detail.data.page.offset, detail.data.page.limit, detail.data.page.returned, detail.data.rights_total || 0)} прав</span>
-                          {detail.data.page.next_cursor && (
-                            <button type="button" onClick={continueObjectDetail}>
-                              Следующая страница деталей<ChevronRight size={15} />
+                {(detailRequest || restrictionRequest) && (
+                  <div className="role-detail-backdrop" role="presentation">
+                    <section
+                      className="role-detail-dialog"
+                      role="dialog"
+                      aria-modal="true"
+                      aria-label={detailRequest
+                        ? `Права объекта ${detail.data?.object?.name || detailRequest.fullName?.split(".").at(-1) || ""}`
+                        : "Условие RLS"}
+                    >
+                      <button
+                        className="role-detail-close"
+                        type="button"
+                        aria-label="Закрыть окно"
+                        onClick={closeRoleModal}
+                      >
+                        <X size={18} aria-hidden="true" />
+                      </button>
+                      {detailRequest && (
+                        <>
+                          <div className="role-detail-tabs" role="tablist" aria-label="Режим детализации">
+                            <button
+                              type="button"
+                              role="tab"
+                              aria-selected={detailRequest.detail === "children"}
+                              className={detailRequest.detail === "children" ? "is-active" : ""}
+                              onClick={() => chooseDetailMode("children")}
+                            >
+                              Предоставленные дочерние права
                             </button>
+                            <button
+                              type="button"
+                              role="tab"
+                              aria-selected={detailRequest.detail === "audit"}
+                              className={detailRequest.detail === "audit" ? "is-active" : ""}
+                              onClick={() => chooseDetailMode("audit")}
+                            >
+                              Технический аудит
+                            </button>
+                          </div>
+                          <section className="role-object-detail" aria-live="polite">
+                            {detail.isPending && <span><span className="loading-dot" />Читаем детализацию объекта…</span>}
+                            {detail.isError && <div className="roles-unavailable" role="alert">{errorText(detail.error)}</div>}
+                            {detail.data?.state === "ready" && detail.data.object && detail.data.page && (
+                              <>
+                                <header className="role-detail-heading">
+                                  <div>
+                                    <span>{detail.data.mode === "audit" ? "Технический аудит" : "Дочерние права"}</span>
+                                    <h3>{detail.data.object.name}</h3>
+                                    <code>{detail.data.object.full_name}</code>
+                                  </div>
+                                  {detail.data.mode === "audit" && (
+                                    <StatusBadge tone="warning">Включая false</StatusBadge>
+                                  )}
+                                </header>
+                                <div className="role-detail-list">
+                                  {(detail.data.rights || []).map((right) => (
+                                    <article className="role-detail-row" key={`${right.target}:${right.name}`}>
+                                      <div>
+                                        <span className="role-object-kind">{right.child_kind_ru || detail.data!.object!.kind_ru}</span>
+                                        <strong>{right.child_name || detail.data!.object!.name}</strong>
+                                        <code>{right.child_path || right.target}</code>
+                                      </div>
+                                      <div>
+                                        <strong>{right.label_ru}</strong>
+                                        <code>{right.name}</code>
+                                      </div>
+                                      {(detail.data!.mode === "audit" || right.state === "conditional_true") && (
+                                        <span className={`role-right-state ${stateClass(right.state)}`}>
+                                          {stateLabel(right.state)}
+                                        </span>
+                                      )}
+                                      {right.restrictions.map((item) => (
+                                        <button
+                                          type="button"
+                                          aria-label="Показать RLS"
+                                          key={item.ref}
+                                          onClick={() => openRestriction(item.ref)}
+                                        >
+                                          Показать RLS
+                                        </button>
+                                      ))}
+                                    </article>
+                                  ))}
+                                </div>
+                                <div className="roles-pagination">
+                                  <span>{pageLabel(detail.data.page.offset, detail.data.page.limit, detail.data.page.returned, detail.data.rights_total || 0)} прав</span>
+                                  {detail.data.page.next_cursor && (
+                                    <button type="button" onClick={continueObjectDetail}>
+                                      Следующая страница деталей<ChevronRight size={15} />
+                                    </button>
+                                  )}
+                                </div>
+                              </>
+                            )}
+                          </section>
+                        </>
+                      )}
+                      {restrictionRequest && (
+                        <section className="role-restriction-card" aria-live="polite">
+                          <header>
+                            <div><span>Явно открытое условие</span><strong>RLS</strong></div>
+                            <small>Читается окнами до 2 000 символов</small>
+                          </header>
+                          {restriction.isPending && <span>Читаем окно RLS…</span>}
+                          {restriction.isError && <div role="alert">{errorText(restriction.error)}</div>}
+                          {restriction.data?.fields && restriction.data.fields.length > 0 && (
+                            <div className="role-restriction-fields">
+                              <strong>Поля ограничения</strong>
+                              <ul>
+                                {restriction.data.fields.map((field, index) => (
+                                  <li key={`${index}:${field}`}><code>{field}</code></li>
+                                ))}
+                              </ul>
+                            </div>
                           )}
-                        </div>
-                      </>
-                    )}
-                  </section>
-                )}
-                {restrictionRequest && (
-                  <section className="role-restriction-card" aria-live="polite">
-                    <header>
-                      <div><span>Явно открытое условие</span><strong>RLS</strong></div>
-                      <small>Читается окнами до 2 000 символов</small>
-                    </header>
-                    {restriction.isPending && <span>Читаем окно RLS…</span>}
-                    {restriction.isError && <div role="alert">{errorText(restriction.error)}</div>}
-                    {restriction.data?.fields && restriction.data.fields.length > 0 && (
-                      <div className="role-restriction-fields">
-                        <strong>Поля ограничения</strong>
-                        <ul>
-                          {restriction.data.fields.map((field, index) => (
-                            <li key={`${index}:${field}`}><code>{field}</code></li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                    {restriction.data?.total_chars === 0 && (
-                      <p className="role-restriction-empty">Условие RLS пустое.</p>
-                    )}
-                    {restrictionContent && <pre>{restrictionContent}</pre>}
-                    {restriction.data?.page?.next_cursor && (
-                      <button type="button" onClick={continueRestriction}>Дочитать RLS</button>
-                    )}
-                  </section>
+                          {restriction.data?.total_chars === 0 && (
+                            <p className="role-restriction-empty">Условие RLS пустое.</p>
+                          )}
+                          {restrictionContent && <pre>{restrictionContent}</pre>}
+                          {restriction.data?.page?.next_cursor && (
+                            <button type="button" onClick={continueRestriction}>Дочитать RLS</button>
+                          )}
+                        </section>
+                      )}
+                    </section>
+                  </div>
                 )}
               </div>
             </div>

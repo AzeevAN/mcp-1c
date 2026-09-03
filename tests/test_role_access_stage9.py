@@ -134,6 +134,47 @@ def _summary_roles():
     ),)
 
 
+def _navigation_roles():
+    return (
+        (
+            "Reader",
+            _descriptor(
+                "Reader",
+                uuid="71111111-1111-1111-1111-111111111111",
+                synonyms=(("ru", "Базовое чтение"),),
+            ),
+            _rights((
+                ("Catalog.Orders", (_right("Read", True),)),
+                ("Document.Invoice", (_right("Read", True),)),
+                (
+                    "Document.Invoice.Attribute.Number",
+                    (_right("Read", True),),
+                ),
+                ("Document.Act", (_right("View", True),)),
+                ("InformationRegister.Stock", (_right("Read", True),)),
+            )),
+        ),
+        (
+            "Administrator",
+            _descriptor(
+                "Administrator",
+                uuid="72222222-2222-2222-2222-222222222222",
+                synonyms=(("en", "Administration"), ("ru", "Администратор")),
+            ),
+            _rights((("Catalog.Orders", (_right("Update", True),)),)),
+        ),
+        (
+            "AccountingAdministrator",
+            _descriptor(
+                "AccountingAdministrator",
+                uuid="73333333-3333-3333-3333-333333333333",
+                synonyms=(("ru", "Администратор учёта"),),
+            ),
+            _rights((("Document.Invoice", (_right("Update", True),)),)),
+        ),
+    )
+
+
 def _publish(
     registry: Registry,
     root,
@@ -874,3 +915,111 @@ def test_roles_api_объясняет_setup_missing_error_и_требует_read
         params={"config": "ReadyConfiguration"},
     )
     assert denied.status_code == 401
+    denied_objects = _client(registry, tmp_path).get(
+        "/api/v1/roles/objects",
+        params={"config": "ReadyConfiguration", "role": "Reader"},
+    )
+    assert denied_objects.status_code == 401
+
+
+def test_roles_api_ищет_роль_по_русскому_синониму_и_имени(tmp_path):
+    registry = Registry(tmp_path / "data")
+    _publish(
+        registry,
+        tmp_path / "source",
+        configuration="DemoConfiguration",
+        generation_id="generation-1",
+        roles=_navigation_roles(),
+    )
+    client = _client(registry, tmp_path)
+
+    first = client.get(
+        "/api/v1/roles",
+        params={
+            "config": "DemoConfiguration",
+            "query": "администратор",
+            "limit": 1,
+        },
+    )
+
+    assert first.status_code == 200
+    payload = first.json()
+    assert payload["roles_total"] == 3
+    assert payload["roles_matched"] == 2
+    assert [role["label_ru"] for role in payload["roles"]] == [
+        "Администратор",
+    ]
+    assert payload["page"]["next_cursor"]
+
+    second = client.get(
+        "/api/v1/roles",
+        params={
+            "config": "DemoConfiguration",
+            "query": "администратор",
+            "limit": 1,
+            "cursor": payload["page"]["next_cursor"],
+        },
+    )
+    assert second.status_code == 200
+    assert [role["label_ru"] for role in second.json()["roles"]] == [
+        "Администратор учёта",
+    ]
+    assert second.json()["page"]["next_cursor"] is None
+
+    by_name = client.get(
+        "/api/v1/roles",
+        params={
+            "config": "DemoConfiguration",
+            "query": "accountingadmin",
+            "limit": 20,
+        },
+    )
+    assert by_name.status_code == 200
+    assert [role["name"] for role in by_name.json()["roles"]] == [
+        "AccountingAdministrator",
+    ]
+
+
+def test_roles_api_фильтрует_объекты_роли_и_возвращает_фасеты(tmp_path):
+    registry = Registry(tmp_path / "data")
+    _publish(
+        registry,
+        tmp_path / "source",
+        configuration="DemoConfiguration",
+        generation_id="generation-1",
+        roles=_navigation_roles(),
+    )
+    client = _client(registry, tmp_path)
+
+    response = client.get(
+        "/api/v1/roles/objects",
+        params={
+            "config": "DemoConfiguration",
+            "role": "Reader",
+            "kind": "Document",
+            "query": "invoice",
+            "limit": 50,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["mode"] == "objects"
+    assert payload["object_filters"] == {
+        "kind": "Document",
+        "query": "invoice",
+    }
+    assert payload["objects_all_total"] == 4
+    assert payload["objects_total"] == 1
+    assert [item["full_name"] for item in payload["objects"]] == [
+        "Документ.Invoice",
+    ]
+    assert payload["object_facets"] == [
+        {"kind": "Catalog", "kind_ru": "Справочник", "count": 1},
+        {"kind": "Document", "kind_ru": "Документ", "count": 2},
+        {
+            "kind": "InformationRegister",
+            "kind_ru": "Регистр сведений",
+            "count": 1,
+        },
+    ]

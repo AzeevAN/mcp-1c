@@ -82,12 +82,15 @@ from .role_access_service import (
     MAX_ACCESS_LIMIT as MAX_ROLE_ACCESS_LIMIT,
     MAX_FIND_LIMIT as MAX_ROLE_FIND_LIMIT,
     MAX_PAGE_CHARS as MAX_ROLE_PAGE_CHARS,
+    MAX_OBJECT_QUERY_CHARS,
+    MAX_ROLE_QUERY_CHARS,
     MAX_ROLE_LIST_LIMIT,
     MIN_PAGE_CHARS as MIN_ROLE_PAGE_CHARS,
     RoleAccessQueryError,
     find_roles_payload,
     get_role_access_payload,
     http_status as role_http_status,
+    role_objects_payload,
     roles_catalog_payload,
 )
 from .render import DETAIL_LEVELS
@@ -1007,6 +1010,11 @@ def _spa_routes(
                 roles_catalog_payload,
                 registry,
                 config=role_param(request, "config", maximum=512) or None,
+                query=role_param(
+                    request,
+                    "query",
+                    maximum=MAX_ROLE_QUERY_CHARS,
+                ) or "",
                 cursor=role_param(request, "cursor", maximum=2048) or None,
                 limit=role_integer(
                     request,
@@ -1014,6 +1022,37 @@ def _spa_routes(
                     default=50,
                     minimum=1,
                     maximum=MAX_ROLE_LIST_LIMIT,
+                ),
+            )
+        except (RoleAccessQueryError, RegistryError) as error:
+            return _json_error(str(error), 400)
+        return JSONResponse(payload, status_code=role_http_status(payload))
+
+    async def role_objects_api(request: Request) -> JSONResponse:
+        if not can_read(request):
+            return _json_error("Нужен токен чтения.", 401)
+        try:
+            role = role_param(request, "role", maximum=512)
+            if not role:
+                raise RoleAccessQueryError("Параметр role обязателен.")
+            payload = await run_in_threadpool(
+                role_objects_payload,
+                registry,
+                role,
+                config=role_param(request, "config", maximum=512) or None,
+                kind=role_param(request, "kind", maximum=512) or "",
+                query=role_param(
+                    request,
+                    "query",
+                    maximum=MAX_OBJECT_QUERY_CHARS,
+                ) or "",
+                cursor=role_param(request, "cursor", maximum=2048) or None,
+                limit=role_integer(
+                    request,
+                    "limit",
+                    default=50,
+                    minimum=1,
+                    maximum=MAX_ROLE_ACCESS_LIMIT,
                 ),
             )
         except (RoleAccessQueryError, RegistryError) as error:
@@ -1593,6 +1632,12 @@ def _spa_routes(
             roles_access_api,
             methods=["GET"],
             name="dashboard_roles_access",
+        ),
+        Route(
+            "/api/v1/roles/objects",
+            role_objects_api,
+            methods=["GET"],
+            name="dashboard_role_objects",
         ),
         Route(
             "/api/v1/roles/restriction",

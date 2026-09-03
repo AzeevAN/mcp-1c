@@ -181,11 +181,10 @@
   border-right: 1px solid var(--line);
 }
 
-/* Native select берёт min-content из самой длинной option. Без явного
-   shrink-контракта он растягивает все grid-элементы поверх правой панели. */
+/* Поиск не должен брать min-content длинного технического имени роли. */
 .role-picker-card,
 .role-picker-card > *,
-.role-picker-card select {
+.role-picker-card input {
   min-width: 0;
 }
 
@@ -193,24 +192,64 @@
   width: 100%;
 }
 
-.role-picker-card select {
+.role-picker-card input {
   width: 100%;
   max-width: 100%;
-}
-
-.role-picker-card > button {
-  min-height: 38px;
+  min-height: 42px;
+  padding: 9px 11px;
   border: 1px solid var(--line-strong);
   border-radius: 10px;
-  color: var(--blue-deep);
+  color: var(--text);
   background: var(--surface);
-  cursor: pointer;
-  font-weight: 750;
+  font: inherit;
 }
 
-.role-picker-card > button:disabled {
-  opacity: 0.55;
-  cursor: wait;
+.role-picker-card input:focus {
+  outline: 3px solid rgba(77, 143, 247, 0.13);
+  border-color: var(--blue);
+}
+
+.role-search-results {
+  max-height: 310px;
+  display: grid;
+  gap: 5px;
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.role-search-results > button {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--ink-900);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.role-search-results > button:hover,
+.role-search-results > button:focus-visible {
+  outline: none;
+  background: var(--surface-blue);
+}
+
+.role-search-results code,
+.role-search-results > span,
+.role-search-results > small {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.role-search-results > span,
+.role-search-results > small {
+  padding: 9px;
 }
 
 .role-descriptor {
@@ -275,6 +314,69 @@
   color: var(--muted);
   background: var(--canvas-soft);
   font-size: 12px;
+}
+
+.role-object-navigation {
+  display: grid;
+  gap: 12px;
+  padding: 15px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--canvas-soft);
+}
+
+.role-object-navigation-head {
+  display: grid;
+  grid-template-columns: minmax(190px, 1fr) minmax(220px, 0.9fr);
+  align-items: end;
+  gap: 14px;
+}
+
+.role-object-navigation-head > div,
+.role-object-navigation-head label {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.role-object-navigation small,
+.role-object-navigation-head span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.role-object-navigation input {
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  color: var(--text);
+  background: var(--surface);
+  font: inherit;
+}
+
+.role-object-facets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.role-object-facets button {
+  padding: 7px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--surface);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.role-object-facets button[aria-pressed="true"] {
+  border-color: var(--blue-deep);
+  color: #fff;
+  background: var(--blue-deep);
 }
 
 .role-object-list {
@@ -462,6 +564,73 @@
   border: 1px solid var(--line-strong);
   border-radius: 15px;
   background: var(--canvas-soft);
+}
+
+.role-detail-backdrop {
+  position: fixed;
+  z-index: 80;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(23, 34, 56, 0.48);
+  backdrop-filter: blur(4px);
+}
+
+.role-detail-dialog {
+  position: relative;
+  width: min(1040px, 100%);
+  max-height: min(86vh, 900px);
+  display: grid;
+  gap: 14px;
+  overflow-y: auto;
+  padding: 24px;
+  border: 1px solid var(--line-strong);
+  border-radius: 20px;
+  background: var(--surface);
+  box-shadow: 0 28px 90px rgba(23, 34, 56, 0.28);
+}
+
+.role-detail-close {
+  position: absolute;
+  z-index: 1;
+  top: 14px;
+  right: 14px;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--muted);
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.role-detail-tabs {
+  display: inline-flex;
+  width: fit-content;
+  max-width: calc(100% - 48px);
+  gap: 5px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--canvas-soft);
+}
+
+.role-detail-tabs button {
+  padding: 8px 11px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+  font-weight: 750;
+}
+
+.role-detail-tabs button.is-active {
+  color: #fff;
+  background: var(--ink-800);
 }
 
 .role-detail-list {
@@ -730,6 +899,10 @@
     border-right: 0;
     border-bottom: 1px solid var(--line);
   }
+
+  .role-object-navigation-head {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 620px) {
@@ -754,6 +927,20 @@
   .roles-unavailable {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .role-detail-backdrop {
+    padding: 10px;
+  }
+
+  .role-detail-dialog {
+    max-height: calc(100vh - 20px);
+    padding: 16px;
+  }
+
+  .role-detail-tabs {
+    width: calc(100% - 48px);
+    display: grid;
   }
 }
 

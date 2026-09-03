@@ -310,9 +310,61 @@ it("открывается без config, выбирает роль и не по
 
   fireEvent.click(screen.getByRole("button", { name: "Показать RLS" }));
   expect(await screen.findByText("SyntheticAllowed(x)")).toBeInTheDocument();
+  expect(screen.getByText("Контекст условия")).toBeInTheDocument();
+  expect(screen.getByText("Справочник Orders")).toBeInTheDocument();
+  expect(screen.getByText(/Загружено 19 из 6.000 символов · окно до 2.000/)).toBeInTheDocument();
+  expect(screen.getByText(/Следующее окно добавится к уже прочитанному тексту/)).toBeInTheDocument();
   expect(screen.getByText("Catalog.Orders.Attribute.Code")).toBeInTheDocument();
   expect(screen.getByText("Catalog.Orders.Attribute.Number")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Дочитать RLS" })).toBeInTheDocument();
+});
+
+it("дочитывает длинное RLS в то же окно без замены уже загруженного текста", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+    const url = new URL(String(input), "http://dashboard.test");
+    if (url.pathname === "/api/v1/roles/objects") return response(access);
+    if (url.pathname === "/api/v1/roles/restriction") {
+      const continued = Boolean(url.searchParams.get("cursor"));
+      return response({
+        ...base,
+        mode: "restriction",
+        role: "Reader",
+        restriction_ref: "restriction-ref",
+        fields: [],
+        template: "",
+        target: "Catalog.Orders",
+        right: "Read",
+        content: continued ? "B".repeat(5) : "A".repeat(2000),
+        total_chars: 2005,
+        total_bytes: 2005,
+        page: {
+          offset: continued ? 2000 : 0,
+          max_chars: 2000,
+          returned_chars: continued ? 5 : 2000,
+          next_cursor: continued ? null : "rls-next",
+        },
+      });
+    }
+    return response(catalog);
+  }));
+  renderPage();
+
+  fireEvent.click(await screen.findByRole("button", { name: "Чтение" }));
+  await screen.findByRole("heading", { name: "Orders" });
+  fireEvent.click(screen.getByRole("button", { name: "Показать RLS" }));
+
+  await waitFor(() => {
+    expect(screen.getByRole("dialog").querySelector("pre")?.textContent).toHaveLength(2000);
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Дочитать RLS" }));
+
+  await waitFor(() => {
+    const text = screen.getByRole("dialog").querySelector("pre")?.textContent || "";
+    expect(text).toHaveLength(2005);
+    expect(text.endsWith("BBBBB")).toBe(true);
+  });
+  expect(screen.getByText(/Загружено 2.005 из 2.005 символов/)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Дочитать RLS" })).not.toBeInTheDocument();
 });
 
 it("показывает неизвестные default-флаги descriptor-only роли без false", async () => {

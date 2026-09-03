@@ -150,6 +150,31 @@ export function RolesPage() {
     [catalog.data?.roles, objects.data?.role, requestedRole, roleSearch.data?.roles],
   );
   const activeDescriptor = selectedDescriptor;
+  const restrictionRootTarget = restriction.data?.target
+    ?.split(".")
+    .slice(0, 2)
+    .join(".") || "";
+  const restrictionObject = (
+    detail.data?.object?.target === restrictionRootTarget
+      ? detail.data.object
+      : objects.data?.objects?.find((item) => item.target === restrictionRootTarget)
+  );
+  const restrictionRight = [
+    ...(detail.data?.rights || []),
+    ...(objects.data?.objects || []).flatMap((item) => item.root_rights),
+  ].find((item) => (
+    item.target === restriction.data?.target && item.name === restriction.data?.right
+  ));
+  const restrictionRightLabel = restrictionRight?.label_ru
+    || operationOptions.find((item) => item.platform_right === restriction.data?.right)?.label_ru
+    || restriction.data?.right
+    || "—";
+  const restrictionLoadedChars = restriction.data?.page
+    ? Math.min(
+        restriction.data.total_chars || 0,
+        restriction.data.page.offset + restriction.data.page.returned_chars,
+      )
+    : 0;
 
   useEffect(() => {
     if (requestedRole && activeDescriptor && !roleQuery) {
@@ -699,10 +724,46 @@ export function RolesPage() {
                         <section className="role-restriction-card" aria-live="polite">
                           <header>
                             <div><span>Явно открытое условие</span><strong>RLS</strong></div>
-                            <small>Читается окнами до 2 000 символов</small>
+                            <small>
+                              {restriction.data?.page
+                                ? `Загружено ${restrictionLoadedChars.toLocaleString("ru-RU")} из ${(restriction.data.total_chars || 0).toLocaleString("ru-RU")} символов · окно до ${restriction.data.page.max_chars.toLocaleString("ru-RU")}`
+                                : "Читаем первое окно до 2 000 символов"}
+                            </small>
                           </header>
                           {restriction.isPending && <span>Читаем окно RLS…</span>}
                           {restriction.isError && <div role="alert">{errorText(restriction.error)}</div>}
+                          {restriction.data && (
+                            <div className="role-restriction-context">
+                              <strong>Контекст условия</strong>
+                              <dl>
+                                <div>
+                                  <dt>Роль</dt>
+                                  <dd>
+                                    <strong>{activeDescriptor ? roleLabel(activeDescriptor) : restriction.data.role}</strong>
+                                    <code>{restriction.data.role}</code>
+                                  </dd>
+                                </div>
+                                <div>
+                                  <dt>Объект</dt>
+                                  <dd>
+                                    <strong>
+                                      {restrictionObject
+                                        ? `${restrictionObject.kind_ru} ${restrictionObject.name}`
+                                        : restriction.data.target}
+                                    </strong>
+                                    <code>{restriction.data.target}</code>
+                                  </dd>
+                                </div>
+                                <div>
+                                  <dt>Право</dt>
+                                  <dd>
+                                    <strong>{restrictionRightLabel}</strong>
+                                    <code>{restriction.data.right}</code>
+                                  </dd>
+                                </div>
+                              </dl>
+                            </div>
+                          )}
                           {restriction.data?.fields && restriction.data.fields.length > 0 && (
                             <div className="role-restriction-fields">
                               <strong>Поля ограничения</strong>
@@ -718,7 +779,12 @@ export function RolesPage() {
                           )}
                           {restrictionContent && <pre>{restrictionContent}</pre>}
                           {restriction.data?.page?.next_cursor && (
-                            <button type="button" onClick={continueRestriction}>Дочитать RLS</button>
+                            <>
+                              <p className="role-restriction-window-note">
+                                Следующее окно добавится к уже прочитанному тексту; загруженная часть не заменяется.
+                              </p>
+                              <button type="button" onClick={continueRestriction}>Дочитать RLS</button>
+                            </>
                           )}
                         </section>
                       )}

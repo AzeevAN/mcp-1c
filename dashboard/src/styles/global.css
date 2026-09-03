@@ -730,6 +730,42 @@
   display: grid;
 }
 
+.role-restriction-context {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #efcf93;
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.role-restriction-context dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.role-restriction-context dl > div,
+.role-restriction-context dd {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  margin: 0;
+}
+
+.role-restriction-context dt {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.role-restriction-context code {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 10px;
+}
+
 .role-restriction-card pre {
   max-height: 420px;
   overflow: auto;
@@ -761,6 +797,12 @@
 .role-restriction-empty {
   margin: 0;
   color: var(--text-muted);
+}
+
+.role-restriction-window-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .role-object-mode {
@@ -906,6 +948,10 @@
 }
 
 @media (max-width: 620px) {
+  .role-restriction-context dl {
+    grid-template-columns: 1fr;
+  }
+
   .role-detail-row {
     grid-template-columns: 1fr;
   }

@@ -245,7 +245,9 @@ def test_zip_tree_fail_closed_на_опасном_или_неоднозначн�
         )
 
 
-def test_zip_tree_отвергает_symlink_при_discovery_и_zip_bomb_при_open(tmp_path):
+def test_zip_tree_отвергает_symlink_и_ограничивает_zip_bomb_только_для_browser(
+    tmp_path,
+):
     TransportLimitError = _symbol("TransportLimitError")
     TransportSecurityError = _symbol("TransportSecurityError")
     ZipExportTree = _symbol("ZipExportTree")
@@ -270,14 +272,23 @@ def test_zip_tree_отвергает_symlink_при_discovery_и_zip_bomb_при
     ) as archive:
         archive.writestr("Configuration.xml", b" " * 4096)
 
-    bomb_tree = ZipExportTree(
+    limits = _small_limits(
+        max_entry_bytes=8192,
+        max_total_bytes=8192,
+        max_compression_ratio=2,
+    )
+    incoming_tree = ZipExportTree(
         bomb_zip,
         transport=CandidateTransport.INCOMING,
-        limits=_small_limits(
-            max_entry_bytes=8192,
-            max_total_bytes=8192,
-            max_compression_ratio=2,
-        ),
+        limits=limits,
+    )
+    with incoming_tree.open("Configuration.xml") as stream:
+        assert stream.read() == b" " * 4096
+
+    bomb_tree = ZipExportTree(
+        bomb_zip,
+        transport=CandidateTransport.BROWSER,
+        limits=limits,
     )
     with pytest.raises(TransportLimitError, match="сжати|предел"):
         bomb_tree.open("Configuration.xml")
@@ -336,7 +347,7 @@ def test_zip_и_каталог_не_считают_непрочитанный_б
     trees = (
         ZipExportTree(
             archive_path,
-            transport=CandidateTransport.INCOMING,
+            transport=CandidateTransport.LOCAL_FILE,
             limits=limits,
         ),
         DirectoryExportTree(
@@ -352,6 +363,42 @@ def test_zip_и_каталог_не_считают_непрочитанный_б
         assert len(tree.source_sha256()) == 64
         with pytest.raises(TransportLimitError, match="размер|предел"):
             tree.open("Ext/ParentConfigurations/Supply.cf")
+
+
+def test_incoming_zip_не_ограничивает_суммарный_объём_полезных_файлов(tmp_path):
+    TransportLimitError = _symbol("TransportLimitError")
+    ZipExportTree = _symbol("ZipExportTree")
+
+    archive_path = tmp_path / "candidate.zip"
+    _write_zip(
+        archive_path,
+        {
+            "Configuration.xml": b"12345",
+            "Catalogs/Demo.xml": b"6789012345",
+        },
+    )
+    limits = _small_limits(max_entry_bytes=8, max_total_bytes=9)
+
+    incoming = ZipExportTree(
+        archive_path,
+        transport=CandidateTransport.INCOMING,
+        limits=limits,
+    )
+    with incoming.open("Configuration.xml") as stream:
+        assert stream.read() == b"12345"
+    with incoming.open("Catalogs/Demo.xml") as stream:
+        assert stream.read() == b"6789012345"
+
+    browser = ZipExportTree(
+        archive_path,
+        transport=CandidateTransport.BROWSER,
+        limits=limits,
+    )
+    with browser.open("Configuration.xml") as stream:
+        assert stream.read() == b"12345"
+    with pytest.raises(TransportLimitError, match="прочитан|предел"):
+        with browser.open("Catalogs/Demo.xml") as stream:
+            stream.read()
 
 
 def test_tree_обнаруживает_изменение_zip_и_каталога_во_время_операции(tmp_path):

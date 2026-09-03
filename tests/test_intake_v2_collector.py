@@ -525,6 +525,31 @@ def test_collector_общая_ошибка_отменяет_весь_staging(tmp
     assert list(tmp_path.glob(".failed.*.tmp")) == []
 
 
+def test_collector_сохраняет_понятную_ошибку_транспорта(tmp_path):
+    CollectorError = _symbol("CollectorError")
+    collect_source_b = _symbol("collect_source_b")
+    TransportLimitError = importlib.import_module(
+        "mcp1c.intake_v2_transport"
+    ).TransportLimitError
+
+    class LimitedTree(MemoryTree):
+        def open(self, path: str):
+            if path == "Catalogs/Demo/Ext/ObjectModule.bsl":
+                raise TransportLimitError("синтетический превышенный бюджет")
+            return super().open(path)
+
+    tree = LimitedTree(
+        {
+            "Configuration.xml": _configuration(),
+            "Catalogs/Demo/Ext/ObjectModule.bsl": b"code",
+        }
+    )
+    probe = probe_export(tree)
+
+    with pytest.raises(CollectorError, match="синтетический превышенный бюджет"):
+        collect_source_b(tree, probe, tmp_path / "failed")
+
+
 def test_collection_manifest_fail_closed_на_подмене_и_symlink(tmp_path):
     CollectionError = _symbol("CollectionError")
     load_collection = _symbol("load_collection")

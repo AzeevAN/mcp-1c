@@ -192,10 +192,19 @@ def _read_small_regular_file(path: Path, limit: int) -> bytes:
             os.close(descriptor)
 
 
-def _read_budget(limits: ResourceLimits, label: str) -> ResourceBudget:
+def _read_budget(
+    limits: ResourceLimits,
+    label: str,
+    *,
+    enforce_content_limits: bool = True,
+) -> ResourceBudget:
     if not isinstance(limits, ResourceLimits):
         raise TypeError("limits должен быть ResourceLimits")
-    return ResourceBudget(limits, label)
+    return ResourceBudget(
+        limits,
+        label,
+        enforce_content_limits=enforce_content_limits,
+    )
 
 
 def _validate_opened_member(
@@ -731,7 +740,14 @@ class ZipExportTree:
         try:
             archive = zipfile.ZipFile(source)
             members = self._inspect(archive, limits)
-            budget = _read_budget(limits, "ZIP файловой выгрузки")
+            budget = _read_budget(
+                limits,
+                "ZIP файловой выгрузки",
+                # `incoming/` — доверенный server-side канал без browser-size
+                # policy. Структура ZIP всё ещё проверяется целиком, а CRC и
+                # стабильность — при потоковом чтении каждого выбранного файла.
+                enforce_content_limits=transport is not CandidateTransport.INCOMING,
+            )
         except (zipfile.BadZipFile, OSError, EOFError) as error:
             if archive is not None:
                 archive.close()

@@ -31,6 +31,7 @@ from .intake_v2 import (
     VirtualExportTree,
 )
 from .intake_v2_probe import CandidateProbe, ProbeError
+from .intake_v2_transport import TransportError
 
 
 COLLECTION_FORMAT_VERSION = 1
@@ -1261,6 +1262,9 @@ def collect_source_b(
         return CollectionResult.from_dict(target, result.to_dict())
     except CollectorError:
         raise
+    except TransportError as error:
+        message = str(error).strip() or "source-B transport недоступен"
+        raise CollectorError(message[:2048]) from error
     except Exception as error:
         raise CollectorError("не удалось собрать source-B collection") from error
     finally:

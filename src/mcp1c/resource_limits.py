@@ -47,15 +47,26 @@ V8_LIMITS = ResourceLimits(
 class ResourceBudget:
     """Проверка заявленного состава и реально прочитанных байтов."""
 
-    def __init__(self, limits: ResourceLimits, label: str):
+    def __init__(
+        self,
+        limits: ResourceLimits,
+        label: str,
+        *,
+        enforce_content_limits: bool = True,
+    ):
+        if not isinstance(enforce_content_limits, bool):
+            raise TypeError("enforce_content_limits должен быть bool")
         self.limits = limits
         self.label = label
+        self.enforce_content_limits = enforce_content_limits
         self.read_total = 0
 
     def validate_members(
         self, members: Iterable[tuple[str, int, int]]
     ) -> None:
         rows = list(members)
+        if not self.enforce_content_limits:
+            return
         if len(rows) > self.limits.max_entries:
             raise ResourceLimitError(
                 f"{self.label}: число записей {len(rows)} превышает предел "
@@ -89,12 +100,18 @@ class ResourceBudget:
                 )
 
     def consume(self, name: str, entry_total: int, amount: int) -> None:
-        if entry_total + amount > self.limits.max_entry_bytes:
+        if (
+            self.enforce_content_limits
+            and entry_total + amount > self.limits.max_entry_bytes
+        ):
             raise ResourceLimitError(
                 f"{self.label}: запись {name!r} при чтении превысила предел "
                 f"{self.limits.max_entry_bytes} байт."
             )
-        if self.read_total + amount > self.limits.max_total_bytes:
+        if (
+            self.enforce_content_limits
+            and self.read_total + amount > self.limits.max_total_bytes
+        ):
             raise ResourceLimitError(
                 f"{self.label}: реально прочитанный объём превысил предел "
                 f"{self.limits.max_total_bytes} байт."
@@ -112,10 +129,13 @@ class LimitedReader:
         self._read = 0
 
     def read(self, size: int = -1) -> bytes:
-        entry_left = self._budget.limits.max_entry_bytes - self._read
-        total_left = self._budget.limits.max_total_bytes - self._budget.read_total
-        allowed = min(entry_left, total_left)
-        requested = allowed + 1 if size < 0 else min(size, allowed + 1)
+        if self._budget.enforce_content_limits:
+            entry_left = self._budget.limits.max_entry_bytes - self._read
+            total_left = self._budget.limits.max_total_bytes - self._budget.read_total
+            allowed = min(entry_left, total_left)
+            requested = allowed + 1 if size < 0 else min(size, allowed + 1)
+        else:
+            requested = size
         data = self._stream.read(requested)
         self._budget.consume(self._name, self._read, len(data))
         self._read += len(data)

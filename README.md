@@ -22,13 +22,13 @@
 | Роли | объявленные права из native generation; без готового слоя две role-ручки отсутствуют |
 | Дашборд | современная SPA включена по умолчанию; `on` либо `off` |
 | Авторизация Docker | два разных обязательных токена: `API_TOKEN` на чтение, `ADMIN_TOKEN` на запись |
-| Тесты | `.venv/bin/python -m pytest`, 1946 |
+| Тесты | `.venv/bin/python -m pytest`, 1947 |
 
 Воспроизводимый прогон:
 
 ```bash
 .venv/bin/pip install --require-hashes -r requirements-dev-lock.txt
-.venv/bin/python -m pytest          # 1946 тестов (прогон 2026-09-03)
+.venv/bin/python -m pytest          # 1947 тестов (прогон 2026-09-03)
 ```
 
 ## Навигация

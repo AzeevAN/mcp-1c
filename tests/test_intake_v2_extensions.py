@@ -12,7 +12,7 @@ from dataclasses import replace
 
 import pytest
 
-from mcp1c import coverage_log
+from mcp1c import coverage_log, index_cache
 from mcp1c.intake_v2 import ExportIdentity, LayerKind
 from mcp1c.intake_v2_collector import collect_source_b
 from mcp1c.intake_v2_converter import (
@@ -742,6 +742,33 @@ def test_restore_поднимает_код_native_расширения_из_warm
         extension="DemoExtension",
     )
     assert restored.extension is not None and restored.extension.готов
+
+
+def test_startup_sweep_сохраняет_кэши_active_native_расширения(tmp_path):
+    _base_collection, base = _materialized(tmp_path, "base-cache-owner")
+    _extension_collection, extension = _materialized(
+        tmp_path,
+        "extension-cache-owner",
+        configuration_name="DemoExtension",
+        extension=True,
+    )
+    registry = Registry(tmp_path / "data")
+    registry.publish_generation(
+        registry.stage_generation(base.manifest, base.payloads)
+    )
+    registry.publish_generation(
+        registry.stage_generation(extension.manifest, extension.payloads)
+    )
+    source_id = "DemoConfiguration:ext:DemoExtension"
+    expected = {
+        registry._cache_path(source_id, kind).name
+        for kind in Registry.CACHE_KINDS[KIND_EXTENSION]
+    }
+    expected.add(registry._cache_path(source_id, "roles.sqlite").name)
+    assert all((registry.cache_dir / name).is_file() for name in expected)
+
+    assert expected <= registry._cached_names()
+    assert index_cache.sweep(registry.cache_dir, registry._cached_names()) == []
 
 
 def test_extension_publish_CAS_отклоняет_смену_родителя(tmp_path, monkeypatch):

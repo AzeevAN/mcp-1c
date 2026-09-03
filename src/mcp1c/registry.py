@@ -1337,10 +1337,26 @@ class Registry:
         # принадлежит активному поколению и не должен сноситься sweep после
         # успешного restore.
         for manifest in self._generation_manifests.values():
-            if manifest.identity.source_kind is not SourceKind.CONFIGURATION:
+            layers = {layer.kind: layer for layer in manifest.layers}
+            if manifest.identity.source_kind is SourceKind.EXTENSION:
+                source_id = (
+                    f"{manifest.identity.parent_configuration}:ext:"
+                    f"{index_cache.safe_name(manifest.identity.extension_name)}"
+                )
+                if any(
+                    layers.get(kind) is not None
+                    and layers[kind].state is LayerState.READY
+                    for kind in (LayerKind.CODE, LayerKind.FORMS)
+                ):
+                    names.update(
+                        self._cache_path(source_id, kind).name
+                        for kind in self.CACHE_KINDS[KIND_EXTENSION]
+                    )
+                roles = layers.get(LayerKind.ROLES)
+                if roles is not None and roles.state is LayerState.READY:
+                    names.add(self._cache_path(source_id, "roles.sqlite").name)
                 continue
             configuration = manifest.identity.configuration_name
-            layers = {layer.kind: layer for layer in manifest.layers}
             base = layers.get(LayerKind.BASE_STRUCTURE)
             if base is not None and base.state is LayerState.READY:
                 names.update(

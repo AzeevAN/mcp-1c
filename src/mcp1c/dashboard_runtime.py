@@ -189,7 +189,8 @@ def _sources_payload(
                 {
                     "id": corpus.source_id or f"{configuration.name}:modules",
                     "label": corpus.corpus,
-                    "kind": source.kind if source is not None else KIND_MODULES,
+                    "kind": corpus.kind,
+                    "native_generation": corpus.native_generation,
                     "phase": corpus.phase,
                     "state": corpus.state,
                     "source": _source_payload(source),
@@ -213,6 +214,7 @@ def _sources_payload(
                 "edges": configuration.edges,
                 "loaded_at": configuration.loaded_at,
                 "notes": list(configuration.notes),
+                "native_generation": configuration.native_generation,
                 "source": _source_payload(sources_by_id.get(configuration.name)),
                 "extension_runtime": _source_payload(
                     sources_by_id.get(

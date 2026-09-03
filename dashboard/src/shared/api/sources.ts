@@ -40,6 +40,7 @@ export type CodeCorpus = {
   id: string;
   label: string;
   kind: "modules" | "extension";
+  native_generation: boolean;
   phase: "ready" | "limited" | "building" | "error" | "missing";
   state: string;
   source: SourceItem | null;
@@ -57,6 +58,7 @@ export type ConfigurationSource = {
   edges: number;
   loaded_at: string;
   notes: string[];
+  native_generation: boolean;
   source: SourceItem | null;
   extension_runtime?: SourceItem | null;
   corpora: CodeCorpus[];

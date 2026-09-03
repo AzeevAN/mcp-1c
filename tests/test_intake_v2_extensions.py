@@ -26,8 +26,8 @@ from mcp1c.intake_v2_registry import hash_layer_semantic
 from mcp1c.intake_v2_planner import IntakeAction, plan_intake
 from mcp1c.intake_v2_probe import probe_export
 from mcp1c.model import Configuration, Field, MetadataObject
-from mcp1c.registry import Registry, RegistryError
-from mcp1c.tools import list_extensions
+from mcp1c.registry import KIND_EXTENSION, Registry, RegistryError
+from mcp1c.tools import list_extensions, sources_snapshot
 from conftest import write_export
 from test_intake_v2_converter import (
     MemoryTree,
@@ -612,6 +612,13 @@ def test_remove_снимает_native_generation_расширения_без_leg
     pointer = registry.active_generation_pointer(extension.manifest.identity)
     assert pointer is not None
     assert "DemoConfiguration:ext:DemoExtension" not in registry.snapshot().sources
+    corpus = next(
+        row
+        for row in sources_snapshot(registry).code
+        if row.source_id == "DemoConfiguration:ext:DemoExtension"
+    )
+    assert corpus.kind == KIND_EXTENSION
+    assert corpus.native_generation is True
     role_cache = registry._cache_path(
         "DemoConfiguration:ext:DemoExtension",
         "roles.sqlite",
@@ -664,6 +671,39 @@ def test_remove_снимает_legacy_source_и_native_generation_одного_�
     assert source_id not in snapshot.modules
     assert registry.active_generation_pointer(extension.manifest.identity) is None
     assert "DemoExtension" not in snapshot.extension_names("DemoConfiguration")
+
+
+def test_remove_native_конфигурации_каскадно_снимает_её_расширения(tmp_path):
+    _base_collection, base = _materialized(tmp_path, "base-remove-cascade")
+    _extension_collection, extension = _materialized(
+        tmp_path,
+        "extension-remove-cascade",
+        configuration_name="DemoExtension",
+        extension=True,
+    )
+    registry = Registry(tmp_path / "data")
+    base_pointer = registry.publish_generation(
+        registry.stage_generation(base.manifest, base.payloads)
+    )
+    extension_pointer = registry.publish_generation(
+        registry.stage_generation(extension.manifest, extension.payloads)
+    )
+
+    registry.remove("DemoConfiguration")
+
+    snapshot = registry.snapshot()
+    assert registry.active_generation_pointer(base.manifest.identity) is None
+    assert registry.active_generation_pointer(extension.manifest.identity) is None
+    assert "DemoConfiguration" not in snapshot.configurations
+    assert "DemoConfiguration:modules" not in snapshot.modules
+    assert "DemoConfiguration:ext:DemoExtension" not in snapshot.modules
+    assert not (registry.data_dir / base_pointer.root_path).exists()
+    assert not (registry.data_dir / extension_pointer.root_path).exists()
+
+    restarted = Registry(registry.data_dir)
+    assert restarted.restore() == []
+    assert not restarted.snapshot().configurations
+    assert not restarted.snapshot().generations
 
 
 def test_restore_поднимает_код_native_расширения_из_warm_кэша(

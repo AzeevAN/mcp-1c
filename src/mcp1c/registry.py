@@ -3598,12 +3598,80 @@ class Registry:
                 preloaded = None
 
     def remove(self, source_id: str) -> None:
-        """Снять источник или native-расширение одним логическим действием."""
+        """Снять источник или native-слой одним логическим действием."""
+        if source_id.endswith(":modules"):
+            configuration = source_id.removesuffix(":modules")
+            identity = ExportIdentity.configuration(configuration)
+            with self._lock:
+                pointer = self._generation_pointers.get(identity.grouping_key)
+                manifest = self._generation_manifests.get(identity.grouping_key)
+            if pointer is not None and manifest is not None:
+                self._remove_native_code(source_id, pointer, manifest)
+                return
         # Publish и remove одной identity не могут пересекаться: иначе remove
         # проверит старый набор pointers, а publisher сразу после этого вернёт
-        # уже снятое расширение новым поколением.
+        # уже снятую identity новым поколением.
         with self._generation_mutation_lock:
             self._remove_serialized(source_id)
+
+    def _remove_native_code(
+        self,
+        source_id: str,
+        previous: GenerationPointer,
+        active: GenerationManifest,
+    ) -> None:
+        """Опубликовать поколение без code/forms, сохранив структуру и роли."""
+        removable = {LayerKind.CODE, LayerKind.FORMS}
+        if not any(
+            layer.kind in removable and layer.state is LayerState.READY
+            for layer in active.layers
+        ):
+            raise RegistryError(f"Источник не зарегистрирован: {source_id}")
+        layers = tuple(
+            LayerManifest(layer.kind, LayerState.UNAVAILABLE)
+            if layer.kind in removable
+            else layer
+            for layer in active.layers
+        )
+        manifest = replace(
+            active,
+            generation_id=f"remove-code-{uuid.uuid4().hex}",
+            layers=layers,
+        )
+        payloads = dict(self.generation_payload_sources(previous))
+        for kind in removable:
+            payloads.pop(kind, None)
+        staged: StagedGeneration | None = self.stage_generation(manifest, payloads)
+        try:
+            current = self.publish_generation(
+                staged,
+                expected_previous=previous,
+            )
+            staged = None
+        finally:
+            if staged is not None:
+                try:
+                    self.discard_staged_generation(staged)
+                except (OSError, BundleStoreError):
+                    pass
+
+        # Не удаляем расходные файлы нового writer: между publish и cleanup
+        # identity могла получить ещё одно поколение. Проверка выполняется под
+        # тем же mutation lock, которым сериализованы publisher и remove.
+        with self._generation_mutation_lock, self._modules_cache_lock:
+            with self._lock:
+                still_current = (
+                    self._generation_pointers.get(active.identity.grouping_key)
+                    == current
+                )
+            if still_current:
+                self._drop_cache(source_id, KIND_MODULES)
+                try:
+                    coverage_log.remove(self.data_dir, source_id)
+                except OSError:
+                    logger.warning(
+                        "Журнал покрытия снятого native-корпуса не удалён."
+                    )
 
     def _remove_serialized(self, source_id: str) -> None:
         """Снять источник — а для конфигурации ещё и её код.
@@ -3630,7 +3698,16 @@ class Registry:
         # writer не может записать файл между `_drop_cache` и снятием Source.
         with self._modules_cache_lock, self._lock:
             source = self.sources.get(source_id)
-            native: tuple[tuple[str, ...], GenerationPointer] | None = next(
+            native_configuration = next(
+                (
+                    (key, pointer)
+                    for key, pointer in self._generation_pointers.items()
+                    if pointer.identity.source_kind is SourceKind.CONFIGURATION
+                    and source_id == pointer.identity.configuration_name
+                ),
+                None,
+            )
+            native_extension = next(
                 (
                     (key, pointer)
                     for key, pointer in self._generation_pointers.items()
@@ -3643,7 +3720,28 @@ class Registry:
                 ),
                 None,
             )
-            if source is None and native is None:
+            configuration_removal = (
+                native_configuration is not None
+                or (source is not None and source.kind == KIND_CONFIGURATION)
+            )
+            if configuration_removal:
+                native = [
+                    (key, pointer)
+                    for key, pointer in self._generation_pointers.items()
+                    if (
+                        pointer.identity.source_kind is SourceKind.CONFIGURATION
+                        and pointer.identity.configuration_name == source_id
+                    )
+                    or (
+                        pointer.identity.source_kind is SourceKind.EXTENSION
+                        and pointer.identity.parent_configuration == source_id
+                    )
+                ]
+            elif native_extension is not None:
+                native = [native_extension]
+            else:
+                native = []
+            if source is None and not native:
                 raise RegistryError(f"Источник не зарегистрирован: {source_id}")
 
             # Цепочка считается ДО первого удаления: `self.sources` меняется
@@ -3651,7 +3749,7 @@ class Registry:
             # движущейся целью. Только конфигурация каскадирует — модули и
             # расширения снимаются каждый сам по себе, без цепочки.
             цепочка = [source_id]
-            if source is not None and source.kind == KIND_CONFIGURATION:
+            if configuration_removal:
                 модули_id = f"{source_id}:modules"
                 префикс_расширений = f"{source_id}:ext:"
                 runtime_id = f"{source_id}:extension-runtime"
@@ -3696,10 +3794,10 @@ class Registry:
                         отставленные.append(
                             (снести, отставленный, канонический)
                         )
-                if native is not None:
-                    native_key, _native_pointer = native
+                if native:
                     next_pointers = dict(self._generation_pointers)
-                    next_pointers.pop(native_key)
+                    for native_key, _native_pointer in native:
+                        next_pointers.pop(native_key)
                     next_sources = {
                         sid: current
                         for sid, current in self.sources.items()
@@ -3779,31 +3877,58 @@ class Registry:
                     self._relation_cache.clear()
                     отложенная_справка = dict(self.syntax_versions)
 
-            native_pointer: GenerationPointer | None = None
-            if native is not None:
-                native_key, native_pointer = native
+            native_pointers: list[GenerationPointer] = []
+            for native_key, native_pointer in native:
+                native_pointers.append(native_pointer)
                 identity = native_pointer.identity
                 self._generation_pointers.pop(native_key, None)
                 self._generation_manifests.pop(native_key, None)
-                self.modules.pop(source_id, None)
-                self.extension_structures.pop(source_id, None)
-                self.extension_relations.pop(source_id, None)
-                self.extension_roles.pop(source_id, None)
-                self._relation_cache.pop(identity.parent_configuration, None)
-                self._drop_cache(source_id, KIND_EXTENSION)
-                try:
-                    self._cache_path(source_id, "roles.sqlite").unlink(
-                        missing_ok=True
+                if identity.source_kind is SourceKind.CONFIGURATION:
+                    configuration = identity.configuration_name
+                    modules_id = f"{configuration}:modules"
+                    self.configurations.pop(configuration, None)
+                    self.modules.pop(modules_id, None)
+                    self.roles.pop(configuration, None)
+                    self._relation_cache.pop(configuration, None)
+                    self._drop_cache(configuration, KIND_CONFIGURATION)
+                    self._drop_cache(modules_id, KIND_MODULES)
+                    try:
+                        self._cache_path(configuration, "roles.sqlite").unlink(
+                            missing_ok=True
+                        )
+                    except OSError:
+                        pass
+                    try:
+                        coverage_log.remove(self.data_dir, modules_id)
+                    except OSError:
+                        logger.warning(
+                            "Журнал покрытия снятой native-конфигурации не удалён."
+                        )
+                    инвалидировать.add(modules_id)
+                else:
+                    native_source_id = (
+                        f"{identity.parent_configuration}:ext:"
+                        f"{index_cache.safe_name(identity.extension_name)}"
                     )
-                except OSError:
-                    pass
-                try:
-                    coverage_log.remove(self.data_dir, source_id)
-                except OSError:
-                    logger.warning(
-                        "Журнал покрытия снятого native-расширения не удалён."
-                    )
-                инвалидировать.add(source_id)
+                    self.modules.pop(native_source_id, None)
+                    self.extension_structures.pop(native_source_id, None)
+                    self.extension_relations.pop(native_source_id, None)
+                    self.extension_roles.pop(native_source_id, None)
+                    self._relation_cache.pop(identity.parent_configuration, None)
+                    self._drop_cache(native_source_id, KIND_EXTENSION)
+                    try:
+                        self._cache_path(native_source_id, "roles.sqlite").unlink(
+                            missing_ok=True
+                        )
+                    except OSError:
+                        pass
+                    try:
+                        coverage_log.remove(self.data_dir, native_source_id)
+                    except OSError:
+                        logger.warning(
+                            "Журнал покрытия снятого native-расширения не удалён."
+                        )
+                    инвалидировать.add(native_source_id)
 
             for sid in инвалидировать:
                 # Номер не сбрасывается: иначе remove -> add даст
@@ -3815,7 +3940,7 @@ class Registry:
             снести(каталог_кода)
         if отложенная_справка is not None:
             self._apply_syntax(отложенная_справка)
-        if native_pointer is not None:
+        for native_pointer in native_pointers:
             try:
                 self._generation_store.remove_pointer_root(native_pointer)
             except (OSError, RecoveryBlocked) as error:

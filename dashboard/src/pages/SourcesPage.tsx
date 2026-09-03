@@ -208,7 +208,12 @@ function CorpusCard({
         </div>
         <div className="corpus-actions">
           <StatusBadge tone={phase.tone}>{phase.label}</StatusBadge>
-          {onRemove && (corpus.source || corpus.kind === "extension") && (
+          {onRemove && (
+            corpus.source
+            || (corpus.native_generation && (
+              corpus.kind === "extension" || corpus.phase !== "missing"
+            ))
+          ) && (
             <button
               className="is-danger"
               type="button"
@@ -218,7 +223,7 @@ function CorpusCard({
                 title: corpus.label,
                 impact: corpus.kind === "extension"
                   ? "Будут удалены все опубликованные слои этого расширения, его индекс и журнал покрытия. Родительская конфигурация останется."
-                  : "Будут удалены индекс основного кода, каталог модулей и журнал покрытия. Структура конфигурации останется.",
+                  : "Будут удалены код, формы, индекс модулей и журнал покрытия. Оба структурных слоя и роли останутся.",
               })}
               aria-label={`Удалить ${corpus.label}`}
             >
@@ -359,16 +364,17 @@ function ConfigurationDetail({
         </div>
         <div className="configuration-hero-actions">
           <StatusBadge tone="success">Источник активен</StatusBadge>
-          {onRemove && configuration.source && (
+          {onRemove && (configuration.source || configuration.native_generation) && (
             <button
               className="button-danger-quiet"
               type="button"
               onClick={() => onRemove({
                 operation: "source",
-                id: configuration.source!.id,
+                id: configuration.source?.id ?? configuration.id,
                 title: configuration.id,
                 impact: "Будут каскадно удалены структура конфигурации, основной код, все привязанные расширения и их журналы покрытия.",
               })}
+              aria-label={`Удалить конфигурацию ${configuration.id}`}
             >
               <Trash2 size={15} aria-hidden="true" />Удалить
             </button>

@@ -10,7 +10,7 @@ import pytest
 
 from conftest import write_export
 from mcp1c import coverage_log
-from mcp1c.intake_v2 import LayerKind, LayerSourceProfile
+from mcp1c.intake_v2 import LayerKind, LayerSourceProfile, LayerState
 from mcp1c.intake_v2_converter import convert_collection
 from mcp1c.intake_v2_generation import materialize_generation
 from mcp1c.model import Configuration, Field, MetadataObject
@@ -49,6 +49,49 @@ def _rewrite_manifest(target, **changes):
         for name, content in members.items():
             archive.writestr(name, content)
     return target
+
+
+def test_remove_native_корпуса_сохраняет_структуру_и_роли(tmp_path):
+    _collection_value, generation = _materialized(
+        tmp_path,
+        "remove-code",
+        common_forms=True,
+    )
+    registry = Registry(tmp_path / "data")
+    previous = registry.publish_generation(
+        registry.stage_generation(generation.manifest, generation.payloads)
+    )
+    previous_layers = {
+        layer.kind: layer for layer in generation.manifest.layers
+    }
+
+    registry.remove("DemoConfiguration:modules")
+
+    current_pointer = registry.active_generation_pointer(generation.manifest.identity)
+    current = registry.active_generation(generation.manifest.identity)
+    assert current_pointer is not None and current_pointer != previous
+    assert current is not None
+    current_layers = {layer.kind: layer for layer in current.layers}
+    for kind in (
+        LayerKind.BASE_STRUCTURE,
+        LayerKind.EXTENDED_STRUCTURE,
+        LayerKind.ROLES,
+    ):
+        assert current_layers[kind] == previous_layers[kind]
+    assert current_layers[LayerKind.CODE].state is LayerState.UNAVAILABLE
+    assert current_layers[LayerKind.FORMS].state is LayerState.UNAVAILABLE
+    context = registry.resolve("DemoConfiguration")
+    assert context.configuration is not None
+    assert context.modules is None
+    assert context.roles is not None and context.roles.ready
+    assert not (registry.data_dir / previous.root_path).exists()
+
+    restarted = Registry(registry.data_dir)
+    assert restarted.restore() == []
+    restored = restarted.resolve("DemoConfiguration")
+    assert restored.configuration is not None
+    assert restored.modules is None
+    assert restored.roles is not None and restored.roles.ready
 
 
 def test_native_commit_атомарно_подключает_структуру_код_и_формы(

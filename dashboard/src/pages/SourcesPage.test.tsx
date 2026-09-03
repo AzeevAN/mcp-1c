@@ -223,6 +223,7 @@ it("позволяет снять native-расширение без отдел�
       phase: "missing",
       state: "не загружен",
       source: null,
+      native_generation: true,
       coverage: null,
       journal: "",
       journal_url: "",
@@ -245,6 +246,40 @@ it("позволяет снять native-расширение без отдел�
   const dialog = screen.getByRole("dialog", { name: "Удалить «Расширение Доп»?" });
   expect(within(dialog).getByText(/все опубликованные слои этого расширения/)).toBeInTheDocument();
   expect(within(dialog).getByText("b:ext:Доп")).toBeInTheDocument();
+});
+
+it("не теряет удаления после полной native-публикации конфигурации", async () => {
+  const fetchMock = vi.mocked(fetch);
+  const regularFetch = fetchMock.getMockImplementation()!;
+  fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const response = await regularFetch(input, init);
+    if (String(input) !== "/api/v1/sources") return response;
+    const payload = await response.json();
+    payload.configurations[0] = {
+      ...payload.configurations[0],
+      source: null,
+      native_generation: true,
+      corpora: [{
+        ...payload.configurations[0].corpora[0],
+        source: null,
+        native_generation: true,
+      }],
+    };
+    return { ...response, json: async () => payload };
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  render(
+    <MemoryRouter initialEntries={["/sources"]}>
+      <QueryClientProvider client={client}>
+        <SourcesPage />
+      </QueryClientProvider>
+    </MemoryRouter>,
+  );
+
+  expect(await screen.findByRole("button", { name: "Удалить конфигурацию Отраслевая конфигурация А" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Удалить Основная конфигурация" }));
+  expect(within(screen.getByRole("dialog")).getByText(/оба структурных слоя и роли останутся/i)).toBeInTheDocument();
 });
 
 it("не изображает состав конфигурации декоративными развилками", async () => {
@@ -399,7 +434,7 @@ it("показывает администратору два явных пути
   expect(screen.queryByRole("checkbox", { name: /Разрешить неполную тестовую выгрузку/ })).not.toBeInTheDocument();
   expect(input).toHaveAttribute("accept", ".zip,.hbk,.json,.mcp1cref");
 
-  fireEvent.click(screen.getByRole("button", { name: "Удалить" }));
+  fireEvent.click(screen.getByRole("button", { name: "Удалить конфигурацию Отраслевая конфигурация А" }));
   expect(screen.getByRole("dialog", { name: "Удалить «Отраслевая конфигурация А»?" })).toBeInTheDocument();
   expect(screen.getByText(/каскадно удалены структура конфигурации/)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Удалить без возможности отмены" })).toBeDisabled();

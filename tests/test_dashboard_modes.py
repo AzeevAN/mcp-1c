@@ -11,6 +11,7 @@ from mcp1c.dashboard_runtime import (
     DASHBOARD_OFF,
     DASHBOARD_ON,
     DashboardModeError,
+    _sources_payload,
     dashboard_mode,
     routes,
 )
@@ -288,6 +289,26 @@ def test_sources_api_отдаёт_журнал_native_generation(tmp_path):
     assert corpus["journal"].startswith("logs/code-")
     assert journal.status_code == 200
     assert journal.json()["kind"] == "module_coverage"
+
+
+def test_sources_api_помечает_native_конфигурацию_без_source(tmp_path):
+    _base_collection, base = _materialized(tmp_path, "dashboard-native-base")
+    registry = Registry(tmp_path / "data")
+    registry.publish_generation(
+        registry.stage_generation(base.manifest, base.payloads)
+    )
+
+    payload = _sources_payload(tools.sources_snapshot(registry), admin=True)
+
+    configuration = payload["configurations"][0]
+    assert configuration["source"] is None
+    assert configuration["native_generation"] is True
+    assert [
+        (corpus["kind"], corpus["native_generation"], corpus["source"])
+        for corpus in configuration["corpora"]
+    ] == [
+        ("modules", True, None),
+    ]
 
 
 def test_sources_api_показывает_безопасную_причину_только_admin(

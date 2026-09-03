@@ -21,10 +21,12 @@ from dataclasses import dataclass
 
 from . import coverage_log, index_cache, replacements, structure_origin
 from .bsl_lex import Процедура, прочитать_модуль, разобрать
+from .intake_v2 import ExportIdentity
 from .module_content import ModuleLocator, read_bsl
 from .module_address import путь_модуля
 from .registry import (
     KIND_EXTENSION,
+    KIND_MODULES,
     STATUS_ERROR,
     LoadedModules,
     Registry,
@@ -242,6 +244,8 @@ class CodeStateRow:
     journal: str = ""
     phase: str = "missing"
     diagnostic: str = ""
+    kind: str = KIND_MODULES
+    native_generation: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -286,6 +290,7 @@ class ConfigurationStateRow:
     notes: tuple[str, ...]
     code: tuple[CodeStateRow, ...]
     extension_runtime: SourceStateRow | None = None
+    native_generation: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -1152,6 +1157,9 @@ def _code_state_rows(
 
     rows: list[CodeStateRow] = []
     for snapshot in capture.rows:
+        native_base = capture.registry.generation(
+            ExportIdentity.configuration(snapshot.context.name)
+        ) is not None
         source_id, journal_path = journal(snapshot.modules)
         rows.append(
             CodeStateRow(
@@ -1167,9 +1175,17 @@ def _code_state_rows(
                 journal_path,
                 phase(snapshot.modules),
                 diagnostic(snapshot.modules),
+                KIND_MODULES,
+                native_base,
             )
         )
         for extension_name, view in snapshot.extensions:
+            native_extension = capture.registry.generation(
+                ExportIdentity.extension(
+                    extension_name,
+                    parent_configuration=snapshot.context.name,
+                )
+            ) is not None
             source_id, journal_path = journal(view)
             rows.append(CodeStateRow(
                 snapshot.context.name,
@@ -1180,6 +1196,8 @@ def _code_state_rows(
                 journal_path,
                 phase(view),
                 diagnostic(view),
+                KIND_EXTENSION,
+                native_extension,
             ))
     return tuple(rows)
 
@@ -1213,6 +1231,12 @@ def _configurations_result(
                 ),
                 extension_runtime=(
                     _source_state_row(runtime.source) if runtime is not None else None
+                ),
+                native_generation=(
+                    capture.registry.generation(
+                        ExportIdentity.configuration(config.name)
+                    )
+                    is not None
                 ),
             )
         )

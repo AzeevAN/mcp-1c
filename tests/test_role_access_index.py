@@ -10,6 +10,7 @@ import gzip
 import hashlib
 import importlib
 import shutil
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,8 @@ from mcp1c.intake_v2 import (
     GenerationManifest,
     LayerKind,
     LayerManifest,
+    LayerProvenance,
+    LayerSourceProfile,
     LayerState,
 )
 from mcp1c.intake_v2_registry import (
@@ -756,6 +759,52 @@ def test_registry_атомарно_подключает_role_index_и_подни
     assert restored is not None and restored.index is not None
     assert restored.index.from_cache is True
     assert restored.index.path == cache_path
+
+
+def test_source_a_overlay_сохраняет_sha_source_b_для_role_provider(tmp_path):
+    manifest, _payloads = _generation(
+        tmp_path / "generation",
+        ((
+            "Reader",
+            _descriptor("Reader", uuid="11111111-1111-1111-1111-111111111111"),
+            _rights((("Catalog.Orders", (_right("Read", True),)),)),
+        ),),
+        generation_id="generation-1",
+    )
+    source_b_sha256 = "b" * 64
+    source_a_sha256 = "c" * 64
+    layers = tuple(
+        replace(
+            layer,
+            provenance=LayerProvenance(
+                profile=LayerSourceProfile.SOURCE_B,
+                transport=CandidateTransport.INCOMING,
+                origin_name="source-b.zip",
+                raw_sha256=source_b_sha256,
+                parser_version=1,
+                selection_version=1,
+            ),
+        )
+        if layer.kind is LayerKind.ROLES
+        else layer
+        for layer in manifest.layers
+    )
+    overlaid = replace(
+        manifest,
+        raw_sha256=source_a_sha256,
+        source_transport=CandidateTransport.BROWSER,
+        origin_name="source-a.zip",
+        layers=layers,
+    )
+
+    roles = _symbol("load_role_access")(
+        tmp_path / "generation",
+        overlaid,
+        tmp_path / "roles.sqlite",
+    )
+
+    assert roles is not None
+    assert roles.source_sha256 == source_b_sha256
 
 
 def test_ошибка_semantic_roles_не_ломает_остальные_слои_и_не_оставляет_старый_index(

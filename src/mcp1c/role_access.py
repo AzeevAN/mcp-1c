@@ -1867,11 +1867,18 @@ def load_role_access(
     )
     if layer is None or layer.state is LayerState.UNAVAILABLE:
         return None
+    # Source A меняет общий raw SHA generation, но сохраняет ролевой слой
+    # из Source B. Ответы ролей должны ссылаться на источник самого слоя.
+    source_sha256 = (
+        layer.provenance.raw_sha256
+        if layer.provenance is not None
+        else manifest.raw_sha256
+    )
     if layer.state is LayerState.ERROR:
         return LoadedRoleAccess(
             state="error",
             generation_id=manifest.generation_id,
-            source_sha256=manifest.raw_sha256,
+            source_sha256=source_sha256,
             content_sha256="",
             items_total=0,
             error=layer.error,
@@ -1882,7 +1889,7 @@ def load_role_access(
         return LoadedRoleAccess(
             state="error",
             generation_id=manifest.generation_id,
-            source_sha256=manifest.raw_sha256,
+            source_sha256=source_sha256,
             content_sha256=layer.content_sha256,
             items_total=layer.items_total,
             error=str(error),
@@ -1890,7 +1897,7 @@ def load_role_access(
     return LoadedRoleAccess(
         state="ready",
         generation_id=manifest.generation_id,
-        source_sha256=manifest.raw_sha256,
+        source_sha256=source_sha256,
         content_sha256=layer.content_sha256,
         items_total=layer.items_total,
         index=index,

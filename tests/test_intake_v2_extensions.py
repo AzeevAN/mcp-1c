@@ -673,7 +673,15 @@ def test_remove_снимает_legacy_source_и_native_generation_одного_�
     assert "DemoExtension" not in snapshot.extension_names("DemoConfiguration")
 
 
-def test_remove_native_конфигурации_каскадно_снимает_её_расширения(tmp_path):
+@pytest.mark.parametrize(
+    "source_id",
+    ("DemoConfiguration", "DemoConfiguration:modules"),
+    ids=("configuration", "main-source-b"),
+)
+def test_remove_native_конфигурации_каскадно_снимает_её_расширения(
+    tmp_path,
+    source_id,
+):
     _base_collection, base = _materialized(tmp_path, "base-remove-cascade")
     _extension_collection, extension = _materialized(
         tmp_path,
@@ -689,7 +697,7 @@ def test_remove_native_конфигурации_каскадно_снимает_
         registry.stage_generation(extension.manifest, extension.payloads)
     )
 
-    registry.remove("DemoConfiguration")
+    registry.remove(source_id)
 
     snapshot = registry.snapshot()
     assert registry.active_generation_pointer(base.manifest.identity) is None

@@ -544,6 +544,9 @@ class LoadedConfiguration:
     graph: Graph
     index: SearchIndex
     field_index: SearchIndex
+    # Для legacy совпадает с source.sha256. Native resolved-view зависит от
+    # двух структурных слоёв, поэтому кэш нельзя штамповать одним base SHA.
+    structure_sha256: str = ""
 
 
 @dataclass(slots=True)
@@ -1397,15 +1400,17 @@ class Registry:
         source: Source,
         *,
         write_cache: bool = True,
+        cache_sha256: str = "",
     ) -> SearchIndex:
         path = self._cache_path(source.id, "objects")
         synonyms = self.dictionary.synonyms()
         aliases = self.dictionary.aliases_for(config.name)
+        identity = cache_sha256 or source.sha256
 
         cached = index_cache.load(
             path,
             config.objects,
-            source_sha256=source.sha256,
+            source_sha256=identity,
             kind="objects",
             synonyms=synonyms,
             aliases=aliases,
@@ -1415,7 +1420,7 @@ class Registry:
 
         index = index_configuration(config, synonyms=synonyms, aliases=aliases)
         if write_cache:
-            index_cache.save(index, path, source_sha256=source.sha256, kind="objects")
+            index_cache.save(index, path, source_sha256=identity, kind="objects")
         return index
 
     def _field_index(
@@ -1424,9 +1429,11 @@ class Registry:
         source: Source,
         *,
         write_cache: bool = True,
+        cache_sha256: str = "",
     ) -> SearchIndex:
         path = self._cache_path(source.id, "fields")
         synonyms = self.dictionary.synonyms()
+        identity = cache_sha256 or source.sha256
 
         # Полезная нагрузка собирается только когда есть что поднимать: на
         # промахе она всё равно построится внутри index_fields.
@@ -1435,7 +1442,7 @@ class Registry:
             cached = index_cache.load(
                 path,
                 payloads,
-                source_sha256=source.sha256,
+                source_sha256=identity,
                 kind="fields",
                 synonyms=synonyms,
             )
@@ -1444,7 +1451,7 @@ class Registry:
 
         index = index_fields(config, synonyms=synonyms)
         if write_cache:
-            index_cache.save(index, path, source_sha256=source.sha256, kind="fields")
+            index_cache.save(index, path, source_sha256=identity, kind="fields")
         return index
 
     def _syntax_index(self, syntax: SyntaxIndex, source: Source) -> SearchIndex:
@@ -1694,10 +1701,10 @@ class Registry:
         ):
             raise RegistryError("schema v1 относится к другой active generation")
         if not config.is_complete:
-            # Canonical base намеренно одинаков для Source A и Source B и не
-            # несёт transport-признаки полноты. Пока эти признаки не входят в
-            # generation-контракт, публикация потеряла бы их после restart и
-            # превратила бы неполный источник в якобы полный.
+            # Признаки полноты теперь переживают restart внутри base layer,
+            # но неполная A всё равно не может стать авторитетной базой
+            # единого A/B view: она удалила бы отсутствующие в своём срезе
+            # объекты, сохранив код, формы и роли полного B.
             raise RegistryError(
                 "неполную schema v1 нельзя наложить на native generation: "
                 "активное поколение и его указатель оставлены без изменений"
@@ -3614,94 +3621,35 @@ class Registry:
                 preloaded = None
 
     def remove(self, source_id: str) -> None:
-        """Снять источник или native-слой одним логическим действием."""
+        """Снять источник; A/B основной конфигурации удаляются агрегатом."""
         if source_id.endswith(":modules"):
             configuration = source_id.removesuffix(":modules")
             identity = ExportIdentity.configuration(configuration)
             with self._lock:
-                pointer = self._generation_pointers.get(identity.grouping_key)
-                manifest = self._generation_manifests.get(identity.grouping_key)
-            if pointer is not None and manifest is not None:
-                self._remove_native_code(source_id, pointer, manifest)
-                return
+                aggregate_exists = (
+                    configuration in self.configurations
+                    or configuration in self.sources
+                    or identity.grouping_key in self._generation_pointers
+                )
+            if aggregate_exists:
+                source_id = configuration
         # Publish и remove одной identity не могут пересекаться: иначе remove
         # проверит старый набор pointers, а publisher сразу после этого вернёт
         # уже снятую identity новым поколением.
         with self._generation_mutation_lock:
             self._remove_serialized(source_id)
 
-    def _remove_native_code(
-        self,
-        source_id: str,
-        previous: GenerationPointer,
-        active: GenerationManifest,
-    ) -> None:
-        """Опубликовать поколение без code/forms, сохранив структуру и роли."""
-        removable = {LayerKind.CODE, LayerKind.FORMS}
-        if not any(
-            layer.kind in removable and layer.state is LayerState.READY
-            for layer in active.layers
-        ):
-            raise RegistryError(f"Источник не зарегистрирован: {source_id}")
-        layers = tuple(
-            LayerManifest(layer.kind, LayerState.UNAVAILABLE)
-            if layer.kind in removable
-            else layer
-            for layer in active.layers
-        )
-        manifest = replace(
-            active,
-            generation_id=f"remove-code-{uuid.uuid4().hex}",
-            layers=layers,
-        )
-        payloads = dict(self.generation_payload_sources(previous))
-        for kind in removable:
-            payloads.pop(kind, None)
-        staged: StagedGeneration | None = self.stage_generation(manifest, payloads)
-        try:
-            current = self.publish_generation(
-                staged,
-                expected_previous=previous,
-            )
-            staged = None
-        finally:
-            if staged is not None:
-                try:
-                    self.discard_staged_generation(staged)
-                except (OSError, BundleStoreError):
-                    pass
-
-        # Не удаляем расходные файлы нового writer: между publish и cleanup
-        # identity могла получить ещё одно поколение. Проверка выполняется под
-        # тем же mutation lock, которым сериализованы publisher и remove.
-        with self._generation_mutation_lock, self._modules_cache_lock:
-            with self._lock:
-                still_current = (
-                    self._generation_pointers.get(active.identity.grouping_key)
-                    == current
-                )
-            if still_current:
-                self._drop_cache(source_id, KIND_MODULES)
-                try:
-                    coverage_log.remove(self.data_dir, source_id)
-                except OSError:
-                    logger.warning(
-                        "Журнал покрытия снятого native-корпуса не удалён."
-                    )
-
     def _remove_serialized(self, source_id: str) -> None:
-        """Снять источник — а для конфигурации ещё и её код.
+        """Снять источник; для конфигурации — весь связанный агрегат.
 
-        `KIND_CONFIGURATION` без каскада выходил бы раньше, чем дошёл бы до
-        `<Имя>:modules` и `<Имя>:ext:*`: индекс кода остался бы в памяти без
-        метаданных, на которые ссылается, а на диске — 351 МБ (меньше у
-        расширения), вернуть которые через интерфейс уже нечем (см.
-        `docs/modules-provider-design.md`, раздел 9). Явный отказ
-        «сначала снимите модули» вместо каскада заставлял бы человека делать
-        руками то, что реестр обязан гарантировать сам: конфигурация без
-        своего кода в реестре не имеет смысла, а не снятый код — это забытый
-        каталог, который никто больше не найдёт (`orphan_sources` смотрит
-        только `sources_dir`, не `modules_dir`/`extensions_dir`).
+        `remove()` заранее переводит основной `<Имя>:modules` в тот же id
+        конфигурации: Source A и Source B не должны оставлять друг от друга
+        половину пользовательского объекта. Без каскада индекс кода либо
+        metadata остались бы в памяти без второй части, а на диске появились
+        бы каталоги, которые уже нельзя вернуть через интерфейс (см.
+        `docs/modules-provider-design.md`, раздел 9). Поэтому конфигурация
+        снимает base/extended/code/forms/roles, сеансовый снимок и дочерние
+        расширения; самостоятельное расширение по-прежнему снимается отдельно.
         """
         # Каталоги кода сносятся ПОСЛЕ выхода из-под замка (тысячи файлов, а
         # тот же замок берут `resolve()` и все инструменты MCP), справка —
@@ -3762,8 +3710,8 @@ class Registry:
 
             # Цепочка считается ДО первого удаления: `self.sources` меняется
             # по ходу цикла ниже, и вычислять её позже значило бы гоняться за
-            # движущейся целью. Только конфигурация каскадирует — модули и
-            # расширения снимаются каждый сам по себе, без цепочки.
+            # движущейся целью. Только конфигурация каскадирует; отдельное
+            # расширение снимается само по себе, без цепочки.
             цепочка = [source_id]
             if configuration_removal:
                 модули_id = f"{source_id}:modules"
@@ -4668,8 +4616,19 @@ class Registry:
                 graph=Graph(config),
                 # До commit кэш нового поколения читать можно, а записывать
                 # нельзя: неудачный preview не должен вытеснить warm-кэш active.
-                index=self._configuration_index(config, source, write_cache=False),
-                field_index=self._field_index(config, source, write_cache=False),
+                index=self._configuration_index(
+                    config,
+                    source,
+                    write_cache=False,
+                    cache_sha256=runtime.structure_sha256,
+                ),
+                field_index=self._field_index(
+                    config,
+                    source,
+                    write_cache=False,
+                    cache_sha256=runtime.structure_sha256,
+                ),
+                structure_sha256=runtime.structure_sha256,
             )
         else:
             with self._lock:
@@ -4769,13 +4728,19 @@ class Registry:
                 index_cache.save(
                     prepared.configuration.index,
                     self._cache_path(source.id, "objects"),
-                    source_sha256=source.sha256,
+                    source_sha256=(
+                        prepared.configuration.structure_sha256
+                        or source.sha256
+                    ),
                     kind="objects",
                 )
                 index_cache.save(
                     prepared.configuration.field_index,
                     self._cache_path(source.id, "fields"),
-                    source_sha256=source.sha256,
+                    source_sha256=(
+                        prepared.configuration.structure_sha256
+                        or source.sha256
+                    ),
                     kind="fields",
                 )
             if (

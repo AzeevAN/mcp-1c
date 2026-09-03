@@ -335,9 +335,10 @@ def test_публичный_снимок_не_смешивает_проблем�
 
     monkeypatch.setattr(tools, "_summarize_code", summarize)
 
-    row = tools.sources_snapshot(registry).code[0]
+    snapshot = tools.sources_snapshot(registry)
 
     if action == "reparse":
+        row = snapshot.code[0]
         assert row.coverage is not None
         assert row.coverage.unknown_markers == 0
         assert row.coverage.unsupported_addresses == 1
@@ -345,8 +346,8 @@ def test_публичный_снимок_не_смешивает_проблем�
             "unknown_address"
         }
     else:
-        assert row.coverage is None
-        assert row.state == "не загружен"
+        assert snapshot.code == ()
+        assert snapshot.configuration_names == ()
 
 
 def test_категория_ограничения_пишется_в_журнал_один_раз_без_адреса(

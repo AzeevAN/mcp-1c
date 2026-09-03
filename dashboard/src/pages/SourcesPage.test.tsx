@@ -277,9 +277,8 @@ it("не теряет удаления после полной native-публи
     </MemoryRouter>,
   );
 
-  expect(await screen.findByRole("button", { name: "Удалить конфигурацию Отраслевая конфигурация А" })).toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", { name: "Удалить Основная конфигурация" }));
-  expect(within(screen.getByRole("dialog")).getByText(/оба структурных слоя и роли останутся/i)).toBeInTheDocument();
+  expect(await screen.findByRole("button", { name: "Удалить конфигурацию целиком Отраслевая конфигурация А" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Удалить Основная конфигурация" })).not.toBeInTheDocument();
 });
 
 it("не изображает состав конфигурации декоративными развилками", async () => {
@@ -434,7 +433,7 @@ it("показывает администратору два явных пути
   expect(screen.queryByRole("checkbox", { name: /Разрешить неполную тестовую выгрузку/ })).not.toBeInTheDocument();
   expect(input).toHaveAttribute("accept", ".zip,.hbk,.json,.mcp1cref");
 
-  fireEvent.click(screen.getByRole("button", { name: "Удалить конфигурацию Отраслевая конфигурация А" }));
+  fireEvent.click(screen.getByRole("button", { name: "Удалить конфигурацию целиком Отраслевая конфигурация А" }));
   expect(screen.getByRole("dialog", { name: "Удалить «Отраслевая конфигурация А»?" })).toBeInTheDocument();
   expect(screen.getByText(/каскадно удалены структура конфигурации/)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Удалить без возможности отмены" })).toBeDisabled();

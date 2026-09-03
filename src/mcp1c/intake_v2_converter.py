@@ -2705,7 +2705,14 @@ def base_layer_data(base: Configuration) -> dict[str, object]:
         "synonym": base.synonym,
         "version": base.version,
         "vendor": base.vendor,
+        "platform": base.platform,
+        "exported_at": base.exported_at,
+        "exporter_version": base.exporter_version,
         "schema_version": base.schema_version,
+        "source_format": base.source_format,
+        "truncated": base.truncated,
+        "predefined_available": base.predefined_available,
+        "warnings": list(base.warnings),
         "objects": objects,
     }
 

@@ -44,6 +44,13 @@ EDGE_TITLES = {
     "task": "задача",
     "chart_of_calculation_types": "план видов расчёта",
     "schedule": "график",
+    "applies_to": "применяется к",
+    "conditional_separation": "условное разделение",
+    "data_separation_use": "параметр разделения",
+    "registers_document": "регистрирует документ",
+    "column_field": "источник графы",
+    "exchange_content": "состав плана обмена",
+    "event_source": "источник события",
 }
 
 # Свойства, значение которых — полное имя другого объекта. Это прямые связи:
@@ -90,6 +97,14 @@ class Graph:
         self.out: dict[str, list[Edge]] = defaultdict(list)
         self.inc: dict[str, list[Edge]] = defaultdict(list)
         self.unresolved: Counter[str] = Counter()
+        self._object_names = {
+            name.casefold(): name for name in config.objects
+        }
+        self._field_owners = {
+            f"{obj.full_name}.{path}".casefold(): obj.full_name
+            for obj in config.objects.values()
+            for path, _field in obj.all_fields()
+        }
         self._build()
 
     # ------------------------------------------------------------- построение
@@ -163,6 +178,34 @@ class Graph:
                 target = obj.props.get(prop)
                 if isinstance(target, str) and target:
                     self._add(source, target, prop)
+
+            for relation in obj.relations:
+                # Часть typed relations — более подробное доказательство уже
+                # существующей base-связи. В resolved graph оно не должно
+                # превращаться во второе ребро к той же цели.
+                if (
+                    relation.kind == "event_source"
+                    and relation.target in sources
+                ) or (
+                    relation.kind == "based_on"
+                    and relation.target in obj.based_on
+                ):
+                    continue
+                if relation.state != "resolved":
+                    self.unresolved[relation.target] += 1
+                    continue
+                target = relation.target
+                if target not in self.config.objects:
+                    target = self._object_names.get(
+                        target.casefold(),
+                        self._field_owners.get(target.casefold(), target),
+                    )
+                via = ", ".join(
+                    f"{key}={value}"
+                    for key, value in relation.properties
+                    if value
+                )
+                self._add(source, target, relation.kind, via)
 
     def _add_module_edge(self, obj: MetadataObject, prop: str) -> None:
         """Обработчик подписки и метод задания записаны как ИмяМодуля.Процедура."""

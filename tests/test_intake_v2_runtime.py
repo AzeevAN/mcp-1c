@@ -15,7 +15,7 @@ from mcp1c.intake_v2_converter import convert_collection
 from mcp1c.intake_v2_generation import materialize_generation
 from mcp1c.model import Configuration, Field, MetadataObject
 from mcp1c.registry import Registry, RegistryError
-from mcp1c.tools import get_procedure
+from mcp1c.tools import get_object, get_procedure, get_related, search_objects
 from test_intake_v2_converter import _collection
 
 
@@ -51,7 +51,7 @@ def _rewrite_manifest(target, **changes):
     return target
 
 
-def test_remove_native_корпуса_сохраняет_структуру_и_роли(tmp_path):
+def test_remove_native_корпуса_удаляет_единый_агрегат_конфигурации(tmp_path):
     _collection_value, generation = _materialized(
         tmp_path,
         "remove-code",
@@ -61,37 +61,26 @@ def test_remove_native_корпуса_сохраняет_структуру_и_�
     previous = registry.publish_generation(
         registry.stage_generation(generation.manifest, generation.payloads)
     )
-    previous_layers = {
-        layer.kind: layer for layer in generation.manifest.layers
-    }
+    registry.incoming_dir.mkdir(parents=True)
+    incoming = registry.incoming_dir / "оставить.zip"
+    incoming.write_bytes(b"synthetic incoming")
 
     registry.remove("DemoConfiguration:modules")
 
     current_pointer = registry.active_generation_pointer(generation.manifest.identity)
     current = registry.active_generation(generation.manifest.identity)
-    assert current_pointer is not None and current_pointer != previous
-    assert current is not None
-    current_layers = {layer.kind: layer for layer in current.layers}
-    for kind in (
-        LayerKind.BASE_STRUCTURE,
-        LayerKind.EXTENDED_STRUCTURE,
-        LayerKind.ROLES,
-    ):
-        assert current_layers[kind] == previous_layers[kind]
-    assert current_layers[LayerKind.CODE].state is LayerState.UNAVAILABLE
-    assert current_layers[LayerKind.FORMS].state is LayerState.UNAVAILABLE
-    context = registry.resolve("DemoConfiguration")
-    assert context.configuration is not None
-    assert context.modules is None
-    assert context.roles is not None and context.roles.ready
+    assert current_pointer is None
+    assert current is None
+    with pytest.raises(RegistryError, match="Не загружено ни одной конфигурации"):
+        registry.resolve("DemoConfiguration")
     assert not (registry.data_dir / previous.root_path).exists()
+    assert incoming.read_bytes() == b"synthetic incoming"
 
     restarted = Registry(registry.data_dir)
     assert restarted.restore() == []
-    restored = restarted.resolve("DemoConfiguration")
-    assert restored.configuration is not None
-    assert restored.modules is None
-    assert restored.roles is not None and restored.roles.ready
+    with pytest.raises(RegistryError, match="Не загружено ни одной конфигурации"):
+        restarted.resolve("DemoConfiguration")
+    assert incoming.read_bytes() == b"synthetic incoming"
 
 
 def test_native_commit_атомарно_подключает_структуру_код_и_формы(
@@ -152,6 +141,182 @@ def test_native_commit_атомарно_подключает_структуру_
         config="DemoConfiguration",
     )
     assert (registry.data_dir / pointer.root_path).is_dir()
+
+
+def test_native_extended_objects_доступны_через_mcp_после_restart(
+    tmp_path,
+    monkeypatch,
+):
+    collection, generation = _materialized(
+        tmp_path,
+        "extended-runtime",
+        journal=True,
+        bindings=True,
+        common_forms=True,
+        bots=True,
+    )
+    registry = Registry(tmp_path / "data")
+    registry.publish_generation(
+        registry.stage_generation(generation.manifest, generation.payloads)
+    )
+    expected = (
+        ("ОбщийРеквизит.Tenant", "ОбщийРеквизит"),
+        ("ПараметрСеанса.Tenant", "ПараметрСеанса"),
+        ("ЖурналДокументов.Ledger", "ЖурналДокументов"),
+        ("ПланОбмена.Nodes", "ПланОбмена"),
+        ("ПодпискаНаСобытие.Resolved", "ПодпискаНаСобытие"),
+        ("РегламентноеЗадание.Refresh", "РегламентноеЗадание"),
+        ("ОбщаяФорма.Workspace", "ОбщаяФорма"),
+        ("Бот.Assistant", "Бот"),
+    )
+
+    shutil.rmtree(collection.root)
+    shutil.rmtree(generation.root)
+    for full_name, kind in expected:
+        found = search_objects(
+            registry,
+            full_name,
+            config="DemoConfiguration",
+            kind=kind,
+        )
+        assert f"`{full_name}`" in found
+        card = get_object(
+            registry,
+            full_name,
+            config="DemoConfiguration",
+            detail="brief",
+        )
+        assert f"нет объекта `{full_name}`" not in card
+
+    common_attribute = registry.resolve(
+        "DemoConfiguration"
+    ).configuration.config.get("ОбщийРеквизит.Tenant")
+    assert common_attribute is not None
+    assert common_attribute.manager_path == "ОбщиеРеквизиты.Tenant"
+    assert common_attribute.value_type is not None
+    assert common_attribute.value_type.type_spec() == "Строка(40)"
+    common_attribute_card = get_object(
+        registry,
+        "ОбщийРеквизит.Tenant",
+        config="DemoConfiguration",
+        detail="full",
+    )
+    assert "Допустимая длина строки: `Fixed`" in common_attribute_card
+    journal = registry.resolve(
+        "DemoConfiguration"
+    ).configuration.config.get("ЖурналДокументов.Ledger")
+    assert journal is not None
+    journal_fields = {item.name: item.types for item in journal.attributes}
+    assert journal_fields["Amount"] == ["Число"]
+    assert journal_fields["Missing"] == []
+    relations = get_related(
+        registry,
+        "ЖурналДокументов.Ledger",
+        config="DemoConfiguration",
+    )
+    assert "Документ.Invoice" in relations
+    assert "регистрирует документ" in relations
+    context = registry.resolve("DemoConfiguration")
+    exchange_plan = context.configuration.config.get("ПланОбмена.Nodes")
+    subscription = context.configuration.config.get(
+        "ПодпискаНаСобытие.Resolved"
+    )
+    scheduled_job = context.configuration.config.get(
+        "РегламентноеЗадание.Refresh"
+    )
+    assert exchange_plan is not None
+    assert exchange_plan.extended["content"][0]["target"] == "Справочник.Items"
+    assert subscription is not None
+    assert subscription.props["handler"] == "CommonModule.Handlers.OnWrite"
+    subscription_sources = [
+        edge
+        for edge in context.configuration.graph.outgoing(subscription.full_name)
+        if edge.target == "Справочник.Items"
+    ]
+    assert [(edge.kind, edge.title) for edge in subscription_sources] == [
+        ("source", "источник подписки")
+    ]
+    assert scheduled_job is not None
+    assert scheduled_job.props["method"] == "CommonModule.Handlers.RunJob"
+    common_form_card = get_object(
+        registry,
+        "ОбщаяФорма.Workspace",
+        config="DemoConfiguration",
+        detail="full",
+    )
+    assert "Использовать стандартные команды: `Нет`" in common_form_card
+
+    restarted = Registry(registry.data_dir)
+
+    def reject_cold_rebuild(*_args, **_kwargs):
+        pytest.fail("неизменённый единый A/B view обязан подняться из кэша")
+
+    monkeypatch.setattr("mcp1c.registry.index_configuration", reject_cold_rebuild)
+    monkeypatch.setattr("mcp1c.registry.index_fields", reject_cold_rebuild)
+    assert restarted.restore() == []
+
+    for full_name, kind in expected:
+        found = search_objects(
+            restarted,
+            full_name,
+            config="DemoConfiguration",
+            kind=kind,
+        )
+        assert f"`{full_name}`" in found
+        card = get_object(
+            restarted,
+            full_name,
+            config="DemoConfiguration",
+            detail="brief",
+        )
+        assert f"нет объекта `{full_name}`" not in card
+
+
+def test_смена_только_extended_не_поднимает_старый_object_cache(tmp_path):
+    _first_collection, first = _materialized(tmp_path, "extended-cache-001")
+    _second_collection, second = _materialized(
+        tmp_path,
+        "extended-cache-002",
+        common_forms=True,
+    )
+    first_layers = {layer.kind: layer for layer in first.manifest.layers}
+    second_layers = {layer.kind: layer for layer in second.manifest.layers}
+    assert (
+        first_layers[LayerKind.BASE_STRUCTURE].content_sha256
+        == second_layers[LayerKind.BASE_STRUCTURE].content_sha256
+    )
+    assert (
+        first_layers[LayerKind.EXTENDED_STRUCTURE].content_sha256
+        != second_layers[LayerKind.EXTENDED_STRUCTURE].content_sha256
+    )
+    registry = Registry(tmp_path / "data")
+    previous = registry.publish_generation(
+        registry.stage_generation(first.manifest, first.payloads)
+    )
+    assert registry.resolve("DemoConfiguration").configuration.config.get(
+        "ОбщаяФорма.Workspace"
+    ) is None
+
+    registry.publish_generation(
+        registry.stage_generation(second.manifest, second.payloads),
+        expected_previous=previous,
+    )
+
+    found = search_objects(
+        registry,
+        "ОбщаяФорма.Workspace",
+        config="DemoConfiguration",
+        kind="ОбщаяФорма",
+    )
+    assert "`ОбщаяФорма.Workspace`" in found
+    restarted = Registry(registry.data_dir)
+    assert restarted.restore() == []
+    assert "`ОбщаяФорма.Workspace`" in search_objects(
+        restarted,
+        "ОбщаяФорма.Workspace",
+        config="DemoConfiguration",
+        kind="ОбщаяФорма",
+    )
 
 
 def test_native_журнал_покрытия_публикуется_и_восстанавливается_без_zip(
@@ -275,7 +440,7 @@ def test_native_compiled_модуль_поднимается_из_warm_кэша(
 def test_schema_v1_после_native_заменяет_только_base_и_переживает_restart(
     tmp_path,
 ):
-    _collection_value, generation = _materialized(
+    collection, generation = _materialized(
         tmp_path,
         "source-a-update",
         common_forms=True,
@@ -292,19 +457,10 @@ def test_schema_v1_после_native_заменяет_только_base_и_пе�
     }
     incoming = tmp_path / "source-a"
     incoming.mkdir()
-    source_a = Configuration(
-        name="DemoConfiguration",
-        version="2.0",
-        source_format="json",
-        objects={
-            "Справочник.Replacement": MetadataObject(
-                full_name="Справочник.Replacement",
-                kind="Справочник",
-                name="Replacement",
-                attributes=[Field("Code", types=["Строка"])],
-            )
-        },
-    )
+    source_a = convert_collection(collection).base
+    source_a.version = "2.0"
+    source_a.platform = "8.3.27.1000"
+    source_a.source_format = "json"
 
     registry.add_configuration(write_export(incoming, source_a))
 
@@ -325,16 +481,57 @@ def test_schema_v1_после_native_заменяет_только_base_и_пе�
     ):
         assert current_layers[kind] == previous_layers[kind]
     context = registry.resolve("DemoConfiguration")
-    assert context.configuration.config.get("Справочник.Replacement") is not None
+    assert context.configuration.config.version == "2.0"
+    assert context.configuration.config.platform == "8.3.27.1000"
+    assert context.configuration.config.exporter_version == "test"
+    assert context.configuration.config.get("ОбщаяФорма.Workspace") is not None
     assert context.modules is not None and context.modules.готов
     assert context.roles is not None and context.roles.ready
 
     restarted = Registry(registry.data_dir)
     assert restarted.restore() == []
     restored = restarted.resolve("DemoConfiguration")
-    assert restored.configuration.config.get("Справочник.Replacement") is not None
+    assert restored.configuration.config.version == "2.0"
+    assert restored.configuration.config.platform == "8.3.27.1000"
+    assert restored.configuration.config.exported_at == "2026-08-15T00:00:00"
+    assert restored.configuration.config.get("ОбщаяФорма.Workspace") is not None
     assert restored.modules is not None and restored.modules.готов
     assert restored.roles is not None and restored.roles.ready
+
+
+def test_schema_v1_не_публикуется_поверх_несовместимого_native(tmp_path):
+    _collection_value, generation = _materialized(
+        tmp_path,
+        "source-a-mismatch",
+        common_forms=True,
+    )
+    registry = Registry(tmp_path / "data")
+    previous = registry.publish_generation(
+        registry.stage_generation(generation.manifest, generation.payloads)
+    )
+    incoming = tmp_path / "source-a"
+    incoming.mkdir()
+    incompatible = Configuration(
+        name="DemoConfiguration",
+        version="2.0",
+        source_format="json",
+        objects={
+            "Справочник.Replacement": MetadataObject(
+                full_name="Справочник.Replacement",
+                kind="Справочник",
+                name="Replacement",
+                attributes=[Field("Code", types=["Строка"])],
+            )
+        },
+    )
+
+    with pytest.raises(RegistryError, match="несинхронная пара Source A/Source B"):
+        registry.add_configuration(write_export(incoming, incompatible))
+
+    assert registry.active_generation_pointer(generation.manifest.identity) == previous
+    context = registry.resolve("DemoConfiguration")
+    assert context.configuration.config.get("Справочник.Items") is not None
+    assert context.configuration.config.get("Справочник.Replacement") is None
 
 
 def test_runtime_failure_до_commit_сохраняет_прежний_pointer_и_runtime(

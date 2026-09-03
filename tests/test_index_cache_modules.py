@@ -504,12 +504,19 @@ def test_remove_readd_не_повторяет_identity_локаторов(
     реестр, первый = _реестр_с_модулями(tmp_path, корень_кода)
     первая_identity = реестр.modules[первый.id].каталог.identity
     архив = tmp_path / "модули.zip"
+    повторный_вход = tmp_path / "readd"
+    повторный_вход.mkdir()
+    структура = write_export(
+        повторный_вход,
+        build_configuration(name="Пример"),
+    )
     реестр.save()
 
     после_restart = Registry(реестр.data_dir)
     assert после_restart.startup() == []
 
     после_restart.remove(первый.id)
+    после_restart.add_configuration(структура)
     второй = после_restart.add_modules(архив, configuration="Пример")
     вторая_identity = после_restart.modules[второй.id].каталог.identity
 

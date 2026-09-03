@@ -208,11 +208,9 @@ function CorpusCard({
         </div>
         <div className="corpus-actions">
           <StatusBadge tone={phase.tone}>{phase.label}</StatusBadge>
-          {onRemove && (
+          {onRemove && corpus.kind === "extension" && (
             corpus.source
-            || (corpus.native_generation && (
-              corpus.kind === "extension" || corpus.phase !== "missing"
-            ))
+            || corpus.native_generation
           ) && (
             <button
               className="is-danger"
@@ -221,9 +219,7 @@ function CorpusCard({
                 operation: "source",
                 id: corpus.source?.id ?? corpus.id,
                 title: corpus.label,
-                impact: corpus.kind === "extension"
-                  ? "Будут удалены все опубликованные слои этого расширения, его индекс и журнал покрытия. Родительская конфигурация останется."
-                  : "Будут удалены код, формы, индекс модулей и журнал покрытия. Оба структурных слоя и роли останутся.",
+                impact: "Будут удалены все опубликованные слои этого расширения, его индекс и журнал покрытия. Родительская конфигурация останется.",
               })}
               aria-label={`Удалить ${corpus.label}`}
             >
@@ -374,9 +370,9 @@ function ConfigurationDetail({
                 title: configuration.id,
                 impact: "Будут каскадно удалены структура конфигурации, основной код, все привязанные расширения и их журналы покрытия.",
               })}
-              aria-label={`Удалить конфигурацию ${configuration.id}`}
+              aria-label={`Удалить конфигурацию целиком ${configuration.id}`}
             >
-              <Trash2 size={15} aria-hidden="true" />Удалить
+              <Trash2 size={15} aria-hidden="true" />Удалить целиком
             </button>
           )}
         </div>

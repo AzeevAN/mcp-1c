@@ -728,8 +728,8 @@ def test_get_callers_смена_поколения_не_смешивает_ин�
         assert not ошибки
         assert "НовыйЗовущий" in ответы[0]
         assert "СтарыйЗовущий" not in ответы[0]
-    elif extension:
-        assert len(ошибки) == 1 and "не загружено" in str(ошибки[0])
     else:
-        assert not ошибки
-        assert "выгрузка в файлы не загружена" in ответы[0]
+        assert not ответы
+        assert len(ошибки) == 1
+        assert isinstance(ошибки[0], RegistryError)
+        assert "не загружено" in str(ошибки[0]).lower()

@@ -28,7 +28,13 @@ from .intake_v2_registry import (
     LayerPayload,
     load_layer_payload,
 )
-from .model import Configuration, Field, MetadataObject, TabularPart
+from .model import (
+    Configuration,
+    Field,
+    MetadataObject,
+    ObjectRelation,
+    TabularPart,
+)
 from .module_catalog import (
     CandidateOutcome,
     CatalogCoverage,
@@ -48,6 +54,7 @@ class GenerationRuntimeError(ValueError):
 class NativeGenerationRuntime:
     configuration: Configuration
     base_sha256: str
+    structure_sha256: str
     catalog: ModuleCatalog | None
     code_sha256: str
     code_items_total: int
@@ -84,6 +91,12 @@ def _optional_int(value: object, label: str) -> int | None:
         raise GenerationRuntimeError(
             f"{label} должен быть целым числом не меньше нуля или null"
         )
+    return value
+
+
+def _boolean(value: object, label: str) -> bool:
+    if type(value) is not bool:
+        raise GenerationRuntimeError(f"{label} должен быть bool")
     return value
 
 
@@ -230,11 +243,27 @@ def _metadata_object(value: object, label: str) -> MetadataObject:
 def configuration_from_base_layer(semantic: object) -> Configuration:
     """Восстановить формат-независимую модель из canonical base layer."""
     raw = _mapping(semantic, "base_structure")
-    _exact_keys(
-        raw,
-        {"name", "synonym", "version", "vendor", "schema_version", "objects"},
-        "base_structure",
-    )
+    legacy_keys = {
+        "name",
+        "synonym",
+        "version",
+        "vendor",
+        "schema_version",
+        "objects",
+    }
+    current_keys = legacy_keys | {
+        "platform",
+        "exported_at",
+        "exporter_version",
+        "source_format",
+        "truncated",
+        "predefined_available",
+        "warnings",
+    }
+    if frozenset(raw) not in {frozenset(legacy_keys), frozenset(current_keys)}:
+        raise GenerationRuntimeError(
+            "base_structure содержит неверный набор полей"
+        )
     objects_raw = raw["objects"]
     if not isinstance(objects_raw, list):
         raise GenerationRuntimeError("base_structure.objects должен быть массивом")
@@ -252,12 +281,370 @@ def configuration_from_base_layer(semantic: object) -> Configuration:
         synonym=_text(raw["synonym"], "base_structure.synonym"),
         version=_text(raw["version"], "base_structure.version"),
         vendor=_text(raw["vendor"], "base_structure.vendor"),
+        platform=_text(raw.get("platform", ""), "base_structure.platform"),
+        exported_at=_text(
+            raw.get("exported_at", ""), "base_structure.exported_at"
+        ),
+        exporter_version=_text(
+            raw.get("exporter_version", ""), "base_structure.exporter_version"
+        ),
         schema_version=_text(
             raw["schema_version"], "base_structure.schema_version", required=True
         ),
-        source_format="source-b",
+        source_format=_text(
+            raw.get("source_format", "source-b"),
+            "base_structure.source_format",
+        ),
+        truncated=_boolean(
+            raw.get("truncated", False), "base_structure.truncated"
+        ),
+        predefined_available=_boolean(
+            raw.get("predefined_available", True),
+            "base_structure.predefined_available",
+        ),
+        warnings=_text_list(
+            raw.get("warnings", []), "base_structure.warnings"
+        ),
         objects=objects,
     )
+
+
+_EXTENDED_OBJECT_KEYS = {
+    "full_name",
+    "kind",
+    "name",
+    "synonym",
+    "comment",
+    "code_address",
+    "base_object",
+    "payload",
+    "forms",
+    "relations",
+}
+
+_TYPE_DESCRIPTION_KEYS = {
+    "types",
+    "string_length",
+    "string_allowed_length",
+    "digits",
+    "fraction_digits",
+    "number_allowed_sign",
+    "date_parts",
+}
+
+
+def _json_value(value: object, label: str) -> object:
+    """Скопировать только JSON-значение с текстовыми ключами."""
+    if value is None or isinstance(value, (str, bool, int, float)):
+        return value
+    if isinstance(value, list):
+        return [
+            _json_value(item, f"{label}[{index}]")
+            for index, item in enumerate(value)
+        ]
+    if isinstance(value, Mapping) and all(
+        isinstance(key, str) for key in value
+    ):
+        return {
+            key: _json_value(item, f"{label}.{key}")
+            for key, item in value.items()
+        }
+    raise GenerationRuntimeError(f"{label} содержит не-JSON значение")
+
+
+def _type_description_field(
+    value: object,
+    label: str,
+    *,
+    name: str = "ТипЗначения",
+    synonym: str = "",
+    comment: str = "",
+    indexing: str = "",
+) -> Field:
+    raw = _mapping(value, label)
+    _exact_keys(raw, _TYPE_DESCRIPTION_KEYS, label)
+    return Field(
+        name=name,
+        synonym=synonym,
+        comment=comment,
+        indexing=indexing,
+        types=_text_list(raw["types"], f"{label}.types"),
+        string_length=_optional_int(
+            raw["string_length"], f"{label}.string_length"
+        ),
+        digits=_optional_int(raw["digits"], f"{label}.digits"),
+        fraction_digits=_optional_int(
+            raw["fraction_digits"], f"{label}.fraction_digits"
+        ),
+        date_parts=_text(raw["date_parts"], f"{label}.date_parts"),
+    )
+
+
+def _extended_relations(value: object, label: str) -> list[ObjectRelation]:
+    if not isinstance(value, list):
+        raise GenerationRuntimeError(f"{label} должен быть массивом")
+    result: list[ObjectRelation] = []
+    for index, item in enumerate(value):
+        item_label = f"{label}[{index}]"
+        raw = _mapping(item, item_label)
+        _exact_keys(raw, {"kind", "target", "state", "properties"}, item_label)
+        properties_raw = raw["properties"]
+        if not isinstance(properties_raw, list):
+            raise GenerationRuntimeError(
+                f"{item_label}.properties должен быть массивом"
+            )
+        properties: list[tuple[str, str]] = []
+        for property_index, pair in enumerate(properties_raw):
+            if (
+                not isinstance(pair, list)
+                or len(pair) != 2
+                or not all(isinstance(part, str) for part in pair)
+            ):
+                raise GenerationRuntimeError(
+                    f"{item_label}.properties[{property_index}] должен быть парой строк"
+                )
+            properties.append((pair[0], pair[1]))
+        state = _text(raw["state"], f"{item_label}.state", required=True)
+        if state not in {"resolved", "unresolved"}:
+            raise GenerationRuntimeError(
+                f"{item_label}.state должен быть resolved или unresolved"
+            )
+        result.append(
+            ObjectRelation(
+                kind=_text(raw["kind"], f"{item_label}.kind", required=True),
+                target=_text(
+                    raw["target"], f"{item_label}.target", required=True
+                ),
+                state=state,
+                properties=tuple(properties),
+            )
+        )
+    return result
+
+
+def _journal_fields(
+    payload: Mapping[str, object],
+    fields_by_address: Mapping[str, Field],
+    label: str,
+) -> list[Field]:
+    """Представить стандартные реквизиты и графы журнала одной карточкой."""
+    result: list[Field] = []
+    standard = payload.get("standard_attributes", [])
+    columns = payload.get("columns", [])
+    if not isinstance(standard, list) or not isinstance(columns, list):
+        raise GenerationRuntimeError(
+            f"{label}.standard_attributes/columns должны быть массивами"
+        )
+    for index, item in enumerate(standard):
+        item_label = f"{label}.standard_attributes[{index}]"
+        raw = _mapping(item, item_label)
+        result.append(
+            Field(
+                name=_text(raw.get("name"), f"{item_label}.name", required=True),
+                synonym=_text(raw.get("synonym", ""), f"{item_label}.synonym"),
+                comment=_text(raw.get("comment", ""), f"{item_label}.comment"),
+            )
+        )
+    for index, item in enumerate(columns):
+        item_label = f"{label}.columns[{index}]"
+        raw = _mapping(item, item_label)
+        references = raw.get("references", [])
+        if not isinstance(references, list):
+            raise GenerationRuntimeError(
+                f"{item_label}.references должен быть массивом"
+            )
+        types: list[str] = []
+        for reference_index, reference in enumerate(references):
+            reference_label = f"{item_label}.references[{reference_index}]"
+            reference_raw = _mapping(reference, reference_label)
+            target = _text(
+                reference_raw.get("target"),
+                f"{reference_label}.target",
+                required=True,
+            )
+            field = fields_by_address.get(target.casefold())
+            if field is None:
+                continue
+            for type_name in field.types:
+                if type_name not in types:
+                    types.append(type_name)
+        result.append(
+            Field(
+                name=_text(raw.get("name"), f"{item_label}.name", required=True),
+                synonym=_text(raw.get("synonym", ""), f"{item_label}.synonym"),
+                comment=_text(raw.get("comment", ""), f"{item_label}.comment"),
+                indexing=_text(raw.get("indexing", ""), f"{item_label}.indexing"),
+                types=types,
+            )
+        )
+    folded = [item.name.casefold() for item in result]
+    if len(folded) != len(set(folded)):
+        raise GenerationRuntimeError(f"{label} дублирует поле журнала")
+    return result
+
+
+def _extended_props(
+    kind: str,
+    payload: Mapping[str, object],
+) -> dict[str, object]:
+    """Вывести полезные скалярные свойства, не дублируя вложенные коллекции."""
+    result: dict[str, object] = {}
+    for key, value in payload.items():
+        if value in (None, "", []):
+            continue
+        if isinstance(value, (str, bool, int, float)):
+            result[key] = value
+        elif isinstance(value, list):
+            if len(value) <= 20 and all(isinstance(item, str) for item in value):
+                result[key] = value
+            else:
+                result[f"{key}_count"] = len(value)
+    binding = payload.get("binding")
+    if isinstance(binding, Mapping):
+        raw = binding.get("raw")
+        if isinstance(raw, str) and raw:
+            result["handler" if kind == "ПодпискаНаСобытие" else "method"] = raw
+    return result
+
+
+def _compose_extended_structure(
+    configuration: Configuration,
+    semantic: object,
+    *,
+    require_base_overlays: bool,
+) -> None:
+    """Собрать единый каталог A/B без копирования base-object overlays."""
+    raw = _mapping(semantic, "extended_structure")
+    if set(raw) != {"extension_structure", "objects"}:
+        raise GenerationRuntimeError(
+            "extended_structure содержит неверный набор полей"
+        )
+    objects = raw["objects"]
+    if not isinstance(objects, list):
+        raise GenerationRuntimeError(
+            "extended_structure.objects должен быть массивом"
+        )
+    folded = {name.casefold(): name for name in configuration.objects}
+    fields_by_address = {
+        f"{obj.full_name}.{path}".casefold(): field
+        for obj in configuration.objects.values()
+        for path, field in obj.all_fields()
+    }
+    seen: set[str] = set()
+    for index, value in enumerate(objects):
+        label = f"extended_structure.objects[{index}]"
+        item = _mapping(value, label)
+        _exact_keys(item, _EXTENDED_OBJECT_KEYS, label)
+        kind = _text(item["kind"], f"{label}.kind", required=True)
+        name = _text(item["name"], f"{label}.name", required=True)
+        full_name = _text(
+            item["full_name"], f"{label}.full_name", required=True
+        )
+        if full_name != f"{kind}.{name}":
+            raise GenerationRuntimeError(
+                f"{label}.full_name не совпадает с kind/name"
+            )
+        key = full_name.casefold()
+        if key in seen:
+            raise GenerationRuntimeError("extended_structure дублирует объект")
+        seen.add(key)
+        base_object = item["base_object"]
+        if type(base_object) is not bool:
+            raise GenerationRuntimeError(f"{label}.base_object должен быть bool")
+        payload_value = item["payload"]
+        if payload_value is None:
+            payload: dict[str, object] = {}
+        else:
+            payload_raw = _mapping(payload_value, f"{label}.payload")
+            copied_payload = _json_value(payload_raw, f"{label}.payload")
+            assert isinstance(copied_payload, dict)
+            payload = copied_payload
+        forms = _text_list(item["forms"], f"{label}.forms")
+        relations = _extended_relations(
+            item["relations"], f"{label}.relations"
+        )
+        canonical = folded.get(key)
+        if base_object:
+            if canonical is None:
+                if require_base_overlays:
+                    raise GenerationRuntimeError(
+                        "несинхронная пара Source A/Source B: в base_structure "
+                        f"отсутствует объект {full_name}, для которого Source B "
+                        "хранит extended overlay"
+                    )
+                # В одной полной Source B выгрузке может остаться модуль или
+                # форма уже удалённого metadata-объекта. Это честный orphan
+                # content, а не самостоятельный объект resolved-view.
+                continue
+            target = configuration.objects[canonical]
+            if target.kind != kind:
+                raise GenerationRuntimeError(
+                    "несинхронная пара Source A/Source B: вид extended overlay "
+                    f"не совпадает с base object {full_name}"
+                )
+        else:
+            if canonical is not None:
+                raise GenerationRuntimeError(
+                    f"{label}: extended-only object конфликтует с base_structure"
+                )
+            target = MetadataObject(
+                full_name=full_name,
+                kind=kind,
+                name=name,
+                synonym=_text(item["synonym"], f"{label}.synonym"),
+                comment=_text(item["comment"], f"{label}.comment"),
+            )
+            configuration.objects[full_name] = target
+            folded[key] = full_name
+        target.code_address = _text(
+            item["code_address"], f"{label}.code_address"
+        )
+        target.forms = forms
+        target.extended = payload
+        target.relations = relations
+        for prop, prop_value in _extended_props(kind, payload).items():
+            target.props.setdefault(prop, prop_value)
+        value_type = payload.get("value_type")
+        if value_type is not None and target.value_type is None:
+            value_type_raw = _mapping(
+                value_type,
+                f"{label}.payload.value_type",
+            )
+            target.value_type = _type_description_field(
+                value_type_raw, f"{label}.payload.value_type"
+            )
+            for source_key, target_key in (
+                (
+                    "string_allowed_length",
+                    "value_type_string_allowed_length",
+                ),
+                ("number_allowed_sign", "value_type_number_allowed_sign"),
+            ):
+                qualifier = _text(
+                    value_type_raw[source_key],
+                    f"{label}.payload.value_type.{source_key}",
+                )
+                if qualifier:
+                    target.props.setdefault(target_key, qualifier)
+        if kind == "ЖурналДокументов":
+            target.attributes = _journal_fields(
+                payload, fields_by_address, f"{label}.payload"
+            )
+
+
+def _structure_sha256(
+    layers: Mapping[LayerKind, LayerManifest],
+) -> str:
+    digest = hashlib.sha256(b"mcp1c-resolved-structure-v1\0")
+    for kind in (LayerKind.BASE_STRUCTURE, LayerKind.EXTENDED_STRUCTURE):
+        layer = layers.get(kind)
+        digest.update(kind.value.encode("ascii") + b"\0")
+        if layer is None:
+            digest.update(b"missing\0")
+            continue
+        digest.update(layer.state.value.encode("ascii") + b"\0")
+        digest.update(layer.content_sha256.encode("ascii") + b"\0")
+    return digest.hexdigest()
 
 
 def _ready_payload(
@@ -517,7 +904,18 @@ def build_generation_runtime(
         required=manifest.identity.source_kind is SourceKind.EXTENSION,
     )
     extension_structure = None
-    if manifest.identity.source_kind is SourceKind.EXTENSION:
+    if manifest.identity.source_kind is SourceKind.CONFIGURATION:
+        if extended is not None:
+            _compose_extended_structure(
+                configuration,
+                extended.semantic,
+                require_base_overlays=(
+                    base_layer.provenance is not None
+                    and base_layer.provenance.profile
+                    is LayerSourceProfile.SCHEMA_V1
+                ),
+            )
+    else:
         assert extended is not None
         try:
             extension_structure = ExtensionStructure.from_layer_dict(
@@ -549,6 +947,7 @@ def build_generation_runtime(
     return NativeGenerationRuntime(
         configuration=configuration,
         base_sha256=base_layer.content_sha256,
+        structure_sha256=_structure_sha256(layers),
         catalog=catalog,
         code_sha256=code_sha256,
         code_items_total=(

@@ -16,7 +16,7 @@ import json
 import re
 from dataclasses import dataclass
 
-from .graph import Graph
+from .graph import EDGE_TITLES, Graph
 from .model import Configuration, Field, MetadataObject
 from .structure_origin import StructureOriginView
 from .syntax_model import KIND_TITLES, SyntaxItem
@@ -579,6 +579,27 @@ _PROP_TITLES = {
     "is_predefined": "Предопределённое",
     "use": "Использование",
     "characteristic_ext_values": "Дополнительные значения характеристик",
+    "registered_documents_count": "Зарегистрированных документов",
+    "standard_attributes_count": "Стандартных реквизитов",
+    "columns_count": "Граф журнала",
+    "commands_count": "Команд",
+    "content_count": "Элементов состава",
+    "forms_count": "Форм",
+    "templates_count": "Макетов",
+    "form_type": "Вид формы",
+    "explanation": "Пояснение",
+    "extended_presentation": "Расширенное представление",
+    "list_presentation": "Представление списка",
+    "extended_list_presentation": "Расширенное представление списка",
+    "default_form": "Основная форма",
+    "auxiliary_form": "Дополнительная форма",
+    "use_purposes": "Назначения использования",
+    "include_help_in_contents": "Включать справку в содержание",
+    "use_standard_commands": "Использовать стандартные команды",
+    "predefined": "Предопределённый",
+    "picture": "Картинка",
+    "value_type_string_allowed_length": "Допустимая длина строки",
+    "value_type_number_allowed_sign": "Допустимый знак числа",
 }
 
 # Свойства, от которых зависит, как писать код и запрос: есть ли у регистра
@@ -760,6 +781,7 @@ def render_object(
     graph: Graph | None = None,
     collapse_after: int = 5,
     max_incoming: int = 20,
+    max_relations: int = 40,
     virtual_tables: list | None = None,
     origins: StructureOriginView | None = None,
 ) -> str:
@@ -802,9 +824,9 @@ def render_object(
 
     if detail == FULL:
         props = [
-            f"- {_PROP_TITLES.get(k, k)}: `{v}`"
+            f"- {_PROP_TITLES.get(k, k)}: `{_prop_value(v)}`"
             for k, v in sorted(obj.props.items())
-            if v not in (None, "", False)
+            if v not in (None, "")
         ]
         out += _section("Свойства", props)
     else:
@@ -863,6 +885,27 @@ def render_object(
             [f"- `{obj.manager_path}.{name}`" for name in obj.predefined],
         )
 
+    if obj.forms:
+        out += _refs_section("Формы", obj.forms)
+
+    if obj.relations:
+        lines = []
+        for relation in obj.relations[:max_relations]:
+            state = "разрешена" if relation.state == "resolved" else "не разрешена"
+            details = ", ".join(
+                f"{key}={value}"
+                for key, value in relation.properties
+                if value
+            )
+            suffix = f" · {details}" if details else ""
+            lines.append(
+                f"- `{relation.target}` — "
+                f"{EDGE_TITLES.get(relation.kind, relation.kind)} · {state}{suffix}"
+            )
+        if len(obj.relations) > max_relations:
+            lines.append(f"- … ещё {len(obj.relations) - max_relations}")
+        out += _section("Связи файловой выгрузки", lines)
+
     out += _refs_section("Движения", obj.movements)
 
     if detail == FULL:
@@ -891,6 +934,11 @@ def _brief_summary(obj: MetadataObject, graph: Graph | None) -> str:
         parts.append(f"предопределённых: {len(obj.predefined)}")
     if obj.movements:
         parts.append(f"движения: {len(obj.movements)}")
+    if obj.forms:
+        parts.append(f"форм: {len(obj.forms)}")
+    if obj.relations:
+        resolved = sum(item.state == "resolved" for item in obj.relations)
+        parts.append(f"связей Source B: {resolved} из {len(obj.relations)}")
     if graph is not None:
         incoming = len(graph.incoming(obj.full_name))
         if incoming:

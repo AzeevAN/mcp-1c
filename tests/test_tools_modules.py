@@ -799,15 +799,12 @@ def test_смена_поколения_во_время_чтения_сигнат
         assert "НовыйПараметр" in ответы[0]
         assert "СтарыйПараметр" not in ответы[0]
         assert "строка 2" in ответы[0]
-    elif extension:
+    else:
         assert not ответы
         assert len(ошибки) == 1
         assert isinstance(ошибки[0], RegistryError)
-        assert "не загружено" in str(ошибки[0])
+        assert "не загружено" in str(ошибки[0]).lower()
         assert "/private/" not in str(ошибки[0])
-    else:
-        assert not ошибки
-        assert "выгрузка в файлы не загружена" in ответы[0]
 
 
 def test_две_смены_поколения_дают_стабильную_ошибку_повтора(
@@ -1885,11 +1882,8 @@ def test_get_procedure_смена_поколения_не_смешивает_т�
         assert not ошибки
         assert "Новый" in ответы[0] and "НовоеТело" in ответы[0]
         assert "Старый" not in ответы[0] and "СтароеТело" not in ответы[0]
-    elif extension:
-        assert len(ошибки) == 1 and "не загружено" in str(ошибки[0])
     else:
-        assert not ошибки
-        assert "выгрузка в файлы не загружена" in ответы[0]
+        assert len(ошибки) == 1 and "не загружено" in str(ошибки[0]).lower()
 
 
 @pytest.mark.parametrize("extension", [None, "Доп"], ids=["modules", "extension"])
@@ -2467,12 +2461,16 @@ def test_get_object_не_смешивает_поколения_модулей(
         отпустить.set()
         поток.join(timeout=3)
 
-    assert not поток.is_alive() and not ошибки
+    assert not поток.is_alive()
     if action == "reparse":
+        assert not ошибки
         assert "МодульМенеджера" in ответы[0]
         assert "МодульОбъекта" not in ответы[0]
     else:
-        assert "код не загружен" in ответы[0].lower()
+        assert not ответы
+        assert len(ошибки) == 1
+        assert isinstance(ошибки[0], RegistryError)
+        assert "не загружено" in str(ошибки[0]).lower()
 
 
 @pytest.mark.parametrize("action", ["reparse", "remove"])

@@ -143,6 +143,16 @@ class TabularPart:
         return self.synonym or self.name
 
 
+@dataclass(slots=True, frozen=True)
+class ObjectRelation:
+    """Типизированная связь из дополнительного metadata-слоя Source B."""
+
+    kind: str
+    target: str
+    state: str
+    properties: tuple[tuple[str, str], ...] = ()
+
+
 @dataclass(slots=True)
 class MetadataObject:
     full_name: str
@@ -166,6 +176,14 @@ class MetadataObject:
     enum_values: list[tuple[str, str]] = field(default_factory=list)
     value_type: Field | None = None
 
+    # Эти сведения не входят в schema v1 и не должны копироваться в
+    # base_structure. Они образуют единый resolved-view только после чтения
+    # отдельного extended_structure поколения Source B.
+    code_address: str = ""
+    forms: list[str] = field(default_factory=list)
+    extended: dict[str, object] = field(default_factory=dict)
+    relations: list[ObjectRelation] = field(default_factory=list)
+
     @property
     def title(self) -> str:
         return self.synonym or self.name
@@ -174,7 +192,9 @@ class MetadataObject:
     def manager_path(self) -> str:
         """Как объект адресуется в коде: Справочники.Номенклатура."""
         manager = KIND_TO_MANAGER.get(self.kind)
-        return f"{manager}.{self.name}" if manager else self.full_name
+        if manager:
+            return f"{manager}.{self.name}"
+        return self.code_address or self.full_name
 
     def all_fields(self) -> Iterator[tuple[str, Field]]:
         """Все поля объекта вместе с путём до них."""

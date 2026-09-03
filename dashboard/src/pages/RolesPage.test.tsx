@@ -149,6 +149,38 @@ const secondAccess = {
   page: { offset: 50, limit: 50, returned: 1, next_cursor: null },
 };
 
+const accessWithTemplate = {
+  ...access,
+  templates_total: 1,
+  templates: [{
+    name: "LongTemplate",
+    chars: 2505,
+    bytes: 2505,
+    ref: "template-ref",
+  }],
+  templates_page: { offset: 0, limit: 20, returned: 1, next_cursor: null },
+};
+
+const accessWithPagedTemplates = {
+  ...accessWithTemplate,
+  templates_total: 21,
+  templates_page: { offset: 0, limit: 20, returned: 20, next_cursor: "templates-next" },
+};
+
+const secondTemplatePage = {
+  ...base,
+  mode: "templates",
+  role,
+  templates_total: 21,
+  templates: [{
+    name: "SecondTemplate",
+    chars: 10,
+    bytes: 10,
+    ref: "second-template-ref",
+  }],
+  page: { offset: 20, limit: 20, returned: 1, next_cursor: null },
+};
+
 const childrenAccess = {
   ...base,
   mode: "children",
@@ -365,6 +397,62 @@ it("дочитывает длинное RLS в то же окно без зам�
   });
   expect(screen.getByText(/Загружено 2.005 из 2.005 символов/)).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Дочитать RLS" })).not.toBeInTheDocument();
+});
+
+it("показывает шаблоны RLS роли и открывает длинный шаблон с его контекстом", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+    const url = new URL(String(input), "http://dashboard.test");
+    if (url.pathname === "/api/v1/roles/objects") return response(accessWithTemplate);
+    if (url.pathname === "/api/v1/roles/restriction") {
+      return response({
+        ...base,
+        mode: "template",
+        role: "Reader",
+        restriction_ref: "template-ref",
+        fields: [],
+        template: "LongTemplate",
+        target: "",
+        right: "",
+        content: "A".repeat(2000),
+        total_chars: 2505,
+        total_bytes: 2505,
+        page: { offset: 0, max_chars: 2000, returned_chars: 2000, next_cursor: "template-next" },
+      });
+    }
+    return response(catalog);
+  }));
+  renderPage("/roles?config=Отраслевая+конфигурация&role=Reader");
+
+  expect(await screen.findByText("Шаблоны ограничений RLS")).toBeInTheDocument();
+  expect(screen.getByText("LongTemplate")).toBeInTheDocument();
+  expect(screen.getByText("2 505 символов")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Открыть шаблон RLS LongTemplate" }));
+
+  expect(await screen.findByText("Контекст шаблона")).toBeInTheDocument();
+  expect(screen.getByRole("dialog")).toHaveTextContent("LongTemplate");
+  expect(screen.getByRole("button", { name: "Дочитать RLS" })).toBeInTheDocument();
+  expect(screen.queryByText("Объект")).not.toBeInTheDocument();
+  expect(screen.queryByText("Право")).not.toBeInTheDocument();
+});
+
+it("листает шаблоны роли отдельным серверным курсором", async () => {
+  const fetchMock = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+    const url = new URL(String(input), "http://dashboard.test");
+    if (url.pathname === "/api/v1/roles/objects") return response(accessWithPagedTemplates);
+    if (url.pathname === "/api/v1/roles/access") return response(secondTemplatePage);
+    return response(catalog);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  renderPage("/roles?config=Отраслевая+конфигурация&role=Reader");
+
+  expect(await screen.findByText("LongTemplate")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Следующая страница шаблонов" }));
+
+  expect(await screen.findByText("SecondTemplate")).toBeInTheDocument();
+  expect(screen.getByText("Страница 2 · показано 1 из 21 шаблонов")).toBeInTheDocument();
+  await waitFor(() => {
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("cursor=templates-next"));
+  });
 });
 
 it("показывает неизвестные default-флаги descriptor-only роли без false", async () => {

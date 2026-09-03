@@ -1014,6 +1014,7 @@ def role_objects_payload(
             offset=offset,
             limit=limit,
         )
+        templates = index.role_templates(descriptor.name, offset=0, limit=20)
     except KeyError as error:
         raise RoleAccessQueryError("Роль не найдена") from error
     except ValueError as error:
@@ -1050,6 +1051,21 @@ def role_objects_payload(
             )
             for item in page.objects
         ],
+        "templates_total": templates.total,
+        "templates": [
+            {
+                "name": item.name,
+                "chars": item.chars,
+                "bytes": item.bytes,
+                "ref": _reference(
+                    roles.generation_id,
+                    descriptor.name,
+                    "template",
+                    item.id,
+                ),
+            }
+            for item in templates.templates
+        ],
         "page": {
             "offset": page.offset,
             "limit": limit,
@@ -1059,6 +1075,17 @@ def role_objects_payload(
                 roles.generation_id,
                 cursor_query,
                 page.next_offset,
+            ),
+        },
+        "templates_page": {
+            "offset": templates.offset,
+            "limit": 20,
+            "returned": len(templates.templates),
+            "next_cursor": _cursor(
+                "role-templates",
+                roles.generation_id,
+                _fingerprint(selection.configuration, role, "", "summary"),
+                templates.next_offset,
             ),
         },
     }

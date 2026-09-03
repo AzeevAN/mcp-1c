@@ -154,6 +154,9 @@ def _navigation_roles():
                 ("InformationRegister.Stock", (_right("Read", True),)),
                 ("Interface.Operator", (_right("Use", True),)),
                 ("Sequence.Documents", (_right("Read", True),)),
+            ), templates=(
+                (("LongTemplate", "A" * 2505),)
+                + tuple((f"Template{index:02d}", "Allowed = true") for index in range(20))
             )),
         ),
         (
@@ -1016,6 +1019,36 @@ def test_roles_api_фильтрует_объекты_роли_и_возвращ�
     assert [item["full_name"] for item in payload["objects"]] == [
         "Документ.Invoice",
     ]
+    assert payload["templates_total"] == 21
+    assert len(payload["templates"]) == 20
+    assert payload["templates"][0] == {
+        "name": "LongTemplate",
+        "chars": 2505,
+        "bytes": 2505,
+        "ref": payload["templates"][0]["ref"],
+    }
+    assert payload["templates_page"] == {
+        "offset": 0,
+        "limit": 20,
+        "returned": 20,
+        "next_cursor": payload["templates_page"]["next_cursor"],
+    }
+    assert payload["templates_page"]["next_cursor"]
+
+    next_templates = client.get(
+        "/api/v1/roles/access",
+        params={
+            "config": "DemoConfiguration",
+            "role": "Reader",
+            "cursor": payload["templates_page"]["next_cursor"],
+        },
+    )
+    assert next_templates.status_code == 200
+    assert next_templates.json()["mode"] == "templates"
+    assert [item["name"] for item in next_templates.json()["templates"]] == [
+        "Template19",
+    ]
+    assert next_templates.json()["page"]["next_cursor"] is None
     assert payload["object_facets"] == [
         {"kind": "Catalog", "kind_ru": "Справочник", "count": 1},
         {"kind": "Document", "kind_ru": "Документ", "count": 2},

@@ -134,7 +134,10 @@ export type RoleObjectsResponse = RoleBase & {
   objects_total?: number;
   object_facets?: RoleObjectFacet[];
   objects?: RoleObjectSummary[];
+  templates_total?: number;
+  templates?: Array<{ name: string; chars: number; bytes: number; ref: string }>;
   page?: Page;
+  templates_page?: Page;
 };
 
 export type RoleCandidate = {

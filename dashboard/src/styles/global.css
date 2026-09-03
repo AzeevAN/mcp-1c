@@ -316,6 +316,63 @@
   font-size: 12px;
 }
 
+.role-template-panel {
+  display: grid;
+  gap: 12px;
+  padding: 15px;
+  border: 1px solid #efcf93;
+  border-radius: 14px;
+  background: #fffaf1;
+}
+
+.role-template-panel > header,
+.role-template-panel > header > div,
+.role-template-list,
+.role-template-list article > div {
+  display: grid;
+  gap: 4px;
+}
+
+.role-template-panel > header {
+  grid-template-columns: minmax(180px, 0.8fr) minmax(220px, 1.2fr);
+  align-items: start;
+}
+
+.role-template-panel small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.role-template-list {
+  gap: 8px;
+}
+
+.role-template-list article {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 12px;
+  border: 1px solid #efcf93;
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.role-template-list article strong {
+  overflow-wrap: anywhere;
+}
+
+.role-template-list button {
+  flex: 0 0 auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  padding: 8px 10px;
+  color: var(--blue-deep);
+  background: var(--surface);
+  cursor: pointer;
+  font-weight: 750;
+}
+
 .role-object-navigation {
   display: grid;
   gap: 12px;
@@ -943,6 +1000,10 @@
   }
 
   .role-object-navigation-head {
+    grid-template-columns: 1fr;
+  }
+
+  .role-template-panel > header {
     grid-template-columns: 1fr;
   }
 }

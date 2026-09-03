@@ -97,6 +97,16 @@ export function RolesPage() {
       cursor: objectCursor,
     } : null;
   const objects = useRoleObjects(objectsRequest);
+  const [templateCursor, setTemplateCursor] = useState<string | undefined>();
+  const templateRequest = (
+    catalog.data?.state === "ready" && effectiveConfig && requestedRole && templateCursor
+  ) ? {
+      config: effectiveConfig,
+      role: requestedRole,
+      cursor: templateCursor,
+      detail: "summary" as const,
+    } : null;
+  const templatePage = useRoleAccess(templateRequest);
   const [detailRequest, setDetailRequest] = useState<RoleAccessRequest | null>(null);
   const detail = useRoleAccess(detailRequest);
 
@@ -175,6 +185,15 @@ export function RolesPage() {
         restriction.data.page.offset + restriction.data.page.returned_chars,
       )
     : 0;
+  const visibleTemplates = templateCursor
+    ? templatePage.data?.templates || []
+    : objects.data?.templates || [];
+  const visibleTemplatesPage = templateCursor
+    ? templatePage.data?.page
+    : objects.data?.templates_page;
+  const templatesTotal = objects.data?.templates_total
+    ?? templatePage.data?.templates_total
+    ?? 0;
 
   useEffect(() => {
     if (requestedRole && activeDescriptor && !roleQuery) {
@@ -195,6 +214,7 @@ export function RolesPage() {
     setRoleQuery("");
     setRolePickerOpen(true);
     setObjectCursor(undefined);
+    setTemplateCursor(undefined);
     setSelectedObjectKind("");
     setRoleObjectQuery("");
     setFindRequest(null);
@@ -208,6 +228,7 @@ export function RolesPage() {
     setRoleQuery(roleLabel(role));
     setRolePickerOpen(false);
     setObjectCursor(undefined);
+    setTemplateCursor(undefined);
     setSelectedObjectKind("");
     setRoleObjectQuery("");
     setRestrictionRequest(null);
@@ -221,6 +242,7 @@ export function RolesPage() {
     setRolePickerOpen(true);
     if (!requestedRole) return;
     setObjectCursor(undefined);
+    setTemplateCursor(undefined);
     setSelectedObjectKind("");
     setRoleObjectQuery("");
     setRestrictionRequest(null);
@@ -320,6 +342,12 @@ export function RolesPage() {
     if (!cursor) return;
     setDetailRequest(null);
     setObjectCursor(cursor);
+  };
+
+  const continueTemplates = () => {
+    const cursor = visibleTemplatesPage?.next_cursor;
+    if (!cursor) return;
+    setTemplateCursor(cursor);
   };
 
   if (catalog.isPending) {
@@ -477,6 +505,58 @@ export function RolesPage() {
                       <span>Реквизиты по умолчанию: <strong>{defaultFlag(objects.data.role.default_flags.set_for_attributes_by_default)}</strong></span>
                       <span>Независимые дочерние: <strong>{defaultFlag(objects.data.role.default_flags.independent_rights_of_child_objects)}</strong></span>
                     </div>
+                    {templatesTotal > 0 && (
+                      <section className="role-template-panel">
+                        <header>
+                          <div>
+                            <strong>Шаблоны ограничений RLS</strong>
+                            <small>{templatesTotal.toLocaleString("ru-RU")} в роли</small>
+                          </div>
+                          <small>Шаблон относится к роли целиком и открывается отдельно от прав объектов.</small>
+                        </header>
+                        {templateCursor && templatePage.isPending ? (
+                          <span><span className="loading-dot" />Читаем страницу шаблонов…</span>
+                        ) : (
+                          <div className="role-template-list">
+                            {visibleTemplates.map((template) => (
+                              <article key={template.ref}>
+                                <div>
+                                  <strong>{template.name}</strong>
+                                  <small>{template.chars.toLocaleString("ru-RU")} символов</small>
+                                </div>
+                                <button
+                                  type="button"
+                                  aria-label={`Открыть шаблон RLS ${template.name}`}
+                                  onClick={() => openRestriction(template.ref)}
+                                >
+                                  Открыть шаблон RLS
+                                </button>
+                              </article>
+                            ))}
+                          </div>
+                        )}
+                        {templatePage.isError && (
+                          <div className="roles-unavailable" role="alert">{errorText(templatePage.error)}</div>
+                        )}
+                        {visibleTemplatesPage && (
+                          <div className="roles-pagination">
+                            <span>
+                              {pageLabel(
+                                visibleTemplatesPage.offset,
+                                visibleTemplatesPage.limit,
+                                visibleTemplatesPage.returned,
+                                templatesTotal,
+                              )} шаблонов
+                            </span>
+                            {visibleTemplatesPage.next_cursor && (
+                              <button type="button" onClick={continueTemplates}>
+                                Следующая страница шаблонов<ChevronRight size={15} />
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </section>
+                    )}
                     <div
                       className="role-object-navigation"
                       aria-busy={objects.isFetching}
@@ -723,7 +803,10 @@ export function RolesPage() {
                       {restrictionRequest && (
                         <section className="role-restriction-card" aria-live="polite">
                           <header>
-                            <div><span>Явно открытое условие</span><strong>RLS</strong></div>
+                            <div>
+                              <span>{restriction.data?.mode === "template" ? "Явно открытый шаблон" : "Явно открытое условие"}</span>
+                              <strong>RLS</strong>
+                            </div>
                             <small>
                               {restriction.data?.page
                                 ? `Загружено ${restrictionLoadedChars.toLocaleString("ru-RU")} из ${(restriction.data.total_chars || 0).toLocaleString("ru-RU")} символов · окно до ${restriction.data.page.max_chars.toLocaleString("ru-RU")}`
@@ -734,7 +817,7 @@ export function RolesPage() {
                           {restriction.isError && <div role="alert">{errorText(restriction.error)}</div>}
                           {restriction.data && (
                             <div className="role-restriction-context">
-                              <strong>Контекст условия</strong>
+                              <strong>{restriction.data.mode === "template" ? "Контекст шаблона" : "Контекст условия"}</strong>
                               <dl>
                                 <div>
                                   <dt>Роль</dt>
@@ -743,24 +826,33 @@ export function RolesPage() {
                                     <code>{restriction.data.role}</code>
                                   </dd>
                                 </div>
-                                <div>
-                                  <dt>Объект</dt>
-                                  <dd>
-                                    <strong>
-                                      {restrictionObject
-                                        ? `${restrictionObject.kind_ru} ${restrictionObject.name}`
-                                        : restriction.data.target}
-                                    </strong>
-                                    <code>{restriction.data.target}</code>
-                                  </dd>
-                                </div>
-                                <div>
-                                  <dt>Право</dt>
-                                  <dd>
-                                    <strong>{restrictionRightLabel}</strong>
-                                    <code>{restriction.data.right}</code>
-                                  </dd>
-                                </div>
+                                {restriction.data.mode === "template" ? (
+                                  <div>
+                                    <dt>Шаблон</dt>
+                                    <dd><strong>{restriction.data.template}</strong></dd>
+                                  </div>
+                                ) : (
+                                  <>
+                                    <div>
+                                      <dt>Объект</dt>
+                                      <dd>
+                                        <strong>
+                                          {restrictionObject
+                                            ? `${restrictionObject.kind_ru} ${restrictionObject.name}`
+                                            : restriction.data.target}
+                                        </strong>
+                                        <code>{restriction.data.target}</code>
+                                      </dd>
+                                    </div>
+                                    <div>
+                                      <dt>Право</dt>
+                                      <dd>
+                                        <strong>{restrictionRightLabel}</strong>
+                                        <code>{restriction.data.right}</code>
+                                      </dd>
+                                    </div>
+                                  </>
+                                )}
                               </dl>
                             </div>
                           )}

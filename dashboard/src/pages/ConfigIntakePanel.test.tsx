@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import { ConfigIntakePanel } from "./ConfigIntakePanel";
@@ -176,11 +176,86 @@ it("показывает semantic preview и публикует только п�
   expect(requests.some(({ path }) => path.endsWith("/confirm"))).toBe(false);
 
   fireEvent.click(within(dialog).getByRole("button", { name: "Опубликовать изменения" }));
-  expect(await screen.findByRole("status")).toHaveTextContent("Поколение опубликовано");
+  expect(await screen.findByText("Поколение опубликовано", { exact: false })).toBeInTheDocument();
   expect(requests).toContainEqual({
     path: "/api/v1/sources/intake/confirm",
     body: { job_id: "job-001" },
   });
+});
+
+it("после confirm блокирует закрытие окна и запуск второго intake", async () => {
+  let finishConfirm: ((result: Response) => void) | undefined;
+  const pendingConfirm = new Promise<Response>((resolve) => {
+    finishConfirm = resolve;
+  });
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    const path = String(input);
+    if (path === "/api/v1/sources/intake") return response(snapshot());
+    if (path === "/api/v1/sources/intake/start") {
+      return response({
+        job: {
+          job_id: "job-locked",
+          candidate_id: candidate.id,
+          state: "ready",
+          stage: "ready",
+          error: "",
+          preview: null,
+          commit: null,
+        },
+      }, 202);
+    }
+    if (path === "/api/v1/sources/intake/jobs/job-locked") {
+      return response({
+        job: {
+          job_id: "job-locked",
+          candidate_id: candidate.id,
+          state: "done",
+          stage: "done",
+          error: "",
+          preview,
+          commit: null,
+        },
+      });
+    }
+    if (path === "/api/v1/sources/intake/confirm") return pendingConfirm;
+    throw new Error(`Неожиданный запрос ${path}`);
+  }));
+  renderPanel();
+
+  expect(await screen.findByText("СинтетическаяКонфигурация")).toBeInTheDocument();
+  const start = screen.getByRole("button", { name: "Создать конфигурацию" });
+  fireEvent.click(start);
+  const dialog = await screen.findByRole("dialog", { name: "Проверка изменений" });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Опубликовать изменения" }));
+
+  await waitFor(() => {
+    expect(within(dialog).getByRole("button", { name: "Закрыть" })).toBeDisabled();
+  });
+  expect(within(dialog).getByRole("button", { name: "Вернуться без публикации" })).toBeDisabled();
+  expect(start).toBeDisabled();
+  expect(within(dialog).getByRole("status")).toHaveTextContent(
+    "Публикация уже запущена",
+  );
+  fireEvent.click(within(dialog).getByRole("button", { name: "Закрыть" }));
+  expect(dialog).toBeInTheDocument();
+
+  finishConfirm?.(response({
+    job: {
+      job_id: "job-locked",
+      candidate_id: candidate.id,
+      state: "done",
+      stage: "done",
+      error: "",
+      preview,
+      commit: {
+        no_op: false,
+        generation_id: "generation-001",
+        manifest_sha256: "d".repeat(64),
+        applied_layers: ["base_structure", "roles"],
+      },
+    },
+  }));
+  expect(await screen.findByText("Поколение опубликовано", { exact: false })).toBeInTheDocument();
 });
 
 it("принимает полный ZIP как durable candidate и обновляет список", async () => {

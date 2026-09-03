@@ -18,6 +18,7 @@ from conftest import build_configuration, write_export, живой_клиент
 from mcp1c.dashboard_runtime import DASHBOARD_ON, routes
 from mcp1c.reference_provider import ReferenceService
 from mcp1c.registry import Registry
+from mcp1c.role_access import RoleAccessIndex
 from mcp1c.server import build_server
 from test_role_access_index import (
     RIGHTS_NS,
@@ -92,6 +93,45 @@ def _roles(
             _rights(),
         ),
     )
+
+
+def _summary_roles():
+    return ((
+        "CompactReader",
+        _descriptor(
+            "CompactReader",
+            uuid="66666666-6666-6666-6666-666666666666",
+            comment="Синтетическая компактная роль",
+            synonyms=(("en", "Compact reader"), ("ru", "Компактное чтение")),
+        ),
+        _rights((
+            (
+                "Catalog.Orders",
+                (
+                    _right("Read", True),
+                    _right("View", True),
+                    _right("Update", False),
+                    _right("Edit", False),
+                ),
+            ),
+            (
+                "Catalog.Orders.Attribute.Code",
+                (_right("Read", True), _right("View", False)),
+            ),
+            (
+                "Catalog.Orders.Command.Open",
+                (_right("Use", True, condition="Allowed = true"),),
+            ),
+            (
+                "Catalog.Orders.TabularSection.Items.Attribute.Price",
+                (_right("Read", True),),
+            ),
+            (
+                "Catalog.Hidden",
+                (_right("Read", False), _right("View", False)),
+            ),
+        )),
+    ),)
 
 
 def _publish(
@@ -211,7 +251,7 @@ async def test_role_tools_отсутствуют_без_ready_и_появляю�
         "limit",
     }
     assert find_fields["operations"]["minItems"] == 1
-    assert find_fields["operations"]["maxItems"] == 6
+    assert find_fields["operations"]["maxItems"] == 16
     assert find_fields["limit"]["maximum"] == 20
     assert "объявлен" in (find.description or "").lower()
     assert "эффектив" in (find.description or "").lower()
@@ -222,6 +262,7 @@ async def test_role_tools_отсутствуют_без_ready_и_появляю�
         "role",
         "config",
         "full_name",
+        "detail",
         "cursor",
         "limit",
         "restriction_ref",
@@ -242,7 +283,7 @@ async def test_role_tools_отсутствуют_без_ready_и_появляю�
             separators=(",", ":"),
         ).encode("utf-8")
     )
-    assert role_schema_bytes <= 7_000
+    assert role_schema_bytes <= 7_500
 
 
 async def test_role_catalog_обновляется_без_restart_и_посылает_list_changed(
@@ -335,8 +376,18 @@ async def test_find_mcp_и_api_дают_один_resolver_и_страницу_к
     assert mcp["source_sha256"] == "a" * 64
     assert mcp["source_target"] == "Catalog.Orders"
     assert mcp["checked_rights"] == [
-        {"operation": "read", "platform_right": "Read"},
-        {"operation": "update", "platform_right": "Update"},
+        {
+            "operation": "read",
+            "label_ru": "Чтение данных",
+            "channel": "programmatic",
+            "platform_right": "Read",
+        },
+        {
+            "operation": "update",
+            "label_ru": "Изменение данных",
+            "channel": "programmatic",
+            "platform_right": "Update",
+        },
     ]
     assert mcp["candidates_total"] == 2
     assert len(mcp["candidates"]) == 1
@@ -396,6 +447,9 @@ async def test_conditional_opt_in_и_explicit_false_различаются(tmp_p
         "read",
         "update",
     ]
+    assert conditional_by_name["Conditional"]["has_rls"] is True
+    assert conditional_by_name["Conditional"]["rls_detail_available"] is True
+    assert "get_role_access" in conditional_by_name["Conditional"]["next_action"]
     assert {
         right["state"]
         for right in conditional_by_name["Conditional"]["matched_rights"]
@@ -403,6 +457,154 @@ async def test_conditional_opt_in_и_explicit_false_различаются(tmp_p
     assert conditional["minimal_role_set"] == {
         "roles": ["Conditional"],
         "proof": "explicit_with_conditions",
+    }
+
+
+async def test_get_role_access_сводит_объекты_и_отдаёт_детали_только_явно(
+    tmp_path,
+    monkeypatch,
+):
+    registry = Registry(tmp_path / "data")
+    _publish(
+        registry,
+        tmp_path / "source",
+        configuration="DemoConfiguration",
+        generation_id="generation-1",
+        roles=_summary_roles(),
+    )
+    server = _server(registry, tmp_path)
+    base = {"config": "DemoConfiguration", "role": "CompactReader"}
+    role_access_calls = []
+    original_role_access = RoleAccessIndex.role_access
+
+    def tracked_role_access(self, *args, **kwargs):
+        role_access_calls.append((args, kwargs))
+        return original_role_access(self, *args, **kwargs)
+
+    monkeypatch.setattr(RoleAccessIndex, "role_access", tracked_role_access)
+
+    compact = _tool_json(await server.call_tool("get_role_access", base))
+
+    assert role_access_calls == []
+    assert compact["mode"] == "objects"
+    assert compact["role"]["label_ru"] == "Компактное чтение"
+    assert compact["objects_total"] == 1
+    assert len(compact["objects"]) == 1
+    summary = compact["objects"][0]
+    assert summary["target"] == "Catalog.Orders"
+    assert summary["full_name"] == "Справочник.Orders"
+    assert summary["kind_ru"] == "Справочник"
+    assert {right["name"] for right in summary["root_rights"]} == {
+        "Read",
+        "View",
+    }
+    assert summary["has_rls"] is True
+    assert summary["rls_detail_available"] is True
+    assert "detail=children" in summary["next_action"]
+    assert summary["descendants"] == {
+        "targets_with_grants": 3,
+        "granted_rights": 3,
+        "conditional_rights": 1,
+        "detail_available": True,
+    }
+    assert "explicit_false" not in json.dumps(compact, ensure_ascii=False)
+    assert "Catalog.Hidden" not in json.dumps(compact, ensure_ascii=False)
+
+    exact = _tool_json(
+        await server.call_tool(
+            "get_role_access",
+            {**base, "full_name": "Справочник.Orders"},
+        )
+    )
+    assert len(role_access_calls) == 1
+    checks = {
+        row["operation"]: row for row in exact["objects"][0]["operation_checks"]
+    }
+    assert checks["read"]["granted"] is True
+    assert checks["view"]["granted"] is True
+    assert checks["update"] == {
+        "operation": "update",
+        "label_ru": "Изменение данных",
+        "channel": "programmatic",
+        "platform_right": "Update",
+        "granted": False,
+        "state": "not_granted",
+        "evidence": "explicit_false",
+        "has_rls": False,
+        "rls_detail_available": False,
+    }
+    assert checks["delete"]["granted"] is False
+    assert checks["delete"]["evidence"] == "not_declared"
+
+    interactive = _tool_json(
+        await server.call_tool(
+            "find_roles_for_access",
+            {
+                "config": "DemoConfiguration",
+                "full_name": "Справочник.Orders",
+                "operations": ["view", "edit"],
+            },
+        )
+    )
+    assert interactive["checked_rights"] == [
+        {
+            "operation": "view",
+            "label_ru": "Интерактивный просмотр",
+            "channel": "interactive",
+            "platform_right": "View",
+        },
+        {
+            "operation": "edit",
+            "label_ru": "Интерактивное редактирование",
+            "channel": "interactive",
+            "platform_right": "Edit",
+        },
+    ]
+    assert interactive["candidates"][0]["matched_operations"] == ["view"]
+    assert interactive["candidates"][0]["denied_operations"] == ["edit"]
+
+    children = _tool_json(
+        await server.call_tool(
+            "get_role_access",
+            {
+                **base,
+                "full_name": "Справочник.Orders",
+                "detail": "children",
+            },
+        )
+    )
+    assert children["mode"] == "children"
+    assert children["rights_total"] == 3
+    assert {right["target"] for right in children["rights"]} == {
+        "Catalog.Orders.Attribute.Code",
+        "Catalog.Orders.Command.Open",
+        "Catalog.Orders.TabularSection.Items.Attribute.Price",
+    }
+    nested = next(right for right in children["rights"] if right["child_name"] == "Price")
+    assert nested["child_kind_ru"] == "Реквизит"
+    assert nested["child_path"] == "TabularSection.Items.Attribute.Price"
+    conditional = next(right for right in children["rights"] if right["name"] == "Use")
+    assert conditional["has_rls"] is True
+    assert conditional["rls_detail_available"] is True
+    assert "restriction_ref" in conditional["next_action"]
+    assert conditional["restrictions"][0]["ref"]
+    assert "explicit_false" not in json.dumps(children, ensure_ascii=False)
+
+    audit = _tool_json(
+        await server.call_tool(
+            "get_role_access",
+            {
+                **base,
+                "full_name": "Справочник.Orders",
+                "detail": "audit",
+            },
+        )
+    )
+    assert audit["mode"] == "audit"
+    assert {right["state"] for right in audit["rights"]} >= {
+        "unconditional_true",
+        "conditional_true",
+        "explicit_false",
     }
 
 
@@ -429,13 +631,17 @@ async def test_get_role_access_пагинирует_и_rls_читается_бе
     arguments = {
         "config": "DemoConfiguration",
         "role": "Conditional",
-        "limit": 1,
+        "full_name": "Справочник.Orders",
     }
 
     mcp = _tool_json(await server.call_tool("get_role_access", arguments))
     api = client.get(
         "/api/v1/roles/access",
-        params={"config": "DemoConfiguration", "role": "Conditional", "limit": 1},
+        params={
+            "config": "DemoConfiguration",
+            "role": "Conditional",
+            "full_name": "Справочник.Orders",
+        },
     )
 
     assert api.status_code == 200
@@ -445,9 +651,11 @@ async def test_get_role_access_пагинирует_и_rls_читается_бе
     assert mcp["generation"] == "generation-1"
     assert mcp["source_sha256"] == "a" * 64
     assert mcp["role"]["uuid"] == "33333333-3333-3333-3333-333333333333"
-    assert mcp["rights_total"] == 2
-    assert len(mcp["rights"]) == 1
-    right = mcp["rights"][0]
+    assert mcp["mode"] == "objects"
+    assert mcp["objects_total"] == 1
+    assert len(mcp["objects"]) == 1
+    assert len(mcp["objects"][0]["root_rights"]) == 2
+    right = mcp["objects"][0]["root_rights"][0]
     assert right["state"] == "conditional_true"
     assert right["restrictions"][0]["chars"] == len(condition)
     assert right["restrictions"][0]["fields"] == [
@@ -525,8 +733,8 @@ async def test_descriptor_only_роль_возвращает_null_флаги_и_
     )
 
     assert payload["state"] == "ready"
-    assert payload["rights"] == []
-    assert payload["rights_total"] == 0
+    assert payload["objects"] == []
+    assert payload["objects_total"] == 0
     assert payload["role"]["default_flags"] == {
         "set_for_new_objects": None,
         "set_for_attributes_by_default": None,
@@ -627,13 +835,33 @@ def test_roles_api_объясняет_setup_missing_error_и_требует_read
     assert setup.json()["roles_total"] == 4
     assert len(setup.json()["roles"]) == 2
     assert setup.json()["page"]["next_cursor"]
-    assert setup.json()["operations"] == [
-        {"operation": "read", "platform_right": "Read"},
-        {"operation": "update", "platform_right": "Update"},
-        {"operation": "insert", "platform_right": "Insert"},
-        {"operation": "delete", "platform_right": "Delete"},
-        {"operation": "posting", "platform_right": "Posting"},
-        {"operation": "use", "platform_right": "Use"},
+    operations = setup.json()["operations"]
+    assert len(operations) == 16
+    assert operations[:4] == [
+        {
+            "operation": "read",
+            "label_ru": "Чтение данных",
+            "channel": "programmatic",
+            "platform_right": "Read",
+        },
+        {
+            "operation": "view",
+            "label_ru": "Интерактивный просмотр",
+            "channel": "interactive",
+            "platform_right": "View",
+        },
+        {
+            "operation": "update",
+            "label_ru": "Изменение данных",
+            "channel": "programmatic",
+            "platform_right": "Update",
+        },
+        {
+            "operation": "edit",
+            "label_ru": "Интерактивное редактирование",
+            "channel": "interactive",
+            "platform_right": "Edit",
+        },
     ]
     assert missing.status_code == 409
     assert missing.json()["state"] == "missing"

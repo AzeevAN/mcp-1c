@@ -25,7 +25,7 @@ role-операции появляются, только когда хотя б�
 | `search_reference` | `query`, `domain`, `kind`, `platform`, `include_explicit`, `include_hidden`, `limit` | короткие карточки общей справки и точные `id` |
 | `get_reference` | `item_id`, `section_id`, `cursor`, `max_chars`, `platform` | страница точной карточки или раздела и `next_cursor` |
 | `find_roles_for_access` | `full_name`, `operations`, `config`, `child_path`, `include_conditional`, `cursor`, `limit` | роли-кандидаты, доказанные пробелы и точное сопоставление операций правам платформы |
-| `get_role_access` | `role`, `config`, `full_name`, `cursor`, `limit`, `restriction_ref`, `restriction_cursor`, `max_chars` | страница объявленных прав роли либо окно одного явно выбранного RLS/шаблона |
+| `get_role_access` | `role`, `config`, `full_name`, `detail`, `cursor`, `limit`, `restriction_ref`, `restriction_cursor`, `max_chars` | компактные объекты роли, явная дочерняя/аудитная детализация либо окно RLS/шаблона |
 
 Если загружено больше одной конфигурации, `config` обязателен там, где он
 предусмотрен. Сервер не выбирает первую конфигурацию молча.
@@ -50,28 +50,44 @@ restart: после intake confirm, удаления источника или a
 3. `find_roles_for_access(full_name=..., operations=[...])` — получить
    кандидатов, доказанные пробелы и, только при полном покрытии, минимальный
    набор.
-4. `get_role_access(role=...)` — прочитать descriptor и одну страницу прав
-   выбранной роли. `full_name` ограничивает страницу одной точной целью;
-   ссылка каждого RLS содержит упорядоченный массив `fields`, но не condition.
-5. Если у страницы есть `next_cursor`, повторить вызов с тем же запросом и
+4. `get_role_access(role=...)` — прочитать descriptor и страницу корневых
+   объектов только с предоставленными правами. Ответ группирует корневые
+   `true` и даёт счётчики дочерних целей; `false` сюда не входит.
+5. `get_role_access(role=..., full_name=...)` — проверить один точный объект.
+   Помимо тех же предоставленных прав, `operation_checks` различает
+   `explicit_false` и вообще не объявленное право.
+6. `detail=children` с тем же `full_name` открывает только `true` дочерних
+   целей. `detail=audit` явно открывает исходные `true|false` всего поддерева.
+7. Если у страницы есть `next_cursor`, повторить вызов с тем же запросом и
    курсором. Текст RLS не приходит на этом шаге.
-6. Только когда нужно само условие, передать его `restriction_ref` обратно в
+8. Только когда нужно само условие, передать его `restriction_ref` обратно в
    `get_role_access`; `restriction_cursor` дочитывает следующие окна до
    `null`.
 
-Шесть начальных пользовательских операций сопоставляются ровно одному праву
-платформы каждая: `read → Read`, `update → Update`, `insert → Insert`,
-`delete → Delete`, `posting → Posting`, `use → Use`. Ответ всегда повторяет
-это сопоставление. Resolver различает `explicit_false`,
-`unconditional_true` и `conditional_true`: false никогда не предоставляет
-доступ, а условный true участвует в кандидатах только при явном
-`include_conditional=true`. Default-флаги роли сохраняются как свидетельство,
-но недоказанное наследование не подмешивается в расчёт. Если у descriptor роли
-нет `Rights.xml`, список прав пуст, а каждый отсутствующий default-флаг равен
-`null` («не задано»), не `false`.
+Шестнадцать пользовательских операций сопоставляются ровно одному праву
+платформы каждая. Программные пары: `read → Read`, `update → Update`,
+`insert → Insert`, `delete → Delete`, `posting → Posting`,
+`undo_posting → UndoPosting`. Интерактивные пары: `view → View`, `edit → Edit`,
+`interactive_insert → InteractiveInsert`,
+`interactive_delete → InteractiveDelete`,
+`set_deletion_mark → InteractiveSetDeletionMark`,
+`clear_deletion_mark → InteractiveClearDeletionMark`,
+`interactive_posting → InteractivePosting`,
+`interactive_undo_posting → InteractiveUndoPosting`,
+`input_by_string → InputByString`; `use → Use` остаётся отдельным платформенным
+правом. Ответ всегда повторяет русское название операции, канал и точное
+сопоставление. Resolver различает `explicit_false`, `unconditional_true` и
+`conditional_true`: false никогда не предоставляет доступ, а условный true
+участвует в кандидатах только при явном `include_conditional=true`. Любой
+условный результат сообщает, что есть RLS и как явно запросить условие.
+Default-флаги роли сохраняются как свидетельство, но недоказанное наследование
+не подмешивается в расчёт. Если у descriptor роли нет `Rights.xml`, список
+объектов пуст, а каждый отсутствующий default-флаг равен `null` («не задано»),
+не `false`.
 
 `find_roles_for_access` возвращает не больше 20 кандидатов за страницу,
-`get_role_access` — не больше 100 прав. Окно одного RLS ограничено 256–8 000
+`get_role_access` — не больше 100 объектов или детальных прав. Окно одного RLS
+ограничено 256–8 000
 символами; курсор позволяет дочитать исходный текст полностью. Одно XML-
 ограничение не размножается по полям: `fields` сохраняет все цели в исходном
 порядке, а пустой `condition` остаётся доступным условным RLS или шаблоном с
@@ -85,7 +101,7 @@ restart: после intake confirm, удаления источника или a
 Инструменты не читают пользователей и назначения ролей, не назначают и не
 изменяют роли. Если пропустить `find_roles_for_access`, роль придётся выбирать
 без серверного доказательства покрытия. Если пропустить `get_role_access`, не
-будут проверены explicit false, условные права и точные дочерние пути
+будут проверены точные отрицательные ответы, условные права и дочерние пути
 кандидата.
 
 ## Рабочая последовательность для общей справки

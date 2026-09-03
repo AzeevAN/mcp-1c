@@ -360,11 +360,13 @@ ROLE_OPERATIONS_PARAM = Annotated[
     list[str],
     Field(
         min_length=1,
-        max_length=6,
+        max_length=16,
         description=(
-            "Одна или несколько базовых операций: read, update, insert, "
-            "delete, posting, use. Ответ всегда показывает точное право "
-            "платформы, с которым сопоставлена каждая операция."
+            "Одна или несколько точных операций. Базовые read, update, "
+            "insert, delete, posting, undo_posting отделены от интерактивных "
+            "view, edit, interactive_insert, interactive_delete, "
+            "set_deletion_mark, clear_deletion_mark, interactive_posting, "
+            "interactive_undo_posting, input_by_string; use проверяет Use."
         ),
     ),
 ]
@@ -944,6 +946,15 @@ def build_server(
                 "страницу прав одной целью."
             )
         )] = "",
+        detail: Annotated[str, Field(
+            pattern="^(summary|children|audit)$",
+            description=(
+                "summary возвращает компактные объекты только с true; при "
+                "full_name также даёт точную проверку известных операций. "
+                "children явно открывает только true дочерних целей, audit "
+                "показывает исходные true/false всего поддерева."
+            ),
+        )] = "summary",
         cursor: Annotated[str | None, Field(
             max_length=2048,
             description=(
@@ -974,6 +985,7 @@ def build_server(
             role,
             config=config,
             full_name=full_name,
+            detail=detail,
             cursor=cursor,
             limit=limit,
             restriction_ref=restriction_ref,
@@ -988,7 +1000,8 @@ def build_server(
             (
                 find_roles_for_access,
                 "find_roles_for_access",
-                "Подобрать роли по объекту и базовым операциям только из "
+                "Подобрать роли по объекту и точным базовым либо "
+                "интерактивным операциям только из "
                 "объявленных прав. Ответ не является эффективным доступом "
                 "пользователя, показывает точное сопоставление операция → "
                 "право платформы, explicit false, безусловные и RLS-права. "
@@ -999,10 +1012,12 @@ def build_server(
                 get_role_access,
                 "get_role_access",
                 "Прочитать объявленные права одной роли ограниченными "
-                "страницами. Обычный ответ различает explicit false, "
-                "безусловный true и условный true, но не содержит полный "
-                "RLS. Текст одного RLS или шаблона открывается только явно "
-                "по restriction_ref и дочитывается по next_cursor. Это не "
+                "страницами. summary показывает объекты и только доказанные "
+                "true; запрос одного объекта отдельно проверяет базовые и "
+                "интерактивные операции. children открывает дочерние права, "
+                "audit — исходные false. Любой условный ответ сообщает о RLS "
+                "и следующем вызове; текст открывается только явно по "
+                "restriction_ref и дочитывается по next_cursor. Это не "
                 "эффективный доступ пользователя.",
             ),
         ),

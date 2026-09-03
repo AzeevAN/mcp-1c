@@ -14,6 +14,7 @@ import {
   type RestrictionRequest,
   type RoleAccessRequest,
   type RoleDescriptor,
+  type RoleObjectSummary,
   RolesApiError,
   useFindRoles,
   useRoleAccess,
@@ -30,8 +31,8 @@ function errorText(error: unknown) {
 
 function stateLabel(state: DeclaredRightRow["state"]) {
   if (state === "explicit_false") return "Явный false";
-  if (state === "conditional_true") return "Условный true · RLS";
-  return "Безусловный true";
+  if (state === "conditional_true") return "С ограничением RLS";
+  return "Предоставлено";
 }
 
 function stateClass(state: DeclaredRightRow["state"]) {
@@ -43,6 +44,18 @@ function stateClass(state: DeclaredRightRow["state"]) {
 function defaultFlag(value: boolean | null) {
   if (value === null) return "не задано";
   return value ? "true" : "false";
+}
+
+function roleLabel(role: RoleDescriptor) {
+  return role.label_ru
+    || role.synonyms.find((item) => item.language.toLowerCase().startsWith("ru"))?.content
+    || role.name;
+}
+
+function channelLabel(channel: DeclaredRightRow["channel"]) {
+  if (channel === "programmatic") return "Доступ из кода";
+  if (channel === "interactive") return "Действия в интерфейсе";
+  return "Права платформы";
 }
 
 function pageLabel(offset: number, limit: number, returned: number, total: number) {
@@ -68,6 +81,8 @@ export function RolesPage() {
       cursor: accessCursor,
     } : null;
   const access = useRoleAccess(accessRequest);
+  const [detailRequest, setDetailRequest] = useState<RoleAccessRequest | null>(null);
+  const detail = useRoleAccess(detailRequest);
 
   const [objectName, setObjectName] = useState(searchParams.get("object") || "");
   const [operations, setOperations] = useState<string[]>([]);
@@ -101,6 +116,13 @@ export function RolesPage() {
     ? roleOptions
     : catalog.data?.roles || [];
   const operationOptions = catalog.data?.operations || [];
+  const operationLabels = useMemo(
+    () => new Map(operationOptions.map((item) => [
+      item.operation,
+      `${item.label_ru} (${item.operation})`,
+    ])),
+    [operationOptions],
+  );
   const selectedDescriptor = useMemo(
     () => visibleRoleOptions.find((item) => item.name === requestedRole),
     [requestedRole, visibleRoleOptions],
@@ -122,6 +144,7 @@ export function RolesPage() {
     setFindRequest(null);
     setRestrictionRequest(null);
     setRestrictionContent("");
+    setDetailRequest(null);
     updateParams({ config, role: null, object: null });
   };
 
@@ -129,6 +152,7 @@ export function RolesPage() {
     setAccessCursor(undefined);
     setRestrictionRequest(null);
     setRestrictionContent("");
+    setDetailRequest(null);
     updateParams({ role });
   };
 
@@ -167,6 +191,32 @@ export function RolesPage() {
     setRestrictionRequest({ ...restrictionRequest, cursor });
   };
 
+  const openObjectDetail = (
+    object: RoleObjectSummary,
+    requestedDetail: "children" | "audit",
+  ) => {
+    if (!effectiveConfig || !requestedRole) return;
+    setDetailRequest({
+      config: effectiveConfig,
+      role: requestedRole,
+      fullName: object.full_name,
+      detail: requestedDetail,
+    });
+  };
+
+  const continueObjectDetail = () => {
+    const cursor = detail.data?.page?.next_cursor;
+    if (!detailRequest || !cursor) return;
+    setDetailRequest({ ...detailRequest, cursor });
+  };
+
+  const continueObjects = () => {
+    const cursor = access.data?.page?.next_cursor;
+    if (!cursor) return;
+    setDetailRequest(null);
+    setAccessCursor(cursor);
+  };
+
   if (catalog.isPending) {
     return <section className="roles-page"><div className="section-card"><span className="loading-dot" />Проверяем снимок ролей…</div></section>;
   }
@@ -176,6 +226,7 @@ export function RolesPage() {
   }
 
   const data = catalog.data;
+  const activeDescriptor = access.data?.role || selectedDescriptor;
 
   return (
     <section className="roles-page page-stack">
@@ -255,7 +306,7 @@ export function RolesPage() {
                     <option value="">Выберите роль</option>
                     {visibleRoleOptions.map((item) => (
                       <option key={item.uuid} value={item.name}>
-                        {item.synonyms[0]?.content || item.name}
+                        {roleLabel(item)}
                       </option>
                     ))}
                   </select>
@@ -270,12 +321,12 @@ export function RolesPage() {
                     {catalog.isFetching ? "Читаем роли…" : "Загрузить ещё роли"}
                   </button>
                 )}
-                {selectedDescriptor && (
+                {activeDescriptor && (
                   <div className="role-descriptor">
-                    <strong>{selectedDescriptor.synonyms[0]?.content || selectedDescriptor.name}</strong>
-                    <code>{selectedDescriptor.name}</code>
-                    <p>{selectedDescriptor.comment || "Без комментария."}</p>
-                    <span>UUID {selectedDescriptor.uuid}</span>
+                    <strong>{roleLabel(activeDescriptor)}</strong>
+                    <code>{activeDescriptor.name}</code>
+                    <p>{activeDescriptor.comment || "Без комментария."}</p>
+                    <span>UUID {activeDescriptor.uuid}</span>
                   </div>
                 )}
               </aside>
@@ -285,10 +336,10 @@ export function RolesPage() {
                   <div className="roles-empty-state">
                     <FileLock2 size={30} aria-hidden="true" />
                     <strong>Выберите роль</strong>
-                    <span>Сервер вернёт только первую страницу объявленных прав.</span>
+                    <span>Сервер вернёт первую страницу объектов с доказанными правами.</span>
                   </div>
                 )}
-                {requestedRole && access.isPending && <div className="section-card"><span className="loading-dot" />Читаем страницу прав…</div>}
+                {requestedRole && access.isPending && <div className="section-card"><span className="loading-dot" />Читаем страницу объектов…</div>}
                 {requestedRole && access.isError && <div className="roles-unavailable" role="alert">{errorText(access.error)}</div>}
                 {access.data?.state === "ready" && access.data.role && access.data.page && (
                   <>
@@ -304,42 +355,158 @@ export function RolesPage() {
                       <span>Реквизиты по умолчанию: <strong>{defaultFlag(access.data.role.default_flags.set_for_attributes_by_default)}</strong></span>
                       <span>Независимые дочерние: <strong>{defaultFlag(access.data.role.default_flags.independent_rights_of_child_objects)}</strong></span>
                     </div>
-                    <div className="role-rights-list">
-                      {(access.data.rights || []).map((right) => (
-                        <article key={`${right.target}:${right.name}`}>
-                          <div>
-                            <code>{right.target}</code>
-                            <strong>{right.name}</strong>
+                    <div className="role-object-list">
+                      {(access.data.objects || []).map((object) => (
+                        <article className="role-object-card" key={object.target}>
+                          <header className="role-object-card-head">
+                            <div>
+                              <span className="role-object-kind">{object.kind_ru}</span>
+                              <h3>{object.name}</h3>
+                              <code>{object.full_name}</code>
+                            </div>
+                            {object.has_rls && (
+                              <span className="role-object-rls">Есть ограничения RLS</span>
+                            )}
+                          </header>
+
+                          <div className="role-right-groups">
+                            {(["programmatic", "interactive", "platform"] as const).map((channel) => {
+                              const rights = object.root_rights.filter((right) => right.channel === channel);
+                              if (rights.length === 0) return null;
+                              return (
+                                <section className="role-right-group" key={channel}>
+                                  <h4>{channelLabel(channel)}</h4>
+                                  <div>
+                                    {rights.map((right) => (
+                                      <span className="role-right-chip" key={`${right.target}:${right.name}`}>
+                                        <span>{right.label_ru}</span>
+                                        <code>{right.name}</code>
+                                        {right.state === "conditional_true" && (
+                                          <span className={`role-right-state ${stateClass(right.state)}`}>
+                                            {stateLabel(right.state)}
+                                          </span>
+                                        )}
+                                        {right.restrictions.map((item) => (
+                                          <button
+                                            type="button"
+                                            aria-label="Показать RLS"
+                                            key={item.ref}
+                                            onClick={() => openRestriction(item.ref)}
+                                          >
+                                            Показать RLS
+                                            <small>{item.chars.toLocaleString("ru-RU")} символов</small>
+                                          </button>
+                                        ))}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </section>
+                              );
+                            })}
                           </div>
-                          <span className={`role-right-state ${stateClass(right.state)}`}>
-                            {stateLabel(right.state)}
-                          </span>
-                          {right.restrictions.map((item) => (
+
+                          {object.descendants.detail_available && (
+                            <div className="role-object-descendants">
+                              <span>Дочерних целей с правами: <strong>{object.descendants.targets_with_grants}</strong></span>
+                              <span>Предоставленных прав: <strong>{object.descendants.granted_rights}</strong></span>
+                              {object.descendants.conditional_rights > 0 && (
+                                <span>С RLS: <strong>{object.descendants.conditional_rights}</strong></span>
+                              )}
+                            </div>
+                          )}
+
+                          <div className="role-object-actions">
+                            {object.descendants.detail_available && (
+                              <button
+                                type="button"
+                                onClick={() => openObjectDetail(object, "children")}
+                              >
+                                Показать детали {object.name}
+                              </button>
+                            )}
                             <button
                               type="button"
-                              aria-label="Показать RLS"
-                              key={item.ref}
-                              onClick={() => openRestriction(item.ref)}
+                              onClick={() => openObjectDetail(object, "audit")}
                             >
-                              Показать RLS
-                              <small>{item.chars.toLocaleString("ru-RU")} символов</small>
+                              Открыть технический аудит {object.name}
                             </button>
-                          ))}
+                          </div>
                         </article>
                       ))}
                     </div>
                     <div className="roles-pagination">
-                      <span>{pageLabel(access.data.page.offset, access.data.page.limit, access.data.page.returned, access.data.rights_total || 0)}</span>
+                      <span>{pageLabel(access.data.page.offset, access.data.page.limit, access.data.page.returned, access.data.objects_total || 0)} объектов</span>
                       {access.data.page.next_cursor && (
                         <button
                           type="button"
-                          onClick={() => setAccessCursor(access.data!.page!.next_cursor || undefined)}
+                          onClick={continueObjects}
                         >
-                          Следующая страница прав<ChevronRight size={15} />
+                          Следующая страница объектов<ChevronRight size={15} />
                         </button>
                       )}
                     </div>
                   </>
+                )}
+                {detailRequest && (
+                  <section className="role-object-detail" aria-live="polite">
+                    {detail.isPending && <span><span className="loading-dot" />Читаем детализацию объекта…</span>}
+                    {detail.isError && <div className="roles-unavailable" role="alert">{errorText(detail.error)}</div>}
+                    {detail.data?.state === "ready" && detail.data.object && detail.data.page && (
+                      <>
+                        <header className="role-detail-heading">
+                          <div>
+                            <span>{detail.data.mode === "audit" ? "Технический аудит" : "Дочерние права"}</span>
+                            <h3>{detail.data.object.name}</h3>
+                            <code>{detail.data.object.full_name}</code>
+                          </div>
+                          {detail.data.mode === "audit" && (
+                            <StatusBadge tone="warning">Включая false</StatusBadge>
+                          )}
+                          <button type="button" onClick={() => setDetailRequest(null)}>
+                            Закрыть детали
+                          </button>
+                        </header>
+                        <div className="role-detail-list">
+                          {(detail.data.rights || []).map((right) => (
+                            <article className="role-detail-row" key={`${right.target}:${right.name}`}>
+                              <div>
+                                <span className="role-object-kind">{right.child_kind_ru || detail.data!.object!.kind_ru}</span>
+                                <strong>{right.child_name || detail.data!.object!.name}</strong>
+                                <code>{right.child_path || right.target}</code>
+                              </div>
+                              <div>
+                                <strong>{right.label_ru}</strong>
+                                <code>{right.name}</code>
+                              </div>
+                              {(detail.data!.mode === "audit" || right.state === "conditional_true") && (
+                                <span className={`role-right-state ${stateClass(right.state)}`}>
+                                  {stateLabel(right.state)}
+                                </span>
+                              )}
+                              {right.restrictions.map((item) => (
+                                <button
+                                  type="button"
+                                  aria-label="Показать RLS"
+                                  key={item.ref}
+                                  onClick={() => openRestriction(item.ref)}
+                                >
+                                  Показать RLS
+                                </button>
+                              ))}
+                            </article>
+                          ))}
+                        </div>
+                        <div className="roles-pagination">
+                          <span>{pageLabel(detail.data.page.offset, detail.data.page.limit, detail.data.page.returned, detail.data.rights_total || 0)} прав</span>
+                          {detail.data.page.next_cursor && (
+                            <button type="button" onClick={continueObjectDetail}>
+                              Следующая страница деталей<ChevronRight size={15} />
+                            </button>
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </section>
                 )}
                 {restrictionRequest && (
                   <section className="role-restriction-card" aria-live="polite">
@@ -393,7 +560,10 @@ export function RolesPage() {
                         checked={operations.includes(item.operation)}
                         onChange={() => toggleOperation(item.operation)}
                       />
-                      <span>{item.operation} → <code>{item.platform_right}</code></span>
+                      <span>
+                        {item.label_ru}
+                        <small>{channelLabel(item.channel)} · <code>{item.operation} → {item.platform_right}</code></small>
+                      </span>
                     </label>
                   ))}
                 </fieldset>
@@ -432,17 +602,20 @@ export function RolesPage() {
                       {(found.data.candidates || []).map((candidate) => (
                         <article key={candidate.role.uuid}>
                           <header>
-                            <strong>{candidate.role.synonyms[0]?.content || candidate.role.name}</strong>
+                            <strong>{roleLabel(candidate.role)}</strong>
                             <code>{candidate.role.name}</code>
                             <StatusBadge tone={candidate.complete ? "success" : "warning"}>
                               {candidate.complete ? "Полное покрытие" : "Частичное покрытие"}
                             </StatusBadge>
                           </header>
-                          <span>Даёт: {candidate.matched_operations.join(", ") || "—"}</span>
-                          <span>Не хватает: {candidate.missing_operations.join(", ") || "—"}</span>
-                          <span>Явный false: {candidate.denied_operations.join(", ") || "—"}</span>
+                          <span>Даёт: {candidate.matched_operations.map((item) => operationLabels.get(item) || item).join(", ") || "—"}</span>
+                          <span>Не хватает: {candidate.missing_operations.map((item) => operationLabels.get(item) || item).join(", ") || "—"}</span>
+                          <span>Не предоставляет: {candidate.denied_operations.map((item) => operationLabels.get(item) || item).join(", ") || "—"}</span>
                           {candidate.conditional_operations.length > 0 && (
-                            <span>Условно через RLS: {candidate.conditional_operations.join(", ")}</span>
+                            <span>Условно через RLS: {candidate.conditional_operations.map((item) => operationLabels.get(item) || item).join(", ")}</span>
+                          )}
+                          {candidate.has_rls && (
+                            <span>Есть ограничения RLS; условия открываются отдельно из карточки роли.</span>
                           )}
                         </article>
                       ))}

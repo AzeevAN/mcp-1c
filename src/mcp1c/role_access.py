@@ -34,7 +34,7 @@ from .intake_v2_registry import (
 )
 
 
-_CACHE_FORMAT = 3
+_CACHE_FORMAT = 4
 _MAX_CACHE_BYTES = 512 * 1024 * 1024
 _MAX_ROLE_XML_BYTES = 256 * 1024 * 1024
 _MAX_ROLE_NAME = 512
@@ -45,16 +45,49 @@ _CORE_NAMESPACE = "http://v8.1c.ru/8.1/data/core"
 _READABLE_NAMESPACE = "http://v8.1c.ru/8.3/xcf/readable"
 _RIGHTS_NAMESPACE = "http://v8.1c.ru/8.2/roles"
 
-# Операции означают только проверку одноимённого базового права платформы.
-# Интерактивные права не подмешиваются эвристически: потребитель видит точное
-# сопоставление и не получает обещание эффективного доступа пользователя.
+# Каждая операция означает только проверку одного точного права платформы.
+# Базовые и интерактивные права намеренно разделены: Read не доказывает View,
+# Update не доказывает Edit, а потребитель не получает обещание эффективного
+# доступа пользователя.
 OPERATION_RIGHTS: Mapping[str, str] = {
     "read": "Read",
+    "view": "View",
     "update": "Update",
+    "edit": "Edit",
     "insert": "Insert",
+    "interactive_insert": "InteractiveInsert",
     "delete": "Delete",
+    "interactive_delete": "InteractiveDelete",
+    "set_deletion_mark": "InteractiveSetDeletionMark",
+    "clear_deletion_mark": "InteractiveClearDeletionMark",
     "posting": "Posting",
+    "undo_posting": "UndoPosting",
+    "interactive_posting": "InteractivePosting",
+    "interactive_undo_posting": "InteractiveUndoPosting",
+    "input_by_string": "InputByString",
     "use": "Use",
+}
+
+OPERATION_PRESENTATION: Mapping[str, tuple[str, str]] = {
+    "read": ("Чтение данных", "programmatic"),
+    "view": ("Интерактивный просмотр", "interactive"),
+    "update": ("Изменение данных", "programmatic"),
+    "edit": ("Интерактивное редактирование", "interactive"),
+    "insert": ("Добавление данных", "programmatic"),
+    "interactive_insert": ("Интерактивное добавление", "interactive"),
+    "delete": ("Удаление данных", "programmatic"),
+    "interactive_delete": ("Интерактивное удаление", "interactive"),
+    "set_deletion_mark": ("Установка пометки удаления", "interactive"),
+    "clear_deletion_mark": ("Снятие пометки удаления", "interactive"),
+    "posting": ("Проведение", "programmatic"),
+    "undo_posting": ("Отмена проведения", "programmatic"),
+    "interactive_posting": ("Интерактивное проведение", "interactive"),
+    "interactive_undo_posting": (
+        "Интерактивная отмена проведения",
+        "interactive",
+    ),
+    "input_by_string": ("Ввод по строке", "interactive"),
+    "use": ("Использование", "platform"),
 }
 
 _PUBLIC_TO_SOURCE_KIND = {
@@ -176,6 +209,25 @@ class RoleAccessPage:
     offset: int
     next_offset: int | None
     template_refs: tuple[RoleTemplateReference, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class RoleObjectSummary:
+    target: str
+    root_grants: int
+    descendant_grants: int
+    descendant_targets: int
+    conditional_grants: int
+    root_rights: tuple[DeclaredRight, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RoleObjectPage:
+    role: RoleDescriptor
+    objects: tuple[RoleObjectSummary, ...]
+    total: int
+    offset: int
+    next_offset: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -585,6 +637,16 @@ CREATE TABLE templates (
     condition_id INTEGER NOT NULL REFERENCES conditions(id),
     UNIQUE(role_id, name_key)
 );
+CREATE TABLE role_objects (
+    role_id INTEGER NOT NULL REFERENCES roles(id),
+    target TEXT NOT NULL,
+    target_key TEXT NOT NULL,
+    root_grants INTEGER NOT NULL,
+    descendant_grants INTEGER NOT NULL,
+    descendant_targets INTEGER NOT NULL,
+    conditional_grants INTEGER NOT NULL,
+    PRIMARY KEY(role_id, target_key)
+) WITHOUT ROWID;
 CREATE INDEX rights_by_target ON rights(target_id, right_name_id, value, conditional, role_id);
 CREATE INDEX rights_by_role ON rights(role_id, target_id, right_name_id);
 CREATE INDEX restrictions_by_right ON restrictions(right_id);
@@ -885,6 +947,34 @@ def _build_database(
                         "independent_children=? WHERE id=?",
                         (*map(int, flags), role_id),
                     )
+            root_path = (
+                "CASE WHEN instr(substr(t.path,instr(t.path,'.')+1),'.')=0 "
+                "THEN t.path ELSE substr(t.path,1,instr(t.path,'.')+"
+                "instr(substr(t.path,instr(t.path,'.')+1),'.')-1) END"
+            )
+            root_key = (
+                "CASE WHEN instr(substr(t.path_key,instr(t.path_key,'.')+1),'.')=0 "
+                "THEN t.path_key ELSE substr(t.path_key,1,instr(t.path_key,'.')+"
+                "instr(substr(t.path_key,instr(t.path_key,'.')+1),'.')-1) END"
+            )
+            connection.execute(
+                "INSERT INTO role_objects(role_id,target,target_key,root_grants,"
+                "descendant_grants,descendant_targets,conditional_grants) "
+                "SELECT r.role_id,min("
+                + root_path
+                + "),"
+                + root_key
+                + ",sum(t.path_key=("
+                + root_key
+                + ")),sum(t.path_key<>("
+                + root_key
+                + ")),count(DISTINCT CASE WHEN t.path_key<>("
+                + root_key
+                + ") THEN t.path_key END),sum(r.conditional) "
+                "FROM rights r JOIN targets t ON t.id=r.target_id "
+                "WHERE r.value=1 GROUP BY r.role_id,"
+                + root_key
+            )
             connection.execute(
                 "INSERT INTO meta(key,value) VALUES ('stamp',?)", (_stamp(layer),)
             )
@@ -1150,11 +1240,84 @@ class RoleAccessIndex:
             raise KeyError(name)
         return next(iter(roles.values()))
 
+    def _materialize_rights(
+        self,
+        rows: list[sqlite3.Row],
+        *,
+        include_restrictions: bool = False,
+    ) -> tuple[DeclaredRight, ...]:
+        """Собрать bounded-строки прав; вызывается только под ``self._lock``."""
+        restrictions: dict[int, list[RoleRestriction]] = {
+            int(row["id"]): [] for row in rows
+        }
+        restriction_refs: dict[int, list[RoleRestrictionReference]] = {
+            int(row["id"]): [] for row in rows
+        }
+        if rows:
+            ids = tuple(restrictions)
+            placeholders = ",".join("?" for _ in ids)
+            # Обычная страница возвращает только размер и ссылку. Даже
+            # локальная строка результата не должна содержать огромный RLS.
+            content_column = "c.content" if include_restrictions else "''"
+            restriction_rows = self._connection.execute(
+                "SELECT x.id,x.right_id,length(c.content) AS chars,"
+                "length(CAST(c.content AS BLOB)) AS bytes,"
+                f"{content_column} AS content FROM restrictions x "
+                "JOIN conditions c ON c.id=x.condition_id "
+                f"WHERE x.right_id IN ({placeholders}) "
+                "ORDER BY x.right_id,x.id",
+                ids,
+            ).fetchall()
+            fields_by_restriction: dict[int, list[str]] = {
+                int(raw["id"]): [] for raw in restriction_rows
+            }
+            for field_row in self._connection.execute(
+                "SELECT f.restriction_id,t.path FROM restriction_fields f "
+                "JOIN restrictions x ON x.id=f.restriction_id "
+                "JOIN targets t ON t.id=f.field_target_id "
+                f"WHERE x.right_id IN ({placeholders}) "
+                "ORDER BY f.restriction_id,f.ordinal",
+                ids,
+            ):
+                fields_by_restriction[int(field_row["restriction_id"])].append(
+                    str(field_row["path"])
+                )
+            for raw in restriction_rows:
+                right_id = int(raw["right_id"])
+                restriction_id = int(raw["id"])
+                fields = tuple(fields_by_restriction[restriction_id])
+                restriction_refs[right_id].append(
+                    RoleRestrictionReference(
+                        id=restriction_id,
+                        fields=fields,
+                        chars=int(raw["chars"]),
+                        bytes=int(raw["bytes"]),
+                    )
+                )
+                if include_restrictions:
+                    restrictions[right_id].append(
+                        RoleRestriction(str(raw["content"]), fields)
+                    )
+        return tuple(
+            DeclaredRight(
+                target=str(row["path"]),
+                name=str(row["name"]),
+                value=bool(row["value"]),
+                has_restrictions=bool(row["conditional"]),
+                restrictions=tuple(restrictions[int(row["id"])]),
+                restriction_refs=tuple(restriction_refs[int(row["id"])]),
+            )
+            for row in rows
+        )
+
     def role_access(
         self,
         role: str,
         *,
         target: str = "",
+        subtree: bool = False,
+        include_root: bool = True,
+        only_granted: bool = False,
         include_restrictions: bool = False,
         offset: int = 0,
         limit: int = 100,
@@ -1167,8 +1330,24 @@ class RoleAccessIndex:
         where = "r.role_id=(SELECT id FROM roles WHERE name_key=?)"
         parameters: list[object] = [descriptor.name.casefold()]
         if target:
-            where += " AND t.path_key=?"
-            parameters.append(target.casefold())
+            target_key = target.casefold()
+            if subtree:
+                if include_root:
+                    where += (
+                        " AND (t.path_key=? OR "
+                        "(t.path_key>=?||'.' AND t.path_key<?||'/'))"
+                    )
+                    parameters.extend((target_key, target_key, target_key))
+                else:
+                    where += " AND t.path_key>=?||'.' AND t.path_key<?||'/'"
+                    parameters.extend((target_key, target_key))
+            else:
+                where += " AND t.path_key=?"
+                parameters.append(target_key)
+        elif subtree:
+            raise ValueError("subtree требует target")
+        if only_granted:
+            where += " AND r.value=1"
         query = (
             "SELECT r.id,t.path,n.name,r.value,r.conditional FROM rights r "
             "JOIN targets t ON t.id=r.target_id "
@@ -1186,60 +1365,10 @@ class RoleAccessIndex:
             rows = self._connection.execute(
                 query, (*parameters, limit, offset)
             ).fetchall()
-            restrictions: dict[int, list[RoleRestriction]] = {
-                int(row["id"]): [] for row in rows
-            }
-            restriction_refs: dict[int, list[RoleRestrictionReference]] = {
-                int(row["id"]): [] for row in rows
-            }
-            if rows:
-                ids = tuple(restrictions)
-                placeholders = ",".join("?" for _ in ids)
-                # Обычная страница возвращает только размер и ссылку. Даже
-                # локальная строка результата не должна содержать огромный RLS.
-                content_column = "c.content" if include_restrictions else "''"
-                restriction_rows = self._connection.execute(
-                    "SELECT x.id,x.right_id,length(c.content) AS chars,"
-                    "length(CAST(c.content AS BLOB)) AS bytes,"
-                    f"{content_column} AS content FROM restrictions x "
-                    "JOIN conditions c ON c.id=x.condition_id "
-                    f"WHERE x.right_id IN ({placeholders}) "
-                    "ORDER BY x.right_id,x.id",
-                    ids,
-                ).fetchall()
-                fields_by_restriction: dict[int, list[str]] = {
-                    int(raw["id"]): [] for raw in restriction_rows
-                }
-                for field_row in self._connection.execute(
-                    "SELECT f.restriction_id,t.path FROM restriction_fields f "
-                    "JOIN restrictions x ON x.id=f.restriction_id "
-                    "JOIN targets t ON t.id=f.field_target_id "
-                    f"WHERE x.right_id IN ({placeholders}) "
-                    "ORDER BY f.restriction_id,f.ordinal",
-                    ids,
-                ):
-                    fields_by_restriction[int(field_row["restriction_id"])].append(
-                        str(field_row["path"])
-                    )
-                for raw in restriction_rows:
-                    right_id = int(raw["right_id"])
-                    restriction_id = int(raw["id"])
-                    fields = tuple(fields_by_restriction[restriction_id])
-                    restriction_refs[right_id].append(
-                        RoleRestrictionReference(
-                            id=restriction_id,
-                            fields=fields,
-                            chars=int(raw["chars"]),
-                            bytes=int(raw["bytes"]),
-                        )
-                    )
-                    if include_restrictions:
-                        restrictions[right_id].append(
-                            RoleRestriction(
-                                str(raw["content"]),
-                                fields,
-                            )
-                        )
+            rights = self._materialize_rights(
+                rows,
+                include_restrictions=include_restrictions,
+            )
             templates: tuple[tuple[str, str], ...] = ()
             if include_restrictions:
                 templates = tuple(
@@ -1252,17 +1381,6 @@ class RoleAccessIndex:
                         (descriptor.name.casefold(),),
                     )
                 )
-        rights = tuple(
-            DeclaredRight(
-                target=str(row["path"]),
-                name=str(row["name"]),
-                value=bool(row["value"]),
-                has_restrictions=bool(row["conditional"]),
-                restrictions=tuple(restrictions[int(row["id"])]),
-                restriction_refs=tuple(restriction_refs[int(row["id"])]),
-            )
-            for row in rows
-        )
         next_offset = offset + len(rights) if offset + len(rights) < total else None
         return RoleAccessPage(
             descriptor,
@@ -1273,6 +1391,73 @@ class RoleAccessIndex:
             next_offset,
             (),
         )
+
+    def role_objects(
+        self,
+        role: str,
+        *,
+        target: str = "",
+        offset: int = 0,
+        limit: int = 50,
+    ) -> RoleObjectPage:
+        """Свернуть доказанные ``true`` одной роли до корневых объектов."""
+        descriptor = self.get_role(role)
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise ValueError("offset должен быть целым числом не меньше нуля")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise ValueError("limit должен быть от 1 до 100")
+        where = "role_id=(SELECT id FROM roles WHERE name_key=?)"
+        parameters: list[object] = [descriptor.name.casefold()]
+        if target:
+            where += " AND target_key=?"
+            parameters.append(target.casefold())
+        with self._lock:
+            total = int(
+                self._connection.execute(
+                    f"SELECT count(*) FROM role_objects WHERE {where}",
+                    parameters,
+                ).fetchone()[0]
+            )
+            rows = self._connection.execute(
+                "SELECT target,target_key,root_grants,descendant_grants,"
+                "descendant_targets,conditional_grants FROM role_objects "
+                f"WHERE {where} ORDER BY target_key,target LIMIT ? OFFSET ?",
+                (*parameters, limit, offset),
+            ).fetchall()
+            root_keys = tuple(str(row["target_key"]) for row in rows)
+            root_rights_by_target: dict[str, list[DeclaredRight]] = {
+                key: [] for key in root_keys
+            }
+            if root_keys:
+                placeholders = ",".join("?" for _ in root_keys)
+                right_rows = self._connection.execute(
+                    "SELECT r.id,t.path,n.name,r.value,r.conditional "
+                    "FROM rights r JOIN targets t ON t.id=r.target_id "
+                    "JOIN right_names n ON n.id=r.right_name_id "
+                    "WHERE r.role_id=(SELECT id FROM roles WHERE name_key=?) "
+                    f"AND r.value=1 AND t.path_key IN ({placeholders}) "
+                    "ORDER BY t.path_key,t.path,n.name_key,n.name",
+                    (descriptor.name.casefold(), *root_keys),
+                ).fetchall()
+                for right in self._materialize_rights(right_rows):
+                    root_rights_by_target[right.target.casefold()].append(right)
+        objects = tuple(
+            RoleObjectSummary(
+                target=str(row["target"]),
+                root_grants=int(row["root_grants"]),
+                descendant_grants=int(row["descendant_grants"]),
+                descendant_targets=int(row["descendant_targets"]),
+                conditional_grants=int(row["conditional_grants"]),
+                root_rights=tuple(
+                    root_rights_by_target[str(row["target_key"])]
+                ),
+            )
+            for row in rows
+        )
+        next_offset = offset + len(objects)
+        if next_offset >= total:
+            next_offset = None
+        return RoleObjectPage(descriptor, objects, total, offset, next_offset)
 
     def role_templates(
         self,
@@ -1640,6 +1825,7 @@ def load_role_access(
 __all__ = [
     "DeclaredRight",
     "LoadedRoleAccess",
+    "OPERATION_PRESENTATION",
     "OPERATION_RIGHTS",
     "RoleAccessError",
     "RoleAccessIndex",
@@ -1648,6 +1834,8 @@ __all__ = [
     "RoleCandidate",
     "RoleDescriptor",
     "RoleIndexSummary",
+    "RoleObjectPage",
+    "RoleObjectSummary",
     "RoleRestriction",
     "load_role_access",
 ]

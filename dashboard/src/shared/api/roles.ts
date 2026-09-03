@@ -5,6 +5,7 @@ export type RoleState = "ready" | "missing" | "error" | "selection_required";
 export type RoleDescriptor = {
   uuid: string;
   name: string;
+  label_ru: string;
   synonyms: Array<{ language: string; content: string }>;
   comment: string;
   comment_truncated: boolean;
@@ -15,6 +16,15 @@ export type RoleDescriptor = {
     independent_rights_of_child_objects: boolean | null;
     resolver_effect: "evidence_only";
   };
+};
+
+export type RightChannel = "programmatic" | "interactive" | "platform";
+
+export type RoleOperation = {
+  operation: string;
+  label_ru: string;
+  channel: RightChannel;
+  platform_right: string;
 };
 
 type Page = {
@@ -37,7 +47,7 @@ type RoleBase = {
 
 export type RolesCatalog = RoleBase & {
   configuration_names: string[];
-  operations?: Array<{ operation: string; platform_right: string }>;
+  operations?: RoleOperation[];
   roles_total?: number;
   roles?: RoleDescriptor[];
   page?: Page;
@@ -46,8 +56,17 @@ export type RolesCatalog = RoleBase & {
 export type DeclaredRightRow = {
   target: string;
   name: string;
+  label_ru: string;
+  channel: RightChannel;
   value: boolean;
   state: "explicit_false" | "unconditional_true" | "conditional_true";
+  has_rls: boolean;
+  rls_detail_available: boolean;
+  next_action?: string;
+  child_path?: string;
+  child_kind?: string;
+  child_kind_ru?: string;
+  child_name?: string;
   restrictions: Array<{
     fields: string[];
     chars: number;
@@ -56,10 +75,41 @@ export type DeclaredRightRow = {
   }>;
 };
 
+export type OperationCheck = RoleOperation & {
+  granted: boolean;
+  state: "unconditional" | "conditional" | "not_granted";
+  evidence: "explicit_true" | "explicit_false" | "not_declared";
+  has_rls: boolean;
+  rls_detail_available: boolean;
+  next_action?: string;
+};
+
+export type RoleObjectSummary = {
+  target: string;
+  full_name: string;
+  kind: string;
+  kind_ru: string;
+  name: string;
+  root_rights: DeclaredRightRow[];
+  descendants: {
+    targets_with_grants: number;
+    granted_rights: number;
+    conditional_rights: number;
+    detail_available: boolean;
+  };
+  has_rls: boolean;
+  rls_detail_available: boolean;
+  next_action?: string;
+  operation_checks?: OperationCheck[];
+};
+
 export type RoleAccessResponse = RoleBase & {
-  mode?: "rights" | "templates";
+  mode?: "objects" | "children" | "audit" | "templates";
   role?: RoleDescriptor;
   target?: string | null;
+  objects_total?: number;
+  objects?: RoleObjectSummary[];
+  object?: Pick<RoleObjectSummary, "target" | "full_name" | "kind" | "kind_ru" | "name">;
   rights_total?: number;
   rights?: DeclaredRightRow[];
   templates_total?: number;
@@ -75,9 +125,14 @@ export type RoleCandidate = {
   missing_operations: string[];
   conditional_operations: string[];
   denied_operations: string[];
+  has_rls: boolean;
+  rls_detail_available: boolean;
+  next_action?: string;
   matched_rights: Array<{
     target: string;
     name: string;
+    label_ru: string;
+    channel: RightChannel;
     value: boolean;
     state: "unconditional_true" | "conditional_true";
   }>;
@@ -85,7 +140,7 @@ export type RoleCandidate = {
 
 export type FindRolesResponse = RoleBase & {
   source_target?: string;
-  checked_rights?: Array<{ operation: string; platform_right: string }>;
+  checked_rights?: RoleOperation[];
   include_conditional?: boolean;
   conditional_candidates_excluded?: number;
   candidates_total?: number;
@@ -148,6 +203,7 @@ export type RoleAccessRequest = {
   role: string;
   cursor?: string;
   fullName?: string;
+  detail?: "summary" | "children" | "audit";
 };
 
 export function useRoleAccess(request: RoleAccessRequest | null) {
@@ -162,6 +218,7 @@ export function useRoleAccess(request: RoleAccessRequest | null) {
       });
       if (request!.cursor) params.set("cursor", request!.cursor);
       if (request!.fullName) params.set("full_name", request!.fullName);
+      if (request!.detail) params.set("detail", request!.detail);
       return roleJson<RoleAccessResponse>(`/api/v1/roles/access?${params}`);
     },
   });

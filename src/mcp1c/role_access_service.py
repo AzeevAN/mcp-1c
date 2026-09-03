@@ -15,12 +15,14 @@ from typing import Any, Iterable
 
 from .registry import Registry
 from .role_access import (
+    OPERATION_PRESENTATION,
     OPERATION_RIGHTS,
     DeclaredRight,
     LoadedRoleAccess,
     RoleAccessIndex,
     RoleCandidate,
     RoleDescriptor,
+    RoleObjectSummary,
     source_target,
 )
 
@@ -39,6 +41,119 @@ MAX_ROLE_LIST_LIMIT = 100
 MAX_CURSOR_CHARS = 2048
 MAX_NAME_CHARS = 512
 MAX_COMMENT_CHARS = 2048
+
+_SOURCE_KIND_PRESENTATION: dict[str, tuple[str, str]] = {
+    "AccountingRegister": ("РегистрБухгалтерии", "Регистр бухгалтерии"),
+    "AccumulationRegister": ("РегистрНакопления", "Регистр накопления"),
+    "BusinessProcess": ("БизнесПроцесс", "Бизнес-процесс"),
+    "CalculationRegister": ("РегистрРасчета", "Регистр расчёта"),
+    "Catalog": ("Справочник", "Справочник"),
+    "ChartOfAccounts": ("ПланСчетов", "План счетов"),
+    "ChartOfCalculationTypes": ("ПланВидовРасчета", "План видов расчёта"),
+    "ChartOfCharacteristicTypes": (
+        "ПланВидовХарактеристик",
+        "План видов характеристик",
+    ),
+    "CommonAttribute": ("ОбщийРеквизит", "Общий реквизит"),
+    "CommonCommand": ("ОбщаяКоманда", "Общая команда"),
+    "CommonForm": ("ОбщаяФорма", "Общая форма"),
+    "CommonModule": ("ОбщийМодуль", "Общий модуль"),
+    "Configuration": ("Конфигурация", "Конфигурация"),
+    "Constant": ("Константа", "Константа"),
+    "DataProcessor": ("Обработка", "Обработка"),
+    "DefinedType": ("ОпределяемыйТип", "Определяемый тип"),
+    "Document": ("Документ", "Документ"),
+    "DocumentJournal": ("ЖурналДокументов", "Журнал документов"),
+    "Enum": ("Перечисление", "Перечисление"),
+    "EventSubscription": ("ПодпискаНаСобытие", "Подписка на событие"),
+    "ExchangePlan": ("ПланОбмена", "План обмена"),
+    "FilterCriterion": ("КритерийОтбора", "Критерий отбора"),
+    "HTTPService": ("HTTPСервис", "HTTP-сервис"),
+    "InformationRegister": ("РегистрСведений", "Регистр сведений"),
+    "Report": ("Отчет", "Отчёт"),
+    "ScheduledJob": ("РегламентноеЗадание", "Регламентное задание"),
+    "SessionParameter": ("ПараметрСеанса", "Параметр сеанса"),
+    "Subsystem": ("Подсистема", "Подсистема"),
+    "Task": ("Задача", "Задача"),
+    "WebService": ("WebСервис", "Web-сервис"),
+}
+
+_CHILD_KIND_LABELS = {
+    "AccountingFlag": "Признак учёта",
+    "Attribute": "Реквизит",
+    "Command": "Команда",
+    "Dimension": "Измерение",
+    "ExtDimensionAccountingFlag": "Признак учёта субконто",
+    "Operation": "Операция",
+    "Resource": "Ресурс",
+    "StandardAttribute": "Стандартный реквизит",
+    "StandardTabularSection": "Стандартная табличная часть",
+    "Subsystem": "Подсистема",
+    "TabularSection": "Табличная часть",
+    "URLTemplate": "Шаблон URL",
+}
+
+_RIGHT_LABELS = {
+    "ActiveUsers": "Активные пользователи",
+    "Administration": "Администрирование",
+    "AnalyticsSystemClient": "Клиент системы аналитики",
+    "Automation": "Автоматизация",
+    "ConfigurationExtensionsAdministration": "Администрирование расширений",
+    "DataAdministration": "Администрирование данных",
+    "Delete": "Удаление данных",
+    "Edit": "Интерактивное редактирование",
+    "EditDataHistoryVersionComment": "Изменение комментария версии истории данных",
+    "EventLog": "Журнал регистрации",
+    "ExclusiveMode": "Монопольный режим",
+    "ExternalConnection": "Внешнее соединение",
+    "Get": "Получение",
+    "InputByString": "Ввод по строке",
+    "Insert": "Добавление данных",
+    "InteractiveChangeOfPosted": "Интерактивное изменение проведённых данных",
+    "InteractiveClearDeletionMark": "Интерактивное снятие пометки удаления",
+    "InteractiveClearDeletionMarkPredefinedData": "Снятие пометки удаления предопределённых данных",
+    "InteractiveDelete": "Интерактивное удаление",
+    "InteractiveDeleteMarked": "Удаление помеченных объектов",
+    "InteractiveDeleteMarkedPredefinedData": "Удаление помеченных предопределённых данных",
+    "InteractiveDeletePredefinedData": "Интерактивное удаление предопределённых данных",
+    "InteractiveInsert": "Интерактивное добавление",
+    "InteractiveOpenExtDataProcessors": "Открытие внешних обработок",
+    "InteractiveOpenExtReports": "Открытие внешних отчётов",
+    "InteractivePosting": "Интерактивное проведение",
+    "InteractivePostingRegular": "Интерактивное оперативное проведение",
+    "InteractiveSetDeletionMark": "Интерактивная установка пометки удаления",
+    "InteractiveSetDeletionMarkPredefinedData": "Пометка удаления предопределённых данных",
+    "InteractiveUndoPosting": "Интерактивная отмена проведения",
+    "MainWindowModeEmbeddedWorkplace": "Режим встроенного рабочего места",
+    "MainWindowModeFullscreenWorkplace": "Полноэкранное рабочее место",
+    "MainWindowModeKiosk": "Режим киоска",
+    "MainWindowModeNormal": "Обычный режим главного окна",
+    "MainWindowModeWorkplace": "Режим рабочего места",
+    "MobileClient": "Мобильный клиент",
+    "Output": "Вывод",
+    "Posting": "Проведение",
+    "Read": "Чтение данных",
+    "ReadDataHistory": "Чтение истории данных",
+    "ReadDataHistoryOfMissingData": "Чтение истории отсутствующих данных",
+    "SaveUserData": "Сохранение данных пользователя",
+    "Set": "Установка",
+    "SwitchToDataHistoryVersion": "Переход к версии истории данных",
+    "TechnicalSpecialistMode": "Режим технического специалиста",
+    "ThickClient": "Толстый клиент",
+    "ThinClient": "Тонкий клиент",
+    "TotalsControl": "Управление итогами",
+    "UndoPosting": "Отмена проведения",
+    "Update": "Изменение данных",
+    "UpdateDataBaseConfiguration": "Обновление конфигурации базы данных",
+    "UpdateDataHistory": "Изменение истории данных",
+    "UpdateDataHistoryOfMissingData": "Изменение истории отсутствующих данных",
+    "UpdateDataHistorySettings": "Изменение настроек истории данных",
+    "UpdateDataHistoryVersionComment": "Изменение комментария истории данных",
+    "Use": "Использование",
+    "View": "Интерактивный просмотр",
+    "ViewDataHistory": "Просмотр истории данных",
+    "WebClient": "Веб-клиент",
+}
 
 
 class RoleAccessQueryError(ValueError):
@@ -220,9 +335,18 @@ def _ready(selection: _Selection) -> tuple[dict[str, Any], LoadedRoleAccess, Rol
 
 def _descriptor(role: RoleDescriptor) -> dict[str, Any]:
     comment, truncated = _bounded(role.comment, MAX_COMMENT_CHARS)
+    label_ru = next(
+        (
+            content
+            for language, content in role.synonyms
+            if language.casefold().startswith("ru") and content
+        ),
+        role.name,
+    )
     return {
         "uuid": role.uuid,
         "name": role.name,
+        "label_ru": label_ru,
         "synonyms": [
             {"language": language, "content": content}
             for language, content in role.synonyms
@@ -249,8 +373,122 @@ def _right_state(right: DeclaredRight) -> str:
     return "unconditional_true"
 
 
+def _right_channel(name: str) -> str:
+    if name in {"Read", "Update", "Insert", "Delete", "Posting", "UndoPosting"}:
+        return "programmatic"
+    if name in {"View", "Edit", "InputByString"} or name.startswith("Interactive"):
+        return "interactive"
+    return "platform"
+
+
+def _right_payload(
+    right: DeclaredRight,
+    *,
+    roles: LoadedRoleAccess,
+    role: str,
+) -> dict[str, Any]:
+    restrictions = [
+        {
+            "fields": list(item.fields),
+            "chars": item.chars,
+            "bytes": item.bytes,
+            "ref": _reference(
+                roles.generation_id,
+                role,
+                "restriction",
+                item.id,
+            ),
+        }
+        for item in right.restriction_refs
+    ]
+    payload: dict[str, Any] = {
+        "target": right.target,
+        "name": right.name,
+        "label_ru": _RIGHT_LABELS.get(right.name, right.name),
+        "channel": _right_channel(right.name),
+        "value": right.value,
+        "state": _right_state(right),
+        "has_rls": right.conditional,
+        "rls_detail_available": bool(restrictions),
+        "restrictions": restrictions,
+    }
+    target = _target_payload(right.target)
+    for key in ("child_path", "child_kind", "child_kind_ru", "child_name"):
+        if key in target:
+            payload[key] = target[key]
+    if right.conditional:
+        payload["next_action"] = (
+            "Запросите условие отдельно через restriction_ref."
+        )
+    return payload
+
+
+def _target_payload(target: str) -> dict[str, Any]:
+    parts = target.split(".")
+    kind = parts[0] if parts else ""
+    name = parts[1] if len(parts) > 1 else ""
+    canonical_kind, kind_ru = _SOURCE_KIND_PRESENTATION.get(kind, (kind, kind))
+    payload: dict[str, Any] = {
+        "target": target,
+        "full_name": f"{canonical_kind}.{name}" if name else target,
+        "kind": kind,
+        "kind_ru": kind_ru,
+        "name": name,
+    }
+    if len(parts) > 2:
+        child_path = parts[2:]
+        leaf_kind = child_path[-2] if len(child_path) > 1 else child_path[0]
+        payload.update(
+            {
+                "child_path": ".".join(child_path),
+                "child_kind": leaf_kind,
+                "child_kind_ru": _CHILD_KIND_LABELS.get(
+                    leaf_kind,
+                    leaf_kind,
+                ),
+                "child_name": child_path[-1] if len(child_path) > 1 else "",
+            }
+        )
+    return payload
+
+
+def _operation_checks(rights: tuple[DeclaredRight, ...]) -> list[dict[str, Any]]:
+    by_name = {right.name.casefold(): right for right in rights}
+    checks: list[dict[str, Any]] = []
+    for operation, platform_right in OPERATION_RIGHTS.items():
+        label_ru, channel = OPERATION_PRESENTATION[operation]
+        right = by_name.get(platform_right.casefold())
+        granted = bool(right is not None and right.value)
+        if granted:
+            state = "conditional" if right and right.conditional else "unconditional"
+            evidence = "explicit_true"
+        else:
+            state = "not_granted"
+            evidence = "explicit_false" if right is not None else "not_declared"
+        row = {
+            "operation": operation,
+            "label_ru": label_ru,
+            "channel": channel,
+            "platform_right": platform_right,
+            "granted": granted,
+            "state": state,
+            "evidence": evidence,
+            "has_rls": bool(granted and right and right.conditional),
+            "rls_detail_available": bool(
+                granted and right and right.restriction_refs
+            ),
+        }
+        if row["has_rls"]:
+            row["next_action"] = (
+                "Откройте restriction_ref соответствующего root_right."
+            )
+        checks.append(row)
+    return checks
+
+
 def _candidate(candidate: RoleCandidate) -> dict[str, Any]:
-    return {
+    has_rls = bool(candidate.conditional_operations)
+    payload = {
         "role": _descriptor(candidate.role),
         "complete": candidate.complete,
         "matched_operations": list(candidate.matched_operations),
@@ -261,19 +499,87 @@ def _candidate(candidate: RoleCandidate) -> dict[str, Any]:
             {
                 "target": right.target,
                 "name": right.name,
+                "label_ru": _RIGHT_LABELS.get(right.name, right.name),
+                "channel": _right_channel(right.name),
                 "value": right.value,
                 "state": _right_state(right),
             }
             for right in candidate.matched_rights
         ],
+        "has_rls": has_rls,
+        "rls_detail_available": has_rls,
     }
+    if has_rls:
+        payload["next_action"] = (
+            "Вызовите get_role_access для роли и объекта; затем запросите "
+            "условие отдельно через restriction_ref."
+        )
+    return payload
 
 
 def _operation_rows(operations: Iterable[str]) -> list[dict[str, str]]:
     return [
-        {"operation": operation, "platform_right": OPERATION_RIGHTS[operation]}
+        {
+            "operation": operation,
+            "label_ru": OPERATION_PRESENTATION[operation][0],
+            "channel": OPERATION_PRESENTATION[operation][1],
+            "platform_right": OPERATION_RIGHTS[operation],
+        }
         for operation in operations
     ]
+
+
+def _object_summary_payload(
+    index: RoleAccessIndex,
+    roles: LoadedRoleAccess,
+    role: str,
+    target: str,
+    aggregate: RoleObjectSummary | None,
+    *,
+    include_checks: bool,
+) -> dict[str, Any]:
+    if include_checks:
+        root_page = index.role_access(role, target=target, limit=200)
+        all_root_rights = root_page.rights
+    else:
+        all_root_rights = aggregate.root_rights if aggregate else ()
+    root_rights = tuple(right for right in all_root_rights if right.value)
+    conditional_grants = aggregate.conditional_grants if aggregate else 0
+    descendants = {
+        "targets_with_grants": aggregate.descendant_targets if aggregate else 0,
+        "granted_rights": aggregate.descendant_grants if aggregate else 0,
+        "conditional_rights": 0,
+        "detail_available": bool(aggregate and aggregate.descendant_grants),
+    }
+    if aggregate:
+        root_conditional = sum(1 for right in root_rights if right.conditional)
+        descendants["conditional_rights"] = max(
+            aggregate.conditional_grants - root_conditional,
+            0,
+        )
+    payload = {
+        **_target_payload(target),
+        "root_rights": [
+            _right_payload(right, roles=roles, role=role) for right in root_rights
+        ],
+        "descendants": descendants,
+        "has_rls": bool(conditional_grants),
+        "rls_detail_available": bool(conditional_grants),
+    }
+    if conditional_grants:
+        if any(right.conditional for right in root_rights):
+            payload["next_action"] = (
+                "Откройте restriction_ref условного права; дочерние условия "
+                "доступны через detail=children."
+            )
+        else:
+            payload["next_action"] = (
+                "Запросите get_role_access с detail=children, затем откройте "
+                "условие через restriction_ref."
+            )
+    if include_checks:
+        payload["operation_checks"] = _operation_checks(all_root_rights)
+    return payload
 
 
 def find_roles_payload(
@@ -435,6 +741,7 @@ def get_role_access_payload(
     *,
     config: str | None = None,
     full_name: str = "",
+    detail: str = "summary",
     cursor: str | None = None,
     limit: int = 50,
     restriction_ref: str = "",
@@ -445,6 +752,8 @@ def get_role_access_payload(
         raise RoleAccessQueryError("role должен быть непустым точным именем")
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_ACCESS_LIMIT:
         raise RoleAccessQueryError(f"limit должен быть от 1 до {MAX_ACCESS_LIMIT}")
+    if detail not in {"summary", "children", "audit"}:
+        raise RoleAccessQueryError("detail должен быть summary|children|audit")
     selection = _selection(registry, config)
     selected = _ready(selection)
     if isinstance(selected, dict):
@@ -474,7 +783,9 @@ def get_role_access_payload(
             target = source_target(full_name)
         except ValueError as error:
             raise RoleAccessQueryError(str(error)) from error
-    query = _fingerprint(selection.configuration, role, target)
+    if detail in {"children", "audit"} and not target:
+        raise RoleAccessQueryError(f"detail={detail} требует full_name")
+    query = _fingerprint(selection.configuration, role, target, detail)
     offset = 0
     template_offset: int | None = None
     if cursor:
@@ -487,9 +798,14 @@ def get_role_access_payload(
                 query=query,
             )
         else:
+            cursor_kind = {
+                "summary": "role-objects",
+                "children": "role-children",
+                "audit": "role-audit",
+            }[detail]
             offset = _cursor_offset(
                 cursor,
-                kind="role-rights",
+                kind=cursor_kind,
                 generation=roles.generation_id,
                 query=query,
             )
@@ -532,46 +848,77 @@ def get_role_access_payload(
                     ),
                 },
             }
-        page = index.role_access(
-            descriptor.name,
-            target=target,
-            offset=offset,
-            limit=limit,
-        )
-        templates = index.role_templates(descriptor.name, offset=0, limit=20)
+        if detail == "summary":
+            objects_page = index.role_objects(
+                descriptor.name,
+                target=target,
+                offset=0 if target else offset,
+                limit=1 if target else limit,
+            )
+            templates = index.role_templates(descriptor.name, offset=0, limit=20)
+        else:
+            page = index.role_access(
+                descriptor.name,
+                target=target,
+                subtree=True,
+                include_root=detail == "audit",
+                only_granted=detail == "children",
+                offset=offset,
+                limit=limit,
+            )
     except KeyError as error:
         raise RoleAccessQueryError("Роль не найдена") from error
     except ValueError as error:
         raise RoleAccessQueryError(str(error)) from error
+
+    if detail != "summary":
+        cursor_kind = "role-children" if detail == "children" else "role-audit"
+        return {
+            **state,
+            "mode": detail,
+            "role": _descriptor(page.role),
+            "object": _target_payload(target),
+            "rights_total": page.total,
+            "rights": [
+                _right_payload(right, roles=roles, role=page.role.name)
+                for right in page.rights
+            ],
+            "page": {
+                "offset": page.offset,
+                "limit": limit,
+                "returned": len(page.rights),
+                "next_cursor": _cursor(
+                    cursor_kind,
+                    roles.generation_id,
+                    query,
+                    page.next_offset,
+                ),
+            },
+        }
+
+    aggregates = {item.target.casefold(): item for item in objects_page.objects}
+    selected_targets = [target] if target else [
+        item.target for item in objects_page.objects
+    ]
+    objects = [
+        _object_summary_payload(
+            index,
+            roles,
+            descriptor.name,
+            item,
+            aggregates.get(item.casefold()),
+            include_checks=bool(target),
+        )
+        for item in selected_targets
+    ]
+    objects_total = 1 if target else objects_page.total
     return {
         **state,
-        "mode": "rights",
-        "role": _descriptor(page.role),
+        "mode": "objects",
+        "role": _descriptor(descriptor),
         "target": target or None,
-        "rights_total": page.total,
-        "rights": [
-            {
-                "target": right.target,
-                "name": right.name,
-                "value": right.value,
-                "state": _right_state(right),
-                "restrictions": [
-                    {
-                        "fields": list(item.fields),
-                        "chars": item.chars,
-                        "bytes": item.bytes,
-                        "ref": _reference(
-                            roles.generation_id,
-                            page.role.name,
-                            "restriction",
-                            item.id,
-                        ),
-                    }
-                    for item in right.restriction_refs
-                ],
-            }
-            for right in page.rights
-        ],
+        "objects_total": objects_total,
+        "objects": objects,
         "templates_total": templates.total,
         "templates": [
             {
@@ -580,7 +927,7 @@ def get_role_access_payload(
                 "bytes": item.bytes,
                 "ref": _reference(
                     roles.generation_id,
-                    page.role.name,
+                    descriptor.name,
                     "template",
                     item.id,
                 ),
@@ -588,14 +935,14 @@ def get_role_access_payload(
             for item in templates.templates
         ],
         "page": {
-            "offset": page.offset,
-            "limit": limit,
-            "returned": len(page.rights),
+            "offset": 0 if target else objects_page.offset,
+            "limit": 1 if target else limit,
+            "returned": len(objects),
             "next_cursor": _cursor(
-                "role-rights",
+                "role-objects",
                 roles.generation_id,
                 query,
-                page.next_offset,
+                None if target else objects_page.next_offset,
             ),
         },
         "templates_page": {

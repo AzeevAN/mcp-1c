@@ -277,33 +277,219 @@
   font-size: 12px;
 }
 
-.role-rights-list,
-.role-candidates-list {
+.role-object-list {
   display: grid;
-  gap: 10px;
-}
-
-.role-rights-list article {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  align-items: center;
   gap: 14px;
-  padding: 13px 15px;
-  border: 1px solid var(--line);
-  border-radius: 13px;
 }
 
-.role-rights-list article > div {
+.role-object-card {
+  min-width: 0;
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+}
+
+.role-object-card-head,
+.role-detail-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.role-object-card-head > div,
+.role-detail-heading > div {
   min-width: 0;
   display: grid;
   gap: 3px;
 }
 
-.role-rights-list code {
+.role-object-card h3,
+.role-detail-heading h3 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.role-object-card-head code,
+.role-detail-heading code,
+.role-detail-row code {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.role-object-kind {
+  color: var(--blue-deep);
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.role-object-rls {
+  flex: none;
+  padding: 7px 10px;
+  border-radius: 999px;
+  color: var(--amber-deep);
+  background: #fff7e8;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.role-right-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 10px;
+}
+
+.role-right-group {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--canvas-soft);
+}
+
+.role-right-group h4 {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.role-right-group > div {
+  display: grid;
+  gap: 7px;
+}
+
+.role-right-chip {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 9px;
+  border-radius: 9px;
+  background: var(--surface);
+}
+
+.role-right-chip > code {
+  grid-column: 1;
   overflow: hidden;
   color: var(--muted);
+  font-size: 10px;
   text-overflow: ellipsis;
-  white-space: nowrap;
+}
+
+.role-right-chip > .role-right-state {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+}
+
+.role-right-chip > button {
+  grid-column: 1 / -1;
+  justify-self: start;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  border: 0;
+  padding: 2px 0;
+  color: var(--blue-deep);
+  background: transparent;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.role-right-chip > button small {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.role-object-descendants {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 13px;
+  border-top: 1px solid var(--line);
+}
+
+.role-object-descendants span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.role-object-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.role-object-actions button,
+.role-detail-heading > button,
+.role-detail-row > button,
+.role-object-detail .roles-pagination button {
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  padding: 8px 10px;
+  color: var(--blue-deep);
+  background: var(--surface);
+  cursor: pointer;
+  font-weight: 750;
+}
+
+.role-object-actions button:last-child {
+  color: var(--muted);
+  border-style: dashed;
+}
+
+.role-detail-heading > button {
+  flex: none;
+}
+
+.role-object-detail {
+  min-width: 0;
+  display: grid;
+  gap: 13px;
+  padding: 17px;
+  border: 1px solid var(--line-strong);
+  border-radius: 15px;
+  background: var(--canvas-soft);
+}
+
+.role-detail-list {
+  display: grid;
+  gap: 8px;
+}
+
+.role-detail-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(170px, 0.8fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface);
+}
+
+.role-detail-row > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.role-candidates-list {
+  display: grid;
+  gap: 10px;
 }
 
 .role-right-state {
@@ -328,7 +514,6 @@
   background: var(--surface-red);
 }
 
-.role-rights-list article > button,
 .roles-pagination button,
 .role-restriction-card button,
 .role-next-candidates {
@@ -339,16 +524,6 @@
   background: var(--surface);
   cursor: pointer;
   font-weight: 750;
-}
-
-.role-rights-list article > button {
-  display: grid;
-  gap: 1px;
-}
-
-.role-rights-list article > button small {
-  color: var(--muted);
-  font-weight: 500;
 }
 
 .roles-pagination {
@@ -453,6 +628,16 @@
   font-size: 13px;
 }
 
+.role-find-form fieldset label > span {
+  display: grid;
+  gap: 2px;
+}
+
+.role-find-form fieldset label small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
 .role-find-form > button {
   min-height: 42px;
   display: flex;
@@ -548,8 +733,13 @@
 }
 
 @media (max-width: 620px) {
-  .role-rights-list article {
+  .role-detail-row {
     grid-template-columns: 1fr;
+  }
+
+  .role-object-card-head,
+  .role-detail-heading {
+    flex-direction: column;
   }
 
   .roles-tabs {

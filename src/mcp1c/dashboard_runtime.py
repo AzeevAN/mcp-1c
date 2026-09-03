@@ -1028,11 +1028,11 @@ def _spa_routes(
             if not full_name:
                 raise RoleAccessQueryError("Параметр full_name обязателен.")
             operations = request.query_params.getlist("operation")
-            if not 1 <= len(operations) <= 6 or any(
+            if not 1 <= len(operations) <= 16 or any(
                 not operation or len(operation) > 32 for operation in operations
             ):
                 raise RoleAccessQueryError(
-                    "Нужно указать от одной до шести операций operation."
+                    "Нужно указать от одной до шестнадцати операций operation."
                 )
             payload = await run_in_threadpool(
                 find_roles_payload,
@@ -1068,6 +1068,7 @@ def _spa_routes(
                 role,
                 config=role_param(request, "config", maximum=512) or None,
                 full_name=role_param(request, "full_name", maximum=1024) or "",
+                detail=role_param(request, "detail", maximum=16) or "summary",
                 cursor=role_param(request, "cursor", maximum=2048) or None,
                 limit=role_integer(
                     request,

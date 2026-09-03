@@ -9,7 +9,11 @@ import { RolesPage } from "./RolesPage";
 const role = {
   uuid: "11111111-1111-1111-1111-111111111111",
   name: "Reader",
-  synonyms: [{ language: "ru", content: "Чтение" }],
+  label_ru: "Чтение",
+  synonyms: [
+    { language: "en", content: "Reading" },
+    { language: "ru", content: "Чтение" },
+  ],
   comment: "Синтетическая роль",
   comment_truncated: false,
   xml_version: "2.20",
@@ -35,8 +39,24 @@ const base = {
 const catalog = {
   ...base,
   operations: [
-    { operation: "read", platform_right: "Read" },
-    { operation: "update", platform_right: "Update" },
+    {
+      operation: "read",
+      label_ru: "Чтение данных",
+      channel: "programmatic",
+      platform_right: "Read",
+    },
+    {
+      operation: "view",
+      label_ru: "Интерактивный просмотр",
+      channel: "interactive",
+      platform_right: "View",
+    },
+    {
+      operation: "update",
+      label_ru: "Изменение данных",
+      channel: "programmatic",
+      platform_right: "Update",
+    },
   ],
   roles_total: 1,
   roles: [role],
@@ -45,49 +65,134 @@ const catalog = {
 
 const access = {
   ...base,
-  mode: "rights",
+  mode: "objects",
   role,
   target: null,
-  rights_total: 2,
-  rights: [{
+  objects_total: 2,
+  objects: [{
     target: "Catalog.Orders",
-    name: "Read",
-    value: true,
-    state: "conditional_true",
-    restrictions: [{
-      fields: [
-        "Catalog.Orders.Attribute.Code",
-        "Catalog.Orders.Attribute.Number",
-      ],
-      chars: 6000,
-      bytes: 6000,
-      ref: "restriction-ref",
+    full_name: "Справочник.Orders",
+    kind: "Catalog",
+    kind_ru: "Справочник",
+    name: "Orders",
+    root_rights: [{
+      target: "Catalog.Orders",
+      name: "Read",
+      label_ru: "Чтение данных",
+      channel: "programmatic",
+      value: true,
+      state: "conditional_true",
+      has_rls: true,
+      rls_detail_available: true,
+      next_action: "Запросите условие отдельно через restriction_ref.",
+      restrictions: [{
+        fields: [
+          "Catalog.Orders.Attribute.Code",
+          "Catalog.Orders.Attribute.Number",
+        ],
+        chars: 6000,
+        bytes: 6000,
+        ref: "restriction-ref",
+      }],
+    }, {
+      target: "Catalog.Orders",
+      name: "View",
+      label_ru: "Интерактивный просмотр",
+      channel: "interactive",
+      value: true,
+      state: "unconditional_true",
+      has_rls: false,
+      rls_detail_available: false,
+      restrictions: [],
     }],
+    descendants: {
+      targets_with_grants: 2,
+      granted_rights: 2,
+      conditional_rights: 1,
+      detail_available: true,
+    },
+    has_rls: true,
+    rls_detail_available: true,
+    next_action: "Откройте restriction_ref или detail=children.",
   }],
   templates_total: 0,
   templates: [],
-  page: { offset: 0, limit: 1, returned: 1, next_cursor: "rights-next" },
+  page: { offset: 0, limit: 50, returned: 1, next_cursor: "objects-next" },
   templates_page: { offset: 0, limit: 20, returned: 0, next_cursor: null },
 };
 
 const secondAccess = {
   ...access,
-  rights: [{
+  objects: [{
+    ...access.objects[0],
+    target: "Document.Invoice",
+    full_name: "Документ.Invoice",
+    kind: "Document",
+    kind_ru: "Документ",
+    name: "Invoice",
+    has_rls: false,
+    rls_detail_available: false,
+    root_rights: [access.objects[0].root_rights[1]],
+    descendants: {
+      targets_with_grants: 0,
+      granted_rights: 0,
+      conditional_rights: 0,
+      detail_available: false,
+    },
+  }],
+  page: { offset: 50, limit: 50, returned: 1, next_cursor: null },
+};
+
+const childrenAccess = {
+  ...base,
+  mode: "children",
+  role,
+  object: {
     target: "Catalog.Orders",
-    name: "Update",
-    value: false,
-    state: "explicit_false",
+    full_name: "Справочник.Orders",
+    kind: "Catalog",
+    kind_ru: "Справочник",
+    name: "Orders",
+  },
+  rights_total: 1,
+  rights: [{
+    target: "Catalog.Orders.Attribute.Code",
+    child_path: "Attribute.Code",
+    child_kind: "Attribute",
+    child_kind_ru: "Реквизит",
+    child_name: "Code",
+    name: "Read",
+    label_ru: "Чтение данных",
+    channel: "programmatic",
+    value: true,
+    state: "unconditional_true",
+    has_rls: false,
+    rls_detail_available: false,
     restrictions: [],
   }],
-  page: { offset: 1, limit: 1, returned: 1, next_cursor: null },
+  page: { offset: 0, limit: 50, returned: 1, next_cursor: null },
+};
+
+const auditAccess = {
+  ...childrenAccess,
+  mode: "audit",
+  rights_total: 1,
+  rights: [{
+    ...childrenAccess.rights[0],
+    name: "Edit",
+    label_ru: "Интерактивное редактирование",
+    channel: "interactive",
+    value: false,
+    state: "explicit_false",
+  }],
 };
 
 const found = {
   ...base,
   source_target: "Catalog.Orders",
   checked_rights: [
-    { operation: "read", platform_right: "Read" },
-    { operation: "update", platform_right: "Update" },
+    { operation: "read", label_ru: "Чтение данных", channel: "programmatic", platform_right: "Read" },
+    { operation: "update", label_ru: "Изменение данных", channel: "programmatic", platform_right: "Update" },
   ],
   include_conditional: false,
   conditional_candidates_excluded: 1,
@@ -99,9 +204,13 @@ const found = {
     missing_operations: ["update"],
     conditional_operations: [],
     denied_operations: ["update"],
+    has_rls: false,
+    rls_detail_available: false,
     matched_rights: [{
       target: "Catalog.Orders",
       name: "Read",
+      label_ru: "Чтение данных",
+      channel: "programmatic",
       value: true,
       state: "unconditional_true",
     }],
@@ -186,8 +295,10 @@ it("открывается без config, выбирает роль и не по
   fireEvent.change(screen.getByRole("combobox", { name: "Роль" }), {
     target: { value: "Reader" },
   });
-  expect(await screen.findByText("Catalog.Orders")).toBeInTheDocument();
-  expect(screen.getByText("Условный true · RLS")).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: "Orders" })).toBeInTheDocument();
+  expect(screen.getByText("Справочник")).toBeInTheDocument();
+  expect(screen.getByText("С ограничением RLS")).toBeInTheDocument();
+  expect(screen.getByText("Интерактивный просмотр")).toBeInTheDocument();
   expect(screen.getByText(/Default-флаги — свидетельство/)).toBeInTheDocument();
   expect(screen.queryByText("SyntheticAllowed(x)")).not.toBeInTheDocument();
   expect(screen.queryByText("Catalog.Orders.Attribute.Code")).not.toBeInTheDocument();
@@ -216,8 +327,8 @@ it("показывает неизвестные default-флаги descriptor-on
       return response({
         ...access,
         role: descriptorOnly,
-        rights: [],
-        rights_total: 0,
+        objects: [],
+        objects_total: 0,
       });
     }
     return response({ ...catalog, roles: [descriptorOnly] });
@@ -259,7 +370,7 @@ it("объясняет пустое условие RLS и всё равно по
   fireEvent.change(screen.getByRole("combobox", { name: "Роль" }), {
     target: { value: "Reader" },
   });
-  await screen.findByText("Catalog.Orders");
+  await screen.findByRole("heading", { name: "Orders" });
   fireEvent.click(screen.getByRole("button", { name: "Показать RLS" }));
 
   expect(await screen.findByText("Условие RLS пустое.")).toBeInTheDocument();
@@ -267,7 +378,7 @@ it("объясняет пустое условие RLS и всё равно по
   expect(screen.getByText("Catalog.Orders.Attribute.Number")).toBeInTheDocument();
 });
 
-it("заменяет страницу большой роли и различает explicit false", async () => {
+it("заменяет страницу объектов большой роли и не показывает false", async () => {
   vi.stubGlobal("fetch", vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
     const url = new URL(String(input), "http://dashboard.test");
     if (url.pathname === "/api/v1/roles/access") {
@@ -277,13 +388,37 @@ it("заменяет страницу большой роли и различа�
   }));
   renderPage("/roles?config=Отраслевая+конфигурация&role=Reader");
 
-  expect(await screen.findByText("Catalog.Orders")).toBeInTheDocument();
-  expect(screen.getByText("Страница 1 · показано 1 из 2")).toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", { name: "Следующая страница прав" }));
+  expect(await screen.findByRole("heading", { name: "Orders" })).toBeInTheDocument();
+  expect(screen.getByText("Страница 1 · показано 1 из 2 объектов")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Следующая страница объектов" }));
 
+  expect(await screen.findByRole("heading", { name: "Invoice" })).toBeInTheDocument();
+  expect(screen.getByText("Страница 2 · показано 1 из 2 объектов")).toBeInTheDocument();
+  expect(screen.queryByText("Явный false")).not.toBeInTheDocument();
+});
+
+it("открывает дочерние права и explicit false только отдельными действиями", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+    const url = new URL(String(input), "http://dashboard.test");
+    if (url.pathname === "/api/v1/roles/access") {
+      if (url.searchParams.get("detail") === "children") return response(childrenAccess);
+      if (url.searchParams.get("detail") === "audit") return response(auditAccess);
+      return response(access);
+    }
+    return response(catalog);
+  }));
+  renderPage("/roles?config=Отраслевая+конфигурация&role=Reader");
+
+  await screen.findByRole("heading", { name: "Orders" });
+  expect(screen.queryByText("Code")).not.toBeInTheDocument();
+  expect(screen.queryByText("Явный false")).not.toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: "Показать детали Orders" }));
+  expect(await screen.findByText("Code")).toBeInTheDocument();
+  expect(screen.getByText("Реквизит")).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: "Открыть технический аудит Orders" }));
   expect(await screen.findByText("Явный false")).toBeInTheDocument();
-  expect(screen.getByText("Страница 2 · показано 1 из 2")).toBeInTheDocument();
-  expect(screen.queryByText("Условный true · RLS")).not.toBeInTheDocument();
 });
 
 it("дочитывает каталог ролей серверными страницами", async () => {
@@ -291,6 +426,7 @@ it("дочитывает каталог ролей серверными стра
     ...role,
     uuid: "22222222-2222-2222-2222-222222222222",
     name: "Editor",
+    label_ru: "Редактирование",
     synonyms: [{ language: "ru", content: "Редактирование" }],
   };
   const firstPage = {
@@ -336,8 +472,8 @@ it("показывает серверный resolver объект → роли �
 
   expect(await screen.findByText("Editor + Reader")).toBeInTheDocument();
   expect(screen.getByText("Доказательство: explicit_unconditional")).toBeInTheDocument();
-  expect(screen.getByText("Не хватает: update")).toBeInTheDocument();
-  expect(screen.getByText("Явный false: update")).toBeInTheDocument();
+  expect(screen.getByText("Не хватает: Изменение данных (update)")).toBeInTheDocument();
+  expect(screen.getByText("Не предоставляет: Изменение данных (update)")).toBeInTheDocument();
   expect(screen.getByText("Условных кандидатов исключено: 1")).toBeInTheDocument();
   await waitFor(() => {
     expect(screen.getByLabelText("Текущий адрес")).toHaveTextContent("mode=object");

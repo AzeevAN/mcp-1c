@@ -390,9 +390,11 @@ export function RolesPage() {
                 </label>
                 <small>
                   Ролей в снимке: {data.roles_total || 0}.
-                  {deferredRoleQuery
+                  {rolePickerOpen && deferredRoleQuery
                     ? ` Найдено: ${roleSearch.data?.roles_matched || 0}.`
-                    : " Начните вводить имя или выберите из первых результатов."}
+                    : requestedRole
+                      ? " Роль выбрана. Начните вводить, чтобы сменить."
+                      : " Начните вводить имя или выберите из первых результатов."}
                 </small>
                 {rolePickerOpen && (
                   <div className="role-search-results" id="role-search-results">

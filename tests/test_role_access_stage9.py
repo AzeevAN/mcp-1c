@@ -152,6 +152,8 @@ def _navigation_roles():
                 ),
                 ("Document.Act", (_right("View", True),)),
                 ("InformationRegister.Stock", (_right("Read", True),)),
+                ("Interface.Operator", (_right("Use", True),)),
+                ("Sequence.Documents", (_right("Read", True),)),
             )),
         ),
         (
@@ -1009,7 +1011,7 @@ def test_roles_api_фильтрует_объекты_роли_и_возвращ�
         "kind": "Document",
         "query": "invoice",
     }
-    assert payload["objects_all_total"] == 4
+    assert payload["objects_all_total"] == 6
     assert payload["objects_total"] == 1
     assert [item["full_name"] for item in payload["objects"]] == [
         "Документ.Invoice",
@@ -1020,6 +1022,12 @@ def test_roles_api_фильтрует_объекты_роли_и_возвращ�
         {
             "kind": "InformationRegister",
             "kind_ru": "Регистр сведений",
+            "count": 1,
+        },
+        {"kind": "Interface", "kind_ru": "Интерфейс", "count": 1},
+        {
+            "kind": "Sequence",
+            "kind_ru": "Последовательность",
             "count": 1,
         },
     ]

@@ -299,6 +299,8 @@ it("открывается без config, выбирает роль и не по
 
   fireEvent.click(await screen.findByRole("button", { name: "Чтение" }));
   expect(await screen.findByRole("heading", { name: "Orders" })).toBeInTheDocument();
+  expect(screen.getByText(/Роль выбрана\. Начните вводить, чтобы сменить/)).toBeInTheDocument();
+  expect(screen.queryByText("Найдено: 1.")).not.toBeInTheDocument();
   expect(screen.getByText("Справочник")).toBeInTheDocument();
   expect(screen.getByText("С ограничением RLS")).toBeInTheDocument();
   expect(screen.getByText("Интерактивный просмотр")).toBeInTheDocument();

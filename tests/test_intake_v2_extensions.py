@@ -12,6 +12,7 @@ from dataclasses import replace
 
 import pytest
 
+from mcp1c import coverage_log
 from mcp1c.intake_v2 import ExportIdentity, LayerKind
 from mcp1c.intake_v2_collector import collect_source_b
 from mcp1c.intake_v2_converter import (
@@ -412,6 +413,12 @@ def test_registry_сохраняет_extension_generation_при_строгой_
         registry.stage_generation(extension.manifest, extension.payloads)
     )
     extension_pointer = registry.active_generation_pointer(extension.manifest.identity)
+    extension_loaded = registry.modules["DemoConfiguration:ext:DemoExtension"]
+    assert coverage_log.load_current(
+        registry.data_dir,
+        extension_loaded.source,
+        expected=coverage_log.build_payload(extension_loaded),
+    ) is not None
 
     before = registry.resolve("DemoConfiguration", extension="DemoExtension")
     assert before.extension is not None and before.extension.готов
@@ -462,6 +469,11 @@ def test_registry_сохраняет_extension_generation_при_строгой_
     assert restored.extension_roles is not None and restored.extension_roles.ready
     assert restored.extension_resolution is not None
     assert restored.extension_resolution.relations[0].state.value == "target_missing"
+    assert coverage_log.load_current(
+        restarted.data_dir,
+        restored.extension.source,
+        expected=coverage_log.build_payload(restored.extension),
+    ) is not None
 
 
 def test_schema_v1_поверх_native_сохраняет_проекцию_собственного_объекта(

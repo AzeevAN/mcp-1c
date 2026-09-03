@@ -2486,11 +2486,7 @@ class Registry:
         """Записать журнал только пока Source и готовый пакет ещё актуальны."""
         with self._modules_cache_lock:
             with self._lock:
-                if (
-                    self.sources.get(source.id) is not source
-                    or self.modules.get(source.id) is not loaded
-                    or not loaded.готов
-                ):
+                if not self._пакет_кода_актуален(source, loaded):
                     return False
             записан = False
             try:
@@ -2515,10 +2511,7 @@ class Registry:
                 except OSError:
                     pass
             with self._lock:
-                if (
-                    self.sources.get(source.id) is not source
-                    or self.modules.get(source.id) is not loaded
-                ):
+                if not self._пакет_кода_актуален(source, loaded):
                     if записан:
                         try:
                             coverage_log.remove(self.data_dir, source.id)
@@ -2541,6 +2534,41 @@ class Registry:
                     # следующего старта не превращает кэш/журнал в источник.
                     pass
             return записан
+
+    def _пакет_кода_актуален(
+        self,
+        source: Source,
+        loaded: LoadedModules,
+    ) -> bool:
+        """Проверить под ``_lock`` legacy- или native-владельца корпуса."""
+        if (
+            self.modules.get(source.id) is not loaded
+            or loaded.source is not source
+            or not loaded.готов
+        ):
+            return False
+        if self.sources.get(source.id) is source:
+            return True
+        # Native Source не дублируется строкой ``sources``: его durable-
+        # владельцем является active generation pointer. Совпадение exact
+        # runtime-объекта, canonical id и root не позволяет отставленному
+        # writer записать журнал после переключения поколения.
+        for pointer in self._generation_pointers.values():
+            identity = pointer.identity
+            native_source_id = (
+                f"{identity.configuration_name}:modules"
+                if identity.source_kind is SourceKind.CONFIGURATION
+                else (
+                    f"{identity.parent_configuration}:ext:"
+                    f"{index_cache.safe_name(identity.extension_name)}"
+                )
+            )
+            if (
+                native_source_id == source.id
+                and pointer.root_path == source.stored_path
+            ):
+                return True
+        return False
 
     def _следующее_поколение_модулей(self, source_id: str) -> int:
         """Вызывается под `_lock`; возвращает новый монотонный номер."""
@@ -4545,6 +4573,28 @@ class Registry:
             # следующий запуск просто построит его заново.
             return
 
+    def _обновить_native_диагностику_кода(
+        self,
+        prepared: _PreparedNativeRuntime,
+        loaded: LoadedModules | None,
+    ) -> None:
+        """Best-effort диагностика уже опубликованного native-корпуса."""
+        if (
+            prepared.module_source is None
+            or prepared.module_indices is None
+            or loaded is None
+        ):
+            return
+        self._журналировать_ограничения_кода(
+            prepared.module_source,
+            prepared.module_indices,
+        )
+        self._обновить_журнал_покрытия(
+            prepared.module_source,
+            loaded,
+            persist=False,
+        )
+
     def publish_generation(
         self,
         staged: StagedGeneration,
@@ -4720,6 +4770,10 @@ class Registry:
                         error,
                     )
                 self._save_native_runtime_cache(prepared_runtime)
+                self._обновить_native_диагностику_кода(
+                    prepared_runtime,
+                    loaded_modules,
+                )
                 return pointer
             except Exception:
                 # Обычный отказ откатывается сразу. SIGKILL/SystemExit
@@ -5155,6 +5209,11 @@ class Registry:
                     f"{pointer.identity.configuration_name}: legacy cleanup "
                     f"отложен — {error}"
                 )
+        for prepared, _configuration, loaded_modules in native_runtime.values():
+            self._обновить_native_диагностику_кода(
+                prepared,
+                loaded_modules,
+            )
         return problems
 
     def bootstrap(self) -> list[str]:

@@ -15,6 +15,7 @@ from mcp1c.dashboard_runtime import (
     routes,
 )
 from mcp1c.registry import STATUS_ERROR, Registry
+from test_intake_v2_runtime import _materialized
 
 
 def test_по_умолчанию_включён_современный_дашборд(monkeypatch):
@@ -257,6 +258,35 @@ def test_sources_api_группирует_конфигурацию_модули_
 
     assert journal.status_code == 200
     assert journal.json()["schema_version"] == 1
+    assert journal.json()["kind"] == "module_coverage"
+
+
+def test_sources_api_отдаёт_журнал_native_generation(tmp_path):
+    _collection_value, generation = _materialized(
+        tmp_path,
+        "dashboard-coverage",
+        common_forms=True,
+    )
+    registry = Registry(tmp_path / "data")
+    registry.publish_generation(
+        registry.stage_generation(generation.manifest, generation.payloads)
+    )
+    app = Starlette(
+        routes=routes(
+            registry,
+            mode=DASHBOARD_ON,
+            static_dir=tmp_path / "dashboard-dist",
+        )
+    )
+
+    with TestClient(app) as client:
+        sources = client.get("/api/v1/sources")
+        corpus = sources.json()["configurations"][0]["corpora"][0]
+        journal = client.get(corpus["journal_url"])
+
+    assert sources.status_code == 200
+    assert corpus["journal"].startswith("logs/code-")
+    assert journal.status_code == 200
     assert journal.json()["kind"] == "module_coverage"
 
 

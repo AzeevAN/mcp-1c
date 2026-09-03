@@ -936,7 +936,12 @@ def _spa_routes(
                 {"error": "Не указан source_id."}, status_code=400
             )
         snapshot = registry.snapshot()
-        source = snapshot.sources.get(source_id)
+        code = snapshot.modules.get(source_id)
+        source = (
+            code.source
+            if code is not None and code.source is not None
+            else snapshot.sources.get(source_id)
+        )
         if source is None or source.kind not in (KIND_MODULES, KIND_EXTENSION):
             return JSONResponse({"error": "Журнал не найден."}, status_code=404)
         payload = await run_in_threadpool(

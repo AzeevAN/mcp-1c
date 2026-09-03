@@ -9,6 +9,7 @@ import zipfile
 import pytest
 
 from conftest import write_export
+from mcp1c import coverage_log
 from mcp1c.intake_v2 import LayerKind, LayerSourceProfile
 from mcp1c.intake_v2_converter import convert_collection
 from mcp1c.intake_v2_generation import materialize_generation
@@ -81,7 +82,6 @@ def test_native_commit_атомарно_подключает_структуру_
         "Справочник.Items.МодульОбъекта::Demo",
         config="DemoConfiguration",
     )
-
     pointer = registry.active_generation_pointer(generation.manifest.identity)
     assert pointer is not None
     shutil.rmtree(collection.root)
@@ -109,6 +109,42 @@ def test_native_commit_атомарно_подключает_структуру_
         config="DemoConfiguration",
     )
     assert (registry.data_dir / pointer.root_path).is_dir()
+
+
+def test_native_журнал_покрытия_публикуется_и_восстанавливается_без_zip(
+    tmp_path,
+):
+    collection, generation = _materialized(
+        tmp_path,
+        "coverage-journal",
+        common_forms=True,
+    )
+    registry = Registry(tmp_path / "data")
+
+    registry.publish_generation(
+        registry.stage_generation(generation.manifest, generation.payloads)
+    )
+
+    published = registry.modules["DemoConfiguration:modules"]
+    journal_path = coverage_log.log_path(registry.data_dir, published.source.id)
+    assert coverage_log.load_current(
+        registry.data_dir,
+        published.source,
+        expected=coverage_log.build_payload(published),
+    ) is not None
+
+    shutil.rmtree(collection.root)
+    shutil.rmtree(generation.root)
+    journal_path.unlink()
+    restarted = Registry(registry.data_dir)
+
+    assert restarted.restore() == []
+    restored = restarted.modules["DemoConfiguration:modules"]
+    assert coverage_log.load_current(
+        restarted.data_dir,
+        restored.source,
+        expected=coverage_log.build_payload(restored),
+    ) is not None
 
 
 @pytest.mark.parametrize(

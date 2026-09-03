@@ -22,13 +22,13 @@
 | Роли | объявленные права из native generation; без готового слоя две role-ручки отсутствуют |
 | Дашборд | современная SPA включена по умолчанию; `on` либо `off` |
 | Авторизация Docker | два разных обязательных токена: `API_TOKEN` на чтение, `ADMIN_TOKEN` на запись |
-| Тесты | `.venv/bin/python -m pytest`, 1935 |
+| Тесты | `.venv/bin/python -m pytest`, 1937 |
 
 Воспроизводимый прогон:
 
 ```bash
 .venv/bin/pip install --require-hashes -r requirements-dev-lock.txt
-.venv/bin/python -m pytest          # 1935 тестов (прогон 2026-09-03)
+.venv/bin/python -m pytest          # 1937 тестов (прогон 2026-09-03)
 ```
 
 ## Навигация
@@ -390,6 +390,9 @@ server log получает traceback, а административная ст�
 показывает bounded техническую причину без имени исходного ZIP.
 Обычный read-only ответ сохраняет обезличенную ошибку. Старый coverage-
 журнал при `status=error` не выдаётся за актуальный.
+После native source-B публикации тот же JSON-журнал создаётся для каждого
+корпуса кода; если расходный файл отсутствует или устарел, restart восстанавливает
+его из активного generation snapshot без повторной загрузки исходного ZIP.
 
 `start` принимает только `candidate_id`, `action`, необязательные `job_id` для
 возобновления и `parent_configuration`. Произвольного файлового пути в HTTP-

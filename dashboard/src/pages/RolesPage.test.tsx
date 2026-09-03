@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
 
+import rolesCss from "../styles/global.css?raw";
 import { RolesPage } from "./RolesPage";
 
 const role = {
@@ -357,4 +358,16 @@ it.each([
 
   expect(await screen.findByRole("alert")).toHaveTextContent(message);
   expect(screen.queryByRole("combobox", { name: "Роль" })).not.toBeInTheDocument();
+});
+
+it("удерживает длинные имена ролей внутри боковой колонки", () => {
+  expect(rolesCss).toMatch(
+    /\.role-picker-card\s*,\s*\.role-picker-card > \*\s*,\s*\.role-picker-card select\s*\{[^}]*min-width:\s*0;/s,
+  );
+  expect(rolesCss).toMatch(
+    /\.role-picker-card > \*\s*\{[^}]*width:\s*100%;/s,
+  );
+  expect(rolesCss).toMatch(
+    /\.role-picker-card select\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*100%;/s,
+  );
 });

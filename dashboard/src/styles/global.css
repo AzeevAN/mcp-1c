@@ -181,6 +181,23 @@
   border-right: 1px solid var(--line);
 }
 
+/* Native select берёт min-content из самой длинной option. Без явного
+   shrink-контракта он растягивает все grid-элементы поверх правой панели. */
+.role-picker-card,
+.role-picker-card > *,
+.role-picker-card select {
+  min-width: 0;
+}
+
+.role-picker-card > * {
+  width: 100%;
+}
+
+.role-picker-card select {
+  width: 100%;
+  max-width: 100%;
+}
+
 .role-picker-card > button {
   min-height: 38px;
   border: 1px solid var(--line-strong);

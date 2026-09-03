@@ -237,9 +237,9 @@ def test_roles_error_заменяет_ready_без_отката_остальны
     assert _planned(plan, LayerKind.CODE).candidate.state is LayerState.READY
 
 
-def test_legacy_content_update_fail_closed_считает_content_нуждающимся_в_reparse():
+def test_legacy_content_update_fail_closed_требует_первого_полного_обновления():
     IntakeAction = _symbol("IntakeAction")
-    LayerChangeReason = _symbol("LayerChangeReason")
+    PlannerError = _symbol("PlannerError")
     plan_intake = _symbol("plan_intake")
     identity = ExportIdentity.configuration("DemoConfiguration")
     active = legacy_generation_view(
@@ -250,17 +250,9 @@ def test_legacy_content_update_fail_closed_считает_content_нуждающ
         code_items_total=20,
     )
 
-    plan = plan_intake(
-        IntakeAction.UPDATE_CONTENT,
-        _manifest("generation-new"),
-        active=active,
-    )
-
-    assert plan.applied_layers == frozenset(
-        {LayerKind.CODE, LayerKind.FORMS, LayerKind.ROLES}
-    )
-    assert {
-        _planned(plan, kind).reason
-        for kind in (LayerKind.CODE, LayerKind.FORMS, LayerKind.ROLES)
-    } == {LayerChangeReason.REPARSE}
-    assert _planned(plan, LayerKind.BASE_STRUCTURE).decision.value == "preserve"
+    with pytest.raises(PlannerError, match="полное обновление"):
+        plan_intake(
+            IntakeAction.UPDATE_CONTENT,
+            _manifest("generation-new"),
+            active=active,
+        )

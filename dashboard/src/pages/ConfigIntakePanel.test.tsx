@@ -378,3 +378,27 @@ it("для расширения требует выбрать родительс
     },
   });
 });
+
+it("для legacy-конфигурации объясняет обязательное первое полное обновление", async () => {
+  const legacyCandidate = {
+    ...candidate,
+    id: "candidate-legacy",
+    actions: ["update_full"],
+  };
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    const path = String(input);
+    if (path === "/api/v1/sources/intake") {
+      return response({
+        ...snapshot([legacyCandidate]),
+        configuration_names: [legacyCandidate.internal_name],
+      });
+    }
+    throw new Error(`Неожиданный запрос ${path}`);
+  }));
+  renderPanel();
+
+  expect(await screen.findByText("СинтетическаяКонфигурация")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Обновить код, формы и роли" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Обновить полностью" })).toBeInTheDocument();
+  expect(screen.getByText(/Сначала выполните полное обновление/)).toBeInTheDocument();
+});

@@ -99,6 +99,9 @@ function CandidateRow({
   onStart: (candidate: IntakeCandidate, action: IntakeAction, parent: string) => void;
 }) {
   const [parent, setParent] = useState("");
+  const requiresFirstFullUpdate = candidate.source_kind === "configuration"
+    && candidate.actions.length === 1
+    && candidate.actions[0] === "update_full";
   return (
     <article className="intake-candidate">
       <span className="incoming-file-icon"><FileArchive size={20} aria-hidden="true" /></span>
@@ -140,6 +143,11 @@ function CandidateRow({
         ))}
         {candidate.requires_parent && configurationNames.length === 0 && (
           <small>Сначала загрузите родительскую конфигурацию.</small>
+        )}
+        {requiresFirstFullUpdate && (
+          <small>
+            Сначала выполните полное обновление: оно создаст единое поколение структуры, кода, форм и ролей.
+          </small>
         )}
       </div>
     </article>

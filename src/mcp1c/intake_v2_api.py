@@ -19,6 +19,7 @@ from .intake_v2 import (
     LayerManifest,
     SourceKind,
 )
+from .intake_v2_composition import CompositionError
 from .intake_v2_lifecycle import (
     CandidateCatalog,
     DiscoveredCandidate,
@@ -27,9 +28,9 @@ from .intake_v2_lifecycle import (
 )
 from .intake_v2_operations import IntakeCommitResult, IntakeCoordinator
 from .intake_v2_planner import IntakeAction, LayerVersion
-from .intake_v2_registry import GenerationView
+from .intake_v2_registry import GenerationOrigin, GenerationView
 from .intake_v2_transport import BrowserStagingStore
-from .registry import Registry, RegistryError
+from .registry import Registry, RegistryError, RegistrySnapshot
 
 
 _MAX_EXTENSION_IMPACT_ITEMS = 200
@@ -116,28 +117,26 @@ class IntakeApiService:
     def _actions(
         self,
         candidate: DiscoveredCandidate,
-        configuration_names: frozenset[str] | None = None,
+        registry_snapshot: RegistrySnapshot | None = None,
     ) -> list[str]:
         if candidate.probe.source_kind is SourceKind.EXTENSION:
             # Родитель выбирается при start. До этого можно обещать только
             # полную первую загрузку/замену отдельного extension layer.
             return [IntakeAction.UPDATE_FULL.value]
-        if configuration_names is None:
-            configuration_names = frozenset(
-                self.registry.snapshot().configuration_names
-            )
-        exists = candidate.probe.internal_name in configuration_names
-        return (
-            [IntakeAction.UPDATE_CONTENT.value, IntakeAction.UPDATE_FULL.value]
-            if exists
-            else [IntakeAction.CREATE.value]
-        )
+        snapshot = registry_snapshot or self.registry.snapshot()
+        configuration = candidate.probe.internal_name
+        if configuration not in snapshot.configuration_names:
+            return [IntakeAction.CREATE.value]
+        identity = ExportIdentity.configuration(configuration)
+        if snapshot.generation(identity) is None:
+            return [IntakeAction.UPDATE_FULL.value]
+        return [IntakeAction.UPDATE_CONTENT.value, IntakeAction.UPDATE_FULL.value]
 
     def candidate_payload(
         self,
         candidate: DiscoveredCandidate,
         *,
-        configuration_names: frozenset[str] | None = None,
+        registry_snapshot: RegistrySnapshot | None = None,
     ) -> dict[str, object]:
         return {
             "id": candidate.candidate_id,
@@ -149,20 +148,19 @@ class IntakeApiService:
             "origin_name": candidate.probe.origin_name,
             "raw_sha256": candidate.probe.raw_sha256,
             "requires_parent": candidate.probe.source_kind is SourceKind.EXTENSION,
-            "actions": self._actions(candidate, configuration_names),
+            "actions": self._actions(candidate, registry_snapshot),
         }
 
     def snapshot(self) -> dict[str, object]:
         refreshed = self.lifecycle.refresh()
         registry_snapshot = self.registry.snapshot()
-        configuration_names = frozenset(registry_snapshot.configuration_names)
         return {
             "api_version": "v1",
             "configuration_names": list(registry_snapshot.configuration_names),
             "candidates": [
                 self.candidate_payload(
                     candidate,
-                    configuration_names=configuration_names,
+                    registry_snapshot=registry_snapshot,
                 )
                 for candidate in refreshed.candidates
             ],
@@ -247,7 +245,8 @@ class IntakeApiService:
                 )
             return None
         configuration = candidate.probe.internal_name
-        exists = configuration in self.registry.snapshot().configuration_names
+        snapshot = self.registry.snapshot()
+        exists = configuration in snapshot.configuration_names
         if action is IntakeAction.CREATE:
             if exists:
                 raise IntakeApiConflict("Конфигурация уже существует.")
@@ -255,9 +254,17 @@ class IntakeApiService:
         if not exists:
             raise IntakeApiConflict("Конфигурация для обновления не найдена.")
         try:
-            return self.registry.generation_view(configuration)
+            active = snapshot.generation_view(configuration)
         except RegistryError as error:
             raise IntakeApiConflict(str(error)) from error
+        if (
+            action is IntakeAction.UPDATE_CONTENT
+            and active.origin is GenerationOrigin.LEGACY
+        ):
+            raise IntakeApiConflict(
+                "Для legacy-конфигурации сначала требуется полное обновление."
+            )
+        return active
 
     def start(
         self,
@@ -356,6 +363,10 @@ class IntakeApiService:
             raise IntakeApiConflict(
                 "Durable preview или commit result job недоступен."
             ) from None
+        except CompositionError as error:
+            # Preview, созданный прежней версией сервера, может пережить
+            # restart. Он тоже должен завершаться контролируемым конфликтом.
+            raise IntakeApiConflict(str(error)) from error
         return self.job_payload(job_id)
 
     def job_payload(self, job_id: str) -> dict[str, object]:

@@ -15,6 +15,7 @@ from starlette.applications import Starlette
 from conftest import build_configuration, write_export, живой_клиент
 from mcp1c.dashboard_runtime import DASHBOARD_ON, routes
 from mcp1c.intake_v2 import DurableCandidateStore
+from mcp1c.intake_v2_composition import CompositionError
 from mcp1c.intake_v2_lifecycle import CandidateCatalog, IntakeLifecycle
 from mcp1c.intake_v2_operations import IntakeCoordinator
 from mcp1c.intake_v2_transport import BrowserStagingStore
@@ -189,6 +190,76 @@ def test_refresh_требует_admin_и_не_раскрывает_сервер�
     assert registry.snapshot().configuration_names == ()
 
 
+def test_legacy_цель_не_предлагает_и_не_запускает_частичное_обновление(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    registry = Registry(tmp_path / "data")
+    source = tmp_path / "base"
+    source.mkdir()
+    registry.add_configuration(
+        write_export(source, build_configuration(name="DemoConfiguration")),
+        keep_source=False,
+    )
+    _write_archive(registry.incoming_dir / "candidate.zip")
+    service = _service(registry)
+    client = _client(registry, service)
+
+    candidate = client.get(
+        "/api/v1/sources/intake",
+        headers={"x-api-token": "admin-token"},
+    ).json()["candidates"][0]
+    rejected = client.post(
+        "/api/v1/sources/intake/start",
+        headers={"x-api-token": "admin-token"},
+        json={"candidate_id": candidate["id"], "action": "update"},
+    )
+
+    assert candidate["actions"] == ["update_full"]
+    assert rejected.status_code == 409
+    assert "полное обновление" in rejected.json()["error"]
+    assert service.lifecycle.operations.records.list_jobs() == ()
+
+
+def test_confirm_старого_legacy_preview_возвращает_конфликт_вместо_500(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    registry = Registry(tmp_path / "data")
+    service = _service(registry)
+    client = _client(registry, service)
+    uploaded = client.post(
+        "/api/v1/sources/intake/upload",
+        headers={"x-api-token": "admin-token"},
+        files={"file": ("configuration.zip", _archive())},
+    ).json()["candidate"]
+    started = client.post(
+        "/api/v1/sources/intake/start",
+        headers={"x-api-token": "admin-token"},
+        json={"candidate_id": uploaded["id"], "action": "create"},
+    )
+    job_id = started.json()["job"]["job_id"]
+    _wait_job(client, job_id)
+
+    def reject_legacy_preview(_job_id, _publisher):
+        raise CompositionError("обычный legacy update требует полного обновления")
+
+    monkeypatch.setattr(
+        service.lifecycle.operations,
+        "confirm",
+        reject_legacy_preview,
+    )
+    rejected = client.post(
+        "/api/v1/sources/intake/confirm",
+        headers={"x-api-token": "admin-token"},
+        json={"job_id": job_id},
+    )
+
+    assert rejected.status_code == 409
+    assert "полного обновления" in rejected.json()["error"]
+    assert registry.snapshot().configuration_names == ()
+
+
 def test_browser_upload_сохраняет_candidate_но_не_запускает_parse(
     tmp_path, monkeypatch
 ):
@@ -296,6 +367,10 @@ def test_create_строит_preview_и_публикует_только_посл
     assert commit["no_op"] is False
     generation_id = commit["generation_id"]
     assert registry.snapshot().configuration_names == ("DemoConfiguration",)
+    assert service.snapshot()["candidates"][0]["actions"] == [
+        "update",
+        "update_full",
+    ]
 
     again = client.post(
         "/api/v1/sources/intake/confirm",

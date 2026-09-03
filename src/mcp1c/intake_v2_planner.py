@@ -274,6 +274,12 @@ def plan_intake(
 
     native = _active_manifest_layers(active) if active is not None else {}
     legacy = active is not None and active.origin is GenerationOrigin.LEGACY
+    if legacy and action is IntakeAction.UPDATE_CONTENT:
+        # У legacy нет независимых payload сохранённых слоёв: content-only
+        # нельзя собрать в атомарное поколение, не выдумывая их содержимое.
+        raise PlannerError(
+            "Для legacy-конфигурации сначала требуется полное обновление."
+        )
     planned: list[PlannedLayer] = []
     for kind in LayerKind:
         current = (

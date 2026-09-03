@@ -504,6 +504,41 @@ it("фильтрует объекты выбранной роли по типу 
   });
 });
 
+it("не размонтирует поиск объекта между буквами серверного запроса", async () => {
+  const fetchMock = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+    const url = new URL(String(input), "http://dashboard.test");
+    if (url.pathname === "/api/v1/roles/objects") {
+      if (url.searchParams.has("query")) {
+        return new Promise<Response>(() => undefined);
+      }
+      return response(access);
+    }
+    return response(catalog);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  renderPage("/roles?config=Отраслевая+конфигурация&role=Reader");
+
+  const input = await screen.findByRole("searchbox", { name: "Поиск объекта роли" });
+  input.focus();
+  fireEvent.change(input, { target: { value: "i" } });
+  await waitFor(() => {
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("query=i"));
+  });
+
+  const retained = screen.getByRole("searchbox", { name: "Поиск объекта роли" });
+  expect(retained).toBe(input);
+  expect(retained).toHaveFocus();
+  expect(retained).toHaveValue("i");
+  expect(screen.getByText("Фильтруем объекты…")).toBeInTheDocument();
+  fireEvent.change(retained, { target: { value: "in" } });
+  await waitFor(() => {
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("query=in"));
+  });
+  expect(screen.getByRole("searchbox", { name: "Поиск объекта роли" })).toBe(retained);
+  expect(retained).toHaveFocus();
+  expect(retained).toHaveValue("in");
+});
+
 it("показывает серверный resolver объект → роли и не вычисляет минимум сам", async () => {
   vi.stubGlobal("fetch", vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
     const url = new URL(String(input), "http://dashboard.test");

@@ -229,6 +229,15 @@ export function useRoleObjects(request: RoleObjectsRequest | null) {
   return useQuery({
     queryKey: ["roles", "objects", request],
     enabled: request !== null,
+    placeholderData: (previousData, previousQuery) => {
+      const previousRequest = previousQuery?.queryKey[2] as RoleObjectsRequest | null | undefined;
+      if (!request || !previousRequest) return undefined;
+      if (
+        previousRequest.config !== request.config
+        || previousRequest.role !== request.role
+      ) return undefined;
+      return previousData;
+    },
     queryFn: () => {
       const params = new URLSearchParams({
         config: request!.config,

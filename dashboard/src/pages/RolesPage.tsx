@@ -452,7 +452,10 @@ export function RolesPage() {
                       <span>Реквизиты по умолчанию: <strong>{defaultFlag(objects.data.role.default_flags.set_for_attributes_by_default)}</strong></span>
                       <span>Независимые дочерние: <strong>{defaultFlag(objects.data.role.default_flags.independent_rights_of_child_objects)}</strong></span>
                     </div>
-                    <div className="role-object-navigation">
+                    <div
+                      className="role-object-navigation"
+                      aria-busy={objects.isFetching}
+                    >
                       <div className="role-object-navigation-head">
                         <div>
                           <strong>Объекты с предоставленными правами</strong>
@@ -488,9 +491,11 @@ export function RolesPage() {
                           </button>
                         ))}
                       </div>
-                      <small>
-                        Найдено объектов: {objects.data.objects_total || 0}.
-                        Показаны только цели хотя бы с одним объявленным true.
+                      <small aria-live="polite">
+                        {objects.isFetching
+                          ? "Фильтруем объекты…"
+                          : `Найдено объектов: ${objects.data.objects_total || 0}. `
+                            + "Показаны только цели хотя бы с одним объявленным true."}
                       </small>
                     </div>
                     <div className="role-object-list">

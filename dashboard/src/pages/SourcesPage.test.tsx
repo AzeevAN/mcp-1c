@@ -211,6 +211,42 @@ it("переключает конфигурацию без ухода со ст�
   expect(screen.getAllByRole("link", { name: "Открыть JSON-журнал" })).toHaveLength(2);
 });
 
+it("позволяет снять native-расширение без отдельной legacy source-строки", async () => {
+  const fetchMock = vi.mocked(fetch);
+  const regularFetch = fetchMock.getMockImplementation()!;
+  fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const response = await regularFetch(input, init);
+    if (String(input) !== "/api/v1/sources") return response;
+    const payload = await response.json();
+    payload.configurations[1].corpora[1] = {
+      ...payload.configurations[1].corpora[1],
+      phase: "missing",
+      state: "не загружен",
+      source: null,
+      coverage: null,
+      journal: "",
+      journal_url: "",
+    };
+    return { ...response, json: async () => payload };
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  render(
+    <MemoryRouter initialEntries={["/sources"]}>
+      <QueryClientProvider client={client}>
+        <SourcesPage />
+      </QueryClientProvider>
+    </MemoryRouter>,
+  );
+
+  fireEvent.click(await screen.findByRole("button", { name: /Отраслевая конфигурация Б/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Удалить Расширение Доп" }));
+
+  const dialog = screen.getByRole("dialog", { name: "Удалить «Расширение Доп»?" });
+  expect(within(dialog).getByText(/все опубликованные слои этого расширения/)).toBeInTheDocument();
+  expect(within(dialog).getByText("b:ext:Доп")).toBeInTheDocument();
+});
+
 it("не изображает состав конфигурации декоративными развилками", async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const { container } = render(

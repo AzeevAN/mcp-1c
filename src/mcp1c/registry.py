@@ -3598,6 +3598,14 @@ class Registry:
                 preloaded = None
 
     def remove(self, source_id: str) -> None:
+        """Снять источник или native-расширение одним логическим действием."""
+        # Publish и remove одной identity не могут пересекаться: иначе remove
+        # проверит старый набор pointers, а publisher сразу после этого вернёт
+        # уже снятое расширение новым поколением.
+        with self._generation_mutation_lock:
+            self._remove_serialized(source_id)
+
+    def _remove_serialized(self, source_id: str) -> None:
         """Снять источник — а для конфигурации ещё и её код.
 
         `KIND_CONFIGURATION` без каскада выходил бы раньше, чем дошёл бы до
@@ -3622,7 +3630,20 @@ class Registry:
         # writer не может записать файл между `_drop_cache` и снятием Source.
         with self._modules_cache_lock, self._lock:
             source = self.sources.get(source_id)
-            if source is None:
+            native: tuple[tuple[str, ...], GenerationPointer] | None = next(
+                (
+                    (key, pointer)
+                    for key, pointer in self._generation_pointers.items()
+                    if pointer.identity.source_kind is SourceKind.EXTENSION
+                    and source_id
+                    == (
+                        f"{pointer.identity.parent_configuration}:ext:"
+                        f"{index_cache.safe_name(pointer.identity.extension_name)}"
+                    )
+                ),
+                None,
+            )
+            if source is None and native is None:
                 raise RegistryError(f"Источник не зарегистрирован: {source_id}")
 
             # Цепочка считается ДО первого удаления: `self.sources` меняется
@@ -3630,7 +3651,7 @@ class Registry:
             # движущейся целью. Только конфигурация каскадирует — модули и
             # расширения снимаются каждый сам по себе, без цепочки.
             цепочка = [source_id]
-            if source.kind == KIND_CONFIGURATION:
+            if source is not None and source.kind == KIND_CONFIGURATION:
                 модули_id = f"{source_id}:modules"
                 префикс_расширений = f"{source_id}:ext:"
                 runtime_id = f"{source_id}:extension-runtime"
@@ -3675,6 +3696,24 @@ class Registry:
                         отставленные.append(
                             (снести, отставленный, канонический)
                         )
+                if native is not None:
+                    native_key, _native_pointer = native
+                    next_pointers = dict(self._generation_pointers)
+                    next_pointers.pop(native_key)
+                    next_sources = {
+                        sid: current
+                        for sid, current in self.sources.items()
+                        if sid not in цепочка
+                    }
+                    # Pointer и возможная legacy-строка исчезают одной durable
+                    # записью ДО удаления generation root. После SIGKILL
+                    # restore уже не попытается открыть снятое поколение.
+                    self._write_registry_payload(
+                        self._registry_payload(
+                            next_pointers,
+                            sources=next_sources,
+                        )
+                    )
             except BaseException as error:
                 ошибки_отката: list[str] = []
                 for _, отставленный, канонический in reversed(отставленные):
@@ -3703,7 +3742,8 @@ class Registry:
                 for sid, операция in self._module_operations.items()
                 if sid == source_id
                 or (
-                    source.kind == KIND_CONFIGURATION
+                    source is not None
+                    and source.kind == KIND_CONFIGURATION
                     and операция.configuration == source_id
                 )
             }
@@ -3739,6 +3779,32 @@ class Registry:
                     self._relation_cache.clear()
                     отложенная_справка = dict(self.syntax_versions)
 
+            native_pointer: GenerationPointer | None = None
+            if native is not None:
+                native_key, native_pointer = native
+                identity = native_pointer.identity
+                self._generation_pointers.pop(native_key, None)
+                self._generation_manifests.pop(native_key, None)
+                self.modules.pop(source_id, None)
+                self.extension_structures.pop(source_id, None)
+                self.extension_relations.pop(source_id, None)
+                self.extension_roles.pop(source_id, None)
+                self._relation_cache.pop(identity.parent_configuration, None)
+                self._drop_cache(source_id, KIND_EXTENSION)
+                try:
+                    self._cache_path(source_id, "roles.sqlite").unlink(
+                        missing_ok=True
+                    )
+                except OSError:
+                    pass
+                try:
+                    coverage_log.remove(self.data_dir, source_id)
+                except OSError:
+                    logger.warning(
+                        "Журнал покрытия снятого native-расширения не удалён."
+                    )
+                инвалидировать.add(source_id)
+
             for sid in инвалидировать:
                 # Номер не сбрасывается: иначе remove -> add даст
                 # тот же generation и ABA вернёт старому writer право голоса.
@@ -3749,6 +3815,17 @@ class Registry:
             снести(каталог_кода)
         if отложенная_справка is not None:
             self._apply_syntax(отложенная_справка)
+        if native_pointer is not None:
+            try:
+                self._generation_store.remove_pointer_root(native_pointer)
+            except (OSError, RecoveryBlocked) as error:
+                # Pointer уже durable снят. Оставшийся detached bundle не
+                # обслуживается и безопаснее лишнего места на диске, чем
+                # ложный ответ API о неудавшемся логическом удалении.
+                logger.warning(
+                    "Каталог снятого native-поколения не удалён: %s",
+                    error,
+                )
 
     # ------------------------------------------------------------- разрешение
 
@@ -4002,16 +4079,19 @@ class Registry:
         generation_pointers: Mapping[
             tuple[str, ...], GenerationPointer
         ] | None = None,
+        *,
+        sources: Mapping[str, Source] | None = None,
     ) -> dict[str, object]:
         pointers = (
             self._generation_pointers
             if generation_pointers is None
             else generation_pointers
         )
+        source_rows = self.sources if sources is None else sources
         payload: dict[str, object] = {
             "registry_version": REGISTRY_VERSION,
             "saved_at": _now(),
-            "sources": [source.to_dict() for source in self.sources.values()],
+            "sources": [source.to_dict() for source in source_rows.values()],
         }
         if pointers:
             payload["generation_manifests"] = [

@@ -208,16 +208,16 @@ function CorpusCard({
         </div>
         <div className="corpus-actions">
           <StatusBadge tone={phase.tone}>{phase.label}</StatusBadge>
-          {onRemove && corpus.source && (
+          {onRemove && (corpus.source || corpus.kind === "extension") && (
             <button
               className="is-danger"
               type="button"
               onClick={() => onRemove({
                 operation: "source",
-                id: corpus.source!.id,
+                id: corpus.source?.id ?? corpus.id,
                 title: corpus.label,
                 impact: corpus.kind === "extension"
-                  ? "Будут удалены индекс этого расширения, его каталог кода и журнал покрытия. Родительская конфигурация останется."
+                  ? "Будут удалены все опубликованные слои этого расширения, его индекс и журнал покрытия. Родительская конфигурация останется."
                   : "Будут удалены индекс основного кода, каталог модулей и журнал покрытия. Структура конфигурации останется.",
               })}
               aria-label={`Удалить ${corpus.label}`}

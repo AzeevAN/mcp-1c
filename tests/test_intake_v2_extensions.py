@@ -585,6 +585,87 @@ def test_restore_поднимает_native_расширение_после_legac
     )
 
 
+def test_remove_снимает_native_generation_расширения_без_legacy_source(
+    tmp_path,
+):
+    incoming = tmp_path / "legacy-parent-remove"
+    incoming.mkdir()
+    registry = Registry(tmp_path / "data")
+    registry.add_configuration(
+        write_export(
+            incoming,
+            _configuration(
+                "DemoConfiguration",
+                _object("Items", "BaseField"),
+            ),
+        )
+    )
+    _collection_value, extension = _materialized(
+        tmp_path,
+        "extension-remove",
+        configuration_name="DemoExtension",
+        extension=True,
+    )
+    registry.publish_generation(
+        registry.stage_generation(extension.manifest, extension.payloads)
+    )
+    pointer = registry.active_generation_pointer(extension.manifest.identity)
+    assert pointer is not None
+    assert "DemoConfiguration:ext:DemoExtension" not in registry.snapshot().sources
+    role_cache = registry._cache_path(
+        "DemoConfiguration:ext:DemoExtension",
+        "roles.sqlite",
+    )
+    assert role_cache.is_file()
+
+    registry.remove("DemoConfiguration:ext:DemoExtension")
+
+    snapshot = registry.snapshot()
+    assert registry.active_generation_pointer(extension.manifest.identity) is None
+    assert "DemoExtension" not in snapshot.extension_names("DemoConfiguration")
+    assert "DemoConfiguration:ext:DemoExtension" not in snapshot.modules
+    assert not (registry.data_dir / pointer.root_path).exists()
+    assert not role_cache.exists()
+
+    restarted = Registry(registry.data_dir)
+    assert restarted.restore() == []
+    assert "DemoExtension" not in restarted.snapshot().extension_names(
+        "DemoConfiguration"
+    )
+
+
+def test_remove_снимает_legacy_source_и_native_generation_одного_расширения(
+    tmp_path,
+    корень_кода,
+    реестр_из_кода,
+):
+    registry = реестр_из_кода(
+        корень_кода,
+        name="DemoConfiguration",
+        extension="DemoExtension",
+    )
+    _collection_value, extension = _materialized(
+        tmp_path,
+        "extension-remove-over-legacy",
+        configuration_name="DemoExtension",
+        extension=True,
+    )
+    registry.publish_generation(
+        registry.stage_generation(extension.manifest, extension.payloads)
+    )
+    source_id = "DemoConfiguration:ext:DemoExtension"
+    assert source_id in registry.snapshot().sources
+    assert registry.active_generation_pointer(extension.manifest.identity) is not None
+
+    registry.remove(source_id)
+
+    snapshot = registry.snapshot()
+    assert source_id not in snapshot.sources
+    assert source_id not in snapshot.modules
+    assert registry.active_generation_pointer(extension.manifest.identity) is None
+    assert "DemoExtension" not in snapshot.extension_names("DemoConfiguration")
+
+
 def test_restore_поднимает_код_native_расширения_из_warm_кэша(
     tmp_path,
     monkeypatch,

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import BinaryIO
 
 from .intake_v2 import (
+    CandidateJobStage,
     CandidateJobState,
     DurableCandidateStore,
     ExportIdentity,
@@ -26,7 +27,11 @@ from .intake_v2_lifecycle import (
     IntakeLifecycle,
     LifecycleError,
 )
-from .intake_v2_operations import IntakeCommitResult, IntakeCoordinator
+from .intake_v2_operations import (
+    IntakeCommitResult,
+    IntakeCoordinator,
+    OperationStalePreview,
+)
 from .intake_v2_planner import IntakeAction, LayerVersion
 from .intake_v2_registry import GenerationOrigin, GenerationView
 from .intake_v2_transport import BrowserStagingStore
@@ -304,6 +309,8 @@ class IntakeApiService:
         if previous is not None and previous.state is CandidateJobState.DONE:
             try:
                 preview = self.lifecycle.operations.load_preview(job_id)
+            except OperationStalePreview as error:
+                raise IntakeApiConflict(str(error)) from error
             except KeyError:
                 raise IntakeApiConflict(
                     "Durable preview готовой job недоступен."
@@ -363,6 +370,8 @@ class IntakeApiService:
             raise IntakeApiConflict(
                 "Durable preview или commit result job недоступен."
             ) from None
+        except OperationStalePreview as error:
+            raise IntakeApiConflict(str(error)) from error
         except CompositionError as error:
             # Preview, созданный прежней версией сервера, может пережить
             # restart. Он тоже должен завершаться контролируемым конфликтом.
@@ -387,6 +396,15 @@ class IntakeApiService:
             return payload
         try:
             preview = self.lifecycle.operations.load_preview(job_id)
+        except OperationStalePreview as error:
+            # Один preview прежней версии не должен блокировать список
+            # кандидатов и остальные durable jobs.
+            payload.update(
+                state=CandidateJobState.FAILED.value,
+                stage=CandidateJobStage.FAILED.value,
+                error=str(error),
+            )
+            return payload
         except KeyError:
             raise IntakeApiConflict(
                 "Durable preview готовой job недоступен."

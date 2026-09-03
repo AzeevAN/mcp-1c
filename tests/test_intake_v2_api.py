@@ -13,11 +13,13 @@ import pytest
 from starlette.applications import Starlette
 
 from conftest import build_configuration, write_export, живой_клиент
+import mcp1c.intake_v2_operations as intake_v2_operations
 from mcp1c.dashboard_runtime import DASHBOARD_ON, routes
 from mcp1c.intake_v2 import DurableCandidateStore
-from mcp1c.intake_v2_composition import CompositionError
 from mcp1c.intake_v2_lifecycle import CandidateCatalog, IntakeLifecycle
 from mcp1c.intake_v2_operations import IntakeCoordinator
+from mcp1c.intake_v2_planner import IntakeAction, plan_intake
+from mcp1c.intake_v2_registry import native_generation_view
 from mcp1c.intake_v2_transport import BrowserStagingStore
 from mcp1c.registry import Registry
 from test_intake_v2_collector import _configuration
@@ -221,43 +223,71 @@ def test_legacy_цель_не_предлагает_и_не_запускает_ч
     assert service.lifecycle.operations.records.list_jobs() == ()
 
 
-def test_confirm_старого_legacy_preview_возвращает_конфликт_вместо_500(
+def test_старый_legacy_preview_не_ломает_snapshot_и_возвращает_конфликт(
     tmp_path, monkeypatch
 ):
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
     registry = Registry(tmp_path / "data")
+    source = tmp_path / "base"
+    source.mkdir()
+    registry.add_configuration(
+        write_export(source, build_configuration(name="DemoConfiguration")),
+        keep_source=False,
+    )
+    _write_archive(registry.incoming_dir / "candidate.zip")
     service = _service(registry)
     client = _client(registry, service)
-    uploaded = client.post(
-        "/api/v1/sources/intake/upload",
-        headers={"x-api-token": "admin-token"},
-        files={"file": ("configuration.zip", _archive())},
-    ).json()["candidate"]
-    started = client.post(
-        "/api/v1/sources/intake/start",
-        headers={"x-api-token": "admin-token"},
-        json={"candidate_id": uploaded["id"], "action": "create"},
-    )
-    job_id = started.json()["job"]["job_id"]
-    _wait_job(client, job_id)
+    candidate = service.snapshot()["candidates"][0]
+    job_id = "job-stale-legacy-preview"
+    service.lifecycle.start(job_id, candidate["id"])
 
-    def reject_legacy_preview(_job_id, _publisher):
-        raise CompositionError("обычный legacy update требует полного обновления")
+    def previous_plan(action, manifest, *, active):
+        return plan_intake(
+            action,
+            manifest,
+            active=native_generation_view(manifest),
+        )
 
-    monkeypatch.setattr(
-        service.lifecycle.operations,
-        "confirm",
-        reject_legacy_preview,
+    with monkeypatch.context() as previous_version:
+        previous_version.setattr(
+            intake_v2_operations,
+            "plan_intake",
+            previous_plan,
+        )
+        service.lifecycle.prepare(
+            job_id,
+            action=IntakeAction.UPDATE_CONTENT,
+            active=registry.generation_view("DemoConfiguration"),
+            generation_id="generation-stale-preview",
+        )
+
+    snapshot = client.get(
+        "/api/v1/sources/intake",
+        headers={"x-api-token": "admin-token"},
     )
-    rejected = client.post(
+    status = client.get(
+        f"/api/v1/sources/intake/jobs/{job_id}",
+        headers={"x-api-token": "admin-token"},
+    )
+    confirm = client.post(
         "/api/v1/sources/intake/confirm",
         headers={"x-api-token": "admin-token"},
         json={"job_id": job_id},
     )
 
-    assert rejected.status_code == 409
-    assert "полного обновления" in rejected.json()["error"]
-    assert registry.snapshot().configuration_names == ()
+    assert snapshot.status_code == 200
+    stale = next(item for item in snapshot.json()["jobs"] if item["job_id"] == job_id)
+    assert stale["state"] == "failed"
+    assert stale["stage"] == "failed"
+    assert "полное обновление" in stale["error"]
+    assert stale["preview"] is None
+    assert status.status_code == 200
+    assert status.json()["job"] == stale
+    assert confirm.status_code == 409
+    assert "полное обновление" in confirm.json()["error"]
+    assert registry.active_generation_pointer(
+        registry.generation_view("DemoConfiguration").identity
+    ) is None
 
 
 def test_browser_upload_сохраняет_candidate_но_не_запускает_parse(

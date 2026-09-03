@@ -35,7 +35,7 @@ from .intake_v2_collector import collect_source_b
 from .intake_v2_composition import compose_generation, compose_manifest
 from .intake_v2_converter import convert_collection
 from .intake_v2_generation import MaterializedGeneration, materialize_generation
-from .intake_v2_planner import IntakeAction, IntakePlan, plan_intake
+from .intake_v2_planner import IntakeAction, IntakePlan, PlannerError, plan_intake
 from .intake_v2_probe import CandidateProbe, probe_export
 from .intake_v2_registry import (
     GenerationConflictError,
@@ -64,6 +64,10 @@ class OperationError(RuntimeError):
 
 class OperationConflict(OperationError):
     """Active generation изменился после построения подтверждаемого preview."""
+
+
+class OperationStalePreview(OperationError):
+    """Durable preview создан прежним, более слабым контрактом planner."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -976,6 +980,11 @@ class IntakeCoordinator:
             ):
                 raise OperationError("preview не совпадает с durable candidate")
             return preview
+        except PlannerError as error:
+            raise OperationStalePreview(
+                "Готовый preview несовместим с текущим контрактом: "
+                f"{error} Постройте новый preview."
+            ) from error
         except OperationError:
             raise
         except Exception as error:
@@ -1114,4 +1123,5 @@ __all__ = [
     "IntakePreview",
     "OperationConflict",
     "OperationError",
+    "OperationStalePreview",
 ]

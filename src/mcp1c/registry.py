@@ -1722,6 +1722,33 @@ class Registry:
             )
 
         semantic = base_layer_data(config)
+        content_sha256 = hash_layer_semantic(
+            LayerKind.BASE_STRUCTURE,
+            semantic,
+        )
+        active_base = next(
+            (
+                layer
+                for layer in active.layers
+                if layer.kind is LayerKind.BASE_STRUCTURE
+            ),
+            None,
+        )
+        if (
+            active_base is not None
+            and active_base.state is LayerState.READY
+            and active_base.content_sha256 == content_sha256
+        ):
+            # Повтор той же A не является новой публикацией: иначе одинаковый
+            # base без причины меняет generation и ломает единый no-op контракт.
+            with self._lock:
+                loaded = self.configurations.get(config.name)
+                current = self._generation_pointers.get(active.identity.grouping_key)
+            if loaded is None or current != previous:
+                raise RegistryError(
+                    "active generation изменилась во время проверки schema-v1 no-op"
+                )
+            return loaded.source
         payload = LayerPayload(LayerKind.BASE_STRUCTURE, semantic)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         temporary = Path(
@@ -1737,10 +1764,7 @@ class Registry:
             base = LayerManifest(
                 kind=LayerKind.BASE_STRUCTURE,
                 state=LayerState.READY,
-                content_sha256=hash_layer_semantic(
-                    LayerKind.BASE_STRUCTURE,
-                    semantic,
-                ),
+                content_sha256=content_sha256,
                 payload_sha256=hash_layer_payload(
                     LayerKind.BASE_STRUCTURE,
                     payload_path,

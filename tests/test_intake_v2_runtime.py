@@ -643,6 +643,36 @@ def test_schema_v1_после_native_заменяет_только_base_и_пе�
     assert restored.roles is not None and restored.roles.ready
 
 
+def test_повторная_идентичная_schema_v1_поверх_native_не_меняет_generation(
+    tmp_path,
+):
+    collection, generation = _materialized(
+        tmp_path,
+        "source-a-no-op",
+        common_forms=True,
+    )
+    registry = Registry(tmp_path / "data")
+    registry.publish_generation(
+        registry.stage_generation(generation.manifest, generation.payloads)
+    )
+    incoming = tmp_path / "source-a"
+    incoming.mkdir()
+    source_a = convert_collection(collection).base
+    source_a_path = write_export(incoming, source_a)
+
+    first_source = registry.add_configuration(source_a_path)
+    first_pointer = registry.active_generation_pointer(generation.manifest.identity)
+    first_manifest = registry.active_generation(generation.manifest.identity)
+
+    repeated_source = registry.add_configuration(source_a_path)
+
+    assert registry.active_generation_pointer(generation.manifest.identity) == (
+        first_pointer
+    )
+    assert registry.active_generation(generation.manifest.identity) == first_manifest
+    assert repeated_source == first_source
+
+
 def test_schema_v1_не_публикуется_поверх_несовместимого_native(tmp_path):
     _collection_value, generation = _materialized(
         tmp_path,

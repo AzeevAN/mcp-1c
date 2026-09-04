@@ -211,6 +211,31 @@ it("переключает конфигурацию без ухода со ст�
   expect(screen.getAllByRole("link", { name: "Открыть JSON-журнал" })).toHaveLength(2);
 });
 
+it("объясняет ограничение через категории покрытия, а не через нулевой счётчик", async () => {
+  const fetchMock = vi.mocked(fetch);
+  const regularFetch = fetchMock.getMockImplementation()!;
+  fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const response = await regularFetch(input, init);
+    if (String(input) !== "/api/v1/sources") return response;
+    const payload = await response.json();
+    payload.configurations[0].corpora[0].phase = "limited";
+    payload.configurations[0].corpora[0].coverage.has_limitations = true;
+    return { ...response, json: async () => payload };
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  render(
+    <MemoryRouter initialEntries={["/sources"]}>
+      <QueryClientProvider client={client}>
+        <SourcesPage />
+      </QueryClientProvider>
+    </MemoryRouter>,
+  );
+
+  expect(await screen.findByText(/Ограничение найдено минимум в одной категории покрытия/)).toBeInTheDocument();
+  expect(screen.queryByText(/Нулевой счётчик не доказывает отсутствие данных/)).not.toBeInTheDocument();
+});
+
 it("позволяет снять native-расширение без отдельной legacy source-строки", async () => {
   const fetchMock = vi.mocked(fetch);
   const regularFetch = fetchMock.getMockImplementation()!;

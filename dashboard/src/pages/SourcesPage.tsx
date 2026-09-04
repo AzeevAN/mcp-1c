@@ -258,7 +258,7 @@ function CorpusCard({
           {(corpus.phase === "limited" || corpus.source?.incomplete) && (
             <div className="inline-warning">
               <AlertTriangle size={18} aria-hidden="true" />
-              <span>Нулевой счётчик не доказывает отсутствие данных: корпус прочитан с ограничениями.</span>
+              <span>Ограничение найдено минимум в одной категории покрытия. Точные причины и счётчики приведены ниже.</span>
             </div>
           )}
 

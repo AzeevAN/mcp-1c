@@ -36,6 +36,7 @@ from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
+from functools import wraps
 from pathlib import Path
 from types import MappingProxyType
 from typing import Callable, Iterable, Mapping, TypeVar
@@ -153,6 +154,18 @@ _RE_PLATFORM = re.compile(r"\b(\d+\.\d+\.\d+(?:\.\d+)?)\b")
 
 class RegistryError(Exception):
     """Источник не загружается или запрошено то, чего нет."""
+
+
+class SourceInUseError(RegistryError):
+    """Файл снова используется или ещё готовится к публикации."""
+
+
+def _protect_source_operation(method):
+    @wraps(method)
+    def protected(self, path, *args, **kwargs):
+        with self._source_file_operation(Path(path)):
+            return method(self, path, *args, **kwargs)
+    return protected
 
 
 class GenerationPublishConflict(RegistryError, GenerationConflictError):
@@ -1012,6 +1025,8 @@ class Registry:
         self.dictionary = Dictionary.load(self.dictionary_path)
 
         self._lock = threading.RLock()
+        self._source_reservations: Counter[Path] = Counter()
+        self._source_scopes = threading.local()
         # Staging разных кандидатов может идти параллельно, но pointer и общий
         # WAL переключаются только одним publisher за раз.
         self._generation_mutation_lock = threading.Lock()
@@ -1496,6 +1511,36 @@ class Registry:
         )
         return lookup
 
+    @staticmethod
+    def _source_file_keys(path: Path) -> set[Path]:
+        # Нужны оба имени: symlink-вход может читать managed source, а rename
+        # сохранённой копии заменяет саму ссылку, оставляя обычный файл.
+        return {Path(os.path.abspath(path)), path.resolve()}
+
+    @contextmanager
+    def _source_file_operation(self, path: Path):
+        previous = getattr(self._source_scopes, "paths", None)
+        paths: set[Path] = set()
+        self._source_scopes.paths = paths
+        try:
+            self._reserve_source_file(path)
+            yield
+        finally:
+            with self._lock:
+                for reserved in paths:
+                    self._source_reservations[reserved] -= 1
+                    if not self._source_reservations[reserved]:
+                        del self._source_reservations[reserved]
+            self._source_scopes.paths = previous
+
+    def _reserve_source_file(self, path: Path) -> None:
+        paths = self._source_scopes.paths
+        keys = self._source_file_keys(path)
+        with self._lock:
+            for key in keys - paths:
+                self._source_reservations[key] += 1
+                paths.add(key)
+
     def _store_source(
         self,
         path: Path,
@@ -1524,6 +1569,10 @@ class Registry:
         target = f"source-{identity}-{digest}{suffix}"
         temporary = f".{target}.{uuid.uuid4().hex}.tmp"
         target_dir = self.sources_dir / subdir
+        # Резерв живёт до завершения всей add-операции, а не только копирования.
+        # Временный файл также не должен исчезнуть между open и rename.
+        self._reserve_source_file(target_dir / target)
+        self._reserve_source_file(target_dir / temporary)
         opened: list[int] = []
         temporary_created = False
 
@@ -1595,6 +1644,7 @@ class Registry:
             self._configuration_revisions.get(name, 0) + 1
         )
 
+    @_protect_source_operation
     def add_configuration(
         self,
         path: str | Path,
@@ -1843,6 +1893,7 @@ class Registry:
                     pass
             shutil.rmtree(temporary, ignore_errors=True)
 
+    @_protect_source_operation
     def add_extension_runtime(
         self,
         path: str | Path,
@@ -3439,6 +3490,7 @@ class Registry:
             отпечаток_архива=отпечаток_архива,
         )
 
+    @_protect_source_operation
     def add_syntax(
         self,
         path: str | Path,
@@ -5562,6 +5614,47 @@ class Registry:
             removed.append(path.name)
         return removed
 
+    def forget_source(self, stored_path: str) -> None:
+        """Удалить только текущий orphan, не доверяя прежнему снимку SPA."""
+        relative = Path(stored_path)
+        if (
+            relative.is_absolute()
+            or len(relative.parts) < 2
+            or relative.parts[0] != "sources"
+            or ".." in relative.parts
+            or relative.as_posix() != stored_path
+        ):
+            raise RegistryError("Удалять можно только файл внутри sources.")
+
+        target = self.data_dir / relative
+        keys = self._source_file_keys(target)
+        opened: list[int] = []
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        try:
+            opened.append(os.open(self.data_dir, os.O_RDONLY | os.O_DIRECTORY))
+            for part in relative.parts[:-1]:
+                opened.append(os.open(part, flags, dir_fd=opened[-1]))
+            name = relative.name
+            # Публикация владельца, резерв и unlink используют один замок.
+            # Полное сканирование sources и разбор файлов здесь не выполняются.
+            with self._lock:
+                used = set().union(*(
+                    self._source_file_keys(self._absolute(source.stored_path))
+                    for source in self.sources.values() if source.stored_path
+                ))
+                if keys & used or any(self._source_reservations[key] for key in keys):
+                    raise SourceInUseError(
+                        "Файл уже используется или готовится к публикации. "
+                        "Обновите список неиспользуемых файлов."
+                    )
+                info = os.stat(name, dir_fd=opened[-1], follow_symlinks=False)
+                if not stat.S_ISREG(info.st_mode):
+                    raise RegistryError("Удалять можно только обычный файл, не ссылку.")
+                os.unlink(name, dir_fd=opened[-1])
+        finally:
+            for descriptor in reversed(opened):
+                os.close(descriptor)
+
     def orphan_sources(self) -> list[tuple[Path, int]]:
         """Исходные файлы, на которые не ссылается ни один источник.
 
@@ -5584,7 +5677,9 @@ class Registry:
                 for source in self.sources.values()
                 if source.stored_path
             )
+            reserved_paths = tuple(self._source_reservations)
         used = {self._absolute(path).resolve() for path in stored_paths}
+        used.update(reserved_paths)
         orphans: list[tuple[Path, int]] = []
         if not self.sources_dir.is_dir():
             return orphans

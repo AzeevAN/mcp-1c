@@ -65,6 +65,7 @@ from .registry import (
     KIND_SYNTAX,
     Registry,
     RegistryError,
+    SourceInUseError,
 )
 from .process_restart import RestartController
 from .reference_provider import (
@@ -1596,17 +1597,13 @@ def _spa_routes(
         given = str(payload.get("path", ""))
         if not given or payload.get("confirmation") != given:
             return _json_error("Не подтверждено точное имя файла.", 400)
-        orphan_sources = await run_in_threadpool(registry.orphan_sources)
-        allowed = {
-            path.relative_to(registry.data_dir).as_posix(): path
-            for path, _ in orphan_sources
-        }
-        target = allowed.get(given)
-        if target is None:
-            return _json_error("Такого неиспользуемого файла нет.", 404)
         try:
-            await run_in_threadpool(target.unlink)
-        except OSError as error:
+            await run_in_threadpool(registry.forget_source, given)
+        except SourceInUseError as error:
+            return _json_error(str(error), 409)
+        except FileNotFoundError:
+            return _json_error("Такого неиспользуемого файла нет.", 404)
+        except (RegistryError, OSError) as error:
             return _json_error(str(error), 400)
         return JSONResponse({"forgotten": given})
 

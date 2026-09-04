@@ -6,6 +6,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { QueriesPage } from "./QueriesPage";
 
 const setup = {
+  sources_revision: "new-generation",
   api_version: "v1",
   configuration_names: ["Отраслевая конфигурация А", "Отраслевая конфигурация Б"],
   default_configuration: "Отраслевая конфигурация А",
@@ -19,6 +20,7 @@ const setup = {
 };
 
 const runResult = {
+  sources_revision: "new-generation",
   api_version: "v1",
   request: {
     config: "Отраслевая конфигурация Б",
@@ -53,6 +55,19 @@ const runResult = {
 function client() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } });
 }
+
+it.each(["old-generation", undefined, null])("помечает сохранённую выдачу ревизии %s, не теряя фразы и ссылки", async (revision) => {
+  window.sessionStorage.setItem("mcp1c-dashboard-queries", JSON.stringify({
+    phrasesText: "номер телефона", config: runResult.request.config, scope: "fields",
+    response: { ...runResult, sources_revision: revision }, scrollY: 0,
+  }));
+  render(<MemoryRouter initialEntries={["/queries"]}><QueryClientProvider client={client()}><QueriesPage /></QueryClientProvider></MemoryRouter>);
+  expect(await screen.findByText(/Результат устарел/)).toBeInTheDocument();
+  expect(screen.getByRole("textbox", { name: "Поисковые фразы" })).toHaveValue("номер телефона");
+  expect(screen.getByRole("link", { name: "Справочник.Контрагенты.Телефон" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Прогнать запросы" }));
+  await waitFor(() => expect(screen.queryByText(/Результат устарел/)).not.toBeInTheDocument());
+});
 
 function BackPage() {
   return <Link to="/queries">К результатам запросов</Link>;

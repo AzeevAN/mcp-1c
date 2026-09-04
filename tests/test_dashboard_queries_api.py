@@ -38,6 +38,75 @@ def _registry(tmp_path, *, platform: str = "8.3.23.1997") -> Registry:
     return registry
 
 
+def test_поиск_помечен_ревизией_источников_и_она_меняется_после_замены(tmp_path):
+    registry = _registry(tmp_path)
+    with _client(registry, tmp_path) as client:
+        before = client.get("/api/v1/queries").json()["sources_revision"]
+        result = client.post("/api/v1/queries", json={
+            "config": "", "scope": "objects", "phrases": ["товары"],
+        }).json()
+        assert result["sources_revision"] == before
+        config = build_configuration()
+        config.platform = "8.3.24.1000"
+        registry.add_configuration(write_export(tmp_path / "incoming", config))
+        after = client.get("/api/v1/queries").json()["sources_revision"]
+        assert after != before
+        assert client.get("/api/v1/queries").json()["sources_revision"] == after
+
+
+def test_изменение_источника_во_время_поиска_не_выдаёт_актуальную_ревизию(tmp_path, monkeypatch):
+    from mcp1c import dashboard_backend
+    registry = _registry(tmp_path)
+    original = dashboard_backend._run_queries
+
+    def changed(*args):
+        result = original(*args)
+        config = build_configuration()
+        config.platform = "8.3.24.1000"
+        registry.add_configuration(write_export(tmp_path / "incoming", config))
+        return result
+
+    monkeypatch.setattr(dashboard_backend, "_run_queries", changed)
+    with _client(registry, tmp_path) as client:
+        result = client.post("/api/v1/queries", json={
+            "config": "", "scope": "objects", "phrases": ["товары"],
+        })
+    assert result.status_code == 200
+    assert result.json()["sources_revision"] is None
+
+
+def test_удаление_и_возврат_того_же_имени_не_восстанавливает_ревизию(tmp_path):
+    from mcp1c.dashboard_runtime import _queries_setup_payload
+    registry = _registry(tmp_path)
+    before = _queries_setup_payload(registry)["sources_revision"]
+    registry.remove(build_configuration().name)
+    empty = _queries_setup_payload(registry)["sources_revision"]
+    registry.add_configuration(write_export(tmp_path / "incoming", build_configuration()))
+    restored = _queries_setup_payload(registry)["sources_revision"]
+    assert len({before, empty, restored}) == 3
+
+
+def test_ревизия_учитывает_source_b_и_не_меняется_при_no_op(tmp_path):
+    from mcp1c.dashboard_runtime import _queries_setup_payload
+    from test_intake_v2_api import _service, _write_archive
+    registry = Registry(tmp_path / "data")
+    service = _service(registry)
+    before = _queries_setup_payload(registry)["sources_revision"]
+    _write_archive(registry.incoming_dir / "synthetic.zip")
+    candidate = service.snapshot()["candidates"][0]
+    work = service.start(candidate["id"], "create")
+    service.prepare(work)
+    service.confirm(work.job_id)
+    published = _queries_setup_payload(registry)["sources_revision"]
+    assert before != published
+    candidate = service.snapshot()["candidates"][0]
+    work = service.start(candidate["id"], "update_full")
+    service.prepare(work)
+    result = service.confirm(work.job_id)
+    assert result["commit"]["no_op"] is True
+    assert _queries_setup_payload(registry)["sources_revision"] == published
+
+
 def test_get_queries_api_описывает_пустое_состояние_и_границы(tmp_path):
     registry = Registry(tmp_path / "data")
 
@@ -47,6 +116,7 @@ def test_get_queries_api_описывает_пустое_состояние_и_�
     assert response.status_code == 200
     assert response.json() == {
         "api_version": "v1",
+        "sources_revision": response.json()["sources_revision"],
         "configuration_names": [],
         "default_configuration": "",
         "scopes": [

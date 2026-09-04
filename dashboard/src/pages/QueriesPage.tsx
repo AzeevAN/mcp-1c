@@ -359,6 +359,14 @@ export function QueriesPage() {
         <section className="query-output" id="query-results" aria-live="polite">
           {visibleResponse ? (
             <>
+              {(!visibleResponse.sources_revision
+                || visibleResponse.sources_revision !== setup.data.sources_revision
+                || setup.isFetching) && (
+                <div className="query-form-error" role="status">
+                  <AlertTriangle size={17} />
+                  Результат устарел или его актуальность ещё не подтверждена. Источники могли измениться; прогоните запросы повторно. Ниже сохранена история.
+                </div>
+              )}
               <div className="query-output-heading">
                 <div><span className="eyebrow">Последний прогон</span><h2>Результаты</h2></div>
                 <span>{visibleResponse.results.length} фраз</span>

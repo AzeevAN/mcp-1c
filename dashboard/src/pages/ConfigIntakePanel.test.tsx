@@ -106,7 +106,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-it("показывает semantic preview и публикует только после отдельного confirm", async () => {
+it.each([false, true])("публикует только после confirm и учитывает no_op=%s при обновлении кэша", async (noOp) => {
   const requests: Array<{ path: string; body: unknown }> = [];
   let previewReady = false;
   const readyJob = {
@@ -155,7 +155,7 @@ it("показывает semantic preview и публикует только п�
           error: "",
           preview: null,
           commit: {
-            no_op: false,
+            no_op: noOp,
             generation_id: "generation-001",
             manifest_sha256: "d".repeat(64),
             applied_layers: ["base_structure", "roles"],
@@ -165,7 +165,9 @@ it("показывает semantic preview и публикует только п�
     }
     throw new Error(`Неожиданный запрос ${path}`);
   }));
-  renderPanel();
+  const client = renderPanel();
+  const dependentKeys = [["card", "object", "Synthetic"], ["roles", "catalog", "Synthetic"], ["graph", "Synthetic"], ["queries-setup"]];
+  dependentKeys.forEach((key) => client.setQueryData(key, "прежнее поколение"));
 
   expect(await screen.findByText("СинтетическаяКонфигурация")).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Создать конфигурацию" }));
@@ -192,7 +194,10 @@ it("показывает semantic preview и публикует только п�
   const reopenedDialog = await screen.findByRole("dialog", { name: "Проверка изменений" });
 
   fireEvent.click(within(reopenedDialog).getByRole("button", { name: "Опубликовать изменения" }));
-  expect(await screen.findByText("Поколение опубликовано", { exact: false })).toBeInTheDocument();
+  expect(await screen.findByText(noOp ? "Изменений нет; активное поколение сохранено." : "Поколение опубликовано", { exact: false })).toBeInTheDocument();
+  for (const key of dependentKeys) {
+    expect(client.getQueryData(key)).toBe(noOp ? "прежнее поколение" : undefined);
+  }
   expect(requests).toContainEqual({
     path: "/api/v1/sources/intake/confirm",
     body: { job_id: "job-001" },

@@ -1,4 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect } from "react";
+import { refreshSourceDependents } from "./sourceFreshness";
+
+const terminalSnapshots = new WeakMap<object, string>();
 
 export type AdminJob = {
   name: string;
@@ -105,7 +109,8 @@ async function adminRequest<T>(path: string, body?: Record<string, string>): Pro
 }
 
 export function useAdminSources(enabled: boolean) {
-  return useQuery({
+  const client = useQueryClient();
+  const result = useQuery({
     queryKey: ["sources", "admin"],
     queryFn: () => adminRequest<AdminSourcesResponse>("/api/v1/sources/admin"),
     enabled,
@@ -118,6 +123,18 @@ export function useAdminSources(enabled: boolean) {
       return runningJob || runningIncoming ? 2_000 : false;
     },
   });
+  const jobs = result.data?.jobs;
+  useEffect(() => {
+    if (!enabled || !jobs) return;
+    const signature = JSON.stringify(jobs);
+    if (terminalSnapshots.get(client) === signature) return;
+    const previous = terminalSnapshots.get(client);
+    terminalSnapshots.set(client, signature);
+    if (previous !== undefined && jobs.some((job) => job.state === "готово" || job.state === "ошибка")) {
+      void refreshSourceDependents(client);
+    }
+  }, [client, enabled, jobs]);
+  return result;
 }
 
 export function uploadSource(
@@ -270,11 +287,13 @@ export async function waitForServerRestart(
 
 function useRefreshingMutation<TVariables, TResult>(
   mutationFn: (variables: TVariables) => Promise<TResult>,
+  changesSources = false,
 ) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn,
     onSuccess: async () => {
+      if (changesSources) await refreshSourceDependents(queryClient);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["sources"] }),
         queryClient.invalidateQueries({ queryKey: ["dashboard", "bootstrap"] }),
@@ -304,7 +323,7 @@ export function useRemoveSource() {
     adminRequest<{ removed: string }>("/api/v1/sources/remove", {
       id,
       confirmation: id,
-    }),
+    }), true,
   );
 }
 

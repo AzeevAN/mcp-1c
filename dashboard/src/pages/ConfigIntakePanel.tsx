@@ -24,6 +24,7 @@ import {
   useConfigIntake,
   useIntakeJob,
 } from "../shared/api/configIntake";
+import { refreshSourceDependents } from "../shared/api/sourceFreshness";
 import { StatusBadge, type StatusTone } from "../shared/ui/StatusBadge";
 
 const MAX_UPLOAD_BYTES = 500 * 1024 * 1024;
@@ -389,8 +390,7 @@ export function ConfigIntakePanel() {
         result,
       );
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["sources"], exact: true }),
-        queryClient.invalidateQueries({ queryKey: ["dashboard", "bootstrap"] }),
+        ...(result.job.commit?.no_op ? [] : [refreshSourceDependents(queryClient)]),
         queryClient.invalidateQueries({ queryKey: ["sources", "intake"], exact: true }),
       ]);
       setActiveJobId("");

@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 export type QueryScope = "objects" | "fields" | "syntax";
 
 export type QueriesSetup = {
+  sources_revision?: string;
   api_version: "v1";
   configuration_names: string[];
   default_configuration: string;
@@ -33,6 +34,7 @@ export type QueryHit = {
 };
 
 export type QueryRunResponse = {
+  sources_revision?: string | null;
   api_version: "v1";
   request: {
     config: string;
@@ -78,5 +80,6 @@ export function useQueriesSetup() {
   return useQuery({
     queryKey: ["queries-setup"],
     queryFn: getQueriesSetup,
+    refetchOnMount: "always",
   });
 }

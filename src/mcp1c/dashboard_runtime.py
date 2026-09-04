@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import secrets
 import shutil
@@ -309,6 +310,37 @@ def _json_error(message: str, status_code: int) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status_code)
 
 
+_REVISION_SALT = secrets.token_hex(16)
+
+
+def _sources_revision(snapshot) -> str:
+    """Непрозрачный маркер снимка, без передачи путей и служебных identity в SPA.
+
+    Это общая ревизия источников, а не версия отдельной конфигурации.
+    Новый процесс консервативно делает сохранённую выдачу исторической.
+    """
+    evidence = (
+        _REVISION_SALT,
+        tuple(snapshot.sources.items()),
+        tuple(snapshot.syntax_versions.items()),
+        tuple((key, value.pointer) for key, value in snapshot.generations.items()),
+        tuple((name, id(loaded)) for name, loaded in snapshot.configurations.items()),
+        id(snapshot.syntax),
+    )
+    return hashlib.sha256(repr(evidence).encode()).hexdigest()
+
+
+def _run_revisioned_queries(registry, config, scope, phrases):
+    snapshot = registry.snapshot()
+    results = dashboard_backend._run_queries(registry, config or None, scope, phrases)
+    payload = _query_results_payload(config, scope, phrases, results)
+    # Гонка не должна приписать старой выдаче ревизию уже нового источника.
+    payload["sources_revision"] = (
+        _sources_revision(snapshot) if registry.snapshot_is_current(snapshot) else None
+    )
+    return payload
+
+
 _QUERY_SCOPE_LABELS = {
     "objects": "Объекты",
     "fields": "Реквизиты",
@@ -322,6 +354,7 @@ def _queries_setup_payload(registry: Registry) -> dict:
     names = list(snapshot.configuration_names)
     return {
         "api_version": "v1",
+        "sources_revision": _sources_revision(snapshot),
         "configuration_names": names,
         "default_configuration": names[0] if names else "",
         "scopes": [
@@ -774,10 +807,10 @@ def _spa_routes(
                 422,
             )
         try:
-            results = await run_in_threadpool(
-                dashboard_backend._run_queries,
+            result = await run_in_threadpool(
+                _run_revisioned_queries,
                 registry,
-                config or None,
+                config,
                 scope,
                 phrases,
             )
@@ -785,7 +818,7 @@ def _spa_routes(
             return _json_error(str(error), 409)
         except ValueError as error:
             return _json_error(str(error), 422)
-        return JSONResponse(_query_results_payload(config, scope, phrases, results))
+        return JSONResponse(result)
 
     async def card_api(request: Request, *, kind: str) -> JSONResponse:
         if not can_read(request):

@@ -151,6 +151,10 @@ export function confirmConfigIntake(jobId: string): Promise<{ job: IntakeJob }> 
   return intakeRequest("/api/v1/sources/intake/confirm", { job_id: jobId });
 }
 
+export function discardConfigIntake(jobId: string): Promise<{ discarded: string }> {
+  return intakeRequest("/api/v1/sources/intake/discard", { job_id: jobId });
+}
+
 export function uploadConfigCandidate(
   file: File,
   onProgress: (percent: number) => void,

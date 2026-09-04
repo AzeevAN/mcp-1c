@@ -22,9 +22,11 @@ from types import MappingProxyType
 from typing import Iterator, Mapping
 
 from .intake_v2 import (
+    CandidateJob,
     CandidateJobState,
     CandidateTransport,
     ExportCandidate,
+    SourceKind,
 )
 from .intake_v2_operations import IntakeCoordinator, IntakePreview, OperationError
 from .intake_v2_planner import IntakeAction
@@ -366,6 +368,26 @@ class CandidateCatalog:
                 "запись candidate catalog относится к другому candidate"
             )
         return candidate
+
+    def remove(self, candidate_id: str) -> None:
+        path = self._path(candidate_id)
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            return
+        except OSError as error:
+            raise LifecycleError("candidate catalog недоступен") from error
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            raise LifecycleError(
+                "запись candidate catalog должна быть обычным файлом"
+            )
+        try:
+            path.unlink()
+            _sync_directory(self.records_dir)
+        except OSError as error:
+            raise LifecycleError(
+                "не удалось удалить запись candidate catalog"
+            ) from error
 
 
 class IntakeLifecycle:
@@ -852,6 +874,103 @@ class IntakeLifecycle:
                 tree,
                 expected_action=expected_action,
             )
+
+    def discard(self, job_id: str) -> None:
+        """Отменить готовый preview, сохранив сам входной candidate."""
+        with self._lock:
+            self.operations.discard(job_id)
+
+    def release_committed_candidate(self, job_id: str) -> None:
+        """Убрать managed ZIP после commit; server-side источники не менять."""
+        with self._lock:
+            job = self.operations.records.load_job(job_id)
+            try:
+                candidate = self.catalog.load(job.candidate_id)
+            except KeyError:
+                return
+            if candidate.locator.transport is not CandidateTransport.BROWSER:
+                return
+            try:
+                self.browser.discard(job.candidate_id)
+            except TransportError as error:
+                raise LifecycleError(str(error)) from error
+            self.catalog.remove(job.candidate_id)
+
+    @staticmethod
+    def _belongs_to_configuration(
+        candidate: ExportCandidate, configuration: str
+    ) -> bool:
+        identity = candidate.identity
+        return (
+            identity.source_kind is SourceKind.CONFIGURATION
+            and identity.configuration_name == configuration
+        ) or (
+            identity.source_kind is SourceKind.EXTENSION
+            and identity.parent_configuration == configuration
+        )
+
+    def configuration_jobs(self, configuration: str) -> tuple[CandidateJob, ...]:
+        """Найти durable jobs основной конфигурации и её расширений."""
+        with self._lock:
+            matched: list[CandidateJob] = []
+            for job in self.operations.records.list_jobs():
+                try:
+                    candidate = self.operations.records.load_candidate(
+                        job.candidate_id
+                    )
+                except KeyError:
+                    # До успешного probe identity ещё не доказана, а готового
+                    # preview или тяжёлого work у такой job быть не может.
+                    continue
+                if self._belongs_to_configuration(candidate, configuration):
+                    matched.append(job)
+            return tuple(matched)
+
+    def ensure_configuration_purgeable(self, configuration: str) -> None:
+        for job in self.configuration_jobs(configuration):
+            if job.state not in {CandidateJobState.DONE, CandidateJobState.FAILED}:
+                raise LifecycleConflict(
+                    "Конфигурацию нельзя удалить во время операции intake."
+                )
+
+    def purge_configuration(self, configuration: str) -> None:
+        """Снести derived jobs конфигурации, не меняя входные источники."""
+        with self._lock:
+            jobs = self.configuration_jobs(configuration)
+            active = [
+                job
+                for job in jobs
+                if job.state not in {
+                    CandidateJobState.DONE,
+                    CandidateJobState.FAILED,
+                }
+            ]
+            if active:
+                raise LifecycleConflict(
+                    "Конфигурацию нельзя удалить во время операции intake."
+                )
+            candidate_ids = {job.candidate_id for job in jobs}
+            for job in jobs:
+                self.operations.remove_job(job.job_id)
+            referenced = {
+                job.candidate_id
+                for job in self.operations.records.list_jobs()
+            }
+            for candidate_id in sorted(candidate_ids - referenced):
+                try:
+                    discovered = self.catalog.load(candidate_id)
+                except KeyError:
+                    discovered = None
+                if (
+                    discovered is not None
+                    and discovered.locator.transport is CandidateTransport.BROWSER
+                ):
+                    try:
+                        self.browser.discard(candidate_id)
+                    except TransportError as error:
+                        raise LifecycleError(str(error)) from error
+                self.catalog.remove(candidate_id)
+                self.operations.records.remove_candidate(candidate_id)
 
 
 __all__ = [

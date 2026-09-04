@@ -1018,6 +1018,15 @@ class GenerationBundleStore:
         if root.exists():
             shutil.rmtree(root)
             _sync_directory(root.parent)
+        try:
+            root.parent.rmdir()
+        except FileNotFoundError:
+            return
+        except OSError:
+            # При обычной замене рядом уже лежит новое поколение той же
+            # identity. Родитель удаляется только когда действительно пуст.
+            return
+        _sync_directory(root.parent.parent)
 
     def remove_staging(self, relative_path: str) -> None:
         if not relative_path:

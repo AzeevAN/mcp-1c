@@ -30,6 +30,7 @@ from .intake_v2_lifecycle import (
 from .intake_v2_operations import (
     IntakeCommitResult,
     IntakeCoordinator,
+    OperationConflict,
     OperationStalePreview,
 )
 from .intake_v2_planner import IntakeAction, LayerVersion
@@ -366,6 +367,7 @@ class IntakeApiService:
             raise IntakeApiNotFound("Job не найдена.") from None
         try:
             self.lifecycle.operations.confirm(job_id, self.registry)
+            self.lifecycle.release_committed_candidate(job_id)
         except KeyError:
             raise IntakeApiConflict(
                 "Durable preview или commit result job недоступен."
@@ -377,6 +379,29 @@ class IntakeApiService:
             # restart. Он тоже должен завершаться контролируемым конфликтом.
             raise IntakeApiConflict(str(error)) from error
         return self.job_payload(job_id)
+
+    def discard(self, job_id: str) -> dict[str, str]:
+        try:
+            self.lifecycle.operations.records.load_job(job_id)
+        except KeyError:
+            raise IntakeApiNotFound("Job не найдена.") from None
+        try:
+            self.lifecycle.discard(job_id)
+        except OperationConflict as error:
+            raise IntakeApiConflict(str(error)) from error
+        return {"discarded": job_id}
+
+    def ensure_configuration_purgeable(self, configuration: str) -> None:
+        try:
+            self.lifecycle.ensure_configuration_purgeable(configuration)
+        except LifecycleError as error:
+            raise IntakeApiConflict(str(error)) from error
+
+    def purge_configuration(self, configuration: str) -> None:
+        try:
+            self.lifecycle.purge_configuration(configuration)
+        except LifecycleError as error:
+            raise IntakeApiConflict(str(error)) from error
 
     def job_payload(self, job_id: str) -> dict[str, object]:
         try:
@@ -393,6 +418,13 @@ class IntakeApiService:
             "commit": None,
         }
         if job.state is not CandidateJobState.DONE:
+            return payload
+        try:
+            result = self.lifecycle.operations.load_commit(job_id)
+        except KeyError:
+            result = None
+        if result is not None:
+            payload["commit"] = _commit_payload(result)
             return payload
         try:
             preview = self.lifecycle.operations.load_preview(job_id)
@@ -446,12 +478,6 @@ class IntakeApiService:
             ],
             "truncated": len(impacts) > _MAX_EXTENSION_IMPACT_ITEMS,
         }
-        try:
-            result = self.lifecycle.operations.load_commit(job_id)
-        except KeyError:
-            result = None
-        if result is not None:
-            payload["commit"] = _commit_payload(result)
         return payload
 
 

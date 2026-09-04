@@ -15,7 +15,7 @@ from starlette.applications import Starlette
 from conftest import build_configuration, write_export, живой_клиент
 import mcp1c.intake_v2_operations as intake_v2_operations
 from mcp1c.dashboard_runtime import DASHBOARD_ON, routes
-from mcp1c.intake_v2 import DurableCandidateStore
+from mcp1c.intake_v2 import DurableCandidateStore, ExportIdentity
 from mcp1c.intake_v2_lifecycle import CandidateCatalog, IntakeLifecycle
 from mcp1c.intake_v2_operations import IntakeCoordinator
 from mcp1c.intake_v2_planner import IntakeAction, plan_intake
@@ -111,9 +111,10 @@ def test_extension_full_требует_родителя_и_проходит_prev
 
     committed = service.confirm(work.job_id)
     assert committed["commit"]["no_op"] is False
-    identity = service.lifecycle.operations.load_preview(
-        work.job_id
-    ).materialized.manifest.identity
+    identity = ExportIdentity.extension(
+        "DemoExtension",
+        parent_configuration="DemoConfiguration",
+    )
     assert registry.active_generation_pointer(identity) is not None
 
 
@@ -397,10 +398,7 @@ def test_create_строит_preview_и_публикует_только_посл
     assert commit["no_op"] is False
     generation_id = commit["generation_id"]
     assert registry.snapshot().configuration_names == ("DemoConfiguration",)
-    assert service.snapshot()["candidates"][0]["actions"] == [
-        "update",
-        "update_full",
-    ]
+    assert service.snapshot()["candidates"] == []
 
     again = client.post(
         "/api/v1/sources/intake/confirm",
@@ -410,10 +408,15 @@ def test_create_строит_preview_и_публикует_только_посл
     assert again.status_code == 200
     assert again.json()["job"]["commit"]["generation_id"] == generation_id
 
+    uploaded_again = client.post(
+        "/api/v1/sources/intake/upload",
+        headers={"x-api-token": "admin-token"},
+        files={"file": ("configuration.zip", _archive())},
+    ).json()["candidate"]
     no_op_start = client.post(
         "/api/v1/sources/intake/start",
         headers={"x-api-token": "admin-token"},
-        json={"candidate_id": uploaded["id"], "action": "update_full"},
+        json={"candidate_id": uploaded_again["id"], "action": "update_full"},
     )
     no_op = _wait_job(client, no_op_start.json()["job"]["job_id"])
     assert no_op["preview"]["no_op"] is True
@@ -544,3 +547,175 @@ def test_start_не_принимает_путь_и_не_запускает_дв�
     )
     assert confirm_while_busy.status_code == 409
     release.set()
+
+
+def test_confirm_удаляет_тяжелый_work_но_сохраняет_idempotent_result(
+    tmp_path,
+):
+    registry = Registry(tmp_path / "data")
+    service = _service(registry)
+    raw = _archive()
+    candidate = service.accept_upload(
+        "configuration.zip",
+        io.BytesIO(raw),
+        expected_size=len(raw),
+    )
+    work = service.start(
+        candidate["id"],
+        "create",
+        job_id="job-confirm-cleanup",
+    )
+    service.prepare(work)
+    operations = service.lifecycle.operations
+    work_root = operations.work_dir / work.job_id
+    request = operations.requests_dir / f"{work.job_id}.json"
+    preview = operations.previews_dir / f"{work.job_id}.json"
+
+    assert work_root.is_dir()
+    assert request.is_file()
+    assert preview.is_file()
+
+    first = service.confirm(work.job_id)
+
+    assert first["preview"] is None
+    assert first["commit"]["generation_id"] == work.generation_id
+    assert not work_root.exists()
+    assert not request.exists()
+    assert not preview.exists()
+    assert (
+        operations.commits_dir / f"{work.job_id}.json"
+    ).is_file()
+    assert service.lifecycle.browser.candidate_ids() == ()
+    assert service.confirm(work.job_id) == first
+    assert _service(registry).job_payload(work.job_id) == first
+    IntakeApiConflict = _symbol("IntakeApiConflict")
+    with pytest.raises(IntakeApiConflict, match="Опубликованную job"):
+        service.discard(work.job_id)
+
+
+def test_discard_удаляет_неопубликованный_preview_и_оставляет_candidate(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    registry = Registry(tmp_path / "data")
+    service = _service(registry)
+    raw = _archive()
+    candidate = service.accept_upload(
+        "configuration.zip",
+        io.BytesIO(raw),
+        expected_size=len(raw),
+    )
+    work = service.start(
+        candidate["id"],
+        "create",
+        job_id="job-discard-preview",
+    )
+    service.prepare(work)
+    operations = service.lifecycle.operations
+
+    response = _client(registry, service).post(
+        "/api/v1/sources/intake/discard",
+        headers={"x-api-token": "admin-token"},
+        json={"job_id": work.job_id},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"discarded": work.job_id}
+    assert not (operations.work_dir / work.job_id).exists()
+    for directory in (
+        operations.requests_dir,
+        operations.previews_dir,
+        operations.commits_dir,
+        operations.records.jobs_dir,
+    ):
+        assert not (directory / f"{work.job_id}.json").exists()
+    snapshot = service.snapshot()
+    assert [item["id"] for item in snapshot["candidates"]] == [candidate["id"]]
+    assert snapshot["jobs"] == []
+
+
+def test_remove_конфигурации_чистит_все_derived_job_но_оставляет_incoming(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    registry = Registry(tmp_path / "data")
+    incoming = registry.incoming_dir / "configuration.zip"
+    _write_archive(incoming)
+    incoming_extension = registry.incoming_dir / "extension.zip"
+    _write_extension_archive(incoming_extension)
+    service = _service(registry)
+    candidate = next(
+        item
+        for item in service.snapshot()["candidates"]
+        if item["source_kind"] == "configuration"
+    )
+
+    create = service.start(
+        candidate["id"],
+        "create",
+        job_id="job-create",
+    )
+    service.prepare(create)
+    committed = service.confirm(create.job_id)
+    pointer = registry.active_generation_pointer(
+        registry.generation_view("DemoConfiguration").identity
+    )
+    assert pointer is not None
+
+    update = service.start(
+        candidate["id"],
+        "update_full",
+        job_id="job-unpublished-update",
+    )
+    service.prepare(update)
+    assert (service.lifecycle.operations.work_dir / update.job_id).is_dir()
+
+    extension_candidate = next(
+        item
+        for item in service.snapshot()["candidates"]
+        if item["source_kind"] == "extension"
+    )
+    extension = service.start(
+        extension_candidate["id"],
+        "update_full",
+        job_id="job-unpublished-extension",
+        parent_configuration="DemoConfiguration",
+    )
+    service.prepare(extension)
+
+    client = _client(registry, service)
+    removed = client.post(
+        "/api/v1/sources/remove",
+        headers={"x-api-token": "admin-token"},
+        json={
+            "id": "DemoConfiguration",
+            "confirmation": "DemoConfiguration",
+        },
+    )
+
+    assert removed.status_code == 200
+    assert incoming.is_file()
+    assert incoming_extension.is_file()
+    assert registry.snapshot().configuration_names == ()
+    assert not (registry.data_dir / pointer.root_path).exists()
+    assert not (registry.data_dir / pointer.root_path).parent.exists()
+    operations = service.lifecycle.operations
+    for job_id in (create.job_id, update.job_id, extension.job_id):
+        assert not (operations.work_dir / job_id).exists()
+        for directory in (
+            operations.requests_dir,
+            operations.previews_dir,
+            operations.commits_dir,
+            operations.records.jobs_dir,
+        ):
+            assert not (directory / f"{job_id}.json").exists()
+    refreshed = service.snapshot()
+    assert refreshed["jobs"] == []
+    configuration = next(
+        item
+        for item in refreshed["candidates"]
+        if item["source_kind"] == "configuration"
+    )
+    assert configuration["actions"] == ["create"]

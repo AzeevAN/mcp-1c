@@ -1321,6 +1321,34 @@ def _spa_routes(
             await role_tools_refresh()
         return JSONResponse({"job": job})
 
+    async def intake_discard_api(request: Request) -> JSONResponse:
+        denied = _mutation_denied(request, action="Отмена preview")
+        if denied is not None:
+            return denied
+        payload = await _json_body(request)
+        if set(payload) != {"job_id"} or not isinstance(
+            payload.get("job_id"), str
+        ):
+            return _json_error("Нужен единственный строковый job_id.", 422)
+        async with intake_start_lock:
+            if any(not task.done() for task in intake_tasks):
+                return _json_error(
+                    "Нельзя отменять preview во время другой тяжёлой операции.",
+                    409,
+                )
+            try:
+                result = await run_in_threadpool(
+                    intake_service().discard,
+                    payload["job_id"],
+                )
+            except IntakeApiNotFound as error:
+                return _json_error(str(error), 404)
+            except IntakeApiConflict as error:
+                return _json_error(str(error), 409)
+            except (IntakeApiError, LifecycleError, OperationError) as error:
+                return _json_error(str(error), 422)
+        return JSONResponse(result)
+
     async def upload_source_api(request: Request) -> JSONResponse:
         denied = _mutation_denied(request, action="Загрузка")
         if denied is not None:
@@ -1512,11 +1540,38 @@ def _spa_routes(
         source_id = str(payload.get("id", ""))
         if not source_id or payload.get("confirmation") != source_id:
             return _json_error("Не подтверждено точное имя источника.", 400)
-        try:
-            await run_in_threadpool(registry.remove, source_id)
-            await run_in_threadpool(registry.save)
-        except RegistryError as error:
-            return _json_error(str(error), 400)
+        configuration = source_id.removesuffix(":modules")
+        async with intake_start_lock:
+            if any(not task.done() for task in intake_tasks):
+                return _json_error(
+                    "Нельзя удалять конфигурацию во время операции intake.",
+                    409,
+                )
+            purge_intake = (
+                configuration in registry.snapshot().configuration_names
+                and (
+                    current_intake is not None
+                    or (registry.data_dir / "intake-v2").exists()
+                )
+            )
+            service = intake_service() if purge_intake else None
+            try:
+                if service is not None:
+                    await run_in_threadpool(
+                        service.ensure_configuration_purgeable,
+                        configuration,
+                    )
+                await run_in_threadpool(registry.remove, source_id)
+                await run_in_threadpool(registry.save)
+                if service is not None:
+                    await run_in_threadpool(
+                        service.purge_configuration,
+                        configuration,
+                    )
+            except RegistryError as error:
+                return _json_error(str(error), 400)
+            except (IntakeApiError, LifecycleError, OperationError) as error:
+                return _json_error(str(error), 409)
         if role_tools_refresh is not None:
             await role_tools_refresh()
         return JSONResponse({"removed": source_id})
@@ -1712,6 +1767,12 @@ def _spa_routes(
             intake_confirm_api,
             methods=["POST"],
             name="dashboard_intake_confirm",
+        ),
+        Route(
+            "/api/v1/sources/intake/discard",
+            intake_discard_api,
+            methods=["POST"],
+            name="dashboard_intake_discard",
         ),
         Route(
             "/api/v1/sources/upload",

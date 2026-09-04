@@ -634,6 +634,7 @@ def test_remove_снимает_native_generation_расширения_без_leg
     assert "DemoExtension" not in snapshot.extension_names("DemoConfiguration")
     assert "DemoConfiguration:ext:DemoExtension" not in snapshot.modules
     assert not (registry.data_dir / pointer.root_path).exists()
+    assert not (registry.data_dir / pointer.root_path).parent.exists()
     assert not role_cache.exists()
 
     restarted = Registry(registry.data_dir)
@@ -709,6 +710,8 @@ def test_remove_native_конфигурации_каскадно_снимает_
     assert "DemoConfiguration:ext:DemoExtension" not in snapshot.modules
     assert not (registry.data_dir / base_pointer.root_path).exists()
     assert not (registry.data_dir / extension_pointer.root_path).exists()
+    assert not (registry.data_dir / base_pointer.root_path).parent.exists()
+    assert not (registry.data_dir / extension_pointer.root_path).parent.exists()
 
     restarted = Registry(registry.data_dir)
     assert restarted.restore() == []

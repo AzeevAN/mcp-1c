@@ -147,7 +147,7 @@ it("показывает semantic preview и публикует только п�
           state: "done",
           stage: "done",
           error: "",
-          preview,
+          preview: null,
           commit: {
             no_op: false,
             generation_id: "generation-001",
@@ -231,7 +231,8 @@ it("после confirm блокирует закрытие окна и запу�
   await waitFor(() => {
     expect(within(dialog).getByRole("button", { name: "Закрыть" })).toBeDisabled();
   });
-  expect(within(dialog).getByRole("button", { name: "Вернуться без публикации" })).toBeDisabled();
+  expect(within(dialog).getByRole("button", { name: "Сохранить preview и вернуться" })).toBeDisabled();
+  expect(within(dialog).getByRole("button", { name: "Отменить и удалить preview" })).toBeDisabled();
   expect(start).toBeDisabled();
   expect(within(dialog).getByRole("status")).toHaveTextContent(
     "Публикация уже запущена",
@@ -246,7 +247,7 @@ it("после confirm блокирует закрытие окна и запу�
       state: "done",
       stage: "done",
       error: "",
-      preview,
+      preview: null,
       commit: {
         no_op: false,
         generation_id: "generation-001",
@@ -401,4 +402,66 @@ it("для legacy-конфигурации объясняет обязатель
   expect(screen.queryByRole("button", { name: "Обновить код, формы и роли" })).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Обновить полностью" })).toBeInTheDocument();
   expect(screen.getByText(/Сначала выполните полное обновление/)).toBeInTheDocument();
+});
+
+it("называет владельца готового preview и отдельно сохраняет либо удаляет его", async () => {
+  const readyJob = {
+    job_id: "job-ready-preview",
+    candidate_id: candidate.id,
+    state: "done",
+    stage: "done",
+    error: "",
+    preview,
+    commit: null,
+  };
+  const requests: Array<{ path: string; body: unknown }> = [];
+  let discarded = false;
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input);
+    const body = init?.body ? JSON.parse(String(init.body)) : null;
+    requests.push({ path, body });
+    if (path === "/api/v1/sources/intake") {
+      return response({
+        ...snapshot(),
+        jobs: discarded ? [] : [readyJob],
+      });
+    }
+    if (path === "/api/v1/sources/intake/jobs/job-ready-preview") {
+      return response({ job: readyJob });
+    }
+    if (path === "/api/v1/sources/intake/discard") {
+      discarded = true;
+      return response({ discarded: readyJob.job_id });
+    }
+    throw new Error(`Неожиданный запрос ${path}`);
+  }));
+  renderPanel();
+
+  const open = await screen.findByRole("button", {
+    name: "Открыть preview: СинтетическаяКонфигурация · configuration.zip",
+  });
+  fireEvent.click(open);
+  let dialog = await screen.findByRole("dialog", { name: "Проверка изменений" });
+  fireEvent.click(within(dialog).getByRole("button", {
+    name: "Сохранить preview и вернуться",
+  }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  expect(requests.some(({ path }) => path.endsWith("/discard"))).toBe(false);
+
+  fireEvent.click(screen.getByRole("button", {
+    name: "Открыть preview: СинтетическаяКонфигурация · configuration.zip",
+  }));
+  dialog = await screen.findByRole("dialog", { name: "Проверка изменений" });
+  fireEvent.click(within(dialog).getByRole("button", {
+    name: "Отменить и удалить preview",
+  }));
+
+  expect(await screen.findByText("Preview отменён; его рабочие данные удалены.")).toBeInTheDocument();
+  expect(requests).toContainEqual({
+    path: "/api/v1/sources/intake/discard",
+    body: { job_id: readyJob.job_id },
+  });
+  await waitFor(() => {
+    expect(screen.queryByRole("button", { name: /Открыть preview:/ })).not.toBeInTheDocument();
+  });
 });

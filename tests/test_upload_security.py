@@ -119,6 +119,10 @@ _MUTATIONS = (
         "/api/v1/sources/intake/confirm",
         {"json": {"job_id": "job"}},
     ),
+    (
+        "/api/v1/sources/intake/discard",
+        {"json": {"job_id": "job"}},
+    ),
     ("/api/v1/sources/remove", {"json": {"id": "СинтетическаяКонфигурация"}}),
     ("/api/v1/sources/forget", {"json": {"path": "sources/test.zip"}}),
     ("/api/v1/sources/jobs/clear", {}),

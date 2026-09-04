@@ -771,6 +771,90 @@ class IntakeCoordinator:
         except OSError as error:
             raise OperationError("не удалось удалить partial preview") from error
 
+    @staticmethod
+    def _discard_record(directory: Path, job_id: str, label: str) -> None:
+        if not _IDENTIFIER_RE.fullmatch(job_id):
+            raise OperationError("job_id операции имеет недопустимый формат")
+        path = directory / f"{job_id}.json"
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            return
+        except OSError as error:
+            raise OperationError(f"не удалось проверить {label}") from error
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            raise OperationError(f"{label} должен быть обычным файлом")
+        try:
+            path.unlink()
+            _sync_directory(directory)
+        except OSError as error:
+            raise OperationError(f"не удалось удалить {label}") from error
+
+    def _discard_work(self, job_id: str) -> None:
+        if not _IDENTIFIER_RE.fullmatch(job_id):
+            raise OperationError("job_id операции имеет недопустимый формат")
+        root = self.work_dir / job_id
+        try:
+            info = root.lstat()
+        except FileNotFoundError:
+            return
+        except OSError as error:
+            raise OperationError("не удалось проверить operation work") from error
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            raise OperationError("operation work должен быть обычным каталогом")
+        try:
+            shutil.rmtree(root)
+            _sync_directory(self.work_dir)
+        except OSError as error:
+            raise OperationError("не удалось удалить operation work") from error
+
+    def _discard_payload(
+        self,
+        job_id: str,
+        *,
+        keep_commit: bool,
+        keep_job: bool,
+    ) -> None:
+        """Удалить производные данные job, оставляя durable retry при commit."""
+        self.records.load_job(job_id)
+        self._discard_work(job_id)
+        self._discard_record(
+            self.requests_dir, job_id, "request операции"
+        )
+        self._discard_record(
+            self.previews_dir, job_id, "preview record"
+        )
+        if not keep_commit:
+            self._discard_record(
+                self.commits_dir, job_id, "commit result"
+            )
+        if not keep_job:
+            self.records.remove_job(job_id)
+
+    def discard(self, job_id: str) -> None:
+        """Отменить неопубликованный preview и удалить всю его job."""
+        job = self.records.load_job(job_id)
+        if job.state is not CandidateJobState.DONE:
+            raise OperationConflict(
+                "Отменить можно только готовый неопубликованный preview."
+            )
+        try:
+            self.load_commit(job_id)
+        except KeyError:
+            pass
+        else:
+            raise OperationConflict("Опубликованную job отменить нельзя.")
+        self._discard_payload(job_id, keep_commit=False, keep_job=False)
+
+    def remove_job(self, job_id: str) -> None:
+        """Каскадно удалить terminal job при снятии её конфигурации."""
+        job = self.records.load_job(job_id)
+        if job.state not in {CandidateJobState.DONE, CandidateJobState.FAILED}:
+            raise OperationConflict(
+                "Конфигурацию нельзя удалить во время операции intake."
+            )
+        self._discard_payload(job_id, keep_commit=False, keep_job=False)
+
     def _reset_work(self, job_id: str) -> Path:
         root = self.work_dir / job_id
         if root.is_symlink():
@@ -1022,9 +1106,19 @@ class IntakeCoordinator:
         """CAS-подтвердить preview либо durable вернуть доказанный no-op."""
         self._require_publisher(publisher)
         try:
-            return self.load_commit(job_id)
+            result = self.load_commit(job_id)
         except KeyError:
             pass
+        else:
+            self._discard_payload(job_id, keep_commit=True, keep_job=True)
+            return result
+
+        def finish(result: IntakeCommitResult) -> IntakeCommitResult:
+            # Сначала durable result: если очистка оборвётся, повторный confirm
+            # безопасно закончит её, не публикуя поколение второй раз.
+            self._save_commit(result)
+            self._discard_payload(job_id, keep_commit=True, keep_job=True)
+            return result
 
         preview = self.load_preview(job_id)
         active_manifest = (
@@ -1048,8 +1142,7 @@ class IntakeCoordinator:
             if current is None:
                 raise OperationError("no-op не имеет active generation")
             result = self._result(preview, current)
-            self._save_commit(result)
-            return result
+            return finish(result)
 
         target = GenerationPointer.for_manifest(target_manifest)
         if current == target:
@@ -1058,8 +1151,7 @@ class IntakeCoordinator:
                     "active generation pointer не совпадает с target manifest"
                 )
             result = self._result(preview, target)
-            self._save_commit(result)
-            return result
+            return finish(result)
         if current != expected:
             raise OperationConflict(
                 "active generation изменился после построения preview"
@@ -1113,8 +1205,7 @@ class IntakeCoordinator:
             raise OperationError("Registry опубликовал неожиданный generation pointer")
         self._after_publish(pointer)
         result = self._result(preview, pointer)
-        self._save_commit(result)
-        return result
+        return finish(result)
 
 
 __all__ = [

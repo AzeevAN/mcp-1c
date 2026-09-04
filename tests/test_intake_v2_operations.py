@@ -238,7 +238,10 @@ def test_commit_после_аварии_распознаёт_уже_опубли
     monkeypatch.setattr(coordinator, "_after_publish", crash_after_publish)
     with pytest.raises(SystemExit, match="после Registry commit"):
         coordinator.confirm("job-001", registry)
-    assert registry.active_generation(preview.plan.identity) == preview.materialized.manifest
+    assert (
+        registry.active_generation(preview.plan.identity)
+        == preview.materialized.manifest
+    )
 
     restarted = IntakeCoordinator(
         root / "operations",
@@ -248,10 +251,62 @@ def test_commit_после_аварии_распознаёт_уже_опубли
 
     assert isinstance(result, IntakeCommitResult)
     assert result.no_op is False
-    assert result.pointer == registry.active_generation_pointer(preview.plan.identity)
+    assert result.pointer == registry.active_generation_pointer(
+        preview.plan.identity
+    )
     assert result.applied_layers == set(LayerKind)
     assert restarted.load_commit("job-001") == result
     assert restarted.confirm("job-001", registry) == result
+
+
+def test_commit_переживает_отказ_очистки_и_повтор_завершает_её(
+    tmp_path,
+    monkeypatch,
+):
+    IntakeCoordinator = _symbol("IntakeCoordinator")
+    OperationError = _symbol("OperationError")
+
+    root, uploads, records = _stores(tmp_path)
+    coordinator = IntakeCoordinator(root / "operations", records)
+    _accepted(uploads, coordinator)
+    with uploads.open_tree("candidate-001") as tree:
+        preview = coordinator.prepare(
+            "job-001",
+            tree,
+            action=IntakeAction.CREATE,
+            active=None,
+            generation_id="generation-001",
+        )
+    registry = Registry(tmp_path / "data")
+
+    def fail_cleanup(*_args, **_kwargs):
+        raise OperationError("синтетический отказ очистки")
+
+    monkeypatch.setattr(coordinator, "_discard_payload", fail_cleanup)
+    with pytest.raises(OperationError, match="отказ очистки"):
+        coordinator.confirm("job-001", registry)
+
+    assert (
+        registry.active_generation(preview.plan.identity)
+        == preview.materialized.manifest
+    )
+    assert coordinator.load_commit("job-001").pointer == (
+        registry.active_generation_pointer(preview.plan.identity)
+    )
+    assert (coordinator.work_dir / "job-001").is_dir()
+
+    restarted = IntakeCoordinator(
+        root / "operations",
+        DurableCandidateStore(root / "records"),
+    )
+    result = restarted.confirm("job-001", registry)
+
+    assert result.pointer == registry.active_generation_pointer(
+        preview.plan.identity
+    )
+    assert not (restarted.work_dir / "job-001").exists()
+    assert not (restarted.requests_dir / "job-001.json").exists()
+    assert not (restarted.previews_dir / "job-001.json").exists()
 
 
 def test_commit_распознаёт_тот_же_target_при_гонке_до_staging(

@@ -18,6 +18,7 @@ import {
   type IntakeJob,
   type IntakeLayerVersion,
   confirmConfigIntake,
+  discardConfigIntake,
   startConfigIntake,
   uploadConfigCandidate,
   useConfigIntake,
@@ -158,14 +159,18 @@ function PreviewDialog({
   job,
   error,
   pending,
+  discarding,
   onClose,
   onConfirm,
+  onDiscard,
 }: {
   job: IntakeJob | undefined;
   error: string;
   pending: boolean;
+  discarding: boolean;
   onClose: () => void;
   onConfirm: () => void;
+  onDiscard: () => void;
 }) {
   const preview = job?.preview;
   const title = preview ? "Проверка изменений" : "Подготовка изменений";
@@ -206,7 +211,7 @@ function PreviewDialog({
               <div className="intake-progress" role="status">
                 <LoaderCircle className="is-spinning" size={18} aria-hidden="true" />
                 <span>
-                  <strong>Публикация уже запущена.</strong>{" "}
+                  <strong>{discarding ? "Удаление preview уже запущено." : "Публикация уже запущена."}</strong>{" "}
                   Дождитесь ответа сервера: операция не отменяется закрытием или обновлением страницы.
                 </span>
               </div>
@@ -246,8 +251,11 @@ function PreviewDialog({
               </section>
             )}
             <footer>
+              <button className="button-danger-quiet" type="button" onClick={onDiscard} disabled={pending}>
+                Отменить и удалить preview
+              </button>
               <button className="button-secondary" type="button" onClick={onClose} disabled={pending}>
-                Вернуться без публикации
+                Сохранить preview и вернуться
               </button>
               <button className="button-primary" type="button" onClick={onConfirm} disabled={pending}>
                 {pending && <LoaderCircle className="is-spinning" size={16} aria-hidden="true" />}
@@ -274,6 +282,7 @@ export function ConfigIntakePanel() {
   const [activeJobId, setActiveJobId] = useState("");
   const [starting, setStarting] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [discarding, setDiscarding] = useState(false);
   const [dialogError, setDialogError] = useState("");
   const [feedback, setFeedback] = useState<{ tone: "success" | "danger"; text: string } | null>(null);
   const job = useIntakeJob(activeJobId);
@@ -387,6 +396,25 @@ export function ConfigIntakePanel() {
     }
   };
 
+  const discard = async () => {
+    if (!activeJobId) return;
+    setDiscarding(true);
+    setDialogError("");
+    try {
+      await discardConfigIntake(activeJobId);
+      await queryClient.invalidateQueries({ queryKey: ["sources", "intake"] });
+      setActiveJobId("");
+      setFeedback({
+        tone: "success",
+        text: "Preview отменён; его рабочие данные удалены.",
+      });
+    } catch (error) {
+      setDialogError(message(error));
+    } finally {
+      setDiscarding(false);
+    }
+  };
+
   if (intake.isPending) {
     return <section className="admin-loading"><span className="loading-dot" />Проверяем кандидатов полной выгрузки…</section>;
   }
@@ -398,7 +426,7 @@ export function ConfigIntakePanel() {
   }
 
   const candidates = new Map(intake.data.candidates.map((item) => [item.id, item]));
-  const intakeBusy = starting || confirming;
+  const intakeBusy = starting || confirming || discarding;
 
   return (
     <section className="admin-card config-intake-card" aria-label="Полная файловая выгрузка">
@@ -408,7 +436,7 @@ export function ConfigIntakePanel() {
           <h3>Полная файловая выгрузка</h3>
           <p>Один источник для структуры, кода, форм и ролей. Сначала preview, затем отдельная публикация.</p>
         </div>
-        <button className="button-secondary" type="button" onClick={() => void refresh()} disabled={intake.isFetching || confirming}>
+        <button className="button-secondary" type="button" onClick={() => void refresh()} disabled={intake.isFetching || confirming || discarding}>
           <RefreshCw className={intake.isFetching ? "is-spinning" : ""} size={16} aria-hidden="true" />
           Проверить обновления
         </button>
@@ -428,11 +456,11 @@ export function ConfigIntakePanel() {
           <strong>{file ? file.name : "ZIP до 500 МиБ"}</strong>
           <small>{file ? formatBytes(file.size) : "Большие файлы оставьте в data/incoming/"}</small>
         </span>
-        <button className="button-secondary" type="button" onClick={() => input.current?.click()} disabled={uploading || confirming}>
+        <button className="button-secondary" type="button" onClick={() => input.current?.click()} disabled={uploading || confirming || discarding}>
           Выбрать ZIP полной выгрузки
         </button>
         <input ref={input} type="file" accept=".zip" onChange={handleInput} hidden />
-        <button className="button-primary" type="button" onClick={() => void upload()} disabled={!file || uploading || confirming}>
+        <button className="button-primary" type="button" onClick={() => void upload()} disabled={!file || uploading || confirming || discarding}>
           {uploading && <LoaderCircle className="is-spinning" size={16} aria-hidden="true" />}
           {uploading ? `Принимаем ${uploadProgress}%` : "Принять ZIP"}
         </button>
@@ -488,11 +516,21 @@ export function ConfigIntakePanel() {
           <strong>Готовые preview</strong>
           {intake.data.jobs
             .filter((item) => item.state === "done" && !item.commit)
-            .map((item) => (
-              <button className="button-secondary" type="button" key={item.job_id} disabled={confirming} onClick={() => { setDialogError(""); setActiveJobId(item.job_id); }}>
-                Открыть preview · {item.candidate_id}
-              </button>
-            ))}
+            .map((item) => {
+              const candidate = candidates.get(item.candidate_id);
+              const identity = item.preview?.identity;
+              const identityName = identity?.source_kind === "extension"
+                ? `${identity.parent_configuration} / ${identity.extension_name}`
+                : identity?.configuration_name;
+              const label = candidate
+                ? `${identityName || candidate.internal_name} · ${candidate.origin_name}`
+                : identityName || item.candidate_id;
+              return (
+                <button className="button-secondary" type="button" key={item.job_id} disabled={confirming || discarding} onClick={() => { setDialogError(""); setActiveJobId(item.job_id); }}>
+                  Открыть preview: {label}
+                </button>
+              );
+            })}
         </div>
       )}
 
@@ -500,13 +538,15 @@ export function ConfigIntakePanel() {
         <PreviewDialog
           job={job.data?.job}
           error={dialogError || (job.isError ? message(job.error) : "")}
-          pending={confirming}
+          pending={confirming || discarding}
+          discarding={discarding}
           onClose={() => {
             if (confirming) return;
             setActiveJobId("");
             setDialogError("");
           }}
           onConfirm={() => void confirm()}
+          onDiscard={() => void discard()}
         />
       )}
     </section>

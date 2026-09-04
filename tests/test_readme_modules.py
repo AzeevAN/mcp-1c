@@ -108,6 +108,7 @@ def test_документация_различает_zip_структуры_и_�
     assert "без родительской" in dashboard
     assert "Произвольный путь в HTTP не принимается" in operations
     assert "/api/v1/sources/intake/confirm" in operations
+    assert "/api/v1/sources/intake/discard" in operations
 
 
 def test_readme_фиксирует_холодный_и_тёплый_замер_памяти_контейнера():

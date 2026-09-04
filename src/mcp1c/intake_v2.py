@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import tempfile
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -582,6 +583,29 @@ class DurableCandidateStore:
         except IntakeV2ContractError as error:
             raise CandidateStoreError("candidate store содержит неверный candidate") from error
 
+    def _remove(self, directory: Path, record_id: str) -> None:
+        path = self._path(directory, record_id)
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            return
+        except OSError as error:
+            raise CandidateStoreError("candidate store недоступен") from error
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            raise CandidateStoreError(
+                "запись candidate store должна быть обычным файлом"
+            )
+        try:
+            path.unlink()
+            self._sync_directory(directory)
+        except OSError as error:
+            raise CandidateStoreError(
+                "не удалось удалить запись candidate store"
+            ) from error
+
+    def remove_candidate(self, candidate_id: str) -> None:
+        self._remove(self.candidates_dir, candidate_id)
+
     def save_job(self, job: CandidateJob) -> None:
         if not isinstance(job, CandidateJob):
             raise IntakeV2ContractError("job должен быть CandidateJob")
@@ -597,6 +621,9 @@ class DurableCandidateStore:
             return CandidateJob.from_dict(payload)
         except IntakeV2ContractError as error:
             raise CandidateStoreError("candidate store содержит неверный job") from error
+
+    def remove_job(self, job_id: str) -> None:
+        self._remove(self.jobs_dir, job_id)
 
     def list_jobs(self) -> tuple[CandidateJob, ...]:
         """Прочитать все durable job в детерминированном порядке."""

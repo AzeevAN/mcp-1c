@@ -1547,23 +1547,35 @@ def _spa_routes(
                     "Нельзя удалять конфигурацию во время операции intake.",
                     409,
                 )
-            purge_intake = (
-                configuration in registry.snapshot().configuration_names
-                and (
-                    current_intake is not None
-                    or (registry.data_dir / "intake-v2").exists()
-                )
+            snapshot = registry.snapshot()
+            registry_target_exists = (
+                configuration in snapshot.configuration_names
+                or source_id in snapshot.sources
+                or configuration in snapshot.sources
             )
-            service = intake_service() if purge_intake else None
+            service = (
+                intake_service()
+                if current_intake is not None
+                or (registry.data_dir / "intake-v2").exists()
+                else None
+            )
             try:
-                if service is not None:
+                has_intake_jobs = bool(
+                    service is not None
+                    and await run_in_threadpool(
+                        service.has_configuration_jobs,
+                        configuration,
+                    )
+                )
+                if has_intake_jobs:
                     await run_in_threadpool(
                         service.ensure_configuration_purgeable,
                         configuration,
                     )
-                await run_in_threadpool(registry.remove, source_id)
-                await run_in_threadpool(registry.save)
-                if service is not None:
+                if registry_target_exists or not has_intake_jobs:
+                    await run_in_threadpool(registry.remove, source_id)
+                    await run_in_threadpool(registry.save)
+                if has_intake_jobs:
                     await run_in_threadpool(
                         service.purge_configuration,
                         configuration,

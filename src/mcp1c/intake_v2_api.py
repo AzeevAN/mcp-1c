@@ -397,6 +397,12 @@ class IntakeApiService:
         except LifecycleError as error:
             raise IntakeApiConflict(str(error)) from error
 
+    def has_configuration_jobs(self, configuration: str) -> bool:
+        try:
+            return bool(self.lifecycle.configuration_jobs(configuration))
+        except LifecycleError as error:
+            raise IntakeApiConflict(str(error)) from error
+
     def purge_configuration(self, configuration: str) -> None:
         try:
             self.lifecycle.purge_configuration(configuration)

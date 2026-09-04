@@ -719,3 +719,49 @@ def test_remove_конфигурации_чистит_все_derived_job_но_о
         if item["source_kind"] == "configuration"
     )
     assert configuration["actions"] == ["create"]
+
+
+def test_remove_дочищает_job_если_registry_уже_снят_старой_версией(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    registry = Registry(tmp_path / "data")
+    incoming = registry.incoming_dir / "configuration.zip"
+    _write_archive(incoming)
+    service = _service(registry)
+    candidate = service.snapshot()["candidates"][0]
+    create = service.start(
+        candidate["id"],
+        "create",
+        job_id="job-old-server",
+    )
+    service.prepare(create)
+    service.confirm(create.job_id)
+    update = service.start(
+        candidate["id"],
+        "update_full",
+        job_id="job-old-server-preview",
+    )
+    service.prepare(update)
+    operations = service.lifecycle.operations
+
+    # Воспроизводим прежнюю версию: Registry уже снят, intake не очищен.
+    registry.remove("DemoConfiguration")
+    registry.save()
+    assert (operations.work_dir / update.job_id).is_dir()
+
+    response = _client(registry, service).post(
+        "/api/v1/sources/remove",
+        headers={"x-api-token": "admin-token"},
+        json={
+            "id": "DemoConfiguration",
+            "confirmation": "DemoConfiguration",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"removed": "DemoConfiguration"}
+    assert incoming.is_file()
+    assert service.snapshot()["jobs"] == []
+    assert not (operations.work_dir / update.job_id).exists()

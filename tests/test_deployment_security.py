@@ -22,7 +22,7 @@ def test_compose_по_умолчанию_публикует_порт_тольк�
 def test_compose_получает_готовый_образ_и_ничего_не_собирает():
     compose = _compose()
 
-    assert "image: ${MCP1C_IMAGE:-ghcr.io/azeevan/mcp-1c:2.0.1}" in compose
+    assert "image: ${MCP1C_IMAGE:-ghcr.io/azeevan/mcp-1c:2.1.0}" in compose
     assert "build:" not in compose
     assert "runtime-core" not in compose
     assert "runtime-dashboard" not in compose

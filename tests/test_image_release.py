@@ -47,7 +47,7 @@ def test_release_contract_отклоняет_расхождение_versions_и_
 
 
 def test_текущий_установочный_контракт_закрепляет_v2() -> None:
-    expected = f"{IMAGE}:2.0.1"
+    expected = f"{IMAGE}:2.1.0"
 
     assert expected in (ROOT / "compose.yaml").read_text(encoding="utf-8")
     assert expected in (ROOT / ".env.example").read_text(encoding="utf-8")

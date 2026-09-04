@@ -1015,6 +1015,10 @@ class Registry:
         # Staging разных кандидатов может идти параллельно, но pointer и общий
         # WAL переключаются только одним publisher за раз.
         self._generation_mutation_lock = threading.Lock()
+        # Версии нужны только для незавершённых публикаций внутри процесса.
+        # После удаления счётчик сохраняется: пусто -> B -> пусто тоже смена
+        # состояния, которую не обнаружить сравнением одних pointers.
+        self._configuration_revisions: dict[str, int] = {}
         self._generation_pointers: dict[tuple[str, ...], GenerationPointer] = {}
         self._generation_manifests: dict[
             tuple[str, ...], GenerationManifest
@@ -1585,6 +1589,12 @@ class Registry:
                 os.close(descriptor)
         return target_dir / target
 
+    def _advance_configuration_revision(self, name: str) -> None:
+        """Отметить смену базы под ``_lock``, включая удаление и restore."""
+        self._configuration_revisions[name] = (
+            self._configuration_revisions.get(name, 0) + 1
+        )
+
     def add_configuration(
         self,
         path: str | Path,
@@ -1621,8 +1631,10 @@ class Registry:
             )
 
         identity = ExportIdentity.configuration(config.name)
-        previous = self.active_generation_pointer(identity)
-        active = self.active_generation(identity)
+        with self._lock:
+            revision = self._configuration_revisions.get(config.name, 0)
+            previous = self.active_generation_pointer(identity)
+            active = self.active_generation(identity)
         if previous is not None and active is not None:
             return self._replace_native_base(
                 config,
@@ -1680,10 +1692,20 @@ class Registry:
             index=self._configuration_index(config, source),
             field_index=self._field_index(config, source),
         )
-        with self._lock:
+        # Тяжёлые индексы готовы вне mutation lock. Проверка и подмена вместе
+        # сериализуются с native publish/remove, иначе A затрёт новый runtime,
+        # оставив на диске прежний pointer B. Автоповтор изменил бы намерение
+        # уже выполняющейся загрузки: конфликт требует явного нового запроса.
+        with self._generation_mutation_lock, self._lock:
+            if self._configuration_revisions.get(config.name, 0) != revision:
+                raise RegistryError(
+                    f"Конфигурация «{config.name}» изменилась во время загрузки "
+                    "Source A. Повторите загрузку."
+                )
             self.configurations[config.name] = loaded
             self.sources[source.id] = source
             self._relation_cache.pop(config.name, None)
+            self._advance_configuration_revision(config.name)
         return source
 
     def _replace_native_base(
@@ -3862,6 +3884,8 @@ class Registry:
                 )
             }
 
+            if configuration_removal:
+                self._advance_configuration_revision(source_id)
             for sid in цепочка:
                 текущий = self.sources.pop(sid, None)
                 if текущий is None:
@@ -4958,6 +4982,7 @@ class Registry:
                     if loaded_configuration is not None:
                         name = loaded_configuration.config.name
                         self.configurations[name] = loaded_configuration
+                        self._advance_configuration_revision(name)
                         modules_key = f"{name}:modules"
                         if loaded_modules is None:
                             self.modules.pop(modules_key, None)
@@ -5200,6 +5225,7 @@ class Registry:
             ) in native_runtime.items():
                 name = loaded_configuration.config.name
                 self.configurations[name] = loaded_configuration
+                self._advance_configuration_revision(name)
                 modules_key = f"{name}:modules"
                 if loaded_modules is None:
                     self.modules.pop(modules_key, None)

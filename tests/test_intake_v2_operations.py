@@ -5,7 +5,9 @@ from __future__ import annotations
 import importlib
 import io
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from threading import Event
 
 import pytest
 
@@ -17,7 +19,7 @@ from mcp1c.intake_v2 import (
 )
 from mcp1c.intake_v2_planner import IntakeAction
 from mcp1c.intake_v2_transport import BrowserStagingStore
-from mcp1c.registry import Registry
+from mcp1c.registry import Registry, RegistryError
 from test_intake_v2_collector import _configuration
 
 
@@ -448,11 +450,10 @@ def test_commit_атомарно_отклоняет_смену_legacy_после
     assert not tuple((registry.data_dir / "generations").glob(".staging-*"))
 
 
-def test_commit_перепроверяет_legacy_в_точке_переключения_pointer(
+def test_commit_сериализует_публикацию_с_конкурентной_legacy(
     tmp_path, monkeypatch
 ):
     IntakeCoordinator = _symbol("IntakeCoordinator")
-    OperationConflict = _symbol("OperationConflict")
 
     root, uploads, records = _stores(tmp_path)
     coordinator = IntakeCoordinator(root / "operations", records)
@@ -478,16 +479,33 @@ def test_commit_перепроверяет_legacy_в_точке_переключ
         )
 
     real_build = registry._build_native_generation_runtime
+    real_index = registry._configuration_index
+    indexed = Event()
+    competitor = []
+
+    def signal_legacy_index(config, source, **kwargs):
+        result = real_index(config, source, **kwargs)
+        if config.version == "2.0":
+            indexed.set()
+        return result
+
+    monkeypatch.setattr(registry, "_configuration_index", signal_legacy_index)
 
     def change_legacy_during_publish(root_path, manifest):
         prepared = real_build(root_path, manifest)
-        registry.add_configuration(
-            write_export(
-                legacy_input,
-                build_configuration(name="DemoConfiguration", version="2.0"),
-            ),
-            keep_source=False,
+        # Настоящий конкурент ждёт mutation lock; синхронный вложенный вызов
+        # add_configuration из publisher создавал бы искусственный deadlock.
+        competitor.append(
+            pool.submit(
+                registry.add_configuration,
+                write_export(
+                    legacy_input,
+                    build_configuration(name="DemoConfiguration", version="2.0"),
+                ),
+                keep_source=False,
+            )
         )
+        assert indexed.wait(10), "Source A не дошла до публикации"
         return prepared
 
     monkeypatch.setattr(
@@ -496,9 +514,16 @@ def test_commit_перепроверяет_legacy_в_точке_переключ
         change_legacy_during_publish,
     )
 
-    with pytest.raises(OperationConflict, match="active generation изменился"):
-        coordinator.confirm("job-001", registry)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        result = coordinator.confirm("job-001", registry)
+        with pytest.raises(RegistryError, match="изменилась.*Повторите загрузку"):
+            competitor[0].result(timeout=10)
 
-    assert registry.active_generation(preview.plan.identity) is None
-    assert registry.generation_view("DemoConfiguration") != active
+    assert registry.active_generation(preview.plan.identity) == preview.materialized.manifest
+    assert registry.active_generation_pointer(preview.plan.identity) == result.pointer
+    restarted = Registry(registry.data_dir)
+    assert restarted.restore() == []
+    assert restarted.generation_view("DemoConfiguration") == registry.generation_view(
+        "DemoConfiguration"
+    )
     assert not tuple((registry.data_dir / "generations").glob(".staging-*"))

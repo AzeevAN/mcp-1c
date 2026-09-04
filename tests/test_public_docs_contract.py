@@ -1,5 +1,6 @@
 """Ключевые публичные документы описывают текущее поведение, а не планы."""
 
+from datetime import date
 from pathlib import Path
 import struct
 import zipfile
@@ -37,7 +38,8 @@ def test_readme_не_выдаёт_локальный_registry_за_состав_
     readme = _read("README.md")
     state = readme.split("## Состояние", 1)[1].split("## Навигация", 1)[0]
 
-    assert "2026-09-04" in state
+    state_date = date.fromisoformat(state.splitlines()[0].strip().removeprefix("— "))
+    assert f"(прогон {state_date.isoformat()})" in state
     assert "| Тесты |" in state
     assert "| Конфигурации |" not in state
     assert "group_by(.kind)" not in state

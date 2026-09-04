@@ -1,6 +1,7 @@
 """Ключевые публичные документы описывают текущее поведение, а не планы."""
 
 from pathlib import Path
+import struct
 import zipfile
 
 import pytest
@@ -13,6 +14,23 @@ ROOT = Path(__file__).parents[1]
 
 def _read(relative: str) -> str:
     return (ROOT / relative).read_text(encoding="utf-8")
+
+
+def test_readme_показывает_обезличенный_дашборд():
+    readme = _read("README.md")
+    images = (
+        ".github/assets/dashboard-overview-light.png",
+        ".github/assets/dashboard-overview-dark.png",
+    )
+
+    assert "<picture>" in readme
+    assert "полностью синтетических данных" in readme
+    for relative in images:
+        assert relative in readme
+        payload = (ROOT / relative).read_bytes()
+        assert payload.startswith(b"\x89PNG\r\n\x1a\n")
+        assert struct.unpack(">II", payload[16:24]) == (1440, 1000)
+        assert len(payload) < 1_000_000
 
 
 def test_readme_не_выдаёт_локальный_registry_за_состав_установки():

@@ -34,6 +34,13 @@ FORBIDDEN = re.compile(
     r"market-" r"review|modules-and-" r"extensions|"
     r"(?:^|[/_.-])hand" r"off(?=$|[/_.-])|"
     r"(?:^|[/_.-])super" r"powers(?=$|[/_.-])|"
+    r"(?:^|[/_.-])reference-" r"lab(?=$|[/_.-])|"
+    r"\bреференс[-_ ]*" r"лаб\b|"
+    r"/Users/" r"[^/\s]+/|/home/" r"[^/\s]+/|"
+    r"\bgh" r"[pousr]_[A-Za-z0-9_]{20,}\b|"
+    r"\bsk-" r"[A-Za-z0-9_-]{20,}\b|"
+    r"\bAK" r"IA[0-9A-Z]{16}\b|"
+    r"\bBEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY\b|"
     r"(?<!к)лю" r"ч_|лок_(?:Скуп" r"ка|Про" r"бы)|"
     r"\bмир(?:а|у|е|ом)?\s*музык(?:а|и|е|у|ой)\b|"
     + PROCESS_LABEL,
@@ -98,6 +105,37 @@ def _tracked_texts() -> list[tuple[str, str]]:
             continue
         texts.append((name, text))
     return texts
+
+
+def _private_tracked_names(names: set[str]) -> list[str]:
+    private_roots = {
+        "data",
+        "reference-" "lab",
+        ".codex",
+        ".agents",
+        ".claude",
+        "screenshots",
+        "playwright-report",
+        "test-results",
+    }
+    private_files = {
+        "AGENTS" ".md",
+        "CLAUDE" ".md",
+        "GEMINI" ".md",
+        "QWEN" ".md",
+        "docs/TASK" "BOARD.md",
+    }
+    findings = []
+    for name in sorted(names):
+        root = name.split("/", 1)[0]
+        if root in private_roots or name in private_files:
+            findings.append(name)
+        elif name == ".env" or (
+            name.startswith(".env.")
+            and name not in {".env.example", ".env.template"}
+        ):
+            findings.append(name)
+    return findings
 
 
 def _searchable_text(text: str) -> str:
@@ -280,6 +318,10 @@ def test_публичные_тексты_не_раскрывают_внутре�
     assert re.search(r"\b[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+\b", раздел) is None
 
 
+def test_локальные_каталоги_и_настройки_не_отслеживаются():
+    assert _private_tracked_names(_tracked_names()) == []
+
+
 def test_публичные_дизайны_перечислены_в_readme_и_contributing():
     tracked = _tracked_names()
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -372,6 +414,13 @@ def test_дизайн_дашборда_описывает_текущую_реа�
         "из Мира " + "музыки",
         "к Миру\n# " + "музыки",
         "Миром" + "Музыки",
+        "reference-" + "lab/runtime.py",
+        "/Users/" + "developer/private-project",
+        "/home/" + "developer/private-project",
+        "gh" + "p_" + "A" * 36,
+        "sk-" + "A" * 32,
+        "AK" + "IA" + "A" * 16,
+        "-----BEGIN " + "PRIVATE KEY-----",
     ],
 )
 def test_запрещённые_примеры_распознаются(example: str):

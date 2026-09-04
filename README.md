@@ -10,6 +10,14 @@
 производные индексы. Всё состояние конкретной установки находится в отдельном
 каталоге `data/` и не попадает в git.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/dashboard-overview-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset=".github/assets/dashboard-overview-light.png">
+  <img alt="Обзорная страница дашборда MCP-1C" src=".github/assets/dashboard-overview-light.png">
+</picture>
+
+<p align="center"><sub>Интерфейс дашборда на полностью синтетических данных.</sub></p>
+
 ## Состояние — 2026-09-04
 
 | Контур | Состояние |
@@ -22,13 +30,13 @@
 | Роли | объявленные права из native generation; без готового слоя две role-ручки отсутствуют |
 | Дашборд | современная SPA включена по умолчанию; светлая и тёмная темы; `on` либо `off` |
 | Авторизация Docker | два разных обязательных токена: `API_TOKEN` на чтение, `ADMIN_TOKEN` на запись |
-| Тесты | `.venv/bin/python -m pytest`, 1969 |
+| Тесты | `.venv/bin/python -m pytest`, 1978 |
 
 Воспроизводимый прогон:
 
 ```bash
 .venv/bin/pip install --require-hashes -r requirements-dev-lock.txt
-.venv/bin/python -m pytest          # 1969 тестов (прогон 2026-09-04)
+.venv/bin/python -m pytest          # 1978 тестов (прогон 2026-09-04)
 ```
 
 ## Навигация
@@ -597,8 +605,8 @@ sudo install -o 10001 -g 10001 -m 0640 \
 Каноническая SQLite schema v1 не входит в репозиторий и не собирается этим
 проектом. Она доставляется внутри одного подписанного ZIP-артефакта с
 однозначным расширением `.mcp1cref`. При управляемом пути администратор выбирает
-такой файл в общей форме «Загрузить источник» на странице «Источники» в SPA
-или SPA. Та же форма принимает ZIP/HBK/JSON, а по расширению направляет
+такой файл в общей форме «Загрузить источник» на странице «Источники» в SPA.
+Та же форма принимает ZIP/HBK/JSON, а по расширению направляет
 `.mcp1cref` в отдельный справочный адаптер, не смешивая его с Registry. Обычный
 `.zip` по-прежнему относится только к Registry.
 

@@ -254,6 +254,7 @@
 | `indexing` | строка | режим индексирования, если свойство есть |
 | `type` | массив строк | **полные** имена типов, всегда полностью, без схлопывания |
 | `string_length` | число | длина строки, если > 0 |
+| `string_allowed_length` | строка | допустимая длина строки (`Фиксированная` / `Переменная`), если квалификатор доступен |
 | `digits` | число | разрядность числа |
 | `fraction_digits` | число | разрядность дробной части |
 | `date_parts` | строка | части даты |
@@ -272,8 +273,8 @@
 
 | Вид | Дополнительные поля |
 |---|---|
-| Справочник | `hierarchical`, `hierarchy_type`, `code_length`, `description_length`, `code_type`, `owners[]`, `attributes[]`, `tabular_parts[]`, `predefined[]` |
-| Документ | `posting`, `number_length`, `number_periodicity`, `number_type`, `numerator`, `real_time_posting`, `register_records_deletion`, `register_records_on_post`, `attributes[]`, `tabular_parts[]`, `movements[]`, `based_on[]` |
+| Справочник | `hierarchical`, `hierarchy_type`, `code_length`, `description_length`, `code_type`, `code_allowed_length`, `owners[]`, `attributes[]`, `tabular_parts[]`, `predefined[]` |
+| Документ | `posting`, `number_length`, `number_periodicity`, `number_type`, `number_allowed_length`, `numerator`, `number_rules_resolved`, `real_time_posting`, `register_records_deletion`, `register_records_on_post`, `attributes[]`, `tabular_parts[]`, `movements[]`, `based_on[]` |
 | РегистрСведений | `periodicity`, `write_mode`, `dimensions[]`, `resources[]`, `attributes[]` |
 | РегистрНакопления | `register_kind`, `dimensions[]`, `resources[]`, `attributes[]` |
 | РегистрБухгалтерии | `correspondence`, `chart_of_accounts`, `period_adjustment_length`, `dimensions[]`, `resources[]`, `attributes[]` |
@@ -296,11 +297,41 @@
 попыткой, и то, чего нет на этой платформе, просто не попадает в выгрузку.
 Загрузчик обязан переживать отсутствие любого из них.
 
+Если документу назначен `numerator`, обработка читает `number_type`,
+`number_length`, `number_allowed_length` и `number_periodicity` с самого
+нумератора: локальные настройки документа в этом случае не являются
+эффективными. `number_rules_resolved=true` подтверждает, что все четыре
+свойства прочитаны. При отсутствии подтверждения runtime показывает поле
+`Номер`, но не придумывает ему тип.
+
 ### 5.4 Табличная часть
 
 ```
 { "name": ..., "synonym": ..., "attributes": [ <поле>, ... ] }
 ```
+
+### 5.5 Стандартные реквизиты
+
+`attributes` содержит только реквизиты разработчика. Стандартные реквизиты
+платформы не дублируются в архиве: загрузчик выводит их в resolved runtime из
+вида объекта и свойств §5.3. Поэтому Source A и Source B дают одинаковые
+имена для BSL и языка запросов.
+
+- Документ: `Ссылка`, условный `Номер`, `Дата`, `Проведен`,
+  `ПометкаУдаления`.
+- Справочник: `Ссылка`, условные `Код` и `Наименование`, условные
+  `Владелец`, `Родитель`, `ЭтоГруппа`, затем `ПометкаУдаления`,
+  `Предопределенный`, `ИмяПредопределенныхДанных`.
+- Журнал документов из Source B: фактический состав `StandardAttributes` с
+  русскими query-именами; `Ссылка` и `Номер` получают составные типы из
+  зарегистрированных документов.
+
+`Ссылка` — тип соответствующего объекта, но не UUID экземпляра: архив не
+содержит данных информационной базы. Нумератор также не публикуется отдельным
+объектом; он только задаёт эффективные свойства `Номер` документов. Если
+назначенный descriptor отсутствует, Source B отклоняется. Старый архив без
+подтверждения `number_rules_resolved` остаётся совместимым, но загрузчик не
+придумывает тип номера.
 
 ---
 

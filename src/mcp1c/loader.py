@@ -71,6 +71,7 @@ _BOOL_KEYS = frozenset(
         "external_connection",
         "use",
         "is_predefined",
+        "number_rules_resolved",
     }
 )
 
@@ -249,6 +250,7 @@ def _to_field(raw: dict[str, Any]) -> Field:
         indexing=raw.get("indexing", "") or "",
         types=[str(t) for t in types],
         string_length=_as_int(raw.get("string_length")),
+        string_allowed_length=raw.get("string_allowed_length", "") or "",
         digits=_as_int(raw.get("digits")),
         fraction_digits=_as_int(raw.get("fraction_digits")),
         date_parts=raw.get("date_parts", "") or "",

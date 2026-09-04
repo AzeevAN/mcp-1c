@@ -134,6 +134,11 @@ class Graph:
                 ("resource", obj.resources),
             ):
                 for item in fields:
+                    # Системные ссылки уже представлены более точными
+                    # предметными связями: owner/registers_document. Self-ref
+                    # `Ссылка` тоже не является полезным ребром графа.
+                    if item.standard:
+                        continue
                     weak = len(item.types) >= WEAK_EDGE_TYPE_COUNT
                     for target in item.object_types():
                         self._add(source, target, kind, item.name, weak)

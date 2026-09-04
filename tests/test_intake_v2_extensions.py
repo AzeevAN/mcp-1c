@@ -93,6 +93,7 @@ def test_resolver_объединяет_собственные_объекты_и_
     assert [
         item.name
         for item in resolved.configuration.objects["Справочник.Items"].attributes
+        if not item.standard
     ] == ["BaseField", "ExtensionField"]
     assert [(item.target, item.state.value) for item in resolved.relations] == [
         ("Справочник.Items", "resolved")
@@ -215,6 +216,7 @@ def test_исчезнувшее_заимствованное_поле_не_ст�
     assert [
         item.name
         for item in resolved.configuration.objects["Справочник.Items"].attributes
+        if not item.standard
     ] == ["ExtensionField"]
     assert [(item.target, item.state.value) for item in resolved.relations] == [
         ("Справочник.Items", "resolved"),

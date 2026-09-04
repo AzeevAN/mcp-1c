@@ -112,6 +112,10 @@ from .store import load_syntax, save_syntax
 from .syntax_merge import merge_syntax
 from .syntax_model import SyntaxIndex, SyntaxItem, parse_version, release
 from .syntax_parser import parse_hbk
+from .standard_attributes import (
+    StandardAttributeError,
+    materialize_standard_attributes,
+)
 from .virtual_tables import TableTemplate, build_table_index
 from .v8container import V8ContainerError
 
@@ -1628,6 +1632,13 @@ class Registry:
                 digest=digest,
                 transport=source_transport,
             )
+
+        try:
+            materialize_standard_attributes(config)
+        except StandardAttributeError as error:
+            raise RegistryError(
+                f"{source_path.name}: стандартные реквизиты не построены — {error}"
+            ) from error
 
         stored = (
             self._store_source(

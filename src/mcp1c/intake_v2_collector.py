@@ -35,7 +35,7 @@ from .intake_v2_transport import TransportError
 
 
 COLLECTION_FORMAT_VERSION = 1
-SELECTION_VERSION = 3
+SELECTION_VERSION = 4
 _READ_CHUNK = 1 << 20
 _MANIFEST_LIMIT = 64 * 1024 * 1024
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -554,6 +554,13 @@ DEFAULT_KIND_SPECS = (
         extended_adapter="document_journal",
     ),
     _supported(
+        "DocumentNumerators",
+        "Нумератор",
+        ("DocumentNumerator",),
+        (LayerKind.BASE_STRUCTURE,),
+        base_adapter="numbering_rules",
+    ),
+    _supported(
         "CommonAttributes",
         "ОбщийРеквизит",
         ("CommonAttribute",),
@@ -638,7 +645,6 @@ DEFAULT_KIND_SPECS = (
                 "ПараметрФункциональнойОпции",
                 ("FunctionalOptionsParameter",),
             ),
-            ("Numerators", "Нумератор", ()),
             ("CommonTemplates", "ОбщийМакет", ("CommonTemplate",)),
             ("ExternalDataSources", "ВнешнийИсточникДанных", ()),
             ("Interfaces", "Интерфейс", ("Interface",)),

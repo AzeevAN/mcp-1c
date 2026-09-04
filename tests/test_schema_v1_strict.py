@@ -321,10 +321,11 @@ def _epf_payloads(path: Path):
                     yield from (item.read() for item in nested.entries())
 
 
-def test_exporter_sources_and_binaries_write_documented_chunk_count():
+def test_exporter_sources_and_binaries_write_documented_chunk_count_and_current_core():
     dist = PROJECT_ROOT / "exporter-1c" / "dist"
     xml_marker = 'ЗаписатьАтрибут("count"'.encode()
     json_marker = 'ЗаписатьИмяСвойства("count"'.encode()
+    current_core_markers = (b"string_allowed_length", b"number_rules_resolved")
 
     for path in dist.glob("*.bsl"):
         # Самостоятельный runtime-снимок расширений не является schema v1 и
@@ -333,6 +334,7 @@ def test_exporter_sources_and_binaries_write_documented_chunk_count():
             continue
         payload = path.read_bytes()
         assert xml_marker in payload, path.name
+        assert all(marker in payload for marker in current_core_markers), path.name
         if "JSON" in path.name:
             assert json_marker in payload, path.name
 
@@ -345,6 +347,10 @@ def test_exporter_sources_and_binaries_write_documented_chunk_count():
         assert any(
             xml_marker in payload or escaped_xml_marker in payload
             for payload in payloads
+        ), path.name
+        assert all(
+            any(marker in payload for payload in payloads)
+            for marker in current_core_markers
         ), path.name
         if "XML_JSON" in path.name:
             assert any(

@@ -44,6 +44,10 @@ from .module_catalog import (
 )
 from .module_content import LocatorIdentity, ModuleLocator
 from .role_access import LoadedRoleAccess, load_role_access
+from .standard_attributes import (
+    StandardAttributeError,
+    materialize_standard_attributes,
+)
 
 
 class GenerationRuntimeError(ValueError):
@@ -106,7 +110,7 @@ def _text_list(value: object, label: str) -> list[str]:
     return list(value)
 
 
-_FIELD_KEYS = {
+_LEGACY_FIELD_KEYS = {
     "name",
     "synonym",
     "comment",
@@ -117,11 +121,16 @@ _FIELD_KEYS = {
     "fraction_digits",
     "date_parts",
 }
+_FIELD_KEYS = _LEGACY_FIELD_KEYS | {"string_allowed_length"}
 
 
 def _field(value: object, label: str) -> Field:
     raw = _mapping(value, label)
-    _exact_keys(raw, _FIELD_KEYS, label)
+    if frozenset(raw) not in {
+        frozenset(_LEGACY_FIELD_KEYS),
+        frozenset(_FIELD_KEYS),
+    }:
+        raise GenerationRuntimeError(f"{label} содержит неверный набор полей")
     return Field(
         name=_text(raw["name"], f"{label}.name", required=True),
         synonym=_text(raw["synonym"], f"{label}.synonym"),
@@ -129,6 +138,10 @@ def _field(value: object, label: str) -> Field:
         indexing=_text(raw["indexing"], f"{label}.indexing"),
         types=_text_list(raw["types"], f"{label}.types"),
         string_length=_optional_int(raw["string_length"], f"{label}.string_length"),
+        string_allowed_length=_text(
+            raw.get("string_allowed_length", ""),
+            f"{label}.string_allowed_length",
+        ),
         digits=_optional_int(raw["digits"], f"{label}.digits"),
         fraction_digits=_optional_int(
             raw["fraction_digits"], f"{label}.fraction_digits"
@@ -435,16 +448,9 @@ def _journal_fields(
         raise GenerationRuntimeError(
             f"{label}.standard_attributes/columns должны быть массивами"
         )
-    for index, item in enumerate(standard):
-        item_label = f"{label}.standard_attributes[{index}]"
-        raw = _mapping(item, item_label)
-        result.append(
-            Field(
-                name=_text(raw.get("name"), f"{item_label}.name", required=True),
-                synonym=_text(raw.get("synonym", ""), f"{item_label}.synonym"),
-                comment=_text(raw.get("comment", ""), f"{item_label}.comment"),
-            )
-        )
+    # StandardAttributes определяет состав и подписи, но не содержит типов.
+    # Единая проекция после сведения слоёв добавит русские query-имена и
+    # выведет типы из документов. Здесь остаются только пользовательские графы.
     for index, item in enumerate(columns):
         item_label = f"{label}.columns[{index}]"
         raw = _mapping(item, item_label)
@@ -927,6 +933,12 @@ def build_generation_runtime(
             raise GenerationRuntimeError(
                 f"extended_structure: {error}"
             ) from error
+    try:
+        materialize_standard_attributes(configuration)
+    except StandardAttributeError as error:
+        raise GenerationRuntimeError(
+            f"стандартные реквизиты: {error}"
+        ) from error
     code = _ready_payload(root, layers, LayerKind.CODE, required=False)
     forms = _ready_payload(root, layers, LayerKind.FORMS, required=False)
     source_id = (

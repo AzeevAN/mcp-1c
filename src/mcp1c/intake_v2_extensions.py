@@ -14,6 +14,10 @@ from types import MappingProxyType
 from typing import Mapping
 
 from .model import Configuration, Field, MetadataObject, TabularPart
+from .standard_attributes import (
+    StandardAttributeError,
+    materialize_standard_attributes,
+)
 
 
 class ExtensionResolutionError(ValueError):
@@ -430,6 +434,12 @@ def resolve_extension_structure(
             overlay,
             borrowed,
         )
+    try:
+        materialize_standard_attributes(configuration)
+    except StandardAttributeError as error:
+        raise ExtensionResolutionError(
+            f"стандартные реквизиты расширения: {error}"
+        ) from error
     return ExtensionResolution(configuration, relations)
 
 

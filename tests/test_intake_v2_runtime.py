@@ -11,8 +11,9 @@ import pytest
 from conftest import write_export
 from mcp1c import coverage_log
 from mcp1c.intake_v2 import LayerKind, LayerSourceProfile, LayerState
-from mcp1c.intake_v2_converter import convert_collection
+from mcp1c.intake_v2_converter import base_layer_data, convert_collection
 from mcp1c.intake_v2_generation import materialize_generation
+from mcp1c.intake_v2_runtime import configuration_from_base_layer
 from mcp1c.model import Configuration, Field, MetadataObject
 from mcp1c.registry import Registry, RegistryError
 from mcp1c.tools import get_object, get_procedure, get_related, search_objects
@@ -101,7 +102,11 @@ def test_native_commit_атомарно_подключает_структуру_
     context = registry.resolve("DemoConfiguration")
     catalog = context.configuration.config.get("Справочник.Items")
     assert catalog is not None
-    assert {field.name: field.types for field in catalog.attributes} == {
+    assert {
+        field.name: field.types
+        for field in catalog.attributes
+        if not field.standard
+    } == {
         "Title": ["Строка"],
         "Owner": ["Справочник.Items"],
     }
@@ -202,13 +207,52 @@ def test_native_extended_objects_доступны_через_mcp_после_rest
         detail="full",
     )
     assert "Допустимая длина строки: `Fixed`" in common_attribute_card
+    catalog = registry.resolve(
+        "DemoConfiguration"
+    ).configuration.config.get("Справочник.Items")
+    assert catalog is not None
+    catalog_fields = {item.name: item for item in catalog.attributes}
+    assert catalog_fields["Ссылка"].types == ["Справочник.Items"]
+    assert catalog_fields["Код"].type_spec() == "Строка(9, перем.)"
+    assert catalog_fields["Наименование"].type_spec() == "Строка(120, перем.)"
+    assert catalog_fields["Родитель"].types == ["Справочник.Items"]
+    assert catalog_fields["ЭтоГруппа"].types == ["Булево"]
+    assert catalog_fields["ПометкаУдаления"].types == ["Булево"]
+    assert catalog_fields["Предопределенный"].types == ["Булево"]
+    assert catalog_fields["ИмяПредопределенныхДанных"].is_unlimited_string is False
+    document = registry.resolve(
+        "DemoConfiguration"
+    ).configuration.config.get("Документ.Invoice")
+    assert document is not None
+    document_fields = {item.name: item for item in document.attributes}
+    assert document_fields["Ссылка"].types == ["Документ.Invoice"]
+    assert document_fields["Номер"].type_spec() == "Число(3,0)"
+    assert document_fields["Дата"].types == ["Дата"]
+    assert document_fields["Проведен"].types == ["Булево"]
+    assert document_fields["ПометкаУдаления"].types == ["Булево"]
     journal = registry.resolve(
         "DemoConfiguration"
     ).configuration.config.get("ЖурналДокументов.Ledger")
     assert journal is not None
-    journal_fields = {item.name: item.types for item in journal.attributes}
-    assert journal_fields["Amount"] == ["Число"]
-    assert journal_fields["Missing"] == []
+    journal_fields = {item.name: item for item in journal.attributes}
+    assert journal_fields["Тип"].types == ["Строка"]
+    assert journal_fields["Ссылка"].types == [
+        "Документ.Invoice",
+        "Документ.Missing",
+    ]
+    assert journal_fields["Дата"].types == ["Дата"]
+    assert journal_fields["Проведен"].types == ["Булево"]
+    assert journal_fields["ПометкаУдаления"].types == ["Булево"]
+    assert journal_fields["Amount"].types == ["Число"]
+    assert journal_fields["Missing"].types == []
+    assert not {
+        "Type",
+        "Ref",
+        "Number",
+        "Date",
+        "Posted",
+        "DeletionMark",
+    } & set(journal_fields)
     relations = get_related(
         registry,
         "ЖурналДокументов.Ledger",
@@ -270,6 +314,106 @@ def test_native_extended_objects_доступны_через_mcp_после_rest
             detail="brief",
         )
         assert f"нет объекта `{full_name}`" not in card
+
+
+def test_legacy_schema_v1_получает_ту_же_проекцию_после_restart(tmp_path):
+    source_dir = tmp_path / "source-a"
+    source_dir.mkdir()
+    configuration = Configuration(
+        name="Legacy",
+        objects={
+            "Справочник.Items": MetadataObject(
+                full_name="Справочник.Items",
+                kind="Справочник",
+                name="Items",
+                props={
+                    "hierarchical": False,
+                    "code_length": 9,
+                    "code_type": "Строка",
+                    "code_allowed_length": "Variable",
+                    "description_length": 80,
+                },
+                attributes=[
+                    Field(
+                        "Custom",
+                        types=["Строка"],
+                        string_length=20,
+                        string_allowed_length="Fixed",
+                    )
+                ],
+            ),
+            "Документ.Invoice": MetadataObject(
+                full_name="Документ.Invoice",
+                kind="Документ",
+                name="Invoice",
+                props={
+                    "number_length": 11,
+                    "number_type": "Строка",
+                    "number_allowed_length": "Fixed",
+                    "numerator": "Нумератор.Shared",
+                    "number_rules_resolved": True,
+                },
+            ),
+        },
+    )
+    registry = Registry(tmp_path / "data")
+    registry.add_configuration(write_export(source_dir, configuration))
+    registry.save()
+
+    current = registry.resolve("Legacy").configuration.config
+    assert current.get("Справочник.Items").attributes[0].name == "Ссылка"
+    assert current.get("Справочник.Items").attributes[1].type_spec() == (
+        "Строка(9, перем.)"
+    )
+    assert current.get("Документ.Invoice").attributes[1].type_spec() == (
+        "Строка(11, фикс.)"
+    )
+
+    restarted = Registry(registry.data_dir)
+    assert restarted.restore() == []
+    restored = restarted.resolve("Legacy").configuration.config
+    assert restored.get("Справочник.Items").attributes[0].name == "Ссылка"
+    assert restored.get("Справочник.Items").attributes[1].type_spec() == (
+        "Строка(9, перем.)"
+    )
+    assert restored.get("Документ.Invoice").attributes[1].type_spec() == (
+        "Строка(11, фикс.)"
+    )
+
+    xml_source = tmp_path / "legacy-xml.zip"
+    manifest = (
+        '<manifest schema_version="1" format="xml" name="LegacyXml" '
+        'objects_total="1" truncated="false">'
+        '<files><item path="objects/document.001.xml" type="Документ" '
+        'chunk="1" count="1"/></files></manifest>'
+    )
+    chunk = (
+        '<objects schema_version="1" type="Документ" chunk="1" count="1">'
+        '<object full_name="Документ.Invoice" type="Документ" name="Invoice" '
+        'number_length="11" number_type="Строка" '
+        'number_allowed_length="Фиксированная" numerator="Нумератор.Shared" '
+        'number_rules_resolved="true"/></objects>'
+    )
+    with zipfile.ZipFile(xml_source, "w") as archive:
+        archive.writestr("manifest.xml", manifest)
+        archive.writestr("objects/document.001.xml", chunk)
+    xml_registry = Registry(tmp_path / "xml-data")
+    xml_registry.add_configuration(xml_source, keep_source=False)
+    xml_document = xml_registry.resolve("LegacyXml").configuration.config.get(
+        "Документ.Invoice"
+    )
+    assert xml_document is not None
+    assert xml_document.props["number_rules_resolved"] is True
+    assert xml_document.attributes[1].type_spec() == "Строка(11, фикс.)"
+
+    old_semantic = base_layer_data(configuration)
+    for raw_object in old_semantic["objects"]:
+        for raw_field in raw_object["attributes"]:
+            raw_field.pop("string_allowed_length")
+    restored_old = configuration_from_base_layer(old_semantic)
+    old_field = restored_old.get("Справочник.Items").attributes[0]
+    assert old_field.name == "Custom"
+    assert old_field.string_allowed_length == ""
 
 
 def test_смена_только_extended_не_поднимает_старый_object_cache(tmp_path):

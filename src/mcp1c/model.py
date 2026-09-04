@@ -70,6 +70,18 @@ class Field:
     digits: int | None = None
     fraction_digits: int | None = None
     date_parts: str = ""
+    # Новое сериализуемое поле стоит после прежних позиционных аргументов,
+    # чтобы не менять их порядок для внешнего Python-кода.
+    string_allowed_length: str = ""
+
+    # Эти два признака принадлежат только resolved runtime и не сериализуются
+    # в source-layer. У платформенных полей вроде `Тип` журнала строковый тип
+    # доказан, а максимальная длина в descriptor отсутствует: считать такую
+    # строку неограниченной было бы ложью и породило бы неверный совет по
+    # запросу. `standard` одновременно позволяет графу не дублировать
+    # предметные owner/registers_document-рёбра вычисляемыми ссылками.
+    string_length_known: bool = True
+    standard: bool = False
 
     @property
     def is_composite(self) -> bool:
@@ -86,7 +98,11 @@ class Field:
         отдаёт всегда. Ноль тоже принимаем — на случай, если выгрузка когда-то
         станет писать его явно.
         """
-        return "Строка" in self.types and not self.string_length
+        return (
+            "Строка" in self.types
+            and self.string_length_known
+            and not self.string_length
+        )
 
     @property
     def title(self) -> str:
@@ -107,8 +123,16 @@ class Field:
 
         parts = []
         for type_name in self.types:
-            if type_name == "Строка" and self.string_length:
-                parts.append(f"Строка({self.string_length})")
+            if type_name == "Строка" and not self.string_length_known:
+                parts.append("Строка (длина определяется платформой)")
+            elif type_name == "Строка" and self.string_length:
+                allowed = self.string_allowed_length.casefold()
+                if allowed in {"fixed", "фиксированная"}:
+                    parts.append(f"Строка({self.string_length}, фикс.)")
+                elif allowed in {"variable", "переменная"}:
+                    parts.append(f"Строка({self.string_length}, перем.)")
+                else:
+                    parts.append(f"Строка({self.string_length})")
             elif type_name == "Строка":
                 # Пробел перед скобкой намеренно: `Строка(200)` — это длина,
                 # `Строка (неогр.)` — пометка. Слитно они читались бы как одно

@@ -29,6 +29,8 @@ def test_readme_не_выдаёт_локальный_registry_за_состав_
 def test_schema_описывает_рабочие_предопределённые_на_8_3_5():
     schema = _read("docs/schema-v1.md")
     exporter = _read("exporter-1c/src/core.bsl")
+    readme = _read("README.md")
+    sources = _read("docs/data-sources.md")
 
     assert "предопределённые на 8.3.5 и 8.3.23" in schema.lower()
     assert "`ОбъектМетаданных.ПолучитьИменаПредопределенных()`" in schema
@@ -36,6 +38,13 @@ def test_schema_описывает_рабочие_предопределённы
     assert "перечислить их из встроенного языка нельзя" not in schema
     assert "МетаОбъект.ПолучитьИменаПредопределенных()" in exporter
     assert "ВЫБРАТЬ ИмяПредопределенныхДанных КАК Имя" in exporter
+    for text in (schema, readme, sources):
+        assert "ИмяПредопределенныхДанных" in text
+        assert "ПометкаУдаления" in text
+        assert "Проведен" in text
+    assert "number_rules_resolved" in schema
+    assert "DocumentNumerators" in _read("src/mcp1c/intake_v2_collector.py")
+    assert "ДопустимаяДлинаНомера" in exporter
 
 
 def test_legacy_архив_документирован_как_явный_отказ_с_перевыгрузкой(tmp_path):

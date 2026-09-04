@@ -99,6 +99,7 @@ def _configuration(
     bindings: bool = False,
     common_forms: bool = False,
     bots: bool = False,
+    numbering_rules: bool = False,
 ) -> bytes:
     extra = "<FutureFlag>Enabled</FutureFlag>" if unknown else ""
     properties = (
@@ -121,6 +122,8 @@ def _configuration(
             "<Document>Invoice</Document>"
             "<DocumentJournal>Ledger</DocumentJournal>"
         )
+    if numbering_rules:
+        children += "<DocumentNumerator>Shared</DocumentNumerator>"
     if bindings:
         children += (
             "<ExchangePlan>Nodes</ExchangePlan>"
@@ -162,7 +165,8 @@ def _catalog(*, unknown: bool = False) -> bytes:
         "<Hierarchical>true</Hierarchical>"
         "<HierarchyType>HierarchyFoldersAndItems</HierarchyType>"
         "<CodeLength>9</CodeLength><DescriptionLength>120</DescriptionLength>"
-        f"<CodeType>String</CodeType>{extra}"
+        "<CodeType>String</CodeType>"
+        f"<CodeAllowedLength>Variable</CodeAllowedLength>{extra}"
     )
     tabular = (
         "<TabularSection><Properties><Name>Lines</Name>"
@@ -228,11 +232,18 @@ def _session_parameter() -> bytes:
     return _document("SessionParameter", properties)
 
 
-def _base_document() -> bytes:
+def _base_document(*, numbering_rules: bool = False) -> bytes:
     properties = (
         "<Name>Invoice</Name>"
         f"<Synonym>{_localized('Документ')}</Synonym>"
-        "<Posting>Allow</Posting><NumberLength>11</NumberLength>"
+        "<Posting>Allow</Posting><NumberLength>3</NumberLength>"
+        "<NumberAllowedLength>Fixed</NumberAllowedLength>"
+        "<NumberType>Number</NumberType>"
+        + (
+            "<Numerator>DocumentNumerator.Shared</Numerator>"
+            if numbering_rules
+            else ""
+        )
     )
     children = _field(
         "Amount",
@@ -240,6 +251,17 @@ def _base_document() -> bytes:
         synonym="Сумма",
     )
     return _document("Document", properties, children)
+
+
+def _document_numerator() -> bytes:
+    properties = (
+        "<Name>Shared</Name>"
+        f"<Synonym>{_localized('Общая нумерация')}</Synonym>"
+        "<NumberType>String</NumberType><NumberLength>11</NumberLength>"
+        "<NumberAllowedLength>Variable</NumberAllowedLength>"
+        "<NumberPeriodicity>Year</NumberPeriodicity><CheckUnique>true</CheckUnique>"
+    )
+    return _document("DocumentNumerator", properties)
 
 
 def _document_journal(*, malformed_reference: bool = False) -> bytes:
@@ -257,7 +279,11 @@ def _document_journal(*, malformed_reference: bool = False) -> bytes:
         "<DefaultForm>DocumentJournal.Ledger.Form.Card</DefaultForm>"
         "<RegisteredDocuments><v8:Item>Document.Invoice</v8:Item>"
         "<v8:Item>Document.Missing</v8:Item></RegisteredDocuments>"
-        "<StandardAttributes><StandardAttribute name=\"Date\">"
+        "<StandardAttributes>"
+        "<StandardAttribute name=\"Type\"/>"
+        "<StandardAttribute name=\"Ref\"/>"
+        "<StandardAttribute name=\"Number\"/>"
+        "<StandardAttribute name=\"Date\">"
         f"<Synonym>{_localized('Дата')}</Synonym>"
         "<Comment>Дата документа</Comment><PasswordMode>false</PasswordMode>"
         "<Format/><EditFormat/><ToolTip/><MarkNegatives>false</MarkNegatives>"
@@ -267,7 +293,10 @@ def _document_journal(*, malformed_reference: bool = False) -> bytes:
         "<CreateOnInput>Use</CreateOnInput><DataHistory>Use</DataHistory>"
         "<FullTextSearch>Use</FullTextSearch>"
         "<TypeReductionMode>Transform</TypeReductionMode>"
-        "</StandardAttribute></StandardAttributes>"
+        "</StandardAttribute>"
+        "<StandardAttribute name=\"Posted\"/>"
+        "<StandardAttribute name=\"DeletionMark\"/>"
+        "</StandardAttributes>"
     )
     columns = (
         "<Column><Properties><Name>Amount</Name>"
@@ -478,6 +507,8 @@ def _collection(
     schedule: bytes = b"<Schedule><Period>60</Period></Schedule>",
     flat_mandatory: bool = False,
     compiled_module: bool = False,
+    numbering_rules: bool = False,
+    include_numbering_descriptor: bool = True,
 ):
     payloads = {
         "Configuration.xml": _configuration(
@@ -486,6 +517,7 @@ def _collection(
             bindings=bindings,
             common_forms=common_forms,
             bots=bots,
+            numbering_rules=numbering_rules,
         ),
         "Catalogs/Items.xml": _catalog(unknown=unknown),
         "Catalogs/Items/Ext/ObjectModule.bsl": b"procedure Demo() endprocedure",
@@ -497,7 +529,9 @@ def _collection(
     if journal:
         payloads.update(
             {
-                "Documents/Invoice.xml": _base_document(),
+                "Documents/Invoice.xml": _base_document(
+                    numbering_rules=numbering_rules
+                ),
                 "DocumentJournals/Ledger.xml": _document_journal(
                     malformed_reference=malformed_journal_reference
                 ),
@@ -512,6 +546,8 @@ def _collection(
                 "DocumentJournals/Ledger/Templates/Print/Ext/Template.xml": b"<template/>",
             }
         )
+    if numbering_rules and include_numbering_descriptor:
+        payloads["DocumentNumerators/Shared.xml"] = _document_numerator()
     if bindings:
         payloads.update(
             {
@@ -665,6 +701,8 @@ def test_metadata_kind_spec_выбирает_структурный_adapter():
     assert specs["Bots"].layouts == frozenset({"tree"})
     assert specs["CommonCommands"].base_adapter == ""
     assert specs["CommonCommands"].extended_adapter == ""
+    assert specs["DocumentNumerators"].base_adapter == "numbering_rules"
+    assert specs["DocumentNumerators"].extended_adapter == ""
 
 
 def test_converter_строит_base_без_дублирования_в_extended(tmp_path):
@@ -685,6 +723,7 @@ def test_converter_строит_base_без_дублирования_в_extended
         "code_length": 9,
         "description_length": 120,
         "code_type": "Строка",
+        "code_allowed_length": "Variable",
     }
     assert [(field.name, field.types) for field in catalog.attributes] == [
         ("Title", ["Строка"]),
@@ -867,10 +906,18 @@ def test_document_journal_хранит_свойства_и_пустую_граф
         "Документ.Invoice",
         "Документ.Missing",
     )
-    assert journal.payload.standard_attributes[0].name == "Date"
-    assert journal.payload.standard_attributes[0].type_reduction_mode == "Transform"
-    assert journal.payload.standard_attributes[0].password_mode is False
-    assert journal.payload.standard_attributes[0].full_text_search == "Use"
+    assert [item.name for item in journal.payload.standard_attributes] == [
+        "Type",
+        "Ref",
+        "Number",
+        "Date",
+        "Posted",
+        "DeletionMark",
+    ]
+    date_attribute = journal.payload.standard_attributes[3]
+    assert date_attribute.type_reduction_mode == "Transform"
+    assert date_attribute.password_mode is False
+    assert date_attribute.full_text_search == "Use"
     assert [column.name for column in journal.payload.columns] == [
         "Amount",
         "Empty",
@@ -882,6 +929,43 @@ def test_document_journal_хранит_свойства_и_пустую_граф
         == "ИндексироватьСДопУпорядочиванием"
     )
     assert result.base.get("ЖурналДокументов.Ledger") is None
+
+
+def test_numerator_задаёт_эффективный_тип_номера_без_отдельной_карточки(
+    tmp_path,
+):
+    ConversionError = _symbol("ConversionError")
+    convert_collection = _symbol("convert_collection")
+
+    result = convert_collection(
+        _collection(tmp_path, journal=True, numbering_rules=True)
+    )
+
+    document = result.base.get("Документ.Invoice")
+    assert document is not None
+    assert document.props["numerator"] == "Нумератор.Shared"
+    assert document.props["number_type"] == "Строка"
+    assert document.props["number_length"] == 11
+    assert document.props["number_allowed_length"] == "Variable"
+    assert document.props["number_periodicity"] == "Year"
+    assert document.props["number_rules_resolved"] is True
+    assert result.base.get("Нумератор.Shared") is None
+    assert not any(
+        item.signature == "DocumentNumerators" for item in result.diagnostics
+    )
+
+    with pytest.raises(
+        ConversionError,
+        match="не найден descriptor назначенного нумератора",
+    ):
+        convert_collection(
+            _collection(
+                tmp_path / "missing",
+                journal=True,
+                numbering_rules=True,
+                include_numbering_descriptor=False,
+            )
+        )
 
 
 def test_document_journal_разрешает_типы_граф_без_копирования(tmp_path):

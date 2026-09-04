@@ -86,6 +86,7 @@ class TypeDescription:
             indexing=head.get("indexing", ""),
             types=list(self.types),
             string_length=self.string_length,
+            string_allowed_length=self.string_allowed_length,
             digits=self.digits,
             fraction_digits=self.fraction_digits,
             date_parts=self.date_parts,
@@ -539,6 +540,7 @@ _REFERENCE_KINDS = {
     "SessionParameter": "ПараметрСеанса",
     "CommonAttribute": "ОбщийРеквизит",
     "DocumentJournal": "ЖурналДокументов",
+    "DocumentNumerator": "Нумератор",
 }
 
 # В Source подписки платформа пишет не вид metadata, а runtime-тип объекта.
@@ -734,6 +736,7 @@ _SCHEMA_KINDS = {
     "ScheduledJobs": "ScheduledJob",
     "Reports": "Report",
     "DataProcessors": "DataProcessor",
+    "DocumentNumerators": "DocumentNumerator",
 }
 
 _BASE_HEAD = frozenset(
@@ -752,6 +755,7 @@ _BASE_PROPERTIES: dict[str, dict[str, tuple[str, str]]] = {
         "CodeLength": ("code_length", "int"),
         "DescriptionLength": ("description_length", "int"),
         "CodeType": ("code_type", "value_type"),
+        "CodeAllowedLength": ("code_allowed_length", "text"),
         "Owners": ("owners", "refs"),
     },
     "Document": {
@@ -759,6 +763,7 @@ _BASE_PROPERTIES: dict[str, dict[str, tuple[str, str]]] = {
         "NumberLength": ("number_length", "int"),
         "NumberPeriodicity": ("number_periodicity", "text"),
         "NumberType": ("number_type", "value_type"),
+        "NumberAllowedLength": ("number_allowed_length", "text"),
         "Numerator": ("numerator", "ref"),
         "RealTimePosting": ("real_time_posting", "text"),
         "RegisterRecordsDeletion": ("register_records_deletion", "text"),
@@ -1053,6 +1058,77 @@ def _base_object(
         elif child_kind not in {"Command", "Form", "Template", "AddressingAttribute"}:
             diagnostics.add("unknown_child", expected_kind, child_kind)
     return obj
+
+
+@dataclass(frozen=True, slots=True)
+class _NumberingRules:
+    address: str
+    number_type: str
+    number_length: int | None
+    number_allowed_length: str
+    number_periodicity: str
+
+
+def _numbering_rules(
+    root: ET.Element,
+    diagnostics: _Diagnostics,
+    where: str,
+) -> _NumberingRules:
+    _node, properties, _children = _descriptor(
+        root, "DocumentNumerator", where
+    )
+    _unknown_properties(
+        properties,
+        _BASE_HEAD
+        | {
+            "NumberType",
+            "NumberLength",
+            "NumberAllowedLength",
+            "NumberPeriodicity",
+            "CheckUnique",
+        },
+        diagnostics,
+        "DocumentNumerator",
+    )
+    name = _required_text(_child(properties, "Name"), f"{where}.Name")
+    raw_type = _text(_child(properties, "NumberType"))
+    return _NumberingRules(
+        address=f"Нумератор.{name}",
+        number_type=_VALUE_TYPES.get(raw_type, raw_type),
+        number_length=_int(
+            _child(properties, "NumberLength"), f"{where}.NumberLength"
+        ),
+        number_allowed_length=_text(
+            _child(properties, "NumberAllowedLength")
+        ),
+        number_periodicity=_text(_child(properties, "NumberPeriodicity")),
+    )
+
+
+def _apply_numbering_rules(
+    obj: MetadataObject,
+    rules: Mapping[str, _NumberingRules],
+    where: str,
+) -> None:
+    reference = obj.props.get("numerator")
+    if not reference:
+        return
+    if not isinstance(reference, str):
+        raise ConversionError(f"{where}.Numerator должен быть строкой")
+    rule = rules.get(reference.casefold())
+    if rule is None:
+        raise ConversionError(
+            f"{where}: не найден descriptor назначенного нумератора {reference}"
+        )
+    obj.props.update(
+        {
+            "number_type": rule.number_type,
+            "number_length": rule.number_length,
+            "number_allowed_length": rule.number_allowed_length,
+            "number_periodicity": rule.number_periodicity,
+            "number_rules_resolved": True,
+        }
+    )
 
 
 def _borrowed_field_targets(
@@ -2649,6 +2725,7 @@ def _field_data(value: Field) -> dict[str, object]:
         "indexing": value.indexing,
         "types": sorted(value.types, key=_order),
         "string_length": value.string_length,
+        "string_allowed_length": value.string_allowed_length,
         "digits": value.digits,
         "fraction_digits": value.fraction_digits,
         "date_parts": value.date_parts,
@@ -2670,7 +2747,11 @@ def base_layer_data(base: Configuration) -> dict[str, object]:
                 "comment": value.comment,
                 "props": _canonical(value.props),
                 "attributes": sorted(
-                    (_field_data(item) for item in value.attributes),
+                    (
+                        _field_data(item)
+                        for item in value.attributes
+                        if not item.standard
+                    ),
                     key=lambda item: _order(str(item["name"])),
                 ),
                 "dimensions": sorted(
@@ -2832,6 +2913,23 @@ def convert_collection(
             raise ConversionError("адреса модулей ботов различаются только регистром")
         bot_module_addresses[key] = item.address
 
+    numbering_rules: dict[str, _NumberingRules] = {}
+    for artifact in collection.metadata:
+        spec = specs.get(artifact.source_name)
+        if spec is None or spec.base_adapter != "numbering_rules":
+            continue
+        if not _is_descriptor(artifact, spec):
+            continue
+        rule = _numbering_rules(
+            _parse_xml(collection, artifact),
+            diagnostics,
+            artifact.source_path,
+        )
+        key = rule.address.casefold()
+        if key in numbering_rules:
+            raise ConversionError(f"дублируется нумератор {rule.address}")
+        numbering_rules[key] = rule
+
     for artifact in collection.metadata:
         if artifact.source_path == "Configuration.xml":
             continue
@@ -2851,6 +2949,12 @@ def convert_collection(
         root = _parse_xml(collection, artifact)
         if spec.base_adapter == "schema_v1":
             obj = _base_object(root, spec, diagnostics, artifact.source_path)
+            if obj.kind == "Документ":
+                _apply_numbering_rules(
+                    obj,
+                    numbering_rules,
+                    artifact.source_path,
+                )
             if obj.full_name in base.objects:
                 raise ConversionError(f"дублируется base object {obj.full_name}")
             base.objects[obj.full_name] = obj

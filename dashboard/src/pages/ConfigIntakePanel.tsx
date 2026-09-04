@@ -8,7 +8,7 @@ import {
   UploadCloud,
   X,
 } from "lucide-react";
-import { type ChangeEvent, type DragEvent, useRef, useState } from "react";
+import { type ChangeEvent, type DragEvent, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import {
@@ -216,11 +216,16 @@ function PreviewDialog({
                 </span>
               </div>
             ) : (
-              <p>
-                {preview.no_op
-                  ? "Содержимое совпадает с активным поколением: повторная запись не нужна."
-                  : "Публикация применит только перечисленные решения одним поколением."}
-              </p>
+              <>
+                <p>
+                  {preview.no_op
+                    ? "Содержимое совпадает с активным поколением: повторная запись не нужна."
+                    : "Публикация применит только перечисленные решения одним поколением."}
+                </p>
+                <p>
+                  Preview уже сохранён на сервере. Закройте окно крестиком, чтобы вернуться к нему позже.
+                </p>
+              </>
             )}
             <div className="intake-diff" aria-label="Послойные изменения">
               {preview.layers.map((layer) => (
@@ -254,9 +259,6 @@ function PreviewDialog({
               <button className="button-danger-quiet" type="button" onClick={onDiscard} disabled={pending}>
                 Отменить и удалить preview
               </button>
-              <button className="button-secondary" type="button" onClick={onClose} disabled={pending}>
-                Сохранить preview и вернуться
-              </button>
               <button className="button-primary" type="button" onClick={onConfirm} disabled={pending}>
                 {pending && <LoaderCircle className="is-spinning" size={16} aria-hidden="true" />}
                 {pending
@@ -286,6 +288,15 @@ export function ConfigIntakePanel() {
   const [dialogError, setDialogError] = useState("");
   const [feedback, setFeedback] = useState<{ tone: "success" | "danger"; text: string } | null>(null);
   const job = useIntakeJob(activeJobId);
+
+  useEffect(() => {
+    const state = job.data?.job.state;
+    if (!activeJobId || (state !== "done" && state !== "failed")) return;
+    void queryClient.invalidateQueries({
+      queryKey: ["sources", "intake"],
+      exact: true,
+    });
+  }, [activeJobId, job.data?.job.state, queryClient]);
 
   const refresh = async () => {
     setFeedback(null);
@@ -380,7 +391,7 @@ export function ConfigIntakePanel() {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["sources"], exact: true }),
         queryClient.invalidateQueries({ queryKey: ["dashboard", "bootstrap"] }),
-        queryClient.invalidateQueries({ queryKey: ["sources", "intake"] }),
+        queryClient.invalidateQueries({ queryKey: ["sources", "intake"], exact: true }),
       ]);
       setActiveJobId("");
       setFeedback({
@@ -398,12 +409,21 @@ export function ConfigIntakePanel() {
 
   const discard = async () => {
     if (!activeJobId) return;
+    const discardedJobId = activeJobId;
     setDiscarding(true);
     setDialogError("");
     try {
-      await discardConfigIntake(activeJobId);
-      await queryClient.invalidateQueries({ queryKey: ["sources", "intake"] });
+      await discardConfigIntake(discardedJobId);
       setActiveJobId("");
+      setDialogError("");
+      await queryClient.invalidateQueries({
+        queryKey: ["sources", "intake"],
+        exact: true,
+      });
+      queryClient.removeQueries({
+        queryKey: ["sources", "intake", "job", discardedJobId],
+        exact: true,
+      });
       setFeedback({
         tone: "success",
         text: "Preview отменён; его рабочие данные удалены.",

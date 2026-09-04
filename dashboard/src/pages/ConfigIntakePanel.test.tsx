@@ -108,11 +108,26 @@ afterEach(() => {
 
 it("показывает semantic preview и публикует только после отдельного confirm", async () => {
   const requests: Array<{ path: string; body: unknown }> = [];
+  let previewReady = false;
+  const readyJob = {
+    job_id: "job-001",
+    candidate_id: candidate.id,
+    state: "done",
+    stage: "done",
+    error: "",
+    preview,
+    commit: null,
+  };
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
     const body = init?.body ? JSON.parse(String(init.body)) : null;
     requests.push({ path, body });
-    if (path === "/api/v1/sources/intake") return response(snapshot());
+    if (path === "/api/v1/sources/intake") {
+      return response({
+        ...snapshot(),
+        jobs: previewReady ? [readyJob] : [],
+      });
+    }
     if (path === "/api/v1/sources/intake/start") {
       return response({
         job: {
@@ -127,17 +142,8 @@ it("показывает semantic preview и публикует только п�
       }, 202);
     }
     if (path === "/api/v1/sources/intake/jobs/job-001") {
-      return response({
-        job: {
-          job_id: "job-001",
-          candidate_id: candidate.id,
-          state: "done",
-          stage: "done",
-          error: "",
-          preview,
-          commit: null,
-        },
-      });
+      previewReady = true;
+      return response({ job: readyJob });
     }
     if (path === "/api/v1/sources/intake/confirm") {
       return response({
@@ -175,7 +181,17 @@ it("показывает semantic preview и публикует только п�
   });
   expect(requests.some(({ path }) => path.endsWith("/confirm"))).toBe(false);
 
-  fireEvent.click(within(dialog).getByRole("button", { name: "Опубликовать изменения" }));
+  expect(within(dialog).queryByRole("button", {
+    name: "Сохранить preview и вернуться",
+  })).not.toBeInTheDocument();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Закрыть" }));
+  const reopen = await screen.findByRole("button", {
+    name: "Открыть preview: СинтетическаяКонфигурация · configuration.zip",
+  });
+  fireEvent.click(reopen);
+  const reopenedDialog = await screen.findByRole("dialog", { name: "Проверка изменений" });
+
+  fireEvent.click(within(reopenedDialog).getByRole("button", { name: "Опубликовать изменения" }));
   expect(await screen.findByText("Поколение опубликовано", { exact: false })).toBeInTheDocument();
   expect(requests).toContainEqual({
     path: "/api/v1/sources/intake/confirm",
@@ -231,7 +247,6 @@ it("после confirm блокирует закрытие окна и запу�
   await waitFor(() => {
     expect(within(dialog).getByRole("button", { name: "Закрыть" })).toBeDisabled();
   });
-  expect(within(dialog).getByRole("button", { name: "Сохранить preview и вернуться" })).toBeDisabled();
   expect(within(dialog).getByRole("button", { name: "Отменить и удалить preview" })).toBeDisabled();
   expect(start).toBeDisabled();
   expect(within(dialog).getByRole("status")).toHaveTextContent(
@@ -404,7 +419,7 @@ it("для legacy-конфигурации объясняет обязатель
   expect(screen.getByText(/Сначала выполните полное обновление/)).toBeInTheDocument();
 });
 
-it("называет владельца готового preview и отдельно сохраняет либо удаляет его", async () => {
+it("называет владельца preview и не запрашивает job после её удаления", async () => {
   const readyJob = {
     job_id: "job-ready-preview",
     candidate_id: candidate.id,
@@ -416,6 +431,7 @@ it("называет владельца готового preview и отдель
   };
   const requests: Array<{ path: string; body: unknown }> = [];
   let discarded = false;
+  let deletedJobRequests = 0;
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
     const body = init?.body ? JSON.parse(String(init.body)) : null;
@@ -427,6 +443,10 @@ it("называет владельца готового preview и отдель
       });
     }
     if (path === "/api/v1/sources/intake/jobs/job-ready-preview") {
+      if (discarded) {
+        deletedJobRequests += 1;
+        return response({ error: "Job не найдена." }, 404);
+      }
       return response({ job: readyJob });
     }
     if (path === "/api/v1/sources/intake/discard") {
@@ -441,17 +461,8 @@ it("называет владельца готового preview и отдель
     name: "Открыть preview: СинтетическаяКонфигурация · configuration.zip",
   });
   fireEvent.click(open);
-  let dialog = await screen.findByRole("dialog", { name: "Проверка изменений" });
-  fireEvent.click(within(dialog).getByRole("button", {
-    name: "Сохранить preview и вернуться",
-  }));
-  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-  expect(requests.some(({ path }) => path.endsWith("/discard"))).toBe(false);
-
-  fireEvent.click(screen.getByRole("button", {
-    name: "Открыть preview: СинтетическаяКонфигурация · configuration.zip",
-  }));
-  dialog = await screen.findByRole("dialog", { name: "Проверка изменений" });
+  const dialog = await screen.findByRole("dialog", { name: "Проверка изменений" });
+  expect(within(dialog).getByText(/Preview уже сохранён/)).toBeInTheDocument();
   fireEvent.click(within(dialog).getByRole("button", {
     name: "Отменить и удалить preview",
   }));
@@ -464,4 +475,6 @@ it("называет владельца готового preview и отдель
   await waitFor(() => {
     expect(screen.queryByRole("button", { name: /Открыть preview:/ })).not.toBeInTheDocument();
   });
+  expect(screen.queryByText("Job не найдена.")).not.toBeInTheDocument();
+  expect(deletedJobRequests).toBe(0);
 });

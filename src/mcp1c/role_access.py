@@ -1799,7 +1799,7 @@ class RoleAccessIndex:
             "Default-флаги сохранены, но недоказанное наследование не участвует в подборе.",
             *(
                 (
-                    "Условные права не учитывались без явного opt-in."
+                    "Условные права не учитывались без явного opt-in.",
                 )
                 if conditional_excluded_roles and not include_conditional
                 else ()

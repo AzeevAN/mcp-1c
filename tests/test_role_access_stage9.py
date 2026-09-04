@@ -455,6 +455,58 @@ async def test_find_mcp_и_api_дают_один_resolver_и_страницу_к
     assert second["minimal_role_set"] == mcp["minimal_role_set"]
 
 
+@pytest.mark.parametrize("transport", ["mcp", "http"])
+@pytest.mark.parametrize("mode", ["default", "explicit_false", "opt_in", "no_conditional"])
+async def test_предупреждения_условных_прав_приходят_целыми_строками(
+    tmp_path, transport, mode,
+):
+    registry = Registry(tmp_path / "data")
+    _publish(
+        registry, tmp_path / "source",
+        configuration="DemoConfiguration", generation_id="generation-warning",
+        roles=_roles()[:2] if mode == "no_conditional" else _roles(),
+    )
+    arguments = {
+        "config": "DemoConfiguration", "full_name": "Справочник.Orders",
+        "operations": ["read", "update"],
+    }
+    if mode in {"explicit_false", "opt_in"}:
+        arguments["include_conditional"] = mode == "opt_in"
+    if transport == "mcp":
+        payload = _tool_json(await _server(registry, tmp_path).call_tool(
+            "find_roles_for_access", arguments,
+        ))
+    else:
+        params = [
+            ("config", arguments["config"]), ("full_name", arguments["full_name"]),
+            ("operation", "read"), ("operation", "update"),
+        ]
+        if "include_conditional" in arguments:
+            params.append(("include_conditional", "1" if arguments["include_conditional"] else "0"))
+        response = _client(registry, tmp_path).get("/api/v1/roles/find", params=params)
+        assert response.status_code == 200
+        payload = response.json()
+
+    expected = [
+        "Показаны объявленные права роли, а не эффективный доступ пользователя.",
+        "Default-флаги сохранены, но недоказанное наследование не участвует в подборе.",
+    ]
+    if mode in {"default", "explicit_false"}:
+        expected.append("Условные права не учитывались без явного opt-in.")
+    elif mode == "opt_in":
+        expected.append(
+            "Условные права являются кандидатами: фактический доступ требует "
+            "отдельной проверки RLS."
+        )
+    assert payload["warnings"] == expected
+    assert payload["conditional_candidates_excluded"] == (
+        1 if mode in {"default", "explicit_false"} else 0
+    )
+    names = {row["role"]["name"] for row in payload["candidates"]}
+    assert names == ({"Reader", "Editor", "Conditional"} if mode == "opt_in" else {"Reader", "Editor"})
+    assert "Allowed = true" not in json.dumps(payload)
+
+
 async def test_conditional_opt_in_и_explicit_false_различаются(tmp_path):
     registry = Registry(tmp_path / "data")
     _publish(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -15,7 +16,7 @@ def test_lab_сравнивает_thread_local_и_lock_в_отдельных_п�
 ):
     result = subprocess.run(
         [
-            str(ROOT / ".venv/bin/python"),
+            sys.executable,
             str(ROOT / "tools/lab/measure_stemmer_concurrency.py"),
             "--modules-root",
             str(корень_кода),

@@ -2005,6 +2005,15 @@ class Registry:
             return
         if цель.is_dir():
             shutil.rmtree(цель, ignore_errors=True)
+        # У расширений есть дополнительный managed-уровень с именем базы.
+        # Последнее расширение не должно оставлять пустую конфигурацию в
+        # `data/extensions`; при конкурентном добавлении или наличии соседа
+        # точечный `rmdir` безопасно откажется и ничего не удалит.
+        if цель.parent.parent == база:
+            try:
+                цель.parent.rmdir()
+            except OSError:
+                pass
 
     def _retire_code_root(self, корень: Path, kind: str) -> Path | None:
         """Быстро отвязать старое поколение от canonical path.

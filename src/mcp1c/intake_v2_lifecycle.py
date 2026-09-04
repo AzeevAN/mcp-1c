@@ -777,6 +777,12 @@ class IntakeLifecycle:
                 tuple(issues),
             )
 
+    @contextmanager
+    def stable_jobs(self) -> Iterator[tuple[CandidateJob, ...]]:
+        """Не дать discard разорвать чтение списка и payload одной job."""
+        with self._lock:
+            yield self.operations.records.list_jobs()
+
     @staticmethod
     def _expected_candidate(
         discovered: DiscoveredCandidate, parent_configuration: str

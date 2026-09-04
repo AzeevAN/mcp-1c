@@ -160,6 +160,11 @@ class IntakeApiService:
     def snapshot(self) -> dict[str, object]:
         refreshed = self.lifecycle.refresh()
         registry_snapshot = self.registry.snapshot()
+        # Refresh может читать большие server-side источники и завершается до
+        # этой короткой секции. Здесь нужна атомарность только между списком job
+        # и их payload: иначе конкурентный discard оставляет ложный HTTP 409.
+        with self.lifecycle.stable_jobs() as jobs:
+            job_payloads = [self.job_payload(job.job_id) for job in jobs]
         return {
             "api_version": "v1",
             "configuration_names": list(registry_snapshot.configuration_names),
@@ -186,10 +191,7 @@ class IntakeApiService:
                 }
                 for issue in refreshed.issues
             ],
-            "jobs": [
-                self.job_payload(job.job_id)
-                for job in self.lifecycle.operations.records.list_jobs()
-            ],
+            "jobs": job_payloads,
         }
 
     def accept_upload(

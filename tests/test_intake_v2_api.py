@@ -635,6 +635,88 @@ def test_discard_удаляет_неопубликованный_preview_и_ос
     assert snapshot["jobs"] == []
 
 
+def test_snapshot_не_падает_если_discard_удалил_перечисленную_job(
+    tmp_path,
+    monkeypatch,
+):
+    registry = Registry(tmp_path / "data")
+    service = _service(registry)
+    raw = _archive()
+    candidate = service.accept_upload(
+        "configuration.zip",
+        io.BytesIO(raw),
+        expected_size=len(raw),
+    )
+    work = service.start(
+        candidate["id"],
+        "create",
+        job_id="job-concurrent-discard",
+    )
+    service.prepare(work)
+
+    records = service.lifecycle.operations.records
+    real_list_jobs = records.list_jobs
+    jobs_listed = threading.Event()
+    continue_snapshot = threading.Event()
+
+    def blocked_list_jobs():
+        jobs = real_list_jobs()
+        jobs_listed.set()
+        assert continue_snapshot.wait(5)
+        return jobs
+
+    monkeypatch.setattr(records, "list_jobs", blocked_list_jobs)
+    snapshot_result: list[dict[str, object]] = []
+    snapshot_errors: list[Exception] = []
+
+    def read_snapshot():
+        try:
+            snapshot_result.append(service.snapshot())
+        except Exception as error:  # pragma: no cover - проверяется ниже
+            snapshot_errors.append(error)
+
+    snapshot_thread = threading.Thread(target=read_snapshot)
+    snapshot_thread.start()
+    assert jobs_listed.wait(5)
+
+    # Если lifecycle-lock свободен, принудительно завершаем discard до чтения
+    # payload. При атомарном снимке discard дождётся его окончания, и оба
+    # допустимых порядка остаются детерминированными.
+    lock_was_free = service.lifecycle._lock.acquire(blocking=False)
+    if lock_was_free:
+        service.lifecycle._lock.release()
+
+    discard_errors: list[Exception] = []
+    discard_done = threading.Event()
+
+    def discard_preview():
+        try:
+            service.discard(work.job_id)
+        except Exception as error:  # pragma: no cover - проверяется ниже
+            discard_errors.append(error)
+        finally:
+            discard_done.set()
+
+    discard_thread = threading.Thread(target=discard_preview)
+    discard_thread.start()
+    if lock_was_free:
+        assert discard_done.wait(5)
+    continue_snapshot.set()
+
+    snapshot_thread.join(5)
+    discard_thread.join(5)
+    assert not snapshot_thread.is_alive()
+    assert not discard_thread.is_alive()
+    assert discard_errors == []
+    assert snapshot_errors == []
+    assert len(snapshot_result) == 1
+    snapshot_jobs = snapshot_result[0]["jobs"]
+    assert snapshot_jobs == [] or [item["job_id"] for item in snapshot_jobs] == [
+        work.job_id
+    ]
+    assert service.snapshot()["jobs"] == []
+
+
 def test_remove_конфигурации_чистит_все_derived_job_но_оставляет_incoming(
     tmp_path,
     monkeypatch,

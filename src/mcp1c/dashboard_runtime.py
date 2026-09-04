@@ -12,6 +12,7 @@ import secrets
 import shutil
 import tempfile
 from collections.abc import Awaitable, Callable
+from functools import wraps
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
@@ -46,6 +47,7 @@ from .dictionary import ANY_CONFIGURATION, SOURCE_BUILTIN
 from .graph_view import DEFAULT_LIMIT as DEFAULT_GRAPH_LIMIT
 from .graph_view import bounds as graph_bounds
 from .graph_view import neighbourhood
+from .heavy_operations import HeavyOperations
 from .intake_v2_api import (
     IntakeApiConflict,
     IntakeApiError,
@@ -633,6 +635,28 @@ def _spa_routes(
     current_intake = intake
     intake_tasks: set[asyncio.Task[None]] = set()
     intake_start_lock = asyncio.Lock()
+    heavy = HeavyOperations()
+
+    def heavy_endpoint(endpoint):
+        @wraps(endpoint)
+        async def admitted(request):
+            denied = _mutation_denied(request, action="Тяжёлая операция")
+            if denied is not None:
+                return denied
+            lease = heavy.acquire()
+            if lease is None:
+                return _json_error(
+                    "Одновременно допускается только одна тяжёлая операция: "
+                    "уже принимается или выполняется загрузка/intake. "
+                    "Дождитесь её завершения и повторите запрос.", 409,
+                )
+            token = heavy.current.set(lease)
+            try:
+                return await endpoint(request)
+            finally:
+                heavy.current.reset(token)
+                lease.release()
+        return admitted
 
     def intake_service() -> IntakeApiService:
         nonlocal current_intake
@@ -653,7 +677,7 @@ def _spa_routes(
         service: IntakeApiService, work: IntakeWork
     ) -> None:
         try:
-            await run_in_threadpool(service.prepare, work)
+            await heavy.run(service.prepare, work)
         except Exception:
             # Application service уже сохранил bounded error в durable job.
             return
@@ -1191,6 +1215,7 @@ def _spa_routes(
             return _json_error(str(error), 409)
         return JSONResponse(payload)
 
+    @heavy_endpoint
     async def intake_upload_api(request: Request) -> JSONResponse:
         denied = _mutation_denied(request, action="Загрузка кандидата")
         if denied is not None:
@@ -1220,7 +1245,7 @@ def _spa_routes(
             return _json_error("Принимается только ZIP файловой выгрузки.", 400)
         try:
             await uploaded.seek(0)
-            candidate = await run_in_threadpool(
+            candidate = await heavy.run(
                 service.accept_upload,
                 name,
                 uploaded.file,
@@ -1234,6 +1259,7 @@ def _spa_routes(
             await form.close()
         return JSONResponse({"candidate": candidate}, status_code=201)
 
+    @heavy_endpoint
     async def intake_start_api(request: Request) -> JSONResponse:
         denied = _mutation_denied(request, action="Запуск разбора")
         if denied is not None:
@@ -1259,7 +1285,7 @@ def _spa_routes(
                     409,
                 )
             try:
-                work = await run_in_threadpool(
+                work = await heavy.run(
                     service.start,
                     candidate_id,
                     action,
@@ -1272,7 +1298,7 @@ def _spa_routes(
                 return _json_error(str(error), 409)
             except IntakeApiError as error:
                 return _json_error(str(error), 422)
-            task = asyncio.create_task(run_intake_work(service, work))
+            task = heavy.spawn(run_intake_work(service, work))
             intake_tasks.add(task)
             task.add_done_callback(intake_task_done)
         return JSONResponse(
@@ -1295,6 +1321,7 @@ def _spa_routes(
             return _json_error(str(error), 409)
         return JSONResponse({"job": payload})
 
+    @heavy_endpoint
     async def intake_confirm_api(request: Request) -> JSONResponse:
         denied = _mutation_denied(request, action="Публикация preview")
         if denied is not None:
@@ -1311,7 +1338,7 @@ def _spa_routes(
                     409,
                 )
             try:
-                job = await run_in_threadpool(
+                job = await heavy.run(
                     intake_service().confirm,
                     payload["job_id"],
                 )
@@ -1325,6 +1352,7 @@ def _spa_routes(
             await role_tools_refresh()
         return JSONResponse({"job": job})
 
+    @heavy_endpoint
     async def intake_discard_api(request: Request) -> JSONResponse:
         denied = _mutation_denied(request, action="Отмена preview")
         if denied is not None:
@@ -1341,7 +1369,7 @@ def _spa_routes(
                     409,
                 )
             try:
-                result = await run_in_threadpool(
+                result = await heavy.run(
                     intake_service().discard,
                     payload["job_id"],
                 )
@@ -1353,6 +1381,7 @@ def _spa_routes(
                 return _json_error(str(error), 422)
         return JSONResponse(result)
 
+    @heavy_endpoint
     async def upload_source_api(request: Request) -> JSONResponse:
         denied = _mutation_denied(request, action="Загрузка")
         if denied is not None:
@@ -1383,10 +1412,13 @@ def _spa_routes(
             await form.close()
             return _json_error("Принимаются только .zip, .hbk и .json.", 400)
 
-        directory = tempfile.mkdtemp()
-        target = Path(directory) / name
-        job = dashboard_backend._start_job(name, 0)
+        directory = None
+        job = None
+        handed_off = False
         try:
+            directory = tempfile.mkdtemp()
+            target = Path(directory) / name
+            job = dashboard_backend._start_job(name, 0)
             size = 0
             with target.open("wb") as output:
                 while True:
@@ -1398,36 +1430,35 @@ def _spa_routes(
                     if size > dashboard_backend.MAX_UPLOAD:
                         raise dashboard_backend._UploadTooLarge
                     output.write(chunk)
+            task = heavy.spawn(
+                heavy.run(
+                    dashboard_backend._run_job,
+                    registry, job, directory, target, suffix,
+                    allow_truncated=allow_truncated,
+                )
+            )
+            handed_off = True
+            dashboard_backend._ФОНОВЫЕ.add(task)
+            task.add_done_callback(dashboard_backend._ФОНОВЫЕ.discard)
+            return JSONResponse({"job": _job_payload(job)}, status_code=202)
         except dashboard_backend._UploadTooLarge:
-            shutil.rmtree(directory, ignore_errors=True)
-            dashboard_backend._JOBS.remove(job)
-            await form.close()
             return _json_error(
                 f"Файл больше {dashboard_backend.MAX_UPLOAD // 1024 // 1024} МБ.",
                 413,
             )
         except OSError as error:
-            shutil.rmtree(directory, ignore_errors=True)
-            dashboard_backend._JOBS.remove(job)
-            await form.close()
             return _json_error(f"Не удалось принять файл: {error}", 500)
-        await form.close()
+        finally:
+            # До handoff каталог принадлежит запросу, после — worker. Отмена
+            # чтения не должна оставить ни частичный файл, ни вечную job.
+            if not handed_off:
+                if directory is not None:
+                    shutil.rmtree(directory, ignore_errors=True)
+                if job is not None and job in dashboard_backend._JOBS:
+                    dashboard_backend._JOBS.remove(job)
+            uploaded.file.close()
 
-        task = asyncio.create_task(
-            run_in_threadpool(
-                dashboard_backend._run_job,
-                registry,
-                job,
-                directory,
-                target,
-                suffix,
-                allow_truncated=allow_truncated,
-            )
-        )
-        dashboard_backend._ФОНОВЫЕ.add(task)
-        task.add_done_callback(dashboard_backend._ФОНОВЫЕ.discard)
-        return JSONResponse({"job": _job_payload(job)}, status_code=202)
-
+    @heavy_endpoint
     async def parse_incoming_api(request: Request) -> JSONResponse:
         denied = _mutation_denied(request, action="Разбор")
         if denied is not None:
@@ -1473,7 +1504,11 @@ def _spa_routes(
 
         job = dashboard_backend._start_job(name, archive.stat().st_size)
         try:
-            await run_in_threadpool(intake.planned_size, archive)
+            await heavy.run(intake.planned_size, archive)
+        except asyncio.CancelledError:
+            job["state"] = dashboard_backend.JOB_FAILED
+            job["error"] = "Проверка входящей выгрузки отменена до запуска разбора."
+            raise
         except Exception as error:
             job["state"] = dashboard_backend.JOB_FAILED
             job["error"] = f"{archive.name}: не похоже на zip-архив ({error})"
@@ -1508,8 +1543,8 @@ def _spa_routes(
                 {"error": job["error"], "job": _job_payload(job)},
                 status_code=409,
             )
-        task = asyncio.create_task(
-            run_in_threadpool(
+        task = heavy.spawn(
+            heavy.run(
                 dashboard_backend._run_incoming,
                 registry,
                 scanner,

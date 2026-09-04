@@ -21,6 +21,7 @@ from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 from . import tools
 from .auth import same_token
+from .heavy_operations import _settled
 from .intake_v2 import CandidateTransport
 from .loader import ExportError
 from .registry import (
@@ -157,6 +158,22 @@ def _csrf_denied(request: Request) -> PlainTextResponse | None:
 class _UploadTooLarge(MultiPartException):
     """File-part пересёк границу до следующей записи в spool."""
 
+class _ProtectedUploadFile(UploadFile):
+    """Не закрывать spool, пока его read/write ещё выполняется в потоке."""
+
+    async def write(self, data: bytes) -> None:
+        await _settled(asyncio.create_task(super().write(data)))
+
+    async def read(self, size: int = -1) -> bytes:
+        return await _settled(asyncio.create_task(super().read(size)))
+
+    async def seek(self, offset: int) -> None:
+        await _settled(asyncio.create_task(super().seek(offset)))
+
+    async def close(self) -> None:
+        await _settled(asyncio.create_task(super().close()))
+
+
 class _LimitedUploadParser(MultiPartParser):
     """Multipart с одним файлом и ограниченным временным spool-файлом."""
 
@@ -170,6 +187,14 @@ class _LimitedUploadParser(MultiPartParser):
         )
         self.file_limit = file_limit
         self._current_file_size = 0
+
+    def on_headers_finished(self) -> None:
+        super().on_headers_finished()
+        file = self._current_part.file
+        if file is not None:
+            self._current_part.file = _ProtectedUploadFile(
+                file.file, size=file.size, filename=file.filename, headers=file.headers,
+            )
 
     def on_part_begin(self) -> None:
         super().on_part_begin()
@@ -199,7 +224,14 @@ async def _limited_upload_form(
         request,
         MAX_UPLOAD if file_limit is None else file_limit,
     )
-    form = await parser.parse()
+    try:
+        form = await parser.parse()
+    except BaseException:
+        # Starlette закрывает spool при ошибке multipart, но отмена запроса
+        # тоже должна освободить уже принятые части до возврата допуска.
+        for file in parser._files_to_close_on_error:
+            file.close()
+        raise
     items = form.multi_items()
     files = [(name, value) for name, value in items if isinstance(value, UploadFile)]
     fields = [(name, value) for name, value in items if not isinstance(value, UploadFile)]

@@ -421,7 +421,7 @@ it("повторяет чтение снимка после временного
   ).toHaveLength(2);
 });
 
-it("показывает администратору два явных пути загрузки и подтверждение удаления", async () => {
+it("показывает администратору действия без дублирующей плашки доступа", async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const { container } = render(
     <MemoryRouter initialEntries={["/sources"]}>
@@ -431,7 +431,9 @@ it("показывает администратору два явных пути
     </MemoryRouter>,
   );
 
-  expect(await screen.findByRole("heading", { name: "Добавление и обслуживание данных" })).toBeInTheDocument();
+  expect(await screen.findByRole("region", { name: "Администрирование источников" })).toBeInTheDocument();
+  expect(screen.queryByText("Добавление и обслуживание данных")).not.toBeInTheDocument();
+  expect(screen.queryByText("Запись разрешена")).not.toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "Локальная общая справка" })).toBeInTheDocument();
   expect(screen.getByText("Каноническая база не загружена.")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Загрузить справочную базу" })).not.toBeInTheDocument();

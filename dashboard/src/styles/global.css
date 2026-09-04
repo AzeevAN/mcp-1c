@@ -2455,7 +2455,6 @@ h2 {
   gap: 16px;
 }
 
-.source-admin-heading,
 .admin-card,
 .admin-subsection,
 .admin-loading {
@@ -2465,20 +2464,6 @@ h2 {
   box-shadow: var(--shadow);
 }
 
-.source-admin-heading {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 24px;
-  padding: 26px 30px;
-  border-left: 4px solid var(--blue);
-}
-
-.source-admin-heading h2 {
-  margin-bottom: 8px;
-}
-
-.source-admin-heading p,
 .admin-card-heading p {
   margin-bottom: 0;
   color: var(--muted);
@@ -5888,7 +5873,6 @@ h2 {
     flex-direction: column;
   }
 
-  .source-admin-heading,
   .upload-options,
   .configuration-hero-actions,
   .incoming-action,
@@ -5923,7 +5907,6 @@ h2 {
 
   .admin-card,
   .admin-subsection,
-  .source-admin-heading,
   .removal-dialog,
   .intake-preview-dialog {
     padding: 20px;

@@ -439,15 +439,6 @@ export function SourcesAdminPanel({
 
   return (
     <section className="source-admin" aria-label="Администрирование источников">
-      <header className="source-admin-heading">
-        <div>
-          <span className="eyebrow">Доступ администратора</span>
-          <h2>Добавление и обслуживание данных</h2>
-          <p>Операции выполняет тот же сервер и тот же Registry, которым пользуются MCP-инструменты.</p>
-        </div>
-        <StatusBadge tone="info">Запись разрешена</StatusBadge>
-      </header>
-
       {feedback && <div className={`admin-feedback is-${feedback.tone}`} role="status">{feedback.text}</div>}
       {data.snapshot_error && <div className="admin-feedback is-danger">{data.snapshot_error}</div>}
 

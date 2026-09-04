@@ -253,7 +253,9 @@ def _metadata_object(value: object, label: str) -> MetadataObject:
     )
 
 
-def configuration_from_base_layer(semantic: object) -> Configuration:
+def configuration_from_base_layer(
+    semantic: object, *, source_profile: LayerSourceProfile | None = None,
+) -> Configuration:
     """Восстановить формат-независимую модель из canonical base layer."""
     raw = _mapping(semantic, "base_structure")
     legacy_keys = {
@@ -273,7 +275,10 @@ def configuration_from_base_layer(semantic: object) -> Configuration:
         "predefined_available",
         "warnings",
     }
-    if frozenset(raw) not in {frozenset(legacy_keys), frozenset(current_keys)}:
+    if frozenset(raw) not in {
+        frozenset(legacy_keys), frozenset(current_keys),
+        frozenset(current_keys | {"compatibility_mode"}),
+    }:
         raise GenerationRuntimeError(
             "base_structure содержит неверный набор полей"
         )
@@ -289,12 +294,35 @@ def configuration_from_base_layer(semantic: object) -> Configuration:
             raise GenerationRuntimeError("base_structure дублирует объект")
         casefold_names.add(folded)
         objects[obj.full_name] = obj
+    source_format = _text(
+        raw.get("source_format", "source-b"), "base_structure.source_format"
+    )
+    platform = _text(raw.get("platform", ""), "base_structure.platform")
+    compatibility = _text(
+        raw.get("compatibility_mode", ""), "base_structure.compatibility_mode"
+    )
+    predefined = _boolean(
+        raw.get("predefined_available", True), "base_structure.predefined_available"
+    )
+    is_source_b = (
+        source_profile is LayerSourceProfile.SOURCE_B
+        or (source_profile is None and source_format == "source-b")
+    )
+    if is_source_b:
+        # До parser v4 B записывал CompatibilityMode в platform и наследовал
+        # True для недоступных предопределённых. Исправляем только проекцию:
+        # защищённые хешами payload/manifest на диске остаются неизменными.
+        if "compatibility_mode" not in raw:
+            compatibility = platform
+        platform = ""
+        predefined = False
     return Configuration(
         name=_text(raw["name"], "base_structure.name", required=True),
         synonym=_text(raw["synonym"], "base_structure.synonym"),
         version=_text(raw["version"], "base_structure.version"),
         vendor=_text(raw["vendor"], "base_structure.vendor"),
-        platform=_text(raw.get("platform", ""), "base_structure.platform"),
+        platform=platform,
+        compatibility_mode=compatibility,
         exported_at=_text(
             raw.get("exported_at", ""), "base_structure.exported_at"
         ),
@@ -304,17 +332,11 @@ def configuration_from_base_layer(semantic: object) -> Configuration:
         schema_version=_text(
             raw["schema_version"], "base_structure.schema_version", required=True
         ),
-        source_format=_text(
-            raw.get("source_format", "source-b"),
-            "base_structure.source_format",
-        ),
+        source_format=source_format,
         truncated=_boolean(
             raw.get("truncated", False), "base_structure.truncated"
         ),
-        predefined_available=_boolean(
-            raw.get("predefined_available", True),
-            "base_structure.predefined_available",
-        ),
+        predefined_available=predefined,
         warnings=_text_list(
             raw.get("warnings", []), "base_structure.warnings"
         ),
@@ -884,7 +906,10 @@ def build_generation_runtime(
         required=True,
     )
     assert base is not None
-    configuration = configuration_from_base_layer(base.semantic)
+    configuration = configuration_from_base_layer(
+        base.semantic,
+        source_profile=base_layer.provenance.profile if base_layer.provenance else None,
+    )
     if (
         base_layer.provenance is not None
         and base_layer.provenance.profile is LayerSourceProfile.SCHEMA_V1

@@ -2587,7 +2587,8 @@ def _configuration(
         synonym=_localized(_child(properties, "Synonym")),
         version=_text(_child(properties, "Version")),
         vendor=_text(_child(properties, "Vendor")),
-        platform=_text(_child(properties, "CompatibilityMode")),
+        compatibility_mode=_text(_child(properties, "CompatibilityMode")),
+        predefined_available=False,
         source_format="source-b",
     )
 
@@ -2787,6 +2788,7 @@ def base_layer_data(base: Configuration) -> dict[str, object]:
         "version": base.version,
         "vendor": base.vendor,
         "platform": base.platform,
+        "compatibility_mode": base.compatibility_mode,
         "exported_at": base.exported_at,
         "exporter_version": base.exporter_version,
         "schema_version": base.schema_version,

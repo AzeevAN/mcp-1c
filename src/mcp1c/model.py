@@ -256,6 +256,9 @@ class Configuration:
 
     objects: dict[str, MetadataObject] = field(default_factory=dict)
 
+    # Настройка конфигурации из Source B, не версия работающего runtime.
+    compatibility_mode: str = ""
+
     def __len__(self) -> int:
         return len(self.objects)
 

@@ -291,6 +291,8 @@ class ConfigurationStateRow:
     code: tuple[CodeStateRow, ...]
     extension_runtime: SourceStateRow | None = None
     native_generation: bool = False
+    compatibility_mode: str = ""
+    predefined_available: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -1218,6 +1220,8 @@ def _configurations_result(
                 name=config.name,
                 version=config.version,
                 platform=config.platform,
+                compatibility_mode=config.compatibility_mode,
+                predefined_available=config.predefined_available,
                 objects=len(config),
                 edges=len(configuration.graph.edges),
                 loaded_at=configuration.source.loaded_at,
@@ -1340,10 +1344,12 @@ def _render_configurations_list(capture: _ListConfigurationsCapture) -> str:
             out.append(f"*{config.synonym}*")
         out.append("")
         out.append(
-            f"- Версия: {config.version} · платформа **{config.platform}**\n"
+            f"- Версия: {config.version} · платформа **{config.platform or 'неизвестна'}**\n"
             f"- Объектов: {len(config)}, связей: "
             f"{len(context.configuration.graph.edges)}"
         )
+        if config.compatibility_mode:
+            out.append(f"- Режим совместимости: {config.compatibility_mode}")
         out.append(f"- Метаданные: да")
         if context.syntax is not None and context.syntax_platform:
             relation = {
@@ -1352,6 +1358,7 @@ def _render_configurations_list(capture: _ListConfigurationsCapture) -> str:
                     f"новее конфигурации, скрыто {context.syntax_hidden} элементов"
                 ),
                 "older": "**старее конфигурации**",
+                "unknown": "сравнение невозможно — фактическая версия платформы неизвестна",
             }.get(context.syntax_relation, context.syntax_relation)
             out.append(
                 f"- Синтаксис платформы: справка {context.syntax_platform} — "
@@ -1454,11 +1461,14 @@ def _coverage_section(capture: _ListConfigurationsCapture) -> list[str]:
         for _, source in capture.syntax_versions
     }
     нужные: dict[tuple[int, ...], tuple[str, list[str]]] = {}
+    unknown_platform = False
     for row in capture.rows:
         platform = row.context.configuration.config.platform
         key = release(parse_version(platform))
         if key:
             нужные.setdefault(key, (platform, []))[1].append(row.context.name)
+        else:
+            unknown_platform = True
     покрытие = {
         "loaded": [platform for _, platform in sorted(платформы_справок.items())],
         "missing": [
@@ -1469,7 +1479,7 @@ def _coverage_section(capture: _ListConfigurationsCapture) -> list[str]:
         "unused": [
             platform
             for key, platform in sorted(платформы_справок.items())
-            if key not in нужные
+            if key not in нужные and not unknown_platform
         ],
     }
     if not покрытие["loaded"] and not покрытие["missing"]:

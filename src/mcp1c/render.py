@@ -974,10 +974,12 @@ def render_configuration_summary(config: Configuration, graph: Graph | None = No
         f"- Имя: `{config.name}`",
         f"- Версия: {config.version}",
         f"- Поставщик: {config.vendor}",
-        f"- Платформа: {config.platform}",
+        f"- Платформа: {config.platform or 'неизвестна'}",
         f"- Выгружено: {config.exported_at}",
         f"- Объектов: {len(config)}",
     ]
+    if config.compatibility_mode:
+        out.append(f"- Режим совместимости: {config.compatibility_mode}")
     if graph is not None:
         out.append(f"- Связей: {len(graph.edges)}")
     out.append("")
@@ -986,7 +988,10 @@ def render_configuration_summary(config: Configuration, graph: Graph | None = No
         out.append("> **Выгрузка неполная** — сделана с ограничением числа объектов.")
         out.append("")
     if not config.predefined_available:
-        out.append("> **Предопределённые элементы отсутствуют** в этой выгрузке.")
+        out.append(
+            "> **Сведения о предопределённых элементах не получены**; "
+            "это не доказывает их отсутствие в базе."
+        )
         out.append("")
     for warning in config.warnings:
         out.append(f"> Предупреждение: {warning}")

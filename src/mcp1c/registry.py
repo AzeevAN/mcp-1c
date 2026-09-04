@@ -148,6 +148,7 @@ RELATION_EXACT = "exact"
 RELATION_NEWER = "newer"
 RELATION_OLDER = "older"
 RELATION_NONE = "none"
+RELATION_UNKNOWN = "unknown"
 
 _RE_PLATFORM = re.compile(r"\b(\d+\.\d+\.\d+(?:\.\d+)?)\b")
 
@@ -954,6 +955,12 @@ class ResolvedContext:
 
         config = self.configuration.config
 
+        if not parse_version(config.platform):
+            notes.append(
+                "Фактическая версия платформы неизвестна: фильтрация синтаксиса "
+                "по версии выключена, доступность методов в вашей базе не подтверждена. "
+                "Загрузите Source A из работающей информационной базы."
+            )
         if config.truncated:
             notes.append(
                 "Выгрузка конфигурации неполная — сделана с ограничением числа "
@@ -961,8 +968,9 @@ class ResolvedContext:
             )
         if not config.predefined_available:
             notes.append(
-                "В выгрузке нет предопределённых элементов: имена вида "
-                "`Справочники.X.Y` проверить нечем."
+                "Сведения о предопределённых элементах не получены: имена вида "
+                "`Справочники.X.Y` проверить нечем. Пустой список не доказывает "
+                "отсутствие элементов в базе."
             )
         notes.extend(config.warnings)
 
@@ -4213,7 +4221,7 @@ class Registry:
             # без фильтра агенту покажут методы, которых в его платформе нет.
             return RELATION_NONE, 0
         if not config_platform:
-            return RELATION_EXACT, 0
+            return RELATION_UNKNOWN, 0
         if syntax_platform == config_platform:
             return RELATION_EXACT, 0
         if syntax_platform > config_platform:
@@ -4238,10 +4246,12 @@ class Registry:
                 for source in self.syntax_versions.values()
             }
             нужные: dict[tuple[int, ...], tuple[str, list[str]]] = {}
+            unknown_platform = False
             for name in sorted(self.configurations):
                 platform = self.configurations[name].config.platform
                 key = release(parse_version(platform))
                 if not key:
+                    unknown_platform = True
                     continue
                 нужные.setdefault(key, (platform, []))[1].append(name)
 
@@ -4253,7 +4263,7 @@ class Registry:
         unused = [
             platform
             for key, platform in sorted(платформы_справок.items())
-            if key not in нужные
+            if key not in нужные and not unknown_platform
         ]
         return {
             "loaded": [platform for _, platform in sorted(платформы_справок.items())],
@@ -4273,6 +4283,8 @@ class Registry:
                     "synonym": config.synonym,
                     "version": config.version,
                     "platform": config.platform,
+                    "compatibility_mode": config.compatibility_mode,
+                    "predefined_available": config.predefined_available,
                     "objects": len(config),
                     "edges": len(context.configuration.graph.edges),
                     "loaded_at": context.configuration.source.loaded_at,
@@ -4450,7 +4462,10 @@ class Registry:
             raise RegistryError("preview базы не содержит готовый base_structure")
         try:
             payload = load_layer_payload(Path(generation_root) / layer.relative_path)
-            candidate = configuration_from_base_layer(payload.semantic)
+            candidate = configuration_from_base_layer(
+                payload.semantic,
+                source_profile=layer.provenance.profile if layer.provenance else None,
+            )
         except (OSError, ValueError, BundleStoreError, GenerationRuntimeError) as error:
             raise RegistryError("base_structure preview не прочитан") from error
         with self._lock:

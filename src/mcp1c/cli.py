@@ -191,7 +191,9 @@ def _cmd_reg_list(args: argparse.Namespace) -> int:
         return 0
 
     for row in snapshot.rows:
-        print(f"{row.name}  {row.version}  платформа {row.platform}")
+        print(f"{row.name}  {row.version}  платформа {row.platform or 'неизвестна'}")
+        if row.compatibility_mode:
+            print(f"  Режим совместимости: {row.compatibility_mode}")
         print(
             f"  объектов {row.objects}, связей {row.edges}, "
             f"загружено {row.loaded_at}"
@@ -236,6 +238,7 @@ _RELATION_TITLES = {
     "newer": "новее конфигурации",
     "older": "СТАРЕЕ конфигурации",
     "none": "не подключён",
+    "unknown": "фактическая версия платформы неизвестна",
 }
 
 

@@ -255,8 +255,11 @@ def _cmd_reg_search(args: argparse.Namespace) -> int:
             print("Справка не подключена.", file=sys.stderr)
             return 1
         keep = context.syntax_filter()
+        hits = context.syntax.index.search(
+            args.query, limit=args.limit, predicate=lambda doc: keep(doc.payload),
+        )
+        # Предварительное окно ограничивает лишь диагностическую выборку.
         raw = context.syntax.index.search(args.query, limit=args.limit * 3)
-        hits = [h for h in raw if keep(h.doc.payload)][: args.limit]
         скрытые = [h for h in raw if not keep(h.doc.payload)]
         for hit in hits:
             item = hit.doc.payload

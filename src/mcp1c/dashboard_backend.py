@@ -402,12 +402,16 @@ def _run_queries(
 
     result: list[tuple[str, list, list]] = []
     for phrase in phrases:
-        hits = index.search(phrase, limit=20 if keep else 5)
+        hits = index.search(
+            phrase, limit=5,
+            predicate=(lambda doc: keep(doc.payload)) if keep is not None else None,
+        )
         hidden: list = []
         if keep is not None:
-            hidden = [hit for hit in hits if not keep(hit.doc.payload)]
-            hits = [hit for hit in hits if keep(hit.doc.payload)]
-        result.append((phrase, hits[:5], hidden[:5]))
+            # Выборка скрытого не отнимает места у доступных результатов.
+            raw = index.search(phrase, limit=20)
+            hidden = [hit for hit in raw if not keep(hit.doc.payload)]
+        result.append((phrase, hits, hidden[:5]))
     return result
 
 _RE_CODE = re.compile(r"`([^`]+)`")

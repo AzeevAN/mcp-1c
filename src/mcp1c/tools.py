@@ -3207,10 +3207,14 @@ def search_syntax(
     kinds = [kind] if kind else None
 
     limit = _clamp(limit)
+    hits = context.syntax.index.search(
+        query, limit=limit, kinds=kinds,
+        predicate=lambda doc: keep(doc.payload),
+    )
+    # Окно нужно только для ограниченных подсказок о скрытом. Оно не может
+    # ограничивать поиск доступных элементов: все верхние места бывают новее.
     raw = context.syntax.index.search(query, limit=limit * 4, kinds=kinds)
-    allowed = [h for h in raw if keep(h.doc.payload)]
     filtered_out = [h for h in raw if not keep(h.doc.payload)]
-    hits = allowed[:limit]
 
     if not hits:
         where = (

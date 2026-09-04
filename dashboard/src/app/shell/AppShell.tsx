@@ -8,9 +8,12 @@ import {
   LogIn,
   LogOut,
   Library,
+  Moon,
   SearchCode,
   ShieldCheck,
+  Sun,
 } from "lucide-react";
+import { useEffect } from "react";
 import { Link, Navigate, NavLink, Outlet, useLocation } from "react-router-dom";
 
 import { useUiStore } from "../../store/uiStore";
@@ -29,9 +32,15 @@ const navigation = [
 export function AppShell() {
   const compact = useUiStore((state) => state.sidebarCompact);
   const toggleSidebar = useUiStore((state) => state.toggleSidebar);
+  const theme = useUiStore((state) => state.theme);
+  const toggleTheme = useUiStore((state) => state.toggleTheme);
   const bootstrap = useBootstrap();
   const location = useLocation();
   const currentPath = location.pathname + location.search;
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+  }, [theme]);
 
   if (bootstrap.isPending) {
     return (
@@ -107,6 +116,17 @@ export function AppShell() {
             <strong>Данные MCP-сервера</strong>
           </div>
           <div className="topbar-actions">
+            <button
+              className="theme-toggle"
+              type="button"
+              onClick={toggleTheme}
+              aria-label={theme === "dark" ? "Включить светлую тему" : "Включить тёмную тему"}
+              title={theme === "dark" ? "Включить светлую тему" : "Включить тёмную тему"}
+            >
+              {theme === "dark"
+                ? <Sun size={16} aria-hidden="true" />
+                : <Moon size={16} aria-hidden="true" />}
+            </button>
             <div className="connection-badge is-online">
               <span aria-hidden="true" />На связи
             </div>

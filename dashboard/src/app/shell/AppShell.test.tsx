@@ -1,12 +1,16 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
 
+import { useUiStore } from "../../store/uiStore";
 import { AppShell } from "./AppShell";
 
 beforeEach(() => {
   vi.restoreAllMocks();
+  localStorage.clear();
+  document.documentElement.dataset.theme = "light";
+  useUiStore.setState({ sidebarCompact: false, theme: "light" });
 });
 
 function LoginTarget() {
@@ -82,4 +86,19 @@ it("явно показывает административный уровен�
   expect(await screen.findByText("Администратор")).toBeInTheDocument();
   expect(screen.queryByRole("link", { name: /Войти как администратор/ })).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: /Выйти/ })).toBeInTheDocument();
+});
+
+it("переключает тему, применяет её к документу и сохраняет выбор", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue({ ok: true, json: async () => bootstrap(false, "read") }),
+  );
+  renderShell();
+
+  const toggle = await screen.findByRole("button", { name: "Включить тёмную тему" });
+  fireEvent.click(toggle);
+
+  expect(document.documentElement.dataset.theme).toBe("dark");
+  expect(screen.getByRole("button", { name: "Включить светлую тему" })).toBeInTheDocument();
+  expect(JSON.parse(localStorage.getItem("mcp1c-dashboard-ui") || "{}").state.theme).toBe("dark");
 });

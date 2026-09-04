@@ -22,6 +22,19 @@ def test_spa_объявляет_встроенный_favicon_без_отдель
         assert 'href="data:image/svg+xml,' in index
 
 
+def test_spa_применяет_сохранённую_тему_до_первого_кадра() -> None:
+    for path in (
+        ROOT / "dashboard" / "index.html",
+        DEFAULT_DASHBOARD_DIST / "index.html",
+    ):
+        index = path.read_text(encoding="utf-8")
+        assert "mcp1c-dashboard-ui" in index
+        assert "document.documentElement.dataset.theme" in index
+        assert index.index("document.documentElement.dataset.theme") < index.index(
+            'type="module"'
+        )
+
+
 def test_package_data_включает_index_и_assets() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     patterns = project["tool"]["setuptools"]["package-data"]["mcp1c"]

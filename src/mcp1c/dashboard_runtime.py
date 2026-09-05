@@ -694,11 +694,7 @@ def _spa_routes(
     def intake_service() -> IntakeApiService:
         nonlocal current_intake
         if current_intake is None:
-            configured = os.environ.get("MCP1C_CONFIG_SOURCE", "").strip()
-            current_intake = IntakeApiService.for_registry(
-                registry,
-                local_source=Path(configured) if configured else None,
-            )
+            current_intake = IntakeApiService.for_registry(registry)
         return current_intake
 
     def intake_task_done(task: asyncio.Task[None]) -> None:
@@ -1233,6 +1229,40 @@ def _spa_routes(
         payload["runtime"] = {"self_restart": restart.enabled}
         return JSONResponse(payload)
 
+    async def directory_sources_api(request: Request) -> JSONResponse:
+        denied = _admin_denied(request, action="Просмотр подключённых каталогов")
+        if denied is not None:
+            return denied
+        try:
+            return JSONResponse(await run_in_threadpool(intake_service().directory_sources))
+        except IntakeApiError as error:
+            return _json_error(str(error), 409)
+
+    @heavy_endpoint
+    async def directory_change_api(request: Request) -> JSONResponse:
+        denied = _mutation_denied(request, action="Управление подключёнными каталогами")
+        if denied is not None:
+            return denied
+        operation = request.path_params["operation"]
+        if operation not in {"bind", "unbind", "refresh"}:
+            return _json_error("Неизвестная операция с каталогом.", 404)
+        payload = await _json_body(request)
+        allowed = {"configuration", "source_id"} if operation == "bind" else {"configuration"}
+        if set(payload) != allowed or not all(isinstance(v, str) and v for v in payload.values()):
+            return _json_error("Нужны строковые поля configuration и, для привязки, source_id.", 422)
+        service = intake_service()
+        try:
+            async with intake_start_lock:
+                if operation == "bind":
+                    result = await heavy.run(service.bind_directory, payload["configuration"], payload["source_id"])
+                elif operation == "unbind":
+                    result = await heavy.run(service.unbind_directory, payload["configuration"])
+                else:
+                    result = {"candidate": await heavy.run(service.refresh_directory, payload["configuration"])}
+        except (IntakeApiError, LifecycleError) as error:
+            return _json_error(str(error), 409)
+        return JSONResponse(result)
+
     async def intake_snapshot_api(request: Request) -> JSONResponse:
         denied = _admin_denied(request, action="Просмотр кандидатов")
         if denied is not None:
@@ -1652,6 +1682,8 @@ def _spa_routes(
                         service.purge_configuration,
                         configuration,
                     )
+                if service is not None and configuration not in registry.snapshot().configuration_names:
+                    await run_in_threadpool(service.unbind_directory, configuration)
             except RegistryError as error:
                 return _json_error(str(error), 400)
             except (IntakeApiError, LifecycleError, OperationError) as error:
@@ -1818,6 +1850,8 @@ def _spa_routes(
             methods=["GET"],
             name="dashboard_sources_admin",
         ),
+        Route("/api/v1/sources/directories", directory_sources_api, methods=["GET"]),
+        Route("/api/v1/sources/directories/{operation}", directory_change_api, methods=["POST"]),
         Route(
             "/api/v1/sources/intake",
             intake_snapshot_api,

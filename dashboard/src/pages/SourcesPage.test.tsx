@@ -768,3 +768,30 @@ it("сохраняет полное длинное имя конфигураци
 
   expect(await screen.findByRole("heading", { name: longName })).toHaveAttribute("title", longName);
 });
+
+it("показывает выбор каталога в шапке выбранной конфигурации, вне общей формы загрузки", async () => {
+  const fetchMock = vi.mocked(fetch);
+  const regularFetch = fetchMock.getMockImplementation()!;
+  fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input) === "/api/v1/sources/intake") {
+      return { ok: true, json: async () => ({ ...intakeSnapshot(), directories: {
+        roots: ["config-a", "config-b"], bindings: {},
+        configuration_names: ["Отраслевая конфигурация А", "Отраслевая конфигурация Б"],
+      } }) } as Response;
+    }
+    return regularFetch(input, init);
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<MemoryRouter initialEntries={["/sources"]}>
+    <QueryClientProvider client={client}><SourcesPage /></QueryClientProvider>
+  </MemoryRouter>);
+  const choose = await screen.findByRole("button", { name: "Выбрать каталог" });
+  expect(choose.closest(".configuration-hero")).not.toBeNull();
+  expect(within(screen.getByRole("region", { name: "Полная файловая выгрузка" })).queryByText("Выбрать каталог")).toBeNull();
+  fireEvent.click(choose);
+  expect(within(screen.getByRole("dialog")).getByText("Отраслевая конфигурация А")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Закрыть выбор каталога" }));
+  fireEvent.click(screen.getByRole("button", { name: /Отраслевая конфигурация Б/ }));
+  fireEvent.click(await screen.findByRole("button", { name: "Выбрать каталог" }));
+  expect(within(screen.getByRole("dialog")).getByText("Отраслевая конфигурация Б")).toBeInTheDocument();
+});

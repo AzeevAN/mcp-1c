@@ -27,6 +27,8 @@ import {
 import { refreshSourceDependents } from "../shared/api/sourceFreshness";
 import { StatusBadge, type StatusTone } from "../shared/ui/StatusBadge";
 
+import { ConfigDirectories } from "./ConfigDirectories";
+
 const MAX_UPLOAD_BYTES = 500 * 1024 * 1024;
 
 const actionLabels: Record<IntakeAction, string> = {
@@ -274,7 +276,8 @@ function PreviewDialog({
   );
 }
 
-export function ConfigIntakePanel() {
+export function ConfigIntakePanel({ configuration }: { configuration?: string } = {}) {
+  const [directoryCandidate, setDirectoryCandidate] = useState<IntakeCandidate | null>(null);
   const intake = useConfigIntake();
   const queryClient = useQueryClient();
   const input = useRef<HTMLInputElement>(null);
@@ -368,6 +371,7 @@ export function ConfigIntakePanel() {
     try {
       const result = await startConfigIntake(candidate.id, action, parent);
       setActiveJobId(result.job.job_id);
+      setDirectoryCandidate(null);
       queryClient.setQueryData(
         ["sources", "intake", "job", result.job.job_id],
         result,
@@ -394,6 +398,7 @@ export function ConfigIntakePanel() {
         queryClient.invalidateQueries({ queryKey: ["sources", "intake"], exact: true }),
       ]);
       setActiveJobId("");
+      setDirectoryCandidate(null);
       setFeedback({
         tone: "success",
         text: result.job.commit?.no_op
@@ -436,17 +441,66 @@ export function ConfigIntakePanel() {
   };
 
   if (intake.isPending) {
+    if (configuration) return null;
     return <section className="admin-loading"><span className="loading-dot" />Проверяем кандидатов полной выгрузки…</section>;
   }
   if (intake.isError) {
     const text = intake.error instanceof ConfigIntakeApiError
       ? intake.error.message
       : "Intake API недоступен.";
-    return <section className="admin-loading is-error"><AlertCircle size={20} />{text}</section>;
+    return configuration ? <span role="alert">Каталоги недоступны: {text}</span>
+      : <section className="admin-loading is-error"><AlertCircle size={20} />{text}</section>;
   }
 
   const candidates = new Map(intake.data.candidates.map((item) => [item.id, item]));
   const intakeBusy = starting || confirming || discarding;
+
+  const reviewDialog = (activeJobId && (
+        <PreviewDialog
+          job={job.data?.job}
+          error={dialogError || (job.isError ? message(job.error) : "")}
+          pending={confirming || discarding}
+          discarding={discarding}
+          onClose={() => {
+            if (confirming) return;
+            setActiveJobId("");
+            setDialogError("");
+          }}
+          onConfirm={() => void confirm()}
+          onDiscard={() => void discard()}
+        />
+      ));
+
+  if (configuration) {
+    const directories = intake.data.directories;
+    if (!directories || (!directories.roots.length && !directories.bindings[configuration])) return null;
+    return <div className="configuration-directory-actions" aria-label={`Каталог ${configuration}`}>
+      <ConfigDirectories sources={directories} configuration={configuration}
+        busy={intakeBusy || Boolean(activeJobId)}
+        onCandidate={(candidate) => { setDirectoryCandidate(candidate); setFeedback(null); }} />
+      {feedback && <p className={`admin-feedback is-${feedback.tone}`} role="status">{feedback.text}</p>}
+      {directoryCandidate && !activeJobId && <div className="modal-backdrop" role="presentation">
+        <section className="intake-preview-dialog" role="dialog" aria-modal="true" aria-label="Обновление из каталога">
+          <button className="modal-close" type="button" aria-label="Закрыть обновление" disabled={starting}
+            onClick={() => setDirectoryCandidate(null)}>×</button>
+          <h2>Обновление из каталога</h2>
+          <p><strong>{configuration}</strong> · каталог проверен. Выберите состав обновления.</p>
+          <CandidateRow candidate={directoryCandidate} configurationNames={[configuration]}
+            busy={intakeBusy} onStart={(candidate, action, parent) => void start(candidate, action, parent)} />
+          {feedback?.tone === "danger" && <p role="alert">{feedback.text}</p>}
+        </section>
+      </div>}
+      {intake.data.jobs.filter((item) => item.state === "done" && !item.commit
+        && item.preview?.identity.source_kind === "configuration"
+        && item.preview.identity.configuration_name === configuration).map((item) => (
+        <button key={item.job_id} type="button" className="button-secondary" disabled={intakeBusy}
+          onClick={() => { setDirectoryCandidate(null); setDialogError(""); setActiveJobId(item.job_id); }}>
+          Открыть подготовленное обновление
+        </button>
+      ))}
+      {reviewDialog}
+    </div>;
+  }
 
   return (
     <section className="admin-card config-intake-card" aria-label="Полная файловая выгрузка">
@@ -463,7 +517,6 @@ export function ConfigIntakePanel() {
       </header>
 
       {feedback && <div className={`admin-feedback is-${feedback.tone}`} role="status">{feedback.text}</div>}
-
       <div
         className={dragging ? "intake-upload is-dragging" : file ? "intake-upload has-file" : "intake-upload"}
         onDragEnter={(event) => { event.preventDefault(); setDragging(true); }}
@@ -499,7 +552,7 @@ export function ConfigIntakePanel() {
       {!intake.data.groups.length ? (
         <div className="admin-empty intake-empty">
           <FileArchive size={24} aria-hidden="true" />
-          <span><strong>Кандидатов пока нет</strong><small>Загрузите ZIP, положите его в data/incoming/ или настройте read-only mount.</small></span>
+          <span><strong>Кандидатов пока нет</strong><small>Загрузите ZIP, положите его в data/incoming/ или подключите каталог в шапке конфигурации.</small></span>
         </div>
       ) : (
         <div className="intake-groups">
@@ -554,21 +607,7 @@ export function ConfigIntakePanel() {
         </div>
       )}
 
-      {activeJobId && (
-        <PreviewDialog
-          job={job.data?.job}
-          error={dialogError || (job.isError ? message(job.error) : "")}
-          pending={confirming || discarding}
-          discarding={discarding}
-          onClose={() => {
-            if (confirming) return;
-            setActiveJobId("");
-            setDialogError("");
-          }}
-          onConfirm={() => void confirm()}
-          onDiscard={() => void discard()}
-        />
-      )}
+      {reviewDialog}
     </section>
   );
 }

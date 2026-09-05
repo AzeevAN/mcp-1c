@@ -69,7 +69,14 @@ export type IntakeJob = {
   commit: IntakeCommit | null;
 };
 
+export type DirectorySources = {
+  roots: string[];
+  bindings: Record<string, string>;
+  configuration_names: string[];
+};
+
 export type IntakeSnapshot = {
+  directories?: DirectorySources;
   api_version: "v1";
   configuration_names: string[];
   candidates: IntakeCandidate[];
@@ -194,4 +201,18 @@ export function uploadConfigCandidate(
     form.append("file", file);
     request.send(form);
   });
+}
+
+export function bindDirectory(configuration: string, sourceId: string) {
+  return intakeRequest<DirectorySources>("/api/v1/sources/directories/bind", {
+    configuration, source_id: sourceId,
+  });
+}
+
+export function unbindDirectory(configuration: string) {
+  return intakeRequest<DirectorySources>("/api/v1/sources/directories/unbind", { configuration });
+}
+
+export function refreshDirectory(configuration: string) {
+  return intakeRequest<{ candidate: IntakeCandidate }>("/api/v1/sources/directories/refresh", { configuration });
 }

@@ -98,8 +98,10 @@ def test_compose_передаёт_настройки_необязательно�
     assert "MCP1C_REFERENCE_TRUST_UNSIGNED" not in compose
 
 
-def test_compose_передаёт_только_серверный_путь_read_only_source():
+def test_compose_объясняет_корни_без_singleton():
     compose = _compose()
 
-    assert "MCP1C_CONFIG_SOURCE: ${MCP1C_CONFIG_SOURCE:-}" in compose
+    assert "MCP1C_CONFIG_SOURCE" not in compose
+    assert "/config-sources/config-a" in compose
+    assert "read_only: true" in compose
     assert "MCP1C_CONFIG_SOURCE_HOST" not in compose

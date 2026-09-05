@@ -6200,3 +6200,12 @@ h2 {
     margin-left: 0;
   }
 }
+
+.configuration-directory-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: .65rem; }
+.configuration-directory-actions > .admin-feedback { flex-basis: 100%; max-width: 32rem; }
+.configuration-directory-actions .intake-preview-dialog { text-align: left; }
+.configuration-hero { flex-wrap: wrap; }
+.configuration-hero-copy { flex: 1 1 20rem; }
+.configuration-hero-actions { flex: 1 1 20rem; max-width: 100%; flex-wrap: wrap; justify-content: flex-end; }
+.configuration-directory-actions { order: 1; flex-basis: 100%; min-width: 0; }
+.configuration-directory-actions > small { overflow-wrap: anywhere; }

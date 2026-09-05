@@ -38,6 +38,7 @@ from .intake_v2_transport import (
     TransportSecurityError,
     open_export_tree,
 )
+from .config_sources import ConfigSourceError, source_path
 from .resource_limits import ARCHIVE_LIMITS, ResourceLimits
 
 
@@ -401,6 +402,7 @@ class IntakeLifecycle:
         *,
         incoming_root: Path | None = None,
         local_sources: Mapping[str, Path] | None = None,
+        config_sources_root: Path | None = None,
         limits: ResourceLimits = ARCHIVE_LIMITS,
         directory_settle_seconds: float = 5.0,
     ):
@@ -421,6 +423,7 @@ class IntakeLifecycle:
         normalized_sources: dict[str, Path] = {}
         for source_id, source in (local_sources or {}).items():
             normalized_sources[_identifier(source_id, "local source_id")] = Path(source)
+        self.config_sources_root = config_sources_root
         self.catalog = catalog
         self.browser = browser
         self.operations = operations
@@ -682,10 +685,16 @@ class IntakeLifecycle:
                 limits=self.limits,
             )
         else:
-            try:
-                source = self.local_sources[locator.source_id]
-            except KeyError:
-                raise LifecycleConflict("local source больше не настроен") from None
+            if self.config_sources_root is not None and locator.transport is CandidateTransport.LOCAL_DIRECTORY:
+                try:
+                    source = source_path(self.config_sources_root, locator.source_id)
+                except ConfigSourceError as error:
+                    raise LifecycleConflict(str(error)) from error
+            else:
+                try:
+                    source = self.local_sources[locator.source_id]
+                except KeyError:
+                    raise LifecycleConflict("local source больше не настроен") from None
             if locator.entry_name:
                 source = source / locator.entry_name
             tree = open_export_tree(

@@ -327,7 +327,7 @@ def test_browser_upload_сохраняет_candidate_но_не_запускае�
     assert restarted.lifecycle.browser.candidate_ids() == (candidate["id"],)
 
 
-def test_default_service_читает_только_настроенный_local_source(
+def test_default_service_игнорирует_удалённый_singleton(
     tmp_path, monkeypatch
 ):
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
@@ -344,9 +344,7 @@ def test_default_service_читает_только_настроенный_local_
     )
 
     assert response.status_code == 200
-    assert [item["internal_name"] for item in response.json()["candidates"]] == [
-        "MountedConfiguration"
-    ]
+    assert response.json()["candidates"] == []
     assert str(tmp_path) not in response.text
     assert local.read_bytes() == _archive("MountedConfiguration")
 

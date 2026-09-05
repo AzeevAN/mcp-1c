@@ -137,7 +137,7 @@ def test_инструкция_загрузки_разделяет_source_a_sourc
         "Предпросмотр",
         "Опубликовать",
         "data/incoming/",
-        "MCP1C_CONFIG_SOURCE",
+        "/config-sources/<id>",
         "parent_configuration",
         "legacy",
         "manifest",

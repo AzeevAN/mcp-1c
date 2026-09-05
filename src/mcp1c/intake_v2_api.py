@@ -8,11 +8,13 @@ Starlette остаётся тонкой границей транспорта: �
 from __future__ import annotations
 
 import secrets
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
 from .intake_v2 import (
+    CandidateTransport,
     CandidateJobStage,
     CandidateJobState,
     DurableCandidateStore,
@@ -23,6 +25,7 @@ from .intake_v2 import (
 from .intake_v2_composition import CompositionError
 from .intake_v2_lifecycle import (
     CandidateCatalog,
+    CandidateLocator,
     DiscoveredCandidate,
     IntakeLifecycle,
     LifecycleError,
@@ -35,7 +38,9 @@ from .intake_v2_operations import (
 )
 from .intake_v2_planner import IntakeAction, LayerVersion
 from .intake_v2_registry import GenerationOrigin, GenerationView
-from .intake_v2_transport import BrowserStagingStore
+from .intake_v2_transport import BrowserStagingStore, TransportError
+from .intake_v2_probe import CandidateProbe, ProbeError, probe_export
+from .config_sources import CONFIG_SOURCES_ROOT, ConfigSourceBindings, ConfigSourceError
 from .registry import Registry, RegistryError, RegistrySnapshot
 
 
@@ -96,13 +101,18 @@ class IntakeApiService:
             raise TypeError("lifecycle должен быть IntakeLifecycle")
         self.registry = registry
         self.lifecycle = lifecycle
+        self._directory_lock = threading.RLock()
+        self.bindings = ConfigSourceBindings(
+            registry.data_dir / "config-source-bindings.json",
+            lifecycle.config_sources_root or CONFIG_SOURCES_ROOT,
+        )
 
     @classmethod
     def for_registry(
         cls,
         registry: Registry,
         *,
-        local_source: Path | None = None,
+        config_sources_root: Path = CONFIG_SOURCES_ROOT,
         directory_settle_seconds: float = 5.0,
     ) -> IntakeApiService:
         root = registry.data_dir / "intake-v2"
@@ -113,12 +123,92 @@ class IntakeApiService:
             browser,
             IntakeCoordinator(root / "operations", records),
             incoming_root=registry.incoming_dir,
-            local_sources=(
-                {"local": Path(local_source)} if local_source is not None else None
-            ),
+            config_sources_root=Path(config_sources_root),
             directory_settle_seconds=directory_settle_seconds,
         )
         return cls(registry, lifecycle)
+
+    def directory_sources(self) -> dict[str, object]:
+        try:
+            with self._directory_lock:
+                names = self.registry.snapshot().configuration_names
+                return {"roots": self.bindings.roots(),
+                        "bindings": {k: v for k, v in self.bindings.load().items() if k in names},
+                        "configuration_names": list(names)}
+        except ConfigSourceError as error:
+            raise IntakeApiConflict(str(error)) from error
+
+    def _directory_probe(
+        self, configuration: str, source_id: str,
+    ) -> tuple[CandidateLocator, CandidateProbe]:
+        if configuration not in self.registry.snapshot().configuration_names:
+            raise IntakeApiConflict("Конфигурация не загружена.")
+        try:
+            locator = CandidateLocator(CandidateTransport.LOCAL_DIRECTORY, source_id)
+            with self.lifecycle._open(locator) as tree:
+                probe = probe_export(tree)
+            if (probe.source_kind is not SourceKind.CONFIGURATION
+                    or probe.internal_name != configuration or probe.wrapper):
+                raise IntakeApiConflict(
+                    "Каталог не соответствует выбранной конфигурации. "
+                    "Проверьте внутреннее имя и Configuration.xml в корне."
+                )
+            return locator, probe
+        except (LifecycleError, ProbeError, TransportError, OSError) as error:
+            raise IntakeApiConflict("Не удалось проверить каталог конфигурации: " + (
+                "нет доступа" if isinstance(error, OSError) else str(error)
+            )) from error
+
+    def bind_directory(self, configuration: str, source_id: str) -> dict[str, object]:
+        with self._directory_lock:
+            self._directory_probe(configuration, source_id)
+            try:
+                bindings = self.bindings.load()
+                if any(k != configuration and v == source_id for k, v in bindings.items()):
+                    raise IntakeApiConflict("Каталог уже привязан к другой конфигурации.")
+                bindings[configuration] = source_id
+                self.bindings.save(bindings)
+            except ConfigSourceError as error:
+                raise IntakeApiConflict(str(error)) from error
+            return self.directory_sources()
+
+    def unbind_directory(self, configuration: str) -> dict[str, object]:
+        with self._directory_lock:
+            try:
+                bindings = self.bindings.load()
+                if configuration in bindings:
+                    del bindings[configuration]
+                    self.bindings.save(bindings)
+            except ConfigSourceError as error:
+                raise IntakeApiConflict(str(error)) from error
+            return self.directory_sources()
+
+    def refresh_directory(self, configuration: str) -> dict[str, object]:
+        with self._directory_lock:
+            try:
+                source_id = self.bindings.load().get(configuration)
+            except ConfigSourceError as error:
+                raise IntakeApiConflict(str(error)) from error
+            if source_id is None:
+                raise IntakeApiConflict("К конфигурации не подключён каталог.")
+            locator, probe = self._directory_probe(configuration, source_id)
+            candidate = DiscoveredCandidate(self.lifecycle._candidate_id(locator, probe), locator, probe)
+            self.lifecycle.catalog.save(candidate)
+            return self.candidate_payload(candidate)
+
+    def _validate_directory_candidate(self, candidate: DiscoveredCandidate) -> None:
+        if (candidate.locator.transport is not CandidateTransport.LOCAL_DIRECTORY
+                or self.lifecycle.config_sources_root is None):
+            return
+        configuration = candidate.probe.internal_name
+        try:
+            if self.bindings.load().get(configuration) != candidate.locator.source_id:
+                raise IntakeApiConflict("Привязка каталога конфигурации изменилась.")
+        except ConfigSourceError as error:
+            raise IntakeApiConflict(str(error)) from error
+        _, current = self._directory_probe(configuration, candidate.locator.source_id)
+        if current.raw_sha256 != candidate.probe.raw_sha256:
+            raise IntakeApiConflict("Каталог изменился. Заново нажмите «Обновить из каталога».")
 
     def _actions(
         self,
@@ -167,6 +257,7 @@ class IntakeApiService:
             job_payloads = [self.job_payload(job.job_id) for job in jobs]
         return {
             "api_version": "v1",
+            "directories": self.directory_sources(),
             "configuration_names": list(registry_snapshot.configuration_names),
             "candidates": [
                 self.candidate_payload(
@@ -290,6 +381,7 @@ class IntakeApiService:
             candidate = self.lifecycle.catalog.load(candidate_id)
         except KeyError:
             raise IntakeApiNotFound("Candidate не найден.") from None
+        self._validate_directory_candidate(candidate)
         job_id = job_id or f"job-{secrets.token_hex(16)}"
         try:
             previous = self.lifecycle.operations.records.load_job(job_id)
@@ -368,7 +460,12 @@ class IntakeApiService:
         except KeyError:
             raise IntakeApiNotFound("Job не найдена.") from None
         try:
-            self.lifecycle.operations.confirm(job_id, self.registry)
+            with self._directory_lock:
+                # Повторный confirm готового commit не зависит от доступности входа.
+                if self.job_payload(job_id).get("commit") is None:
+                    job = self.lifecycle.operations.records.load_job(job_id)
+                    self._validate_directory_candidate(self.lifecycle.catalog.load(job.candidate_id))
+                self.lifecycle.operations.confirm(job_id, self.registry)
             self.lifecycle.release_committed_candidate(job_id)
         except KeyError:
             raise IntakeApiConflict(
@@ -408,6 +505,7 @@ class IntakeApiService:
     def purge_configuration(self, configuration: str) -> None:
         try:
             self.lifecycle.purge_configuration(configuration)
+            self.unbind_directory(configuration)
         except LifecycleError as error:
             raise IntakeApiConflict(str(error)) from error
 

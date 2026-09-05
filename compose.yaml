@@ -21,6 +21,13 @@ services:
         bind:
           create_host_path: false
           selinux: Z
+      # Необязательные корни выгрузок, по одному mount на конфигурацию:
+      # - type: bind
+      #   source: /absolute/path/to/export
+      #   target: /config-sources/config-a
+      #   read_only: true
+      #   bind:
+      #     create_host_path: false
     environment:
       # Официальный образ не стартует без двух разных безопасных токенов.
       API_TOKEN: ${API_TOKEN:?Укажите API_TOKEN в .env}
@@ -30,8 +37,6 @@ services:
       # `https-proxy` доверяет X-Forwarded-* от внешнего локального TLS proxy.
       MCP1C_ACCESS: ${MCP1C_ACCESS:-local}
       MCP1C_REFERENCE_ARTIFACT: ${MCP1C_REFERENCE_ARTIFACT:-}
-      # Путь уже внутри контейнера; сам bind mount оператор добавляет как ro.
-      MCP1C_CONFIG_SOURCE: ${MCP1C_CONFIG_SOURCE:-}
       MCP1C_ALLOW_SELF_RESTART: ${MCP1C_ALLOW_SELF_RESTART:-1}
     logging:
       driver: json-file

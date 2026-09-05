@@ -26,6 +26,7 @@ import {
 } from "../shared/api/sources";
 import { StatusBadge, type StatusTone } from "../shared/ui/StatusBadge";
 import { ReferenceSidebar } from "./ReferenceSidebar";
+import { ConfigIntakePanel } from "./ConfigIntakePanel";
 import { SourcesAdminPanel } from "./SourcesAdminPanel";
 
 const sourceKindLabel: Record<SourceItem["kind"], string> = {
@@ -364,6 +365,7 @@ function ConfigurationDetail({
         </div>
         <div className="configuration-hero-actions">
           <StatusBadge tone="success">Источник активен</StatusBadge>
+          {onRemove && <ConfigIntakePanel key={configuration.id} configuration={configuration.id} />}
           {onRemove && (configuration.source || configuration.native_generation) && (
             <button
               className="button-danger-quiet"

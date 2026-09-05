@@ -1178,7 +1178,9 @@ class ReferenceProvider:
         if item["signature"]:
             parts.extend(("## Синтаксис", item["signature"]))
         if item["body"]:
-            parts.extend(("## Описание", item["body"]))
+            # Таблицы выводятся отдельными блоками ниже; метки их прежних
+            # позиций не являются текстом справки для пользователя.
+            parts.extend(("## Описание", _QUERY_TABLE_MARKER.sub("", item["body"])))
         rows = self._connection.execute(
             "SELECT * FROM parameters WHERE item_id=? ORDER BY ordinal", (item_id,)
         ).fetchall()
@@ -1234,7 +1236,9 @@ class ReferenceProvider:
                         f"Раздел {section_id!r} не принадлежит элементу {item_id!r}."
                     )
                 content = "\n\n".join(
-                    value for value in (section["signature"], section["body"]) if value
+                    value for value in (
+                        section["signature"], _QUERY_TABLE_MARKER.sub("", section["body"]),
+                    ) if value
                 )
                 title_ru, title_en = section["title_ru"], section["title_en"]
         return content, {

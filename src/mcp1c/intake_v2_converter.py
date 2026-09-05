@@ -2230,7 +2230,11 @@ def _common_form_object(
     containers: list[CollectionArtifact] = []
     for artifact in form_artifacts:
         parts = PurePosixPath(artifact.source_path).parts
-        if len(parts) == 2 and artifact.source_path.endswith(".xml"):
+        if len(parts) == 1 and artifact.source_path.endswith(".Form.xml"):
+            form_xml.append(artifact)
+        elif len(parts) == 1 and artifact.source_path.endswith(".xml"):
+            descriptors.append(artifact)
+        elif len(parts) == 2 and artifact.source_path.endswith(".xml"):
             descriptors.append(artifact)
         elif parts[-2:] == ("Ext", "Form.xml"):
             form_xml.append(artifact)

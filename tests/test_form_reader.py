@@ -9,6 +9,7 @@ from mcp1c.form_reader import (
     FormReadError,
     read_form,
 )
+from mcp1c.readers.list_stream import MAX_SEMANTIC_TOKENS
 
 
 @pytest.mark.parametrize("marker", [19, 20, 23, 25, 26, 27])
@@ -75,6 +76,37 @@ def test_профили_обычной_формы_читают_реквизит�
     assert result.semantic_fields["attributes"] == ("Значение",)
     assert result.semantic_fields["elements"] == ("ПолеВвода",)
     assert result.semantic_fields["control_types"] == ("InputField",)
+
+
+def test_корректная_форма_до_500_тысяч_лексем_разбирается_семантически():
+    panel = "09ccdc77-ea1a-4a6d-ab1c-3435eada2433"
+    input_field = "381ed624-9217-4e63-85db-c4c3cb87daae"
+    root_control = [
+        panel,
+        "0",
+        ["14", ("Форма",)],
+        [input_field, "1", ["14", ("ПолеВвода",)]],
+    ]
+    attributes = [
+        ["0"],
+        "2",
+        [
+            "1",
+            [["1"], "0", "1", ("Значение",), [("Pattern",), [("S",)]]],
+        ],
+        ["0"],
+    ]
+    large_unused_table = ["0"] * 130_000
+    payload = _stream(
+        ["27", root_control, attributes, large_unused_table, *(["0"] * 16)]
+    ).encode()
+
+    result = read_form(payload)
+
+    assert MAX_SEMANTIC_TOKENS == 500_000
+    assert 250_000 < result.tokens <= MAX_SEMANTIC_TOKENS
+    assert result.semantic_fields["attributes"] == ("Значение",)
+    assert result.semantic_fields["elements"] == ("ПолеВвода",)
 
 
 def test_base64_не_принимает_постороннюю_лексему():

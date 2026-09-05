@@ -221,6 +221,36 @@ def test_collector_сохраняет_mixed_tree_и_flat_без_глобальн
     }
 
 
+def test_collector_сохраняет_плоские_descriptor_и_xml_формы(tmp_path):
+    tree = MemoryTree(
+        {
+            "Configuration.xml": _configuration(),
+            "Catalog.Demo.Form.Managed.xml": b"<form-descriptor/>",
+            "Catalog.Demo.Form.Managed.Form.xml": b"<form/>",
+            "Catalog.Demo.Form.Managed.Form.Module.txt": b"procedure Form() endprocedure",
+            "Catalog.Demo.Form.DescriptorOnly.xml": b"<form-descriptor/>",
+            "Catalog.Demo.Form.Ordinary.Form": b"container",
+        }
+    )
+
+    result = _collect(tree, tmp_path / "flat-forms")
+
+    assert {item.source_path for item in result.forms} == {
+        "Catalog.Demo.Form.Managed.xml",
+        "Catalog.Demo.Form.Managed.Form.xml",
+        "Catalog.Demo.Form.DescriptorOnly.xml",
+        "Catalog.Demo.Form.Ordinary.Form",
+    }
+    assert {item.address for item in result.forms} == {
+        "Справочник.Demo.Форма.Managed",
+        "Справочник.Demo.Форма.DescriptorOnly",
+        "Справочник.Demo.Форма.Ordinary",
+    }
+    assert {item.address for item in result.code} == {
+        "Справочник.Demo.Форма.Managed",
+    }
+
+
 def test_collector_нормализует_роли_плоской_выгрузки(tmp_path):
     read_role_member = _symbol("read_role_member")
     tree = MemoryTree(
@@ -320,6 +350,11 @@ def test_collector_принимает_доказанные_flat_виды_без_
             ArtifactKind.CODE,
             "Sequence.Documents.RecordSetModule.txt",
         ),
+        (
+            "Catalogs",
+            ArtifactKind.FORMS,
+            "Catalog.Products.Form.List.xml",
+        ),
     }
     assert not any(
         item.code in {"unsupported_metadata", "unsupported_layout"}
@@ -327,7 +362,7 @@ def test_collector_принимает_доказанные_flat_виды_без_
     )
     assert not any(
         item.source_path.endswith(
-            (".Help.xml", ".Predefined.xml", ".Form.List.xml", ".Template.Layout.xml")
+            (".Help.xml", ".Predefined.xml", ".Template.Layout.xml")
         )
         for item in result.artifacts
     )

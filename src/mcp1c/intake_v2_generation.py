@@ -50,7 +50,7 @@ from .v8container import V8Container, V8ContainerError, V8ResourceLimitError
 
 
 GENERATION_FORMAT_VERSION = 1
-GENERATION_PARSER_VERSION = 5
+GENERATION_PARSER_VERSION = 6
 _READ_CHUNK = 1 << 20
 _MAX_FORM_CONTAINER_SIZE = 64 << 20
 
@@ -299,7 +299,9 @@ def _common_form_semantic(
         value["unparsed_payload_sha256"] = sorted(
             artifact.sha256
             for artifact in artifacts
-            if artifact.source_path.endswith(("/Ext/Form.xml", "/Ext/Form.bin", ".Form"))
+            if artifact.source_path.endswith(
+                ("/Ext/Form.xml", "/Ext/Form.bin", ".Form", ".Form.xml")
+            )
         )
     return value
 

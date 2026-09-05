@@ -9,7 +9,7 @@ import zipfile
 import pytest
 
 from conftest import write_export
-from mcp1c import coverage_log
+from mcp1c import coverage_log, tools as mcp_tools
 from mcp1c.intake_v2 import LayerKind, LayerSourceProfile, LayerState
 from mcp1c.intake_v2_converter import base_layer_data, convert_collection
 from mcp1c.intake_v2_generation import materialize_generation
@@ -17,7 +17,7 @@ from mcp1c.intake_v2_runtime import configuration_from_base_layer
 from mcp1c.model import Configuration, Field, MetadataObject
 from mcp1c.registry import Registry, RegistryError
 from mcp1c.tools import get_object, get_procedure, get_related, search_objects
-from test_intake_v2_converter import _collection
+from test_intake_v2_converter import _collection, _common_form_xml
 
 
 def _materialized(tmp_path, name: str, **collection_options):
@@ -146,6 +146,50 @@ def test_native_commit_атомарно_подключает_структуру_
         config="DemoConfiguration",
     )
     assert (registry.data_dir / pointer.root_path).is_dir()
+
+
+def test_native_плоская_xml_форма_доходит_до_runtime_вместе_с_событиями(
+    tmp_path,
+):
+    _collection_value, generation = _materialized(
+        tmp_path,
+        "flat-form-xml",
+        flat_common_forms=True,
+        item_form_xml=_common_form_xml(),
+    )
+    registry = Registry(tmp_path / "data-flat-form-xml")
+    registry.publish_generation(
+        registry.stage_generation(generation.manifest, generation.payloads)
+    )
+
+    context = registry.resolve("DemoConfiguration")
+    assert context.modules is not None
+    managed = context.modules.формы.состав("ОбщаяФорма.FlatManaged")
+    descriptor_only = context.modules.формы.состав(
+        "ОбщаяФорма.FlatDescriptorOnly"
+    )
+    assert managed is not None
+    assert managed.реквизиты == ["Filter"]
+    assert managed.элементы == ["FilterField", "Pages", "Refresh"]
+    assert managed.события == {
+        "OnOpen": ("OnOpen",),
+        "OnChange": ("OnChange",),
+        "Refresh": ("Click",),
+    }
+    assert managed.состояние_xml == "ready"
+    assert not managed.структура_частична
+    assert descriptor_only is not None
+    assert descriptor_only.структура_доступна
+    assert descriptor_only.структура_частична
+
+    coverage = mcp_tools.sources_snapshot(registry).code[0].coverage
+    assert coverage is not None
+    assert coverage.forms_total == 3
+    assert coverage.form_structures_full == 2
+    assert coverage.form_structures_partial == 1
+    assert coverage.form_structures_unread == 0
+    assert coverage.form_modules_read == 1
+    assert coverage.form_modules_missing == 2
 
 
 def test_native_extended_objects_доступны_через_mcp_после_restart(

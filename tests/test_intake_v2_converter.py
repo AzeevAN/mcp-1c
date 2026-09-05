@@ -98,6 +98,7 @@ def _configuration(
     journal: bool = False,
     bindings: bool = False,
     common_forms: bool = False,
+    flat_common_forms: bool = False,
     bots: bool = False,
     numbering_rules: bool = False,
     opaque_common_module: bool = False,
@@ -144,6 +145,11 @@ def _configuration(
             "<CommonForm>Unreadable</CommonForm>"
             "<CommonForm>DescriptorOnly</CommonForm>"
             "<CommonForm>Flat</CommonForm>"
+        )
+    if flat_common_forms:
+        children += (
+            "<CommonForm>FlatManaged</CommonForm>"
+            "<CommonForm>FlatDescriptorOnly</CommonForm>"
         )
     if bots:
         children += "<Bot>Assistant</Bot>"
@@ -505,6 +511,7 @@ def _collection(
     plan_auto_record: str = "Allow",
     plan_content: bool = True,
     common_forms: bool = False,
+    flat_common_forms: bool = False,
     common_form_xml: bytes | None = None,
     common_form_module: bytes | None = None,
     common_form_external_module: bytes | None = None,
@@ -528,6 +535,7 @@ def _collection(
             journal=journal,
             bindings=bindings,
             common_forms=common_forms,
+            flat_common_forms=flat_common_forms,
             bots=bots,
             numbering_rules=numbering_rules,
             opaque_common_module=opaque_common_module,
@@ -650,6 +658,21 @@ def _collection(
             payloads[
                 "CommonForms/Container/Ext/Form/Module.bsl"
             ] = common_form_external_module
+    if flat_common_forms:
+        payloads.update(
+            {
+                "CommonForm.FlatManaged.xml": _common_form("FlatManaged"),
+                "CommonForm.FlatManaged.Form.xml": _common_form_xml(),
+                "CommonForm.FlatManaged.Form.Module.txt": (
+                    b"procedure OnOpen() endprocedure\n"
+                    b"procedure OnChange() endprocedure\n"
+                    b"procedure Refresh() endprocedure"
+                ),
+                "CommonForm.FlatDescriptorOnly.xml": _common_form(
+                    "FlatDescriptorOnly"
+                ).replace(b"<FormType>Managed</FormType>", b"<FormType>Ordinary</FormType>"),
+            }
+        )
     if bots:
         payloads["Bots/Assistant.xml"] = _bot(
             predefined=bot_predefined,
@@ -1300,6 +1323,27 @@ def test_common_form_явно_различает_partial_unreadable_descriptor_o
         for item in result.diagnostics
         if item.code == "form_coverage"
     } == {"deferred", "descriptor_only", "unreadable"}
+
+
+def test_плоские_managed_xml_и_descriptor_only_формы_не_теряются(tmp_path):
+    FormStructureState = _symbol("FormStructureState")
+    FormModuleState = _symbol("FormModuleState")
+    convert_collection = _symbol("convert_collection")
+
+    result = convert_collection(_collection(tmp_path, flat_common_forms=True))
+    managed = result.extended.get("ОбщаяФорма.FlatManaged")
+    descriptor_only = result.extended.get("ОбщаяФорма.FlatDescriptorOnly")
+
+    assert managed.payload.structure_state is FormStructureState.READY
+    assert managed.payload.module_state is FormModuleState.READY
+    assert managed.payload.form_type == "Managed"
+    assert managed.payload.attributes == ("Filter",)
+    assert managed.payload.elements == ("FilterField", "Pages", "Refresh")
+    assert len(managed.payload.events) == 3
+
+    assert descriptor_only.payload.structure_state is FormStructureState.DESCRIPTOR_ONLY
+    assert descriptor_only.payload.module_state is FormModuleState.MISSING
+    assert descriptor_only.payload.form_type == "Ordinary"
 
 
 def test_common_form_не_скрывает_конфликт_модулей(tmp_path):

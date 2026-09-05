@@ -22,6 +22,7 @@ from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Iterable, Mapping
 from urllib.parse import quote
+from .package_digest import package_digest
 
 from .intake_v2 import GenerationManifest, LayerKind, LayerManifest, LayerState
 from .intake_v2_registry import (
@@ -553,10 +554,7 @@ def source_target(full_name: str, child_path: str = "") -> str:
 
 @lru_cache(maxsize=1)
 def _code_digest() -> str:
-    digest = hashlib.sha256()
-    for path in sorted(Path(__file__).parent.glob("*.py")):
-        digest.update(path.read_bytes())
-    return digest.hexdigest()
+    return package_digest(Path(__file__).parent)
 
 
 def _stamp(layer: LayerManifest) -> str:

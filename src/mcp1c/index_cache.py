@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Iterable
 
 from .search import SearchIndex
+from .package_digest import package_digest
 
 CACHE_VERSION = 1
 
@@ -71,10 +72,7 @@ def _code_digest(_cache: list[str] = []) -> str:
     """
     if _cache:
         return _cache[0]
-    digest = hashlib.sha256()
-    for path in sorted(Path(__file__).parent.glob("*.py")):
-        digest.update(path.read_bytes())
-    _cache.append(digest.hexdigest())
+    _cache.append(package_digest(Path(__file__).parent))
     return _cache[0]
 
 

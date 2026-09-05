@@ -552,6 +552,12 @@ curl -fsS -H "X-Api-Token: $ADMIN_TOKEN" \
     create_host_path: false
 ```
 
+Личные пути можно вынести в исключённый из Git `compose.local.yaml`:
+поместите приведённый блок под `services` → `mcp1c` → `volumes`, а в `.env`
+добавьте `COMPOSE_FILE=compose.yaml:compose.local.yaml` (macOS/Linux).
+Основной `compose.yaml` при этом не требуется менять. Локальный файл каждый
+оператор создаёт у себя; в репозитории он не распространяется.
+
 Для следующей конфигурации добавьте другой mount, например
 `/config-sources/config-b`. ID — 1–128 латинских букв, цифр, `_`, `-`, `.`,
 первый символ не точка. `Configuration.xml` должен лежать непосредственно

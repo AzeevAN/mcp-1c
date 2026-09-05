@@ -14,8 +14,12 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import difflib
+import hashlib
 import heapq
+import json
 from bisect import bisect_right
 from dataclasses import dataclass
 
@@ -1955,55 +1959,106 @@ def compare_configurations(
     registry: Registry,
     full_name: str,
     configs: list[str] | None = None,
+    *,
+    cursor: str | None = None,
+    limit: int = 40,
 ) -> str:
-    """Один и тот же объект в разных конфигурациях — что различается."""
-    names = (
-        list(configs)
-        if configs
-        else list(registry.snapshot().configuration_names)
-    )
-    if len(names) < 2:
-        return "Для сравнения нужно минимум две загруженные конфигурации."
+    """Имена реквизитов одного объекта в явной паре; различия без потерь."""
+    if type(limit) is not int or not 1 <= limit <= 100:
+        raise RegistryError("limit должен быть целым числом от 1 до 100.")
+    # Оба объекта берутся из одного снимка, а не из двух независимых resolve:
+    # параллельная публикация не должна смешать поколения внутри ответа.
+    snapshot = registry.snapshot()
+    names = list(snapshot.configuration_names) if configs is None else list(configs)
+    if len(names) != 2 or any(not isinstance(name, str) or not name for name in names) or names[0] == names[1]:
+        raise RegistryError(
+            "Укажите ровно две разные конфигурации в configs. "
+            "Без configs автоматический выбор возможен, только если загружены ровно две. "
+            "Список имён доступен через list_configurations."
+        )
 
-    out = [f"# Сравнение `{full_name}`", ""]
-    found: dict[str, object] = {}
+    out = [f"# Сравнение `{full_name}`", "",
+           "Сравниваются только имена реквизитов. Типы, квалификаторы и содержимое "
+           "табличных частей не сравниваются.", ""]
+    objects = []
+    rows = []
 
     for name in names:
-        context = registry.resolve(name)
-        obj = context.configuration.config.get(full_name)
+        loaded = snapshot.configurations.get(name)
+        if loaded is None:
+            raise RegistryError(f"Неизвестная конфигурация: {name}. Проверьте list_configurations.")
+        obj = loaded.config.get(full_name)
+        objects.append(obj)
         if obj is None:
             out.append(f"- **{name}** — объекта нет")
+            rows.append(None)
             continue
-        found[name] = obj
+        rows.append([sorted({a.name for a in obj.attributes}), len(obj.tabular_parts), len(obj.movements)])
         out.append(
             f"- **{name}** — реквизитов {len(obj.attributes)}, "
             f"ТЧ {len(obj.tabular_parts)}, движений {len(obj.movements)}"
         )
     out.append("")
 
-    if len(found) < 2:
+    digest = hashlib.sha256(json.dumps(
+        [full_name, names, rows], ensure_ascii=False, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    offset = 0
+    if cursor is not None:
+        try:
+            if not isinstance(cursor, str) or not 1 <= len(cursor) <= 2048:
+                raise ValueError
+            state = json.loads(base64.b64decode(
+                cursor + "=" * (-len(cursor) % 4), altchars=b"-_", validate=True,
+            ))
+            if (not isinstance(state, dict) or set(state) != {"v", "sha256", "offset"}
+                    or type(state["v"]) is not int or state["v"] != 1
+                    or type(state["offset"]) is not int or state["offset"] <= 0):
+                raise ValueError
+        except (ValueError, TypeError, binascii.Error, RecursionError):
+            raise RegistryError("Некорректный курсор сравнения; начните чтение заново.") from None
+        if state["sha256"] != digest:
+            raise RegistryError("Курсор относится к другой паре, объекту или изменившемуся сравнению; начните заново.")
+        offset = state["offset"]
+
+    if any(obj is None for obj in objects):
+        if cursor is not None:
+            raise RegistryError("Курсор недоступен: объект отсутствует в выбранной паре.")
+        out.append("Сравнение имён реквизитов не выполнено: объект должен существовать в обеих конфигурациях.")
         return "\n".join(out) + "\n"
 
-    names = list(found)
-    left, right = found[names[0]], found[names[1]]
+    left, right = objects
     left_attrs = {a.name for a in left.attributes}
     right_attrs = {a.name for a in right.attributes}
 
     only_left = sorted(left_attrs - right_attrs)
     only_right = sorted(right_attrs - left_attrs)
 
-    if only_left:
-        out.append(f"## Реквизиты только в {names[0]} ({len(only_left)})")
-        out.append("")
-        out += [f"- `{n}`" for n in only_left[:40]]
-        out.append("")
-    if only_right:
-        out.append(f"## Реквизиты только в {names[1]} ({len(only_right)})")
-        out.append("")
-        out += [f"- `{n}`" for n in only_right[:40]]
-        out.append("")
-    if not only_left and not only_right:
-        out.append("Состав реквизитов совпадает.")
+    differences = [(0, name) for name in only_left] + [(1, name) for name in only_right]
+    if cursor is not None and offset >= len(differences):
+        raise RegistryError("Курсор содержит недопустимое смещение; начните чтение заново.")
+    if not differences:
+        out.append("Имена реквизитов совпадают в выбранной паре.")
+        return "\n".join(out) + "\n"
+
+    end = min(offset + limit, len(differences))
+    out.extend((f"Различий: {len(differences)}. Показаны {offset + 1}–{end}.", ""))
+    previous_side = None
+    for side, name in differences[offset:end]:
+        if side != previous_side:
+            out.extend((f"## Реквизиты только в {names[side]}", ""))
+            previous_side = side
+        out.append(f"- `{name}`")
+    if end < len(differences):
+        next_cursor = base64.urlsafe_b64encode(json.dumps(
+            {"v": 1, "sha256": digest, "offset": end}, separators=(",", ":"),
+        ).encode("utf-8")).decode("ascii").rstrip("=")
+        arguments = json.dumps({"full_name": full_name, "configs": names,
+                                "cursor": next_cursor, "limit": limit}, ensure_ascii=False)
+        out.extend(("", "Продолжение (аргументы следующего вызова):",
+                    f"`compare_configurations({arguments})`"))
+    else:
+        out.extend(("", "Все различия имён реквизитов прочитаны."))
 
     return "\n".join(out) + "\n"
 

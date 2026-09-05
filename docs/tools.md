@@ -19,7 +19,7 @@ role-операции появляются, только когда хотя б�
 | `get_callers` | `address`, `config`, `extension`, `limit` | подтверждённые места вызова, подписки, задания и события форм |
 | `get_object` | `full_name`, `config`, `detail` | структура объекта, доказанное происхождение, таблицы запроса и кодовые сведения |
 | `get_related` | `full_name`, `config` | один шаг входящих и исходящих связей |
-| `compare_configurations` | `full_name`, `configs` | различия объекта между конфигурациями |
+| `compare_configurations` | `full_name`, `configs`, `cursor`, `limit` | различия имён реквизитов в явной паре; автоматический выбор только при двух загруженных; страницы до полного чтения |
 | `search_syntax` | `query`, `config`, `kind`, `limit` | синтаксис и таблицы запросов платформы |
 | `get_syntax` | `name`, `config`, `detail` | сигнатура, доступность, версия появления, пример и замена |
 | `search_reference` | `query`, `domain`, `kind`, `platform`, `include_explicit`, `include_hidden`, `limit` | короткие карточки общей справки и точные `id` |

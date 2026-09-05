@@ -830,7 +830,8 @@ def build_server(
     @server.tool(
         description=(
             "Сравнить один и тот же объект в двух конфигурациях: чем "
-            "различается состав реквизитов."
+            "различаются имена реквизитов. Типы и содержимое табличных частей "
+            "не сравниваются. Дочитайте все страницы по готовому вызову продолжения."
         )
     )
     @_expected_registry_errors
@@ -838,10 +839,17 @@ def build_server(
         full_name: Annotated[str, Field(
             description="Полное имя объекта, которое ищется в обеих конфигурациях.")],
         configs: Annotated[list[str] | None, Field(
-            description="Имена конфигураций из `list_configurations`. "
-                        "Не заданы — берутся все загруженные.")] = None,
+            description="Ровно два разных имени из `list_configurations`. "
+                        "Не заданы — автоматический выбор только при ровно двух "
+                        "загруженных конфигурациях; иначе выберите пару явно.")] = None,
+        cursor: Annotated[str | None, Field(
+            max_length=2048, description="Непрозрачный курсор из продолжения. "
+            "Привязан к паре, объекту и содержимому сравнения.")] = None,
+        limit: Annotated[int, Field(
+            ge=1, le=100, description="Число различий на странице суммарно для "
+            "обеих сторон, от 1 до 100.")] = 40,
     ) -> str:
-        return tools.compare_configurations(registry, full_name, configs)
+        return tools.compare_configurations(registry, full_name, configs, cursor=cursor, limit=limit)
 
     @server.tool(
         description=(

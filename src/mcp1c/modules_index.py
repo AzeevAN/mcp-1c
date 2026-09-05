@@ -253,7 +253,9 @@ class Оглавление:
 
         снимок = _единый_каталог(корень, каталог)
         модули_каталога = tuple(
-            entry for entry in снимок.entries.values() if entry.locator is not None
+            entry
+            for entry in снимок.entries.values()
+            if entry.locator is not None or entry.opaque
         )
         исходные_модули: set[str] = set()
         скомпилированные: set[str] = set()
@@ -261,8 +263,11 @@ class Оглавление:
         for обработано, entry in enumerate(модули_каталога, 1):
             адрес = entry.address
             locator = entry.locator
-            assert locator is not None
-            if locator.kind == "compiled":
+            # Непрозрачный source-B descriptor доказывает существование
+            # модуля, хотя физического тела и locator у него нет. Он должен
+            # остаться в оглавлении как compiled: тогда точный запрос честно
+            # отвечает «исходный текст недоступен», а не «модуль не найден».
+            if entry.compiled:
                 if адрес not in исходные_модули:
                     скомпилированные.add(адрес)
             else:
@@ -274,12 +279,13 @@ class Оглавление:
                 модули.append(адрес)
                 индекс_модуля[адрес] = индекс
 
-            if locator.kind == "compiled":
+            if entry.compiled:
                 _сообщить_прогресс(
                     прогресс, обработано, len(модули_каталога)
                 )
                 continue
 
+            assert locator is not None
             for процедура in разобрать(read_bsl(корень, адрес, locator)):
                 # Интернируем на записи, не на чтении: одно и то же имя
                 # («ПриСозданииНаСервере» — 3 003 раза на живом корпусе)
@@ -2158,7 +2164,7 @@ def поднять_индексы(
         ожидаемые_модули = [
             entry.address
             for entry in каталог_локаторов.entries.values()
-            if entry.locator is not None
+            if entry.locator is not None or entry.opaque
         ]
         ожидаемые_формы = [
             entry.address

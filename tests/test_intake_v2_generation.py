@@ -171,6 +171,27 @@ def test_общий_модуль_без_тела_виден_как_opaque_но_�
     assert coverage.compiled_without_source == 1
     assert coverage.problems_total == 0
     assert not coverage.has_limitations
+    sources = tools.list_configurations(registry)
+    object_card = tools.get_object(
+        registry,
+        "ОбщийМодуль.Sealed",
+        config="DemoConfiguration",
+        detail="full",
+    )
+    module = tools.get_procedure(
+        registry,
+        "ОбщийМодуль.Sealed",
+        config="DemoConfiguration",
+    )
+    state = tools.sources_snapshot(registry).code[0].state
+    assert f"модулей {coverage.modules_total}" in state
+    assert state in sources
+    assert "недоступным исходным текстом 1" in sources
+    assert "ОбщийМодуль.Sealed" in object_card
+    assert "исходный текст недоступен" in object_card
+    assert "Модулей нет" not in object_card
+    assert "исходный текст недоступен" in module
+    assert "в загруженном коде не найден" not in module
     answer = tools.search_procedures(
         registry,
         "НесуществующаяПроцедура",

@@ -581,6 +581,39 @@ def test_native_compiled_модуль_поднимается_из_warm_кэша(
     assert restored.каталог.entries["ОбщийМодуль.Sealed"].compiled is True
 
 
+def test_native_opaque_модуль_поднимается_из_warm_кэша(
+    tmp_path,
+    monkeypatch,
+):
+    _collection_value, generation = _materialized(
+        tmp_path,
+        "opaque-cache",
+        opaque_common_module=True,
+    )
+    registry = Registry(tmp_path / "data")
+    registry.publish_generation(
+        registry.stage_generation(generation.manifest, generation.payloads)
+    )
+    published = registry.modules["DemoConfiguration:modules"]
+    assert published.оглавление.скомпилирован("ОбщийМодуль.Sealed") is True
+
+    restarted = Registry(registry.data_dir)
+
+    def reject_cold_rebuild(*_args, **_kwargs):
+        pytest.fail("opaque member native generation обязан подняться из кэша")
+
+    monkeypatch.setattr(
+        restarted,
+        "_построить_индекс_кода",
+        reject_cold_rebuild,
+    )
+
+    assert restarted.restore() == []
+    restored = restarted.modules["DemoConfiguration:modules"]
+    assert restored.оглавление.скомпилирован("ОбщийМодуль.Sealed") is True
+    assert restored.каталог.entries["ОбщийМодуль.Sealed"].opaque is True
+
+
 def test_schema_v1_после_native_заменяет_только_base_и_переживает_restart(
     tmp_path,
 ):

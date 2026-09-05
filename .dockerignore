@@ -9,6 +9,9 @@ src/*
 !src/mcp1c/
 src/mcp1c/*
 !src/mcp1c/*.py
+!src/mcp1c/readers/
+src/mcp1c/readers/*
+!src/mcp1c/readers/*.py
 !src/mcp1c/dashboard_dist/
 src/mcp1c/dashboard_dist/*
 !src/mcp1c/dashboard_dist/index.html

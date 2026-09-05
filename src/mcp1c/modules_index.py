@@ -926,6 +926,7 @@ _КАТЕГОРИИ_ПРОБЛЕМ_ФОРМ = frozenset(
         "known_marker_semantics_incomplete",
         "known_marker_semantics_deferred",
         "semantic_budget_exceeded",
+        "invalid_count",
         "trailing_data",
         "truncated",
         "unknown_marker",

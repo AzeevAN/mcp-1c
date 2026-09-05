@@ -75,13 +75,23 @@ class OrdinaryFormReader:
         if (
             not isinstance(table, list)
             or not table
-            or not str(table[0]).isdigit()
         ):
             raise ListStreamError(
                 "unsupported_profile",
                 "таблица реквизитов form не содержит счётчик",
             )
-        declared = int(str(table[0]))
+        count = table[0]
+        # Счётчик ограничен бюджетом лексем; длинное число или Unicode-цифры
+        # должны дать локальную ошибку формы, а не ValueError всей сборки.
+        if (
+            not isinstance(count, str)
+            or not 1 <= len(count) <= 6
+            or not count.isascii()
+            or not count.isdecimal()
+            or (len(count) > 1 and count.startswith("0"))
+        ):
+            raise ListStreamError("invalid_count", "счётчик реквизитов form не является допустимым целым")
+        declared = int(count)
         rows = table[1:]
         if declared != len(rows):
             raise ListStreamError(

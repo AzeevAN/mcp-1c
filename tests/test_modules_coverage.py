@@ -55,7 +55,6 @@ def _corpus(root: Path, variant: str) -> None:
 @pytest.mark.parametrize(
     ("variant", "field", "category"),
     [
-        ("unknown_marker", "unknown_markers", "unknown_marker"),
         ("broken_container", "broken_containers", "broken_container"),
         ("unsupported_name", "unsupported_addresses", "unknown_address"),
         ("budget_exceeded", "budget_exceeded", "budget_exceeded"),
@@ -96,6 +95,70 @@ def test_ограничения_имеют_точный_агрегат_в_обо
         )
 
 
+@pytest.mark.parametrize("extension", [None, "Доп"])
+def test_неизвестный_маркер_виден_как_отложенная_семантика_без_ошибки(
+    tmp_path, реестр_из_кода, extension
+):
+    root = tmp_path / "code"
+    root.mkdir()
+    _corpus(root, "unknown_marker")
+    registry = реестр_из_кода(root, extension=extension)
+
+    snapshot = tools.sources_snapshot(registry)
+    corpus = "Основная конфигурация" if extension is None else "Расширение Доп"
+    row = next(item for item in snapshot.code if item.corpus == corpus)
+    coverage = row.coverage
+
+    assert coverage is not None
+    assert coverage.unknown_markers == 1
+    assert coverage.form_structures_partial == 1
+    assert coverage.form_modules_empty == 1
+    assert not coverage.has_limitations
+    assert row.state.startswith("готов —")
+    assert coverage.problems_total == 0
+    assert "семантика отложена 1" in "\n".join(
+        tools.code_coverage_lines(coverage)
+    )
+
+
+def test_отсутствующий_модуль_формы_виден_как_норма(tmp_path, реестр_из_кода):
+    root = tmp_path / "code"
+    root.mkdir()
+    _write(
+        root,
+        "CommonForm.БезМодуля.Form",
+        v8_container_bytes([("form", b"{99}")]),
+    )
+    registry = реестр_из_кода(root)
+
+    coverage = tools.sources_snapshot(registry).code[0].coverage
+
+    assert coverage is not None
+    assert coverage.modules_total == 0
+    assert coverage.form_modules_missing == 1
+    assert coverage.form_structures_partial == 1
+    assert coverage.problems_total == 0
+    assert not coverage.has_limitations
+
+
+def test_пустой_модуль_формы_входит_в_общий_счётчик_пустых(
+    tmp_path, реестр_из_кода
+):
+    root = tmp_path / "code"
+    root.mkdir()
+    _write(root, "CommonForm.Пустая.Form", _container(form=b"{99}"))
+    registry = реестр_из_кода(root)
+
+    coverage = tools.sources_snapshot(registry).code[0].coverage
+
+    assert coverage is not None
+    assert coverage.modules_total == 1
+    assert coverage.modules_empty == 1
+    assert coverage.modules_source_available == 0
+    assert coverage.form_modules_empty == 1
+    assert not coverage.has_limitations
+
+
 def test_счётчики_структуры_и_модуля_формы_образуют_точные_разбиения(
     tmp_path, реестр_из_кода
 ):
@@ -131,7 +194,7 @@ def test_публичный_список_ограничен_двадцатью_�
         _write(
             root,
             f"CommonForm.Форма{index:02d}.Form",
-            _container(form=b"{99}"),
+            _container(form=b"{,19}"),
         )
     registry = реестр_из_кода(root)
 
@@ -154,7 +217,7 @@ def test_get_object_показывает_форму_и_её_ограничени
     _write(
         root,
         "Catalog.Контрагенты.Form.Ограниченная.Form",
-        _container(form=b"{99}"),
+        _container(form=b"{,19}"),
     )
     registry = реестр_из_кода(root)
 
@@ -165,8 +228,7 @@ def test_get_object_показывает_форму_и_её_ограничени
     warning = answer.index("Покрытие форм объекта неполно")
     form = answer.index("Справочник.Контрагенты.Форма.Ограниченная")
     assert warning < form
-    assert "unknown_marker" in answer
-    assert "маркер form не поддержан" in answer
+    assert "invalid_syntax" in answer
     assert "Форм нет" not in answer
 
 
@@ -199,7 +261,7 @@ def test_инструменты_кода_ставят_предупреждени
     _write(
         root,
         "CommonForm.Ограниченная.Form",
-        _container(module=body.encode(), form=b"{99}"),
+        _container(module=body.encode(), form=b"{,19}"),
     )
     registry = реестр_из_кода(root, extension=extension)
     kwargs = {"config": "Пример", "extension": extension}
@@ -218,7 +280,7 @@ def test_инструменты_кода_ставят_предупреждени
         assert answer.index("Покрытие кода неполно") < answer.index(
             "ОбщаяФорма.Ограниченная"
         )
-        assert "неизвестных маркеров: 1" in answer
+        assert "invalid_syntax=1" in answer
 
 
 def test_get_related_предупреждает_о_неполном_корпусе_расширения(
@@ -226,7 +288,7 @@ def test_get_related_предупреждает_о_неполном_корпус
 ):
     root = tmp_path / "code"
     root.mkdir()
-    _write(root, "CommonForm.Ограниченная.Form", _container(form=b"{99}"))
+    _write(root, "CommonForm.Ограниченная.Form", _container(form=b"{,19}"))
     registry = реестр_из_кода(root, extension="Доп")
 
     answer = tools.get_related(
@@ -234,7 +296,7 @@ def test_get_related_предупреждает_о_неполном_корпус
     )
 
     assert "Покрытие кода расширения `Доп` неполно" in answer
-    assert "неизвестных маркеров: 1" in answer
+    assert "invalid_syntax=1" in answer
 
 
 def test_инструменты_кода_называют_точную_категорию_битой_структуры(
@@ -266,7 +328,7 @@ def test_инструменты_кода_называют_точную_кате�
 
     for answer in answers:
         assert "invalid_syntax=1" in answer
-        assert "структуры форм: полностью 0, частично 0, не прочитано 1" in answer
+        assert "структуры форм: полностью 0, семантика отложена 0, не прочитано 1" in answer
         assert answer.index("invalid_syntax=1") < answer.index(
             "ОбщаяФорма.Ограниченная"
         )
@@ -304,7 +366,7 @@ def test_get_related_называет_точную_категорию_битой
 
     assert "Покрытие кода расширения `Доп` неполно" in answer
     assert "invalid_syntax=1" in answer
-    assert "структуры форм: полностью 0, частично 0, не прочитано 1" in answer
+    assert "структуры форм: полностью 0, семантика отложена 0, не прочитано 1" in answer
 
 
 @pytest.mark.parametrize("action", ["reparse", "remove"])
@@ -356,7 +418,7 @@ def test_категория_ограничения_пишется_в_журна�
     root = tmp_path / "code"
     root.mkdir()
     for name in ("Первая", "Вторая"):
-        _write(root, f"CommonForm.{name}.Form", _container(form=b"{99}"))
+        _write(root, f"CommonForm.{name}.Form", _container(form=b"{,19}"))
     caplog.set_level(logging.WARNING, logger="mcp1c.registry")
 
     реестр_из_кода(root)
@@ -364,7 +426,7 @@ def test_категория_ограничения_пишется_в_журна�
     rows = [
         record.getMessage()
         for record in caplog.records
-        if "категория=unknown_marker" in record.getMessage()
+        if "категория=invalid_syntax" in record.getMessage()
     ]
     assert len(rows) == 1
     assert "количество=2" in rows[0]

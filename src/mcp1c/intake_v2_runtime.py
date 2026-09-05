@@ -39,10 +39,16 @@ from .module_catalog import (
     CandidateOutcome,
     CatalogCoverage,
     CatalogEntry,
+    CatalogProblem,
     FormSource,
     ModuleCatalog,
 )
-from .module_content import LocatorIdentity, ModuleLocator
+from .module_content import (
+    ContentReadError,
+    LocatorIdentity,
+    ModuleLocator,
+    read_bsl,
+)
 from .role_access import LoadedRoleAccess, load_role_access
 from .standard_attributes import (
     StandardAttributeError,
@@ -702,13 +708,20 @@ def _ready_payload(
 
 def _code_members(
     payload: LayerPayload | None,
-) -> dict[str, tuple[LayerMember, bool]]:
+) -> dict[str, tuple[LayerMember | None, str]]:
     if payload is None:
         return {}
     modules = payload.semantic.get("modules")
     if not isinstance(modules, list):
         raise GenerationRuntimeError("code.modules должен быть массивом")
     members = {member.key: member for member in payload.members}
+    opaque_raw = payload.semantic.get("opaque_modules", [])
+    if not isinstance(opaque_raw, list) or not all(
+        isinstance(value, str) and value for value in opaque_raw
+    ):
+        raise GenerationRuntimeError("code.opaque_modules должен быть массивом строк")
+    if len(set(opaque_raw)) != len(opaque_raw):
+        raise GenerationRuntimeError("code.opaque_modules содержит дубликаты")
     declared: dict[str, tuple[int, str, bool]] = {}
     for index, value in enumerate(modules):
         raw = _mapping(value, f"code.modules[{index}]")
@@ -732,7 +745,9 @@ def _code_members(
         declared[address] = (size, digest, compiled)
     if set(declared) != set(members):
         raise GenerationRuntimeError("code semantic и members расходятся")
-    result: dict[str, tuple[LayerMember, bool]] = {}
+    if set(opaque_raw) & set(declared):
+        raise GenerationRuntimeError("code одновременно содержит тело и opaque-модуль")
+    result: dict[str, tuple[LayerMember | None, str]] = {}
     for address, member in members.items():
         size, digest, compiled = declared[address]
         if (size, digest) != (member.size, member.sha256):
@@ -740,7 +755,9 @@ def _code_members(
         expected_suffix = ".Module" if compiled else ".bsl"
         if not member.relative_path.endswith(expected_suffix):
             raise GenerationRuntimeError("code member не совпадает с compiled")
-        result[address] = (member, compiled)
+        result[address] = (member, "compiled" if compiled else "source")
+    for address in opaque_raw:
+        result[address] = (None, "opaque")
     return result
 
 
@@ -814,6 +831,7 @@ def _code_identity(
 
 
 def _catalog(
+    root: Path,
     code: LayerPayload | None,
     forms: LayerPayload | None,
     identity: LocatorIdentity,
@@ -822,6 +840,25 @@ def _catalog(
     form_members = _form_members(forms)
     if code is None and forms is None:
         return None
+    resolved_code: dict[str, tuple[LayerMember | None, str]] = {}
+    for address, (member, state) in code_members.items():
+        if state != "source":
+            resolved_code[address] = member, state
+            continue
+        assert member is not None
+        try:
+            text = read_bsl(
+                root,
+                address,
+                ModuleLocator.file(member.relative_path),
+            )
+        except ContentReadError:
+            resolved_code[address] = member, "unreadable"
+        else:
+            resolved_code[address] = (
+                member,
+                "empty" if not text.strip() else "source",
+            )
     folded: dict[str, str] = {}
     for address in (*code_members, *form_members):
         previous = folded.setdefault(address.casefold(), address)
@@ -832,9 +869,10 @@ def _catalog(
         set(code_members) | set(form_members),
         key=lambda value: (value.casefold(), value),
     ):
-        code_member = code_members.get(address)
+        code_member = resolved_code.get(address)
         member = code_member[0] if code_member is not None else None
-        compiled = code_member[1] if code_member is not None else False
+        code_state = code_member[1] if code_member is not None else "missing"
+        compiled = code_state in {"compiled", "opaque"}
         entries[address] = CatalogEntry(
             address=address,
             # Физический вид тела уже несут locator.kind и compiled. Здесь
@@ -847,25 +885,52 @@ def _catalog(
                     if compiled
                     else ModuleLocator.file(member.relative_path)
                 )
-                if member is not None
+                if member is not None and code_state != "unreadable"
                 else None
             ),
             is_form=address in form_members,
             compiled=compiled,
             form_sources=form_members.get(address, ()),
-            diagnostics=(),
+            diagnostics=(
+                ("unreadable_body",)
+                if code_state == "unreadable"
+                else ()
+            ),
             conflict=False,
             address_collision=False,
             sort_key=(address.casefold(), address),
+            opaque=code_state == "opaque",
         )
     outcomes: list[CandidateOutcome] = []
     ordinal = 0
     compiled_total = 0
-    for address in sorted(code_members, key=lambda value: (value.casefold(), value)):
+    empty_total = 0
+    unreadable_total = 0
+    problems: list[CatalogProblem] = []
+    for address in sorted(resolved_code, key=lambda value: (value.casefold(), value)):
         ordinal += 1
-        category = "compiled" if code_members[address][1] else "indexed"
+        _member, code_state = resolved_code[address]
+        if code_state in {"compiled", "opaque"}:
+            category = "compiled"
+        elif code_state == "unreadable":
+            category = "unreadable_body"
+        elif code_state == "empty":
+            category = "empty"
+        else:
+            category = "indexed"
         compiled_total += category == "compiled"
+        empty_total += category == "empty"
+        unreadable_total += category == "unreadable_body"
         outcomes.append(CandidateOutcome(ordinal, category, address))
+        if category == "unreadable_body":
+            problems.append(
+                CatalogProblem(
+                    "unreadable_body",
+                    address,
+                    ordinal,
+                    "тело модуля не прочитано",
+                )
+            )
     for address, sources in sorted(
         form_members.items(), key=lambda item: (item[0].casefold(), item[0])
     ):
@@ -876,11 +941,13 @@ def _catalog(
         identity=identity,
         entries=entries,
         outcomes=tuple(outcomes),
-        problems=(),
+        problems=tuple(problems),
         coverage=CatalogCoverage(
             total_candidates=ordinal,
-            indexed=ordinal - compiled_total,
+            indexed=ordinal - compiled_total - empty_total - unreadable_total,
+            empty=empty_total,
             compiled=compiled_total,
+            unreadable_body=unreadable_total,
         ),
     )
 
@@ -976,6 +1043,7 @@ def build_generation_runtime(
     )
     code_sha256, locator_generation = _code_identity(layers)
     catalog = _catalog(
+        root,
         code,
         forms,
         LocatorIdentity(source_id, code_sha256, locator_generation),

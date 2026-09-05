@@ -91,8 +91,11 @@ function CoverageTables({ coverage }: { coverage: Coverage }) {
         title="Модули и процедуры"
         rows={[
           { label: "Исходник доступен", value: coverage.modules.source_available, total: coverage.modules.total },
+          { label: "Модуль пуст", value: coverage.modules.empty, total: coverage.modules.total },
           { label: "Модуль прочитан частично", value: coverage.modules.partial, total: coverage.modules.total },
           { label: "Модуль не прочитан", value: coverage.modules.unreadable, total: coverage.modules.total },
+          { label: "Конфликт тел", value: coverage.modules.conflict, total: coverage.modules.total },
+          { label: "Исходный текст недоступен", value: coverage.modules.compiled_without_source, total: coverage.modules.total },
           { label: "Процедуры разобраны", value: coverage.procedures.full, total: coverage.procedures.total },
           { label: "Процедуры частично", value: coverage.procedures.partial, total: coverage.procedures.total },
         ]}
@@ -101,7 +104,7 @@ function CoverageTables({ coverage }: { coverage: Coverage }) {
         title="Структуры форм"
         rows={[
           { label: "Полностью разобраны", value: coverage.form_structures.full, total: coverage.form_structures.total },
-          { label: "Частично разобраны", value: coverage.form_structures.partial, total: coverage.form_structures.total },
+          { label: "Семантика отложена", value: coverage.form_structures.partial, total: coverage.form_structures.total },
           { label: "Недоступны", value: coverage.form_structures.unreadable, total: coverage.form_structures.total },
         ]}
       />

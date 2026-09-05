@@ -916,10 +916,14 @@ _КАТЕГОРИИ_ПРОБЛЕМ_ФОРМ = frozenset(
         "invalid_syntax",
         "invalid_token",
         "invalid_utf8",
+        "event_semantics_deferred",
         "known_marker_semantics_incomplete",
+        "known_marker_semantics_deferred",
+        "semantic_budget_exceeded",
         "trailing_data",
         "truncated",
         "unknown_marker",
+        "unsupported_profile",
     }
 )
 
@@ -1112,10 +1116,10 @@ class Формы:
     ) -> "Формы":
         """Собрать все доказанные формы из единого каталога локаторов.
 
-        Реквизиты, элементы и события берутся только из ``Form.xml``;
-        подписанные свойства — из XML-дескриптора. Контейнерная запись
-        ``form`` проходит ограниченный синтаксический ридер, но её
-        недоказанные позиционные поля в эти массивы не попадают.
+        Реквизиты, элементы и события берутся из ``Form.xml``; подписанные
+        свойства — из XML-дескриптора. Для доказанных профилей контейнерной
+        записи ``form`` в те же массивы попадают реквизиты и элементы, а
+        недоказанные привязки событий остаются пустыми и явно отложенными.
 
         Порядок файлов детерминированный (`sorted`), как у
         `Оглавление.построить` и `Вызовы.построить` — ради воспроизводимости
@@ -1290,7 +1294,10 @@ class Формы:
                     )
                 except FormReadError as error:
                     битая = True
-                    if error.category == "budget_exceeded":
+                    if error.category in {
+                        "budget_exceeded",
+                        "semantic_budget_exceeded",
+                    }:
                         превышен_бюджет = True
                     добавить_проблему(
                         ПроблемаФормы(
@@ -1317,7 +1324,13 @@ class Формы:
                     )
                 else:
                     структура_прочитана = True
-                    частичная = True
+                    частичная = result.status != "ready"
+                    for имя_реквизита in result.semantic_fields.get(
+                        "attributes", ()
+                    ):
+                        _реквизиты.append(интерн(имя_реквизита))
+                    for имя_элемента in result.semantic_fields.get("elements", ()):
+                        _элементы.append(интерн(имя_элемента))
                     if маркер is None:
                         маркер = result.marker
                     elif маркер != result.marker:
@@ -1641,10 +1654,22 @@ class Формы:
                 {
                     p.адрес
                     for p in object_rows
-                    if p.категория == "known_marker_semantics_incomplete"
+                    if p.категория
+                    in {
+                        "event_semantics_deferred",
+                        "known_marker_semantics_deferred",
+                        "known_marker_semantics_incomplete",
+                    }
                 }
             ),
-            len({p.адрес for p in object_rows if p.категория == "budget_exceeded"}),
+            len(
+                {
+                    p.адрес
+                    for p in object_rows
+                    if p.категория
+                    in {"budget_exceeded", "semantic_budget_exceeded"}
+                }
+            ),
         )
         if счётчики[4:] != special:
             raise ValueError("счётчики причин форм расходятся с деталями")

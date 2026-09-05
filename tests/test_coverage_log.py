@@ -251,7 +251,7 @@ def test_warm_restart_пересобирает_битый_журнал_с_пол
     tmp_path, архив_кода
 ):
     registry, root = _registry(tmp_path)
-    container = v8_container_bytes([("module", b""), ("form", b"{99}")])
+    container = v8_container_bytes([("module", b""), ("form", b"{,19}")])
     for index in range(25):
         path = root / f"CommonForm.Форма{index:02d}.Form"
         path.write_bytes(container)
@@ -268,7 +268,7 @@ def test_warm_restart_пересобирает_битый_журнал_с_пол
     assert payload is not None
     assert payload["coverage"]["limitations"]["problem_rows_total"] == 25
     assert len(payload["problems"]) == 25
-    assert {row["marker"] for row in payload["problems"]} == {99}
+    assert {row["marker"] for row in payload["problems"]} == {None}
     assert payload["problems"][0]["address"] == "ОбщаяФорма.Форма00"
     assert payload["problems"][-1]["address"] == "ОбщаяФорма.Форма24"
 

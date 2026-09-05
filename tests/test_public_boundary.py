@@ -504,7 +504,8 @@ def test_markdown_uri_схемы_не_считаются_путями_репоз
 def test_источник_b_описывает_доступную_структуру_форм():
     text = (ROOT / "docs/data-sources.md").read_text(encoding="utf-8")
 
-    assert "тексты модулей и доступная структура `Form.xml`" in text
+    assert "доступные тексты модулей и структура форм" in text
+    assert "`Form.xml`/поддержанных `Form.bin`" in text
     assert "элементы и события форм" in text
     assert "Команды, макеты и недостающие в schema v1 данные форм" in text
 

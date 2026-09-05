@@ -50,7 +50,7 @@ from .v8container import V8Container, V8ContainerError, V8ResourceLimitError
 
 
 GENERATION_FORMAT_VERSION = 1
-GENERATION_PARSER_VERSION = 4
+GENERATION_PARSER_VERSION = 5
 _READ_CHUNK = 1 << 20
 _MAX_FORM_CONTAINER_SIZE = 64 << 20
 
@@ -224,6 +224,7 @@ def _module_bodies(
 def _code_layer(
     collection: CollectionResult,
     temporary: Path,
+    base: Configuration,
 ) -> _LayerBuild:
     bodies = _module_bodies(collection, temporary)
     members: list[LayerMember] = []
@@ -253,10 +254,24 @@ def _code_layer(
                 "compiled": body.compiled,
             }
         )
+    available = {body.address.casefold() for body in bodies}
+    opaque_modules = sorted(
+        (
+            obj.full_name
+            for obj in base.objects.values()
+            if obj.kind == "ОбщийМодуль"
+            and obj.full_name.casefold() not in available
+        ),
+        key=lambda value: (value.casefold(), value),
+    )
     return _LayerBuild(
-        LayerPayload(LayerKind.CODE, {"modules": modules}, tuple(members)),
+        LayerPayload(
+            LayerKind.CODE,
+            {"modules": modules, "opaque_modules": opaque_modules},
+            tuple(members),
+        ),
         tuple(sources),
-        len(modules),
+        len(modules) + len(opaque_modules),
     )
 
 
@@ -446,7 +461,7 @@ def materialize_generation(
                 (),
                 len(conversion.extended),
             ),
-            LayerKind.CODE: _code_layer(collection, temporary),
+            LayerKind.CODE: _code_layer(collection, temporary, conversion.base),
             LayerKind.FORMS: _forms_layer(collection, conversion.extended),
             LayerKind.ROLES: _roles_layer(collection),
         }

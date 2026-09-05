@@ -100,6 +100,7 @@ def _configuration(
     common_forms: bool = False,
     bots: bool = False,
     numbering_rules: bool = False,
+    opaque_common_module: bool = False,
 ) -> bytes:
     extra = "<FutureFlag>Enabled</FutureFlag>" if unknown else ""
     properties = (
@@ -124,6 +125,8 @@ def _configuration(
         )
     if numbering_rules:
         children += "<DocumentNumerator>Shared</DocumentNumerator>"
+    if opaque_common_module:
+        children += "<CommonModule>Sealed</CommonModule>"
     if bindings:
         children += (
             "<ExchangePlan>Nodes</ExchangePlan>"
@@ -384,6 +387,12 @@ def _common_module() -> bytes:
     return _document("CommonModule", properties)
 
 
+def _named_common_module(name: str) -> bytes:
+    return _common_module().replace(
+        b"<Name>Handlers</Name>", f"<Name>{name}</Name>".encode()
+    )
+
+
 def _event_subscription(name: str, handler: str) -> bytes:
     properties = (
         f"<Name>{name}</Name><Comment>Синтетическая подписка</Comment>"
@@ -507,6 +516,9 @@ def _collection(
     schedule: bytes = b"<Schedule><Period>60</Period></Schedule>",
     flat_mandatory: bool = False,
     compiled_module: bool = False,
+    opaque_common_module: bool = False,
+    object_module: bytes = b"procedure Demo() endprocedure",
+    item_form_xml: bytes = b"<form/>",
     numbering_rules: bool = False,
     include_numbering_descriptor: bool = True,
 ):
@@ -518,11 +530,12 @@ def _collection(
             common_forms=common_forms,
             bots=bots,
             numbering_rules=numbering_rules,
+            opaque_common_module=opaque_common_module,
         ),
         "Catalogs/Items.xml": _catalog(unknown=unknown),
-        "Catalogs/Items/Ext/ObjectModule.bsl": b"procedure Demo() endprocedure",
+        "Catalogs/Items/Ext/ObjectModule.bsl": object_module,
         "Catalogs/Items/Forms/Card.xml": b"<form-descriptor/>",
-        "Catalogs/Items/Forms/Card/Ext/Form.xml": b"<form/>",
+        "Catalogs/Items/Forms/Card/Ext/Form.xml": item_form_xml,
         "CommonAttributes/Tenant.xml": _common_attribute(unresolved=unresolved),
         "SessionParameters/Tenant.xml": _session_parameter(),
     }
@@ -592,6 +605,8 @@ def _collection(
             payloads[
                 "ExchangePlans/Nodes/Ext/Content.xml"
             ] = _exchange_plan_content(plan_auto_record)
+    if opaque_common_module:
+        payloads["CommonModules/Sealed.xml"] = _named_common_module("Sealed")
     if common_forms:
         payloads.update(
             {
@@ -1266,7 +1281,7 @@ def test_common_form_явно_различает_partial_unreadable_descriptor_o
     descriptor_only = result.extended.get("ОбщаяФорма.DescriptorOnly")
     flat = result.extended.get("ОбщаяФорма.Flat")
 
-    assert container.payload.structure_state is FormStructureState.PARTIAL
+    assert container.payload.structure_state is FormStructureState.DEFERRED
     assert container.payload.module_state is FormModuleState.READY
     assert container.payload.container_marker == 19
     assert container.payload.attributes == ()
@@ -1277,14 +1292,14 @@ def test_common_form_явно_различает_partial_unreadable_descriptor_o
     assert unreadable.payload.module_state is FormModuleState.UNREADABLE
     assert descriptor_only.payload.structure_state is FormStructureState.DESCRIPTOR_ONLY
     assert descriptor_only.payload.module_state is FormModuleState.MISSING
-    assert flat.payload.structure_state is FormStructureState.PARTIAL
+    assert flat.payload.structure_state is FormStructureState.DEFERRED
     assert flat.payload.module_state is FormModuleState.READY
     assert flat.payload.container_marker == 19
     assert {
         item.signature
         for item in result.diagnostics
         if item.code == "form_coverage"
-    } == {"descriptor_only", "module_missing", "partial", "unreadable"}
+    } == {"deferred", "descriptor_only", "unreadable"}
 
 
 def test_common_form_не_скрывает_конфликт_модулей(tmp_path):

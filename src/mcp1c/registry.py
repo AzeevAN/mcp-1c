@@ -2611,10 +2611,29 @@ class Registry:
         self, source: Source, индексы: modules_index.Индексы
     ) -> None:
         """По одной обезличенной строке на категорию нового поколения."""
-        counts = Counter(dict(индексы.каталог.problem_counts))
-        counts.update(dict(индексы.формы.problem_counts))
-        if индексы.каталог.coverage.compiled:
-            counts["compiled_without_source"] = индексы.каталог.coverage.compiled
+        counts = Counter(
+            {
+                category: count
+                for category, count in индексы.каталог.problem_counts
+                if category != "missing_body"
+            }
+        )
+        counts.update(
+            {
+                category: count
+                for category, count in индексы.формы.problem_counts
+                if category
+                not in {
+                    "descriptor_only",
+                    "event_semantics_deferred",
+                    "form_structure_missing",
+                    "known_marker_semantics_deferred",
+                    "known_marker_semantics_incomplete",
+                    "unknown_marker",
+                    "unsupported_profile",
+                }
+            }
+        )
 
         for category, count in sorted(counts.items()):
             if count <= 0:

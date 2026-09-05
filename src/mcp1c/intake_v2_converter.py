@@ -18,6 +18,7 @@ from typing import Iterable, Mapping
 
 from .bsl_lex import нормализовать, разобрать
 from .form_reader import FormReadError, read_form
+from .readers.modules import read_module_body
 from .form_structure import (
     FormStructureError,
     parse_form_descriptor,
@@ -294,12 +295,14 @@ class ScheduledJobPayload:
 class FormStructureState(str, Enum):
     READY = "ready"
     PARTIAL = "partial"
+    DEFERRED = "deferred"
     UNREADABLE = "unreadable"
     DESCRIPTOR_ONLY = "descriptor_only"
 
 
 class FormModuleState(str, Enum):
     READY = "ready"
+    EMPTY = "empty"
     MISSING = "module_missing"
     UNREADABLE = "unreadable"
 
@@ -1952,6 +1955,7 @@ class _ModuleSymbols:
     procedures: Mapping[str, str]
     ambiguous: frozenset[str] = frozenset()
     readable: bool = True
+    empty: bool = False
     content_sha256: str = ""
 
     def __post_init__(self) -> None:
@@ -1966,10 +1970,10 @@ def _module_symbols_from_payload(
     address: str,
     payload: bytes,
 ) -> _ModuleSymbols:
-    try:
-        text = нормализовать(payload.decode("utf-8-sig"))
-    except UnicodeDecodeError:
+    body = read_module_body(payload)
+    if body.state == "unreadable" or body.text is None:
         return _ModuleSymbols(address, {}, readable=False)
+    text = нормализовать(body.text)
     procedures: dict[str, str] = {}
     ambiguous: set[str] = set()
     for procedure in разобрать(text):
@@ -1982,6 +1986,7 @@ def _module_symbols_from_payload(
         address,
         procedures,
         frozenset(ambiguous),
+        empty=body.state == "empty",
         content_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
     )
 
@@ -2325,8 +2330,14 @@ def _common_form_object(
             structure_state = FormStructureState.UNREADABLE
             container_unreadable = True
         else:
-            structure_state = FormStructureState.PARTIAL
+            structure_state = (
+                FormStructureState.DEFERRED
+                if result.status == "deferred"
+                else FormStructureState.PARTIAL
+            )
             marker = result.marker
+            attributes = tuple(result.semantic_fields.get("attributes", ()))
+            elements = tuple(result.semantic_fields.get("elements", ()))
     else:
         structure_state = FormStructureState.DESCRIPTOR_ONLY
 
@@ -2351,6 +2362,8 @@ def _common_form_object(
         if module is None and container_unreadable
         else FormModuleState.MISSING
         if module is None
+        else FormModuleState.EMPTY
+        if module.readable and module.empty
         else FormModuleState.READY
         if module.readable
         else FormModuleState.UNREADABLE
@@ -2366,7 +2379,7 @@ def _common_form_object(
                 else "info"
             ),
         )
-    if module_state is not FormModuleState.READY:
+    if module_state is FormModuleState.UNREADABLE:
         diagnostics.add(
             "form_coverage",
             module_state.value,

@@ -8,6 +8,7 @@ import shutil
 
 import pytest
 
+from mcp1c import tools
 from mcp1c.intake_v2 import LayerKind, LayerState
 from mcp1c.intake_v2_collector import collect_source_b
 from mcp1c.intake_v2_converter import convert_collection
@@ -138,6 +139,91 @@ def test_materializer_сохраняет_compiled_модуль_не_выдава
     entry = loaded.каталог.entries["ОбщийМодуль.Sealed"]
     assert entry.compiled is True
     assert entry.locator is not None and entry.locator.kind == "compiled"
+
+
+def test_общий_модуль_без_тела_виден_как_opaque_но_не_как_ошибка(tmp_path):
+    load_layer_payload = _symbol("load_layer_payload")
+    collection = _collection(
+        tmp_path / "source-opaque",
+        opaque_common_module=True,
+        item_form_xml=_common_form_xml(),
+    )
+    materialized = _materialized(tmp_path, "opaque", collection)
+    payload = load_layer_payload(
+        materialized.payloads[LayerKind.CODE].manifest_path
+    )
+
+    assert payload.semantic["opaque_modules"] == ["ОбщийМодуль.Sealed"]
+    assert all(member.key != "ОбщийМодуль.Sealed" for member in payload.members)
+
+    registry = Registry(tmp_path / "data-opaque")
+    registry.publish_generation(
+        registry.stage_generation(materialized.manifest, materialized.payloads)
+    )
+    loaded = registry.modules["DemoConfiguration:modules"]
+    entry = loaded.каталог.entries["ОбщийМодуль.Sealed"]
+    coverage = tools.sources_snapshot(registry).code[0].coverage
+
+    assert entry.opaque is True
+    assert entry.compiled is True
+    assert entry.locator is None
+    assert coverage is not None
+    assert coverage.compiled_without_source == 1
+    assert coverage.problems_total == 0
+    assert not coverage.has_limitations
+    answer = tools.search_procedures(
+        registry,
+        "НесуществующаяПроцедура",
+        config="DemoConfiguration",
+    )
+    assert "исходный текст недоступен у 1 модулей" in answer
+    assert "пустой результат не доказывает отсутствие кода" in answer
+    assert "Покрытие кода неполно" not in answer
+
+    restarted = Registry(registry.data_dir)
+    assert restarted.restore() == []
+    restored = restarted.modules["DemoConfiguration:modules"]
+    assert restored.каталог.entries["ОбщийМодуль.Sealed"].opaque is True
+
+
+def test_native_generation_считает_пустое_тело_прочитанным(tmp_path):
+    collection = _collection(
+        tmp_path / "source-empty",
+        object_module=b" \r\n\t",
+        item_form_xml=_common_form_xml(),
+    )
+    materialized = _materialized(tmp_path, "empty", collection)
+    registry = Registry(tmp_path / "data-empty")
+    registry.publish_generation(
+        registry.stage_generation(materialized.manifest, materialized.payloads)
+    )
+    coverage = tools.sources_snapshot(registry).code[0].coverage
+
+    assert coverage is not None
+    assert coverage.modules_empty == 1
+    assert coverage.modules_unreadable == 0
+    assert coverage.problems_total == 0
+    assert not coverage.has_limitations
+
+
+def test_native_generation_оставляет_нечитаемое_тело_ошибкой(tmp_path):
+    collection = _collection(
+        tmp_path / "source-unreadable",
+        object_module=b"\xff",
+        item_form_xml=_common_form_xml(),
+    )
+    materialized = _materialized(tmp_path, "unreadable", collection)
+    registry = Registry(tmp_path / "data-unreadable")
+    registry.publish_generation(
+        registry.stage_generation(materialized.manifest, materialized.payloads)
+    )
+    coverage = tools.sources_snapshot(registry).code[0].coverage
+
+    assert coverage is not None
+    assert coverage.modules_source_available == 0
+    assert coverage.modules_unreadable == 1
+    assert dict(coverage.problem_categories) == {"unreadable_body": 1}
+    assert coverage.has_limitations
 
 
 def test_hashes_разделяют_изменение_кода_и_декларации_формы(tmp_path):

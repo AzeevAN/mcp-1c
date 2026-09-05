@@ -198,6 +198,9 @@ it("переключает конфигурацию без ухода со ст�
   );
 
   expect(await screen.findByRole("heading", { name: "Отраслевая конфигурация А" })).toBeInTheDocument();
+  expect(screen.getAllByText("Модуль пуст").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("Исходный текст недоступен").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("Семантика отложена").length).toBeGreaterThan(0);
   fireEvent.click(screen.getByRole("button", { name: /Отраслевая конфигурация Б/ }));
 
   expect(screen.getByRole("heading", { name: "Отраслевая конфигурация Б" })).toBeInTheDocument();

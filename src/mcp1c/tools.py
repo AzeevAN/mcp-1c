@@ -189,14 +189,12 @@ class CodeCoverage:
                 self.modules_unreadable,
                 self.modules_conflict,
                 self.procedures_partial,
-                self.form_structures_partial,
                 self.form_structures_unread,
                 self.unsupported_addresses,
                 self.broken_containers,
                 self.unreadable_bodies,
                 self.budget_exceeded,
                 self.body_conflicts,
-                self.compiled_without_source,
             )
         )
 
@@ -361,6 +359,20 @@ def _safe_problem_reason(reason: str) -> str:
     return reason
 
 
+_NEUTRAL_COVERAGE_CATEGORIES = frozenset(
+    {
+        "descriptor_only",
+        "event_semantics_deferred",
+        "form_structure_missing",
+        "known_marker_semantics_deferred",
+        "known_marker_semantics_incomplete",
+        "missing_body",
+        "unknown_marker",
+        "unsupported_profile",
+    }
+)
+
+
 def _iter_code_problems(loaded: LoadedModules):
     """Уникальные обезличенные проблемы без сортировки и общего списка."""
     if loaded.каталог is None or loaded.формы is None:
@@ -379,6 +391,8 @@ def _iter_code_problems(loaded: LoadedModules):
 
     for problems in (loaded.каталог.object_problems or {}).values():
         for problem in problems:
+            if problem.category in _NEUTRAL_COVERAGE_CATEGORIES:
+                continue
             item = CodeProblemRow(
                 problem.category,
                 problem.address,
@@ -416,6 +430,8 @@ def _iter_code_problems(loaded: LoadedModules):
             yield item
     for problems in loaded.формы.object_problems.values():
         for problem in problems:
+            if problem.категория in _NEUTRAL_COVERAGE_CATEGORIES:
+                continue
             if (
                 problem.категория == "form_structure_missing"
                 and problem.адрес.casefold() in точные_причины_форм
@@ -438,27 +454,6 @@ def _iter_code_problems(loaded: LoadedModules):
             if key not in seen:
                 seen.add(key)
                 yield item
-    for entry in loaded.каталог.entries.values():
-        if not entry.compiled:
-            continue
-        item = CodeProblemRow(
-            "compiled_without_source",
-            entry.address,
-            0,
-            "исходный текст модуля поставлен скомпилированным",
-        )
-        key = (
-            item.category,
-            item.address,
-            item.ordinal,
-            item.reason,
-            item.marker,
-        )
-        if key not in seen:
-            seen.add(key)
-            yield item
-
-
 def _all_code_problems(loaded: LoadedModules) -> tuple[CodeProblemRow, ...]:
     """Первые 20 строк без материализации полного корпуса проблем."""
     return tuple(
@@ -506,21 +501,27 @@ def _code_coverage(
     for entry in каталог.entries.values():
         # XML-дескриптор или Form.xml доказывает существование формы, но не
         # модуля. Такой адрес относится только к таблице модулей форм.
+        состояния = категории.get(entry.address.casefold(), set())
         есть_кандидат_модуля = (
             not entry.is_form
             or entry.locator is not None
-            or bool(set(entry.form_evidence) & {"module", "container", "form_bin"})
+            or "module" in entry.form_evidence
+            or bool(
+                состояния
+                & {"broken_container", "unreadable_body", "conflict"}
+            )
         )
         if not есть_кандидат_модуля:
             continue
-        состояния = категории.get(entry.address.casefold(), set())
         if entry.conflict:
             модулей_конфликт += 1
         elif entry.compiled:
             модулей_скомпилировано += 1
+        elif состояния & {"broken_container", "unreadable_body"}:
+            модулей_непрочитано_всего += 1
         elif entry.locator is None:
             модулей_непрочитано_всего += 1
-        elif "empty" in состояния and "indexed" not in состояния:
+        elif "empty" in состояния:
             модулей_пусто_всего += 1
         elif entry.address in частичные_модули:
             модулей_частично += 1
@@ -547,24 +548,25 @@ def _code_coverage(
         состояния = категории.get(entry.address.casefold(), set())
         if entry.conflict:
             модулей_непрочитано += 1
+        elif состояния & {"broken_container", "unreadable_body"}:
+            модулей_непрочитано += 1
         elif "empty" in состояния:
             модулей_пусто += 1
         elif entry.locator is not None and not entry.compiled:
             модулей_прочитано += 1
-        elif состояния & {"broken_container", "unreadable_body"}:
-            модулей_непрочитано += 1
         else:
             модулей_нет += 1
 
     проблемы = _all_code_problems(loaded) if include_problem_rows else ()
-    категории_проблем = dict(каталог.problem_counts)
+    категории_проблем = {
+        category: count
+        for category, count in каталог.problem_counts
+        if category not in _NEUTRAL_COVERAGE_CATEGORIES
+    }
     for category, count in формы.problem_counts:
+        if category in _NEUTRAL_COVERAGE_CATEGORIES:
+            continue
         категории_проблем[category] = категории_проблем.get(category, 0) + count
-    if каталог.coverage.compiled:
-        категории_проблем["compiled_without_source"] = (
-            категории_проблем.get("compiled_without_source", 0)
-            + каталог.coverage.compiled
-        )
     проблем_всего = sum(категории_проблем.values())
     конфликты = len(
         {
@@ -818,16 +820,25 @@ def _loaded_partial_warning(
     if loaded.оглавление is None or loaded.формы is None or loaded.каталог is None:
         return None
     coverage = _code_coverage(loaded, include_problem_rows=False)
-    if not coverage.has_limitations:
-        return None
     suffix = f" {corpus}" if corpus else ""
+    evidence_note = ""
+    if coverage.compiled_without_source:
+        evidence_note = (
+            f"В корпусе кода{suffix} исходный текст недоступен у "
+            f"{coverage.compiled_without_source} модулей. Сведения о "
+            "процедурах, вызовах и перекрытиях приведены только по доступным "
+            "исходникам; пустой результат не доказывает отсутствие кода в "
+            "таких модулях."
+        )
+    if not coverage.has_limitations:
+        return evidence_note or None
     categories = ", ".join(
         f"{category}={count}"
         for category, count in coverage.problem_categories
     ) or "нет"
     warning = (
         f"Покрытие кода{suffix} неполно: структуры форм: полностью "
-        f"{coverage.form_structures_full}, частично "
+        f"{coverage.form_structures_full}, семантика отложена "
         f"{coverage.form_structures_partial}, не прочитано "
         f"{coverage.form_structures_unread}; модули форм: прочитано "
         f"{coverage.form_modules_read}, пусто {coverage.form_modules_empty}, "
@@ -839,18 +850,12 @@ def _loaded_partial_warning(
         f"{coverage.broken_containers}, непрочитанных тел: "
         f"{coverage.unreadable_bodies}, превышений бюджета: "
         f"{coverage.budget_exceeded}, конфликтов тел: "
-        f"{coverage.body_conflicts}, скомпилированных без исходника: "
-        f"{coverage.compiled_without_source}; категории проблем: "
+        f"{coverage.body_conflicts}; категории проблем: "
         f"{categories}. Нулевой счётчик или пустой список не доказывает "
         "отсутствие скрытых данных."
     )
-    if coverage.compiled_without_source:
-        warning += (
-            " Каждый такой модуль поставлен скомпилированным: сведения о "
-            "процедурах, вызовах и перекрытиях приведены только по доступным "
-            "исходникам; дополнительные процедуры, вызовы и перекрытия могут "
-            "быть скрыты."
-        )
+    if evidence_note:
+        warning += " " + evidence_note
     return warning
 
 
@@ -873,7 +878,8 @@ def _code_state_text(view: _CodeView) -> str:
         return (
             f"{readiness} — модулей {len(summary.modules)}, {procedures_label}, "
             f"форм {len(summary.forms)}, "
-            f"скомпилированных без исходника {len(summary.compiled_modules)}"
+            "с недоступным исходным текстом "
+            f"{len(summary.compiled_modules)}"
         )
     if capture.status == STATUS_ERROR:
         return f"ошибка — {_safe_code_error(capture.error)}"
@@ -900,7 +906,7 @@ def code_coverage_lines(coverage: CodeCoverage | None) -> tuple[str, ...]:
             f"Форм обнаружено: {coverage.forms_total}",
             "Структуры форм: "
             f"полностью {coverage.form_structures_full}, "
-            f"частично {coverage.form_structures_partial}, "
+            f"семантика отложена {coverage.form_structures_partial}, "
             f"не прочитано {coverage.form_structures_unread}",
             "Модули форм: "
             f"прочитано {coverage.form_modules_read}, "
@@ -916,7 +922,7 @@ def code_coverage_lines(coverage: CodeCoverage | None) -> tuple[str, ...]:
             f"непрочитанных тел {coverage.unreadable_bodies}, "
             f"превышений бюджета {coverage.budget_exceeded}, "
             f"конфликтов тел {coverage.body_conflicts}, "
-            "скомпилированных без исходника "
+            "модулей с недоступным исходным текстом "
             f"{coverage.compiled_without_source}",
         ]
     )
@@ -1739,6 +1745,7 @@ def _object_code_block(view: _CodeView, full_name: str, detail: str) -> str:
                 _safe_problem_reason(problem.reason),
             )
             for problem in problems
+            if problem.category not in _NEUTRAL_COVERAGE_CATEGORIES
         )
     for address, problems in loaded.формы.object_problems.items():
         if address.casefold() not in form_keys:
@@ -1752,17 +1759,8 @@ def _object_code_block(view: _CodeView, full_name: str, detail: str) -> str:
                 problem.маркер,
             )
             for problem in problems
+            if problem.категория not in _NEUTRAL_COVERAGE_CATEGORIES
         )
-    object_rows.extend(
-        CodeProblemRow(
-            "compiled_without_source",
-            entry.address,
-            0,
-            "исходный текст модуля поставлен скомпилированным",
-        )
-        for entry in loaded.каталог.entries.values()
-        if entry.compiled and entry.address.casefold() in form_keys
-    )
     проблемы_форм = tuple(
         sorted(
             {
@@ -1802,7 +1800,7 @@ def _object_code_block(view: _CodeView, full_name: str, detail: str) -> str:
             1 for module in modules if module.casefold() in compiled
         )
         suffix = (
-            f", скомпилированных без исходника {compiled_count}"
+            f", с недоступным исходным текстом {compiled_count}"
             if compiled_count
             else ""
         )
@@ -1821,7 +1819,7 @@ def _object_code_block(view: _CodeView, full_name: str, detail: str) -> str:
                 *(
                     f"- `{item}`"
                     + (
-                        " — поставлен скомпилированным, исходного текста нет"
+                        " — исходный текст недоступен"
                         if item.casefold() in compiled
                         else ""
                     )
@@ -2815,8 +2813,8 @@ def _get_procedure_once(
             else ""
         )
         return warning_prefix + (
-            f"Модуль `{модуль}` поставлен скомпилированным — исходного "
-            "текста и оглавления процедур в выгрузке нет. Не считайте, что "
+            f"У модуля `{модуль}` исходный текст недоступен — оглавления "
+            "процедур в выгрузке нет. Не считайте, что "
             f"процедуры отсутствуют: их нельзя увидеть.{хвост}\n"
         )
 
@@ -3145,8 +3143,8 @@ def _get_callers_once(
         if not _modules_are_current(registry, loaded):
             raise _StaleModules
         return warning_prefix + (
-            f"Модуль `{module}` поставлен скомпилированным — исходного "
-            "текста и оглавления процедур нет. Поэтому подтвердить или "
+            f"У модуля `{module}` исходный текст недоступен — оглавления "
+            "процедур нет. Поэтому подтвердить или "
             f"опровергнуть вызовы `{name}` по этому адресу невозможно.\n"
         )
     записи_модуля = loaded.оглавление.модуля(module)

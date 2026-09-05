@@ -108,7 +108,7 @@ def test_каждый_кандидат_попадает_ровно_в_одну_�
     assert unknown.address is None and unknown.ordinal > 0
 
 
-def test_пустой_txt_сохраняет_локатор_а_пустой_container_только_форму(tmp_path):
+def test_пустые_txt_и_container_сохраняют_локатор_модуля(tmp_path):
     _write(tmp_path, "CommonModule.Пустой.Module.txt", " \r\n")
     _write(
         tmp_path,
@@ -119,7 +119,8 @@ def test_пустой_txt_сохраняет_локатор_а_пустой_cont
     catalog = build_catalog(tmp_path, _identity())
 
     assert catalog.entries["ОбщийМодуль.Пустой"].locator is not None
-    assert catalog.entries["ОбщаяФорма.Пустая"].locator is None
+    form_locator = catalog.entries["ОбщаяФорма.Пустая"].locator
+    assert form_locator is not None and form_locator.kind == "container"
 
 
 @pytest.mark.parametrize(
@@ -405,8 +406,8 @@ def test_два_контейнерных_доказательства_счита
     assert [
         problem.категория
         for problem in forms.проблемы
-        if problem.категория == "known_marker_semantics_incomplete"
-    ] == ["known_marker_semantics_incomplete"]
+        if problem.категория == "known_marker_semantics_deferred"
+    ] == ["known_marker_semantics_deferred"]
 
 
 def test_самостоятельный_дескриптор_публикует_только_доказанные_свойства(

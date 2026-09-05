@@ -76,6 +76,7 @@ class CatalogEntry:
     conflict: bool
     address_collision: bool
     sort_key: tuple[str, str]
+    opaque: bool = False
 
     @property
     def form_evidence(self) -> tuple[str, ...]:
@@ -147,6 +148,7 @@ class ModuleCatalog:
                     entry.diagnostics,
                     entry.conflict,
                     entry.address_collision,
+                    entry.opaque,
                 )
                 for entry in self.entries.values()
             ],
@@ -232,7 +234,7 @@ class ModuleCatalog:
 
             entries: dict[str, CatalogEntry] = {}
             for raw in raw_entries:
-                if not isinstance(raw, tuple) or len(raw) != 9:
+                if not isinstance(raw, tuple) or len(raw) not in {9, 10}:
                     return None
                 (
                     address,
@@ -244,12 +246,18 @@ class ModuleCatalog:
                     diagnostics,
                     conflict,
                     address_collision,
+                    *tail,
                 ) = raw
+                opaque = tail[0] if tail else False
                 if not isinstance(address, str) or not address or address in entries:
                     return None
                 if not isinstance(module_kind, str):
                     return None
-                if type(is_form) is not bool or type(compiled) is not bool:
+                if (
+                    type(is_form) is not bool
+                    or type(compiled) is not bool
+                    or type(opaque) is not bool
+                ):
                     return None
                 if (
                     type(conflict) is not bool
@@ -288,6 +296,7 @@ class ModuleCatalog:
                     conflict,
                     address_collision,
                     (address.casefold(), address),
+                    opaque,
                 )
 
             outcomes: list[CandidateOutcome] = []
@@ -386,9 +395,10 @@ class ModuleCatalog:
                     return None
                 if entry.conflict and entry.locator is not None:
                     return None
-                if entry.compiled != (
-                    entry.locator is not None
-                    and entry.locator.kind == "compiled"
+                if entry.opaque and (not entry.compiled or entry.locator is not None):
+                    return None
+                if not entry.opaque and entry.compiled != (
+                    entry.locator is not None and entry.locator.kind == "compiled"
                 ):
                     return None
                 if not entry.is_form and entry.form_sources:
@@ -770,7 +780,6 @@ def build_catalog(
             or (
                 candidate.category == "empty"
                 and candidate.locator is not None
-                and candidate.locator.kind == "file"
             )
         ]
         case_collision = len(addresses) != 1

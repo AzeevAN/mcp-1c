@@ -16,6 +16,7 @@ from types import MappingProxyType
 from typing import Mapping
 
 from .bsl_lex import нормализовать
+from .readers.modules import read_module_body
 from .v8container import V8Container, V8ContainerError, V8ResourceLimitError
 
 
@@ -256,13 +257,13 @@ def read_bsl(
     """Прочитать обычный файл или запись контейнера одним нормализатором."""
 
     raw = read_content_bytes(root, address, locator)
-    try:
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError as error:
+    result = read_module_body(raw)
+    if result.state == "unreadable":
         raise ContentReadError(
-            "module_invalid_utf8", address, "текст модуля не является UTF-8"
-        ) from error
-    return нормализовать(text)
+            "module_invalid_utf8", address, result.reason
+        )
+    assert result.text is not None
+    return нормализовать(result.text)
 
 
 def read_content_bytes(

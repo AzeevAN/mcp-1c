@@ -1369,6 +1369,15 @@ def _spa_routes(
             status_code=202,
         )
 
+    async def intake_jobs_api(request: Request) -> JSONResponse:
+        denied = _admin_denied(request, action="Просмотр сохранённых операций")
+        if denied is not None:
+            return denied
+        try:
+            return JSONResponse(await run_in_threadpool(intake_service().jobs_snapshot))
+        except (IntakeApiError, LifecycleError, OperationError, RegistryError) as error:
+            return _json_error(str(error), 409)
+
     async def intake_job_api(request: Request) -> JSONResponse:
         denied = _admin_denied(request, action="Просмотр операции")
         if denied is not None:
@@ -1869,6 +1878,12 @@ def _spa_routes(
             intake_start_api,
             methods=["POST"],
             name="dashboard_intake_start",
+        ),
+        Route(
+            "/api/v1/sources/intake/jobs",
+            intake_jobs_api,
+            methods=["GET"],
+            name="dashboard_intake_jobs",
         ),
         Route(
             "/api/v1/sources/intake/jobs/{job_id}",

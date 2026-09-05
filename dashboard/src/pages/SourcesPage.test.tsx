@@ -117,6 +117,8 @@ beforeEach(() => {
     "fetch",
     vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
       const path = String(input);
+      if (path === "/api/v1/sources/directories") return { ok: true, json: async () => ({ roots: [], bindings: {}, configuration_names: [] }) };
+      if (path === "/api/v1/sources/intake/jobs") return { ok: true, json: async () => ({ jobs: [] }) };
       if (path === "/api/v1/sources/admin") {
         return {
           ok: true,
@@ -560,6 +562,8 @@ it("удаляет файл вне реестра через простое по
     "fetch",
     vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
       const path = String(input);
+      if (path === "/api/v1/sources/directories") return { ok: true, json: async () => ({ roots: [], bindings: {}, configuration_names: [] }) };
+      if (path === "/api/v1/sources/intake/jobs") return { ok: true, json: async () => ({ jobs: [] }) };
       if (path === "/api/v1/sources/admin") {
         return {
           ok: true,
@@ -636,6 +640,8 @@ it("обновляет корпуса после перехода фоновой
     "fetch",
     vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
       const path = String(input);
+      if (path === "/api/v1/sources/directories") return { ok: true, json: async () => ({ roots: [], bindings: {}, configuration_names: [] }) };
+      if (path === "/api/v1/sources/intake/jobs") return { ok: true, json: async () => ({ jobs: [] }) };
       if (path === "/api/v1/sources/admin") {
         adminRequests += 1;
         return {
@@ -714,6 +720,8 @@ it("сохраняет полное длинное имя конфигураци
     "fetch",
     vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
       const path = String(input);
+      if (path === "/api/v1/sources/directories") return { ok: true, json: async () => ({ roots: [], bindings: {}, configuration_names: [] }) };
+      if (path === "/api/v1/sources/intake/jobs") return { ok: true, json: async () => ({ jobs: [] }) };
       if (path === "/api/v1/sources/admin") {
         return {
           ok: true,
@@ -773,11 +781,11 @@ it("показывает выбор каталога в шапке выбран�
   const fetchMock = vi.mocked(fetch);
   const regularFetch = fetchMock.getMockImplementation()!;
   fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-    if (String(input) === "/api/v1/sources/intake") {
-      return { ok: true, json: async () => ({ ...intakeSnapshot(), directories: {
+    if (String(input) === "/api/v1/sources/directories") {
+      return { ok: true, json: async () => ({
         roots: ["config-a", "config-b"], bindings: {},
         configuration_names: ["Отраслевая конфигурация А", "Отраслевая конфигурация Б"],
-      } }) } as Response;
+      }) } as Response;
     }
     return regularFetch(input, init);
   });
@@ -787,7 +795,7 @@ it("показывает выбор каталога в шапке выбран�
   </MemoryRouter>);
   const choose = await screen.findByRole("button", { name: "Выбрать каталог" });
   expect(choose.closest(".configuration-hero")).not.toBeNull();
-  expect(within(screen.getByRole("region", { name: "Полная файловая выгрузка" })).queryByText("Выбрать каталог")).toBeNull();
+  expect(within(await screen.findByRole("region", { name: "Полная файловая выгрузка" })).queryByText("Выбрать каталог")).toBeNull();
   fireEvent.click(choose);
   expect(within(screen.getByRole("dialog")).getByText("Отраслевая конфигурация А")).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Закрыть выбор каталога" }));

@@ -26,9 +26,10 @@ export function ConfigDirectories({ sources, configuration, busy, onCandidate }:
         const result = await refreshDirectory(configuration);
         onCandidate(result.candidate);
       } else {
-        if (action === "bind") await bindDirectory(configuration, selected);
-        else await unbindDirectory(configuration);
-        await client.invalidateQueries({ queryKey: ["sources", "intake"], exact: true });
+        const updated = action === "bind"
+          ? await bindDirectory(configuration, selected)
+          : await unbindDirectory(configuration);
+        client.setQueryData(["sources", "directories"], updated);
         setChoosing(false);
       }
     } catch (cause) {

@@ -22,6 +22,8 @@ import {
   startConfigIntake,
   uploadConfigCandidate,
   useConfigIntake,
+  useDirectorySources,
+  useIntakeJobs,
   useIntakeJob,
 } from "../shared/api/configIntake";
 import { refreshSourceDependents } from "../shared/api/sourceFreshness";
@@ -278,7 +280,9 @@ function PreviewDialog({
 
 export function ConfigIntakePanel({ configuration }: { configuration?: string } = {}) {
   const [directoryCandidate, setDirectoryCandidate] = useState<IntakeCandidate | null>(null);
-  const intake = useConfigIntake();
+  const intake = useConfigIntake(!configuration);
+  const directorySources = useDirectorySources(Boolean(configuration));
+  const storedJobs = useIntakeJobs(Boolean(configuration));
   const queryClient = useQueryClient();
   const input = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
@@ -296,6 +300,7 @@ export function ConfigIntakePanel({ configuration }: { configuration?: string } 
   useEffect(() => {
     const state = job.data?.job.state;
     if (!activeJobId || (state !== "done" && state !== "failed")) return;
+    void queryClient.invalidateQueries({ queryKey: ["sources", "intake", "jobs"], exact: true });
     void queryClient.invalidateQueries({
       queryKey: ["sources", "intake"],
       exact: true,
@@ -396,6 +401,7 @@ export function ConfigIntakePanel({ configuration }: { configuration?: string } 
       await Promise.all([
         ...(result.job.commit?.no_op ? [] : [refreshSourceDependents(queryClient)]),
         queryClient.invalidateQueries({ queryKey: ["sources", "intake"], exact: true }),
+        queryClient.invalidateQueries({ queryKey: ["sources", "intake", "jobs"], exact: true }),
       ]);
       setActiveJobId("");
       setDirectoryCandidate(null);
@@ -425,6 +431,7 @@ export function ConfigIntakePanel({ configuration }: { configuration?: string } 
         queryKey: ["sources", "intake"],
         exact: true,
       });
+      await queryClient.invalidateQueries({ queryKey: ["sources", "intake", "jobs"], exact: true });
       queryClient.removeQueries({
         queryKey: ["sources", "intake", "job", discardedJobId],
         exact: true,
@@ -440,11 +447,10 @@ export function ConfigIntakePanel({ configuration }: { configuration?: string } 
     }
   };
 
-  if (intake.isPending) {
-    if (configuration) return null;
+  if (!configuration && intake.isPending) {
     return <section className="admin-loading"><span className="loading-dot" />Проверяем кандидатов полной выгрузки…</section>;
   }
-  if (intake.isError) {
+  if (!configuration && intake.isError) {
     const text = intake.error instanceof ConfigIntakeApiError
       ? intake.error.message
       : "Intake API недоступен.";
@@ -452,7 +458,7 @@ export function ConfigIntakePanel({ configuration }: { configuration?: string } 
       : <section className="admin-loading is-error"><AlertCircle size={20} />{text}</section>;
   }
 
-  const candidates = new Map(intake.data.candidates.map((item) => [item.id, item]));
+  const candidates = new Map((intake.data?.candidates ?? []).map((item) => [item.id, item]));
   const intakeBusy = starting || confirming || discarding;
 
   const reviewDialog = (activeJobId && (
@@ -472,8 +478,15 @@ export function ConfigIntakePanel({ configuration }: { configuration?: string } 
       ));
 
   if (configuration) {
-    const directories = intake.data.directories;
-    if (!directories || (!directories.roots.length && !directories.bindings[configuration])) return null;
+    if (directorySources.isPending) return <span role="status">Загружаем подключение каталога…</span>;
+    if (directorySources.isError) return <span role="alert">Каталоги недоступны: {message(directorySources.error)}</span>;
+    const directories = directorySources.data;
+    const previews = (storedJobs.data?.jobs ?? []).filter((item) => item.state === "done" && !item.commit
+      && item.transport === "local-directory"
+      && item.preview?.identity.source_kind === "configuration"
+      && item.preview.identity.configuration_name === configuration);
+    if (!directories.roots.length && !directories.bindings[configuration] && !previews.length && !activeJobId
+        && !storedJobs.isError && !storedJobs.isPending) return null;
     return <div className="configuration-directory-actions" aria-label={`Каталог ${configuration}`}>
       <ConfigDirectories sources={directories} configuration={configuration}
         busy={intakeBusy || Boolean(activeJobId)}
@@ -490,9 +503,8 @@ export function ConfigIntakePanel({ configuration }: { configuration?: string } 
           {feedback?.tone === "danger" && <p role="alert">{feedback.text}</p>}
         </section>
       </div>}
-      {intake.data.jobs.filter((item) => item.state === "done" && !item.commit
-        && item.preview?.identity.source_kind === "configuration"
-        && item.preview.identity.configuration_name === configuration).map((item) => (
+      {storedJobs.isError && <span role="alert">Обновления недоступны: {message(storedJobs.error)}</span>}
+      {previews.map((item) => (
         <button key={item.job_id} type="button" className="button-secondary" disabled={intakeBusy}
           onClick={() => { setDirectoryCandidate(null); setDialogError(""); setActiveJobId(item.job_id); }}>
           Открыть подготовленное обновление
@@ -501,6 +513,9 @@ export function ConfigIntakePanel({ configuration }: { configuration?: string } 
       {reviewDialog}
     </div>;
   }
+
+  if (!intake.data) return null;
+  const commonJobs = intake.data.jobs.filter((item) => item.transport !== "local-directory");
 
   return (
     <section className="admin-card config-intake-card" aria-label="Полная файловая выгрузка">
@@ -584,10 +599,10 @@ export function ConfigIntakePanel({ configuration }: { configuration?: string } 
         </div>
       )}
 
-      {intake.data.jobs.some((item) => item.state === "done" && !item.commit) && (
+      {commonJobs.some((item) => item.state === "done" && !item.commit) && (
         <div className="intake-resumable">
           <strong>Готовые preview</strong>
-          {intake.data.jobs
+          {commonJobs
             .filter((item) => item.state === "done" && !item.commit)
             .map((item) => {
               const candidate = candidates.get(item.candidate_id);

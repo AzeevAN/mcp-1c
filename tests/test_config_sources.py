@@ -135,6 +135,10 @@ def test_http_admin_binding_refresh_and_validation(tmp_path, monkeypatch):
     headers = {"x-api-token": "admin-token"}
     assert client.get(url).status_code == 403
     assert client.get(url, headers={"x-api-token": "read-token"}).status_code == 403
+    jobs_url = "/api/v1/sources/intake/jobs"
+    assert client.get(jobs_url).status_code == 403
+    assert client.get(jobs_url, headers={"x-api-token": "read-token"}).status_code == 403
+    assert client.get(jobs_url, headers=headers).json() == {"jobs": []}
     assert client.get(url, headers=headers).json()["roots"] == [f"config-{i}" for i in range(5)]
     assert client.post(url + "/bind", json={"configuration": "Demo0", "source_id": "config-0"}).status_code == 403
     assert client.post(url + "/bind", headers=headers, json={"configuration": "Demo0", "source_id": "config-0", "path": "/tmp"}).status_code == 422
@@ -181,3 +185,19 @@ def test_code_changes_are_visible_only_after_publication(tmp_path):
     assert '"после"' in get_procedure(registry, address, config="Demo0")
     service.confirm(work.job_id)
     assert '"после"' not in get_procedure(registry, address, config="Demo0")
+
+
+def test_stored_jobs_keep_transport_after_restart_without_discovery(tmp_path, monkeypatch):
+    registry, roots, service = setup_sources(tmp_path)
+    service.bind_directory("Demo0", "config-0")
+    candidate = service.refresh_directory("Demo0")
+    work = service.start(candidate["id"], "update_full")
+    service.prepare(work)
+    restarted = IntakeApiService.for_registry(registry, config_sources_root=roots, directory_settle_seconds=0)
+    monkeypatch.setattr(restarted.lifecycle, "refresh", lambda: pytest.fail("Чтение jobs не обнаруживает новые входы"))
+    monkeypatch.setattr(restarted.lifecycle, "_open", lambda *a: pytest.fail("Чтение jobs не открывает выгрузку"))
+    jobs = restarted.jobs_snapshot()["jobs"]
+    assert len(jobs) == 1
+    assert jobs[0]["job_id"] == work.job_id
+    assert jobs[0]["transport"] == "local-directory"
+    assert jobs[0]["preview"]["identity"]["configuration_name"] == "Demo0"

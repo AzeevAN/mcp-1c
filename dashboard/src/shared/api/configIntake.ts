@@ -60,6 +60,7 @@ export type IntakeCommit = {
 };
 
 export type IntakeJob = {
+  transport?: IntakeCandidate["transport"] | null;
   job_id: string;
   candidate_id: string;
   state: IntakeJobState;
@@ -120,10 +121,27 @@ async function intakeRequest<T>(
   return payload;
 }
 
-export function useConfigIntake() {
+export function useConfigIntake(enabled = true) {
   return useQuery({
+    enabled,
     queryKey: ["sources", "intake"],
     queryFn: () => intakeRequest<IntakeSnapshot>("/api/v1/sources/intake"),
+  });
+}
+
+export function useDirectorySources(enabled = true) {
+  return useQuery({
+    enabled,
+    queryKey: ["sources", "directories"],
+    queryFn: () => intakeRequest<DirectorySources>("/api/v1/sources/directories"),
+  });
+}
+
+export function useIntakeJobs(enabled = true) {
+  return useQuery({
+    enabled,
+    queryKey: ["sources", "intake", "jobs"],
+    queryFn: () => intakeRequest<{ jobs: IntakeJob[] }>("/api/v1/sources/intake/jobs"),
   });
 }
 

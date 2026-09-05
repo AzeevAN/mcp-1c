@@ -483,3 +483,50 @@ it("называет владельца preview и не запрашивает j
   expect(screen.queryByText("Job не найдена.")).not.toBeInTheDocument();
   expect(deletedJobRequests).toBe(0);
 });
+
+it("кнопки каталога не ждут общий intake и список preview", async () => {
+  const requests: string[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    const path = String(input);
+    requests.push(path);
+    if (path === "/api/v1/sources/directories") return response({
+      roots: ["config-a"], bindings: { Demo: "config-a" }, configuration_names: ["Demo"],
+    });
+    return new Promise<Response>(() => {});
+  }));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={client}>
+    <ConfigIntakePanel configuration="Demo" />
+    <ConfigIntakePanel />
+  </QueryClientProvider>);
+  expect(await screen.findByRole("button", { name: "Обновить из каталога" })).toBeEnabled();
+  expect(requests).toContain("/api/v1/sources/directories");
+  expect(screen.getByText("Проверяем кандидатов полной выгрузки…")).toBeInTheDocument();
+});
+
+it("сохранённое preview каталога видно только у своей конфигурации, ZIP — в общем блоке", async () => {
+  const jobs = [
+    { job_id: "dir-job", candidate_id: "dir-candidate", state: "done", stage: "done", error: "", commit: null,
+      transport: "local-directory", preview: { ...preview, identity: { ...preview.identity, configuration_name: "Demo" } } },
+    { job_id: "zip-job", candidate_id: "zip-candidate", state: "done", stage: "done", error: "", commit: null,
+      transport: "browser", preview: { ...preview, identity: { ...preview.identity, configuration_name: "Demo" } } },
+  ];
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    const path = String(input);
+    if (path === "/api/v1/sources/directories") return response({
+      roots: ["config-a"], bindings: { Demo: "config-a" }, configuration_names: ["Demo", "Other"],
+    });
+    if (path === "/api/v1/sources/intake/jobs") return response({ jobs });
+    return response({ ...snapshot([]), jobs });
+  }));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={client}>
+    <ConfigIntakePanel configuration="Demo" />
+    <ConfigIntakePanel configuration="Other" />
+    <ConfigIntakePanel />
+  </QueryClientProvider>);
+  await screen.findByRole("button", { name: "Обновить из каталога" });
+  await waitFor(() => expect(screen.getAllByRole("button", { name: "Открыть подготовленное обновление" })).toHaveLength(1));
+  const common = within(screen.getByRole("region", { name: "Полная файловая выгрузка" }));
+  expect(common.getAllByRole("button", { name: /Открыть preview:/ })).toHaveLength(1);
+});

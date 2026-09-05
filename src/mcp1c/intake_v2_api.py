@@ -247,6 +247,11 @@ class IntakeApiService:
             "actions": self._actions(candidate, registry_snapshot),
         }
 
+    def jobs_snapshot(self) -> dict[str, object]:
+        """Читать сохранённые операции без обнаружения или хеширования входов."""
+        with self.lifecycle.stable_jobs() as jobs:
+            return {"jobs": [self.job_payload(job.job_id) for job in jobs]}
+
     def snapshot(self) -> dict[str, object]:
         refreshed = self.lifecycle.refresh()
         registry_snapshot = self.registry.snapshot()
@@ -514,7 +519,16 @@ class IntakeApiService:
             job = self.lifecycle.operations.records.load_job(job_id)
         except KeyError:
             raise IntakeApiNotFound("Job не найдена.") from None
+        try:
+            transport = self.lifecycle.catalog.load(job.candidate_id).locator.transport
+        except KeyError:
+            # Browser staging очищается после commit, durable candidate остаётся.
+            try:
+                transport = self.lifecycle.operations.records.load_candidate(job.candidate_id).transport
+            except KeyError:
+                transport = None
         payload: dict[str, object] = {
+            "transport": transport.value if transport is not None else None,
             "job_id": job.job_id,
             "candidate_id": job.candidate_id,
             "state": job.state.value,

@@ -9,6 +9,8 @@ export async function refreshSourceDependents(client: QueryClient) {
   await Promise.all([
     client.resetQueries(filters),
     client.invalidateQueries({ queryKey: ["sources"], exact: true }),
+    client.invalidateQueries({ queryKey: ["sources", "directories"] }),
+    client.invalidateQueries({ queryKey: ["sources", "intake", "jobs"] }),
     client.invalidateQueries({ queryKey: ["dashboard", "bootstrap"] }),
   ]);
 }

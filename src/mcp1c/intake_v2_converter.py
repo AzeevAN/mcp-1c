@@ -18,6 +18,7 @@ from typing import Iterable, Mapping
 
 from .bsl_lex import нормализовать, разобрать
 from .form_reader import FormReadError, read_form
+from .module_address import разобрать_плоскую_xml_форму
 from .readers.modules import read_module_body
 from .form_structure import (
     FormStructureError,
@@ -2230,10 +2231,9 @@ def _common_form_object(
     containers: list[CollectionArtifact] = []
     for artifact in form_artifacts:
         parts = PurePosixPath(artifact.source_path).parts
-        if len(parts) == 1 and artifact.source_path.endswith(".Form.xml"):
-            form_xml.append(artifact)
-        elif len(parts) == 1 and artifact.source_path.endswith(".xml"):
-            descriptors.append(artifact)
+        if len(parts) == 1 and artifact.source_path.endswith(".xml"):
+            _address, kind = разобрать_плоскую_xml_форму(artifact.source_path)
+            (form_xml if kind == "form_xml" else descriptors).append(artifact)
         elif len(parts) == 2 and artifact.source_path.endswith(".xml"):
             descriptors.append(artifact)
         elif parts[-2:] == ("Ext", "Form.xml"):

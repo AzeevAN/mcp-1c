@@ -353,6 +353,26 @@ def разобрать_плоское_имя(filename: str) -> FlatAddress:
     raise _flat_error("unsupported_flat_name", "неподдержанная форма плоского имени")
 
 
+def разобрать_плоскую_xml_форму(filename: str) -> tuple[str, str]:
+    """Единая классификация descriptor/структуры, включая имя самой формы Form."""
+    if not filename.endswith(".xml"):
+        raise _flat_error("unsupported_flat_name", "ожидался XML формы")
+    stem = filename[:-4]
+    # Сначала проверяется полная грамматика descriptor: его имя тоже может
+    # оканчиваться на Form, поэтому одного сравнения суффиксов недостаточно.
+    for equivalent, kind in (
+        (stem + ".Form.Module.txt", "descriptor"),
+        (stem, "form_xml"),
+    ):
+        try:
+            parsed = разобрать_плоское_имя(equivalent)
+        except FlatNameError:
+            continue
+        if parsed.is_form and (kind == "descriptor" or parsed.representation == "container"):
+            return parsed.address, kind
+    raise _flat_error("unsupported_flat_name", "неподдержанное имя XML формы")
+
+
 def адрес_скомпилированного_модуля(относительный_путь: str) -> str:
     """Адрес двух канонических путей скомпилированного общего модуля.
 

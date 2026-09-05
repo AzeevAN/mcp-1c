@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Mapping
 
 from . import index_cache
+from .module_address import разобрать_плоскую_xml_форму
 from .intake_v2 import (
     GenerationManifest,
     LayerKind,
@@ -766,8 +767,8 @@ def _form_kind(source_path: str) -> tuple[str, bool]:
         return "form_xml", False
     if source_path.endswith("/Ext/Form.bin"):
         return "form_bin", True
-    if source_path.endswith(".Form.xml"):
-        return "form_xml", False
+    if "/" not in source_path and source_path.endswith(".xml"):
+        return разобрать_плоскую_xml_форму(source_path)[1], False
     if source_path.endswith(".Form"):
         return "container", True
     if source_path.endswith(".xml"):

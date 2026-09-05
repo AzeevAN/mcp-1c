@@ -35,7 +35,7 @@ from .intake_v2_transport import TransportError
 
 
 COLLECTION_FORMAT_VERSION = 1
-SELECTION_VERSION = 5
+SELECTION_VERSION = 6
 _READ_CHUNK = 1 << 20
 _MANIFEST_LIMIT = 64 * 1024 * 1024
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -786,18 +786,7 @@ def _form_address(path: str, spec: MetadataKindSpec) -> str | None:
             raise ValueError("плоский контейнер не является формой")
         return parsed.address
     if len(parts) == 1 and path.endswith(".xml"):
-        # В плоской выгрузке descriptor и тело управляемой формы отличаются
-        # только хвостом: ``...Form.Name.xml`` и ``...Form.Name.Form.xml``.
-        # Адрес выводим через уже доказанную грамматику имени модуля формы,
-        # чтобы не заводить второй список допустимых сочетаний видов.
-        if path.endswith(".Form.xml"):
-            equivalent = path[: -len(".xml")]
-        else:
-            equivalent = path[: -len(".xml")] + ".Form.Module.txt"
-        parsed = module_address.разобрать_плоское_имя(equivalent)
-        if not parsed.is_form:
-            raise ValueError("плоский XML не является формой")
-        return parsed.address
+        return module_address.разобрать_плоскую_xml_форму(path)[0]
     if spec.source_name == "CommonForms":
         if len(parts) == 2 and PurePosixPath(parts[1]).suffix == ".xml":
             return f"{spec.canonical_kind}.{PurePosixPath(parts[1]).stem}"

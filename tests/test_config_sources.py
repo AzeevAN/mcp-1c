@@ -39,14 +39,38 @@ def test_five_bindings_restart_and_no_background_read(tmp_path, monkeypatch):
 
 def test_bind_mismatch_missing_symlink_and_path_escape(tmp_path):
     registry, roots, service = setup_sources(tmp_path)
-    for root in ("config-1", "missing", "../base0", "/tmp", "config-0/child"):
+    def disk_state():
+        # Чтение может изменить atime, но отказ не должен создавать даже пустые
+        # записи, менять содержимое или mtime существующего реестра/выгрузки.
+        return {
+            str(path.relative_to(tmp_path)): (
+                path.lstat().st_mode,
+                path.lstat().st_mtime_ns,
+                os.readlink(path) if path.is_symlink()
+                else path.read_bytes() if path.is_file() else None,
+            )
+            for path in tmp_path.rglob("*")
+        }
+
+    def rejected_without_writes(configuration, root):
+        before = disk_state()
         with pytest.raises(IntakeApiConflict):
-            service.bind_directory("Demo0", root)
+            service.bind_directory(configuration, root)
+        assert disk_state() == before
+
+    for root in ("config-1", "missing", "../base0", "/tmp", "config-0/child"):
+        rejected_without_writes("Demo0", root)
+    rejected_without_writes("UnknownConfiguration", "config-0")
     (roots / "link").symlink_to(roots / "config-0", target_is_directory=True)
     assert "link" not in service.directory_sources()["roots"]
-    with pytest.raises(IntakeApiConflict):
-        service.bind_directory("Demo0", "link")
+    rejected_without_writes("Demo0", "link")
     assert service.directory_sources()["bindings"] == {}
+    assert not (registry.data_dir / "config-source-bindings.json").exists()
+    assert not service.lifecycle.operations.records.list_jobs()
+    # Ошибочная замена не должна портить уже сохранённую корректную привязку.
+    service.bind_directory("Demo0", "config-0")
+    rejected_without_writes("Demo0", "config-1")
+    assert service.directory_sources()["bindings"] == {"Demo0": "config-0"}
 
 
 def test_replacement_rejected_at_refresh_and_confirm(tmp_path):

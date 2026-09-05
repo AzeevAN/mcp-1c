@@ -434,10 +434,8 @@ it("показывает администратору действия без д
   expect(await screen.findByRole("region", { name: "Администрирование источников" })).toBeInTheDocument();
   expect(screen.queryByText("Добавление и обслуживание данных")).not.toBeInTheDocument();
   expect(screen.queryByText("Запись разрешена")).not.toBeInTheDocument();
-  expect(screen.getByRole("heading", { name: "Локальная общая справка" })).toBeInTheDocument();
-  expect(screen.getByText("Каноническая база не загружена.")).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Загрузить справочную базу" })).not.toBeInTheDocument();
-  expect(screen.getByText(/загрузка через общую форму выше/)).toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "Локальная общая справка" })).not.toBeInTheDocument();
+  expect(within(screen.getByRole("complementary", { name: "Выбор источника" })).getByRole("button", { name: /Общая справка/ })).toBeInTheDocument();
   expect(await screen.findByRole("region", { name: "Полная файловая выгрузка" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Обновить код, формы и роли" })).toBeEnabled();
   expect(screen.getByRole("button", { name: "Обновить полностью" })).toBeEnabled();
@@ -446,19 +444,21 @@ it("показывает администратору действия без д
   expect(truncated).toBeChecked();
 
   const input = container.querySelector<HTMLInputElement>(
-    'input[accept=".zip,.hbk,.json,.mcp1cref"]',
+    'input[accept=".zip,.hbk,.json"]',
   );
   const file = new File(["synthetic"], "структура.zip", { type: "application/zip" });
   fireEvent.change(input!, { target: { files: [file] } });
   expect(screen.getByText("структура.zip")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Загрузить и разобрать" })).toBeEnabled();
 
+  fireEvent.click(screen.getByRole("button", { name: /Общая справка/ }));
+  const referenceDialog = screen.getByRole("dialog", { name: "Общая справка" });
   const reference = new File(["synthetic"], "reference.mcp1cref", { type: "application/octet-stream" });
-  fireEvent.change(input!, { target: { files: [reference] } });
-  expect(screen.getByText("reference.mcp1cref")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Проверить и сохранить" })).toBeEnabled();
-  expect(screen.queryByRole("checkbox", { name: /Разрешить неполную тестовую выгрузку/ })).not.toBeInTheDocument();
-  expect(input).toHaveAttribute("accept", ".zip,.hbk,.json,.mcp1cref");
+  fireEvent.change(within(referenceDialog).getByLabelText("Файл общей справки"), { target: { files: [reference] } });
+  expect(within(referenceDialog).getByRole("button", { name: "Проверить и сохранить" })).toBeEnabled();
+  expect(within(referenceDialog).queryByRole("checkbox")).not.toBeInTheDocument();
+  fireEvent.click(within(referenceDialog).getByRole("button", { name: "Закрыть" }));
+  expect(screen.getByRole("button", { name: /Общая справка/ })).toHaveFocus();
 
   fireEvent.click(screen.getByRole("button", { name: "Удалить конфигурацию целиком Отраслевая конфигурация А" }));
   expect(screen.getByRole("dialog", { name: "Удалить «Отраслевая конфигурация А»?" })).toBeInTheDocument();
@@ -491,10 +491,9 @@ it("требует точное подтверждение перед удале
     </MemoryRouter>,
   );
 
-  expect(await screen.findByRole("button", { name: "Удалить базу" })).toBeEnabled();
-  expect(screen.getByRole("region", { name: "Локальная общая справка" })).toHaveClass(
-    "reference-admin-card",
-  );
+  fireEvent.click(await screen.findByRole("button", { name: "Общая справка: подключена" }));
+  fireEvent.click(screen.getByText("Дополнительные действия"));
+  expect(screen.getByRole("button", { name: "Удалить базу" })).toBeEnabled();
   fireEvent.click(screen.getByRole("button", { name: "Удалить базу" }));
   const dialog = screen.getByRole("dialog", { name: "Удалить локальную общую базу?" });
   expect(dialog).toBeInTheDocument();
@@ -518,7 +517,7 @@ it("требует точное подтверждение перед удале
   });
   const success = await screen.findByRole("status");
   expect(success).toHaveClass("admin-feedback", "is-success");
-  expect(success.nextElementSibling).toHaveClass("reference-actions");
+  expect(screen.getByRole("dialog", { name: "Общая справка" })).toContainElement(success);
 });
 
 it("показывает подтверждение рестарта только для pending общей базы", async () => {
@@ -543,7 +542,10 @@ it("показывает подтверждение рестарта тольк�
     </MemoryRouter>,
   );
 
-  expect(await screen.findByRole("button", { name: "Перезапустить и применить" })).toBeEnabled();
+  const referenceButton = await screen.findByRole("button", { name: "Общая справка: ожидает перезапуска" });
+  expect(referenceButton).toHaveTextContent("ожидает перезапуска");
+  fireEvent.click(referenceButton);
+  expect(screen.getByRole("button", { name: "Перезапустить и применить" })).toBeEnabled();
   fireEvent.click(screen.getByRole("button", { name: "Перезапустить и применить" }));
   expect(screen.getByRole("dialog", { name: "Перезапустить сервер?" })).toBeInTheDocument();
   expect(screen.getByText(/Текущие MCP-сеансы будут разорваны/)).toBeInTheDocument();

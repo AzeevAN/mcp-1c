@@ -25,6 +25,7 @@ import {
   useSources,
 } from "../shared/api/sources";
 import { StatusBadge, type StatusTone } from "../shared/ui/StatusBadge";
+import { ReferenceSidebar } from "./ReferenceSidebar";
 import { SourcesAdminPanel } from "./SourcesAdminPanel";
 
 const sourceKindLabel: Record<SourceItem["kind"], string> = {
@@ -539,30 +540,33 @@ export function SourcesPage() {
 
       <div className="sources-layout">
         <aside className="sources-master" aria-label="Выбор источника">
-          <div className="sources-master-title"><span>Конфигурации</span><strong>{configurations.length}</strong></div>
-          <div className="configuration-nav-list">
-            {configurations.map((configuration) => (
-              <ConfigurationNavItem
-                key={configuration.id}
-                configuration={configuration}
-                selected={selected?.id === configuration.id}
-                onSelect={() => select(configuration.id)}
-              />
-            ))}
-          </div>
-
-          <div className="references-title">Общие источники</div>
-          <div className="reference-list">
-            {query.data?.references.length
-              ? query.data.references.map((source) => (
-                <ReferenceRow
-                  source={source}
-                  key={source.id}
-                  onRemove={query.data.permissions.admin ? setRemovalTarget : undefined}
+          <div className="sources-master-scroll">
+            <div className="sources-master-title"><span>Конфигурации</span><strong>{configurations.length}</strong></div>
+            <div className="configuration-nav-list">
+              {configurations.map((configuration) => (
+                <ConfigurationNavItem
+                  key={configuration.id}
+                  configuration={configuration}
+                  selected={selected?.id === configuration.id}
+                  onSelect={() => select(configuration.id)}
                 />
-              ))
-              : <span className="reference-empty">Справочники не загружены</span>}
+              ))}
+            </div>
+
+            <div className="references-title">Общие источники</div>
+            <div className="reference-list">
+              {query.data?.references.length
+                ? query.data.references.map((source) => (
+                  <ReferenceRow
+                    source={source}
+                    key={source.id}
+                    onRemove={query.data.permissions.admin ? setRemovalTarget : undefined}
+                  />
+                ))
+                : <span className="reference-empty">Справочники не загружены</span>}
+            </div>
           </div>
+          <ReferenceSidebar admin={query.data?.permissions.admin ?? false} />
         </aside>
 
         <main className="sources-detail">

@@ -103,9 +103,10 @@ function queryString(values: Record<string, string | number | boolean | undefine
   return params.toString();
 }
 
-export function useReferenceStatus() {
+export function useReferenceStatus(enabled = true) {
   return useQuery({
     queryKey: ["reference", "status"],
+    enabled,
     queryFn: async () => responseJson<ReferenceAdminState>(
       await fetch("/api/v1/reference"),
     ),

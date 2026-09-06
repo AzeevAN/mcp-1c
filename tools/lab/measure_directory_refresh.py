@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import cProfile
 import json
 import platform
 import resource
@@ -48,11 +49,14 @@ def synthetic(root: Path, modules: int, kib: int) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, help="Корень реальной выгрузки; только копируется")
+    parser.add_argument("--profile-dir", type=Path, help="Профили cProfile по стадиям; профилирование замедляет прогон")
     parser.add_argument("--modules", type=int, default=1024)
     parser.add_argument("--kib", type=int, default=256)
     args = parser.parse_args()
     if args.modules < 1 or args.kib < 1:
         parser.error("Размеры должны быть положительными")
+    if args.profile_dir:
+        args.profile_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="mcp1c-directory-bench-") as temporary:
         workdir = Path(temporary)
         source = workdir / "mounts" / "config-bench"
@@ -88,9 +92,13 @@ def main() -> None:
 
         def measured(stage, operation):
             start = time.perf_counter()
-            result = operation()
+            profiler = cProfile.Profile() if args.profile_dir else None
+            result = profiler.runcall(operation) if profiler else operation()
+            elapsed = time.perf_counter() - start
+            if profiler:
+                profiler.dump_stats(args.profile_dir / (stage.replace("/", "-") + ".prof"))
             scale = 2**20 if sys.platform == "darwin" else 1024
-            print(json.dumps({"stage": stage, "seconds": round(time.perf_counter() - start, 6),
+            print(json.dumps({"stage": stage, "seconds": round(elapsed, 6),
                               "process_peak_rss_mib": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / scale, 2)}), flush=True)
             return result
 

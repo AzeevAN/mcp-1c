@@ -625,6 +625,12 @@ preview ZIP остаётся в общем блоке. Закрытие окна
 .venv/bin/python tools/lab/measure_directory_refresh.py --modules 1024 --kib 256 > /tmp/directory-synthetic.jsonl
 ```
 
+Для разбора затрат добавьте `--profile-dir /tmp/directory-profile`: стенд сохранит
+отдельный cProfile для каждой стадии. Откройте профиль командой
+`.venv/bin/python -m pstats /tmp/directory-profile/unchanged-prepare.prof`,
+затем введите `sort cumulative` и `stats 20`. Профилирование само замедляет выполнение: его время нельзя сравнивать
+с обычным прогоном как результат оптимизации. Файлы профилей сохраняйте локально.
+
 `SettingsStorages` в текущий приём source B намеренно не входят целиком:
 дескрипторы, `Form.xml`, модуль менеджера и модули форм отбрасываются до
 coverage и не создают ошибку или статус частичного разбора. Прежний частичный

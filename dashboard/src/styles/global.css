@@ -1405,6 +1405,7 @@ a:focus-visible {
 
 .access-badge,
 .session-action,
+.repository-link,
 .theme-toggle {
   min-height: 34px;
   display: inline-flex;
@@ -1436,6 +1437,7 @@ a:focus-visible {
   cursor: pointer;
 }
 
+.repository-link,
 .theme-toggle {
   width: 34px;
   padding: 0;
@@ -1445,9 +1447,18 @@ a:focus-visible {
   cursor: pointer;
 }
 
+.repository-link:hover,
 .theme-toggle:hover {
   border-color: var(--blue);
   color: var(--blue-deep);
+}
+
+.repository-link:focus-visible,
+.theme-toggle:focus-visible {
+  outline: none;
+  border-color: var(--blue);
+  color: var(--blue-deep);
+  box-shadow: 0 0 0 3px rgba(77, 143, 247, 0.13);
 }
 
 .session-action:hover {

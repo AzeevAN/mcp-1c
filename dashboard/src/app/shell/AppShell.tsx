@@ -5,6 +5,7 @@ import {
   CircleGauge,
   DatabaseZap,
   GitBranch,
+  Github,
   LogIn,
   LogOut,
   Library,
@@ -116,6 +117,16 @@ export function AppShell() {
             <strong>Данные MCP-сервера</strong>
           </div>
           <div className="topbar-actions">
+            <a
+              className="repository-link"
+              href="https://github.com/AzeevAN/mcp-1c"
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="Открыть проект mcp-1c на GitHub"
+              title="Открыть проект mcp-1c на GitHub"
+            >
+              <Github size={16} aria-hidden="true" />
+            </a>
             <button
               className="theme-toggle"
               type="button"

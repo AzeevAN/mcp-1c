@@ -30,13 +30,13 @@
 | Роли | объявленные права из native generation; без готового слоя две role-ручки отсутствуют |
 | Дашборд | современная SPA включена по умолчанию; светлая и тёмная темы; `on` либо `off` |
 | Авторизация Docker | два разных обязательных токена: `API_TOKEN` на чтение, `ADMIN_TOKEN` на запись |
-| Тесты | `.venv/bin/python -m pytest`, 2174 |
+| Тесты | `.venv/bin/python -m pytest`, 2176 |
 
 Воспроизводимый прогон:
 
 ```bash
 .venv/bin/pip install --require-hashes -r requirements-dev-lock.txt
-.venv/bin/python -m pytest          # 2174 тестов (прогон 2026-09-06)
+.venv/bin/python -m pytest          # 2176 тестов (прогон 2026-09-06)
 ```
 
 ## Навигация
@@ -89,15 +89,17 @@
 - получает готовый образ `ghcr.io/azeevan/mcp-1c:2.2.0` без локальной сборки;
 - запускает процесс как UID/GID `10001:10001`;
 - монтирует подготовленный каталог хоста в `/data`;
-- публикует порт только на `127.0.0.1`;
+- по умолчанию публикует порт только на `127.0.0.1`, а прямой HTTP требует
+  явного сетевого bind;
 - включает `no-new-privileges` и удаляет все Linux capabilities;
 - ограничивает Docker JSON-логи тремя файлами по 10 МиБ;
 - требует два разных безопасных токена до старта;
 - запускает современный дашборд по умолчанию.
 
-Один образ работает с `MCP1C_DASHBOARD=on|off`; серверный HTML удалён. Для внешнего
-доступа за уже настроенным HTTPS reverse proxy используется
-`MCP1C_ACCESS=https-proxy`; отдельного Compose-файла и встроенного proxy нет.
+Один образ работает с `MCP1C_DASHBOARD=on|off`; серверный HTML удалён.
+`MCP1C_ACCESS=http` явно публикует обычный HTTP в доверенной сети или облаке,
+а `https-proxy` работает за уже настроенным HTTPS reverse proxy. Отдельного
+Compose-файла и встроенного proxy нет.
 
 Есть два поддержанных способа получить этот образ:
 
@@ -164,6 +166,7 @@ cp .env.example .env
 
 ```dotenv
 MCP1C_DATA_DIR=/srv/mcp1c/data
+MCP1C_BIND_ADDRESS=127.0.0.1
 MCP1C_PORT=5001
 MCP1C_IMAGE=ghcr.io/azeevan/mcp-1c:2.2.0
 MCP1C_DASHBOARD=on
@@ -196,19 +199,21 @@ chmod 0600 .env
 | Переменная | Назначение | По умолчанию |
 |---|---|---|
 | `MCP1C_DATA_DIR` | bind source на машине Docker | `./data` |
-| `MCP1C_PORT` | loopback-порт хоста | `5001` |
+| `MCP1C_BIND_ADDRESS` | интерфейс хоста: loopback, конкретный IP либо все интерфейсы | `127.0.0.1` |
+| `MCP1C_PORT` | опубликованный порт хоста | `5001` |
 | `MCP1C_IMAGE` | готовый OCI-образ или точный digest | `ghcr.io/azeevan/mcp-1c:2.2.0` |
 | `API_TOKEN` | чтение MCP и дашборда | обязателен |
 | `ADMIN_TOKEN` | загрузка, удаление, incoming, словарь, reload | обязателен и отличается от `API_TOKEN` |
 | `MCP1C_DASHBOARD` | `on` — SPA, `off` — без UI | `on` |
-| `MCP1C_ACCESS` | `local` либо `https-proxy` | `local` |
+| `MCP1C_ACCESS` | `local`, прямой `http` либо `https-proxy` | `local` |
 | `MCP1C_REFERENCE_ARTIFACT` | `off`, пусто либо путь к `.mcp1cref` внутри контейнера | пусто: управляемый `data/reference/reference.mcp1cref` |
 | `MCP1C_ALLOW_SELF_RESTART` | разрешить admin-дашборду завершить процесс для возврата внешним supervisor | Compose: `1`; bare-запуск: выключено |
 
 Прежнее значение `spa` переименовано в `on`. У удалённого серверного
 HTML-режима прямой замены нет: выберите `on` для SPA либо `off` без UI.
-`https-proxy` не открывает порт наружу и не запускает TLS — он только разрешает
-серверу доверять заголовкам от внешнего proxy на той же машине.
+`http` не включает шифрование: доступность определяют `MCP1C_BIND_ADDRESS`,
+маршрутизация и firewall. `https-proxy` не открывает порт наружу и не запускает
+TLS — он только разрешает серверу доверять заголовкам от внешнего proxy.
 
 Обхода подписи в публикуемом runtime нет: неподписанная SQLite всегда получает
 `untrusted` и не открывается сервером.
@@ -999,13 +1004,41 @@ curl --fail --show-error \
 В режиме без UI запрос `/` должен вернуть `404`; это ожидаемая проверка, а не
 ошибка запуска.
 
-## 8. Удалённый сервер через HTTPS
+## 8. Прямой HTTP в доверенной сети
+
+Один и тот же режим подходит для корпоративной сети, VPN и облака. Он не
+доверяет `X-Forwarded-*` и не требует сертификата. Укажите в `.env`:
+
+```dotenv
+MCP1C_ACCESS=http
+MCP1C_BIND_ADDRESS=0.0.0.0
+MCP1C_PORT=80
+```
+
+Вместо `0.0.0.0` можно указать конкретный адрес интерфейса, например
+`192.168.0.5`. Затем примените конфигурацию:
+
+```bash
+docker compose up -d --force-recreate
+```
+
+Docker направит внешний порт `80` на внутренний `8000`; процесс контейнера
+останется непривилегированным. Клиент подключается к
+`http://192.168.0.5/mcp` либо к DNS-имени с тем же протоколом.
+
+В прямом HTTP `API_TOKEN`, `ADMIN_TOKEN` и предметные ответы передаются без
+шифрования. Режим включается явно и при старте пишет предупреждение. Ограничьте
+порт доверенными подсетями через firewall или cloud security group. Для
+недоверенной сети используйте HTTPS proxy.
+
+## 9. Удалённый сервер через HTTPS
 
 Backend намеренно остаётся на `127.0.0.1`. Наружу его публикует TLS reverse
 proxy на той же машине. В `.env` выберите:
 
 ```dotenv
 MCP1C_ACCESS=https-proxy
+MCP1C_BIND_ADDRESS=127.0.0.1
 ```
 
 Затем примените тот же единственный файл:
@@ -1026,7 +1059,7 @@ mcp.example.com {
 ```
 
 Клиент подключается к `https://mcp.example.com/mcp`. Порт `5001` в firewall
-наружу не открывается. Не добавляйте `0.0.0.0:5001:8000` и не включайте
+наружу не открывается. Не задавайте `MCP1C_BIND_ADDRESS=0.0.0.0` и не включайте
 `MCP1C_ACCESS=https-proxy` при прямом доступе клиента к backend: иначе клиент
 сможет подделать схему запроса.
 
@@ -1045,7 +1078,7 @@ curl --fail --show-error https://mcp.example.com/health
 того, как запрос дойдёт до MCP-сервера. Остальные серверные маршруты сохраняют
 меньшие собственные лимиты.
 
-## 9. Переключение режима, обновление и остановка
+## 10. Переключение режима, обновление и остановка
 
 Посмотреть итоговую конфигурацию выбранного режима:
 
@@ -1079,7 +1112,7 @@ docker compose down
 Команды не используют `down -v`: у проекта нет named volume, но привычка
 удалять volumes опасна при дальнейшем расширении Compose.
 
-## 10. Резервная копия и перенос
+## 11. Резервная копия и перенос
 
 Для согласованной файловой копии остановите writer, сохраните числовых
 владельцев и запустите тот же режим снова:
@@ -1097,7 +1130,7 @@ docker compose start mcp1c
 только `registry.json` без его источников и индексов создаёт несогласованную
 установку.
 
-## 11. Диагностика запуска
+## 12. Диагностика запуска
 
 ### `bind source path does not exist`
 
@@ -1191,7 +1224,9 @@ PYTHONPATH=src .venv/bin/python -m mcp1c.server \
 ошибки проверки до старта.
 
 Bare-запуск также принимает `MCP1C_DASHBOARD=on|off` (по умолчанию `on`) и
-`MCP1C_ACCESS=local|https-proxy` (по умолчанию `local`). Флаг
+`MCP1C_ACCESS=local|http|https-proxy` (по умолчанию `local`). Для прямого
+сетевого HTTP передайте `--host 0.0.0.0` либо конкретный IP; переменная
+`MCP1C_BIND_ADDRESS` относится только к Compose. Флаг
 `--require-tokens` включает ту же строгую проверку `API_TOKEN` и `ADMIN_TOKEN`,
 что всегда действует в официальном образе.
 
@@ -1473,7 +1508,8 @@ reg-search-procedures  reg-get-procedure  reg-get-callers
 ```
 
 `python -m mcp1c.server` поддерживает `--data`, `--transport`, `--host`,
-`--port`, `--trust-proxy-headers`, `--require-writable-data`.
+`--port`, `--trust-proxy-headers`, `--require-writable-data`,
+`--require-tokens`.
 
 `python -m mcp1c.bench` поддерживает `--data`, `--sets`, `--auto`, `--config`,
 `--extension`, `--limit`, `--save`, `--baseline`, `--check-notes` и домены
@@ -1490,7 +1526,8 @@ reg-search-procedures  reg-get-procedure  reg-get-callers
 |---|---|
 | `API_TOKEN` | закрывает MCP, страницы и API чтения |
 | `ADMIN_TOKEN` | включает маршруты изменения; без него они отвечают 404 |
-| Loopback bind | Compose не публикует backend во внешнюю сеть |
+| Loopback bind | значение по умолчанию не публикует backend во внешнюю сеть |
+| Прямой HTTP | требует явных `http` и сетевого bind; токены идут без шифрования |
 | HTTPS profile | требует оба токена и доверяет proxy-заголовкам явно |
 | Non-root | процесс контейнера — `10001:10001` |
 | Filesystem | bind существует заранее, write probe выполняется до Registry |

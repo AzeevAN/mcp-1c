@@ -14,7 +14,9 @@ def _compose() -> str:
 def test_compose_по_умолчанию_публикует_порт_только_на_loopback():
     compose = _compose()
 
-    assert '"127.0.0.1:${MCP1C_PORT:-5001}:8000"' in compose
+    assert "target: 8000" in compose
+    assert 'published: "${MCP1C_PORT:-5001}"' in compose
+    assert 'host_ip: "${MCP1C_BIND_ADDRESS:-127.0.0.1}"' in compose
     assert '- "5001:8000"' not in compose
     assert '"0.0.0.0:5001:8000"' not in compose
 
@@ -59,7 +61,7 @@ def test_образ_содержит_один_runtime_и_современный_
     assert "AS runtime-dashboard" not in dockerfile
 
 
-def test_compose_задаёт_два_режима_без_override_файлов():
+def test_compose_задаёт_три_режима_без_override_файлов():
     compose = _compose()
 
     assert "MCP1C_DASHBOARD: ${MCP1C_DASHBOARD:-on}" in compose

@@ -24,7 +24,7 @@ CLI остаётся полным административным интерф�
 
 ```text
 server.py             /mcp, /health, /admin/reload и подключение UI
-runtime_config.py     on/off, local/https-proxy и Docker auth contract
+runtime_config.py     on/off, local/http/https-proxy и Docker auth contract
 dashboard_runtime.py  /api/v1, login/logout и package-local SPA
 dashboard_backend.py  auth, multipart, jobs, incoming и общие операции
 dashboard/            React/Vite, состояние интерфейса и компоненты
@@ -70,11 +70,12 @@ React не читает и не монтирует `data/`. Все операц�
 | `MCP1C_DASHBOARD` | `on` | JSON API и SPA зарегистрированы |
 | `MCP1C_DASHBOARD` | `off` | UI и `/api/v1/*` отвечают 404; MCP и health работают |
 | `MCP1C_ACCESS` | `local` | forwarded-заголовки не считаются доверенными |
+| `MCP1C_ACCESS` | `http` | прямой HTTP без TLS; forwarded-заголовки не считаются доверенными |
 | `MCP1C_ACCESS` | `https-proxy` | доверяется origin, восстановленный proxy headers |
 
 Неизвестное или пустое значение останавливает запуск до bind порта. Внешний
-HTTPS reverse proxy не входит в образ или Compose. Порт хоста в обоих режимах
-остаётся на `127.0.0.1`.
+HTTPS reverse proxy не входит в образ или Compose. Порт хоста по умолчанию
+остаётся на `127.0.0.1`; прямой HTTP требует явного сетевого bind в Compose.
 
 ## Маршруты
 
@@ -185,5 +186,5 @@ npm run typecheck
 npm run build
 ```
 
-Приёмка образа дополнительно запускает один image ID в четырёх сочетаниях
-`on/off` × `local/https-proxy` и доказывает, что MCP не зависит от UI.
+Приёмка образа дополнительно запускает один image ID в шести сочетаниях
+`on/off` × `local/http/https-proxy` и доказывает, что MCP не зависит от UI.

@@ -60,6 +60,7 @@ from .role_access_service import (
     get_role_access_payload,
 )
 from .runtime_config import (
+    ACCESS_HTTP,
     ACCESS_HTTPS_PROXY,
     AccessModeError,
     TokenConfigurationError,
@@ -1365,6 +1366,14 @@ def main(argv: list[str] | None = None) -> int:
             require_tokens()
     except (AccessModeError, TokenConfigurationError) as error:
         parser.error(str(error))
+
+    if args.transport != "stdio" and access == ACCESS_HTTP:
+        print(
+            "Предупреждение: MCP1C_ACCESS=http включает прямой HTTP без TLS. "
+            "API_TOKEN и ADMIN_TOKEN передаются по сети без шифрования; "
+            "ограничьте доступ средствами сети и firewall.",
+            file=sys.stderr,
+        )
 
     if args.require_writable_data:
         try:

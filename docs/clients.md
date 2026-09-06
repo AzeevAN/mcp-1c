@@ -1,8 +1,9 @@
 # Подключение MCP-клиентов
 
-HTTP endpoint сервера — `http://127.0.0.1:5001/mcp` для локального запуска или
-`https://mcp.example.com/mcp` за TLS reverse proxy. Транспорт —
-Streamable HTTP. Устаревший SSE не поддерживается.
+HTTP endpoint сервера — `http://127.0.0.1:5001/mcp` для локального запуска,
+`http://192.168.0.5/mcp` для явно разрешённого прямого HTTP или
+`https://mcp.example.com/mcp` за TLS reverse proxy. Транспорт — Streamable
+HTTP. Устаревший SSE не поддерживается.
 
 ## Что происходит при подключении
 

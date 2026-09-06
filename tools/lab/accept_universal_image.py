@@ -38,6 +38,8 @@ from mcp.client.streamable_http import streamable_http_client
 MODES = (
     ("on", "local"),
     ("off", "local"),
+    ("on", "http"),
+    ("off", "http"),
     ("on", "https-proxy"),
     ("off", "https-proxy"),
 )
@@ -281,6 +283,7 @@ def _start_mode(
     api_token: str,
     admin_token: str,
 ) -> None:
+    publish = "0.0.0.0::8000" if access == "http" else "127.0.0.1::8000"
     _run(
         [
             "docker",
@@ -292,7 +295,7 @@ def _start_mode(
             "--tmpfs",
             "/data:rw,uid=10001,gid=10001,mode=0750",
             "--publish",
-            "127.0.0.1::8000",
+            publish,
             "--env",
             f"API_TOKEN={api_token}",
             "--env",
@@ -379,6 +382,25 @@ def _compose_contract(image: str, api_token: str, admin_token: str) -> int:
                 raise AssertionError("Compose принял отсутствующий обязательный токен.")
         valid = {**base, "API_TOKEN": api_token, "ADMIN_TOKEN": admin_token}
         _run(command, env=valid)
+        direct_http = {
+            **valid,
+            "MCP1C_ACCESS": "http",
+            "MCP1C_BIND_ADDRESS": "0.0.0.0",
+            "MCP1C_PORT": "80",
+        }
+        rendered = json.loads(
+            _run(
+                [*command[:-1], "--format", "json"], env=direct_http
+            ).stdout
+        )
+        ports = rendered["services"]["mcp1c"]["ports"]
+        if not any(
+            item.get("host_ip") == "0.0.0.0"
+            and item.get("published") == "80"
+            and item.get("target") == 8000
+            for item in ports
+        ):
+            raise AssertionError("Compose не опубликовал прямой HTTP на 0.0.0.0:80.")
     return 2
 
 
@@ -434,7 +456,11 @@ def _accept_mode(
 ) -> dict:
     inspected = _inspect(name)
     state = inspected["State"]
-    port = int(inspected["NetworkSettings"]["Ports"]["8000/tcp"][0]["HostPort"])
+    bindings = inspected["NetworkSettings"]["Ports"]["8000/tcp"]
+    port = int(bindings[0]["HostPort"])
+    expected_host = "0.0.0.0" if access == "http" else "127.0.0.1"
+    if expected_host not in {binding["HostIp"] for binding in bindings}:
+        raise AssertionError("Порт опубликован не на интерфейсе access mode.")
     if inspected["Config"]["User"] != "10001:10001":
         raise AssertionError("Неверный image user.")
     if state["Restarting"] or state["OOMKilled"] or inspected["RestartCount"] != 0:
@@ -505,6 +531,7 @@ def _accept_mode(
         "tools": len(tools),
         "uid_gid": f"{uid}:{gid}",
         "health": state["Health"]["Status"],
+        "host_ip": expected_host,
         "ui": page_status,
         "api": api_status,
         "https_proxy": proxy_status,

@@ -12,8 +12,9 @@ DASHBOARD_OFF = "off"
 DASHBOARD_MODES = (DASHBOARD_ON, DASHBOARD_OFF)
 
 ACCESS_LOCAL = "local"
+ACCESS_HTTP = "http"
 ACCESS_HTTPS_PROXY = "https-proxy"
-ACCESS_MODES = (ACCESS_LOCAL, ACCESS_HTTPS_PROXY)
+ACCESS_MODES = (ACCESS_LOCAL, ACCESS_HTTP, ACCESS_HTTPS_PROXY)
 
 MIN_TOKEN_CHARS = 32
 _TOKEN_CHARS = frozenset(string.ascii_letters + string.digits + string.punctuation)
@@ -61,12 +62,12 @@ def dashboard_mode(environ: Mapping[str, str] | None = None) -> str:
 
 
 def access_mode(environ: Mapping[str, str] | None = None) -> str:
-    """Выбрать прямой loopback либо доверенный внешний HTTPS proxy."""
+    """Выбрать loopback, прямой HTTP либо доверенный внешний HTTPS proxy."""
     source = os.environ if environ is None else environ
     mode = source.get("MCP1C_ACCESS", ACCESS_LOCAL).strip().lower()
     if mode not in ACCESS_MODES:
         raise AccessModeError(
-            "MCP1C_ACCESS должен быть одним из: local, https-proxy. "
+            "MCP1C_ACCESS должен быть одним из: local, http, https-proxy. "
             f"Получено: {mode or '<пусто>'}."
         )
     return mode

@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from mcp1c.runtime_config import (
+    ACCESS_HTTP,
     ACCESS_HTTPS_PROXY,
     ACCESS_LOCAL,
     DASHBOARD_OFF,
@@ -45,14 +46,14 @@ def test_access_по_умолчанию_остаётся_local():
     assert access_mode({}) == ACCESS_LOCAL
 
 
-@pytest.mark.parametrize("mode", [ACCESS_LOCAL, ACCESS_HTTPS_PROXY])
-def test_access_принимает_две_явные_топологии(mode):
+@pytest.mark.parametrize("mode", [ACCESS_LOCAL, ACCESS_HTTP, ACCESS_HTTPS_PROXY])
+def test_access_принимает_три_явные_топологии(mode):
     assert access_mode({"MCP1C_ACCESS": mode}) == mode
 
 
 @pytest.mark.parametrize("mode", ["", "remote", "on", "proxy"])
 def test_access_отклоняет_неявные_и_неизвестные_значения(mode):
-    with pytest.raises(AccessModeError, match="local, https-proxy"):
+    with pytest.raises(AccessModeError, match="local, http, https-proxy"):
         access_mode({"MCP1C_ACCESS": mode})
 
 

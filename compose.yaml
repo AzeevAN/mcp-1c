@@ -12,8 +12,12 @@ services:
     cap_drop:
       - ALL
     ports:
-      # Даже за внешним HTTPS proxy backend остаётся доступен только хосту.
-      - "127.0.0.1:${MCP1C_PORT:-5001}:8000"
+      # По умолчанию backend доступен только хосту. Прямой HTTP публикуется
+      # явным MCP1C_BIND_ADDRESS=0.0.0.0 либо адресом нужного интерфейса.
+      - target: 8000
+        published: "${MCP1C_PORT:-5001}"
+        host_ip: "${MCP1C_BIND_ADDRESS:-127.0.0.1}"
+        protocol: tcp
     volumes:
       - type: bind
         source: ${MCP1C_DATA_DIR:-./data}
@@ -34,7 +38,7 @@ services:
       ADMIN_TOKEN: ${ADMIN_TOKEN:?Укажите ADMIN_TOKEN в .env}
       # Современный дашборд включён по умолчанию; `off` оставляет только MCP.
       MCP1C_DASHBOARD: ${MCP1C_DASHBOARD:-on}
-      # `https-proxy` доверяет X-Forwarded-* от внешнего локального TLS proxy.
+      # Только `https-proxy` доверяет X-Forwarded-* от внешнего TLS proxy.
       MCP1C_ACCESS: ${MCP1C_ACCESS:-local}
       MCP1C_REFERENCE_ARTIFACT: ${MCP1C_REFERENCE_ARTIFACT:-}
       MCP1C_ALLOW_SELF_RESTART: ${MCP1C_ALLOW_SELF_RESTART:-1}

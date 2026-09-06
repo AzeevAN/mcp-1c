@@ -10,10 +10,12 @@ from tools.lab.accept_universal_image import BAD_ENVIRONMENTS, MODES
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_acceptance_matrix_содержит_ровно_четыре_runtime_режима() -> None:
+def test_acceptance_matrix_содержит_ровно_шесть_runtime_режимов() -> None:
     assert set(MODES) == {
         ("on", "local"),
         ("off", "local"),
+        ("on", "http"),
+        ("off", "http"),
         ("on", "https-proxy"),
         ("off", "https-proxy"),
     }
@@ -40,6 +42,8 @@ def test_acceptance_проверяет_mcp_proxy_tokens_и_один_image_id() -
         "streamable_http_client",
         "session.initialize()",
         "session.list_tools()",
+        '"0.0.0.0::8000"',
+        '"MCP1C_BIND_ADDRESS": "0.0.0.0"',
         '"; Secure"',
         '"X-Forwarded-Proto": "https"',
         '"10001:10001"',

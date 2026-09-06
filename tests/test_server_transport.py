@@ -208,6 +208,40 @@ def test_http_доверяет_proxy_по_native_runtime_переменной(tm
     assert параметры["trust_proxy_headers"] is True
 
 
+def test_прямой_http_не_доверяет_proxy_и_предупреждает_о_tls(
+    tmp_path, monkeypatch, capsys
+):
+    class FakeRegistry:
+        configurations = [object()]
+
+        def __init__(self, data):
+            self.data = data
+
+        def startup(self):
+            return []
+
+        def snapshot(self):
+            return self
+
+    параметры = {}
+    monkeypatch.setenv("MCP1C_ACCESS", "http")
+    monkeypatch.setattr(server_module, "Registry", FakeRegistry)
+    monkeypatch.setattr(
+        server_module, "build_server", lambda registry, **kwargs: object()
+    )
+    monkeypatch.setattr(
+        server_module,
+        "_run_streamable_http",
+        lambda server, **kwargs: параметры.update(kwargs),
+    )
+
+    assert server_module.main(["--data", str(tmp_path)]) == 0
+    assert параметры["trust_proxy_headers"] is False
+    stderr = capsys.readouterr().err
+    assert "MCP1C_ACCESS=http" in stderr
+    assert "без TLS" in stderr
+
+
 def test_require_tokens_останавливает_сервер_до_registry(tmp_path, monkeypatch):
     monkeypatch.delenv("API_TOKEN", raising=False)
     monkeypatch.delenv("ADMIN_TOKEN", raising=False)

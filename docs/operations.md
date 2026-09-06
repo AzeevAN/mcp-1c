@@ -332,6 +332,7 @@ PYTHONPATH=src .venv/bin/python -m mcp1c.bench \
 | `--port PORT` | порт HTTP, по умолчанию `8000` |
 | `--trust-proxy-headers` | доверять `X-Forwarded-*` только за своим reverse proxy |
 | `--require-writable-data` | создать рабочие подкаталоги и проверить запись; Docker включает автоматически |
+| `--require-tokens` | до старта потребовать разные безопасные `API_TOKEN` и `ADMIN_TOKEN`; Docker включает автоматически |
 
 ```bash
 PYTHONPATH=src .venv/bin/python -m mcp1c.server \
@@ -341,6 +342,10 @@ PYTHONPATH=src .venv/bin/python -m mcp1c.server \
 Флаг проверки записи отделён намеренно: контейнер — изменяемый сервер и обязан
 уметь загружать источники, тогда как локальный `stdio` можно осознанно
 направить на уже готовый read-only Registry.
+
+`MCP1C_ACCESS=local|http|https-proxy` задаёт доверие к сетевой топологии.
+Для bare-запуска прямой `http` дополнительно требует `--host 0.0.0.0` либо
+конкретный IP; Compose вместо этого использует `MCP1C_BIND_ADDRESS`.
 
 ## Источники данных
 

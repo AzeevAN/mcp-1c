@@ -182,11 +182,12 @@ Compose без запуска контейнера:
 docker compose -f compose.yaml config --quiet
 ```
 
-Docker runtime проверяется четырьмя сочетаниями одного image ID:
-`on/off` × `local/https-proxy`. В каждом запуске проверяются состояние
+Docker runtime проверяется шестью сочетаниями одного image ID:
+`on/off` × `local/http/https-proxy`. В каждом запуске проверяются состояние
 `healthy`, UID/GID процесса, запись в `/data`, `/health`, MCP, наличие или
-отсутствие UI и сохранение Registry после пересоздания. Порт хоста остаётся
-привязан к loopback; внешний HTTPS proxy не входит в Compose.
+отсутствие UI и сохранение Registry после пересоздания. `local` и
+`https-proxy` публикуются на loopback, `http` — на всех интерфейсах; внешний
+HTTPS proxy не входит в Compose.
 
 Полная изолированная матрица использует только временный `tmpfs /data`,
 поднимает временный TLS proxy и удаляет свои контейнеры после проверки:
@@ -196,7 +197,7 @@ python3 tools/build_image.py mcp1c:accept
 .venv/bin/python tools/lab/accept_universal_image.py mcp1c:accept
 ```
 
-Между четырьмя режимами образ не пересобирается; скрипт сравнивает один image
+Между шестью режимами образ не пересобирается; скрипт сравнивает один image
 ID, MCP version/tools, `on/off`, forwarded headers, Secure cookie, плохие
 значения режимов, обязательный token contract и точный manifest файлов
 runtime. Рабочий `data/` он не монтирует.

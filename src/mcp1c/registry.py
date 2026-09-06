@@ -4451,6 +4451,18 @@ class Registry:
                 raise RegistryError("active generation изменился до composition")
         return self._generation_store.payload_sources(pointer)
 
+    def preview_active_extension_relations(
+        self, expected: GenerationPointer,
+    ) -> tuple[ExtensionRelation, ...]:
+        """Посчитать влияние раннего no-op под защитой от смены поколения."""
+        with self._generation_mutation_lock:
+            if self.active_generation_pointer(expected.identity) != expected:
+                raise RegistryError("active generation изменился после preview")
+            manifest = self.active_generation(expected.identity)
+            return self.preview_extension_relations(
+                self.data_dir / expected.root_path, manifest,
+            )
+
     def preview_extension_relations(
         self,
         generation_root: str | Path,

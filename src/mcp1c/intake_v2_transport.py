@@ -1191,6 +1191,18 @@ class DirectoryExportTree:
             self._source_sha256 = digest.hexdigest()
             return self._source_sha256
 
+    def probe_sha256(self, expected: str) -> str:
+        # source_sha256 уже завершает свежее чтение проверкой всего дерева.
+        # При использовании готового хеша нужна новая проверка стабильности.
+        with self._lock:
+            cached = self._source_sha256 is not None
+            if expected != self._snapshot.fingerprint:
+                raise TransportUnstableError("снимок каталога не совпадает")
+            result = self.source_sha256()
+            if cached and not self.verify_stable(expected):
+                raise TransportUnstableError("каталог изменился после хеширования")
+            return result
+
     def verify_stable(self, expected: str) -> bool:
         if not isinstance(expected, str) or expected != self._snapshot.fingerprint:
             return False

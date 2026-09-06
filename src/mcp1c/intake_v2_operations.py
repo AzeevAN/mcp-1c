@@ -13,7 +13,7 @@ import re
 import shutil
 import stat
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Mapping
@@ -470,6 +470,50 @@ class IntakePreview:
         return GenerationPointer.for_manifest(self.active.manifest)
 
 
+
+def _reuse_active(
+    candidate: ExportCandidate,
+    active: GenerationView | None,
+    action: IntakeAction,
+) -> bool:
+    """Пропустить разбор только при полном совпадении входа и происхождения слоёв."""
+    from . import intake_v2_collector as collector
+    from . import intake_v2_generation as generation
+    from .intake_v2 import LayerSourceProfile
+
+    if action is not IntakeAction.UPDATE_FULL or active is None or active.manifest is None:
+        return False
+    manifest = active.manifest
+    # Сохранённая структура A и composition требуют обычного planner после разбора.
+    if active != native_generation_view(manifest):
+        return False
+    if (
+        candidate.identity != manifest.identity
+        or candidate.raw_sha256 != manifest.raw_sha256
+        or candidate.transport != manifest.source_transport
+        or candidate.origin_name != manifest.origin_name
+        or manifest.parser_version != generation.GENERATION_PARSER_VERSION
+        or manifest.selection_version != collector.SELECTION_VERSION
+    ):
+        return False
+    if {layer.kind for layer in manifest.layers} != set(LayerKind):
+        return False
+    for layer in manifest.layers:
+        provenance = layer.provenance
+        if (
+            layer.state is not LayerState.READY
+            or provenance is None
+            or provenance.profile is not LayerSourceProfile.SOURCE_B
+            or provenance.raw_sha256 != manifest.raw_sha256
+            or provenance.transport != manifest.source_transport
+            or provenance.origin_name != manifest.origin_name
+            or provenance.parser_version != manifest.parser_version
+            or provenance.selection_version != manifest.selection_version
+        ):
+            return False
+    return True
+
+
 class IntakeCoordinator:
     """Последовательно строит и восстанавливает preview одной операции."""
 
@@ -883,6 +927,7 @@ class IntakeCoordinator:
                     "materialized_root",
                 ),
                 "manifest": preview.materialized.manifest.to_dict(),
+                "reuse_active": not preview.materialized.payloads and preview.plan.no_op,
                 "payloads": _payloads_to_dict(operation_root, preview.materialized),
             },
             limit=_MAX_PREVIEW_RECORD_BYTES,
@@ -922,6 +967,18 @@ class IntakeCoordinator:
             )
             if current != candidate:
                 raise OperationError("virtual tree изменился после durable probe")
+
+            if _reuse_active(current, request.active, request.action):
+                manifest = replace(request.active.manifest, generation_id=request.generation_id)
+                destination = operation_root / "generation"
+                destination.mkdir()
+                materialized = MaterializedGeneration(destination, manifest, {})
+                preview = IntakePreview(job.job_id, job.candidate_id, request.action, request.active, materialized)
+                if not preview.plan.no_op:
+                    raise OperationError("повторное использование требует no-op")
+                self._write_preview(preview, operation_root)
+                self._save_job(job.transition(CandidateJobState.DONE, result=preview.job_id))
+                return preview
 
             collection = collect_source_b(
                 tree,
@@ -1045,10 +1102,19 @@ class IntakeCoordinator:
             if materialized_root.is_symlink() or not materialized_root.is_dir():
                 raise OperationError("materialized_root preview недоступен")
             manifest = _manifest_from_dict(payload["manifest"])
+            reuse = payload.get("reuse_active", False)
+            if not isinstance(reuse, bool):
+                raise OperationError("reuse_active должен быть boolean")
+            if reuse:
+                candidate = self.records.load_candidate(job.candidate_id)
+                if (not _reuse_active(candidate, request.active, request.action)
+                        or manifest != replace(request.active.manifest, generation_id=request.generation_id)
+                        or payload["payloads"] != {}):
+                    raise OperationStalePreview("Ранний no-op больше не доказан. Подготовьте новое обновление.")
             materialized = MaterializedGeneration(
                 materialized_root,
                 manifest,
-                _payloads_from_dict(operation_root, manifest, payload["payloads"]),
+                {} if reuse else _payloads_from_dict(operation_root, manifest, payload["payloads"]),
             )
             preview = IntakePreview(
                 job_id=job_id,

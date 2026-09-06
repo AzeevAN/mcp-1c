@@ -462,6 +462,8 @@ class IntakeLifecycle:
             {
                 "locator": locator.to_dict(),
                 "raw_sha256": probe.raw_sha256,
+                # Новый физический снимок не перезаписывает durable probe старого.
+                "snapshot_fingerprint": probe.snapshot_fingerprint,
             },
             sort_keys=True,
             separators=(",", ":"),

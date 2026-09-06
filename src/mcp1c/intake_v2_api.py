@@ -578,14 +578,25 @@ class IntakeApiService:
                 for layer in preview.plan.layers
             ],
         }
-        impacts = tuple(
-            item
-            for item in self.registry.preview_extension_relations(
-                preview.materialized.root,
-                preview.materialized.manifest,
+        if not preview.materialized.payloads:
+            try:
+                relations = self.registry.preview_active_extension_relations(
+                    preview.expected_previous,
+                )
+            except RegistryError as error:
+                # Устаревший компактный preview не блокирует список других jobs.
+                payload.update(
+                    state=CandidateJobState.FAILED.value,
+                    stage=CandidateJobStage.FAILED.value,
+                    error=str(error),
+                    preview=None,
+                )
+                return payload
+        else:
+            relations = self.registry.preview_extension_relations(
+                preview.materialized.root, preview.materialized.manifest,
             )
-            if item.state.value == "target_missing"
-        )
+        impacts = tuple(item for item in relations if item.state.value == "target_missing")
         payload["preview"]["extension_impacts"] = {
             "total": len(impacts),
             "items": [

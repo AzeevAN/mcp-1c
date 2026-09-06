@@ -394,7 +394,7 @@ def test_noop_commit_не_создаёт_staging_а_устаревший_preview
         generation_id="generation-competitor",
     )
     registry.publish_generation(
-        registry.stage_generation(competitor_manifest, stale.materialized.payloads),
+        registry.stage_generation(competitor_manifest, registry.generation_payload_sources(created.pointer)),
         expected_previous=created.pointer,
     )
 

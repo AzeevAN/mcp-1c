@@ -354,8 +354,13 @@ def probe_export(tree: VirtualExportTree) -> CandidateProbe:
     properties = _properties(payload)
     source_kind, internal_name = _identity_from_properties(properties)
     try:
-        raw_sha256 = _sha256(tree.source_sha256(), "raw_sha256")
-        stable = tree.verify_stable(fingerprint)
+        from .intake_v2_transport import DirectoryExportTree
+        if isinstance(tree, DirectoryExportTree):
+            raw_sha256 = _sha256(tree.probe_sha256(fingerprint), "raw_sha256")
+            stable = True
+        else:
+            raw_sha256 = _sha256(tree.source_sha256(), "raw_sha256")
+            stable = tree.verify_stable(fingerprint)
     except (OSError, RuntimeError, ValueError) as error:
         raise ProbeError("кандидат изменился или недоступен во время probe") from error
     if not stable:

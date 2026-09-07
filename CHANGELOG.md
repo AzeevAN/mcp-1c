@@ -9,6 +9,12 @@
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-09-07
+
+Мажорный выпуск заменяет общий `MCP1C_CONFIG_SOURCE` независимыми read-only
+каталогами для конкретных конфигураций. Перед обновлением перенесите прежний
+mount под `/config-sources/<id>` и выберите каталог в дашборде.
+
 ### Добавлено
 
 - В верхней панели дашборда рядом с переключателем темы добавлена компактная
@@ -5570,7 +5576,8 @@ JSON-журнал schema v1 для основной выгрузки и кажд
 Неразрешённых ссылок — ноль. Ошибок приведения типов — ноль. Оба формата дают
 одинаковый набор из 30 ключей модели.
 
-[Unreleased]: https://github.com/AzeevAN/mcp-1c/compare/v2.2.0...HEAD
+[Unreleased]: https://github.com/AzeevAN/mcp-1c/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/AzeevAN/mcp-1c/compare/v2.2.0...v3.0.0
 [2.2.0]: https://github.com/AzeevAN/mcp-1c/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/AzeevAN/mcp-1c/compare/v2.0.1...v2.1.0
 [2.0.1]: https://github.com/AzeevAN/mcp-1c/compare/v2.0.0...v2.0.1

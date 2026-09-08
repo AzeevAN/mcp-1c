@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
-from . import index_cache
+from . import index_cache, structure_origin
 from .module_address import разобрать_плоскую_xml_форму
 from .intake_v2 import (
     GenerationManifest,
@@ -71,6 +71,7 @@ class NativeGenerationRuntime:
     code_items_total: int
     locator_generation: int
     roles: LoadedRoleAccess | None
+    declared_structure: structure_origin.DeclaredStructure
     extension_structure: ExtensionStructure | None = None
 
 
@@ -1176,6 +1177,7 @@ def build_generation_runtime(
             raise GenerationRuntimeError(
                 f"extended_structure: {error}"
             ) from error
+    declared_structure = structure_origin.capture_configuration(configuration)
     try:
         materialize_standard_attributes(configuration)
     except StandardAttributeError as error:
@@ -1213,6 +1215,7 @@ def build_generation_runtime(
         ),
         locator_generation=locator_generation,
         roles=roles,
+        declared_structure=declared_structure,
         extension_structure=extension_structure,
     )
 

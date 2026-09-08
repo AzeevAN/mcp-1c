@@ -468,6 +468,8 @@ def test_registry_сохраняет_extension_generation_при_строгой_
         extension="DemoExtension",
     )
     assert restored.extension is not None and restored.extension.готов
+    assert restored.modules is not None and restored.modules.структура is not None
+    assert restored.extension.структура is None
     assert restored.extension_roles is not None and restored.extension_roles.ready
     assert restored.extension_resolution is not None
     assert restored.extension_resolution.relations[0].state.value == "target_missing"

@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .intake import карта_архива
+from .model import Configuration
 
 
 CATALOG_FILE = ".structure-origin.json.gz"
@@ -57,6 +58,7 @@ _KINDS: dict[str, tuple[str, str]] = {
     "Report": ("Reports", "Отчет"),
     "DataProcessor": ("DataProcessors", "Обработка"),
 }
+_PUBLIC_KINDS = frozenset(public_kind for _folder, public_kind in _KINDS.values())
 
 
 def _tag(element: ET.Element) -> str:
@@ -264,6 +266,33 @@ def base_catalog(raw: DeclaredStructure, source_sha256: str) -> StructureCatalog
         objects=raw.objects,
         fields=raw.fields,
         problems=raw.problems,
+    )
+
+
+def capture_configuration(configuration: Configuration) -> DeclaredStructure:
+    """Снять тот же каталог с уже проверенной native-проекции Source B.
+
+    Generation runtime восстанавливает структуру из защищённого хешами
+    ``base_structure`` и не хранит исходный ZIP. Поэтому происхождение нужно
+    выводить из проекции до добавления стандартных реквизитов: иначе после
+    первого restart полный Source B ошибочно выглядел бы как отсутствующий.
+    """
+    objects = {
+        obj.full_name
+        for obj in configuration.objects.values()
+        if obj.kind in _PUBLIC_KINDS
+    }
+    fields = {
+        f"{obj.full_name}.{field.name}"
+        for obj in configuration.objects.values()
+        if obj.kind in _PUBLIC_KINDS
+        for field in obj.attributes
+        if not field.standard
+    }
+    return DeclaredStructure(
+        True,
+        frozenset(objects),
+        frozenset(fields),
     )
 
 

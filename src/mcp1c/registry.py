@@ -4880,10 +4880,21 @@ class Registry:
         loaded_modules = None
         if prepared.module_source is not None:
             assert prepared.module_indices is not None
+            if prepared.parent_configuration is None:
+                origin_catalog = structure_origin.base_catalog(
+                    prepared.runtime.declared_structure,
+                    prepared.module_source.sha256,
+                )
+            else:
+                # Поколение расширения пока не хранит identity базы, с которой
+                # была доказана дельта. Вычислять её заново при restart по уже
+                # новой базе опасно: смена поколения стала бы незаметной.
+                origin_catalog = None
             loaded_modules = self._готовые_модули(
                 prepared.module_source,
                 root,
                 prepared.module_indices,
+                структура=origin_catalog,
             )
         return prepared.configuration, loaded_modules
 

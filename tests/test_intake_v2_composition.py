@@ -89,7 +89,9 @@ def test_content_composition_копирует_preserved_слои_в_новое_�
     shutil.rmtree(active.root)
     shutil.rmtree(candidate.root)
     assert Registry(registry.data_dir).restore() == []
-    assert (registry.data_dir / new_pointer.root_path / "payload/code").is_dir()
+    assert (registry.data_dir / new_pointer.root_path / "members.pack").is_file()
+    assert (registry.data_dir / new_pointer.root_path / "members.index.json").is_file()
+    assert not (registry.data_dir / new_pointer.root_path / "payload").exists()
 
 
 def test_noop_plan_не_создаёт_composed_generation(tmp_path):

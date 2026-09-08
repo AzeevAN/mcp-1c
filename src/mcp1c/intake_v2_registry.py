@@ -32,6 +32,13 @@ from .intake_v2 import (
     RecoveryRecord,
     decide_recovery,
 )
+from .member_pack import (
+    PACK_NAME,
+    MemberPackError,
+    MemberPackWriter,
+    has_member_pack,
+    open_stored_member,
+)
 
 
 _HASH_BLOCK_SIZE = 1 << 20
@@ -353,9 +360,14 @@ class LayerPayload:
 class LayerMemberSource:
     member: LayerMember
     source_path: Path
+    source_member: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "source_path", Path(self.source_path))
+        if not isinstance(self.source_member, str):
+            raise BundleStoreError("source_member должен быть строкой")
+        if self.source_member:
+            _safe_relative(self.source_member, "source_member")
 
 
 @dataclass(frozen=True, slots=True)
@@ -635,41 +647,51 @@ class GenerationBundleStore:
 
     def _copy_member(
         self,
-        source: Path,
-        target: Path,
+        source: LayerMemberSource,
+        pack: MemberPackWriter,
         expected: LayerMember,
     ) -> None:
+        if source.source_member:
+            try:
+                with open_stored_member(
+                    source.source_path.parent, source.source_member
+                ) as input_stream:
+                    pack.copy(
+                        expected.relative_path,
+                        input_stream,
+                        expected_size=expected.size,
+                        expected_sha256=expected.sha256,
+                    )
+            except MemberPackError as error:
+                raise BundleStoreError("не удалось прочитать packed member") from error
+            return
+
+        source_path = source.source_path
         try:
-            before = source.lstat()
+            before = source_path.lstat()
             if not stat.S_ISREG(before.st_mode):
                 raise BundleStoreError("layer member должен быть обычным файлом")
             descriptor = os.open(
-                source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                source_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
             )
-            target.parent.mkdir(parents=True, exist_ok=True)
-            digest = hashlib.sha256()
-            total = 0
             try:
                 opened = os.fstat(descriptor)
                 if not stat.S_ISREG(opened.st_mode):
                     raise BundleStoreError("layer member должен быть обычным файлом")
                 with os.fdopen(descriptor, "rb", closefd=False) as input_stream:
-                    with target.open("xb") as output_stream:
-                        for block in iter(
-                            lambda: input_stream.read(_HASH_BLOCK_SIZE), b""
-                        ):
-                            total += len(block)
-                            digest.update(block)
-                            output_stream.write(block)
-                        output_stream.flush()
-                        os.fsync(output_stream.fileno())
+                    pack.copy(
+                        expected.relative_path,
+                        input_stream,
+                        expected_size=expected.size,
+                        expected_sha256=expected.sha256,
+                    )
                 after = os.fstat(descriptor)
             finally:
                 os.close(descriptor)
-            current = source.lstat()
+            current = source_path.lstat()
         except BundleStoreError:
             raise
-        except OSError as error:
+        except (MemberPackError, OSError) as error:
             raise BundleStoreError("не удалось сохранить layer member") from error
         if not (
             _stat_identity(before)
@@ -678,11 +700,6 @@ class GenerationBundleStore:
             == _stat_identity(current)
         ):
             raise BundleStoreError("layer member изменился во время staging")
-        if total != expected.size or digest.hexdigest() != expected.sha256:
-            raise BundleStoreError(
-                f"member {expected.key}: контрольная сумма или размер не совпали"
-            )
-        _sync_directory(target.parent)
 
     def _stage_envelope(
         self,
@@ -690,6 +707,7 @@ class GenerationBundleStore:
         kind: LayerKind,
         layer: LayerManifest,
         source: LayerPayloadSource,
+        pack: MemberPackWriter,
     ) -> None:
         if not layer.payload_sha256:
             raise BundleStoreError(
@@ -724,8 +742,8 @@ class GenerationBundleStore:
             )
         for key, member in sorted(expected.items()):
             self._copy_member(
-                supplied[key].source_path,
-                temporary / member.relative_path,
+                supplied[key],
+                pack,
                 member,
             )
 
@@ -773,23 +791,26 @@ class GenerationBundleStore:
             )
         )
         try:
-            for kind, layer in sorted(ready.items(), key=lambda item: item[0].value):
-                source = payloads[kind]
-                if isinstance(source, LayerPayloadSource):
-                    self._stage_envelope(temporary, kind, layer, source)
-                else:
-                    if layer.payload_sha256:
-                        raise BundleStoreError(
-                            f"{kind.value}: envelope требует LayerPayloadSource"
+            with MemberPackWriter(temporary) as pack:
+                for kind, layer in sorted(
+                    ready.items(), key=lambda item: item[0].value
+                ):
+                    source = payloads[kind]
+                    if isinstance(source, LayerPayloadSource):
+                        self._stage_envelope(temporary, kind, layer, source, pack)
+                    else:
+                        if layer.payload_sha256:
+                            raise BundleStoreError(
+                                f"{kind.value}: envelope требует LayerPayloadSource"
+                            )
+                        target = temporary / _safe_relative(
+                            layer.relative_path, "relative_path слоя"
                         )
-                    target = temporary / _safe_relative(
-                        layer.relative_path, "relative_path слоя"
-                    )
-                    actual = self._copy_layer(kind, Path(source), target)
-                    if actual != layer.content_sha256:
-                        raise BundleStoreError(
-                            f"{kind.value}: контрольная сумма payload не совпала"
-                        )
+                        actual = self._copy_layer(kind, Path(source), target)
+                        if actual != layer.content_sha256:
+                            raise BundleStoreError(
+                                f"{kind.value}: контрольная сумма payload не совпала"
+                            )
             manifest_path = temporary / "manifest.json"
             with manifest_path.open("xb") as stream:
                 stream.write(manifest.to_json_bytes())
@@ -809,6 +830,7 @@ class GenerationBundleStore:
         """Вернуть проверенные источники active envelope для новой staging."""
         root = self._absolute(pointer.root_path)
         manifest = self._load_manifest(root, pointer)
+        packed = has_member_pack(root)
         result: dict[LayerKind, LayerPayloadSource] = {}
         for layer in manifest.layers:
             if layer.state is not LayerState.READY:
@@ -821,7 +843,11 @@ class GenerationBundleStore:
             result[layer.kind] = LayerPayloadSource(
                 root / layer.relative_path,
                 tuple(
-                    LayerMemberSource(member, root / member.relative_path)
+                    LayerMemberSource(
+                        member,
+                        root / PACK_NAME if packed else root / member.relative_path,
+                        member.relative_path if packed else "",
+                    )
                     for member in payload.members
                 ),
             )
@@ -837,45 +863,9 @@ class GenerationBundleStore:
         relative_path = _safe_relative(relative_path, "member path")
         self._validate_path_chain(root)
         try:
-            root_stat = root.lstat()
-            if not stat.S_ISDIR(root_stat.st_mode):
-                raise BundleStoreError("generation root не является каталогом")
-            descriptors: list[int] = [
-                os.open(
-                    root,
-                    os.O_RDONLY
-                    | getattr(os, "O_DIRECTORY", 0)
-                    | getattr(os, "O_NOFOLLOW", 0),
-                )
-            ]
-            for part in PurePosixPath(relative_path).parts[:-1]:
-                descriptors.append(
-                    os.open(
-                        part,
-                        os.O_RDONLY
-                        | getattr(os, "O_DIRECTORY", 0)
-                        | getattr(os, "O_NOFOLLOW", 0),
-                        dir_fd=descriptors[-1],
-                    )
-                )
-            file_descriptor = os.open(
-                PurePosixPath(relative_path).parts[-1],
-                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
-                dir_fd=descriptors[-1],
-            )
-            opened = os.fstat(file_descriptor)
-            if not stat.S_ISREG(opened.st_mode):
-                os.close(file_descriptor)
-                raise BundleStoreError("generation member не является файлом")
-            stream = os.fdopen(file_descriptor, "rb")
-        except BundleStoreError:
-            raise
-        except OSError as error:
+            return open_stored_member(root, relative_path)
+        except MemberPackError as error:
             raise BundleStoreError("generation member недоступен") from error
-        finally:
-            for descriptor in reversed(locals().get("descriptors", [])):
-                os.close(descriptor)
-        return stream
 
     def verify(
         self, target: GenerationPointer | StagedGeneration

@@ -33,6 +33,7 @@ from .intake_v2_registry import (
     hash_layer_semantic,
     load_layer_payload,
 )
+from .member_pack import MemberPackError, open_stored_member
 
 
 _CACHE_FORMAT = 4
@@ -432,7 +433,7 @@ def _parse_descriptor(stream: BinaryIO, expected_name: str) -> _ParsedDescriptor
     )
 
 
-def _safe_member(root: Path, relative_path: str) -> tuple[BinaryIO, os.stat_result]:
+def _safe_member(root: Path, relative_path: str) -> BinaryIO:
     path = PurePosixPath(relative_path)
     if (
         not relative_path
@@ -442,34 +443,9 @@ def _safe_member(root: Path, relative_path: str) -> tuple[BinaryIO, os.stat_resu
         or any(part in ("", ".", "..") for part in path.parts)
     ):
         raise RoleAccessError("role member имеет небезопасный путь")
-    current = root
     try:
-        for part in path.parts[:-1]:
-            current = current / part
-            value = current.lstat()
-            if not stat.S_ISDIR(value.st_mode) or stat.S_ISLNK(value.st_mode):
-                raise RoleAccessError("role member проходит через недоверенный каталог")
-        target = current / path.parts[-1]
-        before = target.lstat()
-        if not stat.S_ISREG(before.st_mode) or stat.S_ISLNK(before.st_mode):
-            raise RoleAccessError("role member должен быть обычным файлом")
-        descriptor = os.open(target, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-        opened = os.fstat(descriptor)
-        if not stat.S_ISREG(opened.st_mode):
-            os.close(descriptor)
-            raise RoleAccessError("role member должен быть обычным файлом")
-        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
-            opened.st_dev,
-            opened.st_ino,
-            opened.st_size,
-            opened.st_mtime_ns,
-        ):
-            os.close(descriptor)
-            raise RoleAccessError("role member изменился во время открытия")
-        return os.fdopen(descriptor, "rb"), opened
-    except RoleAccessError:
-        raise
-    except OSError as error:
+        return open_stored_member(root, relative_path)
+    except MemberPackError as error:
         raise RoleAccessError("role member недоступен") from error
 
 
@@ -481,9 +457,8 @@ def _verified_xml_stream(
 ):
     class _Context:
         def __enter__(self):
-            source, opened = _safe_member(root, member.relative_path)
+            source = _safe_member(root, member.relative_path)
             self.source = source
-            self.opened = opened
             self.compressed = _HashingReader(
                 source, member.size + 1, f"member {member.key}"
             )

@@ -16,6 +16,7 @@ from types import MappingProxyType
 from typing import Mapping
 
 from .bsl_lex import нормализовать
+from .member_pack import open_stored_member
 from .readers.modules import read_module_body
 from .v8container import V8Container, V8ContainerError, V8ResourceLimitError
 
@@ -183,33 +184,9 @@ class ContentReadError(OSError):
 
 
 def _read_relative_bytes(root: Path, relative_path: str) -> bytes:
-    """Открыть каждый сегмент без перехода по вложенным symlink.
-
-    Одной проверки ``resolve()`` недостаточно: между проверкой и чтением цель
-    можно подменить. ``dir_fd`` и ``O_NOFOLLOW`` удерживают цепочку каталогов,
-    а финальный файл читается через уже открытый дескриптор.
-    """
-
-    parts = PurePosixPath(relative_path).parts
-    flags_directory = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-    flags_no_follow = getattr(os, "O_NOFOLLOW", 0)
-    opened: list[int] = []
-    try:
-        current = os.open(root, flags_directory)
-        opened.append(current)
-        for part in parts[:-1]:
-            current = os.open(
-                part,
-                flags_directory | flags_no_follow,
-                dir_fd=current,
-            )
-            opened.append(current)
-        file_fd = os.open(parts[-1], os.O_RDONLY | flags_no_follow, dir_fd=current)
-        with os.fdopen(file_fd, "rb") as stream:
-            return stream.read()
-    finally:
-        for descriptor in reversed(opened):
-            os.close(descriptor)
+    """Прочитать packed либо прежний loose member без перехода по symlink."""
+    with open_stored_member(root, relative_path) as stream:
+        return stream.read()
 
 
 def _read_bytes(root: Path, address: str, locator: ModuleLocator) -> bytes:

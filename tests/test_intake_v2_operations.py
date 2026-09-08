@@ -150,6 +150,40 @@ def test_обычная_ошибка_сохраняется_и_удаляет_ч
     assert not (root / "operations" / "work" / "job-001").exists()
 
 
+def test_ошибка_job_сохраняет_системную_причину_collection(tmp_path, monkeypatch):
+    IntakeCoordinator = _symbol("IntakeCoordinator")
+    OperationError = _symbol("OperationError")
+    CollectorError = importlib.import_module(
+        "mcp1c.intake_v2_collector"
+    ).CollectorError
+
+    root, uploads, records = _stores(tmp_path)
+    coordinator = IntakeCoordinator(root / "operations", records)
+    _accepted(uploads, coordinator)
+
+    def fail_collection(*_args, **_kwargs):
+        try:
+            raise OSError(5, "синтетический отказ файловой системы")
+        except OSError as cause:
+            raise CollectorError("не удалось собрать source-B collection") from cause
+
+    monkeypatch.setattr(f"{SUBJECT}.collect_source_b", fail_collection)
+    with uploads.open_tree("candidate-001") as tree:
+        with pytest.raises(OperationError, match="OSError.*Errno 5"):
+            coordinator.prepare(
+                "job-001",
+                tree,
+                action=IntakeAction.CREATE,
+                active=None,
+                generation_id="generation-001",
+            )
+
+    failed = records.load_job("job-001")
+    assert "не удалось собрать source-B collection" in failed.error
+    assert "OSError" in failed.error
+    assert "Errno 5" in failed.error
+
+
 def test_аварийный_checkpoint_переживает_рестарт_и_операция_возобновляется(
     tmp_path, monkeypatch
 ):

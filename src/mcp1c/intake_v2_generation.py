@@ -46,6 +46,7 @@ from .intake_v2_registry import (
     hash_layer_semantic,
     load_layer_payload,
 )
+from .member_pack import PACK_NAME, MemberPackError, MemberPackWriter
 from .v8container import V8Container, V8ContainerError, V8ResourceLimitError
 
 
@@ -75,6 +76,7 @@ class _SourceSpec:
     member: LayerMember
     source_path: Path
     local_relative: str = ""
+    source_member: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +94,7 @@ class _ModuleBody:
     source_path: Path
     compiled: bool = False
     local_relative: str = ""
+    source_member: str = ""
 
 
 def _sync_directory(path: Path) -> None:
@@ -182,6 +185,7 @@ def _module_bodies(
                 sha256=artifact.sha256,
                 source_path=collection.root / artifact.relative_path,
                 compiled=artifact.source_path.endswith(".Module"),
+                source_member=artifact.relative_path,
             )
         )
 
@@ -244,6 +248,7 @@ def _code_layer(
                 member,
                 body.source_path,
                 local_relative=body.local_relative,
+                source_member=body.source_member,
             )
         )
         modules.append(
@@ -354,7 +359,11 @@ def _forms_layer(
         )
         members.append(member)
         sources.append(
-            _SourceSpec(member, collection.root / artifact.relative_path)
+            _SourceSpec(
+                member,
+                collection.root / artifact.relative_path,
+                source_member=artifact.relative_path,
+            )
         )
     return _LayerBuild(
         LayerPayload(
@@ -394,7 +403,11 @@ def _roles_layer(collection: CollectionResult) -> _LayerBuild | None:
         )
         members.append(member)
         sources.append(
-            _SourceSpec(member, collection.root / artifact.relative_path)
+            _SourceSpec(
+                member,
+                collection.root / artifact.relative_path,
+                source_member=artifact.relative_path,
+            )
         )
     return _LayerBuild(
         LayerPayload(LayerKind.ROLES, semantic, tuple(members)),
@@ -431,7 +444,11 @@ def _extended_layer(
         )
         members.append(member)
         sources.append(
-            _SourceSpec(member, collection.root / artifact.relative_path)
+            _SourceSpec(
+                member,
+                collection.root / artifact.relative_path,
+                source_member=artifact.relative_path,
+            )
         )
     return _LayerBuild(
         LayerPayload(
@@ -545,6 +562,35 @@ def materialize_generation(
             )
             source_specs[kind] = build.sources
 
+        try:
+            with MemberPackWriter(temporary) as pack:
+                for kind in LayerKind:
+                    for spec in sorted(
+                        source_specs.get(kind, ()),
+                        key=lambda item: item.member.relative_path,
+                    ):
+                        if spec.source_member:
+                            source = open_collection_member(
+                                collection.root, spec.source_member
+                            )
+                        else:
+                            source = spec.source_path.open("rb")
+                        with source:
+                            pack.copy(
+                                spec.member.relative_path,
+                                source,
+                                expected_size=spec.member.size,
+                                expected_sha256=spec.member.sha256,
+                            )
+        except (CollectionError, MemberPackError, OSError) as error:
+            raise GenerationMaterializationError(
+                "не удалось сохранить members materialization"
+            ) from error
+
+        derived = temporary / "derived"
+        if derived.exists():
+            shutil.rmtree(derived)
+
         manifest = GenerationManifest(
             format_version=GENERATION_FORMAT_VERSION,
             generation_id=generation_id,
@@ -572,9 +618,8 @@ def materialize_generation(
             members = tuple(
                 LayerMemberSource(
                     spec.member,
-                    target / spec.local_relative
-                    if spec.local_relative
-                    else spec.source_path,
+                    target / PACK_NAME,
+                    spec.member.relative_path,
                 )
                 for spec in source_specs[layer.kind]
             )

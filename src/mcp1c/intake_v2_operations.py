@@ -50,6 +50,7 @@ from .intake_v2_registry import (
     load_layer_payload,
     native_generation_view,
 )
+from .member_pack import PACK_NAME, MemberPackError, open_stored_member
 
 
 _PREVIEW_FORMAT_VERSION = 1
@@ -350,6 +351,11 @@ def _payloads_to_dict(
                         member.source_path,
                         f"{kind.value}.source_path",
                     ),
+                    **(
+                        {"source_member": member.source_member}
+                        if member.source_member
+                        else {}
+                    ),
                 }
                 for member in source.members
             ],
@@ -412,16 +418,31 @@ def _payloads_from_dict(
                 item.get("source_path"),
                 f"{kind.value}.source_path",
             )
+            source_member = item.get("source_member", "")
+            if not isinstance(source_member, str) or (
+                source_member and source_path.name != PACK_NAME
+            ):
+                raise OperationError(f"{kind.value}: packed member source повреждён")
+            if source_member:
+                try:
+                    with open_stored_member(source_path.parent, source_member):
+                        pass
+                except MemberPackError as error:
+                    raise OperationError(
+                        f"{kind.value}: packed member source недоступен"
+                    ) from error
             try:
                 source_info = source_path.lstat()
             except OSError as error:
                 raise OperationError(f"{kind.value}: member source недоступен") from error
             if (
                 not stat.S_ISREG(source_info.st_mode)
-                or source_info.st_size != expected[key].size
+                or (not source_member and source_info.st_size != expected[key].size)
             ):
                 raise OperationError(f"{kind.value}: member source повреждён")
-            member_sources[key] = LayerMemberSource(expected[key], source_path)
+            member_sources[key] = LayerMemberSource(
+                expected[key], source_path, source_member
+            )
         if set(member_sources) != set(expected):
             raise OperationError(f"{kind.value}: не все member sources сохранены")
         result[kind] = LayerPayloadSource(
@@ -763,8 +784,18 @@ class IntakeCoordinator:
 
     @staticmethod
     def _error_text(error: Exception) -> str:
-        text = str(error).strip() or error.__class__.__name__
-        return text[:2048]
+        parts: list[str] = []
+        current: BaseException | None = error
+        seen: set[int] = set()
+        while current is not None and id(current) not in seen and len(parts) < 4:
+            seen.add(id(current))
+            detail = str(current).strip() or current.__class__.__name__
+            if not parts:
+                parts.append(detail)
+            else:
+                parts.append(f"причина {current.__class__.__name__}: {detail}")
+            current = current.__cause__
+        return "; ".join(parts)[:2048]
 
     def probe(
         self,

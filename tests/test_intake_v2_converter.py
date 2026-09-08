@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import io
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -1393,9 +1393,22 @@ def test_converter_не_следует_по_symlink_внутри_collection(tmp_
     ConversionError = _symbol("ConversionError")
     convert_collection = _symbol("convert_collection")
     collection = _collection(tmp_path)
+    open_member = importlib.import_module(
+        "mcp1c.intake_v2_collector"
+    ).open_collection_member
+    payloads = {}
+    for artifact in collection.metadata:
+        with open_member(collection.root, artifact.relative_path) as source:
+            payloads[artifact.relative_path] = source.read()
+    (collection.root / "members.pack").unlink()
+    (collection.root / "members.index.json").unlink()
     metadata = collection.root / "metadata"
     moved = collection.root / "metadata-real"
-    metadata.rename(moved)
+    moved.mkdir()
+    for relative_path, payload in payloads.items():
+        target = moved.joinpath(*PurePosixPath(relative_path).parts[1:])
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(payload)
     metadata.symlink_to(moved, target_is_directory=True)
 
     with pytest.raises(ConversionError, match="символ|обычн"):

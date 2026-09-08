@@ -7,7 +7,6 @@ Collector не публикует Registry и не строит поисковы
 
 from __future__ import annotations
 
-import errno
 import gzip
 import hashlib
 import json
@@ -32,6 +31,7 @@ from .intake_v2 import (
 )
 from .intake_v2_probe import CandidateProbe, ProbeError
 from .intake_v2_transport import TransportError
+from .member_pack import MemberPackError, MemberPackWriter, open_stored_member
 
 
 COLLECTION_FORMAT_VERSION = 1
@@ -850,18 +850,16 @@ def _copy_artifact(
     tree: VirtualExportTree,
     raw_path: str,
     source_path: str,
-    root: Path,
+    pack: MemberPackWriter,
     kind: ArtifactKind,
     source_name: str,
     address: str = "",
 ) -> CollectionArtifact:
     expected_size = tree.size(raw_path)
     relative_path = f"{kind.value}/{source_path}"
-    target = root.joinpath(*PurePosixPath(relative_path).parts)
-    target.parent.mkdir(parents=True, exist_ok=True)
     digest = hashlib.sha256()
     total = 0
-    with tree.open(raw_path) as source, target.open("xb") as output:
+    with tree.open(raw_path) as source, pack.entry(relative_path) as output:
         while True:
             block = source.read(_READ_CHUNK)
             if not block:
@@ -922,13 +920,11 @@ def _canonicalize_role(
     tree: VirtualExportTree,
     raw_path: str,
     source_path: str,
-    root: Path,
+    pack: MemberPackWriter,
 ) -> RoleArtifact:
     relative_path = f"roles/payload/{source_path}.gz"
-    target = root.joinpath(*PurePosixPath(relative_path).parts)
-    target.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with tree.open(raw_path) as source, target.open("xb") as raw_output:
+        with tree.open(raw_path) as source, pack.entry(relative_path) as raw_output:
             with gzip.GzipFile(
                 filename="",
                 mode="wb",
@@ -946,7 +942,6 @@ def _canonicalize_role(
                     rewrite_prefixes=False,
                 )
     except ET.ParseError:
-        target.unlink(missing_ok=True)
         raise
     return RoleArtifact(
         source_path=source_path,
@@ -1066,7 +1061,10 @@ def collect_source_b(
     role_rights: set[str] = set()
     role_errors: list[tuple[str, str]] = []
     diagnostics = _Diagnostics()
+    pack: MemberPackWriter | None = None
     try:
+        pack = MemberPackWriter(temporary)
+        pack.open()
         for raw_path in tree.paths():
             source_path = _without_wrapper(raw_path, probe.wrapper)
             if source_path == "Configuration.xml":
@@ -1075,7 +1073,7 @@ def collect_source_b(
                         tree,
                         raw_path,
                         source_path,
-                        temporary,
+                        pack,
                         ArtifactKind.METADATA,
                         "Configuration",
                     )
@@ -1094,7 +1092,7 @@ def collect_source_b(
                             tree,
                             raw_path,
                             canonical_role_path,
-                            temporary,
+                            pack,
                         )
                     )
                 except ET.ParseError as error:
@@ -1130,7 +1128,7 @@ def collect_source_b(
                             tree,
                             raw_path,
                             source_path,
-                            temporary,
+                            pack,
                             ArtifactKind.CODE,
                             "Configuration",
                             address,
@@ -1177,7 +1175,7 @@ def collect_source_b(
                         tree,
                         raw_path,
                         source_path,
-                        temporary,
+                        pack,
                         ArtifactKind.METADATA,
                         spec.source_name,
                     )
@@ -1195,7 +1193,7 @@ def collect_source_b(
                             tree,
                             raw_path,
                             source_path,
-                            temporary,
+                            pack,
                             ArtifactKind.CODE,
                             spec.source_name,
                             code_address,
@@ -1220,7 +1218,7 @@ def collect_source_b(
                             tree,
                             raw_path,
                             source_path,
-                            temporary,
+                            pack,
                             ArtifactKind.FORMS,
                             spec.source_name,
                             form_address,
@@ -1246,7 +1244,7 @@ def collect_source_b(
                         tree,
                         raw_path,
                         metadata_source_path,
-                        temporary,
+                        pack,
                         ArtifactKind.METADATA,
                         spec.source_name,
                     )
@@ -1257,6 +1255,8 @@ def collect_source_b(
                     spec.source_name,
                     source_path,
                 )
+
+        pack.finish()
 
         if role_errors:
             for path, _reason in role_errors:
@@ -1311,51 +1311,19 @@ def collect_source_b(
     except Exception as error:
         raise CollectorError("не удалось собрать source-B collection") from error
     finally:
+        if pack is not None:
+            pack.close()
         if temporary != Path() and temporary.exists():
             shutil.rmtree(temporary, ignore_errors=True)
 
 
 def open_collection_member(root: Path, relative_path: str) -> BinaryIO:
-    """Открыть payload через dirfd, не следуя ни по одному symlink пути."""
+    """Открыть packed либо прежний loose payload без следования symlink."""
     relative_path = _relative_path(relative_path, "relative_path")
     try:
-        before = root.lstat()
-    except OSError as error:
-        raise CollectionError("collection root недоступен") from error
-    if stat.S_ISLNK(before.st_mode) or not stat.S_ISDIR(before.st_mode):
-        raise CollectionError("collection root должен быть обычным каталогом")
-    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(
-        os, "O_NOFOLLOW", 0
-    )
-    file_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    opened: list[int] = []
-    file_descriptor: int | None = None
-    try:
-        current = os.open(root, directory_flags)
-        opened.append(current)
-        parts = PurePosixPath(relative_path).parts
-        for part in parts[:-1]:
-            current = os.open(part, directory_flags, dir_fd=current)
-            opened.append(current)
-        file_descriptor = os.open(parts[-1], file_flags, dir_fd=current)
-        info = os.fstat(file_descriptor)
-        if not stat.S_ISREG(info.st_mode):
-            raise CollectionError("collection payload должен быть обычным файлом")
-        stream = os.fdopen(file_descriptor, "rb")
-        file_descriptor = None
-        return stream
-    except CollectionError:
-        raise
-    except OSError as error:
-        message = "collection payload не является обычным файлом"
-        if error.errno == errno.ELOOP:
-            message = "collection payload содержит символическую ссылку"
-        raise CollectionError(message) from error
-    finally:
-        if file_descriptor is not None:
-            os.close(file_descriptor)
-        for descriptor in reversed(opened):
-            os.close(descriptor)
+        return open_stored_member(root, relative_path)
+    except MemberPackError as error:
+        raise CollectionError(str(error)) from error
 
 
 def _read_json_member(root: Path, relative_path: str) -> object:

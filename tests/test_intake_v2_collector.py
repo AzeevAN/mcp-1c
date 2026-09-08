@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import io
+import json
 import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -14,6 +15,7 @@ import pytest
 from mcp1c.intake_v2 import CandidateTransport, LayerState, MetadataKindPolicy
 from mcp1c.intake_v2_probe import probe_export
 from mcp1c.intake_v2_transport import ZipExportTree
+from mcp1c.member_pack import INDEX_NAME, PACK_NAME
 
 
 SUBJECT = "mcp1c.intake_v2_collector"
@@ -39,6 +41,18 @@ def _configuration(name: str = "DemoConfiguration") -> bytes:
         "<CompatibilityMode>Version8_3_21</CompatibilityMode>"
         "</Properties></Configuration></MetaDataObject>"
     ).encode()
+
+
+def _corrupt_packed_member(root: Path, relative_path: str) -> None:
+    index = json.loads((root / INDEX_NAME).read_text(encoding="utf-8"))
+    entry = next(
+        item for item in index["entries"] if item["relative_path"] == relative_path
+    )
+    with (root / PACK_NAME).open("r+b") as stream:
+        stream.seek(entry["offset"])
+        original = stream.read(1)
+        stream.seek(entry["offset"])
+        stream.write(bytes((original[0] ^ 0xFF,)))
 
 
 def _role(name: str) -> bytes:
@@ -474,7 +488,10 @@ def test_collector_нулевые_роли_ready_и_переживают_уда�
     assert restored.probe.raw_sha256 == result.probe.raw_sha256
     assert result.roles.state is restored.roles.state is LayerState.READY
     assert restored.roles.roles_total == 0
-    assert (target / restored.code[0].relative_path).read_bytes() == b"code"
+    with _symbol("open_collection_member")(
+        target, restored.code[0].relative_path
+    ) as source:
+        assert source.read() == b"code"
 
 
 @pytest.mark.parametrize("extra", [{"Roles/Broken.xml": b"<broken"}])
@@ -495,7 +512,11 @@ def test_collector_локальная_ошибка_roles_не_ломает_code_
     assert result.roles.error
     assert result.roles.artifacts == ()
     assert len(result.code) == 1
-    assert (tmp_path / "role-error" / result.code[0].relative_path).is_file()
+    with _symbol("open_collection_member")(
+        tmp_path / "role-error", result.code[0].relative_path
+    ) as source:
+        assert source.read() == b"code"
+    assert not (tmp_path / "role-error" / "roles" / "payload").exists()
 
 
 def test_collector_сохраняет_descriptor_без_rights_как_пустую_роль(tmp_path):
@@ -598,18 +619,30 @@ def test_collection_manifest_fail_closed_на_подмене_и_symlink(tmp_path
         ),
         target,
     )
-    code = target / result.code[0].relative_path
-    code.write_bytes(b"evil")
+    _corrupt_packed_member(target, result.code[0].relative_path)
 
     with pytest.raises(CollectionError, match="хеш|размер|измен"):
         load_collection(target)
 
-    code.unlink()
+    legacy_target = tmp_path / "legacy-symlink"
+    legacy_result = _collect(
+        MemoryTree(
+            {
+                "Configuration.xml": _configuration(),
+                "Catalogs/Demo/Ext/ObjectModule.bsl": b"code",
+            }
+        ),
+        legacy_target,
+    )
+    (legacy_target / PACK_NAME).unlink()
+    (legacy_target / INDEX_NAME).unlink()
+    code = legacy_target / legacy_result.code[0].relative_path
+    code.parent.mkdir(parents=True)
     outside = tmp_path / "outside"
     outside.write_bytes(b"code")
     code.symlink_to(outside)
     with pytest.raises(CollectionError, match="символическ|обычным файлом"):
-        load_collection(target)
+        load_collection(legacy_target)
 
 
 def test_collector_не_перезаписывает_готовый_target(tmp_path):
@@ -650,3 +683,34 @@ def test_collector_работает_через_zip_wrapper_после_удале
     assert b"Catalog.Demo" in read_role_member(
         restored, "Roles/Reader/Ext/Rights.xml"
     )
+
+
+def test_collector_хранит_members_в_одном_pack_без_дерева_мелких_файлов(tmp_path):
+    target = tmp_path / "packed"
+    payloads = {
+        "Configuration.xml": _configuration(),
+        "Catalogs/Demo.xml": b"<MetaDataObject/>",
+        "Catalogs/Demo/Ext/ObjectModule.bsl": b"procedure Demo()\nendprocedure",
+        "Roles/Reader.xml": _role("Reader"),
+        "Roles/Reader/Ext/Rights.xml": _rights(),
+        **{
+            f"Catalogs/Item{ordinal:04d}/Ext/ObjectModule.bsl": b"code"
+            for ordinal in range(512)
+        },
+    }
+    result = _collect(
+        MemoryTree(payloads),
+        target,
+    )
+
+    assert (target / "members.pack").is_file()
+    assert (target / "members.index.json").is_file()
+    assert not (target / "metadata").exists()
+    assert not (target / "code").exists()
+    assert not (target / "roles" / "payload").exists()
+    assert sum(path.is_file() for path in target.rglob("*")) == 4
+    assert len(result.code) == 513
+    assert _symbol("load_collection")(target) == result
+    demo = next(item for item in result.code if item.address.endswith(".Demo.МодульОбъекта"))
+    with _symbol("open_collection_member")(target, demo.relative_path) as source:
+        assert b"procedure Demo" in source.read()

@@ -13,6 +13,7 @@ from mcp1c.intake_v2 import LayerKind, LayerState
 from mcp1c.intake_v2_collector import collect_source_b
 from mcp1c.intake_v2_converter import convert_collection
 from mcp1c.intake_v2_probe import probe_export
+from mcp1c.member_pack import INDEX_NAME, PACK_NAME
 from mcp1c.registry import Registry
 from test_intake_v2_collector import MemoryTree, _configuration, _rights, _role
 from test_intake_v2_converter import (
@@ -106,7 +107,10 @@ def test_materializer_строит_пять_слоёв_и_generation_переж�
     restarted = Registry(registry.data_dir)
     assert restarted.restore() == []
     assert restarted.active_generation(materialized.manifest.identity) == materialized.manifest
-    assert (registry.data_dir / pointer.root_path / "payload/code").is_dir()
+    generation_root = registry.data_dir / pointer.root_path
+    assert (generation_root / "members.pack").is_file()
+    assert (generation_root / "members.index.json").is_file()
+    assert not (generation_root / "payload").exists()
 
 
 def test_materializer_сохраняет_xdto_как_ленивые_extended_members(
@@ -171,9 +175,10 @@ def test_materializer_сохраняет_xdto_как_ленивые_extended_mem
     assert "`c2:Code` → `ПакетXDTO.Common.ТипЗначения.Code` — межпакетная" in card
     assert "typeDef=anonymous" in card
     assert pointer is not None
-    assert (
-        registry.data_dir / pointer.root_path / "payload/extended_structure"
-    ).is_dir()
+    generation_root = registry.data_dir / pointer.root_path
+    assert (generation_root / "members.pack").is_file()
+    assert (generation_root / "members.index.json").is_file()
+    assert not (generation_root / "payload").exists()
 
 
 def test_materializer_сохраняет_compiled_модуль_не_выдавая_его_за_bsl(tmp_path):
@@ -465,7 +470,16 @@ def test_tampered_member_блокирует_restore_даже_при_целом_l
         )
     )
     member = code_manifest["members"][0]["relative_path"]
-    (registry.data_dir / pointer.root_path / member).write_bytes(b"changed")
+    root = registry.data_dir / pointer.root_path
+    index = json.loads((root / INDEX_NAME).read_text(encoding="utf-8"))
+    entry = next(
+        item for item in index["entries"] if item["relative_path"] == member
+    )
+    with (root / PACK_NAME).open("r+b") as stream:
+        stream.seek(entry["offset"])
+        original = stream.read(1)
+        stream.seek(entry["offset"])
+        stream.write(bytes((original[0] ^ 0xFF,)))
 
     with pytest.raises(BundleStoreError, match="member.*контрольная сумма"):
         Registry(registry.data_dir).restore()

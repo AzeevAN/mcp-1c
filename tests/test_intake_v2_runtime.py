@@ -6,7 +6,10 @@ import json
 import shutil
 import zipfile
 
+import anyio
 import pytest
+from mcp import ClientSession
+from mcp.shared.memory import create_client_server_memory_streams
 
 from conftest import write_export
 from mcp1c import coverage_log, tools as mcp_tools
@@ -16,6 +19,7 @@ from mcp1c.intake_v2_generation import materialize_generation
 from mcp1c.intake_v2_runtime import configuration_from_base_layer
 from mcp1c.model import Configuration, Field, MetadataObject
 from mcp1c.registry import Registry, RegistryError
+from mcp1c.server import build_server
 from mcp1c.tools import (
     get_callers,
     get_object,
@@ -416,6 +420,95 @@ def test_native_http_service_endpoint_доступен_через_mcp_после
     restarted = Registry(registry.data_dir)
     assert restarted.restore() == []
     assert_http_contract(restarted)
+
+
+def test_native_http_service_проходит_полную_mcp_сессию(tmp_path):
+    """Агент видит HTTP-сервис через настоящий протокольный контракт SDK."""
+    _collection_value, generation = _materialized(
+        tmp_path,
+        "http-service-mcp-session",
+        http_services=True,
+    )
+    registry = Registry(tmp_path / "data-http-service-mcp-session")
+    registry.publish_generation(
+        registry.stage_generation(generation.manifest, generation.payloads)
+    )
+    server = build_server(registry)
+
+    async def run_session():
+        async with create_client_server_memory_streams() as (
+            client_streams,
+            server_streams,
+        ):
+            async with anyio.create_task_group() as tasks:
+                tasks.start_soon(
+                    server._lowlevel_server.run,
+                    *server_streams,
+                    server._lowlevel_server.create_initialization_options(),
+                )
+                try:
+                    async with ClientSession(*client_streams) as session:
+                        initialized = await session.initialize()
+                        catalog = await session.list_tools()
+                        listed = await session.call_tool("list_configurations", {})
+                        found = await session.call_tool(
+                            "search_objects",
+                            {
+                                "query": "HTTPСервис.Api",
+                                "config": "DemoConfiguration",
+                                "kind": "HTTPСервис",
+                            },
+                        )
+                        card = await session.call_tool(
+                            "get_object",
+                            {
+                                "full_name": "HTTPСервис.Api",
+                                "config": "DemoConfiguration",
+                                "detail": "fields",
+                            },
+                        )
+                        procedure = await session.call_tool(
+                            "get_procedure",
+                            {
+                                "address": "HTTPСервис.Api::Handle",
+                                "config": "DemoConfiguration",
+                            },
+                        )
+                        callers = await session.call_tool(
+                            "get_callers",
+                            {
+                                "address": "HTTPСервис.Api::Handle",
+                                "config": "DemoConfiguration",
+                            },
+                        )
+                finally:
+                    tasks.cancel_scope.cancel()
+        return initialized, catalog, listed, found, card, procedure, callers
+
+    initialized, catalog, listed, found, card, procedure, callers = anyio.run(
+        run_session,
+        backend="asyncio",
+    )
+
+    assert initialized.server_info.name == "mcp1c"
+    assert {
+        "list_configurations",
+        "search_objects",
+        "get_object",
+        "get_procedure",
+        "get_callers",
+    } <= {tool.name for tool in catalog.tools}
+    assert all(
+        not result.is_error
+        for result in (listed, found, card, procedure, callers)
+    )
+    assert "DemoConfiguration" in listed.content[0].text
+    assert "`HTTPСервис.Api`" in found.content[0].text
+    assert "`/hs/api/items/{id}`" in card.content[0].text
+    assert "`HTTPСервис.Api::Handle` · привязка разрешена" in card.content[0].text
+    assert "Функция Handle(Request)" in procedure.content[0].text
+    assert "HTTP-метод `Any`" in callers.content[0].text
+    assert "`/hs/api/items/{id}`" in callers.content[0].text
 
 
 def test_native_http_service_change_и_удаление_endpoint_переживают_restart(

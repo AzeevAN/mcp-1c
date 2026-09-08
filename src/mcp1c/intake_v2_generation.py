@@ -50,7 +50,7 @@ from .v8container import V8Container, V8ContainerError, V8ResourceLimitError
 
 
 GENERATION_FORMAT_VERSION = 1
-GENERATION_PARSER_VERSION = 8
+GENERATION_PARSER_VERSION = 9
 _READ_CHUNK = 1 << 20
 _MAX_FORM_CONTAINER_SIZE = 64 << 20
 
@@ -403,6 +403,47 @@ def _roles_layer(collection: CollectionResult) -> _LayerBuild | None:
     )
 
 
+def _extended_layer(
+    collection: CollectionResult,
+    conversion: StructureConversion,
+) -> _LayerBuild:
+    semantic = extended_layer_data(conversion.extended)
+    artifacts: list[tuple[str, CollectionArtifact]] = []
+    for artifact in collection.metadata:
+        parts = PurePosixPath(artifact.source_path).parts
+        if not (
+            artifact.source_name == "XDTOPackages"
+            and len(parts) == 4
+            and parts[0] == "XDTOPackages"
+            and parts[2:] == ("Ext", "Package.bin")
+        ):
+            continue
+        artifacts.append((f"ПакетXDTO.{parts[1]}", artifact))
+    artifacts.sort(key=lambda item: (item[0].casefold(), item[0]))
+    members: list[LayerMember] = []
+    sources: list[_SourceSpec] = []
+    for ordinal, (address, artifact) in enumerate(artifacts):
+        member = LayerMember(
+            key=address,
+            relative_path=f"payload/extended_structure/{ordinal:08d}.xml",
+            size=artifact.size,
+            sha256=artifact.sha256,
+        )
+        members.append(member)
+        sources.append(
+            _SourceSpec(member, collection.root / artifact.relative_path)
+        )
+    return _LayerBuild(
+        LayerPayload(
+            LayerKind.EXTENDED_STRUCTURE,
+            semantic,
+            tuple(members),
+        ),
+        tuple(sources),
+        len(conversion.extended),
+    )
+
+
 def _identity(collection: CollectionResult, parent_configuration: str) -> ExportIdentity:
     probe = collection.probe
     if probe.source_kind is SourceKind.CONFIGURATION:
@@ -458,10 +499,8 @@ def materialize_generation(
                 (),
                 len(conversion.base.objects),
             ),
-            LayerKind.EXTENDED_STRUCTURE: _LayerBuild(
-                LayerPayload(LayerKind.EXTENDED_STRUCTURE, extended_semantic),
-                (),
-                len(conversion.extended),
+            LayerKind.EXTENDED_STRUCTURE: _extended_layer(
+                collection, conversion
             ),
             LayerKind.CODE: _code_layer(collection, temporary, conversion.base),
             LayerKind.FORMS: _forms_layer(collection, conversion.extended),

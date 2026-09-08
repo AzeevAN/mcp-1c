@@ -525,6 +525,8 @@ def _extended_props(
     """Вывести полезные скалярные свойства, не дублируя вложенные коллекции."""
     result: dict[str, object] = {}
     for key, value in payload.items():
+        if key.startswith("_"):
+            continue
         if value in (None, "", []):
             continue
         if isinstance(value, (str, bool, int, float)):
@@ -661,6 +663,7 @@ def _compose_extended_structure(
     semantic: object,
     *,
     require_base_overlays: bool,
+    members: tuple[LayerMember, ...] = (),
 ) -> None:
     """Собрать единый каталог A/B без копирования base-object overlays."""
     raw = _mapping(semantic, "extended_structure")
@@ -674,6 +677,10 @@ def _compose_extended_structure(
             "extended_structure.objects должен быть массивом"
         )
     folded = {name.casefold(): name for name in configuration.objects}
+    xdto_members = {member.key: member for member in members}
+    if len(xdto_members) != len(members):
+        raise GenerationRuntimeError("extended_structure дублирует member")
+    xdto_packages: set[str] = set()
     fields_by_address = {
         f"{obj.full_name}.{path}".casefold(): field
         for obj in configuration.objects.values()
@@ -710,6 +717,26 @@ def _compose_extended_structure(
             copied_payload = _json_value(payload_raw, f"{label}.payload")
             assert isinstance(copied_payload, dict)
             payload = copied_payload
+        if kind == "ПакетXDTO":
+            xdto_packages.add(full_name)
+        if kind == "ПакетXDTO" or kind.startswith("ПакетXDTO."):
+            package_address = (
+                full_name
+                if kind == "ПакетXDTO"
+                else _text(
+                    payload.get("package_address"),
+                    f"{label}.payload.package_address",
+                    required=True,
+                )
+            )
+            member = xdto_members.get(package_address)
+            if member is None:
+                raise GenerationRuntimeError(
+                    f"{label}: отсутствует member пакета XDTO"
+                )
+            payload["_member_relative_path"] = member.relative_path
+            payload["_member_size"] = member.size
+            payload["_member_sha256"] = member.sha256
         forms = _text_list(item["forms"], f"{label}.forms")
         relations = _extended_relations(
             item["relations"], f"{label}.relations"
@@ -781,6 +808,10 @@ def _compose_extended_structure(
             target.attributes = _journal_fields(
                 payload, fields_by_address, f"{label}.payload"
             )
+    if set(xdto_members) != xdto_packages:
+        raise GenerationRuntimeError(
+            "extended_structure XDTO semantic и members расходятся"
+        )
 
 
 def _structure_sha256(
@@ -1131,6 +1162,7 @@ def build_generation_runtime(
                     and base_layer.provenance.profile
                     is LayerSourceProfile.SCHEMA_V1
                 ),
+                members=extended.members,
             )
     else:
         assert extended is not None

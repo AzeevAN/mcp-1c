@@ -109,6 +109,73 @@ def test_materializer_строит_пять_слоёв_и_generation_переж�
     assert (registry.data_dir / pointer.root_path / "payload/code").is_dir()
 
 
+def test_materializer_сохраняет_xdto_как_ленивые_extended_members(
+    tmp_path, monkeypatch
+):
+    load_layer_payload = _symbol("load_layer_payload")
+    collection = _collection(tmp_path / "source-xdto", xdto_packages=True)
+    materialized = _materialized(tmp_path, "xdto", collection)
+    extended = load_layer_payload(
+        materialized.payloads[LayerKind.EXTENDED_STRUCTURE].manifest_path
+    )
+
+    assert {member.key for member in extended.members} == {
+        "ПакетXDTO.Common",
+        "ПакетXDTO.Main",
+    }
+    assert all(
+        member.relative_path.startswith("payload/extended_structure/")
+        and member.relative_path.endswith(".xml")
+        for member in extended.members
+    )
+    root_payload = next(
+        item["payload"]
+        for item in extended.semantic["objects"]
+        if item["full_name"] == "ПакетXDTO.Main"
+    )
+    assert "object_types" in root_payload
+    assert "property" not in root_payload
+
+    registry = Registry(tmp_path / "data-xdto")
+    registry.publish_generation(
+        registry.stage_generation(materialized.manifest, materialized.payloads)
+    )
+    pointer = registry.active_generation_pointer(materialized.manifest.identity)
+    shutil.rmtree(collection.root)
+    shutil.rmtree(materialized.root)
+
+    restarted = Registry(registry.data_dir)
+    assert restarted.restore() == []
+    reader = tools.read_package_member
+
+    def reject_eager_read(*_args, **_kwargs):
+        pytest.fail("search_objects не должен читать полный XDTO member")
+
+    monkeypatch.setattr(tools, "read_package_member", reject_eager_read)
+    found = tools.search_objects(
+        restarted,
+        "Item",
+        config="DemoConfiguration",
+    )
+    monkeypatch.setattr(tools, "read_package_member", reader)
+    card = tools.get_object(
+        restarted,
+        "ПакетXDTO.Main.ТипОбъекта.Item",
+        config="DemoConfiguration",
+        detail="full",
+    )
+
+    assert "ПакетXDTO.Main.ТипОбъекта.Item" in found
+    assert "ПакетXDTO.Main.ТипОбъекта.Item" in card
+    assert "Свойства (2)" in card
+    assert "`c2:Code` → `ПакетXDTO.Common.ТипЗначения.Code` — межпакетная" in card
+    assert "typeDef=anonymous" in card
+    assert pointer is not None
+    assert (
+        registry.data_dir / pointer.root_path / "payload/extended_structure"
+    ).is_dir()
+
+
 def test_materializer_сохраняет_compiled_модуль_не_выдавая_его_за_bsl(tmp_path):
     load_layer_payload = _symbol("load_layer_payload")
     collection = _collection(

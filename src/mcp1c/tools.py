@@ -22,6 +22,7 @@ import heapq
 import json
 from bisect import bisect_right
 from dataclasses import dataclass
+from pathlib import Path
 
 from . import coverage_log, index_cache, replacements, structure_origin
 from .bsl_lex import Процедура, прочитать_модуль, разобрать
@@ -58,11 +59,13 @@ from .render import (
     render_procedure_search,
     render_standard_procedure_search,
     render_syntax_item,
+    render_xdto,
 )
 from .search import FIELD_KIND_TITLES
 from .standard_procedure_intents import recognize_standard_procedure_intent
 from .syntax_model import KIND_TITLES, SyntaxItem, parse_version, release
 from .virtual_tables import virtual_tables
+from .xdto import XDTOReadError, member_details, read_package_member
 
 
 _ИСХОДНЫЙ_ЧИТАТЕЛЬ_МОДУЛЯ = прочитать_модуль
@@ -1658,6 +1661,34 @@ def get_object(
             ),
             platform=context.platform,
         )
+    if obj.kind == "ПакетXDTO" or obj.kind.startswith("ПакетXDTO."):
+        relative_path = obj.extended.get("_member_relative_path")
+        member_size = obj.extended.get("_member_size")
+        member_sha256 = obj.extended.get("_member_sha256")
+        if (
+            detail != BRIEF
+            and isinstance(relative_path, str)
+            and isinstance(member_size, int)
+            and isinstance(member_sha256, str)
+        ):
+            try:
+                payload = read_package_member(
+                    Path(registry.data_dir) / context.configuration.source.stored_path,
+                    relative_path,
+                    expected_size=member_size,
+                    expected_sha256=member_sha256,
+                )
+                body += render_xdto(
+                    obj,
+                    detail,
+                    member_details(
+                        payload,
+                        obj,
+                        context.configuration.config,
+                    ),
+                )
+            except XDTOReadError as error:
+                body += f"\n> Полная модель XDTO недоступна: {error}.\n"
     code = (
         _object_code_block(snapshot.modules, obj.full_name, detail)
         if snapshot is not None

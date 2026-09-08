@@ -21,6 +21,7 @@ NS_V8 = "http://v8.1c.ru/8.1/data/core"
 NS_XS = "http://www.w3.org/2001/XMLSchema"
 NS_CFG = "http://v8.1c.ru/8.1/data/enterprise/current-config"
 NS_EXTERNAL_PROPERTIES = "http://v8.1c.ru/8.3/xcf/extrnprops"
+NS_XDTO = "http://v8.1c.ru/8.1/xdto"
 
 
 def _symbol(name: str):
@@ -103,6 +104,7 @@ def _configuration(
     numbering_rules: bool = False,
     opaque_common_module: bool = False,
     http_services: bool = False,
+    xdto_packages: bool = False,
 ) -> bytes:
     extra = "<FutureFlag>Enabled</FutureFlag>" if unknown else ""
     properties = (
@@ -156,6 +158,8 @@ def _configuration(
         children += "<Bot>Assistant</Bot>"
     if http_services:
         children += "<HTTPService>Api</HTTPService>"
+    if xdto_packages:
+        children += "<XDTOPackage>Main</XDTOPackage><XDTOPackage>Common</XDTOPackage>"
     return _document("Configuration", properties, children)
 
 
@@ -474,6 +478,40 @@ def _http_service(
     ).encode()
 
 
+def _xdto_descriptor(name: str, namespace: str) -> bytes:
+    properties = (
+        f"<Name>{name}</Name>"
+        f"<Synonym>{_localized('Синтетический пакет XDTO')}</Synonym>"
+        "<Comment>Контракт XDTO</Comment>"
+        f"<Namespace>{namespace}</Namespace>"
+    )
+    root = _document("XDTOPackage", properties).decode()
+    return root.replace(
+        "<XDTOPackage>", f'<XDTOPackage uuid="uuid-{name}">'
+    ).encode()
+
+
+def _xdto_package(
+    namespace: str,
+    body: str,
+    *,
+    declarations: str = "",
+    future: str = "",
+    qualified: bool = True,
+) -> bytes:
+    qualification = (
+        'elementFormQualified="true" attributeFormQualified="false"'
+        if qualified
+        else ""
+    )
+    return (
+        "\ufeff"
+        f'<package xmlns="{NS_XDTO}" xmlns:xs="{NS_XS}" '
+        f'targetNamespace="{namespace}" {declarations}{qualification}>'
+        f"{body}{future}</package>"
+    ).encode("utf-8")
+
+
 def _common_form(name: str) -> bytes:
     properties = (
         f"<Name>{name}</Name>"
@@ -590,6 +628,12 @@ def _collection(
     http_include_method: bool = True,
     http_include_template: bool = True,
     http_module: bytes | None = b"",
+    xdto_packages: bool = False,
+    xdto_namespace_mismatch: bool = False,
+    xdto_missing_payload: bool = False,
+    xdto_future: str = "",
+    xdto_reference: str = "c:Code",
+    xdto_qualified: bool = True,
 ):
     payloads = {
         "Configuration.xml": _configuration(
@@ -602,6 +646,7 @@ def _collection(
             numbering_rules=numbering_rules,
             opaque_common_module=opaque_common_module,
             http_services=http_services or flat_http_services,
+            xdto_packages=xdto_packages,
         ),
         "Catalogs/Items.xml": _catalog(unknown=unknown),
         "Catalogs/Items/Ext/ObjectModule.bsl": object_module,
@@ -769,6 +814,38 @@ def _collection(
             payloads["HTTPServices/Api.xml"] = descriptor
             if module is not None:
                 payloads["HTTPServices/Api/Ext/Module.bsl"] = module
+    if xdto_packages:
+        payloads["XDTOPackages/Main.xml"] = _xdto_descriptor(
+            "Main", "urn:mismatch" if xdto_namespace_mismatch else "urn:main"
+        )
+        payloads["XDTOPackages/Common.xml"] = _xdto_descriptor(
+            "Common", "urn:common"
+        )
+        payloads["XDTOPackages/Common/Ext/Package.bin"] = _xdto_package(
+            "urn:common",
+            '<valueType name="Code"><typeDef type="xs:string"/></valueType>',
+            qualified=xdto_qualified,
+        )
+        if not xdto_missing_payload:
+            payloads["XDTOPackages/Main/Ext/Package.bin"] = _xdto_package(
+                "urn:main",
+                (
+                    '<import namespace="urn:common"/>'
+                    f'<property name="Global" type="{xdto_reference}"/>'
+                    '<valueType name="Status">'
+                    '<typeDef type="xs:string" '
+                    'memberTypes="c:Code {urn:common}Code">'
+                    '<enumeration value="Ready"/>'
+                    '</typeDef></valueType>'
+                    '<objectType name="Item">'
+                    '<property name="Code" xmlns:c2="urn:common" type="c2:Code"/>'
+                    '<property name="Tags"><typeDef type="xs:string"/></property>'
+                    '</objectType>'
+                ),
+                declarations='xmlns:c="urn:common" xmlns:u="urn:unknown" ',
+                future=xdto_future,
+                qualified=xdto_qualified,
+            )
     if flat_mandatory:
         replacements = {
             "CommonAttributes/Tenant.xml": "CommonAttribute.Tenant.xml",
@@ -828,10 +905,142 @@ def test_metadata_kind_spec_выбирает_структурный_adapter():
     assert specs["HTTPServices"].layers == frozenset(
         {LayerKind.EXTENDED_STRUCTURE, LayerKind.CODE}
     )
+    assert specs["XDTOPackages"].extended_adapter == "xdto_package"
+    assert specs["XDTOPackages"].layers == frozenset(
+        {LayerKind.EXTENDED_STRUCTURE}
+    )
+    assert specs["XDTOPackages"].layouts == frozenset({"tree"})
     assert specs["CommonCommands"].base_adapter == ""
     assert specs["CommonCommands"].extended_adapter == ""
     assert specs["DocumentNumerators"].base_adapter == "numbering_rules"
     assert specs["DocumentNumerators"].extended_adapter == ""
+
+
+def test_xdto_package_строит_корень_и_производные_объекты(tmp_path):
+    XDTOPackagePayload = _symbol("XDTOPackagePayload")
+    XDTOMemberPayload = _symbol("XDTOMemberPayload")
+    convert_collection = _symbol("convert_collection")
+
+    result = convert_collection(_collection(tmp_path, xdto_packages=True))
+    package = result.extended.get("ПакетXDTO.Main")
+
+    assert package is not None and isinstance(package.payload, XDTOPackagePayload)
+    assert package.payload.uuid == "uuid-Main"
+    assert package.payload.namespace == "urn:main"
+    assert package.payload.target_namespace == "urn:main"
+    assert package.payload.element_form_qualified is True
+    assert package.payload.attribute_form_qualified is False
+    assert package.payload.imports == ("urn:common",)
+    assert package.payload.object_types == ("Item",)
+    assert package.payload.value_types == ("Status",)
+    assert package.payload.properties == ("Global",)
+    assert len(package.payload.content_sha256) == 64
+
+    expected = {
+        "ПакетXDTO.Main.ТипОбъекта.Item": ("ТипОбъекта", "Item"),
+        "ПакетXDTO.Main.ТипЗначения.Status": ("ТипЗначения", "Status"),
+        "ПакетXDTO.Main.Свойство.Global": ("Свойство", "Global"),
+        "ПакетXDTO.Common.ТипЗначения.Code": ("ТипЗначения", "Code"),
+    }
+    for address, (member_kind, name) in expected.items():
+        member = result.extended.get(address)
+        assert member is not None and isinstance(member.payload, XDTOMemberPayload)
+        assert member.name == name
+        assert member.payload.member_kind == member_kind
+        assert member.payload.package_address == address.split(f".{member_kind}", 1)[0]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"xdto_namespace_mismatch": True},
+        {"xdto_missing_payload": True},
+    ],
+)
+def test_xdto_package_требует_согласованную_полную_пару(tmp_path, change):
+    ConversionError = _symbol("ConversionError")
+    convert_collection = _symbol("convert_collection")
+
+    with pytest.raises(ConversionError):
+        convert_collection(_collection(tmp_path, xdto_packages=True, **change))
+
+
+def test_xdto_unknown_node_диагностируется_и_меняет_semantic_hash(tmp_path):
+    convert_collection = _symbol("convert_collection")
+    plain = convert_collection(_collection(tmp_path / "plain", xdto_packages=True))
+    future = convert_collection(
+        _collection(
+            tmp_path / "future",
+            xdto_packages=True,
+            xdto_future='<futureType name="Later"/>',
+        )
+    )
+    assert plain.base_content_sha256 == future.base_content_sha256
+    assert plain.extended_content_sha256 != future.extended_content_sha256
+    assert any(
+        item.code == "unknown_xdto_node"
+        and item.signature == "futureType"
+        and item.severity == "warning"
+        for item in future.diagnostics
+    )
+
+
+def test_xdto_не_выдумывает_отсутствующие_qualified_свойства(tmp_path):
+    convert_collection = _symbol("convert_collection")
+    result = convert_collection(
+        _collection(tmp_path, xdto_packages=True, xdto_qualified=False)
+    )
+    package = result.extended.get("ПакетXDTO.Main")
+
+    assert package is not None
+    assert package.payload.element_form_qualified is None
+    assert package.payload.attribute_form_qualified is None
+
+@pytest.mark.parametrize(
+    ("reference", "state"),
+    [
+        ("c:Code", "imported"),
+        ("{urn:common}Code", "imported"),
+        ("xs:string", "platform"),
+    ],
+)
+def test_xdto_разрешает_qname_clark_и_платформенные_ссылки(
+    tmp_path, reference, state
+):
+    convert_collection = _symbol("convert_collection")
+    result = convert_collection(
+        _collection(tmp_path, xdto_packages=True, xdto_reference=reference)
+    )
+
+    assert any(
+        item.code == "xdto_reference"
+        and item.signature == state
+        and item.count >= 2
+        for item in result.diagnostics
+    )
+    assert not any(
+        item.code == "unresolved_xdto_reference"
+        for item in result.diagnostics
+    )
+
+
+def test_xdto_неразрешённая_ссылка_остаётся_диагностикой(tmp_path):
+    convert_collection = _symbol("convert_collection")
+    result = convert_collection(
+        _collection(
+            tmp_path,
+            xdto_packages=True,
+            xdto_reference="u:Missing",
+        )
+    )
+
+    assert any(
+        item.code == "unresolved_xdto_reference"
+        and item.signature == "urn:unknown"
+        and item.count == 1
+        and item.severity == "warning"
+        for item in result.diagnostics
+    )
 
 
 @pytest.mark.parametrize("flat", [False, True], ids=["tree", "flat"])

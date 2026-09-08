@@ -511,6 +511,70 @@ def test_native_http_service_проходит_полную_mcp_сессию(tmp_
     assert "`/hs/api/items/{id}`" in callers.content[0].text
 
 
+def test_native_xdto_проходит_mcp_сессию_после_restart(tmp_path):
+    """Агент получает XDTO через прежние инструменты, а не Python-вызов."""
+    _collection_value, generation = _materialized(
+        tmp_path,
+        "xdto-mcp-session",
+        xdto_packages=True,
+    )
+    registry = Registry(tmp_path / "data-xdto-mcp-session")
+    registry.publish_generation(
+        registry.stage_generation(generation.manifest, generation.payloads)
+    )
+    restarted = Registry(registry.data_dir)
+    assert restarted.restore() == []
+    server = build_server(restarted)
+
+    async def run_session():
+        async with create_client_server_memory_streams() as (
+            client_streams,
+            server_streams,
+        ):
+            async with anyio.create_task_group() as tasks:
+                tasks.start_soon(
+                    server._lowlevel_server.run,
+                    *server_streams,
+                    server._lowlevel_server.create_initialization_options(),
+                )
+                try:
+                    async with ClientSession(*client_streams) as session:
+                        initialized = await session.initialize()
+                        catalog = await session.list_tools()
+                        found = await session.call_tool(
+                            "search_objects",
+                            {
+                                "query": "Item",
+                                "config": "DemoConfiguration",
+                            },
+                        )
+                        card = await session.call_tool(
+                            "get_object",
+                            {
+                                "full_name": "ПакетXDTO.Main.ТипОбъекта.Item",
+                                "config": "DemoConfiguration",
+                                "detail": "fields",
+                            },
+                        )
+                finally:
+                    tasks.cancel_scope.cancel()
+        return initialized, catalog, found, card
+
+    initialized, catalog, found, card = anyio.run(
+        run_session,
+        backend="asyncio",
+    )
+
+    assert initialized.server_info.name == "mcp1c"
+    assert {"search_objects", "get_object"} <= {
+        tool.name for tool in catalog.tools
+    }
+    assert not found.is_error and not card.is_error
+    assert "`ПакетXDTO.Main.ТипОбъекта.Item`" in found.content[0].text
+    assert "Свойства (2)" in card.content[0].text
+    assert "межпакетная" in card.content[0].text
+
+
 def test_native_http_service_change_и_удаление_endpoint_переживают_restart(
     tmp_path,
 ):

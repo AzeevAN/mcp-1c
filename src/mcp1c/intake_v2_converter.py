@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, fields, is_dataclass
@@ -37,10 +38,12 @@ from .intake_v2_collector import (
 from .model import Configuration, Field, MetadataObject, TabularPart
 from .intake_v2_extensions import ExtensionStructure as NativeExtensionStructure
 from .v8container import V8Container, V8ContainerError, V8ResourceLimitError
+from .xdto import XDTOReadError, package_references
 
 
 _NS_MDCLASSES = "http://v8.1c.ru/8.3/MDClasses"
 _NS_EXTERNAL_PROPERTIES = "http://v8.1c.ru/8.3/xcf/extrnprops"
+_NS_XDTO = "http://v8.1c.ru/8.1/xdto"
 _MAX_DIAGNOSTIC_EXAMPLES = 3
 
 
@@ -308,6 +311,28 @@ class HTTPServicePayload:
     reuse_sessions: str | None
     session_max_age: int | None
     url_templates: tuple[HTTPServiceURLTemplate, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class XDTOPackagePayload:
+    uuid: str
+    namespace: str
+    target_namespace: str
+    element_form_qualified: bool | None
+    attribute_form_qualified: bool | None
+    imports: tuple[str, ...] = ()
+    object_types: tuple[str, ...] = ()
+    value_types: tuple[str, ...] = ()
+    properties: tuple[str, ...] = ()
+    content_sha256: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class XDTOMemberPayload:
+    package_address: str
+    namespace: str
+    member_kind: str
+    content_sha256: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -2755,6 +2780,266 @@ def _bot(
     )
 
 
+def _xdto_bool_attribute(
+    root: ET.Element,
+    name: str,
+    where: str,
+) -> bool | None:
+    value = root.attrib.get(name)
+    if value is None:
+        return None
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    raise ConversionError(f"{where}.@{name}: ожидается true или false")
+
+
+def _xdto_content_sha256(payload: bytes, where: str) -> str:
+    try:
+        canonical = ET.canonicalize(
+            from_file=io.BytesIO(payload),
+            with_comments=False,
+            strip_text=True,
+        )
+    except (ET.ParseError, ValueError) as error:
+        raise ConversionError(f"{where}: Package.bin не является XML") from error
+    return hashlib.sha256(
+        b"mcp1c-xdto-package-v1\0" + canonical.encode("utf-8")
+    ).hexdigest()
+
+
+def _xdto_payloads(
+    collection: CollectionResult,
+) -> dict[str, CollectionArtifact]:
+    result: dict[str, CollectionArtifact] = {}
+    for artifact in collection.metadata:
+        if artifact.source_name != "XDTOPackages":
+            continue
+        parts = PurePosixPath(artifact.source_path).parts
+        if not (
+            len(parts) == 4
+            and parts[0] == "XDTOPackages"
+            and parts[2:] == ("Ext", "Package.bin")
+        ):
+            continue
+        key = parts[1].casefold()
+        if key in result:
+            raise ConversionError("дублируется Package.bin пакета XDTO")
+        result[key] = artifact
+    return result
+
+
+_XDTO_TOP_LEVEL_KINDS = {
+    "objectType": "ТипОбъекта",
+    "valueType": "ТипЗначения",
+    "property": "Свойство",
+}
+_XDTO_KNOWN_NODES = frozenset(
+    {
+        "package",
+        "import",
+        *tuple(_XDTO_TOP_LEVEL_KINDS),
+        "typeDef",
+        "enumeration",
+        "pattern",
+    }
+)
+
+
+def _xdto_package(
+    descriptor: ET.Element,
+    package_payload: bytes,
+    diagnostics: _Diagnostics,
+    descriptor_path: str,
+    payload_path: str,
+) -> tuple[ExtendedObject, ...]:
+    node, properties, children = _descriptor(
+        descriptor, "XDTOPackage", descriptor_path
+    )
+    _unknown_properties(
+        properties,
+        {"Name", "Synonym", "Comment", "Namespace"},
+        diagnostics,
+        "XDTOPackage",
+    )
+    if children is not None and len(children):
+        for child in children:
+            diagnostics.add(
+                "unknown_child",
+                "XDTOPackage",
+                _tag(child),
+                severity="warning",
+            )
+    name = _required_text(_child(properties, "Name"), f"{descriptor_path}.Name")
+    namespace = _required_text(
+        _child(properties, "Namespace"), f"{descriptor_path}.Namespace"
+    )
+    try:
+        package_root = ET.fromstring(package_payload)
+    except ET.ParseError as error:
+        raise ConversionError(f"{payload_path}: Package.bin не является XML") from error
+    if _namespace(package_root) != _NS_XDTO or _tag(package_root) != "package":
+        raise ConversionError(f"{payload_path}: неверный корень XDTO package")
+    target_namespace = package_root.attrib.get("targetNamespace", "").strip()
+    if not target_namespace:
+        raise ConversionError(f"{payload_path}.@targetNamespace: значение отсутствует")
+    if target_namespace != namespace:
+        raise ConversionError(
+            f"{descriptor_path}: Namespace не совпадает с Package.bin"
+        )
+
+    imports: list[str] = []
+    definitions: dict[str, list[str]] = {
+        kind: [] for kind in _XDTO_TOP_LEVEL_KINDS
+    }
+    for child in package_root:
+        tag = _tag(child)
+        if tag == "import":
+            imported = child.attrib.get("namespace", "").strip()
+            if not imported:
+                raise ConversionError(f"{payload_path}: import без namespace")
+            imports.append(imported)
+        elif tag in _XDTO_TOP_LEVEL_KINDS:
+            member_name = child.attrib.get("name", "").strip()
+            if not member_name:
+                raise ConversionError(f"{payload_path}: {tag} без name")
+            definitions[tag].append(member_name)
+    for descendant in package_root.iter():
+        tag = _tag(descendant)
+        if tag not in _XDTO_KNOWN_NODES:
+            diagnostics.add(
+                "unknown_xdto_node",
+                tag,
+                payload_path,
+                severity="warning",
+            )
+    for kind, names in definitions.items():
+        folded = [value.casefold() for value in names]
+        if len(folded) != len(set(folded)):
+            raise ConversionError(f"{payload_path}: {kind} дублирует имя")
+
+    content_sha256 = _xdto_content_sha256(package_payload, payload_path)
+    uuid = next(
+        (
+            value.strip()
+            for key, value in node.attrib.items()
+            if key.rsplit("}", 1)[-1].lower() == "uuid" and value.strip()
+        ),
+        "",
+    )
+    package_address = f"ПакетXDTO.{name}"
+    objects = [
+        ExtendedObject(
+            full_name=package_address,
+            kind="ПакетXDTO",
+            name=name,
+            synonym=_localized(_child(properties, "Synonym")),
+            comment=_text(_child(properties, "Comment")),
+            payload=XDTOPackagePayload(
+                uuid=uuid,
+                namespace=namespace,
+                target_namespace=target_namespace,
+                element_form_qualified=_xdto_bool_attribute(
+                    package_root, "elementFormQualified", payload_path
+                ),
+                attribute_form_qualified=_xdto_bool_attribute(
+                    package_root, "attributeFormQualified", payload_path
+                ),
+                imports=tuple(sorted(imports, key=_order)),
+                object_types=tuple(sorted(definitions["objectType"], key=_order)),
+                value_types=tuple(sorted(definitions["valueType"], key=_order)),
+                properties=tuple(sorted(definitions["property"], key=_order)),
+                content_sha256=content_sha256,
+            ),
+        )
+    ]
+    for source_kind, public_kind in _XDTO_TOP_LEVEL_KINDS.items():
+        for member_name in sorted(definitions[source_kind], key=_order):
+            objects.append(
+                ExtendedObject(
+                    full_name=f"{package_address}.{public_kind}.{member_name}",
+                    kind=f"{package_address}.{public_kind}",
+                    name=member_name,
+                    payload=XDTOMemberPayload(
+                        package_address=package_address,
+                        namespace=namespace,
+                        member_kind=public_kind,
+                        content_sha256=content_sha256,
+                    ),
+                )
+            )
+    return tuple(objects)
+
+
+def _resolve_xdto_references(
+    collection: CollectionResult,
+    objects: Mapping[str, ExtendedObject],
+    diagnostics: _Diagnostics,
+) -> None:
+    has_xdto = any(
+        artifact.source_name == "XDTOPackages"
+        for artifact in collection.metadata
+    )
+    if has_xdto and collection.probe.source_kind is SourceKind.EXTENSION:
+        raise ConversionError(
+            "XDTO-пакеты расширения не поддержаны без доказанного образца"
+        )
+    catalog: dict[str, dict[str, str]] = {}
+    for obj in objects.values():
+        if obj.kind != "ПакетXDTO" or not isinstance(
+            obj.payload, XDTOPackagePayload
+        ):
+            continue
+        namespace_members: dict[str, str] = {}
+        for names, kind in (
+            (obj.payload.object_types, "ТипОбъекта"),
+            (obj.payload.value_types, "ТипЗначения"),
+            (obj.payload.properties, "Свойство"),
+        ):
+            for name in names:
+                symbol_space = "property" if kind == "Свойство" else "type"
+                key = f"{symbol_space}:{name}"
+                if key in namespace_members:
+                    raise ConversionError(
+                        f"{obj.full_name}: имя XDTO дублируется в symbol space"
+                    )
+                namespace_members[key] = f"{obj.full_name}.{kind}.{name}"
+        if obj.payload.target_namespace in catalog:
+            raise ConversionError("пространство имён XDTO объявлено двумя пакетами")
+        catalog[obj.payload.target_namespace] = namespace_members
+
+    for artifact in collection.metadata:
+        parts = PurePosixPath(artifact.source_path).parts
+        if not (
+            artifact.source_name == "XDTOPackages"
+            and len(parts) == 4
+            and parts[2:] == ("Ext", "Package.bin")
+        ):
+            continue
+        try:
+            references = package_references(
+                _read_artifact_bytes(collection, artifact), catalog
+            )
+        except XDTOReadError as error:
+            raise ConversionError(f"{artifact.source_path}: {error}") from error
+        for reference in references:
+            if reference.state == "unresolved":
+                signature = reference.namespace or "undeclared_namespace"
+                diagnostics.add(
+                    "unresolved_xdto_reference",
+                    signature,
+                    f"{artifact.source_path}: {reference.raw}",
+                    severity="warning",
+                )
+            else:
+                diagnostics.add(
+                    "xdto_reference",
+                    reference.state,
+                    f"{artifact.source_path}: {reference.raw}",
+                )
+
+
 def _is_descriptor(artifact: CollectionArtifact, spec: MetadataKindSpec) -> bool:
     parts = PurePosixPath(artifact.source_path).parts
     if len(parts) == 2:
@@ -2774,6 +3059,13 @@ def _known_supplementary_metadata(
     artifact: CollectionArtifact,
     spec: MetadataKindSpec,
 ) -> bool:
+    if spec.extended_adapter == "xdto_package":
+        parts = PurePosixPath(artifact.source_path).parts
+        return (
+            len(parts) == 4
+            and parts[0] == "XDTOPackages"
+            and parts[2:] == ("Ext", "Package.bin")
+        )
     if spec.extended_adapter not in {
         "common_form",
         "document_journal",
@@ -3057,6 +3349,26 @@ def base_layer_data(base: Configuration) -> dict[str, object]:
 
 def _extended_payload_data(value: object | None) -> object:
     """Отделить metadata-декларации от производных code/forms-состояний."""
+    if isinstance(value, XDTOPackagePayload):
+        return {
+            "uuid": value.uuid,
+            "namespace": value.namespace,
+            "target_namespace": value.target_namespace,
+            "element_form_qualified": value.element_form_qualified,
+            "attribute_form_qualified": value.attribute_form_qualified,
+            "imports": list(value.imports),
+            "object_types": list(value.object_types),
+            "value_types": list(value.value_types),
+            "properties": list(value.properties),
+            "content_sha256": value.content_sha256,
+        }
+    if isinstance(value, XDTOMemberPayload):
+        return {
+            "package_address": value.package_address,
+            "namespace": value.namespace,
+            "member_kind": value.member_kind,
+            "content_sha256": value.content_sha256,
+        }
     if isinstance(value, HTTPServicePayload):
         return {
             "uuid": value.uuid,
@@ -3179,6 +3491,7 @@ def convert_collection(
     borrowed_overlays: dict[str, MetadataObject] = {}
     borrowed_field_targets: set[str] = set()
     exchange_plan_contents = _exchange_plan_content_artifacts(collection)
+    xdto_payloads = _xdto_payloads(collection)
     needs_binding_resolver = any(
         item.source_name in {
             "EventSubscriptions",
@@ -3341,6 +3654,30 @@ def convert_collection(
             if obj.full_name in extended_objects:
                 raise ConversionError(f"дублируется extended object {obj.full_name}")
             extended_objects[obj.full_name] = obj
+        elif spec.extended_adapter == "xdto_package":
+            properties = _descriptor(
+                root, "XDTOPackage", artifact.source_path
+            )[1]
+            name = _required_text(
+                _child(properties, "Name"), f"{artifact.source_path}.Name"
+            )
+            payload_artifact = xdto_payloads.pop(name.casefold(), None)
+            if payload_artifact is None:
+                raise ConversionError(
+                    f"{artifact.source_path}: отсутствует обязательный Package.bin"
+                )
+            for obj in _xdto_package(
+                root,
+                _read_artifact_bytes(collection, payload_artifact),
+                diagnostics,
+                artifact.source_path,
+                payload_artifact.source_path,
+            ):
+                if obj.full_name in extended_objects:
+                    raise ConversionError(
+                        f"дублируется extended object {obj.full_name}"
+                    )
+                extended_objects[obj.full_name] = obj
         elif spec.extended_adapter == "bot":
             obj = _bot(
                 root,
@@ -3361,6 +3698,7 @@ def convert_collection(
             "http_service",
             "scheduled_job",
             "session_parameter",
+            "xdto_package",
         }:
             raise ConversionError(
                 f"для {spec.source_name} не реализован adapter "
@@ -3369,6 +3707,8 @@ def convert_collection(
 
     if exchange_plan_contents:
         raise ConversionError("Content.xml не соответствует descriptor плана обмена")
+    if xdto_payloads:
+        raise ConversionError("Package.bin не соответствует descriptor пакета XDTO")
 
     for name, obj in _common_form_objects(
         collection,
@@ -3379,6 +3719,7 @@ def convert_collection(
             raise ConversionError(f"дублируется extended object {name}")
         extended_objects[name] = obj
 
+    _resolve_xdto_references(collection, extended_objects, diagnostics)
     _attach_content(collection, base, extended_objects, diagnostics)
     _resolve_relations(extended_objects, base, diagnostics)
     extension_structure = None
@@ -3441,6 +3782,8 @@ __all__ = [
     "SessionParameterPayload",
     "StructureConversion",
     "TypeDescription",
+    "XDTOMemberPayload",
+    "XDTOPackagePayload",
     "base_layer_data",
     "convert_collection",
     "extended_layer_data",

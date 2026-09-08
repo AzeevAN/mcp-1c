@@ -35,7 +35,7 @@ from .intake_v2_transport import TransportError
 
 
 COLLECTION_FORMAT_VERSION = 1
-SELECTION_VERSION = 7
+SELECTION_VERSION = 8
 _READ_CHUNK = 1 << 20
 _MANIFEST_LIMIT = 64 * 1024 * 1024
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -411,6 +411,7 @@ def _supported(
     *,
     base_adapter: str = "",
     extended_adapter: str = "",
+    layouts: Iterable[str] | None = None,
 ) -> MetadataKindSpec:
     aliases = tuple(aliases)
     return MetadataKindSpec(
@@ -418,7 +419,11 @@ def _supported(
         canonical_kind=canonical_kind,
         policy=MetadataKindPolicy.SUPPORTED,
         layers=frozenset(layers),
-        layouts=frozenset({"tree", *(("flat",) if aliases else ())}),
+        layouts=(
+            frozenset(layouts)
+            if layouts is not None
+            else frozenset({"tree", *(("flat",) if aliases else ())})
+        ),
         aliases=frozenset(aliases),
         base_adapter=base_adapter,
         extended_adapter=extended_adapter,
@@ -620,11 +625,13 @@ DEFAULT_KIND_SPECS = (
         MetadataKindPolicy.DEFERRED,
         ("Subsystem",),
     ),
-    _inactive(
+    _supported(
         "XDTOPackages",
         "ПакетXDTO",
-        MetadataKindPolicy.DEFERRED,
         ("XDTOPackage",),
+        (LayerKind.EXTENDED_STRUCTURE,),
+        extended_adapter="xdto_package",
+        layouts=("tree",),
     ),
     _inactive(
         "WSReferences",
@@ -1152,7 +1159,29 @@ def collect_source_b(
                         source_path,
                     )
                 continue
+            layout = "tree" if "/" in source_path else "flat"
+            if layout not in spec.layouts:
+                continue
             if spec.policy is not MetadataKindPolicy.SUPPORTED:
+                continue
+
+            parts = PurePosixPath(source_path).parts
+            if (
+                spec.extended_adapter == "xdto_package"
+                and len(parts) == 4
+                and parts[0] == "XDTOPackages"
+                and parts[2:] == ("Ext", "Package.bin")
+            ):
+                artifacts.append(
+                    _copy_artifact(
+                        tree,
+                        raw_path,
+                        source_path,
+                        temporary,
+                        ArtifactKind.METADATA,
+                        spec.source_name,
+                    )
+                )
                 continue
 
             try:

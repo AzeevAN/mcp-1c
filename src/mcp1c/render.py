@@ -21,6 +21,7 @@ from .graph import EDGE_TITLES, Graph
 from .model import Configuration, Field, MetadataObject
 from .structure_origin import StructureOriginView
 from .syntax_model import KIND_TITLES, SyntaxItem, parse_version
+from .xdto import XDTOMemberDetails
 
 BRIEF, FIELDS, FULL = "brief", "fields", "full"
 DETAIL_LEVELS = (BRIEF, FIELDS, FULL)
@@ -205,6 +206,90 @@ def render_http_service(
         out.extend([f"Показано URL-шаблонов: {max_templates} из {len(templates)}.", ""])
     if shown_methods < methods_total:
         out.extend([f"Показано методов: {shown_methods} из {methods_total}.", ""])
+    return "\n".join(out).rstrip() + "\n"
+
+
+def render_xdto(
+    obj: MetadataObject,
+    detail: str,
+    details: XDTOMemberDetails,
+    *,
+    limit: int = 80,
+) -> str:
+    """Компактная карточка лениво прочитанного XDTO package/member."""
+    if detail == BRIEF:
+        return ""
+    payload = obj.extended
+    if obj.kind == "ПакетXDTO":
+        counts = [
+            ("Типов объектов", payload.get("object_types", [])),
+            ("Типов значений", payload.get("value_types", [])),
+            ("Глобальных свойств", payload.get("properties", [])),
+        ]
+        out = ["## Пакет XDTO", ""]
+        out.append(f"- Пространство имён: `{payload.get('target_namespace', '')}`")
+        out.extend(
+            f"- {title}: {len(values) if isinstance(values, list) else 0}"
+            for title, values in counts
+        )
+        imports = payload.get("imports", [])
+        if isinstance(imports, list) and imports:
+            out.extend(["", "### Импорты", ""])
+            out.extend(f"- `{value}`" for value in imports[:limit])
+            if len(imports) > limit:
+                out.append(f"- … ещё {len(imports) - limit}")
+    else:
+        out = ["## Определение XDTO", ""]
+        out.append(f"- Пакет: `{payload.get('package_address', '')}`")
+        out.append(f"- Вид: `{payload.get('member_kind', '')}`")
+
+    if details.properties:
+        out.extend(["", f"### Свойства ({len(details.properties)})", ""])
+        for value in details.properties[:limit]:
+            name = value.get("name") or value.get("ref") or "?"
+            attributes = ", ".join(
+                f"{key}={item}"
+                for key, item in value.items()
+                if key not in {"name", "ref"}
+            )
+            out.append(f"- `{name}`" + (f" — {attributes}" if attributes else ""))
+        if len(details.properties) > limit:
+            out.append(f"- … ещё {len(details.properties) - limit}")
+
+    if details.references:
+        labels = {
+            "local": "локальная",
+            "imported": "межпакетная",
+            "platform": "платформенная",
+            "unresolved": "не разрешена",
+        }
+        out.extend(["", f"### Ссылки типов ({len(details.references)})", ""])
+        for reference in details.references[:limit]:
+            target = f" → `{reference.target}`" if reference.target else ""
+            out.append(
+                f"- `{reference.raw}`{target} — {labels[reference.state]}"
+            )
+        if len(details.references) > limit:
+            out.append(f"- … ещё {len(details.references) - limit}")
+
+    for title, values in (
+        ("Перечисления", details.enumerations),
+        ("Шаблоны", details.patterns),
+    ):
+        if values:
+            out.extend(["", f"### {title} ({len(values)})", ""])
+            out.extend(f"- `{value}`" for value in values[:limit])
+            if len(values) > limit:
+                out.append(f"- … ещё {len(values) - limit}")
+    if details.unknown_nodes:
+        out.extend(
+            [
+                "",
+                "> Неизвестные узлы сохранены в семантическом hash: "
+                + ", ".join(f"`{value}`" for value in details.unknown_nodes)
+                + ".",
+            ]
+        )
     return "\n".join(out).rstrip() + "\n"
 
 

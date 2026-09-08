@@ -59,7 +59,7 @@ class AutoRecordPolicy(str, Enum):
 
 
 class BindingState(str, Enum):
-    """Состояние ссылки metadata на процедуру общего модуля."""
+    """Состояние ссылки metadata на процедуру или функцию модуля."""
 
     UNAVAILABLE = "unavailable"
     RESOLVED = "resolved"
@@ -278,6 +278,36 @@ class CodeBinding:
     state: BindingState
     module_address: str = ""
     procedure_address: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class HTTPServiceMethod:
+    uuid: str
+    name: str
+    synonym: str
+    comment: str
+    http_method: str
+    handler: str
+    binding: CodeBinding
+
+
+@dataclass(frozen=True, slots=True)
+class HTTPServiceURLTemplate:
+    uuid: str
+    name: str
+    synonym: str
+    comment: str
+    template: str
+    methods: tuple[HTTPServiceMethod, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class HTTPServicePayload:
+    uuid: str
+    root_url: str
+    reuse_sessions: str | None
+    session_max_age: int | None
+    url_templates: tuple[HTTPServiceURLTemplate, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -926,6 +956,46 @@ _BOT_PROPERTIES = _BASE_HEAD | {
     "ExtendedConfigurationObject",
     "ObjectBelonging",
 }
+_HTTP_SERVICE_PROPERTIES = frozenset(
+    {
+        "Name",
+        "Synonym",
+        "Comment",
+        "RootURL",
+        "ReuseSessions",
+        "SessionMaxAge",
+        "ExtendedConfigurationObject",
+        "ObjectBelonging",
+    }
+)
+_HTTP_URL_TEMPLATE_PROPERTIES = frozenset(
+    {"Name", "Synonym", "Comment", "Template"}
+)
+_HTTP_SERVICE_METHOD_PROPERTIES = frozenset(
+    {"Name", "Synonym", "Comment", "HTTPMethod", "Handler"}
+)
+_HTTP_METHODS = frozenset(
+    {
+        "CONNECT",
+        "COPY",
+        "DELETE",
+        "GET",
+        "HEAD",
+        "LOCK",
+        "MERGE",
+        "MKCOL",
+        "MOVE",
+        "OPTIONS",
+        "PATCH",
+        "POST",
+        "PROPFIND",
+        "PROPPATCH",
+        "PUT",
+        "TRACE",
+        "UNLOCK",
+        "Any",
+    }
+)
 
 
 def _property_value(element: ET.Element, kind: str, where: str) -> object:
@@ -1955,6 +2025,7 @@ class _ModuleSymbols:
     address: str
     procedures: Mapping[str, str]
     ambiguous: frozenset[str] = frozenset()
+    functions: frozenset[str] = frozenset()
     readable: bool = True
     empty: bool = False
     content_sha256: str = ""
@@ -1977,16 +2048,20 @@ def _module_symbols_from_payload(
     text = нормализовать(body.text)
     procedures: dict[str, str] = {}
     ambiguous: set[str] = set()
+    functions: set[str] = set()
     for procedure in разобрать(text):
         procedure_key = procedure.имя.casefold()
         if procedure_key in procedures:
             ambiguous.add(procedure_key)
             continue
         procedures[procedure_key] = procedure.имя
+        if procedure.вид == "функция":
+            functions.add(procedure_key)
     return _ModuleSymbols(
         address,
         procedures,
         frozenset(ambiguous),
+        frozenset(functions),
         empty=body.state == "empty",
         content_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
     )
@@ -1998,7 +2073,11 @@ def _binding_module_symbols(
 ) -> Mapping[str, _ModuleSymbols]:
     grouped: dict[str, list[CollectionArtifact]] = {}
     for artifact in collection.code:
-        if artifact.source_name not in {"CommonModules", "CommonForms"}:
+        if artifact.source_name not in {
+            "CommonModules",
+            "CommonForms",
+            "HTTPServices",
+        }:
             continue
         grouped.setdefault(artifact.address.casefold(), []).append(artifact)
 
@@ -2006,11 +2085,10 @@ def _binding_module_symbols(
     for key, artifacts in sorted(grouped.items()):
         canonical = sorted((item.address for item in artifacts), key=_order)[0]
         if len({item.sha256 for item in artifacts}) != 1:
-            source_kind = (
-                "CommonForm"
-                if artifacts[0].source_name == "CommonForms"
-                else "CommonModule"
-            )
+            source_kind = {
+                "CommonForms": "CommonForm",
+                "HTTPServices": "HTTPService",
+            }.get(artifacts[0].source_name, "CommonModule")
             diagnostics.add(
                 "ambiguous_code_module",
                 source_kind,
@@ -2168,6 +2246,9 @@ def _resolve_form_binding(
     module: _ModuleSymbols | None,
     diagnostics: _Diagnostics,
     owner: str,
+    *,
+    diagnostic_code: str = "unresolved_form_handler",
+    require_function: bool = False,
 ) -> CodeBinding:
     if not raw:
         binding = CodeBinding(raw, BindingState.UNRESOLVED)
@@ -2191,6 +2272,12 @@ def _resolve_form_binding(
                 BindingState.PROCEDURE_MISSING,
                 module_address=module.address,
             )
+        elif require_function and raw.casefold() not in module.functions:
+            binding = CodeBinding(
+                raw,
+                BindingState.UNRESOLVED,
+                module_address=module.address,
+            )
         else:
             binding = CodeBinding(
                 raw,
@@ -2200,12 +2287,163 @@ def _resolve_form_binding(
             )
     if binding.state is not BindingState.RESOLVED:
         diagnostics.add(
-            "unresolved_form_handler",
+            diagnostic_code,
             binding.state.value,
             owner,
             severity="warning",
         )
     return binding
+
+
+def _http_service_method(
+    element: ET.Element,
+    module_address: str,
+    module: _ModuleSymbols | None,
+    diagnostics: _Diagnostics,
+    where: str,
+) -> HTTPServiceMethod:
+    properties = _child(element, "Properties")
+    if properties is None:
+        raise ConversionError(f"{where}: у Method нет Properties")
+    _unknown_properties(
+        properties,
+        _HTTP_SERVICE_METHOD_PROPERTIES,
+        diagnostics,
+        "HttpServiceMethod",
+    )
+    name = _required_text(_child(properties, "Name"), f"{where}.Name")
+    http_method = _required_text(
+        _child(properties, "HTTPMethod"), f"{where}.HTTPMethod"
+    )
+    if http_method not in _HTTP_METHODS:
+        diagnostics.add(
+            "unknown_http_method",
+            http_method,
+            f"{module_address}.{name}",
+            severity="warning",
+        )
+    handler = _text(_child(properties, "Handler"))
+    return HTTPServiceMethod(
+        uuid=element.attrib.get("uuid", ""),
+        name=name,
+        synonym=_localized(_child(properties, "Synonym")),
+        comment=_text(_child(properties, "Comment")),
+        http_method=http_method,
+        handler=handler,
+        binding=_resolve_form_binding(
+            handler,
+            module_address,
+            module,
+            diagnostics,
+            f"{module_address}.{name}",
+            diagnostic_code="unresolved_http_handler",
+            require_function=True,
+        ),
+    )
+
+
+def _http_service_template(
+    element: ET.Element,
+    module_address: str,
+    module: _ModuleSymbols | None,
+    diagnostics: _Diagnostics,
+    where: str,
+) -> HTTPServiceURLTemplate:
+    properties = _child(element, "Properties")
+    if properties is None:
+        raise ConversionError(f"{where}: у URLTemplate нет Properties")
+    _unknown_properties(
+        properties,
+        _HTTP_URL_TEMPLATE_PROPERTIES,
+        diagnostics,
+        "URLTemplate",
+    )
+    name = _required_text(_child(properties, "Name"), f"{where}.Name")
+    methods: list[HTTPServiceMethod] = []
+    children = _child(element, "ChildObjects")
+    for child in children if children is not None else ():
+        if _tag(child) != "Method":
+            diagnostics.add("unknown_child", "URLTemplate", _tag(child))
+            continue
+        methods.append(
+            _http_service_method(
+                child,
+                module_address,
+                module,
+                diagnostics,
+                f"{where}.{name}.Method",
+            )
+        )
+    folded = [item.name.casefold() for item in methods]
+    if len(folded) != len(set(folded)):
+        raise ConversionError(f"{where}.{name}: дублируется Method")
+    return HTTPServiceURLTemplate(
+        uuid=element.attrib.get("uuid", ""),
+        name=name,
+        synonym=_localized(_child(properties, "Synonym")),
+        comment=_text(_child(properties, "Comment")),
+        template=_required_text(
+            _child(properties, "Template"), f"{where}.{name}.Template"
+        ),
+        methods=tuple(methods),
+    )
+
+
+def _http_service(
+    root: ET.Element,
+    modules: Mapping[str, _ModuleSymbols],
+    diagnostics: _Diagnostics,
+    where: str,
+) -> ExtendedObject:
+    node, properties, children = _descriptor(root, "HTTPService", where)
+    _unknown_properties(
+        properties,
+        _HTTP_SERVICE_PROPERTIES,
+        diagnostics,
+        "HTTPService",
+    )
+    name = _required_text(_child(properties, "Name"), f"{where}.Name")
+    full_name = f"HTTPСервис.{name}"
+    module = modules.get(full_name.casefold())
+    templates: list[HTTPServiceURLTemplate] = []
+    for child in children if children is not None else ():
+        if _tag(child) != "URLTemplate":
+            diagnostics.add("unknown_child", "HTTPService", _tag(child))
+            continue
+        templates.append(
+            _http_service_template(
+                child,
+                full_name,
+                module,
+                diagnostics,
+                f"{where}.URLTemplate",
+            )
+        )
+    folded = [item.name.casefold() for item in templates]
+    if len(folded) != len(set(folded)):
+        raise ConversionError(f"{where}: дублируется URLTemplate")
+    return ExtendedObject(
+        full_name=full_name,
+        kind="HTTPСервис",
+        name=name,
+        synonym=_localized(_child(properties, "Synonym")),
+        comment=_text(_child(properties, "Comment")),
+        code_address=full_name,
+        payload=HTTPServicePayload(
+            uuid=node.attrib.get("uuid", ""),
+            root_url=_required_text(
+                _child(properties, "RootURL"), f"{where}.RootURL"
+            ),
+            reuse_sessions=(
+                _text(_child(properties, "ReuseSessions")) or None
+            ),
+            session_max_age=_int(
+                _child(properties, "SessionMaxAge"),
+                f"{where}.SessionMaxAge",
+            ),
+            url_templates=tuple(templates),
+        ),
+    )
 
 
 def _one_representation(
@@ -2819,6 +3057,34 @@ def base_layer_data(base: Configuration) -> dict[str, object]:
 
 def _extended_payload_data(value: object | None) -> object:
     """Отделить metadata-декларации от производных code/forms-состояний."""
+    if isinstance(value, HTTPServicePayload):
+        return {
+            "uuid": value.uuid,
+            "root_url": value.root_url,
+            "reuse_sessions": value.reuse_sessions,
+            "session_max_age": value.session_max_age,
+            "url_templates": [
+                {
+                    "uuid": template.uuid,
+                    "name": template.name,
+                    "synonym": template.synonym,
+                    "comment": template.comment,
+                    "template": template.template,
+                    "methods": [
+                        {
+                            "uuid": method.uuid,
+                            "name": method.name,
+                            "synonym": method.synonym,
+                            "comment": method.comment,
+                            "http_method": method.http_method,
+                            "handler": method.handler,
+                        }
+                        for method in template.methods
+                    ],
+                }
+                for template in value.url_templates
+            ],
+        }
     if isinstance(value, EventSubscriptionPayload):
         return {"binding": {"raw": value.binding.raw}}
     if isinstance(value, ScheduledJobPayload):
@@ -2914,7 +3180,11 @@ def convert_collection(
     borrowed_field_targets: set[str] = set()
     exchange_plan_contents = _exchange_plan_content_artifacts(collection)
     needs_binding_resolver = any(
-        item.source_name in {"EventSubscriptions", "ScheduledJobs"}
+        item.source_name in {
+            "EventSubscriptions",
+            "ScheduledJobs",
+            "HTTPServices",
+        }
         for item in collection.metadata
     ) or any(item.source_name == "CommonForms" for item in collection.artifacts)
     module_symbols = (
@@ -3061,6 +3331,16 @@ def convert_collection(
             if obj.full_name in extended_objects:
                 raise ConversionError(f"дублируется extended object {obj.full_name}")
             extended_objects[obj.full_name] = obj
+        elif spec.extended_adapter == "http_service":
+            obj = _http_service(
+                root,
+                module_symbols,
+                diagnostics,
+                artifact.source_path,
+            )
+            if obj.full_name in extended_objects:
+                raise ConversionError(f"дублируется extended object {obj.full_name}")
+            extended_objects[obj.full_name] = obj
         elif spec.extended_adapter == "bot":
             obj = _bot(
                 root,
@@ -3078,6 +3358,7 @@ def convert_collection(
             "document_journal",
             "event_subscription",
             "exchange_plan",
+            "http_service",
             "scheduled_job",
             "session_parameter",
         }:
@@ -3151,6 +3432,9 @@ __all__ = [
     "FormEventBinding",
     "FormModuleState",
     "FormStructureState",
+    "HTTPServiceMethod",
+    "HTTPServicePayload",
+    "HTTPServiceURLTemplate",
     "MetadataRelation",
     "RelationState",
     "ScheduledJobPayload",

@@ -35,7 +35,7 @@ from .intake_v2_transport import TransportError
 
 
 COLLECTION_FORMAT_VERSION = 1
-SELECTION_VERSION = 6
+SELECTION_VERSION = 7
 _READ_CHUNK = 1 << 20
 _MANIFEST_LIMIT = 64 * 1024 * 1024
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -601,7 +601,13 @@ DEFAULT_KIND_SPECS = (
         (LayerKind.CODE, LayerKind.FORMS),
     ),
     _supported("WebServices", "WebСервис", ("WebService",), (LayerKind.CODE,)),
-    _supported("HTTPServices", "HTTPСервис", ("HTTPService",), (LayerKind.CODE,)),
+    _supported(
+        "HTTPServices",
+        "HTTPСервис",
+        ("HTTPService",),
+        (LayerKind.EXTENDED_STRUCTURE, LayerKind.CODE),
+        extended_adapter="http_service",
+    ),
     _supported(
         "Sequences",
         "Последовательность",

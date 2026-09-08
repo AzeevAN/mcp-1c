@@ -16,7 +16,13 @@ from mcp1c.intake_v2_generation import materialize_generation
 from mcp1c.intake_v2_runtime import configuration_from_base_layer
 from mcp1c.model import Configuration, Field, MetadataObject
 from mcp1c.registry import Registry, RegistryError
-from mcp1c.tools import get_object, get_procedure, get_related, search_objects
+from mcp1c.tools import (
+    get_callers,
+    get_object,
+    get_procedure,
+    get_related,
+    search_objects,
+)
 from test_intake_v2_converter import _collection, _common_form_xml
 
 
@@ -236,7 +242,6 @@ def test_native_extended_objects_доступны_через_mcp_после_rest
             detail="brief",
         )
         assert f"нет объекта `{full_name}`" not in card
-
     common_attribute = registry.resolve(
         "DemoConfiguration"
     ).configuration.config.get("ОбщийРеквизит.Tenant")
@@ -358,6 +363,136 @@ def test_native_extended_objects_доступны_через_mcp_после_rest
             detail="brief",
         )
         assert f"нет объекта `{full_name}`" not in card
+
+
+def test_native_http_service_endpoint_доступен_через_mcp_после_restart(
+    tmp_path,
+):
+    _collection_value, generation = _materialized(
+        tmp_path,
+        "http-service",
+        http_services=True,
+    )
+    registry = Registry(tmp_path / "data-http-service")
+    registry.publish_generation(
+        registry.stage_generation(generation.manifest, generation.payloads)
+    )
+
+    def assert_http_contract(current: Registry) -> None:
+        found = search_objects(
+            current,
+            "HTTPСервис.Api",
+            config="DemoConfiguration",
+            kind="HTTPСервис",
+        )
+        assert "`HTTPСервис.Api`" in found
+        card = get_object(
+            current,
+            "HTTPСервис.Api",
+            config="DemoConfiguration",
+            detail="fields",
+        )
+        assert "Корневой путь после публикации: `/hs/api`" in card
+        assert "Повторное использование сеансов: `Use`" in card
+        assert "Время жизни сеанса: `900` секунд" in card
+        assert "`/hs/api/items/{id}`" in card
+        assert "`Any` · `GetItem`" in card
+        assert "`HTTPСервис.Api::Handle` · привязка разрешена" in card
+        procedure = get_procedure(
+            current,
+            "HTTPСервис.Api::Handle",
+            config="DemoConfiguration",
+        )
+        assert "Функция Handle(Request)" in procedure
+        callers = get_callers(
+            current,
+            "HTTPСервис.Api::Handle",
+            config="DemoConfiguration",
+        )
+        assert "HTTP-метод `Any`" in callers
+        assert "`/hs/api/items/{id}`" in callers
+
+    assert_http_contract(registry)
+    restarted = Registry(registry.data_dir)
+    assert restarted.restore() == []
+    assert_http_contract(restarted)
+
+
+def test_native_http_service_change_и_удаление_endpoint_переживают_restart(
+    tmp_path,
+):
+    _baseline_collection, baseline = _materialized(
+        tmp_path,
+        "http-baseline",
+        http_services=True,
+    )
+    _changed_collection, changed = _materialized(
+        tmp_path,
+        "http-changed",
+        http_services=True,
+        http_template="/items/{code}",
+        http_method="HEAD",
+        http_handler="Other",
+        http_module=b"function Other(Request) endfunction",
+    )
+    _removed_collection, removed = _materialized(
+        tmp_path,
+        "http-removed",
+        http_services=True,
+        http_include_template=False,
+    )
+    registry = Registry(tmp_path / "data-http-change")
+
+    first = registry.publish_generation(
+        registry.stage_generation(baseline.manifest, baseline.payloads)
+    )
+    first_card = get_object(
+        registry,
+        "HTTPСервис.Api",
+        config="DemoConfiguration",
+        detail="fields",
+    )
+    assert "`/hs/api/items/{id}`" in first_card
+
+    second = registry.publish_generation(
+        registry.stage_generation(changed.manifest, changed.payloads)
+    )
+    second_card = get_object(
+        registry,
+        "HTTPСервис.Api",
+        config="DemoConfiguration",
+        detail="fields",
+    )
+    assert second.generation_id != first.generation_id
+    assert "`/hs/api/items/{id}`" not in second_card
+    assert "`/hs/api/items/{code}`" in second_card
+    assert "`HEAD` · `GetItem`" in second_card
+    assert "`HTTPСервис.Api::Other` · привязка разрешена" in second_card
+
+    third = registry.publish_generation(
+        registry.stage_generation(removed.manifest, removed.payloads)
+    )
+    assert third.generation_id != second.generation_id
+    removed_card = get_object(
+        registry,
+        "HTTPСервис.Api",
+        config="DemoConfiguration",
+        detail="fields",
+    )
+    assert "URL-шаблоны и методы (0 / 0)" in removed_card
+    assert "`/hs/api/items/{code}`" not in removed_card
+
+    restarted = Registry(registry.data_dir)
+    assert restarted.restore() == []
+    restarted_card = get_object(
+        restarted,
+        "HTTPСервис.Api",
+        config="DemoConfiguration",
+        detail="fields",
+    )
+    assert "URL-шаблоны и методы (0 / 0)" in restarted_card
+    assert "`/hs/api/items/{id}`" not in restarted_card
+    assert "`/hs/api/items/{code}`" not in restarted_card
 
 
 def test_legacy_schema_v1_получает_ту_же_проекцию_после_restart(tmp_path):

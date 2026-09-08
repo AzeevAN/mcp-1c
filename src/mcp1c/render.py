@@ -15,11 +15,12 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from typing import Mapping
 
 from .graph import EDGE_TITLES, Graph
 from .model import Configuration, Field, MetadataObject
 from .structure_origin import StructureOriginView
-from .syntax_model import KIND_TITLES, SyntaxItem
+from .syntax_model import KIND_TITLES, SyntaxItem, parse_version
 
 BRIEF, FIELDS, FULL = "brief", "fields", "full"
 DETAIL_LEVELS = (BRIEF, FIELDS, FULL)
@@ -66,10 +67,12 @@ class CallerSite:
 
 @dataclass(frozen=True, slots=True)
 class MetadataBinding:
-    """Привязка процедуры подпиской или регламентным заданием."""
+    """Привязка процедуры metadata-объектом."""
 
     kind: str
     source: str
+    method: str = ""
+    path: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +81,131 @@ class FormHandlerBinding:
 
     element: str | None
     event: str
+
+
+@dataclass(frozen=True, slots=True)
+class HTTPHandlerResolution:
+    """Фактическое состояние Handler в атомарно выбранном корпусе кода."""
+
+    state: str
+    address: str = ""
+
+
+def http_service_path(root_url: str, template: str = "") -> str:
+    root = root_url.strip("/")
+    suffix = template if template.startswith("/") else f"/{template}"
+    return f"/hs/{root}{suffix}" if template else f"/hs/{root}"
+
+
+def render_http_service(
+    obj: MetadataObject,
+    detail: str,
+    bindings: Mapping[str, HTTPHandlerResolution],
+    *,
+    platform: str = "",
+    max_templates: int = 40,
+    max_methods: int = 80,
+) -> str:
+    """Вложенные endpoint HTTP-сервиса без выдуманного адреса хоста/базы."""
+    payload = obj.extended
+    templates = payload.get("url_templates", [])
+    if not isinstance(templates, list):
+        return ""
+    methods_total = sum(
+        len(item.get("methods", []))
+        for item in templates
+        if isinstance(item, dict) and isinstance(item.get("methods"), list)
+    )
+    if detail == BRIEF:
+        return (
+            f"\nHTTP endpoint: URL-шаблонов {len(templates)}, "
+            f"методов {methods_total}.\n"
+        )
+
+    root_url = str(payload.get("root_url", ""))
+    out = [
+        "## HTTP-сервис",
+        "",
+        f"- Корневой путь после публикации: `{http_service_path(root_url)}`",
+    ]
+    reuse_sessions = payload.get("reuse_sessions")
+    session_max_age = payload.get("session_max_age")
+    if reuse_sessions is not None:
+        out.append(f"- Повторное использование сеансов: `{reuse_sessions}`")
+    elif platform and parse_version(platform) < (8, 3, 9):
+        out.append(
+            f"- Повторное использование сеансов: не применимо на платформе {platform}"
+        )
+    else:
+        suffix = "" if platform else "; точная версия платформы неизвестна"
+        out.append(f"- Повторное использование сеансов: не представлено в Source B{suffix}")
+    if session_max_age is not None:
+        out.append(f"- Время жизни сеанса: `{session_max_age}` секунд")
+    elif platform and parse_version(platform) < (8, 3, 9):
+        out.append(f"- Время жизни сеанса: не применимо на платформе {platform}")
+    else:
+        suffix = "" if platform else "; точная версия платформы неизвестна"
+        out.append(f"- Время жизни сеанса: не представлено в Source B{suffix}")
+    out.extend(["", f"## URL-шаблоны и методы ({len(templates)} / {methods_total})", ""])
+
+    shown_methods = 0
+    for template in templates[:max_templates]:
+        if not isinstance(template, dict):
+            continue
+        name = str(template.get("name", ""))
+        synonym = str(template.get("synonym", ""))
+        title = f"### `{name}`" + (f" — {synonym}" if synonym else "")
+        out.extend([title, ""])
+        comment = str(template.get("comment", ""))
+        if comment:
+            out.extend([comment, ""])
+        template_value = str(template.get("template", ""))
+        out.extend(
+            [f"Путь: `{http_service_path(root_url, template_value)}`", ""]
+        )
+        methods = template.get("methods", [])
+        if not isinstance(methods, list):
+            continue
+        for method in methods:
+            if shown_methods >= max_methods:
+                break
+            if not isinstance(method, dict):
+                continue
+            shown_methods += 1
+            method_name = str(method.get("name", ""))
+            synonym = str(method.get("synonym", ""))
+            suffix = f" — {synonym}" if synonym else ""
+            out.append(
+                f"- `{method.get('http_method', '')}` · `{method_name}`{suffix}"
+            )
+            comment = str(method.get("comment", ""))
+            if comment:
+                out.append(f"  {comment}")
+            handler = str(method.get("handler", ""))
+            resolution = bindings.get(handler.casefold())
+            state_titles = {
+                "resolved": "привязка разрешена",
+                "unavailable": "код недоступен",
+                "module_missing": "модуль отсутствует",
+                "procedure_missing": "функция отсутствует",
+                "unresolved": "привязка не разрешена",
+            }
+            state = state_titles.get(
+                resolution.state if resolution else "unresolved",
+                "привязка не разрешена",
+            )
+            target = (
+                f" → `{resolution.address}`" if resolution and resolution.address else ""
+            )
+            out.append(f"  Handler: `{handler}`{target} · {state}")
+        out.append("")
+        if shown_methods >= max_methods:
+            break
+    if len(templates) > max_templates:
+        out.extend([f"Показано URL-шаблонов: {max_templates} из {len(templates)}.", ""])
+    if shown_methods < methods_total:
+        out.extend([f"Показано методов: {shown_methods} из {methods_total}.", ""])
+    return "\n".join(out).rstrip() + "\n"
 
 
 def _code_warnings(warnings: list[str]) -> list[str]:
@@ -473,9 +601,15 @@ def render_callers(
             "method": "регламентное задание",
         }
         for binding in metadata:
-            out.append(
-                f"- {подписи[binding.kind]} `{binding.source}` → `{address}`"
-            )
+            if binding.kind == "http_method":
+                out.append(
+                    f"- HTTP-метод `{binding.method}` сервиса "
+                    f"`{binding.source}` · `{binding.path}` → `{address}`"
+                )
+            else:
+                out.append(
+                    f"- {подписи[binding.kind]} `{binding.source}` → `{address}`"
+                )
         out.append("")
     else:
         out.extend(["Привязок в метаданных нет.", ""])

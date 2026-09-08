@@ -45,10 +45,13 @@ from .render import (
     FIELDS,
     FULL,
     FormHandlerBinding,
+    HTTPHandlerResolution,
     MetadataBinding,
     ProcedureMatch,
     ProcedureOutline,
+    http_service_path,
     render_callers,
+    render_http_service,
     render_module_toc,
     render_object,
     render_procedure_card,
@@ -1644,6 +1647,17 @@ def get_object(
         virtual_tables=tables,
         origins=_structure_origin_view(snapshot) if snapshot is not None else None,
     )
+    if obj.kind == "HTTPСервис":
+        body += render_http_service(
+            obj,
+            detail,
+            (
+                _http_handler_resolutions(snapshot.modules, obj)
+                if snapshot is not None
+                else {}
+            ),
+            platform=context.platform,
+        )
     code = (
         _object_code_block(snapshot.modules, obj.full_name, detail)
         if snapshot is not None
@@ -1663,6 +1677,74 @@ def _belongs_to_object(module: str, full_name: str) -> bool:
     lower_module = module.casefold()
     lower_name = full_name.casefold()
     return lower_module == lower_name or lower_module.startswith(lower_name + ".")
+
+
+def _http_handlers(obj) -> set[str]:
+    handlers: set[str] = set()
+    templates = obj.extended.get("url_templates", [])
+    if not isinstance(templates, list):
+        return handlers
+    for template in templates:
+        if not isinstance(template, dict):
+            continue
+        methods = template.get("methods", [])
+        if not isinstance(methods, list):
+            continue
+        for method in methods:
+            if not isinstance(method, dict):
+                continue
+            handler = method.get("handler")
+            if isinstance(handler, str):
+                handlers.add(handler)
+    return handlers
+
+
+def _http_handler_resolutions(view: _CodeView, obj) -> dict[str, HTTPHandlerResolution]:
+    handlers = _http_handlers(obj)
+    if not handlers:
+        return {}
+    loaded = view.capture.loaded
+    if not view.capture.ready or loaded is None or loaded.оглавление is None:
+        return {
+            handler.casefold(): HTTPHandlerResolution("unavailable")
+            for handler in handlers
+        }
+    requested_module = obj.code_address or obj.full_name
+    module = next(
+        (
+            candidate
+            for candidate in loaded.оглавление.модули
+            if candidate.casefold() == requested_module.casefold()
+        ),
+        None,
+    )
+    if module is None:
+        return {
+            handler.casefold(): HTTPHandlerResolution("module_missing")
+            for handler in handlers
+        }
+    if loaded.оглавление.скомпилирован(module):
+        return {
+            handler.casefold(): HTTPHandlerResolution("unresolved")
+            for handler in handlers
+        }
+    rows = loaded.оглавление.модуля(module)
+    result: dict[str, HTTPHandlerResolution] = {}
+    for handler in handlers:
+        if not handler:
+            result[handler.casefold()] = HTTPHandlerResolution("unresolved")
+            continue
+        matches = [row for row in rows if row.имя.casefold() == handler.casefold()]
+        if not matches:
+            result[handler.casefold()] = HTTPHandlerResolution("procedure_missing")
+        elif len(matches) != 1 or not matches[0].функция:
+            result[handler.casefold()] = HTTPHandlerResolution("unresolved")
+        else:
+            result[handler.casefold()] = HTTPHandlerResolution(
+                "resolved",
+                f"{module}::{matches[0].имя}",
+            )
+    return result
 
 
 def _object_code_details(
@@ -3060,9 +3142,50 @@ def _metadata_bindings(context, module: str, name: str) -> list[MetadataBinding]
         and edge.target.casefold() == module.casefold()
         and edge.via.casefold() == name.casefold()
     ]
+    for obj in context.configuration.config.objects.values():
+        if (
+            obj.kind != "HTTPСервис"
+            or (obj.code_address or obj.full_name).casefold() != module.casefold()
+        ):
+            continue
+        root_url = obj.extended.get("root_url")
+        templates = obj.extended.get("url_templates")
+        if not isinstance(root_url, str) or not isinstance(templates, list):
+            continue
+        for template in templates:
+            if not isinstance(template, dict):
+                continue
+            template_value = template.get("template")
+            methods = template.get("methods")
+            if not isinstance(template_value, str) or not isinstance(methods, list):
+                continue
+            for method in methods:
+                if not isinstance(method, dict):
+                    continue
+                handler = method.get("handler")
+                http_method = method.get("http_method")
+                if (
+                    isinstance(handler, str)
+                    and handler.casefold() == name.casefold()
+                    and isinstance(http_method, str)
+                ):
+                    совпадения.append(
+                        MetadataBinding(
+                            kind="http_method",
+                            source=obj.full_name,
+                            method=http_method,
+                            path=http_service_path(root_url, template_value),
+                        )
+                    )
     return sorted(
         совпадения,
-        key=lambda item: (item.kind, item.source.casefold(), item.source),
+        key=lambda item: (
+            item.kind,
+            item.source.casefold(),
+            item.source,
+            item.method,
+            item.path,
+        ),
     )
 
 

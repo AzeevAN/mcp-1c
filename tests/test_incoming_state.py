@@ -99,7 +99,7 @@ def test_предыдущее_правило_отбора_помечено_ус�
 
     строки = сканер.scan()
 
-    assert SELECTION_VERSION == 6
+    assert SELECTION_VERSION == 7
     assert строки[0]["state"] == STATE_STALE
 
 
@@ -179,7 +179,7 @@ def test_явный_reparse_публикует_текущую_версию_от�
 
     source = registry.add_modules(new_archive, configuration="Розница")
 
-    assert source.selection_version == 6
+    assert source.selection_version == 7
     assert (root / "Catalogs/Т/Forms/Основная.xml").read_text() == "descriptor"
     assert (root / "Catalogs/Т/Forms/Основная/Ext/Form.bin").read_bytes() == b"container"
     assert "Новая" in (root / "Catalogs/Т/Ext/ObjectModule.bsl").read_text()
@@ -189,7 +189,7 @@ def test_явный_reparse_публикует_текущую_версию_от�
     )
     assert persisted_source["sha256"] == source.sha256
     assert persisted_source["origin"] == "new.zip"
-    assert persisted_source["selection_version"] == 6
+    assert persisted_source["selection_version"] == 7
 
     restarted = Registry(registry.data_dir)
     assert restarted.restore() == []

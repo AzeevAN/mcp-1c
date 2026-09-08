@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from module_samples import v8_container_bytes
-from mcp1c.intake_v2 import CandidateTransport
+from mcp1c.intake_v2 import CandidateTransport, LayerKind
 from mcp1c.intake_v2_collector import DEFAULT_KIND_SPECS, collect_source_b
 from mcp1c.intake_v2_probe import probe_export
 
@@ -102,6 +102,7 @@ def _configuration(
     bots: bool = False,
     numbering_rules: bool = False,
     opaque_common_module: bool = False,
+    http_services: bool = False,
 ) -> bytes:
     extra = "<FutureFlag>Enabled</FutureFlag>" if unknown else ""
     properties = (
@@ -153,6 +154,8 @@ def _configuration(
         )
     if bots:
         children += "<Bot>Assistant</Bot>"
+    if http_services:
+        children += "<HTTPService>Api</HTTPService>"
     return _document("Configuration", properties, children)
 
 
@@ -421,6 +424,56 @@ def _scheduled_job() -> bytes:
     return _document("ScheduledJob", properties)
 
 
+def _http_service(
+    *,
+    include_sessions: bool = True,
+    method: str = "Any",
+    handler: str = "Handle",
+    template_value: str = "/items/{id}",
+    include_method: bool = True,
+    include_template: bool = True,
+) -> bytes:
+    sessions = (
+        "<ReuseSessions>Use</ReuseSessions>"
+        "<SessionMaxAge>900</SessionMaxAge>"
+        if include_sessions
+        else ""
+    )
+    properties = (
+        "<Name>Api</Name>"
+        f"<Synonym>{_localized('Синтетический HTTP-сервис')}</Synonym>"
+        "<Comment>Контракт HTTP-сервиса</Comment>"
+        "<RootURL>api</RootURL>"
+        f"{sessions}"
+    )
+    method_xml = (
+        '<Method uuid="uuid-method">'
+        "<Properties><Name>GetItem</Name>"
+        f"<Synonym>{_localized('Получить элемент')}</Synonym>"
+        "<Comment>Возвращает элемент</Comment>"
+        f"<HTTPMethod>{method}</HTTPMethod>"
+        f"<Handler>{handler}</Handler></Properties>"
+        "</Method>"
+    )
+    template = (
+        '<URLTemplate uuid="uuid-template">'
+        "<Properties><Name>Item</Name>"
+        f"<Synonym>{_localized('Элемент')}</Synonym>"
+        "<Comment>Маршрут элемента</Comment>"
+        f"<Template>{template_value}</Template></Properties>"
+        f"<ChildObjects>{method_xml if include_method else ''}</ChildObjects>"
+        "</URLTemplate>"
+    )
+    root = _document(
+        "HTTPService",
+        properties,
+        template if include_template else "",
+    ).decode()
+    return root.replace(
+        "<HTTPService>", '<HTTPService uuid="uuid-service">'
+    ).encode()
+
+
 def _common_form(name: str) -> bytes:
     properties = (
         f"<Name>{name}</Name>"
@@ -528,6 +581,15 @@ def _collection(
     item_form_xml: bytes = b"<form/>",
     numbering_rules: bool = False,
     include_numbering_descriptor: bool = True,
+    http_services: bool = False,
+    flat_http_services: bool = False,
+    http_sessions: bool = True,
+    http_method: str = "Any",
+    http_handler: str = "Handle",
+    http_template: str = "/items/{id}",
+    http_include_method: bool = True,
+    http_include_template: bool = True,
+    http_module: bytes | None = b"",
 ):
     payloads = {
         "Configuration.xml": _configuration(
@@ -539,6 +601,7 @@ def _collection(
             bots=bots,
             numbering_rules=numbering_rules,
             opaque_common_module=opaque_common_module,
+            http_services=http_services or flat_http_services,
         ),
         "Catalogs/Items.xml": _catalog(unknown=unknown),
         "Catalogs/Items/Ext/ObjectModule.bsl": object_module,
@@ -682,6 +745,30 @@ def _collection(
             payloads[f"Bots/{bot_module_name}/Ext/Module.bsl"] = (
                 b"procedure Reply() endprocedure"
             )
+    if http_services or flat_http_services:
+        descriptor = _http_service(
+            include_sessions=http_sessions,
+            method=http_method,
+            handler=http_handler,
+            template_value=http_template,
+            include_method=http_include_method,
+            include_template=http_include_template,
+        )
+        module = http_module
+        if module == b"":
+            module = (
+                "Функция Handle(Request)\n"
+                "    Возврат Неопределено;\n"
+                "КонецФункции\n"
+            ).encode()
+        if flat_http_services:
+            payloads["HTTPService.Api.xml"] = descriptor
+            if module is not None:
+                payloads["HTTPService.Api.Module.txt"] = module
+        else:
+            payloads["HTTPServices/Api.xml"] = descriptor
+            if module is not None:
+                payloads["HTTPServices/Api/Ext/Module.bsl"] = module
     if flat_mandatory:
         replacements = {
             "CommonAttributes/Tenant.xml": "CommonAttribute.Tenant.xml",
@@ -737,10 +824,187 @@ def test_metadata_kind_spec_выбирает_структурный_adapter():
     assert specs["CommonForms"].extended_adapter == "common_form"
     assert specs["Bots"].extended_adapter == "bot"
     assert specs["Bots"].layouts == frozenset({"tree"})
+    assert specs["HTTPServices"].extended_adapter == "http_service"
+    assert specs["HTTPServices"].layers == frozenset(
+        {LayerKind.EXTENDED_STRUCTURE, LayerKind.CODE}
+    )
     assert specs["CommonCommands"].base_adapter == ""
     assert specs["CommonCommands"].extended_adapter == ""
     assert specs["DocumentNumerators"].base_adapter == "numbering_rules"
     assert specs["DocumentNumerators"].extended_adapter == ""
+
+
+@pytest.mark.parametrize("flat", [False, True], ids=["tree", "flat"])
+def test_http_service_сохраняет_endpoint_и_разрешает_handler(tmp_path, flat):
+    HTTPServicePayload = _symbol("HTTPServicePayload")
+    convert_collection = _symbol("convert_collection")
+
+    result = convert_collection(
+        _collection(
+            tmp_path,
+            http_services=not flat,
+            flat_http_services=flat,
+        )
+    )
+    service = result.extended.get("HTTPСервис.Api")
+
+    assert service is not None and isinstance(service.payload, HTTPServicePayload)
+    assert service.base_object is False
+    assert service.code_address == "HTTPСервис.Api"
+    assert service.modules == ("HTTPСервис.Api",)
+    assert service.payload.uuid == "uuid-service"
+    assert service.payload.root_url == "api"
+    assert service.payload.reuse_sessions == "Use"
+    assert service.payload.session_max_age == 900
+    assert len(service.payload.url_templates) == 1
+    template = service.payload.url_templates[0]
+    assert (
+        template.uuid,
+        template.name,
+        template.synonym,
+        template.comment,
+        template.template,
+    ) == (
+        "uuid-template",
+        "Item",
+        "Элемент",
+        "Маршрут элемента",
+        "/items/{id}",
+    )
+    assert len(template.methods) == 1
+    method = template.methods[0]
+    assert (
+        method.uuid,
+        method.name,
+        method.synonym,
+        method.comment,
+        method.http_method,
+        method.handler,
+    ) == (
+        "uuid-method",
+        "GetItem",
+        "Получить элемент",
+        "Возвращает элемент",
+        "Any",
+        "Handle",
+    )
+    assert method.binding.state.value == "resolved"
+    assert method.binding.module_address == "HTTPСервис.Api"
+    assert method.binding.procedure_address == "HTTPСервис.Api::Handle"
+
+
+def test_http_service_не_выдумывает_свойства_8_3_9(tmp_path):
+    convert_collection = _symbol("convert_collection")
+
+    result = convert_collection(
+        _collection(
+            tmp_path,
+            flat_http_services=True,
+            http_sessions=False,
+        )
+    )
+    service = result.extended.get("HTTPСервис.Api")
+
+    assert service is not None
+    assert service.payload.reuse_sessions is None
+    assert service.payload.session_max_age is None
+
+
+def test_http_service_сохраняет_будущий_http_method_с_диагностикой(tmp_path):
+    convert_collection = _symbol("convert_collection")
+
+    result = convert_collection(
+        _collection(
+            tmp_path,
+            http_services=True,
+            http_method="FUTURE",
+        )
+    )
+    service = result.extended.get("HTTPСервис.Api")
+
+    assert service is not None
+    assert service.payload.url_templates[0].methods[0].http_method == "FUTURE"
+    assert any(
+        item.code == "unknown_http_method"
+        and item.signature == "FUTURE"
+        and item.severity == "warning"
+        for item in result.diagnostics
+    )
+
+
+def test_http_service_tree_и_flat_дают_один_semantic_hash(tmp_path):
+    convert_collection = _symbol("convert_collection")
+
+    tree = convert_collection(_collection(tmp_path / "tree", http_services=True))
+    flat = convert_collection(
+        _collection(tmp_path / "flat", flat_http_services=True)
+    )
+
+    assert tree.extended_content_sha256 == flat.extended_content_sha256
+
+
+@pytest.mark.parametrize(
+    ("module", "handler", "state"),
+    [
+        (None, "Handle", "module_missing"),
+        (b"function Other(Request) endfunction", "Handle", "procedure_missing"),
+        (b"procedure Handle(Request) endprocedure", "Handle", "unresolved"),
+        (b"function Handle(Request) endfunction", "", "unresolved"),
+    ],
+)
+def test_http_service_различает_неразрешённые_handler(
+    tmp_path,
+    module,
+    handler,
+    state,
+):
+    convert_collection = _symbol("convert_collection")
+
+    result = convert_collection(
+        _collection(
+            tmp_path,
+            http_services=True,
+            http_handler=handler,
+            http_module=module,
+        )
+    )
+    service = result.extended.get("HTTPСервис.Api")
+
+    assert service is not None
+    binding = service.payload.url_templates[0].methods[0].binding
+    assert binding.state.value == state
+    assert any(
+        item.code == "unresolved_http_handler"
+        and item.signature == state
+        and item.severity == "warning"
+        for item in result.diagnostics
+    )
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"http_template": "/items/{code}"},
+        {"http_method": "HEAD"},
+        {"http_handler": "Other"},
+        {"http_include_method": False},
+        {"http_include_template": False},
+    ],
+)
+def test_http_service_endpoint_change_меняет_только_extended_hash(
+    tmp_path,
+    change,
+):
+    convert_collection = _symbol("convert_collection")
+    baseline = convert_collection(
+        _collection(tmp_path / "baseline", http_services=True)
+    )
+    changed = convert_collection(
+        _collection(tmp_path / "changed", http_services=True, **change)
+    )
+
+    assert changed.base_content_sha256 == baseline.base_content_sha256
+    assert changed.extended_content_sha256 != baseline.extended_content_sha256
 
 
 def test_converter_строит_base_без_дублирования_в_extended(tmp_path):

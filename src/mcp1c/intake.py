@@ -329,7 +329,12 @@ def enough_space(нужно: int, каталог: Path) -> tuple[bool, int]:
 # 6: SettingsStorages целиком исключены. Старый корень мог содержать их модули,
 # поэтому без явного переразбора его нельзя выдавать за результат текущего
 # отбора.
-SELECTION_VERSION = 6
+#
+# 7: native collector сохраняет descriptor HTTP-сервисов в extended_structure.
+# Сам legacy-корень кода не меняется, но общий маркер свежести обязан отправить
+# прежний source B на явный переразбор: из его поколения новый слой восстановить
+# уже неоткуда.
+SELECTION_VERSION = 7
 
 
 def extract(архив: Path, корень: Path) -> tuple[int, int]:

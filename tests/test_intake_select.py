@@ -46,9 +46,9 @@ def test_в_иерархической_берём_модули_и_формы():
 
 
 def test_иерархический_отбор_сохраняет_доказательства_контейнерных_форм():
-    # v6 исключает частично поддержанные SettingsStorages и сохраняет
-    # остальные правила отбора v5.
-    assert SELECTION_VERSION == 6
+    # v7 добавляет HTTP descriptor в native generation; правила legacy-
+    # извлечения кода и форм сохраняют результат v6.
+    assert SELECTION_VERSION == 7
     for name in (
         "Documents/Заказ/Forms/Основная.xml",
         "Documents/Заказ/Forms/Основная/Ext/Form.bin",

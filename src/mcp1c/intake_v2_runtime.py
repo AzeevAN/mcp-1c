@@ -542,6 +542,120 @@ def _extended_props(
     return result
 
 
+def _nullable_text(value: object, label: str) -> str | None:
+    if value is None:
+        return None
+    return _text(value, label)
+
+
+def _http_service_payload(value: object, label: str) -> dict[str, object]:
+    """Проверить вложенный endpoint-контракт до подключения generation."""
+    raw = _mapping(value, label)
+    _exact_keys(
+        raw,
+        {
+            "uuid",
+            "root_url",
+            "reuse_sessions",
+            "session_max_age",
+            "url_templates",
+        },
+        label,
+    )
+    templates_value = raw["url_templates"]
+    if not isinstance(templates_value, list):
+        raise GenerationRuntimeError(f"{label}.url_templates должен быть массивом")
+    templates: list[dict[str, object]] = []
+    template_names: set[str] = set()
+    for template_index, template_value in enumerate(templates_value):
+        template_label = f"{label}.url_templates[{template_index}]"
+        template = _mapping(template_value, template_label)
+        _exact_keys(
+            template,
+            {"uuid", "name", "synonym", "comment", "template", "methods"},
+            template_label,
+        )
+        name = _text(template["name"], f"{template_label}.name", required=True)
+        if name.casefold() in template_names:
+            raise GenerationRuntimeError(f"{label} дублирует URL-шаблон")
+        template_names.add(name.casefold())
+        methods_value = template["methods"]
+        if not isinstance(methods_value, list):
+            raise GenerationRuntimeError(f"{template_label}.methods должен быть массивом")
+        methods: list[dict[str, object]] = []
+        method_names: set[str] = set()
+        for method_index, method_value in enumerate(methods_value):
+            method_label = f"{template_label}.methods[{method_index}]"
+            method = _mapping(method_value, method_label)
+            _exact_keys(
+                method,
+                {
+                    "uuid",
+                    "name",
+                    "synonym",
+                    "comment",
+                    "http_method",
+                    "handler",
+                },
+                method_label,
+            )
+            method_name = _text(
+                method["name"], f"{method_label}.name", required=True
+            )
+            if method_name.casefold() in method_names:
+                raise GenerationRuntimeError(f"{template_label} дублирует Method")
+            method_names.add(method_name.casefold())
+            methods.append(
+                {
+                    "uuid": _text(method["uuid"], f"{method_label}.uuid"),
+                    "name": method_name,
+                    "synonym": _text(
+                        method["synonym"], f"{method_label}.synonym"
+                    ),
+                    "comment": _text(
+                        method["comment"], f"{method_label}.comment"
+                    ),
+                    "http_method": _text(
+                        method["http_method"],
+                        f"{method_label}.http_method",
+                        required=True,
+                    ),
+                    "handler": _text(
+                        method["handler"], f"{method_label}.handler"
+                    ),
+                }
+            )
+        templates.append(
+            {
+                "uuid": _text(template["uuid"], f"{template_label}.uuid"),
+                "name": name,
+                "synonym": _text(
+                    template["synonym"], f"{template_label}.synonym"
+                ),
+                "comment": _text(
+                    template["comment"], f"{template_label}.comment"
+                ),
+                "template": _text(
+                    template["template"],
+                    f"{template_label}.template",
+                    required=True,
+                ),
+                "methods": methods,
+            }
+        )
+    return {
+        "uuid": _text(raw["uuid"], f"{label}.uuid"),
+        "root_url": _text(raw["root_url"], f"{label}.root_url", required=True),
+        "reuse_sessions": _nullable_text(
+            raw["reuse_sessions"], f"{label}.reuse_sessions"
+        ),
+        "session_max_age": _optional_int(
+            raw["session_max_age"], f"{label}.session_max_age"
+        ),
+        "url_templates": templates,
+    }
+
+
 def _compose_extended_structure(
     configuration: Configuration,
     semantic: object,
@@ -587,7 +701,9 @@ def _compose_extended_structure(
         if type(base_object) is not bool:
             raise GenerationRuntimeError(f"{label}.base_object должен быть bool")
         payload_value = item["payload"]
-        if payload_value is None:
+        if kind == "HTTPСервис":
+            payload = _http_service_payload(payload_value, f"{label}.payload")
+        elif payload_value is None:
             payload: dict[str, object] = {}
         else:
             payload_raw = _mapping(payload_value, f"{label}.payload")

@@ -64,7 +64,7 @@ from .render import (
 from .search import FIELD_KIND_TITLES
 from .standard_procedure_intents import recognize_standard_procedure_intent
 from .syntax_model import KIND_TITLES, SyntaxItem, parse_version, release
-from .virtual_tables import virtual_tables
+from .virtual_tables import analyze_virtual_tables
 from .xdto import XDTOReadError, member_details, read_package_member
 
 
@@ -1627,27 +1627,19 @@ def get_object(
     # Виртуальные таблицы собираются здесь, а не в рендере: они соединяют
     # метаданные конфигурации со справкой платформы, а рендер про справку
     # ничего не знает и знать не должен.
-    # Предел нумерации субконто — свойство плана счетов, а спрашивают про
-    # регистр бухгалтерии. Без него поля вида `Субконто1` назвать нечем.
-    chart = context.configuration.config.get(str(obj.props.get("chart_of_accounts", "")))
-    ext_dimensions = chart.props.get("max_ext_dimension_count", 0) if chart else 0
-
-    # `ДанныеГрафика` описывает ресурсы графика — отдельного регистра сведений,
-    # а не самого регистра расчёта.
-    schedule = context.configuration.config.get(str(obj.props.get("schedule", "")))
-
-    tables = virtual_tables(
+    table_report = analyze_virtual_tables(
         obj,
         context.syntax.tables if context.syntax else None,
-        ext_dimension_count=ext_dimensions if isinstance(ext_dimensions, int) else 0,
-        schedule_resources=[f.name for f in schedule.resources] if schedule else None,
+        configuration=context.configuration.config,
     )
 
     body = render_object(
         obj,
         detail,
         graph=context.configuration.graph,
-        virtual_tables=tables,
+        virtual_tables=table_report.tables,
+        table_availability=table_report.availability,
+        virtual_table_notes=table_report.notes,
         origins=_structure_origin_view(snapshot) if snapshot is not None else None,
     )
     if obj.kind == "HTTPСервис":

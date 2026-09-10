@@ -777,6 +777,7 @@ _PROP_TITLES = {
     "method": "Метод",
     "correspondence": "Корреспонденция",
     "chart_of_accounts": "План счетов",
+    "period_adjustment_length": "Длина уточнения периода",
     "ext_dimension_types": "Виды субконто",
     "max_ext_dimension_count": "Максимум субконто",
     "code_type": "Тип кода",
@@ -834,12 +835,14 @@ _CODE_RELEVANT_PROPS = (
     "write_mode",
     "correspondence",
     "chart_of_accounts",
+    "period_adjustment_length",
     "ext_dimension_types",
     "max_ext_dimension_count",
     "hierarchical",
     "hierarchy_type",
     "posting",
     "action_period",
+    "base_period",
     "schedule",
     "chart_of_calculation_types",
     "addressing",
@@ -920,13 +923,17 @@ def _refs_section(title: str, refs: list[str]) -> list[str]:
     return _section(title, [f"- `{r}`" for r in refs])
 
 
-def _virtual_tables_section(tables: list) -> list[str]:
+def _virtual_tables_section(
+    tables: list,
+    availability: list,
+    notes: list[str],
+) -> list[str]:
     """Таблицы запроса с уже подставленными именами полей.
 
     Печатается там же, где реквизиты, а не в `full`: имена полей нужны
     ровно в тот момент, когда агент пишет запрос, и это уровень `fields`.
     """
-    if not tables:
+    if not tables and not availability and not notes:
         return []
 
     lines: list[str] = []
@@ -941,11 +948,23 @@ def _virtual_tables_section(tables: list) -> list[str]:
         if table.service:
             lines.append(f"  служебные: {', '.join(table.service)}")
 
-    return _section("Таблицы запроса", lines) + [
-        "Имя ресурса в виртуальной таблице отличается от имени в конфигураторе:",
-        "берите его из списка выше, а не из раздела «Ресурсы».",
-        "",
-    ]
+    result = _section("Таблицы запроса", lines)
+    if tables:
+        result += [
+            "Имя ресурса в виртуальной таблице отличается от имени в конфигураторе:",
+            "берите его из списка выше, а не из раздела «Ресурсы».",
+            "",
+        ]
+    if availability or notes:
+        condition_lines = [
+            f"- `{item.name}` — по свойствам "
+            f"{'доступна' if item.available else 'недоступна'}: "
+            f"{item.reason}."
+            for item in availability
+        ]
+        condition_lines.extend(f"- {note}" for note in notes)
+        result += _section("Почему таблица или поле доступны", condition_lines)
+    return result
 
 
 def _unlimited_strings_notice(obj: MetadataObject) -> list[str]:
@@ -1005,6 +1024,8 @@ def render_object(
     max_incoming: int = 20,
     max_relations: int = 40,
     virtual_tables: list | None = None,
+    table_availability: list | None = None,
+    virtual_table_notes: list[str] | None = None,
     origins: StructureOriginView | None = None,
 ) -> str:
     """Markdown-описание объекта на заданном уровне детализации."""
@@ -1072,7 +1093,11 @@ def render_object(
     )
     out += _fields_section("Измерения", obj.dimensions, collapse_after)
     out += _fields_section("Ресурсы", obj.resources, collapse_after)
-    out += _virtual_tables_section(virtual_tables or [])
+    out += _virtual_tables_section(
+        virtual_tables or [],
+        table_availability or [],
+        virtual_table_notes or [],
+    )
 
     if obj.value_type is not None:
         out += _section(

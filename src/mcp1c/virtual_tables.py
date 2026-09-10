@@ -19,7 +19,7 @@ _не_выдумывается`).
 
 from dataclasses import dataclass, field
 
-from .model import MetadataObject
+from .model import Configuration, Field, MetadataObject
 from .syntax_model import SyntaxIndex
 
 # Плейсхолдеры справки, которые подставляются из метаданных.
@@ -80,6 +80,9 @@ _ACTION_PERIOD_ONLY = ("ФактическийПериодДействия",)
 # отдельный регистр сведений, указанный свойством `schedule`. Без него имена
 # полей взять неоткуда, и таблица не показывается.
 _SCHEDULE_RESOURCE = "<Имя ресурса графика>"
+_BASE_RESOURCE = "<Имя ресурса базового регистра>"
+_BASE_CUT = "<Имя разреза базового регистра>"
+_BASE_REGISTER = "<Имя базового регистра расчета>"
 
 
 @dataclass(slots=True)
@@ -111,6 +114,25 @@ class VirtualTable:
 
     def all_fields(self) -> list[str]:
         return self.dimensions + self.resources + self.attributes + self.service
+
+
+@dataclass(slots=True, frozen=True)
+class TableAvailability:
+    """Почему условная таблица конкретного регистра доступна или отсутствует."""
+
+    name: str
+    suffix: str
+    available: bool
+    reason: str
+
+
+@dataclass(slots=True)
+class VirtualTableReport:
+    """Фактические таблицы и встроенное объяснение платформенных условий."""
+
+    tables: list[VirtualTable] = field(default_factory=list)
+    availability: list[TableAvailability] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
 
 
 def _placeholder(name: str) -> tuple[str, str] | None:
@@ -164,17 +186,17 @@ def _fields_by_table(syntax: SyntaxIndex) -> dict[str, list[str]]:
     }
 
 
-def _expand_numbered(fields: list[str], count: int) -> list[str] | None:
+def _expand_numbered(fields: list[str], count: int) -> list[str]:
     """Развернуть нумерованные субконто: `Субконто<Номер субконто>` → 1…N.
 
-    `None` означает «в таблице есть субконто, а предела нумерации нет» —
-    показывать её нельзя, имена полей неизвестны.
+    Без плана счетов нумерованные поля убираются, но сама основная таблица не
+    исчезает: у регистра без плана остаются период, регистратор и вид движения.
     """
     if not any(_EXT_DIMENSION_NUMBER in field for field in fields):
         return fields
 
     if count <= 0:
-        return None
+        return [field for field in fields if _EXT_DIMENSION_NUMBER not in field]
 
     expanded: list[str] = []
     for field in fields:
@@ -207,6 +229,24 @@ def _expand_schedule(fields: list[str], resources: list[str]) -> list[str] | Non
             continue
         suffix = field.split(">", 1)[1]
         expanded.extend(f"{resource}{suffix}" for resource in resources)
+    return expanded
+
+
+def _expand_base_resources(fields: list[str], resources: list[str]) -> list[str]:
+    """Подставить ресурсы доказанного базового регистра расчёта.
+
+    Поля разрезов зависят от параметра виртуальной таблицы `Разрезы` и заранее
+    не перечислимы; сама таблица из-за этого не исчезает.
+    """
+    expanded: list[str] = []
+    for field_name in fields:
+        if field_name.startswith(_BASE_CUT):
+            continue
+        if field_name.startswith(_BASE_RESOURCE):
+            suffix = field_name[len(_BASE_RESOURCE) :]
+            expanded.extend(f"{resource}{suffix}" for resource in resources)
+        else:
+            expanded.append(field_name)
     return expanded
 
 
@@ -243,7 +283,61 @@ def _pick_variant(
 def _has_slices(obj: MetadataObject) -> bool:
     """Есть ли у регистра сведений срезы — то есть периодический ли он."""
     periodicity = obj.props.get("periodicity")
-    return bool(periodicity) and periodicity != _NONPERIODIC
+    if not isinstance(periodicity, str):
+        return False
+    normalized = periodicity.casefold().replace(" ", "").replace("_", "")
+    return normalized not in {
+        "",
+        _NONPERIODIC.casefold(),
+        "nonperiodical",
+    }
+
+
+def _balance_register(obj: MetadataObject) -> bool:
+    value = obj.props.get("register_kind")
+    if not isinstance(value, str):
+        return False
+    return value.casefold().replace(" ", "").replace("_", "") in {
+        "остатки",
+        "balance",
+        "balancebalance",
+    }
+
+
+def _positive_int(value: object) -> int:
+    return value if type(value) is int and value > 0 else 0
+
+
+def _base_registers(
+    obj: MetadataObject,
+    configuration: Configuration | None,
+) -> tuple[list[MetadataObject], str]:
+    if obj.props.get("base_period") is not True:
+        return [], "базовый период выключен"
+    if configuration is None:
+        return [], "нет resolved-конфигурации для связи с базовыми планами видов расчета"
+    plan_name = obj.props.get("chart_of_calculation_types")
+    plan = configuration.get(plan_name) if isinstance(plan_name, str) else None
+    if plan is None or plan.kind != "ПланВидовРасчета":
+        return [], "не задан или не разрешен план видов расчета"
+    raw_base_plans = plan.props.get("base_calculation_types")
+    if not isinstance(raw_base_plans, list) or not all(
+        isinstance(item, str) for item in raw_base_plans
+    ):
+        return [], "план видов расчета не задает базовые планы"
+    base_plans = set(raw_base_plans)
+    result = sorted(
+        (
+            candidate
+            for candidate in configuration.objects.values()
+            if candidate.kind == "РегистрРасчета"
+            and candidate.props.get("chart_of_calculation_types") in base_plans
+        ),
+        key=lambda candidate: candidate.full_name.casefold(),
+    )
+    if not result:
+        return [], "для базовых планов не найден ни один регистр расчета"
+    return result, ""
 
 
 def _unknown_placeholder(template: str) -> bool:
@@ -260,7 +354,70 @@ def _unknown_placeholder(template: str) -> bool:
     return not template.startswith(known)
 
 
-def _expand(template: str, obj: MetadataObject) -> tuple[str, list[str]]:
+def _accounting_fields(
+    fields: list[Field],
+    template_suffix: str,
+    table_suffix: str,
+    correspondence: bool,
+) -> list[Field]:
+    """Отобрать поля бухгалтерского регистра для конкретного плейсхолдера."""
+    if not correspondence and table_suffix in {"", "ДвиженияССубконто"}:
+        return fields if template_suffix == "" else []
+    if table_suffix in {"", "ДвиженияССубконто", "ОборотыДтКт"}:
+        if template_suffix in {"", "Оборот"}:
+            return [item for item in fields if item.balance is True]
+        if template_suffix in {"Дт", "Кт", "ОборотДт", "ОборотКт"}:
+            return [item for item in fields if item.balance is False]
+    if table_suffix == "Обороты":
+        if template_suffix == "":
+            return fields
+        if template_suffix == "Кор":
+            return [item for item in fields if item.balance is False]
+        if template_suffix.startswith("КорОборот"):
+            return [item for item in fields if item.balance is False]
+        if template_suffix.startswith("Оборот"):
+            return fields
+    return fields
+
+
+def _accounting_service_field(
+    template: str,
+    obj: MetadataObject,
+    table_suffix: str,
+    ext_dimension_count: int,
+) -> bool:
+    if template == "УточнениеПериода":
+        return table_suffix != "Остатки" and _positive_int(
+            obj.props.get("period_adjustment_length")
+        ) > 0
+    correspondence = obj.props.get("correspondence") is True
+    has_chart = bool(obj.props.get("chart_of_accounts"))
+    if template in {"СчетДт", "СчетКт", "КорСчет"} or template.startswith(
+        (
+            "СубконтоДт",
+            "СубконтоКт",
+            "ВидСубконтоДт",
+            "ВидСубконтоКт",
+            "КорСубконто",
+        )
+    ):
+        return correspondence and has_chart
+    if template == "Счет":
+        return has_chart and (
+            not correspondence or table_suffix not in {"", "ДвиженияССубконто"}
+        )
+    if template.startswith(("Субконто", "ВидСубконто")):
+        return has_chart and ext_dimension_count > 0
+    return True
+
+
+def _expand(
+    template: str,
+    obj: MetadataObject,
+    *,
+    table_suffix: str,
+    ext_dimension_count: int,
+) -> tuple[str, list[str]]:
     """Подставить в шаблон поля объекта. Возвращает вид поля и имена.
 
     Ресурсы здесь не разворачиваются: их суффиксы собираются отдельно, чтобы
@@ -272,17 +429,32 @@ def _expand(template: str, obj: MetadataObject) -> tuple[str, list[str]]:
     # раздваиваются — `ОрганизацияДт`, `ОрганизацияКт`.
     if template.startswith(_DIMENSION):
         suffix = template[len(_DIMENSION) :]
-        return "dimensions", [f"{f.name}{suffix}" for f in obj.dimensions]
+        fields = obj.dimensions
+        if obj.kind == "РегистрБухгалтерии":
+            fields = _accounting_fields(
+                fields,
+                suffix,
+                table_suffix,
+                obj.props.get("correspondence") is True,
+            )
+        return "dimensions", [f"{f.name}{suffix}" for f in fields]
 
     if template.startswith(_ATTRIBUTE):
         suffix = template[len(_ATTRIBUTE) :]
-        return "attributes", [f"{f.name}{suffix}" for f in obj.attributes]
+        return "attributes", [
+            f"{f.name}{suffix}" for f in obj.attributes if not f.standard
+        ]
 
     if template in _SKIPPED:
         return "service", []
 
     # Свёртка детализации периода: `Период` остаётся, `ПериодГод` уходит.
     if template.startswith(_PERIOD_DETAIL) and template != _PERIOD_DETAIL:
+        return "service", []
+
+    if obj.kind == "РегистрБухгалтерии" and not _accounting_service_field(
+        template, obj, table_suffix, ext_dimension_count
+    ):
         return "service", []
 
     return "service", [template]
@@ -330,29 +502,218 @@ def build_table_index(syntax: SyntaxIndex | None) -> dict[str, list[TableTemplat
     return index
 
 
-def virtual_tables(
+def _availability(
+    obj: MetadataObject,
+    *,
+    ext_dimension_count: int,
+    schedule_resources: list[str],
+    base_registers: list[MetadataObject],
+    base_error: str,
+) -> list[TableAvailability]:
+    result: list[TableAvailability] = []
+
+    def add(suffix: str, available: bool, reason: str) -> None:
+        result.append(
+            TableAvailability(
+                name=f"{obj.full_name}.{suffix}",
+                suffix=suffix,
+                available=available,
+                reason=reason,
+            )
+        )
+
+    if obj.kind == "РегистрСведений":
+        available = _has_slices(obj)
+        reason = (
+            "регистр периодический"
+            if available
+            else "регистр непериодический или периодичность не доказана"
+        )
+        for suffix in _SLICE_SUFFIXES:
+            add(suffix, available, reason)
+    elif obj.kind == "РегистрНакопления":
+        available = _balance_register(obj)
+        reason = (
+            "вид регистра — Остатки"
+            if available
+            else "таблицы итогов остатков существуют только у регистра вида Остатки"
+        )
+        for suffix in _BALANCE_ONLY:
+            add(suffix, available, reason)
+    elif obj.kind == "РегистрБухгалтерии":
+        correspondence = obj.props.get("correspondence") is True
+        add(
+            "ОборотыДтКт",
+            correspondence,
+            (
+                "включена корреспонденция"
+                if correspondence
+                else "таблица существует только при включенной корреспонденции"
+            ),
+        )
+        chart = bool(obj.props.get("chart_of_accounts"))
+        subconto = chart and ext_dimension_count > 0
+        add(
+            "Субконто",
+            subconto,
+            (
+                f"задан план счетов, максимум субконто: {ext_dimension_count}"
+                if subconto
+                else "не задан план счетов или у него не доказано количество субконто"
+            ),
+        )
+    elif obj.kind == "РегистрРасчета":
+        action_period = obj.props.get("action_period") is True
+        add(
+            "ФактическийПериодДействия",
+            action_period,
+            (
+                "включен период действия"
+                if action_period
+                else "период действия выключен; без него таблица не существует"
+            ),
+        )
+        schedule = bool(obj.props.get("schedule"))
+        schedule_available = action_period and schedule and bool(schedule_resources)
+        if not action_period:
+            schedule_reason = "период действия выключен, поэтому график неприменим"
+        elif not schedule:
+            schedule_reason = "период действия включен, но график не задан"
+        elif not schedule_resources:
+            schedule_reason = "график задан, но его ресурсы не удалось разрешить"
+        else:
+            schedule_reason = "включен период действия и разрешен регистр графика"
+        add("ДанныеГрафика", schedule_available, schedule_reason)
+        if base_registers:
+            for base in base_registers:
+                suffix = f"База{base.name}"
+                plan = base.props.get("chart_of_calculation_types", "")
+                add(suffix, True, f"включен базовый период; базовый план: {plan}")
+        else:
+            add(f"База{_BASE_REGISTER}", False, base_error)
+    return result
+
+
+def _table_from_template(
+    obj: MetadataObject,
+    template: TableTemplate,
+    *,
+    suffix: str,
+    fields: list[str],
+    ext_dimension_count: int,
+) -> VirtualTable | None:
+    if any(_unknown_placeholder(field_name) for field_name in fields):
+        return None
+    table = VirtualTable(
+        name=f"{obj.full_name}{'.' + suffix if suffix else ''}",
+        suffix=suffix,
+        description=template.description,
+    )
+    resource_templates: list[tuple[str, set[int]]] = []
+    for field_template in fields:
+        if field_template.startswith(_RESOURCE):
+            resource_suffix = field_template[len(_RESOURCE) :]
+            if (
+                obj.kind == "РегистрНакопления"
+                and not _balance_register(obj)
+                and resource_suffix in _MOVEMENT_SUFFIXES
+            ):
+                continue
+            resources = obj.resources
+            if obj.kind == "РегистрБухгалтерии":
+                resources = _accounting_fields(
+                    resources,
+                    resource_suffix,
+                    suffix,
+                    obj.props.get("correspondence") is True,
+                )
+            resource_templates.append(
+                (resource_suffix, {id(resource) for resource in resources})
+            )
+            continue
+        bucket, names = _expand(
+            field_template,
+            obj,
+            table_suffix=suffix,
+            ext_dimension_count=ext_dimension_count,
+        )
+        getattr(table, bucket).extend(names)
+
+    table.resources = [
+        f"{resource.name}{resource_suffix}"
+        for resource in obj.resources
+        for resource_suffix, allowed in resource_templates
+        if id(resource) in allowed
+    ]
+    return table
+
+
+def analyze_virtual_tables(
     obj: MetadataObject,
     tables: dict[str, list[TableTemplate]] | None,
     *,
-    ext_dimension_count: int = 0,
+    configuration: Configuration | None = None,
+    ext_dimension_count: int | None = None,
     schedule_resources: list[str] | None = None,
-) -> list[VirtualTable]:
-    """Таблицы запроса объекта с подставленными именами полей.
+) -> VirtualTableReport:
+    """Построить таблицы запроса и объяснить платформенные условия.
 
     `ext_dimension_count` — предел нумерации субконто из плана счетов, по
     которому ведётся регистр бухгалтерии. Ноль означает «плана счетов рядом
     нет»: таблицы с субконто тогда не показываются, потому что назвать их
     поля нечем.
 
-    Пустой список — нормальный ответ: объект не регистр или справки нет.
+    Условия существования таблиц встроены в код и доступны даже тогда, когда
+    справка платформы не содержит полей выбранной версии. Имена полей без
+    справки по-прежнему не выдумываются.
     """
-    if not tables or not obj.resources:
-        return []
+    if not obj.kind.startswith("Регистр"):
+        return VirtualTableReport()
 
-    # Вид регистра знает только регистр накопления: в выгрузке `register_kind`
-    # проставлен ему одному. Регистру сведений он не нужен вовсе, а без него
-    # `СрезПоследних` — самая частая таблица в отчётах — до агента не доходила.
-    register_kind = obj.props.get("register_kind")
+    if ext_dimension_count is None:
+        chart_name = obj.props.get("chart_of_accounts")
+        chart = configuration.get(chart_name) if configuration and isinstance(chart_name, str) else None
+        ext_dimension_count = (
+            _positive_int(chart.props.get("max_ext_dimension_count")) if chart else 0
+        )
+    if schedule_resources is None:
+        schedule_name = obj.props.get("schedule")
+        schedule = configuration.get(schedule_name) if configuration and isinstance(schedule_name, str) else None
+        schedule_resources = [item.name for item in schedule.resources] if schedule else []
+
+    base_registers, base_error = _base_registers(obj, configuration)
+    report = VirtualTableReport(
+        availability=_availability(
+            obj,
+            ext_dimension_count=ext_dimension_count,
+            schedule_resources=schedule_resources,
+            base_registers=base_registers,
+            base_error=base_error,
+        )
+    )
+    if obj.kind == "РегистрБухгалтерии":
+        adjustment = _positive_int(obj.props.get("period_adjustment_length"))
+        report.notes.append(
+            (
+                f"`УточнениеПериода` доступно в основной и оборотных таблицах "
+                f"(длина уточнения: {adjustment}), но отсутствует в `Остатки`."
+                if adjustment
+                else "`УточнениеПериода` отсутствует: длина уточнения периода равна нулю."
+            )
+        )
+        unknown = [
+            item.name
+            for item in [*obj.dimensions, *obj.resources]
+            if item.balance is None
+        ]
+        if unknown:
+            report.notes.append(
+                "Балансовость не доказана для полей: " + ", ".join(unknown)
+                + "; дебетовые, кредитовые и кор-поля для них не перечисляются."
+            )
+
+    if not tables:
+        return report
 
     # Один суффикс, два шаблона — так справка описывает регистр бухгалтерии:
     # с поддержкой корреспонденции (`ОстатокДт`/`ОстатокКт`) и без неё.
@@ -363,17 +724,36 @@ def virtual_tables(
     for template in tables.get(obj.kind, []):
         variants.setdefault(template.suffix, []).append(template)
 
-    result: list[VirtualTable] = []
+    availability = {item.suffix: item.available for item in report.availability}
     for suffix, choices in variants.items():
         template = _pick_variant(choices, correspondence)
         if template is None:
             continue
 
-        # Плейсхолдер в самом имени таблицы (`База<Имя базового регистра
-        # расчета>`, `<Имя перерасчета>`) — имя, которое агенту нечем
-        # заполнить: подставляется не этот объект, а другой, которого в
-        # выгрузке рядом нет.
+        if _BASE_REGISTER in template.suffix:
+            for base in base_registers:
+                resolved_suffix = template.suffix.replace(_BASE_REGISTER, base.name)
+                fields = _expand_base_resources(
+                    template.fields, [item.name for item in base.resources]
+                )
+                fields = _expand_numbered(fields, ext_dimension_count)
+                table = _table_from_template(
+                    obj,
+                    template,
+                    suffix=resolved_suffix,
+                    fields=fields,
+                    ext_dimension_count=ext_dimension_count,
+                )
+                if table is not None:
+                    report.tables.append(table)
+            continue
+
+        # Перерасчеты адресуются собственными именами, которых эта карточка
+        # регистра не содержит. Для них по-прежнему ничего не выдумываем.
         if "<" in template.suffix:
+            continue
+
+        if suffix in availability and not availability[suffix]:
             continue
 
         # Чужие плейсхолдеры в полях (`<Имя ресурса графика>ПериодДействия`)
@@ -381,12 +761,15 @@ def virtual_tables(
         # его ресурсы под этими именами — та же ошибка, ради которой писался
         # модуль, только наоборот.
         fields = _expand_numbered(template.fields, ext_dimension_count)
-        if fields is not None:
-            fields = _expand_schedule(fields, schedule_resources or [])
-        if fields is None or any(_unknown_placeholder(f) for f in fields):
+        fields = _expand_schedule(fields, schedule_resources)
+        if fields is None:
             continue
 
-        if template.suffix in _BALANCE_ONLY and register_kind == "Обороты":
+        if (
+            obj.kind == "РегистрНакопления"
+            and template.suffix in _BALANCE_ONLY
+            and not _balance_register(obj)
+        ):
             continue
 
         if template.suffix in _SLICE_SUFFIXES and not _has_slices(obj):
@@ -395,28 +778,30 @@ def virtual_tables(
         if template.suffix in _ACTION_PERIOD_ONLY and not obj.props.get("action_period"):
             continue
 
-        table = VirtualTable(
-            name=f"{obj.full_name}{'.' + template.suffix if template.suffix else ''}",
+        table = _table_from_template(
+            obj,
+            template,
             suffix=template.suffix,
-            description=template.description,
+            fields=fields,
+            ext_dimension_count=ext_dimension_count,
         )
-        resource_suffixes: list[str] = []
-        for field_template in fields:
-            if field_template.startswith(_RESOURCE):
-                resource_suffix = field_template[len(_RESOURCE) :]
-                if register_kind != "Остатки" and resource_suffix in _MOVEMENT_SUFFIXES:
-                    continue
-                resource_suffixes.append(resource_suffix)
-                continue
-            bucket, names = _expand(field_template, obj)
-            getattr(table, bucket).extend(names)
+        if table is not None:
+            report.tables.append(table)
 
-        table.resources = [
-            f"{resource.name}{suffix}"
-            for resource in obj.resources
-            for suffix in resource_suffixes
-        ]
+    return report
 
-        result.append(table)
 
-    return result
+def virtual_tables(
+    obj: MetadataObject,
+    tables: dict[str, list[TableTemplate]] | None,
+    *,
+    ext_dimension_count: int = 0,
+    schedule_resources: list[str] | None = None,
+) -> list[VirtualTable]:
+    """Совместимый короткий вызов: только фактически доступные таблицы."""
+    return analyze_virtual_tables(
+        obj,
+        tables,
+        ext_dimension_count=ext_dimension_count,
+        schedule_resources=schedule_resources,
+    ).tables

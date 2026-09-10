@@ -10,8 +10,13 @@
 import pytest
 
 from mcp1c.model import Configuration, Field, MetadataObject
+from mcp1c.render import render_object
 from mcp1c.syntax_model import SyntaxIndex, SyntaxItem
-from mcp1c.virtual_tables import build_table_index, virtual_tables
+from mcp1c.virtual_tables import (
+    analyze_virtual_tables,
+    build_table_index,
+    virtual_tables,
+)
 
 
 def _register(kind_of_register: str = "Остатки") -> MetadataObject:
@@ -127,9 +132,10 @@ def test_основная_таблица_отдаёт_ресурс_без_суф
     assert main.name == "РегистрНакопления.ТоварыНаСкладах"
 
 
-def test_оборотный_регистр_не_получает_остатковых_таблиц():
+@pytest.mark.parametrize("register_kind", ["Обороты", "Turnover"])
+def test_оборотный_регистр_не_получает_остатковых_таблиц(register_kind):
     """`.Остатки` существует только у регистров остатков — так сказано в справке."""
-    tables = virtual_tables(_register("Обороты"), build_table_index(_syntax_with_tables()))
+    tables = virtual_tables(_register(register_kind), build_table_index(_syntax_with_tables()))
     suffixes = {t.suffix for t in tables}
 
     assert "Остатки" not in suffixes
@@ -233,14 +239,15 @@ def test_периодический_регистр_сведений_получа
     assert tables[0].resources == ["Цена"]
 
 
-def test_непериодический_регистр_сведений_среза_не_получает():
+@pytest.mark.parametrize("periodicity", ["Непериодический", "Nonperiodical"])
+def test_непериодический_регистр_сведений_среза_не_получает(periodicity):
     """Живой промах агента: срез предложен непериодическому регистру.
 
     У непериодического нет самого поля `Период`, по которому берётся срез, —
     запрос не скомпилируется.
     """
     tables = virtual_tables(
-        _information_register(periodicity="Непериодический"),
+        _information_register(periodicity=periodicity),
         build_table_index(_syntax_with_slice()),
     )
 
@@ -260,7 +267,7 @@ def test_без_признака_периодичности_срез_не_пок
 
 
 def _calculation_syntax() -> SyntaxIndex:
-    """Две таблицы регистра расчёта: одна про период действия, другая про график."""
+    """Условные таблицы регистра расчёта из справки платформы."""
     index = SyntaxIndex(platforms=["8.3.27"], language="ru", source="test")
     for table_id, name, fields in (
         (
@@ -272,6 +279,17 @@ def _calculation_syntax() -> SyntaxIndex:
             "tables/catalog31/table53",
             "РегистрРасчета.<Имя регистра расчета>.ДанныеГрафика",
             ["<Имя измерения>", "<Имя ресурса графика>ПериодДействия"],
+        ),
+        (
+            "tables/catalog31/table54",
+            "РегистрРасчета.<Имя регистра расчета>.База<Имя базового регистра расчета>",
+            [
+                "<Имя измерения>",
+                "<Имя ресурса>",
+                "<Имя ресурса базового регистра>База",
+                "БазовыйПериодНачало",
+                "БазовыйПериодКонец",
+            ],
         ),
     ):
         index.add(SyntaxItem(id=table_id, kind="query_table", name_ru=name, name_en=""))
@@ -332,6 +350,235 @@ def test_без_графика_таблица_данных_графика_не_�
     без = virtual_tables(_calculation_register(action_period=True), tables)
 
     assert "ДанныеГрафика" not in {t.suffix for t in без}
+
+
+def test_условия_таблиц_расчета_объясняют_причину_отсутствия():
+    report = analyze_virtual_tables(
+        _calculation_register(action_period=False, base_period=False),
+        build_table_index(_calculation_syntax()),
+    )
+    availability = {item.suffix: item for item in report.availability}
+
+    assert availability["ФактическийПериодДействия"].available is False
+    assert "период действия" in availability["ФактическийПериодДействия"].reason
+    assert availability["ДанныеГрафика"].available is False
+    assert "период действия" in availability["ДанныеГрафика"].reason
+    assert availability["База<Имя базового регистра расчета>"].available is False
+    assert "базовый период" in availability["База<Имя базового регистра расчета>"].reason
+
+
+def test_данные_графика_объясняют_отсутствующий_график_отдельно():
+    report = analyze_virtual_tables(
+        _calculation_register(action_period=True, base_period=False),
+        build_table_index(_calculation_syntax()),
+    )
+    item = next(i for i in report.availability if i.suffix == "ДанныеГрафика")
+
+    assert item.available is False
+    assert "график" in item.reason
+    assert "базов" not in item.reason
+
+
+def test_карточка_агента_показывает_почему_данных_графика_нет():
+    register = _calculation_register(action_period=False, base_period=False)
+    report = analyze_virtual_tables(register, build_table_index(_calculation_syntax()))
+
+    card = render_object(
+        register,
+        virtual_tables=report.tables,
+        table_availability=report.availability,
+        virtual_table_notes=report.notes,
+    )
+
+    assert "## Почему таблица или поле доступны" in card
+    assert (
+        "`РегистрРасчета.Начисления.ДанныеГрафика` — по свойствам недоступна"
+        in card
+    )
+    assert "период действия выключен" in card
+
+
+def test_базовые_таблицы_расчета_разрешаются_через_планы_видов_расчета():
+    base_plan = MetadataObject(
+        full_name="ПланВидовРасчета.Начисления",
+        kind="ПланВидовРасчета",
+        name="Начисления",
+    )
+    current_plan = MetadataObject(
+        full_name="ПланВидовРасчета.Удержания",
+        kind="ПланВидовРасчета",
+        name="Удержания",
+        props={"base_calculation_types": [base_plan.full_name]},
+    )
+    base = _calculation_register(
+        chart_of_calculation_types=base_plan.full_name,
+        action_period=True,
+        base_period=True,
+    )
+    current = MetadataObject(
+        full_name="РегистрРасчета.Удержания",
+        kind="РегистрРасчета",
+        name="Удержания",
+        dimensions=[Field("Сотрудник")],
+        resources=[Field("Результат")],
+        props={
+            "chart_of_calculation_types": current_plan.full_name,
+            "action_period": False,
+            "base_period": True,
+        },
+    )
+    configuration = Configuration(
+        name="Demo",
+        objects={item.full_name: item for item in (base_plan, current_plan, base, current)},
+    )
+
+    report = analyze_virtual_tables(
+        current,
+        build_table_index(_calculation_syntax()),
+        configuration=configuration,
+    )
+    table = next(item for item in report.tables if item.suffix == "БазаНачисления")
+
+    assert table.name == "РегистрРасчета.Удержания.БазаНачисления"
+    assert table.service == ["РезультатБаза", "БазовыйПериодНачало", "БазовыйПериодКонец"]
+    item = next(i for i in report.availability if i.suffix == "БазаНачисления")
+    assert item.available is True
+    assert "ПланВидовРасчета.Начисления" in item.reason
+
+
+def _accounting_syntax() -> SyntaxIndex:
+    index = SyntaxIndex(platforms=["8.3.27"], language="ru", source="test")
+
+    def add(table_id: str, suffix: str, fields: list[str]) -> None:
+        tail = f".{suffix}" if suffix else ""
+        index.add(
+            SyntaxItem(
+                id=table_id,
+                kind="query_table",
+                name_ru=f"РегистрБухгалтерии.<Имя регистра бухгалтерии>{tail}",
+                name_en="",
+            )
+        )
+        for number, name in enumerate(fields):
+            index.add(
+                SyntaxItem(
+                    id=f"{table_id}/fields/field{number}",
+                    kind="query_field",
+                    name_ru=name,
+                    name_en="",
+                )
+            )
+
+    add(
+        "tables/accounting/main",
+        "",
+        [
+            "<Имя измерения>",
+            "<Имя измерения>Дт",
+            "<Имя измерения>Кт",
+            "<Имя ресурса>",
+            "<Имя ресурса>Дт",
+            "<Имя ресурса>Кт",
+            "Период",
+            "УточнениеПериода",
+            "СчетДт",
+            "СчетКт",
+        ],
+    )
+    add(
+        "tables/accounting/turnovers",
+        "Обороты",
+        [
+            "<Имя измерения>",
+            "<Имя измерения>Кор",
+            "<Имя ресурса>Оборот",
+            "<Имя ресурса>ОборотДт",
+            "<Имя ресурса>ОборотКт",
+            "<Имя ресурса>КорОборот",
+            "<Имя ресурса>КорОборотДт",
+            "<Имя ресурса>КорОборотКт",
+            "УточнениеПериода",
+        ],
+    )
+    add("tables/accounting/drcr", "ОборотыДтКт", ["<Имя ресурса>Оборот"])
+    add(
+        "tables/accounting/balances",
+        "Остатки",
+        [
+            "<Имя измерения>",
+            "<Имя ресурса>Остаток",
+            "<Имя ресурса>ОстатокДт",
+            "<Имя ресурса>ОстатокКт",
+        ],
+    )
+    add("tables/accounting/subconto", "Субконто", ["Субконто<Номер субконто>"])
+    return index
+
+
+def _accounting_register(*, correspondence: bool, adjustment: int = 0) -> MetadataObject:
+    return MetadataObject(
+        full_name="РегистрБухгалтерии.Проводки",
+        kind="РегистрБухгалтерии",
+        name="Проводки",
+        dimensions=[Field("Организация", balance=True), Field("Валюта", balance=False)],
+        resources=[Field("Сумма", balance=True), Field("Количество", balance=False)],
+        props={
+            "correspondence": correspondence,
+            "period_adjustment_length": adjustment,
+            "chart_of_accounts": "ПланСчетов.Рабочий",
+        },
+    )
+
+
+def test_бухгалтерские_плейсхолдеры_учитывают_балансовость_поля():
+    report = analyze_virtual_tables(
+        _accounting_register(correspondence=True, adjustment=2),
+        build_table_index(_accounting_syntax()),
+        ext_dimension_count=2,
+    )
+    main = next(item for item in report.tables if item.suffix == "")
+    turns = next(item for item in report.tables if item.suffix == "Обороты")
+    balances = next(item for item in report.tables if item.suffix == "Остатки")
+
+    assert main.dimensions == ["Организация", "ВалютаДт", "ВалютаКт"]
+    assert main.resources == ["Сумма", "КоличествоДт", "КоличествоКт"]
+    assert "УточнениеПериода" in main.service
+    assert turns.dimensions == ["Организация", "Валюта", "ВалютаКор"]
+    assert turns.resources == [
+        "СуммаОборот",
+        "СуммаОборотДт",
+        "СуммаОборотКт",
+        "КоличествоОборот",
+        "КоличествоОборотДт",
+        "КоличествоОборотКт",
+        "КоличествоКорОборот",
+        "КоличествоКорОборотДт",
+        "КоличествоКорОборотКт",
+    ]
+    assert balances.dimensions == ["Организация", "Валюта"]
+    assert balances.resources == [
+        "СуммаОстаток",
+        "СуммаОстатокДт",
+        "СуммаОстатокКт",
+        "КоличествоОстаток",
+        "КоличествоОстатокДт",
+        "КоличествоОстатокКт",
+    ]
+
+
+def test_бухгалтерские_условия_объясняют_корреспонденцию_и_план_счетов():
+    register = _accounting_register(correspondence=False)
+    register.props["chart_of_accounts"] = ""
+    report = analyze_virtual_tables(register, build_table_index(_accounting_syntax()))
+    availability = {item.suffix: item for item in report.availability}
+
+    assert availability["ОборотыДтКт"].available is False
+    assert "корреспонденц" in availability["ОборотыДтКт"].reason
+    assert availability["Субконто"].available is False
+    assert "план счетов" in availability["Субконто"].reason
+    main = next(item for item in report.tables if item.suffix == "")
+    assert "Счет" not in main.service
+    assert "УточнениеПериода" not in main.service
 
 
 def test_два_шаблона_на_один_суффикс_пропускаются():

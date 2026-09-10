@@ -105,6 +105,7 @@ def _configuration(
     opaque_common_module: bool = False,
     http_services: bool = False,
     xdto_packages: bool = False,
+    accounting_register: bool = False,
 ) -> bytes:
     extra = "<FutureFlag>Enabled</FutureFlag>" if unknown else ""
     properties = (
@@ -160,16 +161,39 @@ def _configuration(
         children += "<HTTPService>Api</HTTPService>"
     if xdto_packages:
         children += "<XDTOPackage>Main</XDTOPackage><XDTOPackage>Common</XDTOPackage>"
+    if accounting_register:
+        children += "<AccountingRegister>Ledger</AccountingRegister>"
     return _document("Configuration", properties, children)
 
 
-def _field(name: str, type_xml: str, *, synonym: str = "") -> str:
+def _field(
+    name: str,
+    type_xml: str,
+    *,
+    synonym: str = "",
+    extra_properties: str = "",
+) -> str:
     synonym_xml = f"<Synonym>{_localized(synonym)}</Synonym>" if synonym else ""
     return (
         "<Attribute><Properties>"
-        f"<Name>{name}</Name>{synonym_xml}<Indexing>Index</Indexing>{type_xml}"
+        f"<Name>{name}</Name>{synonym_xml}<Indexing>Index</Indexing>"
+        f"{type_xml}{extra_properties}"
         "</Properties></Attribute>"
     )
+
+
+def _accounting_register() -> bytes:
+    properties = (
+        "<Name>Ledger</Name><Correspondence>true</Correspondence>"
+        "<ChartOfAccounts>ChartOfAccounts.Main</ChartOfAccounts>"
+        "<PeriodAdjustmentLength>0</PeriodAdjustmentLength>"
+    )
+    children = _field(
+        "Amount",
+        _type("xs:decimal", digits=15, fraction_digits=2),
+        extra_properties="<Balance>true</Balance>",
+    ).replace("<Attribute>", "<Resource>").replace("</Attribute>", "</Resource>")
+    return _document("AccountingRegister", properties, children)
 
 
 def _catalog(*, unknown: bool = False) -> bytes:
@@ -634,6 +658,7 @@ def _collection(
     xdto_future: str = "",
     xdto_reference: str = "c:Code",
     xdto_qualified: bool = True,
+    accounting_register: bool = False,
 ):
     payloads = {
         "Configuration.xml": _configuration(
@@ -647,6 +672,7 @@ def _collection(
             opaque_common_module=opaque_common_module,
             http_services=http_services or flat_http_services,
             xdto_packages=xdto_packages,
+            accounting_register=accounting_register,
         ),
         "Catalogs/Items.xml": _catalog(unknown=unknown),
         "Catalogs/Items/Ext/ObjectModule.bsl": object_module,
@@ -655,6 +681,8 @@ def _collection(
         "CommonAttributes/Tenant.xml": _common_attribute(unresolved=unresolved),
         "SessionParameters/Tenant.xml": _session_parameter(),
     }
+    if accounting_register:
+        payloads["AccountingRegisters/Ledger.xml"] = _accounting_register()
     if journal:
         payloads.update(
             {
@@ -1252,6 +1280,22 @@ def test_converter_строит_base_без_дублирования_в_extended
     assert overlay.payload is None
     assert overlay.modules == ("Справочник.Items.МодульОбъекта",)
     assert overlay.forms == ("Справочник.Items.Форма.Card",)
+
+
+def test_source_b_сохраняет_балансовость_ресурса_бухгалтерского_регистра(tmp_path):
+    convert_collection = _symbol("convert_collection")
+
+    result = convert_collection(_collection(tmp_path, accounting_register=True))
+
+    register = result.base.get("РегистрБухгалтерии.Ledger")
+    assert register is not None
+    assert [(field.name, field.balance) for field in register.resources] == [
+        ("Amount", True)
+    ]
+    assert not any(
+        item.code == "unknown_property" and item.signature.endswith(":Balance")
+        for item in result.diagnostics
+    )
 
 
 def test_common_objects_имеют_типизированный_payload(tmp_path):

@@ -84,6 +84,31 @@ def test_вид_объекта_списком_отвергается(tmp_path):
     assert "list" in str(ошибка.value)
 
 
+def test_source_a_сохраняет_балансовость_поля(tmp_path):
+    архив = _write_export(
+        tmp_path,
+        [
+            {
+                "full_name": "ПланВидовХарактеристик.Синтетический",
+                "type": "ПланВидовХарактеристик",
+                "name": "Синтетический",
+                "attributes": [
+                    {
+                        "name": "БалансовоеПоле",
+                        "type": ["Число"],
+                        "balance": True,
+                    }
+                ],
+            }
+        ],
+    )
+
+    loaded = load(архив)
+
+    field = loaded.objects["ПланВидовХарактеристик.Синтетический"].attributes[0]
+    assert field.balance is True
+
+
 def test_булево_вместо_списка_предопределённых_отвергается(tmp_path):
     """Второй случай того же рода: `predefined` занят флагом регламентного задания.
 
@@ -258,3 +283,27 @@ def test_xml_булевы_свойства_объектов_совпадают_�
     props = load(archive).objects[f"{kind}.Пример"].props
 
     assert {key: props[key] for key in expected} == expected
+
+
+def test_source_a_xml_различает_небалансовое_поле_и_отсутствующий_признак(tmp_path):
+    kind = "РегистрБухгалтерии"
+    manifest = (
+        '<manifest schema_version="1" format="xml" name="Пример" '
+        'objects_total="1" truncated="false"><files>'
+        f'<item path="objects/item.001.xml" type="{kind}" count="1"/>'
+        "</files></manifest>"
+    )
+    objects = (
+        f'<objects schema_version="1" type="{kind}" chunk="1" count="1">'
+        f'<object full_name="{kind}.Пример" type="{kind}" name="Пример">'
+        '<dimensions><item name="Небалансовое" balance="false"/>'
+        '<item name="СтарыйАрхив"/></dimensions></object></objects>'
+    )
+    archive = tmp_path / "accounting.xml.zip"
+    with zipfile.ZipFile(archive, "w") as target:
+        target.writestr("manifest.xml", manifest)
+        target.writestr("objects/item.001.xml", objects)
+
+    fields = load(archive).objects[f"{kind}.Пример"].dimensions
+
+    assert [field.balance for field in fields] == [False, None]

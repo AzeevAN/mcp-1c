@@ -69,6 +69,129 @@ def _platform_string(name: str) -> Field:
     )
 
 
+def _date(name: str) -> Field:
+    return Field(name=name, types=["Дата"], date_parts="DateTime", standard=True)
+
+
+def _number(name: str) -> Field:
+    return Field(name=name, types=["Число"], standard=True)
+
+
+def _normalized(value: object) -> str:
+    return value.casefold().replace(" ", "").replace("_", "") if isinstance(value, str) else ""
+
+
+def _periodic(obj: MetadataObject) -> bool:
+    return _normalized(obj.props.get("periodicity")) not in {
+        "",
+        "непериодический",
+        "nonperiodical",
+    }
+
+
+def _recorder_subordinate(obj: MetadataObject) -> bool:
+    return _normalized(obj.props.get("write_mode")) in {
+        "подчинениерегистратору",
+        "recordersubordinate",
+    }
+
+
+def _balance_register(obj: MetadataObject) -> bool:
+    return _normalized(obj.props.get("register_kind")) in {
+        "остатки",
+        "balance",
+        "balancebalance",
+    }
+
+
+def _registrars(configuration: Configuration, register: MetadataObject) -> list[str]:
+    return sorted(
+        (
+            obj.full_name
+            for obj in configuration.objects.values()
+            if obj.kind == "Документ" and register.full_name in obj.movements
+        ),
+        key=str.casefold,
+    )
+
+
+def _record_fields(configuration: Configuration, obj: MetadataObject) -> list[Field]:
+    return [
+        Field("Регистратор", types=_registrars(configuration, obj), standard=True),
+        _number("НомерСтроки"),
+    ]
+
+
+def _information_register_fields(
+    configuration: Configuration,
+    obj: MetadataObject,
+) -> list[Field]:
+    result: list[Field] = []
+    if _periodic(obj):
+        result.append(_date("Период"))
+    if _recorder_subordinate(obj):
+        result.extend(_record_fields(configuration, obj))
+        result.append(_boolean("Активность"))
+    return result
+
+
+def _accumulation_register_fields(
+    configuration: Configuration,
+    obj: MetadataObject,
+) -> list[Field]:
+    result = [_date("Период"), *_record_fields(configuration, obj), _boolean("Активность")]
+    if _balance_register(obj):
+        result.append(Field("ВидДвижения", types=["ВидДвиженияНакопления"], standard=True))
+    return result
+
+
+def _accounting_register_fields(
+    configuration: Configuration,
+    obj: MetadataObject,
+) -> list[Field]:
+    result = [_date("Период")]
+    if _positive_int(obj.props.get("period_adjustment_length")):
+        result.append(_number("УточнениеПериода"))
+    result.extend((*_record_fields(configuration, obj), _boolean("Активность")))
+
+    chart_name = obj.props.get("chart_of_accounts")
+    chart = configuration.get(chart_name) if isinstance(chart_name, str) and chart_name else None
+    if chart is None or chart.kind != "ПланСчетов":
+        if obj.props.get("correspondence") is not True:
+            result.append(Field("ВидДвижения", types=["ВидДвиженияБухгалтерии"], standard=True))
+        return result
+
+    correspondence = obj.props.get("correspondence") is True
+    if correspondence:
+        for suffix in ("Дт", "Кт"):
+            result.append(Field(f"Счет{suffix}", types=[chart.full_name], standard=True))
+    else:
+        result.append(Field("Счет", types=[chart.full_name], standard=True))
+        result.append(Field("ВидДвижения", types=["ВидДвиженияБухгалтерии"], standard=True))
+    return result
+
+
+def _calculation_register_fields(
+    configuration: Configuration,
+    obj: MetadataObject,
+) -> list[Field]:
+    chart = obj.props.get("chart_of_calculation_types")
+    chart_types = [chart] if isinstance(chart, str) and chart else []
+    result = [
+        _date("ПериодРегистрации"),
+        *_record_fields(configuration, obj),
+        Field("ВидРасчета", types=chart_types, standard=True),
+    ]
+    if obj.props.get("action_period") is True:
+        result.extend(
+            (_date("ПериодДействия"), _date("ПериодДействияНачало"), _date("ПериодДействияКонец"))
+        )
+    if obj.props.get("base_period") is True:
+        result.extend((_date("БазовыйПериодНачало"), _date("БазовыйПериодКонец")))
+    result.extend((_boolean("Активность"), _boolean("Сторно")))
+    return result
+
+
 def _number_field(obj: MetadataObject) -> Field | None:
     length = _positive_int(obj.props.get("number_length"))
     numerator = obj.props.get("numerator")
@@ -311,6 +434,15 @@ def materialize_standard_attributes(configuration: Configuration) -> None:
             _replace_standard(obj, _document_fields(obj))
         elif obj.kind == "Справочник":
             _replace_standard(obj, _catalog_fields(obj))
+    for obj in configuration.objects.values():
+        if obj.kind == "РегистрСведений":
+            _replace_standard(obj, _information_register_fields(configuration, obj))
+        elif obj.kind == "РегистрНакопления":
+            _replace_standard(obj, _accumulation_register_fields(configuration, obj))
+        elif obj.kind == "РегистрБухгалтерии":
+            _replace_standard(obj, _accounting_register_fields(configuration, obj))
+        elif obj.kind == "РегистрРасчета":
+            _replace_standard(obj, _calculation_register_fields(configuration, obj))
     # Номер журнала выводится из уже материализованных документов.
     for obj in configuration.objects.values():
         if obj.kind == "ЖурналДокументов":

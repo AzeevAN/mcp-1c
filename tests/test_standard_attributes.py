@@ -1,4 +1,4 @@
-"""RED-матрица платформенных реквизитов документа, справочника и журнала."""
+"""RED-матрица платформенных реквизитов объектов и регистров."""
 
 from __future__ import annotations
 
@@ -207,3 +207,160 @@ def test_обычный_реквизит_с_зарезервированным_�
 
     with pytest.raises(ValueError, match="системн.*Ссылка"):
         _project(configuration)
+
+
+def _field_names(obj: MetadataObject) -> list[str]:
+    return [item.name for item in obj.attributes]
+
+
+def test_регистры_сведений_и_накопления_получают_условные_системные_поля():
+    document = _document("Recorder", number_type="Строка", number_length=9)
+    information = MetadataObject(
+        full_name="РегистрСведений.Цены",
+        kind="РегистрСведений",
+        name="Цены",
+        props={"periodicity": "Day", "write_mode": "RecorderSubordinate"},
+    )
+    independent = MetadataObject(
+        full_name="РегистрСведений.Настройки",
+        kind="РегистрСведений",
+        name="Настройки",
+        props={"periodicity": "Nonperiodical", "write_mode": "Independent"},
+    )
+    accumulation = MetadataObject(
+        full_name="РегистрНакопления.ОстаткиТоваров",
+        kind="РегистрНакопления",
+        name="ОстаткиТоваров",
+        props={"register_kind": "Balance"},
+    )
+    document.movements = [information.full_name, accumulation.full_name]
+    configuration = Configuration(
+        name="Demo",
+        objects={item.full_name: item for item in (document, information, independent, accumulation)},
+    )
+
+    _project(configuration)
+    _project(configuration)
+
+    assert _field_names(information) == [
+        "Период",
+        "Регистратор",
+        "НомерСтроки",
+        "Активность",
+    ]
+    assert information.attributes[0].types == ["Дата"]
+    assert information.attributes[1].types == ["Документ.Recorder"]
+    assert information.attributes[2].types == ["Число"]
+    assert information.attributes[3].types == ["Булево"]
+    assert _field_names(independent) == []
+    assert _field_names(accumulation) == [
+        "Период",
+        "Регистратор",
+        "НомерСтроки",
+        "Активность",
+        "ВидДвижения",
+    ]
+    assert accumulation.attributes[-1].types == ["ВидДвиженияНакопления"]
+
+
+def test_бухгалтерский_регистр_получает_эффективные_поля_запроса():
+    document = _document("Operation", number_type="Строка", number_length=9)
+    chart = MetadataObject(
+        full_name="ПланСчетов.Рабочий",
+        kind="ПланСчетов",
+        name="Рабочий",
+        props={
+            "max_ext_dimension_count": 2,
+            "ext_dimension_types": "ПланВидовХарактеристик.ВидыСубконто",
+        },
+    )
+    characteristics = MetadataObject(
+        full_name="ПланВидовХарактеристик.ВидыСубконто",
+        kind="ПланВидовХарактеристик",
+        name="ВидыСубконто",
+        value_type=Field("ТипЗначения", types=["Справочник.Контрагенты", "Строка"]),
+    )
+    register = MetadataObject(
+        full_name="РегистрБухгалтерии.Проводки",
+        kind="РегистрБухгалтерии",
+        name="Проводки",
+        props={
+            "correspondence": True,
+            "chart_of_accounts": chart.full_name,
+            "period_adjustment_length": 2,
+        },
+    )
+    document.movements = [register.full_name]
+    configuration = Configuration(
+        name="Demo",
+        objects={item.full_name: item for item in (document, chart, characteristics, register)},
+    )
+
+    _project(configuration)
+
+    assert _field_names(register) == [
+        "Период",
+        "УточнениеПериода",
+        "Регистратор",
+        "НомерСтроки",
+        "Активность",
+        "СчетДт",
+        "СчетКт",
+    ]
+    fields = {item.name: item for item in register.attributes}
+    assert fields["УточнениеПериода"].types == ["Число"]
+    assert fields["СчетДт"].types == ["ПланСчетов.Рабочий"]
+
+
+def test_бухгалтерский_регистр_без_плана_не_показывает_серый_счет():
+    register = MetadataObject(
+        full_name="РегистрБухгалтерии.Пустой",
+        kind="РегистрБухгалтерии",
+        name="Пустой",
+        props={"correspondence": False, "chart_of_accounts": ""},
+    )
+    configuration = Configuration(name="Demo", objects={register.full_name: register})
+
+    _project(configuration)
+
+    assert _field_names(register) == [
+        "Период",
+        "Регистратор",
+        "НомерСтроки",
+        "Активность",
+        "ВидДвижения",
+    ]
+
+
+def test_регистр_расчета_различает_период_действия_и_базовый_период():
+    document = _document("Payroll", number_type="Строка", number_length=9)
+    calculation = MetadataObject(
+        full_name="РегистрРасчета.Начисления",
+        kind="РегистрРасчета",
+        name="Начисления",
+        props={
+            "action_period": True,
+            "base_period": False,
+            "chart_of_calculation_types": "ПланВидовРасчета.Начисления",
+        },
+    )
+    document.movements = [calculation.full_name]
+    configuration = Configuration(
+        name="Demo", objects={document.full_name: document, calculation.full_name: calculation}
+    )
+
+    _project(configuration)
+
+    assert _field_names(calculation) == [
+        "ПериодРегистрации",
+        "Регистратор",
+        "НомерСтроки",
+        "ВидРасчета",
+        "ПериодДействия",
+        "ПериодДействияНачало",
+        "ПериодДействияКонец",
+        "Активность",
+        "Сторно",
+    ]
+    assert calculation.attributes[3].types == ["ПланВидовРасчета.Начисления"]
+    assert "БазовыйПериодНачало" not in _field_names(calculation)

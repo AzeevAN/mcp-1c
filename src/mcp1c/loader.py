@@ -72,6 +72,7 @@ _BOOL_KEYS = frozenset(
         "use",
         "is_predefined",
         "number_rules_resolved",
+        "balance",
     }
 )
 
@@ -231,6 +232,19 @@ def _as_bool(value: Any, default: bool = False) -> bool:
     return str(value).strip().lower() in {"true", "1", "истина", "yes"}
 
 
+def _as_optional_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"true", "1", "истина", "yes"}:
+        return True
+    if normalized in {"false", "0", "ложь", "no"}:
+        return False
+    return None
+
+
 def _coerce(key: str, value: Any) -> Any:
     if key in _INT_KEYS:
         return _as_int(value)
@@ -254,6 +268,7 @@ def _to_field(raw: dict[str, Any]) -> Field:
         digits=_as_int(raw.get("digits")),
         fraction_digits=_as_int(raw.get("fraction_digits")),
         date_parts=raw.get("date_parts", "") or "",
+        balance=_as_optional_bool(raw.get("balance")),
     )
 
 

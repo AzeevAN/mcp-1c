@@ -749,17 +749,20 @@ def _field(
         "ScheduleLink",
         "ToolTip",
         "Use",
+        "Balance",
     }
     _unknown_properties(properties, known, diagnostics, f"field:{where}")
     indexing_raw = _text(_child(properties, "Indexing"))
     indexing = _INDEXING.get(indexing_raw, indexing_raw)
     type_spec = _type_description(_child(properties, "Type"))
-    return type_spec.to_field(
+    field = type_spec.to_field(
         name,
         synonym=_localized(_child(properties, "Synonym")),
         comment=_text(_child(properties, "Comment")),
         indexing=indexing,
     )
+    field.balance = _bool(_child(properties, "Balance"), f"{where}.Balance")
+    return field
 
 
 def _unknown_properties(
@@ -3265,8 +3268,8 @@ def _canonical(value: object) -> object:
     return value
 
 
-def _field_data(value: Field) -> dict[str, object]:
-    return {
+def _field_data(value: Field, *, include_balance: bool = False) -> dict[str, object]:
+    result = {
         "name": value.name,
         "synonym": value.synonym,
         "comment": value.comment,
@@ -3278,6 +3281,9 @@ def _field_data(value: Field) -> dict[str, object]:
         "fraction_digits": value.fraction_digits,
         "date_parts": value.date_parts,
     }
+    if include_balance:
+        result["balance"] = value.balance
+    return result
 
 
 def base_layer_data(base: Configuration) -> dict[str, object]:
@@ -3303,11 +3309,11 @@ def base_layer_data(base: Configuration) -> dict[str, object]:
                     key=lambda item: _order(str(item["name"])),
                 ),
                 "dimensions": sorted(
-                    (_field_data(item) for item in value.dimensions),
+                    (_field_data(item, include_balance=True) for item in value.dimensions),
                     key=lambda item: _order(str(item["name"])),
                 ),
                 "resources": sorted(
-                    (_field_data(item) for item in value.resources),
+                    (_field_data(item, include_balance=True) for item in value.resources),
                     key=lambda item: _order(str(item["name"])),
                 ),
                 "tabular_parts": [

@@ -81,7 +81,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <manifest schema_version="1"
           format="xml"
-          exporter_version="2.0"
+          exporter_version="2.1"
           name="УправлениеТорговлей"
           synonym="Управление торговлей"
           version="11.5.14.123"
@@ -121,7 +121,7 @@
 {
   "schema_version": "1",
   "format": "json",
-  "exporter_version": "2.0",
+  "exporter_version": "2.1",
   "name": "УправлениеТорговлей",
   "synonym": "Управление торговлей",
   "version": "11.5.14.123",
@@ -258,6 +258,7 @@
 | `digits` | число | разрядность числа |
 | `fraction_digits` | число | разрядность дробной части |
 | `date_parts` | строка | части даты |
+| `balance` | булево | только измерение/ресурс регистра бухгалтерии: ведётся ли по полю отдельный баланс; отсутствие означает «источник не сообщил», а не `false` |
 
 > **Важно.** Список типов пишется **целиком всегда**, даже если типов сотни
 > (Регистратор, Субконто, Характеристика). Схлопывание в «(составной)» —
@@ -277,7 +278,7 @@
 | Документ | `posting`, `number_length`, `number_periodicity`, `number_type`, `number_allowed_length`, `numerator`, `number_rules_resolved`, `real_time_posting`, `register_records_deletion`, `register_records_on_post`, `attributes[]`, `tabular_parts[]`, `movements[]`, `based_on[]` |
 | РегистрСведений | `periodicity`, `write_mode`, `dimensions[]`, `resources[]`, `attributes[]` |
 | РегистрНакопления | `register_kind`, `dimensions[]`, `resources[]`, `attributes[]` |
-| РегистрБухгалтерии | `correspondence`, `chart_of_accounts`, `period_adjustment_length`, `dimensions[]`, `resources[]`, `attributes[]` |
+| РегистрБухгалтерии | `correspondence`, `chart_of_accounts`, `period_adjustment_length`, `dimensions[]` и `resources[]` с условным `balance`, `attributes[]` |
 | РегистрРасчета | `action_period`, `base_period`, `periodicity`, `chart_of_calculation_types`, `schedule`, `schedule_date`, `schedule_value`, `dimensions[]`, `resources[]`, `attributes[]` |
 | Константа | `value_type` (структура с `type[]` и квалификаторами) |
 | ОпределяемыйТип | `value_type` |

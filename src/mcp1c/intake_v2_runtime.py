@@ -130,6 +130,7 @@ _LEGACY_FIELD_KEYS = {
     "date_parts",
 }
 _FIELD_KEYS = _LEGACY_FIELD_KEYS | {"string_allowed_length"}
+_BALANCE_FIELD_KEYS = _FIELD_KEYS | {"balance"}
 
 
 def _field(value: object, label: str) -> Field:
@@ -137,6 +138,7 @@ def _field(value: object, label: str) -> Field:
     if frozenset(raw) not in {
         frozenset(_LEGACY_FIELD_KEYS),
         frozenset(_FIELD_KEYS),
+        frozenset(_BALANCE_FIELD_KEYS),
     }:
         raise GenerationRuntimeError(f"{label} содержит неверный набор полей")
     return Field(
@@ -155,6 +157,11 @@ def _field(value: object, label: str) -> Field:
             raw["fraction_digits"], f"{label}.fraction_digits"
         ),
         date_parts=_text(raw["date_parts"], f"{label}.date_parts"),
+        balance=(
+            _boolean(raw["balance"], f"{label}.balance")
+            if raw.get("balance") is not None
+            else None
+        ),
     )
 
 

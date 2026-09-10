@@ -64,3 +64,41 @@ def test_query_table_версионируется_как_платформа(tmp_
 
     assert "КритерийОтбора.<Имя критерия отбора>" in ответ
     assert "<Доп>" not in ответ
+
+
+def test_get_syntax_возвращает_одноимённые_варианты_с_одним_адресом(tmp_path):
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    syntax = SyntaxIndex(platforms=["8.3.27.2130"], source="test")
+    name = "РегистрБухгалтерии.<Имя регистра бухгалтерии>.Субконто"
+    syntax.add(
+        SyntaxItem(
+            id="tables/accounting/subconto-with-correspondence",
+            kind=KIND_QUERY_TABLE,
+            name_ru=name,
+            description="Вариант с корреспонденцией.",
+        )
+    )
+    syntax.add(
+        SyntaxItem(
+            id="tables/accounting/subconto-without-correspondence",
+            kind=KIND_QUERY_TABLE,
+            name_ru=name,
+            description="Вариант без корреспонденции.",
+        )
+    )
+
+    registry = Registry(tmp_path / "data")
+    registry.add_syntax(save_syntax(syntax, incoming / "8.3.27.2130.json.gz"))
+    config = build_configuration()
+    config.platform = "8.3.27.2130"
+    registry.add_configuration(write_export(incoming, config))
+
+    ответ = get_syntax(registry, name)
+
+    assert "Одноимённые варианты: 2" in ответ
+    assert "Вариант 1 из 2" in ответ
+    assert "Вариант 2 из 2" in ответ
+    assert "Вариант с корреспонденцией." in ответ
+    assert "Вариант без корреспонденции." in ответ
+    assert "Повторите вызов" not in ответ

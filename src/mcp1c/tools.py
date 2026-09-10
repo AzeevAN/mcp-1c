@@ -3725,6 +3725,44 @@ def get_syntax(
         )
 
     if len(exact) > 1:
+        addresses = {item.address.casefold() for item in exact}
+        if len(addresses) == 1:
+            ordered = sorted(exact, key=lambda item: (item.kind, item.id))
+            out = [
+                f"# Одноимённые варианты: {len(ordered)}",
+                "",
+                f"Публичный адрес вариантов совпадает: `{ordered[0].address}`. ",
+                "Выбрать один повторным вызовом невозможно, поэтому ниже ",
+                "приведены все варианты из справки.",
+                "",
+            ]
+            for number, item in enumerate(ordered, start=1):
+                resolution = (
+                    context.syntax.syntax.facts_for(item, context.platform)
+                    if context.platform
+                    else None
+                )
+                rendered = render_syntax_item(item, detail, resolution).splitlines()
+                if rendered and rendered[0].startswith("# "):
+                    rendered.pop(0)
+                while rendered and not rendered[0]:
+                    rendered.pop(0)
+                out.extend(
+                    [
+                        f"## Вариант {number} из {len(ordered)} — "
+                        f"{KIND_TITLES.get(item.kind, item.kind)}",
+                        "",
+                        *rendered,
+                        "",
+                    ]
+                )
+            return (
+                "\n".join(out).rstrip()
+                + "\n"
+                + _отсечённые_однофамильцы(context, отсечённые, подробно=True)
+                + _notes_block(context)
+            )
+
         out = [f"# Одноимённых элементов: {len(exact)}", ""]
         for item in exact[:15]:
             out.append(

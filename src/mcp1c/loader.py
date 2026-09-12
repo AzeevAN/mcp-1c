@@ -249,7 +249,9 @@ def _coerce(key: str, value: Any) -> Any:
     if key in _INT_KEYS:
         return _as_int(value)
     if key in _BOOL_KEYS:
-        return _as_bool(value)
+        # В свойствах объекта `null` означает, что источник не доказал
+        # значение. Только manifest имеет отдельные документированные default.
+        return _as_optional_bool(value)
     return value
 
 

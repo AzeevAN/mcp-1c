@@ -154,18 +154,18 @@ def _accounting_register_fields(
         result.append(_number("УточнениеПериода"))
     result.extend((*_record_fields(configuration, obj), _boolean("Активность")))
 
+    correspondence = obj.props.get("correspondence")
     chart_name = obj.props.get("chart_of_accounts")
     chart = configuration.get(chart_name) if isinstance(chart_name, str) and chart_name else None
     if chart is None or chart.kind != "ПланСчетов":
-        if obj.props.get("correspondence") is not True:
+        if correspondence is False:
             result.append(Field("ВидДвижения", types=["ВидДвиженияБухгалтерии"], standard=True))
         return result
 
-    correspondence = obj.props.get("correspondence") is True
-    if correspondence:
+    if correspondence is True:
         for suffix in ("Дт", "Кт"):
             result.append(Field(f"Счет{suffix}", types=[chart.full_name], standard=True))
-    else:
+    elif correspondence is False:
         result.append(Field("Счет", types=[chart.full_name], standard=True))
         result.append(Field("ВидДвижения", types=["ВидДвиженияБухгалтерии"], standard=True))
     return result

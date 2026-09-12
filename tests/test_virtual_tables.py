@@ -154,6 +154,24 @@ def test_оборотный_регистр_не_получает_прихода_
     assert turnovers.resources == ["КоличествоОборот", "РезервОборот"]
 
 
+@pytest.mark.parametrize(
+    ("register_kind", "expected"),
+    [(None, None), ("", None), ("Обороты", False), ("Остатки", True)],
+)
+def test_вид_регистра_накопления_различает_unknown_turnover_balance(
+    register_kind, expected
+):
+    register = _register("Остатки")
+    if register_kind is None:
+        register.props.pop("register_kind")
+    else:
+        register.props["register_kind"] = register_kind
+    report = analyze_virtual_tables(register, build_table_index(_syntax_with_tables()))
+    item = next(entry for entry in report.availability if entry.suffix == "Остатки")
+
+    assert item.available is expected
+
+
 def test_общий_реквизит_не_выдумывается():
     """`<Имя общего реквизита>` в модели конфигурации не представлен."""
     tables = virtual_tables(_register(), build_table_index(_syntax_with_tables()))
@@ -266,6 +284,25 @@ def test_без_признака_периодичности_срез_не_пок
     assert tables == []
 
 
+@pytest.mark.parametrize(
+    ("periodicity", "expected"),
+    [(None, None), ("", None), ("Непериодический", False), ("День", True)],
+)
+def test_периодичность_различает_unknown_nonperiodic_periodic(
+    periodicity, expected
+):
+    props = {} if periodicity is None else {"periodicity": periodicity}
+    report = analyze_virtual_tables(
+        _information_register(**props),
+        build_table_index(_syntax_with_slice()),
+    )
+    item = next(
+        entry for entry in report.availability if entry.suffix == "СрезПоследних"
+    )
+
+    assert item.available is expected
+
+
 def _calculation_syntax() -> SyntaxIndex:
     """Условные таблицы регистра расчёта из справки платформы."""
     index = SyntaxIndex(platforms=["8.3.27"], language="ru", source="test")
@@ -374,9 +411,54 @@ def test_данные_графика_объясняют_отсутствующи
     )
     item = next(i for i in report.availability if i.suffix == "ДанныеГрафика")
 
-    assert item.available is False
+    assert item.available is None
     assert "график" in item.reason
     assert "базов" not in item.reason
+
+
+_MISSING = object()
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(_MISSING, None), (None, None), (False, False), (True, True)],
+)
+def test_период_действия_различает_unknown_false_true(value, expected):
+    props = {"base_period": False}
+    if value is not _MISSING:
+        props["action_period"] = value
+    report = analyze_virtual_tables(
+        _calculation_register(**props),
+        build_table_index(_calculation_syntax()),
+    )
+    item = next(
+        entry
+        for entry in report.availability
+        if entry.suffix == "ФактическийПериодДействия"
+    )
+
+    assert item.available is expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(_MISSING, None), (None, None), (False, False), (True, None)],
+)
+def test_базовый_период_различает_unknown_false_true(value, expected):
+    props = {"action_period": False}
+    if value is not _MISSING:
+        props["base_period"] = value
+    report = analyze_virtual_tables(
+        _calculation_register(**props),
+        build_table_index(_calculation_syntax()),
+    )
+    item = next(
+        entry
+        for entry in report.availability
+        if entry.suffix == "База<Имя базового регистра расчета>"
+    )
+
+    assert item.available is expected
 
 
 def test_карточка_агента_показывает_почему_данных_графика_нет():
@@ -579,6 +661,160 @@ def test_бухгалтерские_условия_объясняют_корре
     main = next(item for item in report.tables if item.suffix == "")
     assert "Счет" not in main.service
     assert "УточнениеПериода" not in main.service
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(_MISSING, None), (None, None), (False, False), (True, True)],
+)
+def test_корреспонденция_различает_unknown_false_true(value, expected):
+    register = _accounting_register(correspondence=False)
+    register.props.pop("correspondence")
+    if value is not _MISSING:
+        register.props["correspondence"] = value
+    report = analyze_virtual_tables(register, build_table_index(_accounting_syntax()))
+    item = next(
+        entry for entry in report.availability if entry.suffix == "ОборотыДтКт"
+    )
+
+    assert item.available is expected
+
+
+@pytest.mark.parametrize(
+    ("value", "count", "expected"),
+    [
+        (_MISSING, None, None),
+        (None, None, None),
+        ("", 0, False),
+        ("ПланСчетов.Рабочий", 0, False),
+        ("ПланСчетов.Рабочий", 2, True),
+    ],
+)
+def test_субконто_различает_unknown_zero_positive(value, count, expected):
+    register = _accounting_register(correspondence=False)
+    register.props.pop("chart_of_accounts")
+    if value is not _MISSING:
+        register.props["chart_of_accounts"] = value
+    report = analyze_virtual_tables(
+        register,
+        build_table_index(_accounting_syntax()),
+        ext_dimension_count=count,
+    )
+    item = next(entry for entry in report.availability if entry.suffix == "Субконто")
+
+    assert item.available is expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (_MISSING, "не доказана источником"),
+        (None, "не доказана источником"),
+        (0, "равна нулю"),
+        (2, "длина уточнения: 2"),
+    ],
+)
+def test_длина_уточнения_различает_unknown_zero_positive(value, expected):
+    register = _accounting_register(correspondence=False)
+    register.props.pop("period_adjustment_length")
+    if value is not _MISSING:
+        register.props["period_adjustment_length"] = value
+    report = analyze_virtual_tables(register, build_table_index(_accounting_syntax()))
+
+    assert expected in "\n".join(report.notes)
+
+
+def test_карточка_показывает_unknown_без_ложного_отрицания():
+    register = _calculation_register()
+    report = analyze_virtual_tables(register, build_table_index(_calculation_syntax()))
+
+    card = render_object(
+        register,
+        virtual_tables=report.tables,
+        table_availability=report.availability,
+        virtual_table_notes=report.notes,
+    )
+
+    assert "по свойствам unknown" in card
+    assert "период действия выключен" not in card
+    assert "базовый период выключен" not in card
+
+
+def test_unknown_корреспонденция_не_выдумывает_условные_поля():
+    register = _accounting_register(correspondence=False, adjustment=2)
+    register.props.pop("correspondence")
+    report = analyze_virtual_tables(register, build_table_index(_accounting_syntax()))
+    main = next(table for table in report.tables if table.suffix == "")
+    turns = next(table for table in report.tables if table.suffix == "Обороты")
+
+    assert "Организация" in main.dimensions
+    assert "Сумма" in main.resources
+    assert "Валюта" not in main.dimensions
+    assert "Количество" not in main.resources
+    assert all("Кор" not in name for name in turns.all_fields())
+    assert all(not name.endswith(("Дт", "Кт")) for name in turns.all_fields())
+
+
+def test_ссылки_неподходящего_вида_не_доказывают_условные_таблицы():
+    accounting = _accounting_register(correspondence=False)
+    accounting.props["chart_of_accounts"] = "Справочник.НеПлан"
+    calculation = _calculation_register(
+        action_period=True,
+        base_period=False,
+        schedule="Справочник.НеГрафик",
+    )
+    wrong_target = MetadataObject(
+        full_name="Справочник.НеПлан",
+        kind="Справочник",
+        name="НеПлан",
+        resources=[Field("ЛожныйРесурс")],
+        props={"max_ext_dimension_count": 2},
+    )
+    wrong_schedule = MetadataObject(
+        full_name="Справочник.НеГрафик",
+        kind="Справочник",
+        name="НеГрафик",
+        resources=[Field("ЛожныйРесурс")],
+    )
+    configuration = Configuration(
+        name="Demo",
+        objects={
+            item.full_name: item
+            for item in (accounting, calculation, wrong_target, wrong_schedule)
+        },
+    )
+
+    accounting_report = analyze_virtual_tables(
+        accounting,
+        build_table_index(_accounting_syntax()),
+        configuration=configuration,
+    )
+    calculation_report = analyze_virtual_tables(
+        calculation,
+        build_table_index(_calculation_syntax()),
+        configuration=configuration,
+    )
+
+    assert next(
+        item for item in accounting_report.availability if item.suffix == "Субконто"
+    ).available is None
+    assert next(
+        item
+        for item in calculation_report.availability
+        if item.suffix == "ДанныеГрафика"
+    ).available is None
+
+
+def test_явно_пустые_ссылки_доминируют_над_unknown_флагами():
+    register = _calculation_register(
+        schedule="",
+        chart_of_calculation_types="",
+    )
+    report = analyze_virtual_tables(register, build_table_index(_calculation_syntax()))
+    availability = {item.suffix: item.available for item in report.availability}
+
+    assert availability["ДанныеГрафика"] is False
+    assert availability["База<Имя базового регистра расчета>"] is False
 
 
 def test_два_шаблона_на_один_суффикс_пропускаются():

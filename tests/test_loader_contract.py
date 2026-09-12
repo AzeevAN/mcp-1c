@@ -16,7 +16,7 @@ import zipfile
 import pytest
 
 from mcp1c.loader import ExportError, load
-from mcp1c.model import MetadataObject
+from mcp1c.model import Configuration, MetadataObject
 
 from conftest import build_configuration, write_export
 
@@ -307,3 +307,25 @@ def test_source_a_xml_различает_небалансовое_поле_и_о
     fields = load(archive).objects[f"{kind}.Пример"].dimensions
 
     assert [field.balance for field in fields] == [False, None]
+
+
+def test_source_a_json_сохраняет_null_булевого_свойства_как_unknown(tmp_path):
+    configuration = Configuration(
+        name="Пример",
+        objects={
+            "РегистрРасчета.Пример": MetadataObject(
+                full_name="РегистрРасчета.Пример",
+                kind="РегистрРасчета",
+                name="Пример",
+                props={"action_period": None, "base_period": None},
+            )
+        },
+    )
+    source = tmp_path / "source"
+    source.mkdir()
+    archive = write_export(source, configuration)
+
+    props = load(archive).objects["РегистрРасчета.Пример"].props
+
+    assert props["action_period"] is None
+    assert props["base_period"] is None

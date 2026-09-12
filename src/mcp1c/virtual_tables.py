@@ -118,11 +118,11 @@ class VirtualTable:
 
 @dataclass(slots=True, frozen=True)
 class TableAvailability:
-    """Почему условная таблица конкретного регистра доступна или отсутствует."""
+    """Доступность условной таблицы: доказана, опровергнута или неизвестна."""
 
     name: str
     suffix: str
-    available: bool
+    available: bool | None
     reason: str
 
 
@@ -186,7 +186,7 @@ def _fields_by_table(syntax: SyntaxIndex) -> dict[str, list[str]]:
     }
 
 
-def _expand_numbered(fields: list[str], count: int) -> list[str]:
+def _expand_numbered(fields: list[str], count: int | None) -> list[str]:
     """Развернуть нумерованные субконто: `Субконто<Номер субконто>` → 1…N.
 
     Без плана счетов нумерованные поля убираются, но сама основная таблица не
@@ -195,7 +195,7 @@ def _expand_numbered(fields: list[str], count: int) -> list[str]:
     if not any(_EXT_DIMENSION_NUMBER in field for field in fields):
         return fields
 
-    if count <= 0:
+    if count is None or count <= 0:
         return [field for field in fields if _EXT_DIMENSION_NUMBER not in field]
 
     expanded: list[str] = []
@@ -293,6 +293,13 @@ def _has_slices(obj: MetadataObject) -> bool:
     }
 
 
+def _slices_state(obj: MetadataObject) -> bool | None:
+    value = obj.props.get("periodicity")
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return _has_slices(obj)
+
+
 def _balance_register(obj: MetadataObject) -> bool:
     value = obj.props.get("register_kind")
     if not isinstance(value, str):
@@ -304,6 +311,25 @@ def _balance_register(obj: MetadataObject) -> bool:
     }
 
 
+def _balance_register_state(obj: MetadataObject) -> bool | None:
+    value = obj.props.get("register_kind")
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return _balance_register(obj)
+
+
+def _bool_state(obj: MetadataObject, key: str) -> bool | None:
+    value = obj.props.get(key)
+    return value if type(value) is bool else None
+
+
+def _reference_state(obj: MetadataObject, key: str) -> bool | None:
+    value = obj.props.get(key)
+    if not isinstance(value, str):
+        return None
+    return bool(value.strip())
+
+
 def _positive_int(value: object) -> int:
     return value if type(value) is int and value > 0 else 0
 
@@ -311,20 +337,28 @@ def _positive_int(value: object) -> int:
 def _base_registers(
     obj: MetadataObject,
     configuration: Configuration | None,
-) -> tuple[list[MetadataObject], str]:
-    if obj.props.get("base_period") is not True:
-        return [], "базовый период выключен"
+) -> tuple[list[MetadataObject], bool | None, str]:
+    base_period = _bool_state(obj, "base_period")
+    plan_state = _reference_state(obj, "chart_of_calculation_types")
+    if base_period is False:
+        return [], False, "базовый период выключен"
+    if plan_state is False:
+        return [], False, "план видов расчета не задан"
+    if base_period is None:
+        return [], None, "значение базового периода не доказано источником"
+    if plan_state is None:
+        return [], None, "план видов расчета не доказан источником"
     if configuration is None:
-        return [], "нет resolved-конфигурации для связи с базовыми планами видов расчета"
+        return [], None, "нет resolved-конфигурации для связи с базовыми планами видов расчета"
     plan_name = obj.props.get("chart_of_calculation_types")
     plan = configuration.get(plan_name) if isinstance(plan_name, str) else None
     if plan is None or plan.kind != "ПланВидовРасчета":
-        return [], "не задан или не разрешен план видов расчета"
+        return [], False, "не задан или не разрешен план видов расчета"
     raw_base_plans = plan.props.get("base_calculation_types")
     if not isinstance(raw_base_plans, list) or not all(
         isinstance(item, str) for item in raw_base_plans
     ):
-        return [], "план видов расчета не задает базовые планы"
+        return [], None, "состав базовых планов не доказан источником"
     base_plans = set(raw_base_plans)
     result = sorted(
         (
@@ -336,8 +370,8 @@ def _base_registers(
         key=lambda candidate: candidate.full_name.casefold(),
     )
     if not result:
-        return [], "для базовых планов не найден ни один регистр расчета"
-    return result, ""
+        return [], False, "для базовых планов не найден ни один регистр расчета"
+    return result, True, ""
 
 
 def _unknown_placeholder(template: str) -> bool:
@@ -358,9 +392,15 @@ def _accounting_fields(
     fields: list[Field],
     template_suffix: str,
     table_suffix: str,
-    correspondence: bool,
+    correspondence: bool | None,
 ) -> list[Field]:
     """Отобрать поля бухгалтерского регистра для конкретного плейсхолдера."""
+    if correspondence is None:
+        if table_suffix in {"", "ДвиженияССубконто"} and template_suffix == "":
+            return [item for item in fields if item.balance is True]
+        if table_suffix == "Обороты" and template_suffix in {"", "Оборот"}:
+            return fields
+        return []
     if not correspondence and table_suffix in {"", "ДвиженияССубконто"}:
         return fields if template_suffix == "" else []
     if table_suffix in {"", "ДвиженияССубконто", "ОборотыДтКт"}:
@@ -384,14 +424,14 @@ def _accounting_service_field(
     template: str,
     obj: MetadataObject,
     table_suffix: str,
-    ext_dimension_count: int,
+    ext_dimension_count: int | None,
 ) -> bool:
     if template == "УточнениеПериода":
         return table_suffix != "Остатки" and _positive_int(
             obj.props.get("period_adjustment_length")
         ) > 0
-    correspondence = obj.props.get("correspondence") is True
-    has_chart = bool(obj.props.get("chart_of_accounts"))
+    correspondence = _bool_state(obj, "correspondence")
+    has_chart = _reference_state(obj, "chart_of_accounts")
     if template in {"СчетДт", "СчетКт", "КорСчет"} or template.startswith(
         (
             "СубконтоДт",
@@ -401,13 +441,21 @@ def _accounting_service_field(
             "КорСубконто",
         )
     ):
-        return correspondence and has_chart
+        return correspondence is True and has_chart is True
     if template == "Счет":
-        return has_chart and (
-            not correspondence or table_suffix not in {"", "ДвиженияССубконто"}
+        return has_chart is True and (
+            correspondence is False
+            or (
+                correspondence is True
+                and table_suffix not in {"", "ДвиженияССубконто"}
+            )
         )
     if template.startswith(("Субконто", "ВидСубконто")):
-        return has_chart and ext_dimension_count > 0
+        return (
+            has_chart is True
+            and ext_dimension_count is not None
+            and ext_dimension_count > 0
+        )
     return True
 
 
@@ -416,7 +464,7 @@ def _expand(
     obj: MetadataObject,
     *,
     table_suffix: str,
-    ext_dimension_count: int,
+    ext_dimension_count: int | None,
 ) -> tuple[str, list[str]]:
     """Подставить в шаблон поля объекта. Возвращает вид поля и имена.
 
@@ -435,7 +483,7 @@ def _expand(
                 fields,
                 suffix,
                 table_suffix,
-                obj.props.get("correspondence") is True,
+                _bool_state(obj, "correspondence"),
             )
         return "dimensions", [f"{f.name}{suffix}" for f in fields]
 
@@ -505,14 +553,15 @@ def build_table_index(syntax: SyntaxIndex | None) -> dict[str, list[TableTemplat
 def _availability(
     obj: MetadataObject,
     *,
-    ext_dimension_count: int,
-    schedule_resources: list[str],
+    ext_dimension_count: int | None,
+    schedule_resources: list[str] | None,
     base_registers: list[MetadataObject],
+    base_available: bool | None,
     base_error: str,
 ) -> list[TableAvailability]:
     result: list[TableAvailability] = []
 
-    def add(suffix: str, available: bool, reason: str) -> None:
+    def add(suffix: str, available: bool | None, reason: str) -> None:
         result.append(
             TableAvailability(
                 name=f"{obj.full_name}.{suffix}",
@@ -523,65 +572,99 @@ def _availability(
         )
 
     if obj.kind == "РегистрСведений":
-        available = _has_slices(obj)
+        available = _slices_state(obj)
         reason = (
             "регистр периодический"
-            if available
-            else "регистр непериодический или периодичность не доказана"
+            if available is True
+            else (
+                "регистр непериодический"
+                if available is False
+                else "периодичность не доказана источником"
+            )
         )
         for suffix in _SLICE_SUFFIXES:
             add(suffix, available, reason)
     elif obj.kind == "РегистрНакопления":
-        available = _balance_register(obj)
+        available = _balance_register_state(obj)
         reason = (
             "вид регистра — Остатки"
-            if available
-            else "таблицы итогов остатков существуют только у регистра вида Остатки"
+            if available is True
+            else (
+                "таблицы итогов остатков существуют только у регистра вида Остатки"
+                if available is False
+                else "вид регистра не доказан источником"
+            )
         )
         for suffix in _BALANCE_ONLY:
             add(suffix, available, reason)
     elif obj.kind == "РегистрБухгалтерии":
-        correspondence = obj.props.get("correspondence") is True
+        correspondence = _bool_state(obj, "correspondence")
         add(
             "ОборотыДтКт",
             correspondence,
             (
                 "включена корреспонденция"
-                if correspondence
-                else "таблица существует только при включенной корреспонденции"
+                if correspondence is True
+                else (
+                    "таблица существует только при включенной корреспонденции"
+                    if correspondence is False
+                    else "значение корреспонденции не доказано источником"
+                )
             ),
         )
-        chart = bool(obj.props.get("chart_of_accounts"))
-        subconto = chart and ext_dimension_count > 0
+        chart = _reference_state(obj, "chart_of_accounts")
+        if chart is not True:
+            subconto = chart
+        elif ext_dimension_count is None:
+            subconto = None
+        else:
+            subconto = ext_dimension_count > 0
         add(
             "Субконто",
             subconto,
             (
                 f"задан план счетов, максимум субконто: {ext_dimension_count}"
-                if subconto
-                else "не задан план счетов или у него не доказано количество субконто"
+                if subconto is True
+                else (
+                    "план счетов не задан или максимум субконто равен нулю"
+                    if subconto is False
+                    else "план счетов или максимум субконто не доказан источником"
+                )
             ),
         )
     elif obj.kind == "РегистрРасчета":
-        action_period = obj.props.get("action_period") is True
+        action_period = _bool_state(obj, "action_period")
         add(
             "ФактическийПериодДействия",
             action_period,
             (
                 "включен период действия"
-                if action_period
-                else "период действия выключен; без него таблица не существует"
+                if action_period is True
+                else (
+                    "период действия выключен; без него таблица не существует"
+                    if action_period is False
+                    else "значение периода действия не доказано источником"
+                )
             ),
         )
-        schedule = bool(obj.props.get("schedule"))
-        schedule_available = action_period and schedule and bool(schedule_resources)
-        if not action_period:
+        schedule = _reference_state(obj, "schedule")
+        if action_period is False:
+            schedule_available = False
             schedule_reason = "период действия выключен, поэтому график неприменим"
-        elif not schedule:
-            schedule_reason = "период действия включен, но график не задан"
+        elif schedule is False:
+            schedule_available = False
+            schedule_reason = "график не задан"
+        elif action_period is None:
+            schedule_available = None
+            schedule_reason = "значение периода действия не доказано источником"
+        elif schedule is None:
+            schedule_available = None
+            schedule_reason = "ссылка на график не доказана источником"
         elif not schedule_resources:
-            schedule_reason = "график задан, но его ресурсы не удалось разрешить"
+            schedule_available = None
+            schedule_reason = "график задан, но его ресурсы не доказаны"
         else:
+            schedule_available = True
             schedule_reason = "включен период действия и разрешен регистр графика"
         add("ДанныеГрафика", schedule_available, schedule_reason)
         if base_registers:
@@ -590,7 +673,7 @@ def _availability(
                 plan = base.props.get("chart_of_calculation_types", "")
                 add(suffix, True, f"включен базовый период; базовый план: {plan}")
         else:
-            add(f"База{_BASE_REGISTER}", False, base_error)
+            add(f"База{_BASE_REGISTER}", base_available, base_error)
     return result
 
 
@@ -600,7 +683,7 @@ def _table_from_template(
     *,
     suffix: str,
     fields: list[str],
-    ext_dimension_count: int,
+    ext_dimension_count: int | None,
 ) -> VirtualTable | None:
     if any(_unknown_placeholder(field_name) for field_name in fields):
         return None
@@ -625,7 +708,7 @@ def _table_from_template(
                     resources,
                     resource_suffix,
                     suffix,
-                    obj.props.get("correspondence") is True,
+                    _bool_state(obj, "correspondence"),
                 )
             resource_templates.append(
                 (resource_suffix, {id(resource) for resource in resources})
@@ -672,35 +755,57 @@ def analyze_virtual_tables(
 
     if ext_dimension_count is None:
         chart_name = obj.props.get("chart_of_accounts")
-        chart = configuration.get(chart_name) if configuration and isinstance(chart_name, str) else None
-        ext_dimension_count = (
-            _positive_int(chart.props.get("max_ext_dimension_count")) if chart else 0
+        chart = (
+            configuration.get(chart_name)
+            if configuration and isinstance(chart_name, str) and chart_name
+            else None
         )
+        if chart is not None and chart.kind == "ПланСчетов":
+            raw_count = chart.props.get("max_ext_dimension_count")
+            ext_dimension_count = (
+                raw_count if type(raw_count) is int and raw_count >= 0 else None
+            )
+        elif isinstance(chart_name, str) and not chart_name:
+            ext_dimension_count = 0
     if schedule_resources is None:
         schedule_name = obj.props.get("schedule")
-        schedule = configuration.get(schedule_name) if configuration and isinstance(schedule_name, str) else None
-        schedule_resources = [item.name for item in schedule.resources] if schedule else []
+        schedule = (
+            configuration.get(schedule_name)
+            if configuration and isinstance(schedule_name, str) and schedule_name
+            else None
+        )
+        if schedule is not None and schedule.kind == "РегистрСведений":
+            schedule_resources = [item.name for item in schedule.resources]
+        elif isinstance(schedule_name, str) and not schedule_name:
+            schedule_resources = []
 
-    base_registers, base_error = _base_registers(obj, configuration)
+    base_registers, base_available, base_error = _base_registers(obj, configuration)
     report = VirtualTableReport(
         availability=_availability(
             obj,
             ext_dimension_count=ext_dimension_count,
             schedule_resources=schedule_resources,
             base_registers=base_registers,
+            base_available=base_available,
             base_error=base_error,
         )
     )
     if obj.kind == "РегистрБухгалтерии":
-        adjustment = _positive_int(obj.props.get("period_adjustment_length"))
-        report.notes.append(
-            (
+        raw_adjustment = obj.props.get("period_adjustment_length")
+        if type(raw_adjustment) is int and raw_adjustment > 0:
+            report.notes.append(
                 f"`УточнениеПериода` доступно в основной и оборотных таблицах "
-                f"(длина уточнения: {adjustment}), но отсутствует в `Остатки`."
-                if adjustment
-                else "`УточнениеПериода` отсутствует: длина уточнения периода равна нулю."
+                f"(длина уточнения: {raw_adjustment}), но отсутствует в `Остатки`."
             )
-        )
+        elif type(raw_adjustment) is int and raw_adjustment == 0:
+            report.notes.append(
+                "`УточнениеПериода` отсутствует: длина уточнения периода равна нулю."
+            )
+        else:
+            report.notes.append(
+                "Доступность `УточнениеПериода` неизвестна: длина уточнения "
+                "периода не доказана источником."
+            )
         unknown = [
             item.name
             for item in [*obj.dimensions, *obj.resources]
@@ -753,7 +858,7 @@ def analyze_virtual_tables(
         if "<" in template.suffix:
             continue
 
-        if suffix in availability and not availability[suffix]:
+        if suffix in availability and availability[suffix] is not True:
             continue
 
         # Чужие плейсхолдеры в полях (`<Имя ресурса графика>ПериодДействия`)

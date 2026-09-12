@@ -27,6 +27,7 @@ from mcp1c.tools import (
     get_related,
     search_objects,
 )
+import test_intake_v2_converter as converter_fixtures
 from test_intake_v2_converter import _collection, _common_form_xml
 
 
@@ -656,6 +657,109 @@ def test_native_http_service_change_и_удаление_endpoint_пережив�
     assert "URL-шаблоны и методы (0 / 0)" in restarted_card
     assert "`/hs/api/items/{id}`" not in restarted_card
     assert "`/hs/api/items/{code}`" not in restarted_card
+
+
+@pytest.mark.parametrize("explicit_null", [False, True])
+def test_source_a_missing_register_properties_остаются_unknown_после_restart(
+    tmp_path, explicit_null
+):
+    source_dir = tmp_path / "source-a-unknown"
+    source_dir.mkdir()
+    configuration = Configuration(
+        name="UnknownA",
+        objects={
+            full_name: MetadataObject(
+                full_name=full_name,
+                kind=kind,
+                name="Unknown",
+                props=(
+                    {
+                        "correspondence": None,
+                        "period_adjustment_length": None,
+                    }
+                    if explicit_null and kind == "РегистрБухгалтерии"
+                    else (
+                        {"action_period": None, "base_period": None}
+                        if explicit_null
+                        else {}
+                    )
+                ),
+            )
+            for kind, full_name in (
+                ("РегистрБухгалтерии", "РегистрБухгалтерии.Unknown"),
+                ("РегистрРасчета", "РегистрРасчета.Unknown"),
+            )
+        },
+    )
+    registry = Registry(tmp_path / "data-a-unknown")
+    registry.add_configuration(write_export(source_dir, configuration))
+    registry.save()
+
+    for current in (registry, Registry(registry.data_dir)):
+        if current is not registry:
+            assert current.restore() == []
+        accounting = get_object(
+            current,
+            "РегистрБухгалтерии.Unknown",
+            config="UnknownA",
+            detail="fields",
+        )
+        calculation = get_object(
+            current,
+            "РегистрРасчета.Unknown",
+            config="UnknownA",
+            detail="fields",
+        )
+        assert "по свойствам unknown" in accounting
+        assert "длина уточнения периода не доказана источником" in accounting
+        assert "длина уточнения периода равна нулю" not in accounting
+        assert "ВидДвижения — ВидДвиженияБухгалтерии" not in accounting
+        assert "Счет —" not in accounting
+        assert "по свойствам unknown" in calculation
+        assert "период действия выключен" not in calculation
+        assert "базовый период выключен" not in calculation
+
+
+def test_source_b_missing_register_properties_остаются_unknown_после_restart(
+    tmp_path, monkeypatch
+):
+    descriptor = converter_fixtures._accounting_register()
+    for element in (
+        b"<Correspondence>true</Correspondence>",
+        b"<ChartOfAccounts>ChartOfAccounts.Main</ChartOfAccounts>",
+        b"<PeriodAdjustmentLength>0</PeriodAdjustmentLength>",
+    ):
+        descriptor = descriptor.replace(element, b"")
+    monkeypatch.setattr(
+        converter_fixtures,
+        "_accounting_register",
+        lambda: descriptor,
+    )
+    _collection_value, generation = _materialized(
+        tmp_path,
+        "unknown-register-properties",
+        accounting_register=True,
+    )
+    registry = Registry(tmp_path / "data-b-unknown")
+    registry.publish_generation(
+        registry.stage_generation(generation.manifest, generation.payloads)
+    )
+
+    restarted = Registry(registry.data_dir)
+    assert restarted.restore() == []
+    card = get_object(
+        restarted,
+        "РегистрБухгалтерии.Ledger",
+        config="DemoConfiguration",
+        detail="fields",
+    )
+
+    assert "по свойствам unknown" in card
+    assert "значение корреспонденции не доказано источником" in card
+    assert "длина уточнения периода не доказана источником" in card
+    assert "длина уточнения периода равна нулю" not in card
+    assert "ВидДвижения — ВидДвиженияБухгалтерии" not in card
+    assert "Счет —" not in card
 
 
 def test_legacy_schema_v1_получает_ту_же_проекцию_после_restart(tmp_path):

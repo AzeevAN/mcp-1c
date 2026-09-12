@@ -332,6 +332,40 @@ def test_бухгалтерский_регистр_без_плана_не_пок
     ]
 
 
+@pytest.mark.parametrize(
+    ("include_correspondence", "correspondence"),
+    [(False, None), (True, None)],
+)
+@pytest.mark.parametrize("with_chart", [False, True])
+def test_unknown_корреспонденция_не_создаёт_условные_стандартные_поля(
+    include_correspondence, correspondence, with_chart
+):
+    chart = MetadataObject(
+        full_name="ПланСчетов.Рабочий",
+        kind="ПланСчетов",
+        name="Рабочий",
+    )
+    props = {"chart_of_accounts": chart.full_name if with_chart else ""}
+    if include_correspondence:
+        props["correspondence"] = correspondence
+    register = MetadataObject(
+        full_name="РегистрБухгалтерии.Проводки",
+        kind="РегистрБухгалтерии",
+        name="Проводки",
+        props=props,
+    )
+    configuration = Configuration(
+        name="Demo",
+        objects={item.full_name: item for item in (chart, register)},
+    )
+
+    _project(configuration)
+
+    assert not {"Счет", "СчетДт", "СчетКт", "ВидДвижения"}.intersection(
+        _field_names(register)
+    )
+
+
 def test_регистр_расчета_различает_период_действия_и_базовый_период():
     document = _document("Payroll", number_type="Строка", number_length=9)
     calculation = MetadataObject(

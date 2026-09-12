@@ -956,9 +956,10 @@ def _virtual_tables_section(
             "",
         ]
     if availability or notes:
+        states = {True: "доступна", False: "недоступна", None: "unknown"}
         condition_lines = [
             f"- `{item.name}` — по свойствам "
-            f"{'доступна' if item.available else 'недоступна'}: "
+            f"{states[item.available]}: "
             f"{item.reason}."
             for item in availability
         ]

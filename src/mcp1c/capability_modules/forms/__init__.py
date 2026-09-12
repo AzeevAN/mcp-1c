@@ -6,6 +6,7 @@
 
 from .diagnostics import Artifact, Coverage, Diagnostic, FormsResult
 from .models import FormsContractError, ManagedForm, ManagedFormSpec
+from .rules import FormsRuleQueryError, RULE_TOPICS, get_managed_form_rules
 
 
 __all__ = [
@@ -14,6 +15,9 @@ __all__ = [
     "Diagnostic",
     "FormsContractError",
     "FormsResult",
+    "FormsRuleQueryError",
     "ManagedForm",
     "ManagedFormSpec",
+    "RULE_TOPICS",
+    "get_managed_form_rules",
 ]

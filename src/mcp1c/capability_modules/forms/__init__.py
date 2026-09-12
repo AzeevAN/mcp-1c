@@ -6,11 +6,13 @@
 
 from .diagnostics import Artifact, Coverage, Diagnostic, FormsResult
 from .models import FormsContractError, ManagedForm, ManagedFormSpec
+from .compiler import compile_managed_form
 from .rules import FormsRuleQueryError, RULE_TOPICS, get_managed_form_rules
 
 
 __all__ = [
     "Artifact",
+    "compile_managed_form",
     "Coverage",
     "Diagnostic",
     "FormsContractError",

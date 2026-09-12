@@ -513,6 +513,22 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
                     "Кнопка ссылается на неизвестную команду.",
                 )
 
+    event_handlers = {item.handler for item in events}
+    for index, command in enumerate(commands):
+        if command.action in event_handlers:
+            reader.issue(
+                "handler_signature_conflict",
+                f"$.commands[{index}].action",
+                "Один обработчик нельзя сгенерировать с сигнатурами события и команды.",
+            )
+
+    _duplicates(
+        reader,
+        [(item.event, f"$.events[{index}].event") for index, item in enumerate(events)],
+        code="duplicate_event",
+        message="Событие формы повторяется.",
+    )
+
     if reader.diagnostics:
         raise FormsContractError(tuple(reader.diagnostics))
 
@@ -526,6 +542,72 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
         commands=commands,
         events=events,
     )
+
+
+def managed_form_to_spec(form: ManagedForm) -> dict[str, object]:
+    """Вернуть каноническую публичную спецификацию без внутренних ID."""
+
+    attributes: list[dict[str, object]] = []
+    for attribute in form.attributes:
+        item: dict[str, object] = {
+            "name": attribute.name,
+            "type": {"kind": "string", "length": attribute.type.length},
+        }
+        if attribute.title is not None:
+            item["title"] = {"ru": attribute.title.ru}
+        if attribute.main:
+            item["main"] = True
+        attributes.append(item)
+
+    elements: list[dict[str, object]] = []
+    for group in form.elements:
+        children: list[dict[str, object]] = []
+        for child in group.children:
+            if isinstance(child, InputField):
+                child_item: dict[str, object] = {
+                    "kind": "input_field",
+                    "name": child.name,
+                    "data_path": child.data_path,
+                }
+            else:
+                child_item = {
+                    "kind": "button",
+                    "name": child.name,
+                    "command": child.command,
+                }
+                if child.default:
+                    child_item["default"] = True
+            if child.title is not None:
+                child_item["title"] = {"ru": child.title.ru}
+            children.append(child_item)
+        elements.append(
+            {
+                "kind": "usual_group",
+                "name": group.name,
+                "title": {"ru": group.title.ru},
+                "children": children,
+            }
+        )
+
+    return {
+        "schema_version": form.schema_version,
+        "form_name": form.form_name,
+        "format_version": form.format_version,
+        "title": {"ru": form.title.ru},
+        "attributes": attributes,
+        "elements": elements,
+        "commands": [
+            {
+                "name": command.name,
+                "title": {"ru": command.title.ru},
+                "action": command.action,
+            }
+            for command in form.commands
+        ],
+        "events": [
+            {"event": event.event, "handler": event.handler} for event in form.events
+        ],
+    }
 
 
 __all__ = [
@@ -552,5 +634,6 @@ __all__ = [
     "StringTypeSpec",
     "UsualGroup",
     "UsualGroupSpec",
+    "managed_form_to_spec",
     "parse_managed_form_spec",
 ]

@@ -24,6 +24,7 @@ PLATFORM_NAMESPACES = frozenset(
     }
 )
 MAX_PACKAGE_SIZE = 64 << 20
+QNAME_ATTRIBUTES = frozenset({"type", "ref", "base", "itemType", "memberTypes"})
 
 
 class XDTOReadError(ValueError):
@@ -154,6 +155,44 @@ def _qname(
     return namespaces.get(id(element), {}).get("", ""), value
 
 
+def _canonical_qname(value: str, scope: Mapping[str, str]) -> str:
+    value = value.strip()
+    if value.startswith("{") and "}" in value:
+        namespace, name = value[1:].split("}", 1)
+        return f"{{{namespace}}}{name}"
+    if ":" in value:
+        prefix, name = value.split(":", 1)
+        namespace = scope.get(prefix)
+        return f"{{{namespace}}}{name}" if namespace is not None else value
+    namespace = scope.get("")
+    return f"{{{namespace}}}{value}" if namespace is not None else value
+
+
+def semantic_package_bytes(payload: bytes) -> bytes:
+    """Канонизировать XML вместе со смыслом QName в значениях атрибутов."""
+    root, namespaces = _parse_with_namespaces(payload)
+    for element in root.iter():
+        scope = namespaces.get(id(element), {})
+        for attribute, raw in tuple(element.attrib.items()):
+            local_name = attribute.rsplit("}", 1)[-1]
+            if local_name not in QNAME_ATTRIBUTES:
+                continue
+            values = raw.split() if local_name == "memberTypes" else [raw]
+            element.set(
+                attribute,
+                " ".join(_canonical_qname(value, scope) for value in values),
+            )
+    try:
+        canonical = ET.canonicalize(
+            xml_data=ET.tostring(root, encoding="unicode"),
+            with_comments=False,
+            strip_text=True,
+        )
+    except (ET.ParseError, ValueError) as error:
+        raise XDTOReadError("XDTO package не является XML") from error
+    return canonical.encode("utf-8")
+
+
 def _reference(
     raw: str,
     element: ET.Element,
@@ -264,13 +303,7 @@ def member_details(
                 attribute[1:].split("}", 1)[0] if attribute.startswith("{") else ""
             )
             local_name = attribute.rsplit("}", 1)[-1]
-            if attribute_namespace or local_name not in {
-                "type",
-                "ref",
-                "base",
-                "itemType",
-                "memberTypes",
-            }:
+            if attribute_namespace or local_name not in QNAME_ATTRIBUTES:
                 continue
             values = raw.split() if local_name == "memberTypes" else [raw]
             references.extend(
@@ -314,13 +347,7 @@ def package_references(
                 attribute[1:].split("}", 1)[0] if attribute.startswith("{") else ""
             )
             local_name = attribute.rsplit("}", 1)[-1]
-            if attribute_namespace or local_name not in {
-                "type",
-                "ref",
-                "base",
-                "itemType",
-                "memberTypes",
-            }:
+            if attribute_namespace or local_name not in QNAME_ATTRIBUTES:
                 continue
             values = raw.split() if local_name == "memberTypes" else [raw]
             result.extend(
@@ -346,4 +373,5 @@ __all__ = [
     "member_details",
     "package_references",
     "read_package_member",
+    "semantic_package_bytes",
 ]

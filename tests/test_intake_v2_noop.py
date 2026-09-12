@@ -7,10 +7,42 @@ from dataclasses import replace
 import pytest
 from conftest import build_configuration, write_export
 from test_intake_v2_collector import _configuration
+from test_intake_v2_converter import _xdto_descriptor
 from mcp1c.registry import Registry
 from mcp1c.intake_v2_api import IntakeApiService
 from mcp1c.intake_v2 import ExportIdentity
 import mcp1c.intake_v2_operations as ops
+from mcp1c.tools import get_object
+
+
+def _xdto_qname_archive(reference_namespace):
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, 'w') as bundle:
+        bundle.writestr('Configuration.xml', _configuration('QNameUpdate'))
+        for name, namespace in [('First', 'urn:first'), ('Second', 'urn:second')]:
+            bundle.writestr(
+                f'XDTOPackages/{name}.xml',
+                _xdto_descriptor(name, namespace),
+            )
+            bundle.writestr(
+                f'XDTOPackages/{name}/Ext/Package.bin',
+                f'<package xmlns="http://v8.1c.ru/8.1/xdto" '
+                f'targetNamespace="{namespace}"><objectType name="Thing"/>'
+                '</package>',
+            )
+        bundle.writestr(
+            'XDTOPackages/Main.xml',
+            _xdto_descriptor('Main', 'urn:main'),
+        )
+        bundle.writestr(
+            'XDTOPackages/Main/Ext/Package.bin',
+            f'<package xmlns="http://v8.1c.ru/8.1/xdto" '
+            f'xmlns:t="{reference_namespace}" targetNamespace="urn:main">'
+            '<import namespace="urn:first"/><import namespace="urn:second"/>'
+            '<property name="Global" type="t:Thing"/></package>',
+        )
+    return stream.getvalue()
+
 
 @pytest.fixture(params=['directory', 'incoming', 'browser'])
 def world(tmp_path, request):
@@ -145,6 +177,110 @@ def test_unchanged_bytes_rewritten_can_be_prepared(world):
     w = d['prepare']()
     assert d['service'].job_payload(w.job_id)['preview']['no_op']
     assert d['service'].confirm(w.job_id)['commit']['no_op']
+
+
+def test_xdto_qname_namespace_не_теряется_в_noop_после_restart(tmp_path):
+    registry = Registry(tmp_path / 'data')
+    service = IntakeApiService.for_registry(registry, directory_settle_seconds=0)
+
+    def prepare(payload, action):
+        candidate = service.accept_upload(
+            'source.zip', io.BytesIO(payload), expected_size=len(payload)
+        )
+        work = service.start(candidate['id'], action)
+        service.prepare(work)
+        return work
+
+    initial_payload = _xdto_qname_archive('urn:first')
+    initial = prepare(initial_payload, 'create')
+    assert not service.job_payload(initial.job_id)['preview']['no_op']
+    assert not service.confirm(initial.job_id)['commit']['no_op']
+
+    changed_payload = _xdto_qname_archive('urn:second')
+    changed = prepare(changed_payload, 'update_full')
+    assert not service.job_payload(changed.job_id)['preview']['no_op']
+    assert not service.confirm(changed.job_id)['commit']['no_op']
+
+    restarted = Registry(registry.data_dir)
+    assert restarted.restore() == []
+    card = get_object(
+        restarted,
+        'ПакетXDTO.Main.Свойство.Global',
+        config='QNameUpdate',
+        detail='full',
+    )
+    assert 'ПакетXDTO.Second.ТипОбъекта.Thing' in card
+    assert 'ПакетXDTO.First.ТипОбъекта.Thing' not in card
+
+    restarted_service = IntakeApiService.for_registry(
+        restarted, directory_settle_seconds=0
+    )
+    candidate = restarted_service.accept_upload(
+        'source.zip',
+        io.BytesIO(changed_payload),
+        expected_size=len(changed_payload),
+    )
+    repeated = restarted_service.start(candidate['id'], 'update_full')
+    restarted_service.prepare(repeated)
+    assert restarted_service.job_payload(repeated.job_id)['preview']['no_op']
+    assert restarted_service.confirm(repeated.job_id)['commit']['no_op']
+
+
+def test_xdto_старое_поколение_читается_и_требует_явный_reparse(
+    tmp_path, monkeypatch
+):
+    from mcp1c import intake_v2_generation
+
+    payload = _xdto_qname_archive('urn:first')
+    registry = Registry(tmp_path / 'data')
+    with monkeypatch.context() as legacy:
+        legacy.setattr(
+            intake_v2_generation,
+            'GENERATION_PARSER_VERSION',
+            intake_v2_generation.GENERATION_PARSER_VERSION - 1,
+        )
+        service = IntakeApiService.for_registry(
+            registry, directory_settle_seconds=0
+        )
+        candidate = service.accept_upload(
+            'source.zip', io.BytesIO(payload), expected_size=len(payload)
+        )
+        initial = service.start(candidate['id'], 'create')
+        service.prepare(initial)
+        assert not service.confirm(initial.job_id)['commit']['no_op']
+
+    restarted = Registry(registry.data_dir)
+    assert restarted.restore() == []
+    assert 'ПакетXDTO.First.ТипОбъекта.Thing' in get_object(
+        restarted,
+        'ПакетXDTO.Main.Свойство.Global',
+        config='QNameUpdate',
+        detail='full',
+    )
+
+    calls = []
+    collect = ops.collect_source_b
+
+    def tracked_collect(*args, **kwargs):
+        calls.append(1)
+        return collect(*args, **kwargs)
+
+    monkeypatch.setattr(ops, 'collect_source_b', tracked_collect)
+    service = IntakeApiService.for_registry(restarted, directory_settle_seconds=0)
+    candidate = service.accept_upload(
+        'source.zip', io.BytesIO(payload), expected_size=len(payload)
+    )
+    update = service.start(candidate['id'], 'update_full')
+    service.prepare(update)
+
+    assert calls
+    assert not service.job_payload(update.job_id)['preview']['no_op']
+    assert not service.confirm(update.job_id)['commit']['no_op']
+    manifest = restarted.active_generation(
+        ExportIdentity.configuration('QNameUpdate')
+    )
+    assert manifest is not None
+    assert manifest.parser_version == intake_v2_generation.GENERATION_PARSER_VERSION
 
 
 def test_reexport_keeps_previous_durable_probe(world):

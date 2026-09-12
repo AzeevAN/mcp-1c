@@ -38,7 +38,7 @@ from .intake_v2_collector import (
 from .model import Configuration, Field, MetadataObject, TabularPart
 from .intake_v2_extensions import ExtensionStructure as NativeExtensionStructure
 from .v8container import V8Container, V8ContainerError, V8ResourceLimitError
-from .xdto import XDTOReadError, package_references
+from .xdto import XDTOReadError, package_references, semantic_package_bytes
 
 
 _NS_MDCLASSES = "http://v8.1c.ru/8.3/MDClasses"
@@ -2800,15 +2800,11 @@ def _xdto_bool_attribute(
 
 def _xdto_content_sha256(payload: bytes, where: str) -> str:
     try:
-        canonical = ET.canonicalize(
-            from_file=io.BytesIO(payload),
-            with_comments=False,
-            strip_text=True,
-        )
-    except (ET.ParseError, ValueError) as error:
+        canonical = semantic_package_bytes(payload)
+    except XDTOReadError as error:
         raise ConversionError(f"{where}: Package.bin не является XML") from error
     return hashlib.sha256(
-        b"mcp1c-xdto-package-v1\0" + canonical.encode("utf-8")
+        b"mcp1c-xdto-package-v2\0" + canonical
     ).hexdigest()
 
 

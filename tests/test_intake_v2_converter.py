@@ -1013,6 +1013,93 @@ def test_xdto_unknown_node_диагностируется_и_меняет_semant
     )
 
 
+@pytest.mark.parametrize(
+    ("attribute", "before", "after"),
+    [
+        ("type", "t:Thing", "t:Thing"),
+        ("base", "t:Thing", "t:Thing"),
+        ("ref", "t:Thing", "t:Thing"),
+        ("itemType", "t:Thing", "t:Thing"),
+        ("memberTypes", "t:Thing xs:string", "t:Thing xs:string"),
+        ("type", "Thing", "Thing"),
+    ],
+)
+def test_xdto_semantic_hash_учитывает_namespace_qname(
+    attribute, before, after
+):
+    content_sha256 = _symbol("_xdto_content_sha256")
+    if ":" in before:
+        first_declaration = 'xmlns:t="urn:first" xmlns:xs="http://www.w3.org/2001/XMLSchema"'
+        second_declaration = 'xmlns:t="urn:second" xmlns:xs="http://www.w3.org/2001/XMLSchema"'
+        tag = "property"
+    else:
+        first_declaration = 'xmlns:xdto="http://v8.1c.ru/8.1/xdto"'
+        second_declaration = first_declaration
+        tag = "xdto:property"
+    first_local_default = ' xmlns="urn:first"' if ":" not in before else ""
+    second_local_default = ' xmlns="urn:second"' if ":" not in after else ""
+    first = (
+        '<package xmlns="http://v8.1c.ru/8.1/xdto" '
+        f'{first_declaration} targetNamespace="urn:main">'
+        f'<{tag}{first_local_default} name="Value" {attribute}="{before}"/>'
+        "</package>"
+    ).encode()
+    second = (
+        '<package xmlns="http://v8.1c.ru/8.1/xdto" '
+        f'{second_declaration} targetNamespace="urn:main">'
+        f'<{tag}{second_local_default} name="Value" {attribute}="{after}"/>'
+        "</package>"
+    ).encode()
+
+    assert content_sha256(first, "first") != content_sha256(second, "second")
+
+
+def test_xdto_semantic_hash_нормализует_эквивалентные_qname():
+    content_sha256 = _symbol("_xdto_content_sha256")
+    prefixed = (
+        '<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:a="urn:type" '
+        'targetNamespace="urn:main"><property name="Value" type="a:Thing"/>'
+        "</package>"
+    ).encode()
+    renamed = prefixed.replace(b'xmlns:a="urn:type"', b'xmlns:b="urn:type"').replace(
+        b'type="a:Thing"', b'type="b:Thing"'
+    )
+    clark = prefixed.replace(b'type="a:Thing"', b'type="{urn:type}Thing"')
+
+    digest = content_sha256(prefixed, "prefixed")
+    assert content_sha256(renamed, "renamed") == digest
+    assert content_sha256(clark, "clark") == digest
+
+
+def test_xdto_semantic_hash_учитывает_qname_в_namespaced_атрибуте():
+    content_sha256 = _symbol("_xdto_content_sha256")
+    template = (
+        '<package xmlns="http://v8.1c.ru/8.1/xdto" '
+        'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+        'xmlns:t="{namespace}" targetNamespace="urn:main">'
+        '<property name="Value" xsi:type="t:Thing"/></package>'
+    )
+
+    first = template.format(namespace="urn:first").encode()
+    second = template.format(namespace="urn:second").encode()
+
+    assert content_sha256(first, "first") != content_sha256(second, "second")
+
+
+def test_xdto_semantic_hash_учитывает_локальное_переопределение_prefix():
+    content_sha256 = _symbol("_xdto_content_sha256")
+    template = (
+        '<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:t="urn:root" '
+        'targetNamespace="urn:main"><property xmlns:t="{namespace}" '
+        'name="Value" type="t:Thing"/></package>'
+    )
+
+    first = template.format(namespace="urn:first").encode()
+    second = template.format(namespace="urn:second").encode()
+
+    assert content_sha256(first, "first") != content_sha256(second, "second")
+
+
 def test_xdto_не_выдумывает_отсутствующие_qualified_свойства(tmp_path):
     convert_collection = _symbol("convert_collection")
     result = convert_collection(

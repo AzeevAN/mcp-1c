@@ -20,7 +20,13 @@ from .models import (
 MAX_FORM_XML_BYTES = 2 * 1024 * 1024
 _LOGFORM = "http://v8.1c.ru/8.3/xcf/logform"
 _V8 = "http://v8.1c.ru/8.1/data/core"
+_XR = "http://v8.1c.ru/8.3/xcf/readable"
+_XSI = "http://www.w3.org/2001/XMLSchema-instance"
 _IDENTIFIER = re.compile(r"[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*\Z")
+_DATA_PATH = re.compile(
+    r"[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*"
+    r"(?:\.[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*)*\Z"
+)
 _FORBIDDEN_DOCTYPE = re.compile(r"<!\s*DOCTYPE\b", re.IGNORECASE)
 _FORBIDDEN_ENTITY = re.compile(r"<!\s*ENTITY\b", re.IGNORECASE)
 _SINGLETON_TAGS = frozenset(
@@ -39,11 +45,26 @@ _SINGLETON_TAGS = frozenset(
         "ContextMenu",
         "Type",
         "StringQualifiers",
+        "NumberQualifiers",
+        "DateQualifiers",
         "Length",
         "AllowedLength",
+        "Digits",
+        "FractionDigits",
+        "AllowedSign",
+        "DateFractions",
         "DefaultButton",
         "CommandName",
         "DataPath",
+        "MultiLine",
+        "ReadOnly",
+        "ListChoiceMode",
+        "ChoiceList",
+        "Presentation",
+        "Value",
+        "CheckState",
+        "PagesRepresentation",
+        "AdditionSource",
         "ToolTip",
         "Action",
         "lang",
@@ -290,6 +311,93 @@ def _companion(
         _subset_attribute(inventory, node, "id")
 
 
+def _optional_true(
+    inventory: _Inventory,
+    parent: ET.Element,
+    local: str,
+) -> bool:
+    matches = [child for child in parent if child.tag == _q(local)]
+    if not matches:
+        return False
+    node = matches[0]
+    inventory.mark(node)
+    if len(matches) > 1 or _text(node) not in {"true", "false"}:
+        inventory.issue(
+            "unsupported_xml_value",
+            inventory.paths[id(node)],
+            f"{local} должен быть true либо false.",
+            status="unsupported",
+        )
+    return _text(node) == "true"
+
+
+def _choice_list(
+    inventory: _Inventory,
+    parent: ET.Element,
+) -> list[dict[str, object]]:
+    containers = [child for child in parent if child.tag == _q("ChoiceList")]
+    if not containers:
+        return []
+    container = containers[0]
+    inventory.mark(container)
+    if len(containers) > 1:
+        inventory.issue(
+            "repeated_xml_node",
+            f"{inventory.paths[id(parent)]}/ChoiceList",
+            "ChoiceList повторяется.",
+            status="unsupported",
+        )
+    result: list[dict[str, object]] = []
+    for node in container:
+        if node.tag != _q("Item", _XR):
+            continue
+        inventory.mark(node)
+        presentation_stub = inventory.required_child(
+            node, "Presentation", namespace=_XR
+        )
+        check = inventory.required_child(node, "CheckState", namespace=_XR)
+        value_container = inventory.required_child(node, "Value", namespace=_XR)
+        if presentation_stub is not None:
+            inventory.mark(presentation_stub)
+        if check is not None:
+            inventory.mark(check)
+            if _text(check) != "0":
+                inventory.issue(
+                    "unsupported_choice_check_state",
+                    inventory.paths[id(check)],
+                    "Поддерживается CheckState=0.",
+                    status="unsupported",
+                )
+        if value_container is None:
+            continue
+        xsi_type = _q("type", _XSI)
+        inventory.mark(value_container, xsi_type)
+        if value_container.get(xsi_type) != "FormChoiceListDesTimeValue":
+            inventory.issue(
+                "unsupported_choice_value_type",
+                inventory.paths[id(value_container)],
+                "Поддерживается FormChoiceListDesTimeValue.",
+                status="unsupported",
+            )
+        presentation = _localized(
+            inventory, value_container, "Presentation"
+        )
+        value = inventory.required_child(value_container, "Value")
+        if value is not None:
+            inventory.mark(value, xsi_type)
+            if value.get(xsi_type) != "xs:string":
+                inventory.issue(
+                    "unsupported_choice_scalar_type",
+                    inventory.paths[id(value)],
+                    "Базовый ChoiceList поддерживает строковые значения.",
+                    status="unsupported",
+                )
+        result.append(
+            {"value": _text(value), "presentation": presentation}
+        )
+    return result
+
+
 def _input_field(inventory: _Inventory, node: ET.Element) -> dict[str, object]:
     inventory.mark(node, "name", "id")
     item: dict[str, object] = {
@@ -301,7 +409,7 @@ def _input_field(inventory: _Inventory, node: ET.Element) -> dict[str, object]:
     if data_path is not None:
         inventory.mark(data_path)
     item["data_path"] = _text(data_path)
-    if not _IDENTIFIER.fullmatch(_text(data_path)):
+    if not _DATA_PATH.fullmatch(_text(data_path)):
         inventory.issue(
             "unsupported_data_path",
             inventory.paths[id(data_path)] if data_path is not None else inventory.paths[id(node)],
@@ -311,6 +419,15 @@ def _input_field(inventory: _Inventory, node: ET.Element) -> dict[str, object]:
     title = _optional_localized(inventory, node, "Title")
     if title is not None:
         item["title"] = title
+    if _optional_true(inventory, node, "MultiLine"):
+        item["multiline"] = True
+    if _optional_true(inventory, node, "ReadOnly"):
+        item["read_only"] = True
+    if _optional_true(inventory, node, "ListChoiceMode"):
+        item["list_choice_mode"] = True
+    choices = _choice_list(inventory, node)
+    if choices:
+        item["choice_list"] = choices
     _companion(inventory, node, "ContextMenu")
     _companion(inventory, node, "ExtendedTooltip")
     return item
@@ -359,38 +476,344 @@ def _button(inventory: _Inventory, node: ET.Element) -> dict[str, object]:
     return item
 
 
+def _children(
+    inventory: _Inventory, parent: ET.Element
+) -> list[dict[str, object]]:
+    container = inventory.required_child(parent, "ChildItems")
+    if container is None:
+        return []
+    inventory.mark(container)
+    result: list[dict[str, object]] = []
+    for node in container:
+        item = _element(inventory, node)
+        if item is not None:
+            result.append(item)
+    return result
+
+
+def _group(inventory: _Inventory, node: ET.Element) -> dict[str, object]:
+    inventory.mark(node, "name", "id")
+    result: dict[str, object] = {
+        "kind": "usual_group",
+        "name": _attribute_value(inventory, node, "name"),
+        "title": _localized(inventory, node, "Title"),
+    }
+    _subset_attribute(inventory, node, "id")
+    _service_node(inventory, node, "Group", "Vertical")
+    _service_node(inventory, node, "Behavior", "Usual")
+    _service_node(inventory, node, "Representation", "NormalSeparation")
+    _service_node(inventory, node, "ShowTitle", "true")
+    _companion(inventory, node, "ExtendedTooltip")
+    result["children"] = _children(inventory, node)
+    return result
+
+
+def _page(inventory: _Inventory, node: ET.Element) -> dict[str, object]:
+    inventory.mark(node, "name", "id")
+    result: dict[str, object] = {
+        "name": _attribute_value(inventory, node, "name"),
+        "title": _localized(inventory, node, "Title"),
+    }
+    _subset_attribute(inventory, node, "id")
+    _companion(inventory, node, "ExtendedTooltip")
+    result["children"] = _children(inventory, node)
+    return result
+
+
+def _pages(inventory: _Inventory, node: ET.Element) -> dict[str, object]:
+    inventory.mark(node, "name", "id")
+    result: dict[str, object] = {
+        "kind": "pages",
+        "name": _attribute_value(inventory, node, "name"),
+        "title": _localized(inventory, node, "Title"),
+        "representation": "tabs_on_top",
+    }
+    _subset_attribute(inventory, node, "id")
+    _service_node(inventory, node, "PagesRepresentation", "TabsOnTop")
+    _companion(inventory, node, "ExtendedTooltip")
+    container = inventory.required_child(node, "ChildItems")
+    pages: list[dict[str, object]] = []
+    if container is not None:
+        inventory.mark(container)
+        for child in container:
+            if child.tag == _q("Page"):
+                pages.append(_page(inventory, child))
+    result["pages"] = pages
+    return result
+
+
+def _addition(
+    inventory: _Inventory,
+    node: ET.Element,
+    *,
+    expected_type: str,
+    expected_item: str,
+) -> None:
+    inventory.mark(node, "name", "id")
+    _subset_attribute(inventory, node, "name")
+    _subset_attribute(inventory, node, "id")
+    source = inventory.required_child(node, "AdditionSource")
+    if source is not None:
+        inventory.mark(source)
+        item = inventory.required_child(source, "Item")
+        type_node = inventory.required_child(source, "Type")
+        if item is not None:
+            inventory.mark(item)
+            if _text(item) != expected_item:
+                inventory.issue(
+                    "unsupported_addition_source",
+                    inventory.paths[id(item)],
+                    "AdditionSource ссылается не на свою таблицу.",
+                    status="unsupported",
+                )
+        if type_node is not None:
+            inventory.mark(type_node)
+            if _text(type_node) != expected_type:
+                inventory.issue(
+                    "unsupported_addition_type",
+                    inventory.paths[id(type_node)],
+                    "Неподдержанный тип AdditionSource.",
+                    status="unsupported",
+                )
+    _companion(inventory, node, "ContextMenu")
+    _companion(inventory, node, "ExtendedTooltip")
+
+
+def _table(inventory: _Inventory, node: ET.Element) -> dict[str, object]:
+    inventory.mark(node, "name", "id")
+    name = _attribute_value(inventory, node, "name")
+    result: dict[str, object] = {
+        "kind": "table",
+        "name": name,
+    }
+    _subset_attribute(inventory, node, "id")
+    _service_node(inventory, node, "Representation", "List")
+    if _optional_true(inventory, node, "ReadOnly"):
+        result["read_only"] = True
+    data_path = inventory.required_child(node, "DataPath")
+    if data_path is not None:
+        inventory.mark(data_path)
+    result["data_path"] = _text(data_path)
+    title = _optional_localized(inventory, node, "Title")
+    if title is not None:
+        result["title"] = title
+    _companion(inventory, node, "ContextMenu")
+    _companion(inventory, node, "AutoCommandBar")
+    _companion(inventory, node, "ExtendedTooltip")
+    additions = (
+        ("SearchStringAddition", "SearchStringRepresentation"),
+        ("ViewStatusAddition", "ViewStatusRepresentation"),
+        ("SearchControlAddition", "SearchControl"),
+    )
+    for tag, expected_type in additions:
+        addition = inventory.required_child(node, tag)
+        if addition is not None:
+            _addition(
+                inventory,
+                addition,
+                expected_type=expected_type,
+                expected_item=name,
+            )
+    container = inventory.required_child(node, "ChildItems")
+    columns: list[dict[str, object]] = []
+    if container is not None:
+        inventory.mark(container)
+        for child in container:
+            if child.tag == _q("InputField"):
+                columns.append(_input_field(inventory, child))
+    result["columns"] = columns
+    return result
+
+
+def _element(
+    inventory: _Inventory, node: ET.Element
+) -> dict[str, object] | None:
+    if node.tag == _q("InputField"):
+        return _input_field(inventory, node)
+    if node.tag == _q("Button"):
+        return _button(inventory, node)
+    if node.tag == _q("UsualGroup"):
+        return _group(inventory, node)
+    if node.tag == _q("Pages"):
+        return _pages(inventory, node)
+    if node.tag == _q("Table"):
+        return _table(inventory, node)
+    return None
+
+
 def _elements(inventory: _Inventory, root: ET.Element) -> list[dict[str, object]]:
     container = inventory.optional_container(root, "ChildItems")
     if container is None:
         return []
-    groups: list[dict[str, object]] = []
+    result: list[dict[str, object]] = []
     for node in container:
-        if node.tag != _q("UsualGroup"):
-            continue
-        inventory.mark(node, "name", "id")
-        group: dict[str, object] = {
-            "kind": "usual_group",
-            "name": _attribute_value(inventory, node, "name"),
-            "title": _localized(inventory, node, "Title"),
+        item = _element(inventory, node)
+        if item is not None:
+            result.append(item)
+    return result
+
+
+def _integer_text(
+    inventory: _Inventory,
+    parent: ET.Element,
+    local: str,
+    *,
+    namespace: str = _V8,
+) -> int:
+    node = inventory.required_child(parent, local, namespace=namespace)
+    if node is None:
+        return 0
+    inventory.mark(node)
+    try:
+        return int(_text(node))
+    except ValueError:
+        inventory.issue(
+            "invalid_integer",
+            inventory.paths[id(node)],
+            f"{local} должен быть целым числом.",
+            status="failed",
+        )
+        return 0
+
+
+def _type(
+    inventory: _Inventory,
+    parent: ET.Element,
+    *,
+    allow_value_table: bool,
+) -> dict[str, object] | None:
+    container = inventory.required_child(parent, "Type")
+    if container is None:
+        inventory.issue(
+            "attribute_type_not_representable",
+            f"{inventory.paths[id(parent)]}/Type",
+            "Тип реквизита отсутствует или задан вне поддержанного Type.",
+            status="unsupported",
+        )
+        return None
+    inventory.mark(container)
+    type_name = inventory.required_child(container, "Type", namespace=_V8)
+    if type_name is None:
+        return None
+    inventory.mark(type_name)
+    name = _text(type_name)
+    if name == "xs:string":
+        qualifiers = inventory.required_child(
+            container, "StringQualifiers", namespace=_V8
+        )
+        if qualifiers is None:
+            return None
+        inventory.mark(qualifiers)
+        length = _integer_text(inventory, qualifiers, "Length")
+        allowed = inventory.required_child(
+            qualifiers, "AllowedLength", namespace=_V8
+        )
+        if allowed is not None:
+            inventory.mark(allowed)
+            if _text(allowed) != "Variable":
+                inventory.issue(
+                    "unsupported_allowed_length",
+                    inventory.paths[id(allowed)],
+                    "Поддерживается переменная длина строки.",
+                    status="unsupported",
+                )
+        return {"kind": "string", "length": length}
+    if name == "xs:boolean":
+        return {"kind": "boolean"}
+    if name == "xs:decimal":
+        qualifiers = inventory.required_child(
+            container, "NumberQualifiers", namespace=_V8
+        )
+        if qualifiers is None:
+            return None
+        inventory.mark(qualifiers)
+        digits = _integer_text(inventory, qualifiers, "Digits")
+        fractions = _integer_text(inventory, qualifiers, "FractionDigits")
+        sign = inventory.required_child(
+            qualifiers, "AllowedSign", namespace=_V8
+        )
+        if sign is not None:
+            inventory.mark(sign)
+        sign_value = {
+            "Any": "any",
+            "Nonnegative": "nonnegative",
+        }.get(_text(sign))
+        if sign_value is None:
+            inventory.issue(
+                "unsupported_allowed_sign",
+                (
+                    inventory.paths[id(sign)]
+                    if sign is not None
+                    else inventory.paths[id(qualifiers)]
+                ),
+                "Неподдержанное ограничение знака числа.",
+                status="unsupported",
+            )
+            sign_value = "any"
+        return {
+            "kind": "number",
+            "digits": digits,
+            "fraction_digits": fractions,
+            "allowed_sign": sign_value,
         }
-        _subset_attribute(inventory, node, "id")
-        _service_node(inventory, node, "Group", "Vertical")
-        _service_node(inventory, node, "Behavior", "Usual")
-        _service_node(inventory, node, "Representation", "NormalSeparation")
-        _service_node(inventory, node, "ShowTitle", "true")
-        _companion(inventory, node, "ExtendedTooltip")
-        children_node = inventory.required_child(node, "ChildItems")
-        children: list[dict[str, object]] = []
-        if children_node is not None:
-            inventory.mark(children_node)
-            for child in children_node:
-                if child.tag == _q("InputField"):
-                    children.append(_input_field(inventory, child))
-                elif child.tag == _q("Button"):
-                    children.append(_button(inventory, child))
-        group["children"] = children
-        groups.append(group)
-    return groups
+    if name == "xs:dateTime":
+        qualifiers = inventory.required_child(
+            container, "DateQualifiers", namespace=_V8
+        )
+        if qualifiers is None:
+            return None
+        inventory.mark(qualifiers)
+        fractions = inventory.required_child(
+            qualifiers, "DateFractions", namespace=_V8
+        )
+        if fractions is not None:
+            inventory.mark(fractions)
+        value = {"Date": "date", "DateTime": "date_time"}.get(
+            _text(fractions)
+        )
+        if value is None:
+            inventory.issue(
+                "unsupported_date_fractions",
+                (
+                    inventory.paths[id(fractions)]
+                    if fractions is not None
+                    else inventory.paths[id(qualifiers)]
+                ),
+                "Неподдержанная точность даты.",
+                status="unsupported",
+            )
+            value = "date_time"
+        return {"kind": "date", "fractions": value}
+    if name == "v8:ValueTable" and allow_value_table:
+        columns_node = inventory.required_child(parent, "Columns")
+        columns: list[dict[str, object]] = []
+        if columns_node is not None:
+            inventory.mark(columns_node)
+            for column in columns_node:
+                if column.tag != _q("Column"):
+                    continue
+                inventory.mark(column, "name", "id")
+                item: dict[str, object] = {
+                    "name": _attribute_value(inventory, column, "name"),
+                }
+                _subset_attribute(inventory, column, "id")
+                title = _optional_localized(inventory, column, "Title")
+                if title is not None:
+                    item["title"] = title
+                column_type = _type(
+                    inventory, column, allow_value_table=False
+                )
+                if column_type is not None:
+                    item["type"] = column_type
+                columns.append(item)
+        return {"kind": "value_table", "columns": columns}
+    inventory.issue(
+        "unsupported_attribute_type",
+        inventory.paths[id(type_name)],
+        f"Тип {name or '<пусто>'} сохранён только в inventory.",
+        status="unsupported",
+    )
+    return None
 
 
 def _attributes(inventory: _Inventory, root: ET.Element) -> list[dict[str, object]]:
@@ -409,93 +832,11 @@ def _attributes(inventory: _Inventory, root: ET.Element) -> list[dict[str, objec
         title = _optional_localized(inventory, node, "Title")
         if title is not None:
             item["title"] = title
-        type_nodes = [child for child in node if child.tag == _q("Type")]
-        type_node = type_nodes[0] if type_nodes else None
-        supported_type = type_node is not None and len(type_nodes) == 1
-        length = 0
-        if type_node is None:
-            inventory.issue(
-                "attribute_type_not_representable",
-                f"{inventory.paths[id(node)]}/Type",
-                "Тип реквизита отсутствует или задан вне поддержанного Type.",
-                status="unsupported",
-            )
-        else:
-            inventory.mark(type_node)
-            if len(type_nodes) > 1:
-                inventory.issue(
-                    "repeated_xml_node",
-                    f"{inventory.paths[id(node)]}/Type",
-                    "XML-узел Type повторяется.",
-                    status="unsupported",
-                )
-            type_name = inventory.required_child(type_node, "Type", namespace=_V8)
-            qualifiers = inventory.required_child(
-                type_node, "StringQualifiers", namespace=_V8
-            )
-            if type_name is not None:
-                inventory.mark(type_name)
-                if _text(type_name) != "xs:string":
-                    supported_type = False
-                    inventory.issue(
-                        "unsupported_attribute_type",
-                        inventory.paths[id(type_name)],
-                        "Первая вертикаль поддерживает только xs:string.",
-                        status="unsupported",
-                    )
-            else:
-                supported_type = False
-            if qualifiers is not None:
-                inventory.mark(qualifiers)
-                length_node = inventory.required_child(
-                    qualifiers, "Length", namespace=_V8
-                )
-                allowed = inventory.required_child(
-                    qualifiers, "AllowedLength", namespace=_V8
-                )
-                if length_node is not None:
-                    inventory.mark(length_node)
-                    try:
-                        length = int(_text(length_node))
-                    except ValueError:
-                        supported_type = False
-                        inventory.issue(
-                            "invalid_string_length",
-                            inventory.paths[id(length_node)],
-                            "Длина строки должна быть целым числом.",
-                            status="failed",
-                        )
-                else:
-                    supported_type = False
-                if allowed is not None:
-                    inventory.mark(allowed)
-                    if _text(allowed) != "Variable":
-                        supported_type = False
-                        inventory.issue(
-                            "unsupported_allowed_length",
-                            inventory.paths[id(allowed)],
-                            "Поддерживается только переменная длина строки.",
-                            status="unsupported",
-                        )
-                else:
-                    supported_type = False
-            else:
-                supported_type = False
-        if supported_type and length > 0:
-            item["type"] = {"kind": "string", "length": length}
-        main_nodes = [child for child in node if child.tag == _q("MainAttribute")]
-        if main_nodes:
-            main = main_nodes[0]
-            inventory.mark(main)
-            if len(main_nodes) > 1 or _text(main) not in {"true", "false"}:
-                inventory.issue(
-                    "unsupported_xml_value",
-                    inventory.paths[id(main)],
-                    "MainAttribute должен быть true либо false.",
-                    status="unsupported",
-                )
-            if _text(main) == "true":
-                item["main"] = True
+        value_type = _type(inventory, node, allow_value_table=True)
+        if value_type is not None:
+            item["type"] = value_type
+        if _optional_true(inventory, node, "MainAttribute"):
+            item["main"] = True
         result.append(item)
     return result
 

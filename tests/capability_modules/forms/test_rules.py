@@ -18,6 +18,7 @@ def test_темы_правил_закрыты_и_имеют_стабильный
         "specification",
         "elements",
         "attributes",
+        "layout",
         "commands_events",
         "diagnostics",
     )
@@ -72,8 +73,15 @@ def test_elements_описывают_только_принятые_kinds_и_comp
     payload = get_managed_form_rules("elements")
 
     assert payload["supported"] == {
-        "root": ["usual_group"],
-        "group_children": ["input_field", "button"],
+        "root": ["usual_group", "input_field", "button", "pages", "table"],
+        "recursive_children": [
+            "usual_group",
+            "input_field",
+            "button",
+            "pages",
+            "table",
+        ],
+        "page_representations": ["tabs_on_top"],
     }
     by_code = {rule["code"]: rule for rule in payload["rules"]}
     assert by_code["input_field_companions"]["value"] == [
@@ -81,6 +89,15 @@ def test_elements_описывают_только_принятые_kinds_и_comp
         "ExtendedTooltip",
     ]
     assert by_code["button_companions"]["value"] == ["ExtendedTooltip"]
+
+
+def test_layout_оставляет_смысловое_решение_агенту_а_compiler_его_сохраняет():
+    payload = get_managed_form_rules("layout")
+    by_code = {rule["code"]: rule for rule in payload["rules"]}
+
+    assert by_code["agent_owns_semantic_layout"]["status"] == "required"
+    assert by_code["compiler_preserves_layout"]["status"] == "required"
+    assert payload["example"]["tree"][1].startswith("pages:")
 
 
 def test_events_не_обобщают_сигнатуры_вне_первой_вертикали():

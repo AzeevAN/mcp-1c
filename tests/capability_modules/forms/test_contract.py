@@ -15,10 +15,15 @@ from mcp1c.capability_modules.forms.models import (
 
 
 FIXTURE = Path(__file__).with_name("fixtures") / "minimal_form.json"
+RICH_FIXTURE = Path(__file__).with_name("fixtures") / "file_import_form.json"
 
 
 def _payload() -> dict:
     return json.loads(FIXTURE.read_text(encoding="utf-8"))
+
+
+def _rich_payload() -> dict:
+    return json.loads(RICH_FIXTURE.read_text(encoding="utf-8"))
 
 
 def _codes(error: FormsContractError) -> set[tuple[str, str]]:
@@ -37,6 +42,43 @@ def test_минимальная_спецификация_разбирается_
     ]
     assert form.elements[0].children[2].command == "Проверить"
     assert form.events[0].event == "OnCreateAtServer"
+
+
+def test_спецификация_импорта_поддерживает_типы_страницы_таблицу_и_выбор():
+    form = parse_managed_form_spec(_rich_payload())
+
+    assert [item.type.kind for item in form.attributes[3:7]] == [
+        "string",
+        "string",
+        "boolean",
+        "number",
+    ]
+    assert form.attributes[12].type.kind == "date"
+    assert form.attributes[13].type.kind == "value_table"
+    pages = form.elements[0].children[4]
+    assert pages.kind == "pages"
+    assert [page.name for page in pages.pages] == [
+        "СтраницаДанные",
+        "СтраницаПредпросмотр",
+        "СтраницаНастройки",
+    ]
+    assert len(pages.pages[0].children[0].columns) == 10
+    assert form.elements[0].children[1].choice_list[2].value == "XLSX"
+
+
+def test_таблица_отклоняет_путь_к_необъявленной_колонке():
+    payload = _rich_payload()
+    payload["elements"][0]["children"][4]["pages"][0]["children"][0][
+        "columns"
+    ][0]["data_path"] = "ТаблицаДанных.Неизвестная"
+
+    with pytest.raises(FormsContractError) as caught:
+        parse_managed_form_spec(payload)
+
+    assert (
+        "unresolved_table_column",
+        "$.elements[0].children[4].pages[0].children[0].columns[0].data_path",
+    ) in _codes(caught.value)
 
 
 def test_typed_dict_даёт_mcp_точную_вложенную_json_schema():
@@ -80,7 +122,7 @@ def test_typed_dict_даёт_mcp_точную_вложенную_json_schema():
         ),
         (
             lambda value: value["elements"][0]["children"][0].update(
-                {"kind": "table"}
+                {"kind": "calendar_field"}
             ),
             ("unsupported_element_kind", "$.elements[0].children[0].kind"),
         ),
@@ -92,7 +134,7 @@ def test_typed_dict_даёт_mcp_точную_вложенную_json_schema():
         ),
         (
             lambda value: value["attributes"][0]["type"].update(
-                {"kind": "boolean"}
+                {"kind": "uuid"}
             ),
             ("unsupported_attribute_type", "$.attributes[0].type.kind"),
         ),

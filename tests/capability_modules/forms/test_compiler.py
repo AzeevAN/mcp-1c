@@ -20,6 +20,12 @@ def _payload() -> dict:
     return json.loads((FIXTURES / "minimal_form.json").read_text(encoding="utf-8"))
 
 
+def _rich_payload() -> dict:
+    return json.loads(
+        (FIXTURES / "file_import_form.json").read_text(encoding="utf-8")
+    )
+
+
 def _expected(name: str) -> str:
     # Git хранит fixtures с LF, а Конфигуратор во всём доказательном корпусе
     # выгружает текстовые артефакты с CRLF.
@@ -42,6 +48,24 @@ def test_compiler_byte_deterministic_и_совпадает_с_обезличен
     assert artifacts[
         "Forms/ФормаПараметров/Ext/Form/Module.bsl"
     ].content == _expected("minimal_module.bsl")
+
+
+def test_compiler_создаёт_богатую_форму_импорта_детерминированно():
+    first = compile_managed_form(_rich_payload())
+    second = compile_managed_form(_rich_payload())
+
+    assert first.to_dict() == second.to_dict()
+    root = ET.fromstring(first.artifacts[0].content)
+    q = lambda name: f"{{{LOGFORM}}}{name}"
+    assert len(list(root.iter(q("Pages")))) == 1
+    assert len(list(root.iter(q("Page")))) == 3
+    assert len(list(root.iter(q("Table")))) == 1
+    assert len(list(root.iter(q("ChoiceList")))) == 3
+    assert len(list(root.iter(q("Column")))) == 10
+    assert any((node.text or "") == "xs:boolean" for node in root.iter())
+    assert any((node.text or "") == "xs:decimal" for node in root.iter())
+    assert any((node.text or "") == "xs:dateTime" for node in root.iter())
+    assert any((node.text or "") == "v8:ValueTable" for node in root.iter())
 
 
 def test_кодирование_даёт_utf8_bom_crlf_и_валидный_logform_xml():

@@ -1,0 +1,219 @@
+{
+  "schema_version": 1,
+  "form_name": "ФормаИмпортаФайла",
+  "format_version": "2.16",
+  "title": {
+    "ru": "Импорт данных из файла"
+  },
+  "attributes": [
+    {
+      "name": "ПутьКФайлу",
+      "type": {"kind": "string", "length": 1024},
+      "title": {"ru": "Путь к файлу"}
+    },
+    {
+      "name": "ФорматФайла",
+      "type": {"kind": "string", "length": 20},
+      "title": {"ru": "Формат файла"}
+    },
+    {
+      "name": "Предпросмотр",
+      "type": {"kind": "string", "length": 0},
+      "title": {"ru": "Предпросмотр"}
+    },
+    {
+      "name": "Кодировка",
+      "type": {"kind": "string", "length": 20},
+      "title": {"ru": "Кодировка"}
+    },
+    {
+      "name": "Разделитель",
+      "type": {"kind": "string", "length": 1},
+      "title": {"ru": "Разделитель колонок"}
+    },
+    {
+      "name": "ПерваяСтрокаЗаголовок",
+      "type": {"kind": "boolean"},
+      "title": {"ru": "Первая строка содержит заголовки"}
+    },
+    {
+      "name": "ПропуститьСтрок",
+      "type": {
+        "kind": "number",
+        "digits": 4,
+        "fraction_digits": 0,
+        "allowed_sign": "nonnegative"
+      },
+      "title": {"ru": "Пропустить строк"}
+    },
+    {
+      "name": "МаксимумСтрок",
+      "type": {
+        "kind": "number",
+        "digits": 6,
+        "fraction_digits": 0,
+        "allowed_sign": "nonnegative"
+      },
+      "title": {"ru": "Максимум строк"}
+    },
+    {
+      "name": "УдалятьПробелы",
+      "type": {"kind": "boolean"},
+      "title": {"ru": "Удалять пробелы по краям"}
+    },
+    {
+      "name": "СимволКавычки",
+      "type": {"kind": "string", "length": 1},
+      "title": {"ru": "Символ кавычки"}
+    },
+    {
+      "name": "ФорматДаты",
+      "type": {"kind": "string", "length": 50},
+      "title": {"ru": "Формат даты"}
+    },
+    {
+      "name": "РазделительДробнойЧасти",
+      "type": {"kind": "string", "length": 1},
+      "title": {"ru": "Разделитель дробной части"}
+    },
+    {
+      "name": "ДатаИмпорта",
+      "type": {"kind": "date", "fractions": "date_time"},
+      "title": {"ru": "Дата импорта"}
+    },
+    {
+      "name": "ТаблицаДанных",
+      "type": {
+        "kind": "value_table",
+        "columns": [
+          {"name": "Колонка1", "title": {"ru": "Колонка 1"}, "type": {"kind": "string", "length": 0}},
+          {"name": "Колонка2", "title": {"ru": "Колонка 2"}, "type": {"kind": "string", "length": 0}},
+          {"name": "Колонка3", "title": {"ru": "Колонка 3"}, "type": {"kind": "string", "length": 0}},
+          {"name": "Колонка4", "title": {"ru": "Колонка 4"}, "type": {"kind": "string", "length": 0}},
+          {"name": "Колонка5", "title": {"ru": "Колонка 5"}, "type": {"kind": "string", "length": 0}},
+          {"name": "Колонка6", "title": {"ru": "Колонка 6"}, "type": {"kind": "string", "length": 0}},
+          {"name": "Колонка7", "title": {"ru": "Колонка 7"}, "type": {"kind": "string", "length": 0}},
+          {"name": "Колонка8", "title": {"ru": "Колонка 8"}, "type": {"kind": "string", "length": 0}},
+          {"name": "Колонка9", "title": {"ru": "Колонка 9"}, "type": {"kind": "string", "length": 0}},
+          {"name": "Колонка10", "title": {"ru": "Колонка 10"}, "type": {"kind": "string", "length": 0}}
+        ]
+      },
+      "title": {"ru": "Данные файла"}
+    }
+  ],
+  "elements": [
+    {
+      "kind": "usual_group",
+      "name": "ГруппаИмпорта",
+      "title": {"ru": "Параметры импорта"},
+      "children": [
+        {
+          "kind": "input_field",
+          "name": "ПутьКФайлуПоле",
+          "data_path": "ПутьКФайлу"
+        },
+        {
+          "kind": "input_field",
+          "name": "ФорматФайлаПоле",
+          "data_path": "ФорматФайла",
+          "list_choice_mode": true,
+          "choice_list": [
+            {"value": "CSV", "presentation": {"ru": "CSV"}},
+            {"value": "TXT", "presentation": {"ru": "TXT"}},
+            {"value": "XLSX", "presentation": {"ru": "Excel"}}
+          ]
+        },
+        {
+          "kind": "button",
+          "name": "ВыбратьФайлКнопка",
+          "command": "ВыбратьФайл"
+        },
+        {
+          "kind": "button",
+          "name": "ВыполнитьИмпортКнопка",
+          "command": "ВыполнитьИмпорт",
+          "default": true
+        },
+        {
+          "kind": "pages",
+          "name": "СтраницыРезультата",
+          "title": {"ru": "Результат"},
+          "representation": "tabs_on_top",
+          "pages": [
+            {
+              "name": "СтраницаДанные",
+              "title": {"ru": "Данные"},
+              "children": [
+                {
+                  "kind": "table",
+                  "name": "ТаблицаДанныхПоле",
+                  "data_path": "ТаблицаДанных",
+                  "read_only": true,
+                  "columns": [
+                    {"kind": "input_field", "name": "ТаблицаДанныхКолонка1", "data_path": "ТаблицаДанных.Колонка1"},
+                    {"kind": "input_field", "name": "ТаблицаДанныхКолонка2", "data_path": "ТаблицаДанных.Колонка2"},
+                    {"kind": "input_field", "name": "ТаблицаДанныхКолонка3", "data_path": "ТаблицаДанных.Колонка3"},
+                    {"kind": "input_field", "name": "ТаблицаДанныхКолонка4", "data_path": "ТаблицаДанных.Колонка4"},
+                    {"kind": "input_field", "name": "ТаблицаДанныхКолонка5", "data_path": "ТаблицаДанных.Колонка5"},
+                    {"kind": "input_field", "name": "ТаблицаДанныхКолонка6", "data_path": "ТаблицаДанных.Колонка6"},
+                    {"kind": "input_field", "name": "ТаблицаДанныхКолонка7", "data_path": "ТаблицаДанных.Колонка7"},
+                    {"kind": "input_field", "name": "ТаблицаДанныхКолонка8", "data_path": "ТаблицаДанных.Колонка8"},
+                    {"kind": "input_field", "name": "ТаблицаДанныхКолонка9", "data_path": "ТаблицаДанных.Колонка9"},
+                    {"kind": "input_field", "name": "ТаблицаДанныхКолонка10", "data_path": "ТаблицаДанных.Колонка10"}
+                  ]
+                }
+              ]
+            },
+            {
+              "name": "СтраницаПредпросмотр",
+              "title": {"ru": "Предпросмотр"},
+              "children": [
+                {
+                  "kind": "input_field",
+                  "name": "ПредпросмотрПоле",
+                  "data_path": "Предпросмотр",
+                  "multiline": true,
+                  "read_only": true
+                }
+              ]
+            },
+            {
+              "name": "СтраницаНастройки",
+              "title": {"ru": "Настройки"},
+              "children": [
+                {"kind": "input_field", "name": "КодировкаПоле", "data_path": "Кодировка", "list_choice_mode": true, "choice_list": [{"value": "UTF-8", "presentation": {"ru": "UTF-8"}}, {"value": "Windows-1251", "presentation": {"ru": "Windows-1251"}}]},
+                {"kind": "input_field", "name": "РазделительПоле", "data_path": "Разделитель"},
+                {"kind": "input_field", "name": "ПерваяСтрокаЗаголовокПоле", "data_path": "ПерваяСтрокаЗаголовок"},
+                {"kind": "input_field", "name": "ПропуститьСтрокПоле", "data_path": "ПропуститьСтрок"},
+                {"kind": "input_field", "name": "МаксимумСтрокПоле", "data_path": "МаксимумСтрок"},
+                {"kind": "input_field", "name": "УдалятьПробелыПоле", "data_path": "УдалятьПробелы"},
+                {"kind": "input_field", "name": "СимволКавычкиПоле", "data_path": "СимволКавычки"},
+                {"kind": "input_field", "name": "ФорматДатыПоле", "data_path": "ФорматДаты"},
+                {"kind": "input_field", "name": "РазделительДробнойЧастиПоле", "data_path": "РазделительДробнойЧасти", "list_choice_mode": true, "choice_list": [{"value": ".", "presentation": {"ru": "Точка"}}, {"value": ",", "presentation": {"ru": "Запятая"}}]},
+                {"kind": "input_field", "name": "ДатаИмпортаПоле", "data_path": "ДатаИмпорта"}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "commands": [
+    {
+      "name": "ВыбратьФайл",
+      "title": {"ru": "Выбрать файл"},
+      "action": "ВыбратьФайл"
+    },
+    {
+      "name": "ВыполнитьИмпорт",
+      "title": {"ru": "Выполнить"},
+      "action": "ВыполнитьИмпорт"
+    }
+  ],
+  "events": [
+    {
+      "event": "OnCreateAtServer",
+      "handler": "ПриСозданииНаСервере"
+    }
+  ]
+}

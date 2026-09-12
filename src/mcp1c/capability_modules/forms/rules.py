@@ -17,6 +17,7 @@ RuleTopic: TypeAlias = Literal[
     "specification",
     "elements",
     "attributes",
+    "layout",
     "commands_events",
     "diagnostics",
 ]
@@ -32,6 +33,7 @@ RULE_TOPICS: tuple[RuleTopic, ...] = (
     "specification",
     "elements",
     "attributes",
+    "layout",
     "commands_events",
     "diagnostics",
 )
@@ -126,17 +128,17 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
     ),
     "elements": (
         FormRule(
-            "root_usual_group",
+            "recursive_element_tree",
             "supported",
-            "На верхнем уровне первой вертикали поддержан usual_group.",
+            "Элементы образуют явное рекурсивное дерево; compiler сохраняет заданный агентом порядок.",
             "observed_pattern",
         ),
         FormRule(
-            "group_children",
+            "supported_basic_elements",
             "supported",
-            "Внутри группы поддержаны input_field и button.",
+            "Базовый authoring-слой поддерживает группы, поля, кнопки, страницы и таблицы.",
             "observed_pattern",
-            ["input_field", "button"],
+            ["usual_group", "input_field", "button", "pages", "table"],
         ),
         FormRule(
             "input_field_companions",
@@ -159,19 +161,33 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
             "corpus_invariant",
         ),
         FormRule(
-            "other_elements_unsupported",
+            "table_companions",
+            "required",
+            "Table получает наблюдаемый набор служебных дочерних элементов.",
+            "corpus_invariant",
+            [
+                "ContextMenu",
+                "AutoCommandBar",
+                "ExtendedTooltip",
+                "SearchStringAddition",
+                "ViewStatusAddition",
+                "SearchControlAddition",
+            ],
+        ),
+        FormRule(
+            "specialized_elements_boundary",
             "boundary",
-            "Остальные kind требуют отдельного доказательного fixture.",
+            "Специализированные поля документов, диаграмм и схем пока читаются только как inventory.",
             "contract_decision",
         ),
     ),
     "attributes": (
         FormRule(
-            "string_attribute",
+            "basic_attribute_types",
             "supported",
-            "Первая вертикаль поддерживает строковый реквизит с положительной длиной.",
+            "Базовый слой поддерживает строку, boolean, число, дату и таблицу значений.",
             "observed_pattern",
-            {"kind": "string", "length": "positive_integer"},
+            ["string", "boolean", "number", "date", "value_table"],
         ),
         FormRule(
             "main_attribute_optional",
@@ -182,7 +198,7 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
         FormRule(
             "simple_data_path",
             "required",
-            "DataPath input_field должен точно совпасть с именем реквизита формы.",
+            "Обычное поле ссылается на реквизит, колонка — на РеквизитТаблицы.Колонка.",
             "contract_decision",
         ),
         FormRule(
@@ -192,9 +208,53 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
             "corpus_invariant",
         ),
         FormRule(
-            "other_attribute_types_unsupported",
+            "registry_types_boundary",
             "boundary",
-            "Составные, ссылочные и иные типы требуют отдельных fixtures.",
+            "Ссылочные, составные и DynamicList типы требуют Registry-aware слоя.",
+            "contract_decision",
+        ),
+    ),
+    "layout": (
+        FormRule(
+            "agent_owns_semantic_layout",
+            "required",
+            "Агент выбирает страницы, группы, порядок и свойства из требований пользователя.",
+            "contract_decision",
+        ),
+        FormRule(
+            "compiler_preserves_layout",
+            "required",
+            "Compiler не переставляет элементы и не угадывает дизайн.",
+            "contract_decision",
+        ),
+        FormRule(
+            "managed_layout_not_coordinates",
+            "supported",
+            "Компоновка задаётся деревом, порядком и свойствами, а не пиксельными координатами.",
+            "corpus_invariant",
+        ),
+        FormRule(
+            "group_related_controls",
+            "supported",
+            "Связанные входы и действия размещайте в одной группе; вторичные параметры выносите на страницу настроек.",
+            "observed_pattern",
+        ),
+        FormRule(
+            "pages_for_parallel_contexts",
+            "supported",
+            "Pages используйте для параллельных областей, между которыми пользователь переключается.",
+            "observed_pattern",
+        ),
+        FormRule(
+            "table_columns_match_type",
+            "required",
+            "Каждая визуальная колонка Table должна ссылаться на объявленную колонку value_table.",
+            "contract_decision",
+        ),
+        FormRule(
+            "visual_acceptance_required",
+            "boundary",
+            "Правила компоновки не заменяют открытие формы и пользовательскую визуальную приёмку.",
             "contract_decision",
         ),
     ),
@@ -362,8 +422,36 @@ def get_managed_form_rules(topic: RuleTopic = "overview") -> dict[str, object]:
         payload["example"] = _minimal_example()
     elif topic == "elements":
         payload["supported"] = {
-            "root": ["usual_group"],
-            "group_children": ["input_field", "button"],
+            "root": [
+                "usual_group",
+                "input_field",
+                "button",
+                "pages",
+                "table",
+            ],
+            "recursive_children": [
+                "usual_group",
+                "input_field",
+                "button",
+                "pages",
+                "table",
+            ],
+            "page_representations": ["tabs_on_top"],
+        }
+    elif topic == "attributes":
+        payload["supported"] = {
+            "scalar": ["string", "boolean", "number", "date"],
+            "collection": ["value_table"],
+            "string_length_zero": "unlimited",
+        }
+    elif topic == "layout":
+        payload["example"] = {
+            "intent": "Импорт файла",
+            "tree": [
+                "usual_group: источник и действия",
+                "pages: данные, предпросмотр, настройки",
+                "table: колонки value_table",
+            ],
         }
     elif topic == "commands_events":
         payload["supported"] = {

@@ -1,14 +1,9 @@
-"""Закрытая спецификация первой вертикали управляемой формы.
-
-`TypedDict` формирует точную MCP JSON Schema, frozen dataclass используется
-предметным кодом. Ручная проверка нужна и вне MCP-транспорта: compiler и
-checker должны одинаково отклонять неоднозначный вход.
-"""
+"""Строгая спецификация поддержанного слоя управляемой формы."""
 
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from typing import Literal, NotRequired, TypeAlias, TypedDict
 
@@ -18,6 +13,10 @@ from .diagnostics import Diagnostic
 SPECIFICATION_VERSION = 1
 SUPPORTED_FORMAT_VERSION = "2.16"
 _IDENTIFIER = re.compile(r"[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*\Z")
+_DATA_PATH = re.compile(
+    r"[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*"
+    r"(?:\.[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*)*\Z"
+)
 BSL_RESERVED_KEYWORDS = frozenset(
     word.casefold()
     for word in (
@@ -55,13 +54,65 @@ class StringTypeSpec(TypedDict):
     length: int
 
 
+class BooleanTypeSpec(TypedDict):
+    __pydantic_config__ = {"extra": "forbid"}
+
+    kind: Literal["boolean"]
+
+
+class NumberTypeSpec(TypedDict):
+    __pydantic_config__ = {"extra": "forbid"}
+
+    kind: Literal["number"]
+    digits: int
+    fraction_digits: int
+    allowed_sign: Literal["any", "nonnegative"]
+
+
+class DateTypeSpec(TypedDict):
+    __pydantic_config__ = {"extra": "forbid"}
+
+    kind: Literal["date"]
+    fractions: Literal["date", "date_time"]
+
+
+ScalarTypeSpec: TypeAlias = (
+    StringTypeSpec | BooleanTypeSpec | NumberTypeSpec | DateTypeSpec
+)
+
+
+class ValueTableColumnSpec(TypedDict):
+    __pydantic_config__ = {"extra": "forbid"}
+
+    name: str
+    type: ScalarTypeSpec
+    title: NotRequired[LocalizedTextSpec]
+
+
+class ValueTableTypeSpec(TypedDict):
+    __pydantic_config__ = {"extra": "forbid"}
+
+    kind: Literal["value_table"]
+    columns: list[ValueTableColumnSpec]
+
+
+AttributeTypeSpec: TypeAlias = ScalarTypeSpec | ValueTableTypeSpec
+
+
 class FormAttributeSpec(TypedDict):
     __pydantic_config__ = {"extra": "forbid"}
 
     name: str
-    type: StringTypeSpec
+    type: AttributeTypeSpec
     title: NotRequired[LocalizedTextSpec]
     main: NotRequired[bool]
+
+
+class ChoiceListItemSpec(TypedDict):
+    __pydantic_config__ = {"extra": "forbid"}
+
+    value: str
+    presentation: LocalizedTextSpec
 
 
 class InputFieldSpec(TypedDict):
@@ -71,6 +122,10 @@ class InputFieldSpec(TypedDict):
     name: str
     data_path: str
     title: NotRequired[LocalizedTextSpec]
+    multiline: NotRequired[bool]
+    read_only: NotRequired[bool]
+    list_choice_mode: NotRequired[bool]
+    choice_list: NotRequired[list[ChoiceListItemSpec]]
 
 
 class ButtonSpec(TypedDict):
@@ -83,7 +138,33 @@ class ButtonSpec(TypedDict):
     title: NotRequired[LocalizedTextSpec]
 
 
-GroupChildSpec: TypeAlias = InputFieldSpec | ButtonSpec
+class TableSpec(TypedDict):
+    __pydantic_config__ = {"extra": "forbid"}
+
+    kind: Literal["table"]
+    name: str
+    data_path: str
+    columns: list[InputFieldSpec]
+    title: NotRequired[LocalizedTextSpec]
+    read_only: NotRequired[bool]
+
+
+class PageSpec(TypedDict):
+    __pydantic_config__ = {"extra": "forbid"}
+
+    name: str
+    title: LocalizedTextSpec
+    children: list["ElementSpec"]
+
+
+class PagesSpec(TypedDict):
+    __pydantic_config__ = {"extra": "forbid"}
+
+    kind: Literal["pages"]
+    name: str
+    title: LocalizedTextSpec
+    representation: Literal["tabs_on_top"]
+    pages: list[PageSpec]
 
 
 class UsualGroupSpec(TypedDict):
@@ -92,7 +173,13 @@ class UsualGroupSpec(TypedDict):
     kind: Literal["usual_group"]
     name: str
     title: LocalizedTextSpec
-    children: list[GroupChildSpec]
+    children: list["ElementSpec"]
+
+
+ElementSpec: TypeAlias = (
+    InputFieldSpec | ButtonSpec | TableSpec | PagesSpec | UsualGroupSpec
+)
+GroupChildSpec: TypeAlias = ElementSpec
 
 
 class FormCommandSpec(TypedDict):
@@ -111,8 +198,6 @@ class FormEventSpec(TypedDict):
 
 
 class ManagedFormSpec(TypedDict):
-    # FastMCP строит Pydantic-схему из TypedDict. Без этого указания транспорт
-    # молча удаляет лишние поля до нашей предметной проверки контракта.
     __pydantic_config__ = {"extra": "forbid"}
 
     schema_version: Literal[1]
@@ -120,7 +205,7 @@ class ManagedFormSpec(TypedDict):
     format_version: Literal["2.16"]
     title: LocalizedTextSpec
     attributes: list[FormAttributeSpec]
-    elements: list[UsualGroupSpec]
+    elements: list[ElementSpec]
     commands: list[FormCommandSpec]
     events: list[FormEventSpec]
 
@@ -133,14 +218,59 @@ class LocalizedText:
 @dataclass(frozen=True, slots=True)
 class StringType:
     length: int
+    kind: Literal["string"] = "string"
+
+
+@dataclass(frozen=True, slots=True)
+class BooleanType:
+    kind: Literal["boolean"] = "boolean"
+
+
+@dataclass(frozen=True, slots=True)
+class NumberType:
+    digits: int
+    fraction_digits: int
+    allowed_sign: Literal["any", "nonnegative"]
+    kind: Literal["number"] = "number"
+
+
+@dataclass(frozen=True, slots=True)
+class DateType:
+    fractions: Literal["date", "date_time"]
+    kind: Literal["date"] = "date"
+
+
+ScalarType: TypeAlias = StringType | BooleanType | NumberType | DateType
+
+
+@dataclass(frozen=True, slots=True)
+class ValueTableColumn:
+    name: str
+    type: ScalarType
+    title: LocalizedText | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ValueTableType:
+    columns: tuple[ValueTableColumn, ...]
+    kind: Literal["value_table"] = "value_table"
+
+
+AttributeType: TypeAlias = ScalarType | ValueTableType
 
 
 @dataclass(frozen=True, slots=True)
 class FormAttribute:
     name: str
-    type: StringType
+    type: AttributeType
     title: LocalizedText | None = None
     main: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ChoiceListItem:
+    value: str
+    presentation: LocalizedText
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +278,11 @@ class InputField:
     name: str
     data_path: str
     title: LocalizedText | None = None
+    multiline: bool = False
+    read_only: bool = False
+    list_choice_mode: bool = False
+    choice_list: tuple[ChoiceListItem, ...] = ()
+    kind: Literal["input_field"] = "input_field"
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,16 +291,45 @@ class Button:
     command: str
     default: bool = False
     title: LocalizedText | None = None
+    kind: Literal["button"] = "button"
 
 
-GroupChild: TypeAlias = InputField | Button
+@dataclass(frozen=True, slots=True)
+class Table:
+    name: str
+    data_path: str
+    columns: tuple[InputField, ...]
+    title: LocalizedText | None = None
+    read_only: bool = False
+    kind: Literal["table"] = "table"
+
+
+@dataclass(frozen=True, slots=True)
+class Page:
+    name: str
+    title: LocalizedText
+    children: tuple["Element", ...]
+
+
+@dataclass(frozen=True, slots=True)
+class Pages:
+    name: str
+    title: LocalizedText
+    representation: Literal["tabs_on_top"]
+    pages: tuple[Page, ...]
+    kind: Literal["pages"] = "pages"
 
 
 @dataclass(frozen=True, slots=True)
 class UsualGroup:
     name: str
     title: LocalizedText
-    children: tuple[GroupChild, ...]
+    children: tuple["Element", ...]
+    kind: Literal["usual_group"] = "usual_group"
+
+
+Element: TypeAlias = InputField | Button | Table | Pages | UsualGroup
+GroupChild: TypeAlias = Element
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,13 +352,13 @@ class ManagedForm:
     format_version: Literal["2.16"]
     title: LocalizedText
     attributes: tuple[FormAttribute, ...]
-    elements: tuple[UsualGroup, ...]
+    elements: tuple[Element, ...]
     commands: tuple[FormCommand, ...]
     events: tuple[FormEvent, ...]
 
 
 class FormsContractError(ValueError):
-    """Спецификация не входит в доказанное подмножество первой вертикали."""
+    """Спецификация не входит в доказанное подмножество Forms."""
 
     def __init__(self, diagnostics: tuple[Diagnostic, ...]) -> None:
         self.diagnostics = diagnostics
@@ -210,13 +374,7 @@ class _Reader:
 
     def issue(self, code: str, path: str, message: str) -> None:
         self.diagnostics.append(
-            Diagnostic(
-                level="structural",
-                status="failed",
-                code=code,
-                path=path,
-                message=message,
-            )
+            Diagnostic("structural", "failed", code, path, message)
         )
 
     def object(self, value: object, path: str) -> Mapping[str, object]:
@@ -238,13 +396,16 @@ class _Reader:
         unknown = [key for key in value if key not in required | optional]
         for key in sorted(unknown, key=lambda item: repr(item)):
             key_path = key if isinstance(key, str) else repr(key)
-            self.issue(
-                "unknown_key",
-                f"{path}.{key_path}",
-                "Неизвестное поле запрещено.",
-            )
+            self.issue("unknown_key", f"{path}.{key_path}", "Неизвестное поле запрещено.")
 
-    def string(self, value: object, path: str, *, identifier: bool = False) -> str:
+    def string(
+        self,
+        value: object,
+        path: str,
+        *,
+        identifier: bool = False,
+        data_path: bool = False,
+    ) -> str:
         if not isinstance(value, str) or not value.strip():
             self.issue("invalid_string", path, "Ожидалась непустая строка.")
             return ""
@@ -258,12 +419,31 @@ class _Reader:
                 path,
                 "Зарезервированное слово BSL нельзя использовать как идентификатор 1С.",
             )
+        if data_path and not _DATA_PATH.fullmatch(value):
+            self.issue("invalid_data_path", path, "Недопустимый обычный DataPath.")
         return value
 
     def boolean(self, value: object, path: str) -> bool:
         if type(value) is not bool:
             self.issue("invalid_type", path, "Ожидалось логическое значение.")
             return False
+        return value
+
+    def integer(
+        self,
+        value: object,
+        path: str,
+        *,
+        minimum: int,
+        maximum: int,
+    ) -> int:
+        if type(value) is not int or not minimum <= value <= maximum:
+            self.issue(
+                "invalid_integer",
+                path,
+                f"Ожидалось целое число от {minimum} до {maximum}.",
+            )
+            return minimum
         return value
 
     def array(self, value: object, path: str) -> list[object]:
@@ -289,24 +469,126 @@ def _optional_localized(
     return _localized(reader, item.get("title"), f"{path}.title")
 
 
-def _string_type(reader: _Reader, value: object, path: str) -> StringType:
+def _duplicates(
+    reader: _Reader,
+    values: list[tuple[str, str]],
+    *,
+    code: str,
+    message: str,
+) -> None:
+    seen: set[str] = set()
+    for value, path in values:
+        if value and value in seen:
+            reader.issue(code, path, message)
+        seen.add(value)
+
+
+def _scalar_type(reader: _Reader, value: object, path: str) -> ScalarType:
     item = reader.object(value, path)
-    reader.exact_keys(item, path, required=frozenset({"kind", "length"}))
-    if item.get("kind") != "string":
-        reader.issue(
-            "unsupported_attribute_type",
-            f"{path}.kind",
-            "Первая вертикаль поддерживает только string.",
+    kind = item.get("kind")
+    if kind == "string":
+        reader.exact_keys(item, path, required=frozenset({"kind", "length"}))
+        return StringType(
+            reader.integer(
+                item.get("length"),
+                f"{path}.length",
+                minimum=0,
+                maximum=1_048_576,
+            )
         )
-    length = item.get("length")
-    if type(length) is not int or length <= 0:
-        reader.issue(
-            "invalid_string_length",
-            f"{path}.length",
-            "Длина строки должна быть положительным целым числом.",
+    if kind == "boolean":
+        reader.exact_keys(item, path, required=frozenset({"kind"}))
+        return BooleanType()
+    if kind == "number":
+        reader.exact_keys(
+            item,
+            path,
+            required=frozenset(
+                {"kind", "digits", "fraction_digits", "allowed_sign"}
+            ),
         )
-        return StringType(1)
-    return StringType(length)
+        digits = reader.integer(
+            item.get("digits"), f"{path}.digits", minimum=1, maximum=32
+        )
+        fractions = reader.integer(
+            item.get("fraction_digits"),
+            f"{path}.fraction_digits",
+            minimum=0,
+            maximum=32,
+        )
+        if fractions > digits:
+            reader.issue(
+                "invalid_number_fraction_digits",
+                f"{path}.fraction_digits",
+                "Знаков дробной части не может быть больше общей разрядности.",
+            )
+        sign = item.get("allowed_sign")
+        if sign not in {"any", "nonnegative"}:
+            reader.issue(
+                "invalid_allowed_sign",
+                f"{path}.allowed_sign",
+                "Допустимы значения any и nonnegative.",
+            )
+            sign = "any"
+        return NumberType(digits, fractions, sign)
+    if kind == "date":
+        reader.exact_keys(item, path, required=frozenset({"kind", "fractions"}))
+        fractions = item.get("fractions")
+        if fractions not in {"date", "date_time"}:
+            reader.issue(
+                "invalid_date_fractions",
+                f"{path}.fractions",
+                "Допустимы значения date и date_time.",
+            )
+            fractions = "date_time"
+        return DateType(fractions)
+    reader.exact_keys(item, path, required=frozenset({"kind"}))
+    reader.issue(
+        "unsupported_attribute_type",
+        f"{path}.kind",
+        "Поддержаны string, boolean, number, date и value_table.",
+    )
+    return StringType(1)
+
+
+def _value_table_column(
+    reader: _Reader, value: object, path: str
+) -> ValueTableColumn:
+    item = reader.object(value, path)
+    reader.exact_keys(
+        item,
+        path,
+        required=frozenset({"name", "type"}),
+        optional=frozenset({"title"}),
+    )
+    return ValueTableColumn(
+        name=reader.string(item.get("name"), f"{path}.name", identifier=True),
+        type=_scalar_type(reader, item.get("type"), f"{path}.type"),
+        title=_optional_localized(reader, item, path),
+    )
+
+
+def _attribute_type(reader: _Reader, value: object, path: str) -> AttributeType:
+    item = reader.object(value, path)
+    if item.get("kind") != "value_table":
+        return _scalar_type(reader, value, path)
+    reader.exact_keys(item, path, required=frozenset({"kind", "columns"}))
+    columns = tuple(
+        _value_table_column(reader, raw, f"{path}.columns[{index}]")
+        for index, raw in enumerate(
+            reader.array(item.get("columns"), f"{path}.columns")
+        )
+    )
+    _duplicates(
+        reader,
+        [
+            (column.name, f"{path}.columns[{index}].name")
+            for index, column in enumerate(columns)
+        ],
+        code="duplicate_table_column_name",
+        message="Имя колонки таблицы значений повторяется.",
+    )
+    return ValueTableType(columns)
 
 
 def _attribute(reader: _Reader, value: object, path: str) -> FormAttribute:
@@ -319,7 +601,7 @@ def _attribute(reader: _Reader, value: object, path: str) -> FormAttribute:
     )
     return FormAttribute(
         name=reader.string(item.get("name"), f"{path}.name", identifier=True),
-        type=_string_type(reader, item.get("type"), f"{path}.type"),
+        type=_attribute_type(reader, item.get("type"), f"{path}.type"),
         title=_optional_localized(reader, item, path),
         main=(
             reader.boolean(item["main"], f"{path}.main")
@@ -329,19 +611,82 @@ def _attribute(reader: _Reader, value: object, path: str) -> FormAttribute:
     )
 
 
-def _input_field(reader: _Reader, item: Mapping[str, object], path: str) -> InputField:
+def _choice_item(reader: _Reader, value: object, path: str) -> ChoiceListItem:
+    item = reader.object(value, path)
+    reader.exact_keys(
+        item, path, required=frozenset({"value", "presentation"})
+    )
+    return ChoiceListItem(
+        value=reader.string(item.get("value"), f"{path}.value"),
+        presentation=_localized(
+            reader, item.get("presentation"), f"{path}.presentation"
+        ),
+    )
+
+
+def _input_field(
+    reader: _Reader, item: Mapping[str, object], path: str
+) -> InputField:
     reader.exact_keys(
         item,
         path,
         required=frozenset({"kind", "name", "data_path"}),
-        optional=frozenset({"title"}),
+        optional=frozenset(
+            {
+                "title",
+                "multiline",
+                "read_only",
+                "list_choice_mode",
+                "choice_list",
+            }
+        ),
     )
+    choices = tuple(
+        _choice_item(reader, raw, f"{path}.choice_list[{index}]")
+        for index, raw in enumerate(
+            reader.array(item.get("choice_list"), f"{path}.choice_list")
+            if "choice_list" in item
+            else []
+        )
+    )
+    _duplicates(
+        reader,
+        [
+            (choice.value, f"{path}.choice_list[{index}].value")
+            for index, choice in enumerate(choices)
+        ],
+        code="duplicate_choice_value",
+        message="Значение списка выбора повторяется.",
+    )
+    list_mode = (
+        reader.boolean(item["list_choice_mode"], f"{path}.list_choice_mode")
+        if "list_choice_mode" in item
+        else False
+    )
+    if choices and not list_mode:
+        reader.issue(
+            "choice_list_requires_list_mode",
+            f"{path}.choice_list",
+            "ChoiceList требует list_choice_mode=true.",
+        )
     return InputField(
         name=reader.string(item.get("name"), f"{path}.name", identifier=True),
         data_path=reader.string(
-            item.get("data_path"), f"{path}.data_path", identifier=True
+            item.get("data_path"), f"{path}.data_path", data_path=True
         ),
         title=_optional_localized(reader, item, path),
+        multiline=(
+            reader.boolean(item["multiline"], f"{path}.multiline")
+            if "multiline" in item
+            else False
+        ),
+        read_only=(
+            reader.boolean(item["read_only"], f"{path}.read_only")
+            if "read_only" in item
+            else False
+        ),
+        list_choice_mode=list_mode,
+        choice_list=choices,
     )
 
 
@@ -366,67 +711,153 @@ def _button(reader: _Reader, item: Mapping[str, object], path: str) -> Button:
     )
 
 
-def _group(reader: _Reader, value: object, path: str) -> UsualGroup:
+def _table(reader: _Reader, item: Mapping[str, object], path: str) -> Table:
+    reader.exact_keys(
+        item,
+        path,
+        required=frozenset({"kind", "name", "data_path", "columns"}),
+        optional=frozenset({"title", "read_only"}),
+    )
+    columns: list[InputField] = []
+    for index, raw in enumerate(
+        reader.array(item.get("columns"), f"{path}.columns")
+    ):
+        column_path = f"{path}.columns[{index}]"
+        column = reader.object(raw, column_path)
+        if column.get("kind") != "input_field":
+            reader.issue(
+                "unsupported_table_column_kind",
+                f"{column_path}.kind",
+                "В базовом слое колонка таблицы должна быть input_field.",
+            )
+            continue
+        columns.append(_input_field(reader, column, column_path))
+    return Table(
+        name=reader.string(item.get("name"), f"{path}.name", identifier=True),
+        data_path=reader.string(
+            item.get("data_path"), f"{path}.data_path", data_path=True
+        ),
+        columns=tuple(columns),
+        title=_optional_localized(reader, item, path),
+        read_only=(
+            reader.boolean(item["read_only"], f"{path}.read_only")
+            if "read_only" in item
+            else False
+        ),
+    )
+
+
+def _page(reader: _Reader, value: object, path: str) -> Page:
     item = reader.object(value, path)
+    reader.exact_keys(
+        item, path, required=frozenset({"name", "title", "children"})
+    )
+    return Page(
+        name=reader.string(item.get("name"), f"{path}.name", identifier=True),
+        title=_localized(reader, item.get("title"), f"{path}.title"),
+        children=tuple(
+            _element(reader, raw, f"{path}.children[{index}]")
+            for index, raw in enumerate(
+                reader.array(item.get("children"), f"{path}.children")
+            )
+        ),
+    )
+
+
+def _pages(reader: _Reader, item: Mapping[str, object], path: str) -> Pages:
+    reader.exact_keys(
+        item,
+        path,
+        required=frozenset(
+            {"kind", "name", "title", "representation", "pages"}
+        ),
+    )
+    representation = item.get("representation")
+    if representation != "tabs_on_top":
+        reader.issue(
+            "unsupported_pages_representation",
+            f"{path}.representation",
+            "Базовый compiler поддерживает tabs_on_top.",
+        )
+        representation = "tabs_on_top"
+    return Pages(
+        name=reader.string(item.get("name"), f"{path}.name", identifier=True),
+        title=_localized(reader, item.get("title"), f"{path}.title"),
+        representation=representation,
+        pages=tuple(
+            _page(reader, raw, f"{path}.pages[{index}]")
+            for index, raw in enumerate(
+                reader.array(item.get("pages"), f"{path}.pages")
+            )
+        ),
+    )
+
+
+def _group(
+    reader: _Reader, item: Mapping[str, object], path: str
+) -> UsualGroup:
     reader.exact_keys(
         item,
         path,
         required=frozenset({"kind", "name", "title", "children"}),
     )
-    kind = item.get("kind")
-    if kind != "usual_group":
-        reader.issue(
-            "unsupported_element_kind",
-            f"{path}.kind",
-            "На верхнем уровне поддержан только usual_group.",
-        )
-    children: list[GroupChild] = []
-    for index, raw_child in enumerate(
-        reader.array(item.get("children"), f"{path}.children")
-    ):
-        child_path = f"{path}.children[{index}]"
-        child = reader.object(raw_child, child_path)
-        child_kind = child.get("kind")
-        if child_kind == "input_field":
-            children.append(_input_field(reader, child, child_path))
-        elif child_kind == "button":
-            children.append(_button(reader, child, child_path))
-        else:
-            reader.issue(
-                "unsupported_element_kind",
-                f"{child_path}.kind",
-                "В группе поддержаны только input_field и button.",
-            )
     return UsualGroup(
         name=reader.string(item.get("name"), f"{path}.name", identifier=True),
         title=_localized(reader, item.get("title"), f"{path}.title"),
-        children=tuple(children),
+        children=tuple(
+            _element(reader, raw, f"{path}.children[{index}]")
+            for index, raw in enumerate(
+                reader.array(item.get("children"), f"{path}.children")
+            )
+        ),
     )
+
+
+def _element(reader: _Reader, value: object, path: str) -> Element:
+    item = reader.object(value, path)
+    kind = item.get("kind")
+    if kind == "input_field":
+        return _input_field(reader, item, path)
+    if kind == "button":
+        return _button(reader, item, path)
+    if kind == "table":
+        return _table(reader, item, path)
+    if kind == "pages":
+        return _pages(reader, item, path)
+    if kind == "usual_group":
+        return _group(reader, item, path)
+    reader.issue(
+        "unsupported_element_kind",
+        f"{path}.kind",
+        "Элемент не входит в поддержанный базовый слой Forms.",
+    )
+    return InputField("НедопустимыйЭлемент", "НедопустимыйРеквизит")
 
 
 def _command(reader: _Reader, value: object, path: str) -> FormCommand:
     item = reader.object(value, path)
     reader.exact_keys(
-        item,
-        path,
-        required=frozenset({"name", "title", "action"}),
+        item, path, required=frozenset({"name", "title", "action"})
     )
     return FormCommand(
         name=reader.string(item.get("name"), f"{path}.name", identifier=True),
         title=_localized(reader, item.get("title"), f"{path}.title"),
-        action=reader.string(item.get("action"), f"{path}.action", identifier=True),
+        action=reader.string(
+            item.get("action"), f"{path}.action", identifier=True
+        ),
     )
 
 
 def _event(reader: _Reader, value: object, path: str) -> FormEvent:
     item = reader.object(value, path)
-    reader.exact_keys(item, path, required=frozenset({"event", "handler"}))
-    event = item.get("event")
-    if event != "OnCreateAtServer":
+    reader.exact_keys(
+        item, path, required=frozenset({"event", "handler"})
+    )
+    if item.get("event") != "OnCreateAtServer":
         reader.issue(
             "unsupported_event",
             f"{path}.event",
-            "Первая вертикаль поддерживает только OnCreateAtServer.",
+            "Базовый compiler поддерживает только OnCreateAtServer.",
         )
     return FormEvent(
         event="OnCreateAtServer",
@@ -436,22 +867,33 @@ def _event(reader: _Reader, value: object, path: str) -> FormEvent:
     )
 
 
-def _duplicates(
-    reader: _Reader,
-    values: list[tuple[str, str]],
+def _walk_elements(
+    elements: tuple[Element, ...],
+    base_path: str,
     *,
-    code: str,
-    message: str,
-) -> None:
-    seen: set[str] = set()
-    for value, path in values:
-        if value and value in seen:
-            reader.issue(code, path, message)
-        seen.add(value)
+    table: Table | None = None,
+) -> Iterator[tuple[Element, str, Table | None]]:
+    for index, element in enumerate(elements):
+        path = f"{base_path}[{index}]"
+        yield element, path, table
+        if isinstance(element, UsualGroup):
+            yield from _walk_elements(
+                element.children, f"{path}.children"
+            )
+        elif isinstance(element, Pages):
+            for page_index, page in enumerate(element.pages):
+                yield from _walk_elements(
+                    page.children,
+                    f"{path}.pages[{page_index}].children",
+                )
+        elif isinstance(element, Table):
+            yield from _walk_elements(
+                element.columns, f"{path}.columns", table=element
+            )
 
 
 def parse_managed_form_spec(payload: object) -> ManagedForm:
-    """Проверить и нормализовать спецификацию доказанной первой вертикали."""
+    """Проверить и нормализовать поддержанную спецификацию."""
 
     reader = _Reader()
     root = reader.object(payload, "$")
@@ -471,10 +913,10 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
             }
         ),
     )
-
-    if type(root.get("schema_version")) is not int or root.get(
-        "schema_version"
-    ) != SPECIFICATION_VERSION:
+    if (
+        type(root.get("schema_version")) is not int
+        or root.get("schema_version") != SPECIFICATION_VERSION
+    ):
         reader.issue(
             "unsupported_schema_version",
             "$.schema_version",
@@ -484,58 +926,63 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
         reader.issue(
             "unsupported_format_version",
             "$.format_version",
-            "Compiler первой вертикали поддерживает только формат 2.16.",
+            "Compiler поддерживает только формат 2.16.",
         )
 
-    form_name = reader.string(root.get("form_name"), "$.form_name", identifier=True)
+    form_name = reader.string(
+        root.get("form_name"), "$.form_name", identifier=True
+    )
     title = _localized(reader, root.get("title"), "$.title")
-
     attributes = tuple(
         _attribute(reader, value, f"$.attributes[{index}]")
-        for index, value in enumerate(reader.array(root.get("attributes"), "$.attributes"))
+        for index, value in enumerate(
+            reader.array(root.get("attributes"), "$.attributes")
+        )
     )
     elements = tuple(
-        _group(reader, value, f"$.elements[{index}]")
-        for index, value in enumerate(reader.array(root.get("elements"), "$.elements"))
+        _element(reader, value, f"$.elements[{index}]")
+        for index, value in enumerate(
+            reader.array(root.get("elements"), "$.elements")
+        )
     )
     commands = tuple(
         _command(reader, value, f"$.commands[{index}]")
-        for index, value in enumerate(reader.array(root.get("commands"), "$.commands"))
+        for index, value in enumerate(
+            reader.array(root.get("commands"), "$.commands")
+        )
     )
     events = tuple(
         _event(reader, value, f"$.events[{index}]")
-        for index, value in enumerate(reader.array(root.get("events"), "$.events"))
+        for index, value in enumerate(
+            reader.array(root.get("events"), "$.events")
+        )
     )
 
     _duplicates(
         reader,
-        [(item.name, f"$.attributes[{index}].name") for index, item in enumerate(attributes)],
+        [
+            (item.name, f"$.attributes[{index}].name")
+            for index, item in enumerate(attributes)
+        ],
         code="duplicate_attribute_name",
         message="Имя реквизита повторяется.",
     )
     _duplicates(
         reader,
-        [(item.name, f"$.commands[{index}].name") for index, item in enumerate(commands)],
+        [
+            (item.name, f"$.commands[{index}].name")
+            for index, item in enumerate(commands)
+        ],
         code="duplicate_command_name",
         message="Имя команды повторяется.",
     )
-    element_names: list[tuple[str, str]] = []
-    for group_index, group in enumerate(elements):
-        element_names.append((group.name, f"$.elements[{group_index}].name"))
-        element_names.extend(
-            (
-                child.name,
-                f"$.elements[{group_index}].children[{child_index}].name",
-            )
-            for child_index, child in enumerate(group.children)
-        )
+    walked = list(_walk_elements(elements, "$.elements"))
     _duplicates(
         reader,
-        element_names,
+        [(item.name, f"{path}.name") for item, path, _table in walked],
         code="duplicate_element_name",
         message="Имя элемента повторяется.",
     )
-
     if sum(item.main for item in attributes) > 1:
         reader.issue(
             "multiple_main_attributes",
@@ -543,23 +990,68 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
             "Главным может быть не более одного реквизита.",
         )
 
-    attribute_names = {item.name for item in attributes}
+    attribute_by_name = {item.name: item for item in attributes}
     command_names = {item.name for item in commands}
-    for group_index, group in enumerate(elements):
-        for child_index, child in enumerate(group.children):
-            child_path = f"$.elements[{group_index}].children[{child_index}]"
-            if isinstance(child, InputField) and child.data_path not in attribute_names:
-                reader.issue(
-                    "unresolved_data_path",
-                    f"{child_path}.data_path",
-                    "DataPath не разрешается в реквизит формы.",
+    for element, path, table in walked:
+        if isinstance(element, InputField):
+            if table is None:
+                attribute = attribute_by_name.get(element.data_path)
+                if attribute is None:
+                    reader.issue(
+                        "unresolved_data_path",
+                        f"{path}.data_path",
+                        "DataPath не разрешается в реквизит формы.",
+                    )
+                elif (
+                    element.choice_list
+                    and not isinstance(attribute.type, StringType)
+                ):
+                    reader.issue(
+                        "choice_list_requires_string",
+                        f"{path}.choice_list",
+                        "Строковый ChoiceList требует строковый реквизит.",
+                    )
+            else:
+                table_attribute = attribute_by_name.get(table.data_path)
+                prefix = table.data_path + "."
+                column_name = element.data_path.removeprefix(prefix)
+                declared = (
+                    {
+                        column.name
+                        for column in table_attribute.type.columns
+                    }
+                    if table_attribute is not None
+                    and isinstance(table_attribute.type, ValueTableType)
+                    else set()
                 )
-            if isinstance(child, Button) and child.command not in command_names:
+                if (
+                    not element.data_path.startswith(prefix)
+                    or column_name not in declared
+                ):
+                    reader.issue(
+                        "unresolved_table_column",
+                        f"{path}.data_path",
+                        "DataPath не разрешается в колонку таблицы значений.",
+                    )
+        elif isinstance(element, Table):
+            attribute = attribute_by_name.get(element.data_path)
+            if attribute is None or not isinstance(
+                attribute.type, ValueTableType
+            ):
                 reader.issue(
-                    "unresolved_command",
-                    f"{child_path}.command",
-                    "Кнопка ссылается на неизвестную команду.",
+                    "table_requires_value_table",
+                    f"{path}.data_path",
+                    "Таблица должна ссылаться на реквизит value_table.",
                 )
+        elif (
+            isinstance(element, Button)
+            and element.command not in command_names
+        ):
+            reader.issue(
+                "unresolved_command",
+                f"{path}.command",
+                "Кнопка ссылается на неизвестную команду.",
+            )
 
     event_handlers = {item.handler for item in events}
     for index, command in enumerate(commands):
@@ -569,27 +1061,140 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
                 f"$.commands[{index}].action",
                 "Один обработчик нельзя сгенерировать с сигнатурами события и команды.",
             )
-
     _duplicates(
         reader,
-        [(item.event, f"$.events[{index}].event") for index, item in enumerate(events)],
+        [
+            (item.event, f"$.events[{index}].event")
+            for index, item in enumerate(events)
+        ],
         code="duplicate_event",
         message="Событие формы повторяется.",
     )
 
     if reader.diagnostics:
         raise FormsContractError(tuple(reader.diagnostics))
-
     return ManagedForm(
-        schema_version=1,
-        form_name=form_name,
-        format_version="2.16",
-        title=title,
-        attributes=attributes,
-        elements=elements,
-        commands=commands,
-        events=events,
+        1,
+        form_name,
+        "2.16",
+        title,
+        attributes,
+        elements,
+        commands,
+        events,
     )
+
+
+def _localized_spec(value: LocalizedText) -> dict[str, str]:
+    return {"ru": value.ru}
+
+
+def _type_to_spec(value: AttributeType) -> dict[str, object]:
+    if isinstance(value, StringType):
+        return {"kind": "string", "length": value.length}
+    if isinstance(value, BooleanType):
+        return {"kind": "boolean"}
+    if isinstance(value, NumberType):
+        return {
+            "kind": "number",
+            "digits": value.digits,
+            "fraction_digits": value.fraction_digits,
+            "allowed_sign": value.allowed_sign,
+        }
+    if isinstance(value, DateType):
+        return {"kind": "date", "fractions": value.fractions}
+    return {
+        "kind": "value_table",
+        "columns": [
+            {
+                "name": column.name,
+                "type": _type_to_spec(column.type),
+                **(
+                    {"title": _localized_spec(column.title)}
+                    if column.title is not None
+                    else {}
+                ),
+            }
+            for column in value.columns
+        ],
+    }
+
+
+def _element_to_spec(element: Element) -> dict[str, object]:
+    if isinstance(element, InputField):
+        item: dict[str, object] = {
+            "kind": "input_field",
+            "name": element.name,
+            "data_path": element.data_path,
+        }
+        if element.multiline:
+            item["multiline"] = True
+        if element.read_only:
+            item["read_only"] = True
+        if element.list_choice_mode:
+            item["list_choice_mode"] = True
+        if element.choice_list:
+            item["choice_list"] = [
+                {
+                    "value": choice.value,
+                    "presentation": _localized_spec(
+                        choice.presentation
+                    ),
+                }
+                for choice in element.choice_list
+            ]
+    elif isinstance(element, Button):
+        item = {
+            "kind": "button",
+            "name": element.name,
+            "command": element.command,
+        }
+        if element.default:
+            item["default"] = True
+    elif isinstance(element, Table):
+        item = {
+            "kind": "table",
+            "name": element.name,
+            "data_path": element.data_path,
+            "columns": [
+                _element_to_spec(column) for column in element.columns
+            ],
+        }
+        if element.read_only:
+            item["read_only"] = True
+    elif isinstance(element, Pages):
+        item = {
+            "kind": "pages",
+            "name": element.name,
+            "title": _localized_spec(element.title),
+            "representation": element.representation,
+            "pages": [
+                {
+                    "name": page.name,
+                    "title": _localized_spec(page.title),
+                    "children": [
+                        _element_to_spec(child)
+                        for child in page.children
+                    ],
+                }
+                for page in element.pages
+            ],
+        }
+    else:
+        item = {
+            "kind": "usual_group",
+            "name": element.name,
+            "title": _localized_spec(element.title),
+            "children": [
+                _element_to_spec(child) for child in element.children
+            ],
+        }
+    if (
+        not isinstance(element, (Pages, UsualGroup))
+        and element.title is not None
+    ):
+        item["title"] = _localized_spec(element.title)
+    return item
 
 
 def managed_form_to_spec(form: ManagedForm) -> dict[str, object]:
@@ -599,68 +1204,49 @@ def managed_form_to_spec(form: ManagedForm) -> dict[str, object]:
     for attribute in form.attributes:
         item: dict[str, object] = {
             "name": attribute.name,
-            "type": {"kind": "string", "length": attribute.type.length},
+            "type": _type_to_spec(attribute.type),
         }
         if attribute.title is not None:
-            item["title"] = {"ru": attribute.title.ru}
+            item["title"] = _localized_spec(attribute.title)
         if attribute.main:
             item["main"] = True
         attributes.append(item)
-
-    elements: list[dict[str, object]] = []
-    for group in form.elements:
-        children: list[dict[str, object]] = []
-        for child in group.children:
-            if isinstance(child, InputField):
-                child_item: dict[str, object] = {
-                    "kind": "input_field",
-                    "name": child.name,
-                    "data_path": child.data_path,
-                }
-            else:
-                child_item = {
-                    "kind": "button",
-                    "name": child.name,
-                    "command": child.command,
-                }
-                if child.default:
-                    child_item["default"] = True
-            if child.title is not None:
-                child_item["title"] = {"ru": child.title.ru}
-            children.append(child_item)
-        elements.append(
-            {
-                "kind": "usual_group",
-                "name": group.name,
-                "title": {"ru": group.title.ru},
-                "children": children,
-            }
-        )
-
     return {
         "schema_version": form.schema_version,
         "form_name": form.form_name,
         "format_version": form.format_version,
-        "title": {"ru": form.title.ru},
+        "title": _localized_spec(form.title),
         "attributes": attributes,
-        "elements": elements,
+        "elements": [
+            _element_to_spec(element) for element in form.elements
+        ],
         "commands": [
             {
                 "name": command.name,
-                "title": {"ru": command.title.ru},
+                "title": _localized_spec(command.title),
                 "action": command.action,
             }
             for command in form.commands
         ],
         "events": [
-            {"event": event.event, "handler": event.handler} for event in form.events
+            {"event": event.event, "handler": event.handler}
+            for event in form.events
         ],
     }
 
 
 __all__ = [
+    "BSL_RESERVED_KEYWORDS",
+    "BooleanType",
+    "BooleanTypeSpec",
     "Button",
     "ButtonSpec",
+    "ChoiceListItem",
+    "ChoiceListItemSpec",
+    "DateType",
+    "DateTypeSpec",
+    "Element",
+    "ElementSpec",
     "FormAttribute",
     "FormAttributeSpec",
     "FormCommand",
@@ -676,12 +1262,25 @@ __all__ = [
     "LocalizedTextSpec",
     "ManagedForm",
     "ManagedFormSpec",
+    "NumberType",
+    "NumberTypeSpec",
+    "Page",
+    "PageSpec",
+    "Pages",
+    "PagesSpec",
     "SPECIFICATION_VERSION",
     "SUPPORTED_FORMAT_VERSION",
     "StringType",
     "StringTypeSpec",
+    "Table",
+    "TableSpec",
     "UsualGroup",
     "UsualGroupSpec",
+    "ValueTableColumn",
+    "ValueTableColumnSpec",
+    "ValueTableType",
+    "ValueTableTypeSpec",
+    "is_reserved_bsl_keyword",
     "managed_form_to_spec",
     "parse_managed_form_spec",
 ]

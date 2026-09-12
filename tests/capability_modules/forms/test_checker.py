@@ -17,6 +17,12 @@ def _payload() -> dict:
     return json.loads((FIXTURES / "minimal_form.json").read_text(encoding="utf-8"))
 
 
+def _rich_payload() -> dict:
+    return json.loads(
+        (FIXTURES / "file_import_form.json").read_text(encoding="utf-8")
+    )
+
+
 def _pair() -> tuple[str, str]:
     result = compile_managed_form(_payload())
     return result.artifacts[0].content, result.artifacts[1].content
@@ -47,6 +53,20 @@ def test_compiler_pair_проходит_заявленные_статическ�
         "runtime_visual": "not_checked",
     }
     assert "valid" not in result.to_dict()
+
+
+def test_богатая_форма_импорта_проходит_статические_уровни():
+    compiled = compile_managed_form(_rich_payload())
+
+    result = check_managed_form(
+        compiled.artifacts[0].content,
+        form_name="ФормаИмпортаФайла",
+        module_bsl=compiled.artifacts[1].content,
+    )
+
+    assert result.coverage.structural == "passed"
+    assert result.coverage.bsl_static == "passed"
+    assert result.specification == compiled.specification
 
 
 def test_дубликат_id_внутри_элементов_даёт_structural_failed():

@@ -8,11 +8,21 @@ from xml.sax.saxutils import escape, quoteattr
 
 from .diagnostics import Artifact, Coverage, Diagnostic, FormsResult
 from .models import (
+    BooleanType,
     Button,
+    DateType,
     FormAttribute,
     InputField,
     LocalizedText,
     ManagedForm,
+    NumberType,
+    Page,
+    Pages,
+    StringType,
+    Table,
+    UsualGroup,
+    ValueTableColumn,
+    ValueTableType,
     managed_form_to_spec,
     parse_managed_form_spec,
 )
@@ -83,6 +93,32 @@ def _emit_input(
     _append(lines, indent + 1, f"<DataPath>{escape(item.data_path)}</DataPath>")
     if item.title is not None:
         _localized(lines, "Title", item.title, indent + 1)
+    if item.multiline:
+        _append(lines, indent + 1, "<MultiLine>true</MultiLine>")
+    if item.read_only:
+        _append(lines, indent + 1, "<ReadOnly>true</ReadOnly>")
+    if item.list_choice_mode:
+        _append(lines, indent + 1, "<ListChoiceMode>true</ListChoiceMode>")
+    if item.choice_list:
+        _append(lines, indent + 1, "<ChoiceList>")
+        for choice in item.choice_list:
+            _append(lines, indent + 2, "<xr:Item>")
+            _append(lines, indent + 3, "<xr:Presentation/>")
+            _append(lines, indent + 3, "<xr:CheckState>0</xr:CheckState>")
+            _append(
+                lines,
+                indent + 3,
+                '<xr:Value xsi:type="FormChoiceListDesTimeValue">',
+            )
+            _localized(lines, "Presentation", choice.presentation, indent + 4)
+            _append(
+                lines,
+                indent + 4,
+                f'<Value xsi:type="xs:string">{escape(choice.value)}</Value>',
+            )
+            _append(lines, indent + 3, "</xr:Value>")
+            _append(lines, indent + 2, "</xr:Item>")
+        _append(lines, indent + 1, "</ChoiceList>")
     context_id = allocator.next()
     _append(
         lines,
@@ -132,38 +168,288 @@ def _emit_button(
     _append(lines, indent, "</Button>")
 
 
+def _emit_group(
+    lines: list[str],
+    group: UsualGroup,
+    allocator: _IdAllocator,
+    indent: int,
+) -> None:
+    group_id = allocator.next()
+    _append(
+        lines,
+        indent,
+        f"<UsualGroup name={quoteattr(group.name)} id={quoteattr(group_id)}>",
+    )
+    _localized(lines, "Title", group.title, indent + 1)
+    _append(lines, indent + 1, "<Group>Vertical</Group>")
+    _append(lines, indent + 1, "<Behavior>Usual</Behavior>")
+    _append(lines, indent + 1, "<Representation>NormalSeparation</Representation>")
+    _append(lines, indent + 1, "<ShowTitle>true</ShowTitle>")
+    tooltip_id = allocator.next()
+    _append(
+        lines,
+        indent + 1,
+        "<ExtendedTooltip "
+        f"name={quoteattr(group.name + 'РасширеннаяПодсказка')} "
+        f"id={quoteattr(tooltip_id)}/>",
+    )
+    _append(lines, indent + 1, "<ChildItems>")
+    for child in group.children:
+        _emit_element(lines, child, allocator, indent + 2)
+    _append(lines, indent + 1, "</ChildItems>")
+    _append(lines, indent, "</UsualGroup>")
+
+
+def _emit_page(
+    lines: list[str],
+    page: Page,
+    allocator: _IdAllocator,
+    indent: int,
+) -> None:
+    page_id = allocator.next()
+    _append(
+        lines,
+        indent,
+        f"<Page name={quoteattr(page.name)} id={quoteattr(page_id)}>",
+    )
+    _localized(lines, "Title", page.title, indent + 1)
+    tooltip_id = allocator.next()
+    _append(
+        lines,
+        indent + 1,
+        "<ExtendedTooltip "
+        f"name={quoteattr(page.name + 'РасширеннаяПодсказка')} "
+        f"id={quoteattr(tooltip_id)}/>",
+    )
+    _append(lines, indent + 1, "<ChildItems>")
+    for child in page.children:
+        _emit_element(lines, child, allocator, indent + 2)
+    _append(lines, indent + 1, "</ChildItems>")
+    _append(lines, indent, "</Page>")
+
+
+def _emit_pages(
+    lines: list[str],
+    item: Pages,
+    allocator: _IdAllocator,
+    indent: int,
+) -> None:
+    pages_id = allocator.next()
+    _append(
+        lines,
+        indent,
+        f"<Pages name={quoteattr(item.name)} id={quoteattr(pages_id)}>",
+    )
+    _localized(lines, "Title", item.title, indent + 1)
+    _append(lines, indent + 1, "<PagesRepresentation>TabsOnTop</PagesRepresentation>")
+    tooltip_id = allocator.next()
+    _append(
+        lines,
+        indent + 1,
+        "<ExtendedTooltip "
+        f"name={quoteattr(item.name + 'РасширеннаяПодсказка')} "
+        f"id={quoteattr(tooltip_id)}/>",
+    )
+    _append(lines, indent + 1, "<ChildItems>")
+    for page in item.pages:
+        _emit_page(lines, page, allocator, indent + 2)
+    _append(lines, indent + 1, "</ChildItems>")
+    _append(lines, indent, "</Pages>")
+
+
+def _emit_addition(
+    lines: list[str],
+    *,
+    tag: str,
+    suffix: str,
+    source_type: str,
+    table: Table,
+    allocator: _IdAllocator,
+    indent: int,
+) -> None:
+    name = table.name + suffix
+    addition_id = allocator.next()
+    _append(
+        lines,
+        indent,
+        f"<{tag} name={quoteattr(name)} id={quoteattr(addition_id)}>",
+    )
+    _append(lines, indent + 1, "<AdditionSource>")
+    _append(lines, indent + 2, f"<Item>{escape(table.name)}</Item>")
+    _append(lines, indent + 2, f"<Type>{source_type}</Type>")
+    _append(lines, indent + 1, "</AdditionSource>")
+    context_id = allocator.next()
+    _append(
+        lines,
+        indent + 1,
+        f"<ContextMenu name={quoteattr(name + 'КонтекстноеМеню')} "
+        f"id={quoteattr(context_id)}/>",
+    )
+    tooltip_id = allocator.next()
+    _append(
+        lines,
+        indent + 1,
+        f"<ExtendedTooltip name={quoteattr(name + 'РасширеннаяПодсказка')} "
+        f"id={quoteattr(tooltip_id)}/>",
+    )
+    _append(lines, indent, f"</{tag}>")
+
+
+def _emit_table(
+    lines: list[str],
+    item: Table,
+    allocator: _IdAllocator,
+    indent: int,
+) -> None:
+    table_id = allocator.next()
+    _append(
+        lines,
+        indent,
+        f"<Table name={quoteattr(item.name)} id={quoteattr(table_id)}>",
+    )
+    _append(lines, indent + 1, "<Representation>List</Representation>")
+    if item.read_only:
+        _append(lines, indent + 1, "<ReadOnly>true</ReadOnly>")
+    _append(lines, indent + 1, f"<DataPath>{escape(item.data_path)}</DataPath>")
+    if item.title is not None:
+        _localized(lines, "Title", item.title, indent + 1)
+    context_id = allocator.next()
+    _append(
+        lines,
+        indent + 1,
+        f"<ContextMenu name={quoteattr(item.name + 'КонтекстноеМеню')} "
+        f"id={quoteattr(context_id)}/>",
+    )
+    command_bar_id = allocator.next()
+    _append(
+        lines,
+        indent + 1,
+        f"<AutoCommandBar name={quoteattr(item.name + 'КоманднаяПанель')} "
+        f"id={quoteattr(command_bar_id)}/>",
+    )
+    tooltip_id = allocator.next()
+    _append(
+        lines,
+        indent + 1,
+        f"<ExtendedTooltip name={quoteattr(item.name + 'РасширеннаяПодсказка')} "
+        f"id={quoteattr(tooltip_id)}/>",
+    )
+    _emit_addition(
+        lines,
+        tag="SearchStringAddition",
+        suffix="СтрокаПоиска",
+        source_type="SearchStringRepresentation",
+        table=item,
+        allocator=allocator,
+        indent=indent + 1,
+    )
+    _emit_addition(
+        lines,
+        tag="ViewStatusAddition",
+        suffix="СостояниеПросмотра",
+        source_type="ViewStatusRepresentation",
+        table=item,
+        allocator=allocator,
+        indent=indent + 1,
+    )
+    _emit_addition(
+        lines,
+        tag="SearchControlAddition",
+        suffix="УправлениеПоиском",
+        source_type="SearchControl",
+        table=item,
+        allocator=allocator,
+        indent=indent + 1,
+    )
+    _append(lines, indent + 1, "<ChildItems>")
+    for column in item.columns:
+        _emit_input(lines, column, allocator, indent + 2)
+    _append(lines, indent + 1, "</ChildItems>")
+    _append(lines, indent, "</Table>")
+
+
+def _emit_element(
+    lines: list[str],
+    item: object,
+    allocator: _IdAllocator,
+    indent: int,
+) -> None:
+    if isinstance(item, InputField):
+        _emit_input(lines, item, allocator, indent)
+    elif isinstance(item, Button):
+        _emit_button(lines, item, allocator, indent)
+    elif isinstance(item, Table):
+        _emit_table(lines, item, allocator, indent)
+    elif isinstance(item, Pages):
+        _emit_pages(lines, item, allocator, indent)
+    elif isinstance(item, UsualGroup):
+        _emit_group(lines, item, allocator, indent)
+    else:  # pragma: no cover - typed model does not admit other values
+        raise TypeError(f"Неподдержанный элемент: {type(item)!r}")
+
+
 def _emit_elements(lines: list[str], form: ManagedForm) -> None:
     allocator = _IdAllocator()
     _append(lines, 1, "<ChildItems>")
-    for group in form.elements:
-        group_id = allocator.next()
-        _append(
-            lines,
-            2,
-            f"<UsualGroup name={quoteattr(group.name)} id={quoteattr(group_id)}>",
-        )
-        _localized(lines, "Title", group.title, 3)
-        _append(lines, 3, "<Group>Vertical</Group>")
-        _append(lines, 3, "<Behavior>Usual</Behavior>")
-        _append(lines, 3, "<Representation>NormalSeparation</Representation>")
-        _append(lines, 3, "<ShowTitle>true</ShowTitle>")
-        tooltip_id = allocator.next()
-        _append(
-            lines,
-            3,
-            "<ExtendedTooltip "
-            f"name={quoteattr(group.name + 'РасширеннаяПодсказка')} "
-            f"id={quoteattr(tooltip_id)}/>",
-        )
-        _append(lines, 3, "<ChildItems>")
-        for child in group.children:
-            if isinstance(child, InputField):
-                _emit_input(lines, child, allocator, 4)
-            else:
-                _emit_button(lines, child, allocator, 4)
-        _append(lines, 3, "</ChildItems>")
-        _append(lines, 2, "</UsualGroup>")
+    for item in form.elements:
+        _emit_element(lines, item, allocator, 2)
     _append(lines, 1, "</ChildItems>")
+
+
+def _emit_type(lines: list[str], value: object, indent: int) -> None:
+    _append(lines, indent, "<Type>")
+    if isinstance(value, StringType):
+        _append(lines, indent + 1, "<v8:Type>xs:string</v8:Type>")
+        _append(lines, indent + 1, "<v8:StringQualifiers>")
+        _append(lines, indent + 2, f"<v8:Length>{value.length}</v8:Length>")
+        _append(lines, indent + 2, "<v8:AllowedLength>Variable</v8:AllowedLength>")
+        _append(lines, indent + 1, "</v8:StringQualifiers>")
+    elif isinstance(value, BooleanType):
+        _append(lines, indent + 1, "<v8:Type>xs:boolean</v8:Type>")
+    elif isinstance(value, NumberType):
+        _append(lines, indent + 1, "<v8:Type>xs:decimal</v8:Type>")
+        _append(lines, indent + 1, "<v8:NumberQualifiers>")
+        _append(lines, indent + 2, f"<v8:Digits>{value.digits}</v8:Digits>")
+        _append(
+            lines,
+            indent + 2,
+            f"<v8:FractionDigits>{value.fraction_digits}</v8:FractionDigits>",
+        )
+        sign = "Any" if value.allowed_sign == "any" else "Nonnegative"
+        _append(lines, indent + 2, f"<v8:AllowedSign>{sign}</v8:AllowedSign>")
+        _append(lines, indent + 1, "</v8:NumberQualifiers>")
+    elif isinstance(value, DateType):
+        _append(lines, indent + 1, "<v8:Type>xs:dateTime</v8:Type>")
+        _append(lines, indent + 1, "<v8:DateQualifiers>")
+        fractions = "Date" if value.fractions == "date" else "DateTime"
+        _append(
+            lines,
+            indent + 2,
+            f"<v8:DateFractions>{fractions}</v8:DateFractions>",
+        )
+        _append(lines, indent + 1, "</v8:DateQualifiers>")
+    elif isinstance(value, ValueTableType):
+        _append(lines, indent + 1, "<v8:Type>v8:ValueTable</v8:Type>")
+    else:  # pragma: no cover - typed model does not admit other values
+        raise TypeError(f"Неподдержанный тип: {type(value)!r}")
+    _append(lines, indent, "</Type>")
+
+
+def _emit_table_column(
+    lines: list[str],
+    column: ValueTableColumn,
+    column_id: int,
+    indent: int,
+) -> None:
+    _append(
+        lines,
+        indent,
+        f"<Column name={quoteattr(column.name)} id={quoteattr(str(column_id))}>",
+    )
+    if column.title is not None:
+        _localized(lines, "Title", column.title, indent + 1)
+    _emit_type(lines, column.type, indent + 1)
+    _append(lines, indent, "</Column>")
 
 
 def _emit_attribute(
@@ -176,13 +462,12 @@ def _emit_attribute(
     )
     if attribute.title is not None:
         _localized(lines, "Title", attribute.title, 3)
-    _append(lines, 3, "<Type>")
-    _append(lines, 4, "<v8:Type>xs:string</v8:Type>")
-    _append(lines, 4, "<v8:StringQualifiers>")
-    _append(lines, 5, f"<v8:Length>{attribute.type.length}</v8:Length>")
-    _append(lines, 5, "<v8:AllowedLength>Variable</v8:AllowedLength>")
-    _append(lines, 4, "</v8:StringQualifiers>")
-    _append(lines, 3, "</Type>")
+    _emit_type(lines, attribute.type, 3)
+    if isinstance(attribute.type, ValueTableType):
+        _append(lines, 3, "<Columns>")
+        for column_id, column in enumerate(attribute.type.columns, 1):
+            _emit_table_column(lines, column, column_id, 4)
+        _append(lines, 3, "</Columns>")
     if attribute.main:
         _append(lines, 3, "<MainAttribute>true</MainAttribute>")
     _append(lines, 2, "</Attribute>")

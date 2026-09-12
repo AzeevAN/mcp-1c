@@ -18,6 +18,12 @@ def _payload() -> dict:
     return json.loads((FIXTURES / "minimal_form.json").read_text(encoding="utf-8"))
 
 
+def _rich_payload() -> dict:
+    return json.loads(
+        (FIXTURES / "file_import_form.json").read_text(encoding="utf-8")
+    )
+
+
 def _xml() -> str:
     return (FIXTURES / "minimal_form.xml").read_text(encoding="utf-8")
 
@@ -53,10 +59,23 @@ def test_compile_decompile_даёт_нормализованный_roundtrip():
     assert _diagnostics(result, "bsl_check_deferred")
 
 
+def test_богатая_форма_импорта_даёт_lossless_roundtrip():
+    compiled = compile_managed_form(_rich_payload())
+
+    result = decompile_managed_form(
+        compiled.artifacts[0].content,
+        form_name="ФормаИмпортаФайла",
+        module_bsl=compiled.artifacts[1].content,
+    )
+
+    assert result.specification == compiled.specification
+    assert result.coverage.structural == "passed"
+
+
 def test_неизвестный_элемент_остаётся_в_inventory_с_точным_путём_и_tag():
     xml = _xml().replace(
         "\t</ChildItems>\n\t<Attributes>",
-        '\t\t<Table name="НеизвестнаяТаблица" id="11"><Mystery/></Table>\n'
+        '\t\t<CalendarField name="НеизвестныйКалендарь" id="11"><Mystery/></CalendarField>\n'
         "\t</ChildItems>\n\t<Attributes>",
         1,
     )
@@ -69,11 +88,11 @@ def test_неизвестный_элемент_остаётся_в_inventory_с_
     unsupported = _diagnostics(result, "unsupported_xml_node")
     assert [(item.path, item.message) for item in unsupported] == [
         (
-            "/Form/ChildItems/Table[1]",
-            "Неподдержанный XML-узел: Table.",
+                "/Form/ChildItems/CalendarField[1]",
+                "Неподдержанный XML-узел: CalendarField.",
         ),
         (
-            "/Form/ChildItems/Table[1]/Mystery[1]",
+                "/Form/ChildItems/CalendarField[1]/Mystery[1]",
             "Неподдержанный XML-узел: Mystery.",
         ),
     ]

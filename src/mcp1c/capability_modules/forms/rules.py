@@ -311,6 +311,17 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
             {"directive": "&НаКлиенте", "parameters": ["Команда"]},
         ),
         FormRule(
+            "no_synchronous_file_exists_on_client",
+            "required",
+            (
+                "Не вызывайте Файл.Существует() в клиентском контексте "
+                "управляемого приложения: это запрещённый синхронный метод. "
+                "Обрабатывайте ошибку чтения либо используйте асинхронный API "
+                "платформы."
+            ),
+            "contract_decision",
+        ),
+        FormRule(
             "on_create_at_server_stub",
             "supported",
             "OnCreateAtServer получает доказанный серверный каркас.",

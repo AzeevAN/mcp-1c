@@ -221,6 +221,56 @@ def test_зарезервированное_имя_xml_handler_даёт_bsl_fail
     assert _diagnostics(result, "reserved_bsl_keyword")
 
 
+def test_синхронная_проверка_существования_файла_на_клиенте_даёт_bsl_failed():
+    xml, module = _pair()
+    module += """
+
+&НаКлиенте
+Процедура ПрочитатьФайл()
+
+	ВыбранныйФайл = Новый Файл(\"пример.csv\");
+	Если ВыбранныйФайл.Существует() Тогда
+		Сообщить(\"Файл найден\");
+	КонецЕсли;
+
+КонецПроцедуры
+"""
+
+    result = check_managed_form(
+        xml,
+        form_name="ФормаПараметров",
+        module_bsl=module,
+    )
+
+    assert result.coverage.bsl_static == "failed"
+    assert _diagnostics(result, "forbidden_synchronous_client_call")
+
+
+def test_проверка_существования_файла_на_сервере_не_даёт_ложный_failed():
+    xml, module = _pair()
+    module += """
+
+&НаСервере
+Процедура ПрочитатьФайлНаСервере()
+
+	ВыбранныйФайл = Новый Файл("пример.csv");
+	Если ВыбранныйФайл.Существует() Тогда
+		Сообщить("Файл найден");
+	КонецЕсли;
+
+КонецПроцедуры
+"""
+
+    result = check_managed_form(
+        xml,
+        form_name="ФормаПараметров",
+        module_bsl=module,
+    )
+
+    assert result.coverage.bsl_static == "passed"
+    assert not _diagnostics(result, "forbidden_synchronous_client_call")
+
+
 def test_без_module_bsl_уровень_остаётся_not_checked_с_причиной():
     xml, _module = _pair()
 

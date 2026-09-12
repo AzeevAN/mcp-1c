@@ -19,6 +19,10 @@ _NORMAL_DATA_PATH = re.compile(
     r"[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*"
     r"(?:\.[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*)*\Z"
 )
+_BSL_IDENTIFIER = r"[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*"
+_NEW_FILE_ASSIGNMENT = re.compile(
+    rf"(?im)^\s*(?P<name>{_BSL_IDENTIFIER})\s*=\s*Новый\s+Файл\s*\("
+)
 
 
 def _q(local: str, namespace: str = _LOGFORM) -> str:
@@ -267,6 +271,46 @@ def _expected_handlers(root: ET.Element) -> list[tuple[str, str, int, str]]:
     return result
 
 
+def _check_forbidden_synchronous_client_calls(
+    module_bsl: str,
+    procedures: list[object],
+) -> list[Diagnostic]:
+    """Поймать доказанный нативной приёмкой синхронный клиентский вызов."""
+
+    lines = module_bsl.splitlines(keepends=True)
+    diagnostics: list[Diagnostic] = []
+    for procedure in procedures:
+        directive = procedure.директива.casefold()
+        if directive not in {"наклиенте", "наклиентенасерверебезконтекста"}:
+            continue
+        start = max(procedure.строка - 1, 0)
+        end = procedure.конец if procedure.конец else len(lines)
+        body = "".join(lines[start:end])
+        for assignment in _NEW_FILE_ASSIGNMENT.finditer(body):
+            variable = assignment.group("name")
+            exists_call = re.search(
+                rf"(?i)\b{re.escape(variable)}\s*\.\s*Существует\s*\(",
+                body[assignment.end() :],
+            )
+            if exists_call is None:
+                continue
+            call_offset = assignment.end() + exists_call.start()
+            line = procedure.строка + body[:call_offset].count("\n")
+            diagnostics.append(
+                _diagnostic(
+                    "failed",
+                    "forbidden_synchronous_client_call",
+                    f"$module_bsl:{line}",
+                    (
+                        f"Синхронный вызов {variable}.Существует() запрещён "
+                        "в клиентском контексте управляемого приложения."
+                    ),
+                    level="bsl_static",
+                )
+            )
+    return diagnostics
+
+
 def _check_bsl(
     root: ET.Element,
     module_bsl: str | None,
@@ -381,6 +425,9 @@ def _check_bsl(
                     level="bsl_static",
                 )
             )
+    diagnostics.extend(
+        _check_forbidden_synchronous_client_calls(module_bsl, procedures)
+    )
     if any(item.status == "failed" for item in diagnostics):
         return "failed", diagnostics
     if any(item.status == "warning" for item in diagnostics):

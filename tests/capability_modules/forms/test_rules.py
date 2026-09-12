@@ -128,6 +128,10 @@ def test_events_не_обобщают_сигнатуры_вне_первой_в�
         "parameters": ["Отказ", "СтандартнаяОбработка"],
     }
     assert by_code["unknown_event_not_checked"]["status"] == "boundary"
+    assert by_code["no_synchronous_file_exists_on_client"]["status"] == "required"
+    assert "Файл.Существует()" in by_code[
+        "no_synchronous_file_exists_on_client"
+    ]["summary"]
 
 
 def test_неизвестная_тема_отклоняется_с_перечнем_доступных():

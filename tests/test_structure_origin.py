@@ -7,13 +7,19 @@
 
 from __future__ import annotations
 
+import copy
 import gzip
+import time
 import zipfile
 from pathlib import Path
 
 import pytest
+from starlette.applications import Starlette
 
-from conftest import build_configuration, write_export
+from conftest import build_configuration, write_export, живой_клиент, состарить
+from mcp1c import dashboard_backend as dashboard
+from mcp1c.dashboard_runtime import DASHBOARD_ON, routes
+from mcp1c.intake_v2_api import IntakeApiService
 from mcp1c.model import Field, MetadataObject
 from mcp1c.registry import Registry, RegistryError
 from mcp1c.tools import get_object
@@ -159,6 +165,101 @@ def test_без_базового_каталога_происхождение_н�
     assert "Происхождение структуры: **неизвестно**" in answer
     assert "каталога основной файловой выгрузки" in answer
     assert "объявлен расширением" not in answer
+
+
+def test_source_a_не_подменяет_доказательство_b_через_legacy_http(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("ADMIN_TOKEN", "synthetic-admin-token")
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    monkeypatch.setattr(dashboard, "_JOBS", [])
+    registry = Registry(tmp_path / "data")
+    service = IntakeApiService.for_registry(registry, directory_settle_seconds=0)
+    base_archive = _archive(
+        tmp_path,
+        "base-native.zip",
+        fields=("ИНН", "Телефон"),
+    )
+    with base_archive.open("rb") as stream:
+        candidate = service.accept_upload(
+            base_archive.name,
+            stream,
+            expected_size=base_archive.stat().st_size,
+        )
+    work = service.start(candidate["id"], "create")
+    service.prepare(work)
+    service.confirm(work.job_id)
+
+    native_catalog = registry.resolve(_CONFIG).modules.структура
+    assert native_catalog is not None and native_catalog.complete
+    assert f"{_OBJECT}.{_FIELD}" not in native_catalog.fields
+
+    source_a = copy.deepcopy(registry.resolve(_CONFIG).configuration.config)
+    for obj in source_a.objects.values():
+        obj.attributes[:] = [field for field in obj.attributes if not field.standard]
+    source_a.get(_OBJECT).attributes.append(Field(name=_FIELD))
+    source_a.source_format = "json"
+    source_a.exporter_version = "test"
+    source_a.platform = "8.3.21"
+    source_a_root = tmp_path / "source-a"
+    source_a_root.mkdir()
+    registry.add_configuration(write_export(source_a_root, source_a))
+
+    effective_catalog = registry.resolve(_CONFIG).modules.структура
+    assert effective_catalog is not None
+    assert not effective_catalog.complete
+    assert f"{_OBJECT}.{_FIELD}" not in effective_catalog.fields
+
+    registry.incoming_dir.mkdir(exist_ok=True)
+    extension = состарить(
+        _archive(
+            registry.incoming_dir,
+            "extension.zip",
+            fields=("ИНН", "Телефон", _FIELD),
+            extension="Дополнение",
+        )
+    )
+
+    def parse_with_legacy_http(target_registry):
+        client = живой_клиент(
+            Starlette(routes=routes(target_registry, mode=DASHBOARD_ON))
+        )
+        login = client.post(
+            "/login",
+            data={"token": "synthetic-admin-token"},
+            follow_redirects=False,
+        )
+        assert login.status_code == 303
+        response = client.post(
+            "/api/v1/sources/incoming/parse",
+            json={"name": extension.name, "configuration": _CONFIG},
+            follow_redirects=False,
+        )
+        assert response.status_code == 202
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if dashboard._JOBS[-1]["state"] in (dashboard.JOB_DONE, dashboard.JOB_FAILED):
+                break
+            time.sleep(0.02)
+        assert dashboard._JOBS[-1]["state"] == dashboard.JOB_DONE
+        assert target_registry.wait_for_module_builds()
+        answer = get_object(target_registry, _OBJECT, config=_CONFIG, detail="fields")
+        assert "Происхождение структуры: **неизвестно**" in answer
+        assert "объявлен расширением «Дополнение»" not in answer
+
+    parse_with_legacy_http(registry)
+
+    restarted = Registry(registry.data_dir)
+    assert restarted.restore() == []
+    assert restarted.wait_for_module_builds()
+    restarted_answer = get_object(
+        restarted, _OBJECT, config=_CONFIG, detail="fields"
+    )
+    assert "Происхождение структуры: **неизвестно**" in restarted_answer
+    assert "объявлен расширением «Дополнение»" not in restarted_answer
+
+    monkeypatch.setattr(dashboard, "_JOBS", [])
+    parse_with_legacy_http(restarted)
 
 
 def test_смена_поколения_базы_инвалидирует_дельту_расширения(tmp_path):

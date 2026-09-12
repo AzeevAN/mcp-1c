@@ -1184,7 +1184,23 @@ def build_generation_runtime(
             raise GenerationRuntimeError(
                 f"extended_structure: {error}"
             ) from error
-    declared_structure = structure_origin.capture_configuration(configuration)
+    if (
+        base_layer.provenance is not None
+        and base_layer.provenance.profile is LayerSourceProfile.SCHEMA_V1
+    ):
+        # Эффективная Source A может уже включать поля активных расширений.
+        # Считать её каталогом исходной B нельзя: legacy-разбор расширения
+        # вычтет такие поля и потеряет их происхождение. Отдельного снимка
+        # декларации B в этом смешанном поколении нет, поэтому честный
+        # результат — unknown, а не реконструкция по эффективной структуре.
+        declared_structure = structure_origin.DeclaredStructure(
+            False,
+            frozenset(),
+            frozenset(),
+            ("Source A не доказывает состав основной файловой выгрузки",),
+        )
+    else:
+        declared_structure = structure_origin.capture_configuration(configuration)
     try:
         materialize_standard_attributes(configuration)
     except StandardAttributeError as error:

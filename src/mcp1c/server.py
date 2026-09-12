@@ -795,7 +795,9 @@ def build_server(
             "регистров — раздел «Таблицы запроса» с уже подставленными "
             "именами полей: ресурс `Количество` в запросе называется "
             "`КоличествоОстаток` или `КоличествоОборот`, и в конфигураторе "
-            "таких имён не видно."
+            "таких имён не видно. Большие HTTP-сервисы дочитываются тем же "
+            "`get_object` по готовому вызову с непрозрачным cursor; после "
+            "смены поколения чтение нужно начать заново."
         )
     )
     @_expected_registry_errors
@@ -805,8 +807,15 @@ def build_server(
                         "`Справочник.Номенклатура`. Получается из `search_objects`.")],
         config: CONFIG_PARAM = None,
         detail: DETAIL_PARAM = "fields",
+        cursor: Annotated[str | None, Field(
+            description=(
+                "Непрозрачный cursor из ответа get_object для продолжения "
+                "HTTP-сервиса. Передавайте без изменений с теми же "
+                "full_name, config и detail."
+            )
+        )] = None,
     ) -> str:
-        return tools.get_object(registry, full_name, config, detail)
+        return tools.get_object(registry, full_name, config, detail, cursor=cursor)
 
     @server.tool(
         description=(

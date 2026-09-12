@@ -98,6 +98,15 @@ def http_service_path(root_url: str, template: str = "") -> str:
     return f"/hs/{root}{suffix}" if template else f"/hs/{root}"
 
 
+@dataclass(frozen=True, slots=True)
+class HTTPServicePage:
+    """Ограниченная страница вложенных HTTP-шаблонов и методов."""
+
+    text: str
+    next_template: int | None = None
+    next_method: int = 0
+
+
 def render_http_service(
     obj: MetadataObject,
     detail: str,
@@ -106,70 +115,118 @@ def render_http_service(
     platform: str = "",
     max_templates: int = 40,
     max_methods: int = 80,
-) -> str:
+    template_offset: int = 0,
+    method_offset: int = 0,
+) -> HTTPServicePage:
     """Вложенные endpoint HTTP-сервиса без выдуманного адреса хоста/базы."""
     payload = obj.extended
     templates = payload.get("url_templates", [])
     if not isinstance(templates, list):
-        return ""
+        return HTTPServicePage("")
+    if (
+        type(template_offset) is not int
+        or type(method_offset) is not int
+        or template_offset < 0
+        or method_offset < 0
+        or template_offset > len(templates)
+        or max_templates < 1
+        or max_methods < 1
+    ):
+        raise ValueError("недопустимое смещение HTTP-карточки")
     methods_total = sum(
         len(item.get("methods", []))
         for item in templates
         if isinstance(item, dict) and isinstance(item.get("methods"), list)
     )
     if detail == BRIEF:
-        return (
+        return HTTPServicePage(
             f"\nHTTP endpoint: URL-шаблонов {len(templates)}, "
             f"методов {methods_total}.\n"
         )
 
     root_url = str(payload.get("root_url", ""))
-    out = [
-        "## HTTP-сервис",
-        "",
-        f"- Корневой путь после публикации: `{http_service_path(root_url)}`",
-    ]
-    reuse_sessions = payload.get("reuse_sessions")
-    session_max_age = payload.get("session_max_age")
-    if reuse_sessions is not None:
-        out.append(f"- Повторное использование сеансов: `{reuse_sessions}`")
-    elif platform and parse_version(platform) < (8, 3, 9):
-        out.append(
-            f"- Повторное использование сеансов: не применимо на платформе {platform}"
-        )
+    if template_offset or method_offset:
+        out = ["# Продолжение HTTP-сервиса", ""]
     else:
-        suffix = "" if platform else "; точная версия платформы неизвестна"
-        out.append(f"- Повторное использование сеансов: не представлено в Source B{suffix}")
-    if session_max_age is not None:
-        out.append(f"- Время жизни сеанса: `{session_max_age}` секунд")
-    elif platform and parse_version(platform) < (8, 3, 9):
-        out.append(f"- Время жизни сеанса: не применимо на платформе {platform}")
-    else:
-        suffix = "" if platform else "; точная версия платформы неизвестна"
-        out.append(f"- Время жизни сеанса: не представлено в Source B{suffix}")
+        out = [
+            "## HTTP-сервис",
+            "",
+            f"- Корневой путь после публикации: `{http_service_path(root_url)}`",
+        ]
+        reuse_sessions = payload.get("reuse_sessions")
+        session_max_age = payload.get("session_max_age")
+        if reuse_sessions is not None:
+            out.append(f"- Повторное использование сеансов: `{reuse_sessions}`")
+        elif platform and parse_version(platform) < (8, 3, 9):
+            out.append(
+                "- Повторное использование сеансов: не применимо на платформе "
+                f"{platform}"
+            )
+        else:
+            suffix = "" if platform else "; точная версия платформы неизвестна"
+            out.append(
+                "- Повторное использование сеансов: не представлено в Source B"
+                f"{suffix}"
+            )
+        if session_max_age is not None:
+            out.append(f"- Время жизни сеанса: `{session_max_age}` секунд")
+        elif platform and parse_version(platform) < (8, 3, 9):
+            out.append(
+                f"- Время жизни сеанса: не применимо на платформе {platform}"
+            )
+        else:
+            suffix = "" if platform else "; точная версия платформы неизвестна"
+            out.append(
+                "- Время жизни сеанса: не представлено в Source B"
+                f"{suffix}"
+            )
     out.extend(["", f"## URL-шаблоны и методы ({len(templates)} / {methods_total})", ""])
 
     shown_methods = 0
-    for template in templates[:max_templates]:
+    shown_templates = 0
+    template_index = template_offset
+    current_method = method_offset
+    next_position: tuple[int, int] | None = None
+    while template_index < len(templates):
+        if shown_templates >= max_templates or shown_methods >= max_methods:
+            next_position = (template_index, current_method)
+            break
+        template = templates[template_index]
         if not isinstance(template, dict):
+            if current_method:
+                raise ValueError("смещение HTTP method задано не для шаблона")
+            template_index += 1
+            current_method = 0
             continue
+        shown_templates += 1
         name = str(template.get("name", ""))
         synonym = str(template.get("synonym", ""))
+        continuation = current_method > 0
         title = f"### `{name}`" + (f" — {synonym}" if synonym else "")
+        if continuation:
+            title += " — продолжение методов"
         out.extend([title, ""])
-        comment = str(template.get("comment", ""))
-        if comment:
-            out.extend([comment, ""])
-        template_value = str(template.get("template", ""))
-        out.extend(
-            [f"Путь: `{http_service_path(root_url, template_value)}`", ""]
-        )
+        if not continuation:
+            comment = str(template.get("comment", ""))
+            if comment:
+                out.extend([comment, ""])
+            template_value = str(template.get("template", ""))
+            out.extend(
+                [f"Путь: `{http_service_path(root_url, template_value)}`", ""]
+            )
         methods = template.get("methods", [])
         if not isinstance(methods, list):
+            template_index += 1
+            current_method = 0
             continue
-        for method in methods:
+        if current_method < 0 or current_method >= max(1, len(methods)):
+            raise ValueError("смещение HTTP method выходит за страницу")
+        while current_method < len(methods):
             if shown_methods >= max_methods:
+                next_position = (template_index, current_method)
                 break
+            method = methods[current_method]
+            current_method += 1
             if not isinstance(method, dict):
                 continue
             shown_methods += 1
@@ -200,13 +257,23 @@ def render_http_service(
             )
             out.append(f"  Handler: `{handler}`{target} · {state}")
         out.append("")
-        if shown_methods >= max_methods:
+        if next_position is not None:
             break
-    if len(templates) > max_templates:
-        out.extend([f"Показано URL-шаблонов: {max_templates} из {len(templates)}.", ""])
-    if shown_methods < methods_total:
-        out.extend([f"Показано методов: {shown_methods} из {methods_total}.", ""])
-    return "\n".join(out).rstrip() + "\n"
+        template_index += 1
+        current_method = 0
+    if next_position is None and template_index < len(templates):
+        next_position = (template_index, current_method)
+    out.extend(
+        [
+            f"На странице URL-шаблонов: {shown_templates}; методов: {shown_methods}.",
+            "",
+        ]
+    )
+    return HTTPServicePage(
+        "\n".join(out).rstrip() + "\n",
+        next_position[0] if next_position is not None else None,
+        next_position[1] if next_position is not None else 0,
+    )
 
 
 def render_xdto(

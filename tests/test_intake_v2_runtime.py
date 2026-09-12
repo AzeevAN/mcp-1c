@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import zipfile
 
@@ -19,6 +20,7 @@ from mcp1c.intake_v2_generation import materialize_generation
 from mcp1c.intake_v2_runtime import configuration_from_base_layer
 from mcp1c.model import Configuration, Field, MetadataObject
 from mcp1c.registry import Registry, RegistryError
+from mcp1c.render import render_http_service
 from mcp1c.server import build_server
 from mcp1c.tools import (
     get_callers,
@@ -657,6 +659,187 @@ def test_native_http_service_change_и_удаление_endpoint_пережив�
     assert "URL-шаблоны и методы (0 / 0)" in restarted_card
     assert "`/hs/api/items/{id}`" not in restarted_card
     assert "`/hs/api/items/{code}`" not in restarted_card
+
+
+def test_http_service_дочитывается_без_пропусков_и_не_переносит_cursor(
+    tmp_path, monkeypatch
+):
+    original = converter_fixtures._http_service
+    descriptor = original().decode()
+    start = descriptor.index('<URLTemplate ')
+    end = descriptor.index('</URLTemplate>', start) + len('</URLTemplate>')
+    template = descriptor[start:end]
+    method_start = template.index('<Method ')
+    method_end = template.index('</Method>', method_start) + len('</Method>')
+    method = template[method_start:method_end]
+    templates = []
+    for number in range(41):
+        current = (
+            template.replace('uuid-template', f'uuid-template-{number}')
+            .replace('<Name>Item</Name>', f'<Name>Route{number:02}</Name>')
+            .replace('/items/{id}', f'/route{number:02}')
+            .replace('uuid-method', f'uuid-method-{number}-a')
+            .replace('<Name>GetItem</Name>', f'<Name>Method{number:02}A</Name>')
+        )
+        if number < 40:
+            second = (
+                method.replace('uuid-method', f'uuid-method-{number}-b')
+                .replace('<Name>GetItem</Name>', f'<Name>Method{number:02}B</Name>')
+            )
+            current = current.replace('</ChildObjects>', second + '</ChildObjects>')
+        templates.append(current)
+    expanded = (descriptor[:start] + ''.join(templates) + descriptor[end:]).encode()
+
+    monkeypatch.setattr(converter_fixtures, '_http_service', lambda **_kwargs: expanded)
+    _collection_value, generation = _materialized(
+        tmp_path,
+        'http-pagination',
+        http_services=True,
+    )
+    registry = Registry(tmp_path / 'data-http-pagination')
+    registry.publish_generation(
+        registry.stage_generation(generation.manifest, generation.payloads)
+    )
+
+    first_pages = []
+    for detail in ('fields', 'full'):
+        pages = []
+        cursor = None
+        while True:
+            page = get_object(
+                registry,
+                'HTTPСервис.Api',
+                config='DemoConfiguration',
+                detail=detail,
+                cursor=cursor,
+            )
+            pages.append(page)
+            continuation = re.search(r'`get_object\((\{.*\})\)`', page)
+            if continuation is None:
+                break
+            cursor = json.loads(continuation.group(1))['cursor']
+
+        combined = '\n'.join(pages)
+        for number in range(41):
+            assert combined.count(f'`/hs/api/route{number:02}`') == 1
+            assert combined.count(f'`Method{number:02}A`') == 1
+            if number < 40:
+                assert combined.count(f'`Method{number:02}B`') == 1
+        assert len(pages) == 2
+        first_pages.append(pages[0])
+
+    old_cursor = json.loads(
+        re.search(r'`get_object\((\{.*\})\)`', first_pages[0]).group(1)
+    )['cursor']
+    other_dir = tmp_path / 'other-configuration'
+    other_dir.mkdir()
+    registry.add_configuration(
+        write_export(
+            other_dir,
+            Configuration(
+                name='OtherConfiguration',
+                version='1.0',
+                platform='8.3.23.1997',
+            ),
+        )
+    )
+    with pytest.raises(RegistryError, match='Курсор.*другому объекту'):
+        get_object(
+            registry,
+            'HTTPСервис.Api',
+            config='DemoConfiguration',
+            detail='full',
+            cursor=old_cursor,
+        )
+    with pytest.raises(RegistryError, match='Курсор.*detail'):
+        get_object(
+            registry,
+            'HTTPСервис.Api',
+            config='DemoConfiguration',
+            detail='field',
+            cursor=old_cursor,
+        )
+    with pytest.raises(RegistryError, match='Курсор.*другому объекту'):
+        get_object(
+            registry,
+            'HTTPСервис.Missing',
+            config='DemoConfiguration',
+            detail='fields',
+            cursor=old_cursor,
+        )
+    with pytest.raises(RegistryError, match='Курсор.*конфигурации'):
+        get_object(
+            registry,
+            'HTTPСервис.Api',
+            config='OtherConfiguration',
+            detail='fields',
+            cursor=old_cursor,
+        )
+    with pytest.raises(RegistryError, match='Некорректный курсор'):
+        get_object(
+            registry,
+            'HTTPСервис.Api',
+            config='DemoConfiguration',
+            detail='fields',
+            cursor='!',
+        )
+    monkeypatch.setattr(converter_fixtures, '_http_service', original)
+    _changed_collection, changed = _materialized(
+        tmp_path,
+        'http-pagination-changed',
+        http_services=True,
+        http_template='/changed',
+    )
+    registry.publish_generation(
+        registry.stage_generation(changed.manifest, changed.payloads)
+    )
+
+    with pytest.raises(RegistryError, match='Курсор.*изменивш'):
+        get_object(
+            registry,
+            'HTTPСервис.Api',
+            config='DemoConfiguration',
+            detail='fields',
+            cursor=old_cursor,
+        )
+
+
+def test_http_service_дочитывает_81_метод_одного_шаблона_без_дубля_пути():
+    methods = [
+        {
+            'name': f'Method{number:02}',
+            'http_method': 'GET',
+            'handler': f'Handle{number:02}',
+        }
+        for number in range(81)
+    ]
+    obj = MetadataObject(
+        full_name='HTTPСервис.Api',
+        kind='HTTPСервис',
+        name='Api',
+        extended={
+            'root_url': 'api',
+            'url_templates': [
+                {'name': 'All', 'template': '/all', 'methods': methods}
+            ],
+        },
+    )
+
+    first = render_http_service(obj, 'fields', {})
+    assert (first.next_template, first.next_method) == (0, 80)
+    second = render_http_service(
+        obj,
+        'fields',
+        {},
+        template_offset=first.next_template,
+        method_offset=first.next_method,
+    )
+    combined = first.text + second.text
+
+    assert second.next_template is None
+    assert combined.count('`/hs/api/all`') == 1
+    for number in range(81):
+        assert combined.count(f'`Method{number:02}`') == 1
 
 
 @pytest.mark.parametrize("explicit_null", [False, True])

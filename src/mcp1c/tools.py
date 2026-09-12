@@ -1596,14 +1596,119 @@ def _fields_section(context, query: str, limit: int = 5) -> list[str]:
     return out
 
 
+def _http_service_cursor_digest(
+    context,
+    obj,
+    detail: str,
+    bindings: dict[str, HTTPHandlerResolution],
+    code_source: SourceSnapshot | None,
+) -> str:
+    """Отпечаток ровно той HTTP-карточки, которую разрешено дочитать."""
+    source = SourceSnapshot.capture(context.configuration.source)
+    state = {
+        "configuration": context.name,
+        "source": {
+            "id": source.id,
+            "sha256": source.sha256,
+            "loaded_at": source.loaded_at,
+            "locator_generation": source.locator_generation,
+            "selection_version": source.selection_version,
+        },
+        "structure_sha256": context.configuration.structure_sha256,
+        "code_source": (
+            {
+                "id": code_source.id,
+                "sha256": code_source.sha256,
+                "loaded_at": code_source.loaded_at,
+                "locator_generation": code_source.locator_generation,
+                "selection_version": code_source.selection_version,
+            }
+            if code_source is not None
+            else None
+        ),
+        "object": obj.full_name,
+        "detail": detail,
+        "extended": obj.extended,
+        "bindings": [
+            [name, binding.state, binding.address]
+            for name, binding in sorted(bindings.items())
+        ],
+    }
+    return hashlib.sha256(
+        json.dumps(
+            state,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _decode_http_service_cursor(cursor: str, digest: str) -> tuple[int, int]:
+    try:
+        if not isinstance(cursor, str) or not 1 <= len(cursor) <= 2048:
+            raise ValueError
+        state = json.loads(
+            base64.b64decode(
+                cursor + "=" * (-len(cursor) % 4),
+                altchars=b"-_",
+                validate=True,
+            )
+        )
+        if (
+            not isinstance(state, dict)
+            or set(state) != {"v", "sha256", "template", "method"}
+            or type(state["v"]) is not int
+            or state["v"] != 1
+            or not isinstance(state["sha256"], str)
+            or type(state["template"]) is not int
+            or state["template"] < 0
+            or type(state["method"]) is not int
+            or state["method"] < 0
+            or (state["template"] == 0 and state["method"] == 0)
+        ):
+            raise ValueError
+    except (ValueError, TypeError, binascii.Error, RecursionError):
+        raise RegistryError(
+            "Некорректный курсор HTTP-сервиса; начните чтение заново."
+        ) from None
+    if state["sha256"] != digest:
+        raise RegistryError(
+            "Курсор относится к другому объекту или изменившемуся поколению; "
+            "начните чтение заново."
+        )
+    return state["template"], state["method"]
+
+
+def _encode_http_service_cursor(
+    digest: str, template_offset: int, method_offset: int
+) -> str:
+    raw = json.dumps(
+        {
+            "v": 1,
+            "sha256": digest,
+            "template": template_offset,
+            "method": method_offset,
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
 def get_object(
     registry: Registry,
     full_name: str,
     config: str | None = None,
     detail: str = FIELDS,
+    *,
+    cursor: str | None = None,
 ) -> str:
     """Структура объекта: реквизиты, табличные части, движения, связи."""
     if detail not in DETAIL_LEVELS:
+        if cursor is not None:
+            raise RegistryError(
+                "Курсор требует исходный detail fields/full без изменений."
+            )
         detail = FIELDS
 
     snapshot = None
@@ -1616,12 +1721,21 @@ def get_object(
     obj = context.configuration.config.get(full_name)
 
     if obj is None:
+        if cursor is not None:
+            raise RegistryError(
+                "Курсор относится к другому объекту или конфигурации; "
+                "начните чтение заново."
+            )
         hits = context.configuration.index.search(full_name, limit=5)
         suggestion = "\n".join(f"- `{h.doc.id}`" for h in hits)
         return (
             f"В конфигурации {context.name} нет объекта `{full_name}`.\n\n"
             + (f"Возможно, имелось в виду:\n{suggestion}\n" if suggestion else "")
             + _notes_block(context, include_code=False)
+        )
+    if cursor is not None and (obj.kind != "HTTPСервис" or detail == BRIEF):
+        raise RegistryError(
+            "Курсор поддерживается только для HTTP-сервиса с detail fields/full."
         )
 
     # Виртуальные таблицы собираются здесь, а не в рендере: они соединяют
@@ -1633,26 +1747,69 @@ def get_object(
         configuration=context.configuration.config,
     )
 
-    body = render_object(
-        obj,
-        detail,
-        graph=context.configuration.graph,
-        virtual_tables=table_report.tables,
-        table_availability=table_report.availability,
-        virtual_table_notes=table_report.notes,
-        origins=_structure_origin_view(snapshot) if snapshot is not None else None,
-    )
-    if obj.kind == "HTTPСервис":
-        body += render_http_service(
+    body = ""
+    if cursor is None:
+        body = render_object(
             obj,
             detail,
-            (
-                _http_handler_resolutions(snapshot.modules, obj)
-                if snapshot is not None
-                else {}
-            ),
-            platform=context.platform,
+            graph=context.configuration.graph,
+            virtual_tables=table_report.tables,
+            table_availability=table_report.availability,
+            virtual_table_notes=table_report.notes,
+            origins=_structure_origin_view(snapshot) if snapshot is not None else None,
         )
+    if obj.kind == "HTTPСервис":
+        bindings = (
+            _http_handler_resolutions(snapshot.modules, obj)
+            if snapshot is not None
+            else {}
+        )
+        digest = _http_service_cursor_digest(
+            context,
+            obj,
+            detail,
+            bindings,
+            snapshot.modules.capture.source if snapshot is not None else None,
+        )
+        template_offset = 0
+        method_offset = 0
+        if cursor is not None:
+            template_offset, method_offset = _decode_http_service_cursor(
+                cursor, digest
+            )
+            templates = obj.extended.get("url_templates", [])
+            if not isinstance(templates, list) or template_offset >= len(templates):
+                raise RegistryError(
+                    "Курсор содержит недопустимое смещение; начните чтение заново."
+                )
+        try:
+            page = render_http_service(
+                obj,
+                detail,
+                bindings,
+                platform=context.platform,
+                template_offset=template_offset,
+                method_offset=method_offset,
+            )
+        except ValueError:
+            raise RegistryError(
+                "Курсор содержит недопустимое смещение; начните чтение заново."
+            ) from None
+        body += page.text
+        if page.next_template is not None:
+            next_cursor = _encode_http_service_cursor(
+                digest, page.next_template, page.next_method
+            )
+            arguments = {
+                "full_name": obj.full_name,
+                "config": context.name,
+                "detail": detail,
+                "cursor": next_cursor,
+            }
+            body += (
+                "\nПродолжение (аргументы следующего вызова):\n"
+                f"`get_object({json.dumps(arguments, ensure_ascii=False)})`\n"
+            )
     if obj.kind == "ПакетXDTO" or obj.kind.startswith("ПакетXDTO."):
         relative_path = obj.extended.get("_member_relative_path")
         member_size = obj.extended.get("_member_size")
@@ -1683,7 +1840,7 @@ def get_object(
                 body += f"\n> Полная модель XDTO недоступна: {error}.\n"
     code = (
         _object_code_block(snapshot.modules, obj.full_name, detail)
-        if snapshot is not None
+        if snapshot is not None and cursor is None
         else ""
     )
     if snapshot is None:

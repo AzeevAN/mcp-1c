@@ -23,16 +23,31 @@ def _write(root, members: dict[str, bytes]) -> None:
                 target.write(payload)
 
 
-def test_pack_читает_нужный_диапазон_и_пустой_member(tmp_path):
+@pytest.mark.parametrize(
+    "members",
+    [
+        (("payload/z.bin", b""), ("payload/a.bin", b"alpha")),
+        (("payload/a.bin", b"alpha"), ("payload/z.bin", b"")),
+        (
+            ("payload/z-before.bin", b""),
+            ("payload/a.bin", b"alpha"),
+            ("payload/z-between-1.bin", b""),
+            ("payload/z-between-2.bin", b""),
+            ("payload/b.bin", b"beta"),
+            ("payload/z-after.bin", b""),
+        ),
+        (("payload/zero-a.bin", b""), ("payload/zero-b.bin", b"")),
+    ],
+)
+def test_pack_читает_нужные_диапазоны_и_пустые_members(tmp_path, members):
     root = tmp_path / "pack"
-    _write(root, {"payload/a.bin": b"alpha", "payload/empty.bin": b""})
+    _write(root, dict(members))
 
-    with open_stored_member(root, "payload/a.bin") as source:
-        assert source.read(2) == b"al"
-        assert source.read() == b"pha"
-        assert source.read() == b""
-    with open_stored_member(root, "payload/empty.bin") as source:
-        assert source.read() == b""
+    for path, payload in members:
+        with open_stored_member(root, path) as source:
+            assert source.read(2) == payload[:2]
+            assert source.read() == payload[2:]
+            assert source.read() == b""
 
 
 def test_pack_откатывает_незавершённую_entry(tmp_path):
@@ -75,6 +90,53 @@ def test_pack_отклоняет_неканоничный_или_несогла�
 
     with pytest.raises(MemberPackError, match="разрыв|пересечение"):
         open_stored_member(root, "payload/a.bin")
+
+
+def test_pack_отклоняет_пустой_member_внутри_занятого_диапазона(tmp_path):
+    root = tmp_path / "pack"
+    _write(root, {"payload/a.bin": b"alpha", "payload/z.bin": b""})
+    index = json.loads((root / INDEX_NAME).read_text(encoding="utf-8"))
+    empty = next(entry for entry in index["entries"] if entry["size"] == 0)
+    empty["offset"] = 2
+    (root / INDEX_NAME).write_text(
+        json.dumps(
+            index,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MemberPackError, match="разрыв|пересечение"):
+        open_stored_member(root, "payload/z.bin")
+
+
+@pytest.mark.parametrize("offset", [4, 6])
+def test_pack_отклоняет_настоящие_пересечение_и_разрыв(tmp_path, offset):
+    root = tmp_path / "pack"
+    _write(root, {"payload/a.bin": b"alpha", "payload/b.bin": b"beta"})
+    index = json.loads((root / INDEX_NAME).read_text(encoding="utf-8"))
+    second = next(
+        entry
+        for entry in index["entries"]
+        if entry["relative_path"] == "payload/b.bin"
+    )
+    second["offset"] = offset
+    (root / INDEX_NAME).write_text(
+        json.dumps(
+            index,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MemberPackError, match="разрыв|пересечение"):
+        open_stored_member(root, "payload/b.bin")
 
 
 def test_reader_поддерживает_прежний_loose_member(tmp_path):

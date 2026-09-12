@@ -55,6 +55,29 @@ def _canonical_json(value: object) -> bytes:
     ).encode("utf-8")
 
 
+def _validate_index_layout(
+    entries: list[MemberPackEntry], pack_size: int
+) -> None:
+    """Проверить покрытие pack, не приписывая пустым member порядок по имени."""
+    cursor = 0
+    boundaries = {0}
+    nonempty = sorted(
+        (entry for entry in entries if entry.size),
+        key=lambda item: (item.offset, item.relative_path),
+    )
+    for entry in nonempty:
+        if entry.offset != cursor or entry.offset + entry.size > pack_size:
+            raise MemberPackError(
+                "индекс member pack содержит разрыв или пересечение"
+            )
+        cursor += entry.size
+        boundaries.add(cursor)
+    if cursor != pack_size or any(
+        entry.offset not in boundaries for entry in entries if not entry.size
+    ):
+        raise MemberPackError("индекс member pack содержит разрыв или пересечение")
+
+
 @dataclass(frozen=True, slots=True)
 class MemberPackEntry:
     relative_path: str
@@ -324,12 +347,8 @@ def _cached_index(
         entry.relative_path for entry in entries
     ) or len({entry.relative_path for entry in entries}) != len(entries):
         raise MemberPackError("индекс member pack не каноничен или дублирует путь")
-    cursor = 0
-    for entry in sorted(entries, key=lambda item: item.offset):
-        if entry.offset != cursor or entry.offset + entry.size > pack_size:
-            raise MemberPackError("индекс member pack содержит разрыв или пересечение")
-        cursor += entry.size
-    if cursor != pack_size or _canonical_json(value) != raw:
+    _validate_index_layout(entries, pack_size)
+    if _canonical_json(value) != raw:
         raise MemberPackError("индекс member pack не совпадает с pack")
     return MappingProxyType({entry.relative_path: entry for entry in entries})
 

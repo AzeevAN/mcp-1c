@@ -181,6 +181,40 @@ def test_materializer_сохраняет_xdto_как_ленивые_extended_mem
     assert not (generation_root / "payload").exists()
 
 
+def test_generation_pack_с_пустым_member_публикуется_и_читается_после_restart(
+    tmp_path,
+):
+    tree = MemoryTree(
+        {
+            "Configuration.xml": _configuration(),
+            "CommonModules/a/Ext/Module.bsl": (
+                b"procedure Ready() export\nendprocedure"
+            ),
+            "CommonModules/B/Ext/Module.bsl": b"",
+        }
+    )
+    collection = collect_source_b(
+        tree,
+        probe_export(tree),
+        tmp_path / "collection-empty-member",
+    )
+    materialized = _materialized(tmp_path, "empty-member", collection)
+    registry = Registry(tmp_path / "data-empty-member")
+    registry.publish_generation(
+        registry.stage_generation(materialized.manifest, materialized.payloads)
+    )
+
+    restarted = Registry(registry.data_dir)
+    assert restarted.restore() == []
+    assert restarted.wait_for_module_builds()
+    assert "procedure Ready() export" in tools.get_procedure(
+        restarted,
+        "ОбщийМодуль.a::Ready",
+        config="DemoConfiguration",
+    )
+    assert restarted.modules["DemoConfiguration:modules"].готов
+
+
 def test_materializer_сохраняет_compiled_модуль_не_выдавая_его_за_bsl(tmp_path):
     load_layer_payload = _symbol("load_layer_payload")
     collection = _collection(

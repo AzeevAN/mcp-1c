@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "name": "forms",
+  "title": "Управляемые формы",
+  "description": "Правила, генерация, разбор и статическая проверка управляемых форм.",
+  "context_budget": {
+    "status": "unmeasured",
+    "tool_count": null,
+    "approx_tokens": null,
+    "tokenizer": null,
+    "payload": "tools_list_delta",
+    "measured_at": null
+  }
+}

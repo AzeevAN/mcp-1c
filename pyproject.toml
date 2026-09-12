@@ -57,4 +57,8 @@ mcp1c-bench = "mcp1c.bench:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-mcp1c = ["dashboard_dist/*", "dashboard_dist/assets/*"]
+mcp1c = [
+    "dashboard_dist/*",
+    "dashboard_dist/assets/*",
+    "capability_modules/forms/manifest.json",
+]

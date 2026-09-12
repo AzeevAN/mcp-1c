@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "form_name": "ФормаПараметров",
+  "format_version": "2.16",
+  "title": {
+    "ru": "Параметры"
+  },
+  "attributes": [
+    {
+      "name": "ПервоеЗначение",
+      "type": {
+        "kind": "string",
+        "length": 100
+      }
+    },
+    {
+      "name": "ВтороеЗначение",
+      "type": {
+        "kind": "string",
+        "length": 100
+      }
+    }
+  ],
+  "elements": [
+    {
+      "kind": "usual_group",
+      "name": "ГруппаПараметров",
+      "title": {
+        "ru": "Параметры"
+      },
+      "children": [
+        {
+          "kind": "input_field",
+          "name": "ПервоеЗначение",
+          "data_path": "ПервоеЗначение"
+        },
+        {
+          "kind": "input_field",
+          "name": "ВтороеЗначение",
+          "data_path": "ВтороеЗначение"
+        },
+        {
+          "kind": "button",
+          "name": "Выполнить",
+          "command": "Выполнить",
+          "default": true
+        }
+      ]
+    }
+  ],
+  "commands": [
+    {
+      "name": "Выполнить",
+      "title": {
+        "ru": "Выполнить"
+      },
+      "action": "Выполнить"
+    }
+  ],
+  "events": [
+    {
+      "event": "OnCreateAtServer",
+      "handler": "ПриСозданииНаСервере"
+    }
+  ]
+}

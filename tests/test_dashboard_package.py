@@ -35,11 +35,15 @@ def test_spa_применяет_сохранённую_тему_до_перво�
         )
 
 
-def test_package_data_включает_index_и_assets() -> None:
+def test_package_data_включает_dashboard_и_manifest_forms() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     patterns = project["tool"]["setuptools"]["package-data"]["mcp1c"]
 
-    assert patterns == ["dashboard_dist/*", "dashboard_dist/assets/*"]
+    assert patterns == [
+        "dashboard_dist/*",
+        "dashboard_dist/assets/*",
+        "capability_modules/forms/manifest.json",
+    ]
     assert DEFAULT_DASHBOARD_DIST == ROOT / "src" / "mcp1c" / "dashboard_dist"
     index = (DEFAULT_DASHBOARD_DIST / "index.html").read_text(encoding="utf-8")
     references = re.findall(r'(?:src|href)="/([^"?#]+)', index)

@@ -10,6 +10,7 @@ import {
   LogOut,
   Library,
   Moon,
+  Puzzle,
   SearchCode,
   ShieldCheck,
   Sun,
@@ -28,6 +29,7 @@ const navigation = [
   { to: "/graph", label: "Связи", icon: GitBranch },
   { to: "/roles", label: "Роли и права", icon: ShieldCheck },
   { to: "/dictionary", label: "Словарь", icon: BookOpenText },
+  { to: "/capabilities", label: "Дополнительные модули", icon: Puzzle },
 ];
 
 export function AppShell() {

@@ -120,6 +120,202 @@
   --shadow: 0 18px 50px rgba(0, 0, 0, 0.3);
 }
 
+.capabilities-page {
+  display: grid;
+  gap: 18px;
+}
+
+.capabilities-heading,
+.capabilities-status-grid article,
+.capabilities-picker,
+.capabilities-restart,
+.capabilities-error,
+.capabilities-restart-dialog {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.capabilities-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 25px 28px;
+}
+
+.capabilities-heading span,
+.capabilities-picker-copy > span,
+.capabilities-status-grid span,
+.capabilities-restart span {
+  color: var(--blue-deep);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.capabilities-heading h1 {
+  margin: 4px 0 7px;
+  color: var(--ink-950);
+  font-size: clamp(26px, 3vw, 38px);
+}
+
+.capabilities-heading p,
+.capabilities-picker-copy p {
+  max-width: 760px;
+  margin: 0;
+  color: var(--muted);
+}
+
+.capabilities-status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.capabilities-status-grid article {
+  display: grid;
+  gap: 8px;
+  padding: 20px 22px;
+}
+
+.capabilities-status-grid article.is-pending {
+  border-color: var(--warning-line);
+  background: var(--warning-surface);
+}
+
+.capabilities-status-grid strong,
+.capabilities-restart strong {
+  color: var(--ink-950);
+  font-size: 18px;
+}
+
+.capabilities-status-grid small,
+.capabilities-restart small,
+.capability-switch em {
+  color: var(--muted);
+}
+
+.capabilities-picker {
+  display: grid;
+  gap: 20px;
+  padding: 24px 26px;
+}
+
+.capabilities-picker-copy h2 {
+  margin: 4px 0 6px;
+  color: var(--ink-950);
+}
+
+.capabilities-list {
+  display: grid;
+  gap: 12px;
+}
+
+.capability-switch {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 17px 18px;
+  background: var(--surface-subtle);
+}
+
+.capability-switch > span:last-child {
+  display: grid;
+  gap: 4px;
+}
+
+.capability-switch em {
+  font-size: 12px;
+  font-style: normal;
+}
+
+.capabilities-actions,
+.capabilities-dialog-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+}
+
+.capabilities-actions > span {
+  margin-right: auto;
+  color: var(--muted);
+}
+
+.capabilities-actions button,
+.capabilities-restart button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.capabilities-restart {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 22px;
+  padding: 20px 24px;
+  border-color: var(--warning-line);
+  background: var(--warning-surface);
+}
+
+.capabilities-restart > div {
+  display: grid;
+  gap: 5px;
+}
+
+.capabilities-error {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 20px 22px;
+  color: var(--danger-text);
+  background: var(--danger-surface);
+}
+
+.capabilities-error div {
+  display: grid;
+  gap: 4px;
+  margin-right: auto;
+}
+
+.capabilities-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.capabilities-restart-dialog {
+  position: relative;
+  width: min(520px, calc(100vw - 32px));
+  padding: 28px;
+}
+
+.capabilities-restart-dialog h2 {
+  margin: 12px 0 8px;
+  color: var(--ink-950);
+}
+
+.capabilities-restart-dialog p {
+  margin: 0 0 22px;
+  color: var(--muted);
+}
+
+@media (max-width: 760px) {
+  .capabilities-status-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .capabilities-heading,
+  .capabilities-restart,
+  .capabilities-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
 /* Роли: две bounded-проекции одного серверного resolver-а. */
 .roles-page {
   display: grid;

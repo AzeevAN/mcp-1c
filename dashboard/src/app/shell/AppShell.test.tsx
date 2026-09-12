@@ -72,6 +72,10 @@ it("показывает уровень чтения, повышение пра�
   expect(await screen.findByText("Только чтение")).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Общая справка" })).toHaveAttribute("href", "/reference");
   expect(screen.getByRole("link", { name: "Роли и права" })).toHaveAttribute("href", "/roles");
+  expect(screen.getByRole("link", { name: "Дополнительные модули" })).toHaveAttribute(
+    "href",
+    "/capabilities",
+  );
   expect(screen.getByRole("link", { name: "Открыть проект mcp-1c на GitHub" })).toHaveAttribute(
     "href",
     "https://github.com/AzeevAN/mcp-1c",

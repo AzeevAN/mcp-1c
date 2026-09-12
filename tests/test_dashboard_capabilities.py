@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import os
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+
 import pytest
 from starlette.applications import Starlette
 
@@ -94,7 +99,10 @@ def test_capability_status_требует_admin(
     assert read_only.status_code == 403
 
 
-def test_baseline_не_публикует_mutation_api(tmp_path, monkeypatch):
+def test_mutation_сохраняет_desired_и_возвращает_status(
+    tmp_path,
+    monkeypatch,
+):
     monkeypatch.delenv("API_TOKEN", raising=False)
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
     client, store, _restart = _client(tmp_path)
@@ -105,8 +113,177 @@ def test_baseline_не_публикует_mutation_api(tmp_path, monkeypatch):
         json={"enabled": ["diagnostics"]},
     )
 
-    assert response.status_code == 405
+    assert response.status_code == 200
+    assert response.json() == {
+        "available": ["diagnostics"],
+        "active": [],
+        "desired": ["diagnostics"],
+        "pending_restart": True,
+    }
+    assert json.loads(store.path.read_text(encoding="utf-8")) == {
+        "version": 1,
+        "capabilities": {"enabled": ["diagnostics"]},
+    }
+    assert os.stat(store.path).st_mode & 0o777 == 0o600
+
+
+def test_mutation_отключает_модуль_только_после_restart(tmp_path, monkeypatch):
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    client, store, _restart = _client(tmp_path, active=("diagnostics",))
+    _login(client)
+
+    response = client.put("/api/v1/capabilities", json={"enabled": []})
+
+    assert response.status_code == 200
+    assert response.json()["active"] == ["diagnostics"]
+    assert response.json()["desired"] == []
+    assert response.json()["pending_restart"] is True
+    assert store.load() == ()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        {},
+        {"enabled": "diagnostics"},
+        {"enabled": ["unknown"]},
+        {"enabled": ["diagnostics", "diagnostics"]},
+        {"enabled": [], "extra": True},
+    ),
+)
+def test_mutation_отклоняет_неверный_body_без_записи(
+    tmp_path,
+    monkeypatch,
+    payload,
+):
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    client, store, _restart = _client(tmp_path)
+    _login(client)
+
+    response = client.put("/api/v1/capabilities", json=payload)
+
+    assert response.status_code == 422
     assert store.path.exists() is False
+
+
+def test_mutation_отклоняет_malformed_json_без_записи(tmp_path, monkeypatch):
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    client, store, _restart = _client(tmp_path)
+    _login(client)
+
+    response = client.put(
+        "/api/v1/capabilities",
+        content=b"{",
+        headers={"content-type": "application/json"},
+    )
+
+    assert response.status_code == 422
+    assert store.path.exists() is False
+
+
+def test_mutation_требует_admin_и_same_origin(tmp_path, monkeypatch):
+    monkeypatch.setenv("API_TOKEN", "read-token")
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    client, store, _restart = _client(tmp_path)
+    _login(client, "read-token")
+
+    read_only = client.put(
+        "/api/v1/capabilities",
+        json={"enabled": ["diagnostics"]},
+    )
+    client.cookies.clear()
+    _login(client)
+    foreign_origin = client.put(
+        "/api/v1/capabilities",
+        json={"enabled": ["diagnostics"]},
+        headers={"origin": "http://sibling.test"},
+    )
+
+    assert read_only.status_code == 403
+    assert foreign_origin.status_code == 403
+    assert store.path.exists() is False
+
+
+def test_mutation_при_ошибке_записи_сохраняет_прежние_bytes(
+    tmp_path,
+    monkeypatch,
+):
+    import mcp1c.capabilities as capability_module
+
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    client, store, _restart = _client(tmp_path)
+    _login(client)
+    store.save(())
+    original = store.path.read_bytes()
+    monkeypatch.setattr(
+        capability_module.os,
+        "replace",
+        lambda source, target: (_ for _ in ()).throw(OSError("synthetic")),
+    )
+
+    response = client.put(
+        "/api/v1/capabilities",
+        json={"enabled": ["diagnostics"]},
+    )
+
+    assert response.status_code == 409
+    assert store.path.read_bytes() == original
+
+
+def test_mutation_не_перезаписывает_повреждённые_settings(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    client, store, _restart = _client(tmp_path)
+    _login(client)
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    store.path.write_bytes(b"{}")
+
+    response = client.put(
+        "/api/v1/capabilities",
+        json={"enabled": ["diagnostics"]},
+    )
+
+    assert response.status_code == 409
+    assert store.path.read_bytes() == b"{}"
+
+
+def test_параллельные_mutation_возвращают_свой_status_и_целый_json(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    client, store, _restart = _client(tmp_path)
+    _login(client)
+    original_save = store.save
+    barrier = Barrier(2)
+
+    def simultaneous_save(enabled):
+        barrier.wait(timeout=2)
+        return original_save(enabled)
+
+    monkeypatch.setattr(store, "save", simultaneous_save)
+
+    def update(enabled):
+        return client.put("/api/v1/capabilities", json={"enabled": enabled})
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        enabled = pool.submit(update, ["diagnostics"])
+        disabled = pool.submit(update, [])
+        responses = (enabled.result(), disabled.result())
+
+    assert [response.status_code for response in responses] == [200, 200]
+    assert responses[0].json()["desired"] == ["diagnostics"]
+    assert responses[1].json()["desired"] == []
+    payload = json.loads(store.path.read_text(encoding="utf-8"))
+    assert payload["capabilities"]["enabled"] in (["diagnostics"], [])
 
 
 def test_повреждённые_settings_не_разрешают_restart(tmp_path, monkeypatch):

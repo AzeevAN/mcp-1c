@@ -89,11 +89,14 @@ MCP1C_IMAGE=mcp1c:local docker compose up -d
 - `GET /api/v1/roles/access` — страница объявленных прав одной роли;
 - `GET /api/v1/roles/restriction` — ограниченное окно явно выбранного RLS;
 - `GET /api/v1/dictionary` — встроенный и локальный слои словаря;
-- `GET /api/v1/reference*` — статус, поиск и карточки общей справки.
+- `GET /api/v1/reference*` — статус, поиск и карточки общей справки;
+- `GET|PUT /api/v1/capabilities` — active/desired-статус и атомарная запись
+  полного набора внутренних модулей.
 
 Административные ручки находятся под `/api/v1/sources/*`,
-`/api/v1/dictionary/*`, `/api/v1/reference/*` и
-`/api/v1/server/restart`. Они требуют административный токен или
+`/api/v1/dictionary/*`, `/api/v1/reference/*`,
+`/api/v1/capabilities`, `/api/v1/server/restart`. Они требуют
+административный токен или
 административную cookie-сессию. Запрос с cookie дополнительно проходит
 same-origin проверку `Origin`/`Referer`; явный заголовок токена не использует
 браузерные полномочия.

@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
 import sys
 
 import anyio
@@ -172,6 +173,55 @@ def test_server_settings_важнее_env_и_переживают_restart(tmp_pa
 
     assert enabled == ("diagnostics",)
     assert resolved_store.load() == ("diagnostics",)
+
+
+def test_enable_и_disable_применяются_двумя_независимыми_startup(
+    tmp_path,
+):
+    data = tmp_path / "data"
+    store = CapabilitySettingsStore(data)
+    probe = """
+import asyncio
+import json
+import sys
+from pathlib import Path
+
+from mcp1c.capabilities import CapabilityRuntime, resolve_capability_settings
+from mcp1c.reference_provider import ReferenceService
+from mcp1c.registry import Registry
+from mcp1c.server import build_server
+
+data = Path(sys.argv[1])
+store, enabled = resolve_capability_settings(data, environment="off")
+registry = Registry(data)
+registry.startup()
+server = build_server(
+    registry,
+    reference=ReferenceService.discover(data, database_path="off"),
+    enabled_capabilities=enabled,
+    capability_runtime=CapabilityRuntime(store, active=enabled),
+)
+print(json.dumps([tool.name for tool in asyncio.run(server.list_tools())]))
+"""
+
+    def startup_tools() -> list[str]:
+        result = subprocess.run(
+            [sys.executable, "-c", probe, str(data)],
+            cwd=Path(__file__).resolve().parents[1],
+            env={**os.environ, "PYTHONPATH": "src", "MCP1C_CAPABILITIES": "off"},
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return json.loads(result.stdout)
+
+    store.save(("diagnostics",))
+    enabled_tools = startup_tools()
+    store.save(())
+    disabled_tools = startup_tools()
+
+    assert enabled_tools == [*CORE_TOOLS, "diagnostics_status"]
+    assert disabled_tools == CORE_TOOLS
 
 
 def test_после_удаления_settings_status_снова_предсказывает_env_bootstrap(tmp_path):
@@ -579,7 +629,11 @@ def test_public_startup_документирует_settings_и_bootstrap_env():
     assert "MCP1C_CAPABILITIES=off" in example
     assert "`MCP1C_CAPABILITIES`" in readme
     assert "`data/server-settings.json`" in readme
+    assert "`PUT /api/v1/capabilities`" in readme
+    assert "«Дополнительные модули»" in readme
     assert "tests/measure_capability_startup.py --runs 10" in readme
     assert "`diagnostics_status`" in tools_doc
+    assert "`PUT` того же admin-" in tools_doc
     assert "`data/server-settings.json`" in operations
+    assert "`PUT /api/v1/capabilities`" in operations
     assert '"capabilities":{"enabled":["diagnostics"]}' in operations

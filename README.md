@@ -30,13 +30,13 @@
 | Роли | объявленные права из native generation; без готового слоя две role-ручки отсутствуют |
 | Дашборд | современная SPA включена по умолчанию; светлая и тёмная темы; ссылка на GitHub; `on` либо `off` |
 | Авторизация Docker | два разных обязательных токена: `API_TOKEN` на чтение, `ADMIN_TOKEN` на запись |
-| Тесты | `.venv/bin/python -m pytest`, 2357 |
+| Тесты | `.venv/bin/python -m pytest`, 2369 |
 
 Воспроизводимый прогон:
 
 ```bash
 .venv/bin/pip install --require-hashes -r requirements-dev-lock.txt
-.venv/bin/python -m pytest          # 2357 тестов (прогон 2026-09-12)
+.venv/bin/python -m pytest          # 2369 тестов (прогон 2026-09-12)
 ```
 
 ## Навигация
@@ -1514,12 +1514,14 @@ fail-closed останавливают startup до создания Registry. �
 reference/role-tools и других модулей; частично зарегистрированный набор при
 ошибке откатывается. `GET /api/v1/capabilities` с правом администратора отдаёт
 `available`, фактический startup-набор `active`, сохранённый `desired` и
-`pending_restart`. Изменение файла не меняет живой `tools/list`: общий
+`pending_restart`. `PUT /api/v1/capabilities` принимает полный JSON-массив
+`enabled`, требует admin и same-origin для cookie-сессии и атомарно заменяет
+только capability-секцию. В дашборде этот контракт доступен на экране
+«Дополнительные модули». Изменение файла не меняет живой `tools/list`: общий
 `POST /api/v1/server/restart` разрешён при pending общей справки или capability,
 перечисляет причины и применяет новый набор только после полного старта процесса.
-Dashboard-запись настройки и отдельный экран остаются следующей задачей;
-публичного mutation API в этом baseline нет. Поэтому `tools/list_changed` для
-capability startup-события не отправляется.
+Экран требует явно сохранить desired-набор и отдельно подтвердить полный restart.
+`tools/list_changed` для capability startup-события не отправляется.
 
 После изменения bind-mounted `server-settings.json` bare-процесс нужно полностью
 остановить и запустить заново; для Compose достаточно

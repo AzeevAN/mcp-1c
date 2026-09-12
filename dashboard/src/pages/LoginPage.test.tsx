@@ -29,6 +29,8 @@ it("оставляет неверный токен на форме и показ
   vi.stubGlobal("fetch", fetchMock);
   renderLogin();
 
+  expect(screen.getByText(/настройку модулей/)).toBeInTheDocument();
+
   fireEvent.change(screen.getByLabelText("Токен доступа"), {
     target: { value: "wrong-token" },
   });

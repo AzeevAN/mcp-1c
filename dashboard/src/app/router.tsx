@@ -11,6 +11,7 @@ import { DictionaryPage } from "../pages/DictionaryPage";
 import { ReferencePage } from "../pages/ReferencePage";
 import { ReferenceItemPage } from "../pages/ReferenceItemPage";
 import { RolesPage } from "../pages/RolesPage";
+import { CapabilitiesPage } from "../pages/CapabilitiesPage";
 
 export const router = createBrowserRouter([
   { path: "/login", element: <LoginPage /> },
@@ -54,6 +55,10 @@ export const router = createBrowserRouter([
       {
         path: "dictionary",
         element: <DictionaryPage />,
+      },
+      {
+        path: "capabilities",
+        element: <CapabilitiesPage />,
       },
     ],
   },

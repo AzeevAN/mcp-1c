@@ -123,6 +123,7 @@ SPA_PAGE_PATHS = (
     "/object",
     "/syntax",
     "/roles",
+    "/capabilities",
 )
 DEFAULT_DASHBOARD_DIST = Path(__file__).resolve().with_name("dashboard_dist")
 
@@ -1244,6 +1245,34 @@ def _spa_routes(
         except CapabilityConfigurationError as error:
             return _json_error(str(error), 409)
 
+    async def capabilities_update_api(request: Request) -> JSONResponse:
+        denied = _mutation_denied(request, action="Изменение настроек модулей")
+        if denied is not None:
+            return denied
+        payload = await _json_body(request)
+        enabled = payload.get("enabled")
+        if (
+            set(payload) != {"enabled"}
+            or not isinstance(enabled, list)
+            or not all(isinstance(name, str) for name in enabled)
+        ):
+            return _json_error(
+                "Нужен полный массив `enabled` из точных имён модулей.",
+                422,
+            )
+        try:
+            normalized = capabilities.store.normalize(enabled)
+        except CapabilityConfigurationError as error:
+            return _json_error(str(error), 422)
+        try:
+            result = await run_in_threadpool(
+                capabilities.save_desired,
+                normalized,
+            )
+        except CapabilityConfigurationError as error:
+            return _json_error(str(error), 409)
+        return JSONResponse(result)
+
     async def directory_sources_api(request: Request) -> JSONResponse:
         denied = _admin_denied(request, action="Просмотр подключённых каталогов")
         if denied is not None:
@@ -1879,6 +1908,12 @@ def _spa_routes(
             capabilities_api,
             methods=["GET"],
             name="dashboard_capabilities",
+        ),
+        Route(
+            "/api/v1/capabilities",
+            capabilities_update_api,
+            methods=["PUT"],
+            name="dashboard_capabilities_update",
         ),
         Route("/api/v1/sources/directories", directory_sources_api, methods=["GET"]),
         Route("/api/v1/sources/directories/{operation}", directory_change_api, methods=["POST"]),

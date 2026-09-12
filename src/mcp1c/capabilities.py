@@ -144,6 +144,14 @@ class CapabilitySettingsStore:
         self.fallback_environment = fallback_environment
         self._lock = threading.RLock()
 
+    def normalize(self, enabled: object) -> tuple[str, ...]:
+        """Проверить полный desired-набор до любой записи."""
+        return _normalize_names(
+            enabled,
+            source=str(self.path),
+            definitions=self.definitions,
+        )
+
     def _read_payload(self) -> dict | None:
         try:
             descriptor = os.open(
@@ -233,11 +241,7 @@ class CapabilitySettingsStore:
 
     def save(self, enabled: tuple[str, ...]) -> tuple[str, ...]:
         """Атомарно заменить только capability-секцию общего файла."""
-        normalized = _normalize_names(
-            list(enabled),
-            source=str(self.path),
-            definitions=self.definitions,
-        )
+        normalized = self.normalize(list(enabled))
         with self._lock:
             payload = self._read_payload()
             if payload is None:
@@ -293,12 +297,20 @@ class CapabilityRuntime:
 
     def payload(self) -> dict[str, object]:
         desired = self.store.load()
+        return self._payload(desired)
+
+    def _payload(self, desired: tuple[str, ...]) -> dict[str, object]:
         return {
             "available": list(self.store.definitions),
             "active": list(self.active),
             "desired": list(desired),
             "pending_restart": desired != self.active,
         }
+
+    def save_desired(self, desired: tuple[str, ...]) -> dict[str, object]:
+        """Сохранить полный выбор и вернуть статус именно этой записи."""
+        saved = self.store.save(desired)
+        return self._payload(saved)
 
     def pending_restart(self) -> bool:
         return self.store.load() != self.active

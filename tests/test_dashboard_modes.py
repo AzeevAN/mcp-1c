@@ -94,11 +94,13 @@ def test_spa_раздаёт_index_и_маршруты_клиента(tmp_path):
     with TestClient(app) as client:
         root = client.get("/")
         nested = client.get("/sources")
+        capabilities = client.get("/capabilities")
 
     assert root.status_code == 200
     assert nested.status_code == 200
     assert "Новый дашборд" in root.text
     assert nested.text == root.text
+    assert capabilities.text == root.text
 
 
 def test_spa_оставляет_единую_серверную_проверку_токена(
@@ -148,14 +150,19 @@ def test_spa_без_сессии_перенаправляет_прямую_сс�
 
     with TestClient(app) as client:
         denied = client.get("/sources", follow_redirects=False)
+        denied_capabilities = client.get("/capabilities", follow_redirects=False)
         login_page = client.get("/login")
         client.post("/login", data={"token": "test-read-token"})
         allowed = client.get("/sources")
+        allowed_capabilities = client.get("/capabilities")
 
     assert denied.status_code == 303
     assert denied.headers["location"] == "/login?next=%2Fsources"
+    assert denied_capabilities.status_code == 303
+    assert denied_capabilities.headers["location"] == "/login?next=%2Fcapabilities"
     assert login_page.status_code == 200
     assert allowed.status_code == 200
+    assert allowed_capabilities.status_code == 200
 
 
 def test_spa_api_источников_требует_токен_чтения(tmp_path, monkeypatch):

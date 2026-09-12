@@ -5,9 +5,10 @@ from __future__ import annotations
 import hashlib
 import io
 import xml.etree.ElementTree as ET
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from types import MappingProxyType
 
 from .intake_v2_collector import CollectionError, open_collection_member
 from .model import Configuration, MetadataObject
@@ -24,11 +25,54 @@ PLATFORM_NAMESPACES = frozenset(
     }
 )
 MAX_PACKAGE_SIZE = 64 << 20
+MAX_PACKAGE_ELEMENTS = 1_000_000
+MAX_NAMESPACE_DECLARATIONS = 100_000
+MAX_NAMESPACE_SCOPE_SIZE = 10_000
+MAX_PACKAGE_DEPTH = 512
 QNAME_ATTRIBUTES = frozenset({"type", "ref", "base", "itemType", "memberTypes"})
 
 
 class XDTOReadError(ValueError):
     """Сохранённый XDTO member нельзя безопасно прочитать."""
+
+
+class _NamespaceScope(Mapping[str, str]):
+    """Неизменяемый слой namespace без копирования родительской области."""
+
+    __slots__ = ("_local", "_parent", "_size")
+
+    def __init__(
+        self,
+        parent: Mapping[str, str] | None = None,
+        local: Mapping[str, str] | None = None,
+    ) -> None:
+        self._parent = parent
+        self._local = MappingProxyType(dict(local or {}))
+        inherited = len(parent) if parent is not None else 0
+        self._size = (
+            inherited + sum(key not in parent for key in self._local)
+            if parent is not None
+            else len(self._local)
+        )
+
+    def __getitem__(self, key: str) -> str:
+        try:
+            return self._local[key]
+        except KeyError:
+            if self._parent is None:
+                raise
+            return self._parent[key]
+
+    def __iter__(self) -> Iterator[str]:
+        yield from self._local
+        if self._parent is not None:
+            yield from (key for key in self._parent if key not in self._local)
+
+    def __len__(self) -> int:
+        return self._size
+
+
+_EMPTY_NAMESPACE_SCOPE: Mapping[str, str] = _NamespaceScope()
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,10 +119,14 @@ def read_package_member(
 def _parse_with_namespaces(
     payload: bytes,
 ) -> tuple[ET.Element, dict[int, Mapping[str, str]]]:
+    if len(payload) > MAX_PACKAGE_SIZE:
+        raise XDTOReadError("размер XDTO package выходит за допустимый предел")
     namespaces: dict[int, Mapping[str, str]] = {}
-    stack: list[dict[str, str]] = []
+    stack: list[Mapping[str, str]] = []
     pending: dict[str, str] = {}
     root: ET.Element | None = None
+    elements = 0
+    declarations = 0
     try:
         events = ET.iterparse(
             io.BytesIO(payload), events=("start", "end", "start-ns", "end-ns")
@@ -87,13 +135,34 @@ def _parse_with_namespaces(
             if event == "start-ns":
                 prefix, namespace = value
                 pending[prefix or ""] = namespace
+                declarations += 1
+                if declarations > MAX_NAMESPACE_DECLARATIONS:
+                    raise XDTOReadError(
+                        "XDTO package превышает предел объявлений namespace"
+                    )
             elif event == "start":
                 element = value
-                current = dict(stack[-1]) if stack else {}
-                current.update(pending)
+                elements += 1
+                if elements > MAX_PACKAGE_ELEMENTS:
+                    raise XDTOReadError("XDTO package превышает предел XML-элементов")
+                parent = stack[-1] if stack else _EMPTY_NAMESPACE_SCOPE
+                if pending:
+                    current = _NamespaceScope(parent, pending)
+                    if len(current) > MAX_NAMESPACE_SCOPE_SIZE:
+                        raise XDTOReadError(
+                            "XDTO package превышает предел namespace в области"
+                        )
+                else:
+                    current = parent
                 pending.clear()
-                namespaces[id(element)] = current
                 stack.append(current)
+                if len(stack) > MAX_PACKAGE_DEPTH:
+                    raise XDTOReadError("XDTO package превышает предел глубины XML")
+                if any(
+                    attribute.rsplit("}", 1)[-1] in QNAME_ATTRIBUTES
+                    for attribute in element.attrib
+                ):
+                    namespaces[id(element)] = current
                 if root is None:
                     root = element
             elif event == "end":

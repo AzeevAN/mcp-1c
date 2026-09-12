@@ -9,7 +9,7 @@ from conftest import build_configuration, write_export
 from test_intake_v2_collector import _configuration
 from test_intake_v2_converter import _xdto_descriptor
 from mcp1c.registry import Registry
-from mcp1c.intake_v2_api import IntakeApiService
+from mcp1c.intake_v2_api import IntakeApiConflict, IntakeApiService
 from mcp1c.intake_v2 import ExportIdentity
 import mcp1c.intake_v2_operations as ops
 from mcp1c.tools import get_object
@@ -88,6 +88,58 @@ def test_noop_skips_collection_and_survives_restart(world, monkeypatch):
     restarted=IntakeApiService.for_registry(recovered,config_sources_root=d['root'].parent,directory_settle_seconds=0)
     assert restarted.confirm(w.job_id)['commit']['no_op']
     assert d['registry'].active_generation_pointer(ExportIdentity.configuration('Demo0'))==before
+
+
+def test_two_browser_noop_previews_confirm_after_cleanup_and_restart(tmp_path):
+    registry = Registry(tmp_path / 'data')
+    service = IntakeApiService.for_registry(registry, directory_settle_seconds=0)
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, 'w') as archive:
+        archive.writestr('Configuration.xml', _configuration('Demo0'))
+    raw = payload.getvalue()
+    initial_candidate = service.accept_upload(
+        'source.zip', io.BytesIO(raw), expected_size=len(raw)
+    )
+    initial = service.start(initial_candidate['id'], 'create')
+    service.prepare(initial)
+    assert not service.confirm(initial.job_id)['commit']['no_op']
+
+    candidate = service.accept_upload(
+        'source.zip', io.BytesIO(raw), expected_size=len(raw)
+    )
+
+    works = [service.start(candidate['id'], 'update_full') for _ in range(2)]
+    for work in works:
+        service.prepare(work)
+        assert service.job_payload(work.job_id)['preview']['no_op']
+
+    assert service.confirm(works[0].job_id)['commit']['no_op']
+    assert service.job_payload(works[1].job_id)['preview']['no_op']
+
+    restarted = Registry(registry.data_dir)
+    assert restarted.restore() == []
+    restarted_service = IntakeApiService.for_registry(
+        restarted, directory_settle_seconds=0
+    )
+    second = restarted_service.confirm(works[1].job_id)
+    assert second['commit']['no_op']
+    assert restarted_service.confirm(works[1].job_id) == second
+
+
+@pytest.mark.parametrize('world', ['directory'], indirect=True)
+def test_directory_preview_rejects_changed_binding(world):
+    service = world['service']
+    work = world['prepare']()
+    assert service.job_payload(work.job_id)['preview']['no_op']
+
+    service.unbind_directory('Demo0')
+
+    with pytest.raises(
+        IntakeApiConflict,
+        match='Привязка каталога конфигурации изменилась',
+    ):
+        service.confirm(work.job_id)
+
 
 @pytest.mark.parametrize('change',['same-stat','add','delete','rename'])
 def test_real_changes_use_full_path(world,monkeypatch,change):

@@ -469,7 +469,16 @@ class IntakeApiService:
                 # Повторный confirm готового commit не зависит от доступности входа.
                 if self.job_payload(job_id).get("commit") is None:
                     job = self.lifecycle.operations.records.load_job(job_id)
-                    self._validate_directory_candidate(self.lifecycle.catalog.load(job.candidate_id))
+                    durable = self.lifecycle.operations.records.load_candidate(
+                        job.candidate_id
+                    )
+                    # Только directory-preview зависит от изменяемого binding и
+                    # повторного probe. Browser-preview после prepare автономен:
+                    # его ZIP уже может быть штатно очищен другим commit.
+                    if durable.transport is CandidateTransport.LOCAL_DIRECTORY:
+                        self._validate_directory_candidate(
+                            self.lifecycle.catalog.load(job.candidate_id)
+                        )
                 self.lifecycle.operations.confirm(job_id, self.registry)
             self.lifecycle.release_committed_candidate(job_id)
         except KeyError:

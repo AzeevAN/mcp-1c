@@ -8,10 +8,15 @@ import {
 } from "../shared/api/capabilities";
 import { requestServerRestart, waitForServerRestart } from "../shared/api/sourceAdmin";
 
-const moduleCopy: Record<string, { title: string; description: string }> = {
+const moduleCopy: Record<string, { title: string; description: string; details?: string }> = {
   diagnostics: {
     title: "Диагностика сервера",
     description: "Добавляет административный инструмент проверки состояния capability-контура.",
+  },
+  forms: {
+    title: "Управляемые формы",
+    description: "Добавляет 4 инструмента: правила, компиляцию, декомпиляцию и статическую проверку. Файлы и конфигурацию 1С не изменяет.",
+    details: "≈ 1 385 токенов стартового контекста · o200k_base · замер 12.09.2026",
   },
 };
 
@@ -166,6 +171,7 @@ export function CapabilitiesPage() {
                 <span>
                   <strong>{copy.title}</strong>
                   <small>{copy.description}</small>
+                  {copy.details && <small>{copy.details}</small>}
                   <code>{name}</code>
                   <em>В текущем процессе: {status.active.includes(name) ? "включён" : "выключен"}</em>
                 </span>

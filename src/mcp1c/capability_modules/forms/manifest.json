@@ -4,11 +4,14 @@
   "title": "Управляемые формы",
   "description": "Правила, генерация, разбор и статическая проверка управляемых форм.",
   "context_budget": {
-    "status": "unmeasured",
-    "tool_count": null,
-    "approx_tokens": null,
-    "tokenizer": null,
+    "status": "measured",
+    "tool_count": 4,
+    "approx_tokens": 1385,
+    "tokenizer": "tiktoken 0.11.0 / o200k_base",
+    "method": "canonical tools/list delta: UTF-8 JSON, sort_keys, compact separators",
+    "canonical_bytes": 6041,
+    "canonical_sha256": "1466ad4e4f63b63dcbcc05a041d65cc5a6c46513afb41bb19ff160f62faf2c19",
     "payload": "tools_list_delta",
-    "measured_at": null
+    "measured_at": "2026-09-12"
   }
 }

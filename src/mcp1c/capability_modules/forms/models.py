@@ -21,15 +21,21 @@ _IDENTIFIER = re.compile(r"[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*\Z"
 
 
 class LocalizedTextSpec(TypedDict):
+    __pydantic_config__ = {"extra": "forbid"}
+
     ru: str
 
 
 class StringTypeSpec(TypedDict):
+    __pydantic_config__ = {"extra": "forbid"}
+
     kind: Literal["string"]
     length: int
 
 
 class FormAttributeSpec(TypedDict):
+    __pydantic_config__ = {"extra": "forbid"}
+
     name: str
     type: StringTypeSpec
     title: NotRequired[LocalizedTextSpec]
@@ -37,6 +43,8 @@ class FormAttributeSpec(TypedDict):
 
 
 class InputFieldSpec(TypedDict):
+    __pydantic_config__ = {"extra": "forbid"}
+
     kind: Literal["input_field"]
     name: str
     data_path: str
@@ -44,6 +52,8 @@ class InputFieldSpec(TypedDict):
 
 
 class ButtonSpec(TypedDict):
+    __pydantic_config__ = {"extra": "forbid"}
+
     kind: Literal["button"]
     name: str
     command: str
@@ -55,6 +65,8 @@ GroupChildSpec: TypeAlias = InputFieldSpec | ButtonSpec
 
 
 class UsualGroupSpec(TypedDict):
+    __pydantic_config__ = {"extra": "forbid"}
+
     kind: Literal["usual_group"]
     name: str
     title: LocalizedTextSpec
@@ -62,17 +74,25 @@ class UsualGroupSpec(TypedDict):
 
 
 class FormCommandSpec(TypedDict):
+    __pydantic_config__ = {"extra": "forbid"}
+
     name: str
     title: LocalizedTextSpec
     action: str
 
 
 class FormEventSpec(TypedDict):
+    __pydantic_config__ = {"extra": "forbid"}
+
     event: Literal["OnCreateAtServer"]
     handler: str
 
 
 class ManagedFormSpec(TypedDict):
+    # FastMCP строит Pydantic-схему из TypedDict. Без этого указания транспорт
+    # молча удаляет лишние поля до нашей предметной проверки контракта.
+    __pydantic_config__ = {"extra": "forbid"}
+
     schema_version: Literal[1]
     form_name: str
     format_version: Literal["2.16"]

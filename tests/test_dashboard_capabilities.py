@@ -64,7 +64,7 @@ def test_status_различает_active_desired_и_pending_restart(tmp_path, m
 
     assert status.status_code == 200
     assert status.json() == {
-        "available": ["diagnostics"],
+        "available": ["diagnostics", "forms"],
         "active": [],
         "desired": ["diagnostics"],
         "pending_restart": True,
@@ -121,20 +121,20 @@ def test_mutation_сохраняет_desired_и_возвращает_status(
 
     response = client.put(
         "/api/v1/capabilities",
-        json={"enabled": ["diagnostics"]},
+        json={"enabled": ["diagnostics", "forms"]},
     )
 
     assert response.status_code == 200
     assert response.json() == {
-        "available": ["diagnostics"],
+        "available": ["diagnostics", "forms"],
         "active": [],
-        "desired": ["diagnostics"],
+        "desired": ["diagnostics", "forms"],
         "pending_restart": True,
         "runtime": {"self_restart": True},
     }
     assert json.loads(store.path.read_text(encoding="utf-8")) == {
         "version": 1,
-        "capabilities": {"enabled": ["diagnostics"]},
+        "capabilities": {"enabled": ["diagnostics", "forms"]},
     }
     assert os.stat(store.path).st_mode & 0o777 == 0o600
 

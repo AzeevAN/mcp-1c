@@ -1,8 +1,6 @@
-"""Контракт opt-in capability управляемых форм.
+"""Предметный API opt-in capability управляемых форм."""
 
-Пакет пока не регистрируется в startup-каталоге: сначала фиксируются модели,
-диагностика и RED-корпус, затем отдельными вертикалями добавляются операции.
-"""
+from __future__ import annotations
 
 from .diagnostics import Artifact, Coverage, Diagnostic, FormsResult
 from .models import FormsContractError, ManagedForm, ManagedFormSpec
@@ -10,6 +8,14 @@ from .checker import check_managed_form
 from .compiler import compile_managed_form
 from .decompiler import decompile_managed_form
 from .rules import FormsRuleQueryError, RULE_TOPICS, get_managed_form_rules
+
+
+def load():
+    """Лениво загрузить только транспортные обёртки capability."""
+
+    from .tools import load as load_tools
+
+    return load_tools()
 
 
 __all__ = [
@@ -26,4 +32,5 @@ __all__ = [
     "ManagedFormSpec",
     "RULE_TOPICS",
     "get_managed_form_rules",
+    "load",
 ]

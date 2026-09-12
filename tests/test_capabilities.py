@@ -253,7 +253,7 @@ def test_env_служит_fallback_только_пока_server_settings_не_с
     store.save(())
 
     assert runtime.payload() == {
-        "available": ["diagnostics"],
+        "available": ["diagnostics", "forms"],
         "active": ["diagnostics"],
         "desired": [],
         "pending_restart": True,

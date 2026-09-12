@@ -12,7 +12,7 @@ vi.mock("../shared/api/sourceAdmin", async (importOriginal) => ({
 }));
 
 const ready = {
-  available: ["diagnostics"],
+  available: ["diagnostics", "forms"],
   active: [],
   desired: [],
   pending_restart: false,
@@ -52,6 +52,7 @@ it.each([360, 1440])(
 
     expect(await screen.findByRole("heading", { name: "Дополнительные модули" })).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: /diagnostics/i })).toBeVisible();
+    expect(screen.getByRole("checkbox", { name: /forms/i })).toBeVisible();
     expect(screen.getByRole("button", { name: "Сохранить выбор" })).toBeVisible();
   },
 );
@@ -63,13 +64,26 @@ it("показывает active отдельно от несохранённог
   expect(await screen.findByRole("heading", { name: "Дополнительные модули" })).toBeInTheDocument();
   const diagnostics = screen.getByRole("checkbox", { name: /diagnostics/i });
   expect(diagnostics).not.toBeChecked();
-  expect(screen.getByText("В текущем процессе: выключен")).toBeInTheDocument();
+  expect(within(diagnostics.closest("label")!).getByText("В текущем процессе: выключен")).toBeInTheDocument();
 
   fireEvent.click(diagnostics);
 
   expect(diagnostics).toBeChecked();
   expect(screen.getByText("Выбор ещё не сохранён.")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Сохранить выбор" })).toBeEnabled();
+});
+
+it("объясняет границу Forms до включения", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ready }));
+  mount();
+
+  const forms = await screen.findByRole("checkbox", { name: /forms/i });
+  const card = forms.closest("label")!;
+  expect(within(card).getByText("Управляемые формы")).toBeInTheDocument();
+  expect(within(card).getByText(/4 инструмента/)).toBeInTheDocument();
+  expect(within(card).getByText(/конфигурацию 1С не изменяет/)).toBeInTheDocument();
+  expect(within(card).getByText(/1 385.*o200k_base/)).toBeInTheDocument();
+  expect(forms).not.toBeChecked();
 });
 
 it("не теряет несохранённый выбор при фоновом обновлении статуса", async () => {
@@ -83,7 +97,7 @@ it("не теряет несохранённый выбор при фоново�
     active: ["diagnostics"],
   });
 
-  await waitFor(() => expect(screen.getByText("В текущем процессе: включён")).toBeInTheDocument());
+  await waitFor(() => expect(within(diagnostics.closest("label")!).getByText("В текущем процессе: включён")).toBeInTheDocument());
   expect(diagnostics).toBeChecked();
   expect(screen.getByText("Выбор ещё не сохранён.")).toBeInTheDocument();
 });
@@ -99,7 +113,8 @@ it("сохраняет весь desired-набор и показывает pendi
   fireEvent.click(screen.getByRole("button", { name: "Сохранить выбор" }));
 
   expect(await screen.findByText("Изменение сохранено и ожидает перезапуска.")).toBeInTheDocument();
-  expect(screen.getByText("В текущем процессе: выключен")).toBeInTheDocument();
+  const diagnostics = screen.getByRole("checkbox", { name: /diagnostics/i });
+  expect(within(diagnostics.closest("label")!).getByText("В текущем процессе: выключен")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Перезапустить и применить" })).toBeEnabled();
 });
 

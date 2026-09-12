@@ -15,6 +15,10 @@ src/mcp1c/readers/*
 !src/mcp1c/capability_modules/
 src/mcp1c/capability_modules/*
 !src/mcp1c/capability_modules/*.py
+!src/mcp1c/capability_modules/forms/
+src/mcp1c/capability_modules/forms/*
+!src/mcp1c/capability_modules/forms/*.py
+!src/mcp1c/capability_modules/forms/manifest.json
 !src/mcp1c/dashboard_dist/
 src/mcp1c/dashboard_dist/*
 !src/mcp1c/dashboard_dist/index.html

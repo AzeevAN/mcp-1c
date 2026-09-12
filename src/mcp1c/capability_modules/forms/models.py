@@ -126,6 +126,18 @@ class InputFieldSpec(TypedDict):
     read_only: NotRequired[bool]
     list_choice_mode: NotRequired[bool]
     choice_list: NotRequired[list[ChoiceListItemSpec]]
+    horizontal_stretch: NotRequired[bool]
+    vertical_stretch: NotRequired[bool]
+
+
+class CheckBoxFieldSpec(TypedDict):
+    __pydantic_config__ = {"extra": "forbid"}
+
+    kind: Literal["check_box_field"]
+    name: str
+    data_path: str
+    title: NotRequired[LocalizedTextSpec]
+    read_only: NotRequired[bool]
 
 
 class ButtonSpec(TypedDict):
@@ -147,6 +159,8 @@ class TableSpec(TypedDict):
     columns: list[InputFieldSpec]
     title: NotRequired[LocalizedTextSpec]
     read_only: NotRequired[bool]
+    horizontal_stretch: NotRequired[bool]
+    vertical_stretch: NotRequired[bool]
 
 
 class PageSpec(TypedDict):
@@ -165,6 +179,8 @@ class PagesSpec(TypedDict):
     title: LocalizedTextSpec
     representation: Literal["tabs_on_top"]
     pages: list[PageSpec]
+    horizontal_stretch: NotRequired[bool]
+    vertical_stretch: NotRequired[bool]
 
 
 class UsualGroupSpec(TypedDict):
@@ -174,10 +190,22 @@ class UsualGroupSpec(TypedDict):
     name: str
     title: LocalizedTextSpec
     children: list["ElementSpec"]
+    orientation: NotRequired[Literal["vertical", "horizontal", "always_horizontal"]]
+    representation: NotRequired[
+        Literal["none", "normal_separation", "strong_separation"]
+    ]
+    show_title: NotRequired[bool]
+    horizontal_stretch: NotRequired[bool]
+    vertical_stretch: NotRequired[bool]
 
 
 ElementSpec: TypeAlias = (
-    InputFieldSpec | ButtonSpec | TableSpec | PagesSpec | UsualGroupSpec
+    InputFieldSpec
+    | CheckBoxFieldSpec
+    | ButtonSpec
+    | TableSpec
+    | PagesSpec
+    | UsualGroupSpec
 )
 GroupChildSpec: TypeAlias = ElementSpec
 
@@ -282,7 +310,18 @@ class InputField:
     read_only: bool = False
     list_choice_mode: bool = False
     choice_list: tuple[ChoiceListItem, ...] = ()
+    horizontal_stretch: bool | None = None
+    vertical_stretch: bool | None = None
     kind: Literal["input_field"] = "input_field"
+
+
+@dataclass(frozen=True, slots=True)
+class CheckBoxField:
+    name: str
+    data_path: str
+    title: LocalizedText | None = None
+    read_only: bool = False
+    kind: Literal["check_box_field"] = "check_box_field"
 
 
 @dataclass(frozen=True, slots=True)
@@ -301,6 +340,8 @@ class Table:
     columns: tuple[InputField, ...]
     title: LocalizedText | None = None
     read_only: bool = False
+    horizontal_stretch: bool | None = None
+    vertical_stretch: bool | None = None
     kind: Literal["table"] = "table"
 
 
@@ -317,6 +358,8 @@ class Pages:
     title: LocalizedText
     representation: Literal["tabs_on_top"]
     pages: tuple[Page, ...]
+    horizontal_stretch: bool | None = None
+    vertical_stretch: bool | None = None
     kind: Literal["pages"] = "pages"
 
 
@@ -325,10 +368,19 @@ class UsualGroup:
     name: str
     title: LocalizedText
     children: tuple["Element", ...]
+    orientation: Literal["vertical", "horizontal", "always_horizontal"] = "vertical"
+    representation: Literal[
+        "none", "normal_separation", "strong_separation"
+    ] = "normal_separation"
+    show_title: bool = True
+    horizontal_stretch: bool | None = None
+    vertical_stretch: bool | None = None
     kind: Literal["usual_group"] = "usual_group"
 
 
-Element: TypeAlias = InputField | Button | Table | Pages | UsualGroup
+Element: TypeAlias = (
+    InputField | CheckBoxField | Button | Table | Pages | UsualGroup
+)
 GroupChild: TypeAlias = Element
 
 
@@ -467,6 +519,17 @@ def _optional_localized(
     if "title" not in item:
         return None
     return _localized(reader, item.get("title"), f"{path}.title")
+
+
+def _optional_boolean(
+    reader: _Reader,
+    item: Mapping[str, object],
+    key: str,
+    path: str,
+) -> bool | None:
+    if key not in item:
+        return None
+    return reader.boolean(item[key], f"{path}.{key}")
 
 
 def _duplicates(
@@ -638,6 +701,8 @@ def _input_field(
                 "read_only",
                 "list_choice_mode",
                 "choice_list",
+                "horizontal_stretch",
+                "vertical_stretch",
             }
         ),
     )
@@ -687,6 +752,35 @@ def _input_field(
         ),
         list_choice_mode=list_mode,
         choice_list=choices,
+        horizontal_stretch=_optional_boolean(
+            reader, item, "horizontal_stretch", path
+        ),
+        vertical_stretch=_optional_boolean(
+            reader, item, "vertical_stretch", path
+        ),
+    )
+
+
+def _check_box_field(
+    reader: _Reader, item: Mapping[str, object], path: str
+) -> CheckBoxField:
+    reader.exact_keys(
+        item,
+        path,
+        required=frozenset({"kind", "name", "data_path"}),
+        optional=frozenset({"title", "read_only"}),
+    )
+    return CheckBoxField(
+        name=reader.string(item.get("name"), f"{path}.name", identifier=True),
+        data_path=reader.string(
+            item.get("data_path"), f"{path}.data_path", data_path=True
+        ),
+        title=_optional_localized(reader, item, path),
+        read_only=(
+            reader.boolean(item["read_only"], f"{path}.read_only")
+            if "read_only" in item
+            else False
+        ),
     )
 
 
@@ -716,7 +810,14 @@ def _table(reader: _Reader, item: Mapping[str, object], path: str) -> Table:
         item,
         path,
         required=frozenset({"kind", "name", "data_path", "columns"}),
-        optional=frozenset({"title", "read_only"}),
+        optional=frozenset(
+            {
+                "title",
+                "read_only",
+                "horizontal_stretch",
+                "vertical_stretch",
+            }
+        ),
     )
     columns: list[InputField] = []
     for index, raw in enumerate(
@@ -743,6 +844,12 @@ def _table(reader: _Reader, item: Mapping[str, object], path: str) -> Table:
             reader.boolean(item["read_only"], f"{path}.read_only")
             if "read_only" in item
             else False
+        ),
+        horizontal_stretch=_optional_boolean(
+            reader, item, "horizontal_stretch", path
+        ),
+        vertical_stretch=_optional_boolean(
+            reader, item, "vertical_stretch", path
         ),
     )
 
@@ -771,6 +878,7 @@ def _pages(reader: _Reader, item: Mapping[str, object], path: str) -> Pages:
         required=frozenset(
             {"kind", "name", "title", "representation", "pages"}
         ),
+        optional=frozenset({"horizontal_stretch", "vertical_stretch"}),
     )
     representation = item.get("representation")
     if representation != "tabs_on_top":
@@ -790,6 +898,12 @@ def _pages(reader: _Reader, item: Mapping[str, object], path: str) -> Pages:
                 reader.array(item.get("pages"), f"{path}.pages")
             )
         ),
+        horizontal_stretch=_optional_boolean(
+            reader, item, "horizontal_stretch", path
+        ),
+        vertical_stretch=_optional_boolean(
+            reader, item, "vertical_stretch", path
+        ),
     )
 
 
@@ -800,7 +914,36 @@ def _group(
         item,
         path,
         required=frozenset({"kind", "name", "title", "children"}),
+        optional=frozenset(
+            {
+                "orientation",
+                "representation",
+                "show_title",
+                "horizontal_stretch",
+                "vertical_stretch",
+            }
+        ),
     )
+    orientation = item.get("orientation", "vertical")
+    if orientation not in {"vertical", "horizontal", "always_horizontal"}:
+        reader.issue(
+            "invalid_group_orientation",
+            f"{path}.orientation",
+            "Допустимы vertical, horizontal и always_horizontal.",
+        )
+        orientation = "vertical"
+    representation = item.get("representation", "normal_separation")
+    if representation not in {
+        "none",
+        "normal_separation",
+        "strong_separation",
+    }:
+        reader.issue(
+            "invalid_group_representation",
+            f"{path}.representation",
+            "Недопустимое представление группы.",
+        )
+        representation = "normal_separation"
     return UsualGroup(
         name=reader.string(item.get("name"), f"{path}.name", identifier=True),
         title=_localized(reader, item.get("title"), f"{path}.title"),
@@ -810,6 +953,19 @@ def _group(
                 reader.array(item.get("children"), f"{path}.children")
             )
         ),
+        orientation=orientation,
+        representation=representation,
+        show_title=(
+            reader.boolean(item["show_title"], f"{path}.show_title")
+            if "show_title" in item
+            else True
+        ),
+        horizontal_stretch=_optional_boolean(
+            reader, item, "horizontal_stretch", path
+        ),
+        vertical_stretch=_optional_boolean(
+            reader, item, "vertical_stretch", path
+        ),
     )
 
 
@@ -818,6 +974,8 @@ def _element(reader: _Reader, value: object, path: str) -> Element:
     kind = item.get("kind")
     if kind == "input_field":
         return _input_field(reader, item, path)
+    if kind == "check_box_field":
+        return _check_box_field(reader, item, path)
     if kind == "button":
         return _button(reader, item, path)
     if kind == "table":
@@ -993,7 +1151,7 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
     attribute_by_name = {item.name: item for item in attributes}
     command_names = {item.name for item in commands}
     for element, path, table in walked:
-        if isinstance(element, InputField):
+        if isinstance(element, (InputField, CheckBoxField)):
             if table is None:
                 attribute = attribute_by_name.get(element.data_path)
                 if attribute is None:
@@ -1002,7 +1160,17 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
                         f"{path}.data_path",
                         "DataPath не разрешается в реквизит формы.",
                     )
+                elif isinstance(element, CheckBoxField) and not isinstance(
+                    attribute.type, BooleanType
+                ):
+                    reader.issue(
+                        "check_box_requires_boolean",
+                        f"{path}.data_path",
+                        "CheckBoxField требует boolean-реквизит.",
+                    )
                 elif (
+                    isinstance(element, InputField)
+                    and
                     element.choice_list
                     and not isinstance(attribute.type, StringType)
                 ):
@@ -1143,6 +1311,18 @@ def _element_to_spec(element: Element) -> dict[str, object]:
                 }
                 for choice in element.choice_list
             ]
+        if element.horizontal_stretch is not None:
+            item["horizontal_stretch"] = element.horizontal_stretch
+        if element.vertical_stretch is not None:
+            item["vertical_stretch"] = element.vertical_stretch
+    elif isinstance(element, CheckBoxField):
+        item = {
+            "kind": "check_box_field",
+            "name": element.name,
+            "data_path": element.data_path,
+        }
+        if element.read_only:
+            item["read_only"] = True
     elif isinstance(element, Button):
         item = {
             "kind": "button",
@@ -1162,6 +1342,10 @@ def _element_to_spec(element: Element) -> dict[str, object]:
         }
         if element.read_only:
             item["read_only"] = True
+        if element.horizontal_stretch is not None:
+            item["horizontal_stretch"] = element.horizontal_stretch
+        if element.vertical_stretch is not None:
+            item["vertical_stretch"] = element.vertical_stretch
     elif isinstance(element, Pages):
         item = {
             "kind": "pages",
@@ -1180,6 +1364,10 @@ def _element_to_spec(element: Element) -> dict[str, object]:
                 for page in element.pages
             ],
         }
+        if element.horizontal_stretch is not None:
+            item["horizontal_stretch"] = element.horizontal_stretch
+        if element.vertical_stretch is not None:
+            item["vertical_stretch"] = element.vertical_stretch
     else:
         item = {
             "kind": "usual_group",
@@ -1189,6 +1377,16 @@ def _element_to_spec(element: Element) -> dict[str, object]:
                 _element_to_spec(child) for child in element.children
             ],
         }
+        if element.orientation != "vertical":
+            item["orientation"] = element.orientation
+        if element.representation != "normal_separation":
+            item["representation"] = element.representation
+        if not element.show_title:
+            item["show_title"] = False
+        if element.horizontal_stretch is not None:
+            item["horizontal_stretch"] = element.horizontal_stretch
+        if element.vertical_stretch is not None:
+            item["vertical_stretch"] = element.vertical_stretch
     if (
         not isinstance(element, (Pages, UsualGroup))
         and element.title is not None
@@ -1241,6 +1439,8 @@ __all__ = [
     "BooleanTypeSpec",
     "Button",
     "ButtonSpec",
+    "CheckBoxField",
+    "CheckBoxFieldSpec",
     "ChoiceListItem",
     "ChoiceListItemSpec",
     "DateType",

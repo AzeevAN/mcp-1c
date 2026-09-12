@@ -10,6 +10,7 @@ from .diagnostics import Artifact, Coverage, Diagnostic, FormsResult
 from .models import (
     BooleanType,
     Button,
+    CheckBoxField,
     DateType,
     FormAttribute,
     InputField,
@@ -93,6 +94,18 @@ def _emit_input(
     _append(lines, indent + 1, f"<DataPath>{escape(item.data_path)}</DataPath>")
     if item.title is not None:
         _localized(lines, "Title", item.title, indent + 1)
+    if item.horizontal_stretch is not None:
+        _append(
+            lines,
+            indent + 1,
+            f"<HorizontalStretch>{str(item.horizontal_stretch).lower()}</HorizontalStretch>",
+        )
+    if item.vertical_stretch is not None:
+        _append(
+            lines,
+            indent + 1,
+            f"<VerticalStretch>{str(item.vertical_stretch).lower()}</VerticalStretch>",
+        )
     if item.multiline:
         _append(lines, indent + 1, "<MultiLine>true</MultiLine>")
     if item.read_only:
@@ -138,6 +151,41 @@ def _emit_input(
     _append(lines, indent, "</InputField>")
 
 
+def _emit_check_box(
+    lines: list[str],
+    item: CheckBoxField,
+    allocator: _IdAllocator,
+    indent: int,
+) -> None:
+    element_id = allocator.next()
+    _append(
+        lines,
+        indent,
+        f"<CheckBoxField name={quoteattr(item.name)} id={quoteattr(element_id)}>",
+    )
+    _append(lines, indent + 1, f"<DataPath>{escape(item.data_path)}</DataPath>")
+    if item.title is not None:
+        _localized(lines, "Title", item.title, indent + 1)
+    if item.read_only:
+        _append(lines, indent + 1, "<ReadOnly>true</ReadOnly>")
+    _append(lines, indent + 1, "<CheckBoxType>Auto</CheckBoxType>")
+    context_id = allocator.next()
+    _append(
+        lines,
+        indent + 1,
+        f"<ContextMenu name={quoteattr(item.name + 'КонтекстноеМеню')} "
+        f"id={quoteattr(context_id)}/>",
+    )
+    tooltip_id = allocator.next()
+    _append(
+        lines,
+        indent + 1,
+        f"<ExtendedTooltip name={quoteattr(item.name + 'РасширеннаяПодсказка')} "
+        f"id={quoteattr(tooltip_id)}/>",
+    )
+    _append(lines, indent, "</CheckBoxField>")
+
+
 def _emit_button(
     lines: list[str], item: Button, allocator: _IdAllocator, indent: int
 ) -> None:
@@ -181,10 +229,36 @@ def _emit_group(
         f"<UsualGroup name={quoteattr(group.name)} id={quoteattr(group_id)}>",
     )
     _localized(lines, "Title", group.title, indent + 1)
-    _append(lines, indent + 1, "<Group>Vertical</Group>")
+    orientation = {
+        "vertical": "Vertical",
+        "horizontal": "Horizontal",
+        "always_horizontal": "AlwaysHorizontal",
+    }[group.orientation]
+    _append(lines, indent + 1, f"<Group>{orientation}</Group>")
     _append(lines, indent + 1, "<Behavior>Usual</Behavior>")
-    _append(lines, indent + 1, "<Representation>NormalSeparation</Representation>")
-    _append(lines, indent + 1, "<ShowTitle>true</ShowTitle>")
+    representation = {
+        "none": "None",
+        "normal_separation": "NormalSeparation",
+        "strong_separation": "StrongSeparation",
+    }[group.representation]
+    _append(lines, indent + 1, f"<Representation>{representation}</Representation>")
+    _append(
+        lines,
+        indent + 1,
+        f"<ShowTitle>{str(group.show_title).lower()}</ShowTitle>",
+    )
+    if group.horizontal_stretch is not None:
+        _append(
+            lines,
+            indent + 1,
+            f"<HorizontalStretch>{str(group.horizontal_stretch).lower()}</HorizontalStretch>",
+        )
+    if group.vertical_stretch is not None:
+        _append(
+            lines,
+            indent + 1,
+            f"<VerticalStretch>{str(group.vertical_stretch).lower()}</VerticalStretch>",
+        )
     tooltip_id = allocator.next()
     _append(
         lines,
@@ -242,6 +316,18 @@ def _emit_pages(
     )
     _localized(lines, "Title", item.title, indent + 1)
     _append(lines, indent + 1, "<PagesRepresentation>TabsOnTop</PagesRepresentation>")
+    if item.horizontal_stretch is not None:
+        _append(
+            lines,
+            indent + 1,
+            f"<HorizontalStretch>{str(item.horizontal_stretch).lower()}</HorizontalStretch>",
+        )
+    if item.vertical_stretch is not None:
+        _append(
+            lines,
+            indent + 1,
+            f"<VerticalStretch>{str(item.vertical_stretch).lower()}</VerticalStretch>",
+        )
     tooltip_id = allocator.next()
     _append(
         lines,
@@ -310,6 +396,18 @@ def _emit_table(
     _append(lines, indent + 1, "<Representation>List</Representation>")
     if item.read_only:
         _append(lines, indent + 1, "<ReadOnly>true</ReadOnly>")
+    if item.horizontal_stretch is not None:
+        _append(
+            lines,
+            indent + 1,
+            f"<HorizontalStretch>{str(item.horizontal_stretch).lower()}</HorizontalStretch>",
+        )
+    if item.vertical_stretch is not None:
+        _append(
+            lines,
+            indent + 1,
+            f"<VerticalStretch>{str(item.vertical_stretch).lower()}</VerticalStretch>",
+        )
     _append(lines, indent + 1, f"<DataPath>{escape(item.data_path)}</DataPath>")
     if item.title is not None:
         _localized(lines, "Title", item.title, indent + 1)
@@ -376,6 +474,8 @@ def _emit_element(
 ) -> None:
     if isinstance(item, InputField):
         _emit_input(lines, item, allocator, indent)
+    elif isinstance(item, CheckBoxField):
+        _emit_check_box(lines, item, allocator, indent)
     elif isinstance(item, Button):
         _emit_button(lines, item, allocator, indent)
     elif isinstance(item, Table):

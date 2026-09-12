@@ -55,20 +55,31 @@ def test_спецификация_импорта_поддерживает_тип
     ]
     assert form.attributes[12].type.kind == "date"
     assert form.attributes[13].type.kind == "value_table"
-    pages = form.elements[0].children[4]
+    source_group = form.elements[0].children[0]
+    assert source_group.orientation == "always_horizontal"
+    assert source_group.representation == "none"
+    assert source_group.show_title is False
+    assert source_group.horizontal_stretch is True
+    assert source_group.children[0].horizontal_stretch is True
+    assert source_group.children[1].choice_list[2].value == "XLSX"
+    pages = form.elements[0].children[1]
     assert pages.kind == "pages"
+    assert pages.horizontal_stretch is True
+    assert pages.vertical_stretch is True
     assert [page.name for page in pages.pages] == [
         "СтраницаДанные",
         "СтраницаПредпросмотр",
         "СтраницаНастройки",
     ]
     assert len(pages.pages[0].children[0].columns) == 10
-    assert form.elements[0].children[1].choice_list[2].value == "XLSX"
+    assert pages.pages[0].children[0].vertical_stretch is True
+    assert pages.pages[2].children[2].kind == "check_box_field"
+    assert pages.pages[2].children[5].kind == "check_box_field"
 
 
 def test_таблица_отклоняет_путь_к_необъявленной_колонке():
     payload = _rich_payload()
-    payload["elements"][0]["children"][4]["pages"][0]["children"][0][
+    payload["elements"][0]["children"][1]["pages"][0]["children"][0][
         "columns"
     ][0]["data_path"] = "ТаблицаДанных.Неизвестная"
 
@@ -77,7 +88,22 @@ def test_таблица_отклоняет_путь_к_необъявленно�
 
     assert (
         "unresolved_table_column",
-        "$.elements[0].children[4].pages[0].children[0].columns[0].data_path",
+        "$.elements[0].children[1].pages[0].children[0].columns[0].data_path",
+    ) in _codes(caught.value)
+
+
+def test_флажок_требует_булевый_реквизит():
+    payload = _rich_payload()
+    payload["elements"][0]["children"][1]["pages"][2]["children"][2][
+        "data_path"
+    ] = "Кодировка"
+
+    with pytest.raises(FormsContractError) as caught:
+        parse_managed_form_spec(payload)
+
+    assert (
+        "check_box_requires_boolean",
+        "$.elements[0].children[1].pages[2].children[2].data_path",
     ) in _codes(caught.value)
 
 

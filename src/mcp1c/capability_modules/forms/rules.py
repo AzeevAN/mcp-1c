@@ -136,9 +136,16 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
         FormRule(
             "supported_basic_elements",
             "supported",
-            "Базовый authoring-слой поддерживает группы, поля, кнопки, страницы и таблицы.",
+            "Базовый authoring-слой поддерживает группы, поля ввода, флажки, кнопки, страницы и таблицы.",
             "observed_pattern",
-            ["usual_group", "input_field", "button", "pages", "table"],
+            [
+                "usual_group",
+                "input_field",
+                "check_box_field",
+                "button",
+                "pages",
+                "table",
+            ],
         ),
         FormRule(
             "input_field_companions",
@@ -153,6 +160,13 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
             "Button получает наблюдаемый ExtendedTooltip.",
             "corpus_invariant",
             ["ExtendedTooltip"],
+        ),
+        FormRule(
+            "check_box_requires_boolean",
+            "required",
+            "CheckBoxField ссылается только на boolean-реквизит и получает наблюдаемые служебные элементы.",
+            "observed_pattern",
+            ["ContextMenu", "ExtendedTooltip"],
         ),
         FormRule(
             "separate_id_spaces",
@@ -232,6 +246,29 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
             "supported",
             "Компоновка задаётся деревом, порядком и свойствами, а не пиксельными координатами.",
             "corpus_invariant",
+        ),
+        FormRule(
+            "supported_layout_properties",
+            "supported",
+            "Агент явно задаёт ориентацию и представление группы, видимость её заголовка и растяжение крупных областей.",
+            "observed_pattern",
+            {
+                "group_orientation": [
+                    "vertical",
+                    "horizontal",
+                    "always_horizontal",
+                ],
+                "group_representation": [
+                    "none",
+                    "normal_separation",
+                    "strong_separation",
+                ],
+                "boolean": [
+                    "show_title",
+                    "horizontal_stretch",
+                    "vertical_stretch",
+                ],
+            },
         ),
         FormRule(
             "group_related_controls",
@@ -425,6 +462,7 @@ def get_managed_form_rules(topic: RuleTopic = "overview") -> dict[str, object]:
             "root": [
                 "usual_group",
                 "input_field",
+                "check_box_field",
                 "button",
                 "pages",
                 "table",
@@ -432,6 +470,7 @@ def get_managed_form_rules(topic: RuleTopic = "overview") -> dict[str, object]:
             "recursive_children": [
                 "usual_group",
                 "input_field",
+                "check_box_field",
                 "button",
                 "pages",
                 "table",

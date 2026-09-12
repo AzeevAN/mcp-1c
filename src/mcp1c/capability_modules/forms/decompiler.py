@@ -59,10 +59,13 @@ _SINGLETON_TAGS = frozenset(
         "MultiLine",
         "ReadOnly",
         "ListChoiceMode",
+        "HorizontalStretch",
+        "VerticalStretch",
         "ChoiceList",
         "Presentation",
         "Value",
         "CheckState",
+        "CheckBoxType",
         "PagesRepresentation",
         "AdditionSource",
         "ToolTip",
@@ -316,9 +319,17 @@ def _optional_true(
     parent: ET.Element,
     local: str,
 ) -> bool:
+    return _optional_boolean(inventory, parent, local) is True
+
+
+def _optional_boolean(
+    inventory: _Inventory,
+    parent: ET.Element,
+    local: str,
+) -> bool | None:
     matches = [child for child in parent if child.tag == _q(local)]
     if not matches:
-        return False
+        return None
     node = matches[0]
     inventory.mark(node)
     if len(matches) > 1 or _text(node) not in {"true", "false"}:
@@ -425,9 +436,50 @@ def _input_field(inventory: _Inventory, node: ET.Element) -> dict[str, object]:
         item["read_only"] = True
     if _optional_true(inventory, node, "ListChoiceMode"):
         item["list_choice_mode"] = True
+    horizontal_stretch = _optional_boolean(inventory, node, "HorizontalStretch")
+    if horizontal_stretch is not None:
+        item["horizontal_stretch"] = horizontal_stretch
+    vertical_stretch = _optional_boolean(inventory, node, "VerticalStretch")
+    if vertical_stretch is not None:
+        item["vertical_stretch"] = vertical_stretch
     choices = _choice_list(inventory, node)
     if choices:
         item["choice_list"] = choices
+    _companion(inventory, node, "ContextMenu")
+    _companion(inventory, node, "ExtendedTooltip")
+    return item
+
+
+def _check_box_field(
+    inventory: _Inventory, node: ET.Element
+) -> dict[str, object]:
+    inventory.mark(node, "name", "id")
+    item: dict[str, object] = {
+        "kind": "check_box_field",
+        "name": _attribute_value(inventory, node, "name"),
+    }
+    _subset_attribute(inventory, node, "id")
+    data_path = inventory.required_child(node, "DataPath")
+    if data_path is not None:
+        inventory.mark(data_path)
+    item["data_path"] = _text(data_path)
+    if not _DATA_PATH.fullmatch(_text(data_path)):
+        inventory.issue(
+            "unsupported_data_path",
+            (
+                inventory.paths[id(data_path)]
+                if data_path is not None
+                else inventory.paths[id(node)]
+            ),
+            "DataPath сохранён в inventory, но не входит в compiler первой вертикали.",
+            status="unsupported",
+        )
+    title = _optional_localized(inventory, node, "Title")
+    if title is not None:
+        item["title"] = title
+    if _optional_true(inventory, node, "ReadOnly"):
+        item["read_only"] = True
+    _service_node(inventory, node, "CheckBoxType", "Auto")
     _companion(inventory, node, "ContextMenu")
     _companion(inventory, node, "ExtendedTooltip")
     return item
@@ -499,10 +551,67 @@ def _group(inventory: _Inventory, node: ET.Element) -> dict[str, object]:
         "title": _localized(inventory, node, "Title"),
     }
     _subset_attribute(inventory, node, "id")
-    _service_node(inventory, node, "Group", "Vertical")
+    group = inventory.required_child(node, "Group")
+    if group is not None:
+        inventory.mark(group)
+    orientation = {
+        "Vertical": "vertical",
+        "Horizontal": "horizontal",
+        "AlwaysHorizontal": "always_horizontal",
+    }.get(_text(group))
+    if orientation is None:
+        inventory.issue(
+            "unsupported_xml_value",
+            inventory.paths[id(group)] if group is not None else inventory.paths[id(node)],
+            "Неподдержанная ориентация UsualGroup.",
+            status="unsupported",
+        )
+    elif orientation != "vertical":
+        result["orientation"] = orientation
     _service_node(inventory, node, "Behavior", "Usual")
-    _service_node(inventory, node, "Representation", "NormalSeparation")
-    _service_node(inventory, node, "ShowTitle", "true")
+    representation_node = inventory.required_child(node, "Representation")
+    if representation_node is not None:
+        inventory.mark(representation_node)
+    representation = {
+        "None": "none",
+        "NormalSeparation": "normal_separation",
+        "StrongSeparation": "strong_separation",
+    }.get(_text(representation_node))
+    if representation is None:
+        inventory.issue(
+            "unsupported_xml_value",
+            (
+                inventory.paths[id(representation_node)]
+                if representation_node is not None
+                else inventory.paths[id(node)]
+            ),
+            "Неподдержанное представление UsualGroup.",
+            status="unsupported",
+        )
+    elif representation != "normal_separation":
+        result["representation"] = representation
+    show_title = inventory.required_child(node, "ShowTitle")
+    if show_title is not None:
+        inventory.mark(show_title)
+    if _text(show_title) not in {"true", "false"}:
+        inventory.issue(
+            "unsupported_xml_value",
+            (
+                inventory.paths[id(show_title)]
+                if show_title is not None
+                else inventory.paths[id(node)]
+            ),
+            "ShowTitle должен быть true либо false.",
+            status="unsupported",
+        )
+    elif _text(show_title) == "false":
+        result["show_title"] = False
+    horizontal_stretch = _optional_boolean(inventory, node, "HorizontalStretch")
+    if horizontal_stretch is not None:
+        result["horizontal_stretch"] = horizontal_stretch
+    vertical_stretch = _optional_boolean(inventory, node, "VerticalStretch")
+    if vertical_stretch is not None:
+        result["vertical_stretch"] = vertical_stretch
     _companion(inventory, node, "ExtendedTooltip")
     result["children"] = _children(inventory, node)
     return result
@@ -530,6 +639,12 @@ def _pages(inventory: _Inventory, node: ET.Element) -> dict[str, object]:
     }
     _subset_attribute(inventory, node, "id")
     _service_node(inventory, node, "PagesRepresentation", "TabsOnTop")
+    horizontal_stretch = _optional_boolean(inventory, node, "HorizontalStretch")
+    if horizontal_stretch is not None:
+        result["horizontal_stretch"] = horizontal_stretch
+    vertical_stretch = _optional_boolean(inventory, node, "VerticalStretch")
+    if vertical_stretch is not None:
+        result["vertical_stretch"] = vertical_stretch
     _companion(inventory, node, "ExtendedTooltip")
     container = inventory.required_child(node, "ChildItems")
     pages: list[dict[str, object]] = []
@@ -590,6 +705,12 @@ def _table(inventory: _Inventory, node: ET.Element) -> dict[str, object]:
     _service_node(inventory, node, "Representation", "List")
     if _optional_true(inventory, node, "ReadOnly"):
         result["read_only"] = True
+    horizontal_stretch = _optional_boolean(inventory, node, "HorizontalStretch")
+    if horizontal_stretch is not None:
+        result["horizontal_stretch"] = horizontal_stretch
+    vertical_stretch = _optional_boolean(inventory, node, "VerticalStretch")
+    if vertical_stretch is not None:
+        result["vertical_stretch"] = vertical_stretch
     data_path = inventory.required_child(node, "DataPath")
     if data_path is not None:
         inventory.mark(data_path)
@@ -630,6 +751,8 @@ def _element(
 ) -> dict[str, object] | None:
     if node.tag == _q("InputField"):
         return _input_field(inventory, node)
+    if node.tag == _q("CheckBoxField"):
+        return _check_box_field(inventory, node)
     if node.tag == _q("Button"):
         return _button(inventory, node)
     if node.tag == _q("UsualGroup"):

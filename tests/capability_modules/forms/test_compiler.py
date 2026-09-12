@@ -60,12 +60,16 @@ def test_compiler_создаёт_богатую_форму_импорта_дет
     assert len(list(root.iter(q("Pages")))) == 1
     assert len(list(root.iter(q("Page")))) == 3
     assert len(list(root.iter(q("Table")))) == 1
+    assert len(list(root.iter(q("CheckBoxField")))) == 2
     assert len(list(root.iter(q("ChoiceList")))) == 3
     assert len(list(root.iter(q("Column")))) == 10
     assert any((node.text or "") == "xs:boolean" for node in root.iter())
     assert any((node.text or "") == "xs:decimal" for node in root.iter())
     assert any((node.text or "") == "xs:dateTime" for node in root.iter())
     assert any((node.text or "") == "v8:ValueTable" for node in root.iter())
+    assert any((node.text or "") == "AlwaysHorizontal" for node in root.iter())
+    assert len(list(root.iter(q("HorizontalStretch")))) >= 5
+    assert len(list(root.iter(q("VerticalStretch")))) >= 4
 
 
 def test_кодирование_даёт_utf8_bom_crlf_и_валидный_logform_xml():

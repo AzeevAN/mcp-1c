@@ -106,39 +106,55 @@
       "kind": "usual_group",
       "name": "ГруппаИмпорта",
       "title": {"ru": "Параметры импорта"},
+      "horizontal_stretch": true,
+      "vertical_stretch": true,
       "children": [
         {
-          "kind": "input_field",
-          "name": "ПутьКФайлуПоле",
-          "data_path": "ПутьКФайлу"
-        },
-        {
-          "kind": "input_field",
-          "name": "ФорматФайлаПоле",
-          "data_path": "ФорматФайла",
-          "list_choice_mode": true,
-          "choice_list": [
-            {"value": "CSV", "presentation": {"ru": "CSV"}},
-            {"value": "TXT", "presentation": {"ru": "TXT"}},
-            {"value": "XLSX", "presentation": {"ru": "Excel"}}
+          "kind": "usual_group",
+          "name": "ГруппаИсточник",
+          "title": {"ru": "Источник"},
+          "orientation": "always_horizontal",
+          "representation": "none",
+          "show_title": false,
+          "horizontal_stretch": true,
+          "children": [
+            {
+              "kind": "input_field",
+              "name": "ПутьКФайлуПоле",
+              "data_path": "ПутьКФайлу",
+              "horizontal_stretch": true
+            },
+            {
+              "kind": "input_field",
+              "name": "ФорматФайлаПоле",
+              "data_path": "ФорматФайла",
+              "list_choice_mode": true,
+              "choice_list": [
+                {"value": "CSV", "presentation": {"ru": "CSV"}},
+                {"value": "TXT", "presentation": {"ru": "TXT"}},
+                {"value": "XLSX", "presentation": {"ru": "Excel"}}
+              ]
+            },
+            {
+              "kind": "button",
+              "name": "ВыбратьФайлКнопка",
+              "command": "ВыбратьФайл"
+            },
+            {
+              "kind": "button",
+              "name": "ВыполнитьИмпортКнопка",
+              "command": "ВыполнитьИмпорт",
+              "default": true
+            }
           ]
-        },
-        {
-          "kind": "button",
-          "name": "ВыбратьФайлКнопка",
-          "command": "ВыбратьФайл"
-        },
-        {
-          "kind": "button",
-          "name": "ВыполнитьИмпортКнопка",
-          "command": "ВыполнитьИмпорт",
-          "default": true
         },
         {
           "kind": "pages",
           "name": "СтраницыРезультата",
           "title": {"ru": "Результат"},
           "representation": "tabs_on_top",
+          "horizontal_stretch": true,
+          "vertical_stretch": true,
           "pages": [
             {
               "name": "СтраницаДанные",
@@ -149,6 +165,8 @@
                   "name": "ТаблицаДанныхПоле",
                   "data_path": "ТаблицаДанных",
                   "read_only": true,
+                  "horizontal_stretch": true,
+                  "vertical_stretch": true,
                   "columns": [
                     {"kind": "input_field", "name": "ТаблицаДанныхКолонка1", "data_path": "ТаблицаДанных.Колонка1"},
                     {"kind": "input_field", "name": "ТаблицаДанныхКолонка2", "data_path": "ТаблицаДанных.Колонка2"},
@@ -173,7 +191,9 @@
                   "name": "ПредпросмотрПоле",
                   "data_path": "Предпросмотр",
                   "multiline": true,
-                  "read_only": true
+                  "read_only": true,
+                  "horizontal_stretch": true,
+                  "vertical_stretch": true
                 }
               ]
             },
@@ -183,10 +203,10 @@
               "children": [
                 {"kind": "input_field", "name": "КодировкаПоле", "data_path": "Кодировка", "list_choice_mode": true, "choice_list": [{"value": "UTF-8", "presentation": {"ru": "UTF-8"}}, {"value": "Windows-1251", "presentation": {"ru": "Windows-1251"}}]},
                 {"kind": "input_field", "name": "РазделительПоле", "data_path": "Разделитель"},
-                {"kind": "input_field", "name": "ПерваяСтрокаЗаголовокПоле", "data_path": "ПерваяСтрокаЗаголовок"},
+                {"kind": "check_box_field", "name": "ПерваяСтрокаЗаголовокПоле", "data_path": "ПерваяСтрокаЗаголовок"},
                 {"kind": "input_field", "name": "ПропуститьСтрокПоле", "data_path": "ПропуститьСтрок"},
                 {"kind": "input_field", "name": "МаксимумСтрокПоле", "data_path": "МаксимумСтрок"},
-                {"kind": "input_field", "name": "УдалятьПробелыПоле", "data_path": "УдалятьПробелы"},
+                {"kind": "check_box_field", "name": "УдалятьПробелыПоле", "data_path": "УдалятьПробелы"},
                 {"kind": "input_field", "name": "СимволКавычкиПоле", "data_path": "СимволКавычки"},
                 {"kind": "input_field", "name": "ФорматДатыПоле", "data_path": "ФорматДаты"},
                 {"kind": "input_field", "name": "РазделительДробнойЧастиПоле", "data_path": "РазделительДробнойЧасти", "list_choice_mode": true, "choice_list": [{"value": ".", "presentation": {"ru": "Точка"}}, {"value": ",", "presentation": {"ru": "Запятая"}}]},

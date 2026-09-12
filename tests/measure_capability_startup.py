@@ -53,7 +53,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.runs < 1:
         parser.error("--runs должен быть положительным")
 
-    modes = ("off", "diagnostics")
+    modes = ("off", "diagnostics", "forms")
     measured = {mode: [] for mode in modes}
     for run in range(args.runs):
         # Чередование первого режима уменьшает систематический эффект прогрева

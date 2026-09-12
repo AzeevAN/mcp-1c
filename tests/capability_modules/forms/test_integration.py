@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 
 import anyio
 import pytest
@@ -15,6 +16,7 @@ from mcp.shared.memory import create_client_server_memory_streams
 from mcp1c.reference_provider import ReferenceService
 from mcp1c.registry import Registry
 from mcp1c.server import build_server
+from mcp1c.capability_modules.forms import tools as forms_tools
 
 
 FIXTURES = Path(__file__).with_name("fixtures")
@@ -204,6 +206,55 @@ async def test_mcp_не_теряет_неизвестные_поля_до_про
 
     assert result.is_error is True
     assert "unknown" in result.content[0].text
+
+
+@pytest.mark.anyio
+async def test_десять_mcp_клиентов_forms_не_блокируют_core_tool(tmp_path, monkeypatch):
+    release = threading.Event()
+    server = _server(tmp_path, enabled=("forms",))
+    results = []
+    compiler = forms_tools.compile_managed_form
+
+    def compile_stub(specification):
+        release.wait(2)
+        return compiler(specification)
+
+    async def call(name: str, arguments: dict) -> None:
+        async with create_client_server_memory_streams() as (
+            client_streams,
+            server_streams,
+        ):
+            async with anyio.create_task_group() as tasks:
+                tasks.start_soon(
+                    server._lowlevel_server.run,
+                    *server_streams,
+                    server._lowlevel_server.create_initialization_options(),
+                )
+                try:
+                    async with ClientSession(*client_streams) as session:
+                        await session.initialize()
+                        results.append(await session.call_tool(name, arguments))
+                finally:
+                    tasks.cancel_scope.cancel()
+
+    monkeypatch.setattr(forms_tools, "compile_managed_form", compile_stub)
+    async with anyio.create_task_group() as clients:
+        for _ in range(10):
+            clients.start_soon(
+                call,
+                "compile_managed_form",
+                {"specification": _payload()},
+            )
+        with anyio.fail_after(1):
+            while forms_tools._GATE.pending < 10:
+                await anyio.sleep(0.001)
+        with anyio.fail_after(1):
+            await call("list_configurations", {})
+        assert results[-1].is_error is False
+        release.set()
+
+    assert len(results) == 11
+    assert all(result.is_error is False for result in results)
 
 
 def test_docker_context_включает_forms_python_и_manifest():

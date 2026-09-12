@@ -7,48 +7,95 @@ import json
 from ...capabilities import CapabilityTool
 from .checker import check_managed_form
 from .compiler import compile_managed_form
-from .decompiler import decompile_managed_form
+from .decompiler import MAX_FORM_XML_BYTES, decompile_managed_form
+from .limits import (
+    MAX_CONCURRENT_OPERATIONS,
+    MAX_MODULE_BYTES,
+    MAX_PENDING_OPERATIONS,
+    MAX_RESULT_BYTES,
+    MAX_SPECIFICATION_BYTES,
+    FormsExecutionGate,
+    FormsToolBusyError,
+    FormsToolInputError,
+    FormsToolResultError,
+    FormsToolTimeoutError,
+)
 from .models import ManagedFormSpec
 from .rules import RuleTopic, get_managed_form_rules
 
 
+_GATE = FormsExecutionGate()
+
+
 def _json(payload: object) -> str:
-    return json.dumps(payload, ensure_ascii=False, indent=2)
+    result = json.dumps(payload, ensure_ascii=False, indent=2)
+    if len(result.encode("utf-8")) > MAX_RESULT_BYTES:
+        raise FormsToolResultError(
+            f"Ответ Forms превышает лимит {MAX_RESULT_BYTES} байт."
+        )
+    return result
+
+
+def _input(value: str, name: str, limit: int) -> None:
+    if len(value.encode("utf-8")) > limit:
+        raise FormsToolInputError(f"{name} превышает лимит {limit} байт.")
 
 
 def _rules_tool(topic: RuleTopic = "overview") -> str:
     return _json(get_managed_form_rules(topic))
 
 
-def _compile_tool(specification: ManagedFormSpec) -> str:
-    return _json(compile_managed_form(specification).to_dict())
-
-
-def _decompile_tool(
-    form_xml: str,
-    form_name: str,
-    module_bsl: str | None = None,
-) -> str:
-    return _json(
-        decompile_managed_form(
-            form_xml,
-            form_name=form_name,
-            module_bsl=module_bsl,
-        ).to_dict()
+async def _compile_tool(specification: ManagedFormSpec) -> str:
+    encoded = json.dumps(
+        specification,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if len(encoded) > MAX_SPECIFICATION_BYTES:
+        raise FormsToolInputError(
+            f"specification превышает лимит {MAX_SPECIFICATION_BYTES} байт."
+        )
+    return await _GATE.run(
+        lambda: _json(compile_managed_form(specification).to_dict())
     )
 
 
-def _check_tool(
+async def _decompile_tool(
     form_xml: str,
     form_name: str,
     module_bsl: str | None = None,
 ) -> str:
-    return _json(
-        check_managed_form(
-            form_xml,
-            form_name=form_name,
-            module_bsl=module_bsl,
-        ).to_dict()
+    _input(form_xml, "form_xml", MAX_FORM_XML_BYTES)
+    if module_bsl is not None:
+        _input(module_bsl, "module_bsl", MAX_MODULE_BYTES)
+    return await _GATE.run(
+        lambda: _json(
+            decompile_managed_form(
+                form_xml,
+                form_name=form_name,
+                module_bsl=module_bsl,
+            ).to_dict()
+        )
+    )
+
+
+async def _check_tool(
+    form_xml: str,
+    form_name: str,
+    module_bsl: str | None = None,
+) -> str:
+    _input(form_xml, "form_xml", MAX_FORM_XML_BYTES)
+    if module_bsl is not None:
+        _input(module_bsl, "module_bsl", MAX_MODULE_BYTES)
+    return await _GATE.run(
+        lambda: _json(
+            check_managed_form(
+                form_xml,
+                form_name=form_name,
+                module_bsl=module_bsl,
+            ).to_dict()
+        )
     )
 
 
@@ -70,7 +117,8 @@ def load() -> tuple[CapabilityTool, ...]:
             description=(
                 "Детерминированно собрать Form.xml 2.16 и Form/Module.bsl из "
                 "строгой спецификации первой вертикали. Возвращает текстовые "
-                "артефакты, ничего не записывает и не выполняет импорт в 1С."
+                "артефакты, ничего не записывает и не выполняет импорт в 1С. "
+                "Размер specification ограничен 256 КиБ."
             ),
         ),
         CapabilityTool(
@@ -79,7 +127,8 @@ def load() -> tuple[CapabilityTool, ...]:
             description=(
                 "Разобрать Form.xml в каноническую спецификацию либо честный "
                 "inventory со всеми непокрытыми XML-путями. Не используйте "
-                "inventory для обратной компиляции: allow_lossy отсутствует."
+                "inventory для обратной компиляции: allow_lossy отсутствует. "
+                "Form.xml и Module.bsl ограничены 2 МиБ каждый."
             ),
         ),
         CapabilityTool(
@@ -88,7 +137,8 @@ def load() -> tuple[CapabilityTool, ...]:
             description=(
                 "Раздельно проверить XML, структуру, локальные ссылки и, если "
                 "передан, Module.bsl. Статический результат не доказывает "
-                "Registry, импорт или внешний вид формы в 1С."
+                "Registry, импорт или внешний вид формы в 1С. Form.xml и "
+                "Module.bsl ограничены 2 МиБ каждый."
             ),
         ),
     )

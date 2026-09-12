@@ -13,7 +13,7 @@ from mcp import ClientSession
 from mcp.shared.memory import create_client_server_memory_streams
 
 from conftest import write_export
-from mcp1c import coverage_log, tools as mcp_tools
+from mcp1c import coverage_log, registry as registry_module, tools as mcp_tools
 from mcp1c.intake_v2 import LayerKind, LayerSourceProfile, LayerState
 from mcp1c.intake_v2_converter import base_layer_data, convert_collection
 from mcp1c.intake_v2_generation import materialize_generation
@@ -731,6 +731,20 @@ def test_http_service_дочитывается_без_пропусков_и_не
     old_cursor = json.loads(
         re.search(r'`get_object\((\{.*\})\)`', first_pages[0]).group(1)
     )['cursor']
+    monkeypatch.setattr(registry_module, '_now', lambda: '2099-01-01T00:00:00Z')
+    restarted = Registry(tmp_path / 'data-http-pagination')
+    assert restarted.restore() == []
+    restarted_page = get_object(
+        restarted,
+        'HTTPСервис.Api',
+        config='DemoConfiguration',
+        detail='fields',
+        cursor=old_cursor,
+    )
+    assert '`/hs/api/route40`' in restarted_page
+    assert '`Method40A`' in restarted_page
+    assert '`get_object({' not in restarted_page
+
     other_dir = tmp_path / 'other-configuration'
     other_dir.mkdir()
     registry.add_configuration(

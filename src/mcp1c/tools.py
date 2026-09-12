@@ -1610,7 +1610,7 @@ def _http_service_cursor_digest(
         "source": {
             "id": source.id,
             "sha256": source.sha256,
-            "loaded_at": source.loaded_at,
+            "stored_path": source.stored_path,
             "locator_generation": source.locator_generation,
             "selection_version": source.selection_version,
         },
@@ -1619,7 +1619,7 @@ def _http_service_cursor_digest(
             {
                 "id": code_source.id,
                 "sha256": code_source.sha256,
-                "loaded_at": code_source.loaded_at,
+                "stored_path": code_source.stored_path,
                 "locator_generation": code_source.locator_generation,
                 "selection_version": code_source.selection_version,
             }

@@ -1071,6 +1071,22 @@ def test_xdto_semantic_hash_нормализует_эквивалентные_qn
     assert content_sha256(clark, "clark") == digest
 
 
+def test_xdto_semantic_hash_считает_пустой_default_namespace_отсутствующим():
+    content_sha256 = _symbol("_xdto_content_sha256")
+    absent = (
+        '<xdto:package xmlns:xdto="http://v8.1c.ru/8.1/xdto" '
+        'targetNamespace="urn:main"><xdto:property name="Value" '
+        'type="Thing"/></xdto:package>'
+    ).encode()
+    explicit_empty = absent.replace(
+        b'<xdto:property ', b'<xdto:property xmlns="" '
+    )
+
+    assert content_sha256(absent, "absent") == content_sha256(
+        explicit_empty, "explicit-empty"
+    )
+
+
 def test_xdto_semantic_hash_учитывает_qname_в_namespaced_атрибуте():
     content_sha256 = _symbol("_xdto_content_sha256")
     template = (

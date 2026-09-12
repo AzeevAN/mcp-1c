@@ -228,13 +228,13 @@ def _canonical_qname(value: str, scope: Mapping[str, str]) -> str:
     value = value.strip()
     if value.startswith("{") and "}" in value:
         namespace, name = value[1:].split("}", 1)
-        return f"{{{namespace}}}{name}"
+        return f"{{{namespace}}}{name}" if namespace else name
     if ":" in value:
         prefix, name = value.split(":", 1)
         namespace = scope.get(prefix)
         return f"{{{namespace}}}{name}" if namespace is not None else value
     namespace = scope.get("")
-    return f"{{{namespace}}}{value}" if namespace is not None else value
+    return f"{{{namespace}}}{value}" if namespace else value
 
 
 def semantic_package_bytes(payload: bytes) -> bytes:

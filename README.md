@@ -1557,6 +1557,19 @@ check — 4 194, decompile — 3 458, самый большой раздел п�
 PYTHONPATH=src .venv/bin/python tests/measure_forms_load.py --runs 10
 ```
 
+Внешняя read-only приёмка запускает два отдельных stdio-процесса через
+официальный MCP SDK: при `off` требует ноль Forms-инструментов, при `forms` —
+ровно четыре и выполняет `rules → compile → check → decompile`, canonical
+roundtrip и отрицательный вызов с неизвестным полем:
+
+```bash
+PYTHONPATH=src .venv/bin/python tests/accept_forms_stdio.py
+```
+
+Сценарий использует только временный пустой Registry и синтетический fixture.
+Он не включает живой dashboard, контейнер, импорт в Конфигуратор или
+визуальную приёмку формы.
+
 Файл ограничен 64 КиБ, обязан быть обычным файлом с `version=1` и точной
 секцией `capabilities.enabled`; неизвестное имя, повтор или повреждённая схема
 fail-closed останавливают startup до создания Registry. Запись секции выполняется

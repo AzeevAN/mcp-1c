@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from starlette.applications import Starlette
 
+from mcp1c.capabilities import CapabilityRuntime, CapabilitySettingsStore
 from mcp1c.process_restart import RestartController
 
 from conftest import живой_клиент
@@ -38,6 +39,7 @@ def _client(
     registry: Registry,
     reference: ReferenceService,
     restart: RestartController | None = None,
+    capabilities: CapabilityRuntime | None = None,
 ):
     return живой_клиент(
         Starlette(
@@ -46,6 +48,7 @@ def _client(
                 mode=DASHBOARD_ON,
                 reference=reference,
                 restart=restart,
+                capabilities=capabilities,
             )
         )
     )
@@ -338,8 +341,36 @@ def test_restart_отвечает_до_завершения_процесса(tmp
     assert response.json() == {
         "state": "restarting",
         "runtime_id": restart.runtime_id,
+        "reasons": ["reference"],
     }
     assert terminated.wait(1)
+    assert restart.requested is True
+
+
+def test_restart_перечисляет_reference_и_capability_pending(tmp_path, monkeypatch):
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    source = build_reference_database(tmp_path / "source.sqlite3")
+    signer = _trusted_signer(monkeypatch)
+    artifact = _artifact(tmp_path, source, signer)
+    registry = Registry(tmp_path / "data")
+    reference = ReferenceService.discover(registry.data_dir)
+    restart = RestartController(enabled=True, terminate=lambda: None, delay=0)
+    store = CapabilitySettingsStore(registry.data_dir)
+    capabilities = CapabilityRuntime(store, active=())
+    client = _client(registry, reference, restart, capabilities)
+    _login(client)
+    uploaded = client.post(
+        "/api/v1/reference/upload",
+        files={"file": ("reference.mcp1cref", artifact.read_bytes())},
+    )
+    assert uploaded.status_code == 201
+    store.save(("diagnostics",))
+
+    response = client.post("/api/v1/server/restart", json={})
+
+    assert response.status_code == 202
+    assert response.json()["reasons"] == ["reference", "capabilities"]
     assert restart.requested is True
 
 

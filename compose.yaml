@@ -41,6 +41,8 @@ services:
       # Только `https-proxy` доверяет X-Forwarded-* от внешнего TLS proxy.
       MCP1C_ACCESS: ${MCP1C_ACCESS:-local}
       MCP1C_REFERENCE_ARTIFACT: ${MCP1C_REFERENCE_ARTIFACT:-}
+      # Bootstrap до появления /data/server-settings.json; затем файл главнее.
+      MCP1C_CAPABILITIES: ${MCP1C_CAPABILITIES-off}
       MCP1C_ALLOW_SELF_RESTART: ${MCP1C_ALLOW_SELF_RESTART:-1}
     logging:
       driver: json-file

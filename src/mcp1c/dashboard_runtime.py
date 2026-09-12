@@ -32,6 +32,11 @@ from starlette.routing import Route
 
 from . import __version__, coverage_log, dashboard_backend, tools
 from .auth import same_token
+from .capabilities import (
+    CapabilityConfigurationError,
+    CapabilityRuntime,
+    CapabilitySettingsStore,
+)
 from .dashboard_backend import (
     COOKIE,
     LEVEL_ADMIN,
@@ -661,6 +666,7 @@ def _spa_routes(
     static_dir: Path,
     reference: ReferenceService,
     restart: RestartController,
+    capabilities: CapabilityRuntime,
     intake: IntakeApiService | None,
     role_tools_refresh: Callable[[], Awaitable[bool]] | None,
 ) -> list[Route]:
@@ -1228,6 +1234,15 @@ def _spa_routes(
         payload["reference"] = reference.payload(detailed=True)
         payload["runtime"] = {"self_restart": restart.enabled}
         return JSONResponse(payload)
+
+    async def capabilities_api(request: Request) -> JSONResponse:
+        denied = _admin_denied(request, action="Просмотр настроек модулей")
+        if denied is not None:
+            return denied
+        try:
+            return JSONResponse(await run_in_threadpool(capabilities.payload))
+        except CapabilityConfigurationError as error:
+            return _json_error(str(error), 409)
 
     async def directory_sources_api(request: Request) -> JSONResponse:
         denied = _admin_denied(request, action="Просмотр подключённых каталогов")
@@ -1859,6 +1874,12 @@ def _spa_routes(
             methods=["GET"],
             name="dashboard_sources_admin",
         ),
+        Route(
+            "/api/v1/capabilities",
+            capabilities_api,
+            methods=["GET"],
+            name="dashboard_capabilities",
+        ),
         Route("/api/v1/sources/directories", directory_sources_api, methods=["GET"]),
         Route("/api/v1/sources/directories/{operation}", directory_change_api, methods=["POST"]),
         Route(
@@ -2001,9 +2022,8 @@ def _spa_routes(
 
 def _reference_routes(
     reference: ReferenceService,
-    restart: RestartController,
 ) -> list[Route]:
-    """API статуса, файла и управляемого перезапуска для SPA."""
+    """API статуса, чтения и управляемого файла общей справки."""
 
     def unique_param(request: Request, name: str, *, maximum: int) -> str | None:
         values = request.query_params.getlist(name)
@@ -2242,31 +2262,6 @@ def _reference_routes(
             }
         )
 
-    async def restart_api(request: Request):
-        def denied_response(message: str, status_code: int):
-            return _json_error(message, status_code)
-
-        denied = _mutation_denied(request, action="Перезапуск сервера")
-        if denied is not None:
-            return denied
-        if not restart.enabled:
-            return denied_response(
-                "Перезапуск из дашборда выключен оператором.", 404
-            )
-        if reference.pending_status is None:
-            return denied_response(
-                "Нет ожидающего изменения общей справки.", 409
-            )
-        if not restart.reserve():
-            return denied_response("Перезапуск уже запрошен.", 409)
-
-        background = BackgroundTask(restart.terminate_after_response)
-        return JSONResponse(
-            {"state": "restarting", "runtime_id": restart.runtime_id},
-            status_code=202,
-            background=background,
-        )
-
     return [
         Route(
             "/api/v1/reference",
@@ -2298,6 +2293,52 @@ def _reference_routes(
             methods=["POST"],
             name="dashboard_reference_remove",
         ),
+    ]
+
+
+def _server_routes(
+    restart: RestartController,
+    *,
+    reference: ReferenceService,
+    capabilities: CapabilityRuntime,
+) -> list[Route]:
+    """Общие process-level маршруты, не принадлежащие одному провайдеру."""
+
+    async def restart_api(request: Request):
+        denied = _mutation_denied(request, action="Перезапуск сервера")
+        if denied is not None:
+            return denied
+        if not restart.enabled:
+            return _json_error(
+                "Перезапуск из дашборда выключен оператором.", 404
+            )
+        reasons = []
+        if reference.pending_status is not None:
+            reasons.append("reference")
+        try:
+            if await run_in_threadpool(capabilities.pending_restart):
+                reasons.append("capabilities")
+        except CapabilityConfigurationError as error:
+            return _json_error(str(error), 409)
+        if not reasons:
+            return _json_error(
+                "Нет ожидающих изменений, требующих полного перезапуска.", 409
+            )
+        if not restart.reserve():
+            return _json_error("Перезапуск уже запрошен.", 409)
+
+        background = BackgroundTask(restart.terminate_after_response)
+        return JSONResponse(
+            {
+                "state": "restarting",
+                "runtime_id": restart.runtime_id,
+                "reasons": reasons,
+            },
+            status_code=202,
+            background=background,
+        )
+
+    return [
         Route(
             "/api/v1/server/restart",
             restart_api,
@@ -2314,6 +2355,7 @@ def routes(
     static_dir: Path | None = None,
     reference: ReferenceService | None = None,
     restart: RestartController | None = None,
+    capabilities: CapabilityRuntime | None = None,
     intake: IntakeApiService | None = None,
     role_tools_refresh: Callable[[], Awaitable[bool]] | None = None,
 ) -> list[Route]:
@@ -2329,6 +2371,11 @@ def routes(
         reference = ReferenceService.discover(registry.data_dir)
     if restart is None:
         restart = RestartController(enabled=False)
+    if capabilities is None:
+        capabilities = CapabilityRuntime(
+            CapabilitySettingsStore(registry.data_dir),
+            active=(),
+        )
     configured_dist = os.environ.get("MCP1C_DASHBOARD_DIST", "")
     root = static_dir or (
         Path(configured_dist) if configured_dist else DEFAULT_DASHBOARD_DIST
@@ -2339,8 +2386,14 @@ def routes(
             root,
             reference,
             restart,
+            capabilities,
             intake,
             role_tools_refresh,
         ),
-        *_reference_routes(reference, restart),
+        *_reference_routes(reference),
+        *_server_routes(
+            restart,
+            reference=reference,
+            capabilities=capabilities,
+        ),
     ]

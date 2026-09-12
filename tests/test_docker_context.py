@@ -23,6 +23,11 @@ def test_dockerignore_закрыт_по_умолчанию() -> None:
         "!src/mcp1c/readers/*.py",
     } <= set(rules)
     assert {
+        "!src/mcp1c/capability_modules/",
+        "src/mcp1c/capability_modules/*",
+        "!src/mcp1c/capability_modules/*.py",
+    } <= set(rules)
+    assert {
         "!dashboard/package-lock.json",
         "!dashboard/src/**/*.tsx",
     } <= set(rules)

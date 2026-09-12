@@ -9,6 +9,25 @@
 
 ## [Unreleased]
 
+### Добавлено
+
+- Внутренний startup-only контракт capability-модулей. Версионированная секция
+  `capabilities.enabled` в `data/server-settings.json` хранит desired-набор,
+  а процесс отдельно сообщает active-набор и `pending_restart`. Пока файла нет,
+  `MCP1C_CAPABILITIES` служит только bootstrap/fallback; существующий файл всегда
+  важнее env. По умолчанию и при пустом массиве публичный MCP остаётся прежним,
+  а реализации модулей
+  не импортируются и не инициализируются. Точное имя `diagnostics` добавляет
+  один безопасный read-only инструмент `diagnostics_status`; неизвестные,
+  повторяющиеся и неоднозначные значения fail-closed отклоняются до Registry,
+  а конфликты имён со всеми core/conditional tools и между модулями проверяются
+  до атомарной регистрации. Docker build context явно включает только Python-
+  файлы встроенных модулей и сохраняет закрытый allowlist. Это только общий
+  архитектурный шов: read-only dashboard API публикует available/active/desired,
+  а общий full-restart допускается при ожидающем изменении reference или
+  capabilities и перечисляет причины. Запись настройки из UI, Forms, сторонние
+  плагины, runtime-переключение и доступ к локальным проектам не реализованы.
+
 ### Изменено
 
 - `parser_version` поднят до 11: semantic hash XDTO теперь учитывает фактические

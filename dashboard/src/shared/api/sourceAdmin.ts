@@ -239,6 +239,7 @@ export function useRemoveReference() {
 export async function requestServerRestart(): Promise<{
   state: "restarting";
   runtime_id: string;
+  reasons: Array<"reference" | "capabilities">;
 }> {
   return adminRequest("/api/v1/server/restart", {});
 }

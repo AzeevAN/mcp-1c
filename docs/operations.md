@@ -127,6 +127,10 @@ SHA-256. После полной проверки артефакт сохран�
 применить» отвечает до остановки процесса, затем `restart: unless-stopped`
 возвращает тот же контейнер. Дашборд ждёт новый `runtime_id` через `/health` и
 просит войти заново. Это не пересборка образа и не замена контейнера.
+Backend полного restart общий: он допускает запрос при pending общей справки
+или capability-настроек и возвращает массив `reasons`. Текущий экран справки
+показывает кнопку для своего pending; экран настройки модулей добавляется
+отдельной задачей поверх уже общего маршрута.
 
 Удаление находится в «Дополнительных действиях» окна справки и требует
 ввести точное имя `reference.mcp1cref`. Артефакт, извлечённая
@@ -346,6 +350,25 @@ PYTHONPATH=src .venv/bin/python -m mcp1c.server \
 `MCP1C_ACCESS=local|http|https-proxy` задаёт доверие к сетевой топологии.
 Для bare-запуска прямой `http` дополнительно требует `--host 0.0.0.0` либо
 конкретный IP; Compose вместо этого использует `MCP1C_BIND_ADDRESS`.
+
+Постоянный desired-набор внутренних модулей хранит
+`data/server-settings.json`, schema v1:
+
+```json
+{"version":1,"capabilities":{"enabled":["diagnostics"]}}
+```
+
+Пустой `enabled` сохраняет основной каталог инструментов. Пока файла нет,
+`MCP1C_CAPABILITIES=off|diagnostics` используется только как bootstrap;
+существующий файл всегда важнее env. Файл ограничен 64 КиБ, читается до
+Registry и при повреждении останавливает startup. `GET /api/v1/capabilities`
+для администратора показывает available/active/desired и `pending_restart`.
+Состав tools меняется только после полного restart; публичной dashboard-записи
+этой секции и отдельного UI в текущем baseline ещё нет.
+После изменения bind-mounted файла bare-процесс останавливают и запускают
+заново; для Compose достаточно `docker compose restart mcp1c`. Если файла ещё
+нет и меняется именно env-bootstrap, нужен
+`docker compose up -d --force-recreate`: простой restart не перечитывает `.env`.
 
 ## Источники данных
 

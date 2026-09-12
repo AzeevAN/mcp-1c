@@ -38,6 +38,16 @@ from starlette.responses import JSONResponse, PlainTextResponse, RedirectRespons
 
 from . import __version__, tools
 from .auth import same_token
+from .capabilities import (
+    CapabilityConfigurationError,
+    CapabilityContractError,
+    CapabilityModule,
+    CapabilityRuntime,
+    CapabilitySettingsStore,
+    load_capability_modules,
+    resolve_capability_settings,
+    validate_capability_tool,
+)
 from .dashboard_backend import MAX_UPLOAD, can_read
 from .dashboard_runtime import routes as dashboard_routes
 from .process_restart import RestartController
@@ -471,7 +481,7 @@ def _expected_role_errors(
 
 
 class MCP1CServer(MCPServer):
-    """MCPServer с атомарно меняющейся парой условных role-tools."""
+    """MCPServer с единым lock для условных наборов инструментов."""
 
     def __init__(self, *args, **kwargs):
         self._role_subscriptions = InMemorySubscriptionBus()
@@ -531,6 +541,80 @@ class MCP1CServer(MCPServer):
         if changed:
             await self._role_subscriptions.publish(ToolsListChanged())
         return changed
+
+    def add_capability_modules(
+        self,
+        modules: tuple[CapabilityModule, ...],
+    ) -> None:
+        """Атомарно добавить уже загруженные startup-only модули.
+
+        Проверка выполняется для всего набора до первого изменения SDK. Имена
+        условных core-инструментов тоже зарезервированы: role-tools могут
+        появиться позднее после reload и не должны столкнуться с модулем.
+        """
+        reserved = {
+            "list_configurations",
+            "list_extensions",
+            "search_objects",
+            "search_procedures",
+            "get_procedure",
+            "get_callers",
+            "get_object",
+            "get_related",
+            "compare_configurations",
+            "search_syntax",
+            "get_syntax",
+            "search_reference",
+            "get_reference",
+            "find_roles_for_access",
+            "get_role_access",
+        }
+        proposed: list[tuple[str, object]] = []
+        owners: dict[str, str] = {}
+        module_names: set[str] = set()
+        for module in modules:
+            if module.name in module_names:
+                raise CapabilityContractError(
+                    f"Capability-модуль `{module.name}` загружен повторно."
+                )
+            module_names.add(module.name)
+            for tool in module.tools:
+                validate_capability_tool(module.name, tool)
+                if tool.name in reserved:
+                    raise CapabilityContractError(
+                        f"Имя capability-инструмента `{tool.name}` "
+                        "зарезервировано ядром."
+                    )
+                previous = owners.get(tool.name)
+                if previous is not None:
+                    raise CapabilityContractError(
+                        f"Capability-модули `{previous}` и `{module.name}` "
+                        f"объявили одно имя `{tool.name}`."
+                    )
+                owners[tool.name] = module.name
+                proposed.append((module.name, tool))
+
+        with self._role_catalog_lock:
+            existing = {tool.name for tool in self._tool_manager.list_tools()}
+            conflicts = existing.intersection(owners)
+            if conflicts:
+                names = ", ".join(f"`{name}`" for name in sorted(conflicts))
+                raise CapabilityContractError(
+                    f"Capability-инструменты конфликтуют с каталогом: {names}."
+                )
+            added: list[str] = []
+            try:
+                for _module_name, tool in proposed:
+                    super().add_tool(
+                        tool.function,
+                        name=tool.name,
+                        description=tool.description,
+                    )
+                    added.append(tool.name)
+            except Exception:
+                for name in reversed(added):
+                    super().remove_tool(name)
+                raise
 
 
 INSTRUCTIONS = f"""
@@ -611,11 +695,25 @@ def build_server(
     *,
     reference: ReferenceService | None = None,
     restart: RestartController | None = None,
+    enabled_capabilities: tuple[str, ...] = (),
+    capability_runtime: CapabilityRuntime | None = None,
 ) -> MCP1CServer:
     if reference is None:
         reference = ReferenceService.discover(registry.data_dir)
     if restart is None:
         restart = RestartController(enabled=False)
+    if capability_runtime is None:
+        capability_runtime = CapabilityRuntime(
+            CapabilitySettingsStore(
+                registry.data_dir,
+                fallback=enabled_capabilities,
+            ),
+            active=enabled_capabilities,
+        )
+    elif capability_runtime.active != enabled_capabilities:
+        raise CapabilityContractError(
+            "Активный capability-набор не совпадает со startup-настройкой."
+        )
     server = MCP1CServer(
         name=name,
         title="Структура конфигураций 1С",
@@ -1170,7 +1268,8 @@ def build_server(
                     structured_content={"result": message}, is_error=True,
                 )
 
-    _add_http_routes(server, registry, reference, restart)
+    server.add_capability_modules(load_capability_modules(enabled_capabilities))
+    _add_http_routes(server, registry, reference, restart, capability_runtime)
     return server
 
 
@@ -1179,6 +1278,7 @@ def _add_http_routes(
     registry: Registry,
     reference: ReferenceService,
     restart: RestartController,
+    capabilities: CapabilityRuntime,
 ) -> None:
     """Служебные HTTP-маршруты рядом с MCP: проверка живости и перезагрузка.
 
@@ -1242,6 +1342,7 @@ def _add_http_routes(
         registry,
         reference=reference,
         restart=restart,
+        capabilities=capabilities,
         role_tools_refresh=server.refresh_role_tools,
     ):
         server.custom_route(
@@ -1370,10 +1471,18 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        capability_store, enabled_capabilities = resolve_capability_settings(
+            args.data,
+            environment=os.environ.get("MCP1C_CAPABILITIES"),
+        )
         access = access_mode()
         if args.require_tokens:
             require_tokens()
-    except (AccessModeError, TokenConfigurationError) as error:
+    except (
+        AccessModeError,
+        CapabilityConfigurationError,
+        TokenConfigurationError,
+    ) as error:
         parser.error(str(error))
 
     if args.transport != "stdio" and access == ACCESS_HTTP:
@@ -1401,10 +1510,18 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
 
-    server = build_server(
-        registry,
-        restart=RestartController.from_environment(),
-    )
+    try:
+        server = build_server(
+            registry,
+            restart=RestartController.from_environment(),
+            enabled_capabilities=enabled_capabilities,
+            capability_runtime=CapabilityRuntime(
+                capability_store,
+                active=enabled_capabilities,
+            ),
+        )
+    except CapabilityContractError as error:
+        parser.error(str(error))
     if args.transport == "stdio":
         # По stdio сервер разговаривает с одним клиентом, который его и
         # запустил: токен там не с кем проверять и не от кого защищаться.

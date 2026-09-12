@@ -1,0 +1,229 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from xml.etree import ElementTree as ET
+
+from mcp1c.capability_modules.forms.checker import check_managed_form
+from mcp1c.capability_modules.forms.compiler import compile_managed_form
+
+
+FIXTURES = Path(__file__).with_name("fixtures")
+LOGFORM = "http://v8.1c.ru/8.3/xcf/logform"
+V8 = "http://v8.1c.ru/8.1/data/core"
+
+
+def _payload() -> dict:
+    return json.loads((FIXTURES / "minimal_form.json").read_text(encoding="utf-8"))
+
+
+def _pair() -> tuple[str, str]:
+    result = compile_managed_form(_payload())
+    return result.artifacts[0].content, result.artifacts[1].content
+
+
+def _diagnostics(result, code: str) -> list:
+    return [item for item in result.diagnostics if item.code == code]
+
+
+def test_compiler_pair_проходит_заявленные_статические_уровни():
+    xml, module = _pair()
+
+    result = check_managed_form(
+        xml,
+        form_name="ФормаПараметров",
+        module_bsl=module,
+    )
+
+    assert result.status == "checked"
+    assert result.artifacts == ()
+    assert result.specification == compile_managed_form(_payload()).specification
+    assert result.coverage.to_dict() == {
+        "xml_parse": "passed",
+        "structural": "passed",
+        "configuration_links": "not_checked",
+        "bsl_static": "passed",
+        "platform_import": "not_checked",
+        "runtime_visual": "not_checked",
+    }
+    assert "valid" not in result.to_dict()
+
+
+def test_дубликат_id_внутри_элементов_даёт_structural_failed():
+    xml, module = _pair()
+    xml = xml.replace('name="ВтороеЗначение" id="6"', 'name="ВтороеЗначение" id="3"')
+
+    result = check_managed_form(
+        xml,
+        form_name="ФормаПараметров",
+        module_bsl=module,
+    )
+
+    assert result.coverage.structural == "failed"
+    assert _diagnostics(result, "duplicate_element_id")
+
+
+def test_одинаковый_id_элемента_реквизита_и_команды_допустим():
+    xml, module = _pair()
+
+    result = check_managed_form(
+        xml,
+        form_name="ФормаПараметров",
+        module_bsl=module,
+    )
+
+    assert result.coverage.structural == "passed"
+    assert _diagnostics(result, "separate_id_spaces_valid")
+
+
+def test_повтор_языка_в_одном_заголовке_даёт_structural_failed():
+    xml, module = _pair()
+    root = ET.fromstring(xml)
+    title = root.find(f"{{{LOGFORM}}}Title")
+    first_item = title.find(f"{{{V8}}}item")
+    title.append(ET.fromstring(ET.tostring(first_item, encoding="unicode")))
+
+    result = check_managed_form(
+        ET.tostring(root, encoding="unicode"),
+        form_name="ФормаПараметров",
+        module_bsl=module,
+    )
+
+    assert result.coverage.structural == "failed"
+    assert _diagnostics(result, "duplicate_localization_language")
+
+
+def test_пустой_локализованный_заголовок_не_даёт_ложный_failed():
+    xml, module = _pair()
+    root = ET.fromstring(xml)
+    title = root.find(f"{{{LOGFORM}}}Title")
+    for item in list(title):
+        title.remove(item)
+
+    result = check_managed_form(
+        ET.tostring(root, encoding="unicode"),
+        form_name="ФормаПараметров",
+        module_bsl=module,
+    )
+
+    assert result.coverage.structural == "unsupported"
+    assert not _diagnostics(result, "invalid_localization_item")
+
+
+def test_вложенный_id_типа_не_смешивается_с_id_реквизита():
+    xml, module = _pair()
+    xml = xml.replace(
+        "<v8:StringQualifiers>",
+        '<v8:StringQualifiers id="1">',
+        1,
+    )
+
+    result = check_managed_form(
+        xml,
+        form_name="ФормаПараметров",
+        module_bsl=module,
+    )
+
+    assert result.coverage.structural == "unsupported"
+    assert not _diagnostics(result, "duplicate_attribute_id")
+
+
+def test_неизвестный_узел_не_получает_structural_passed():
+    xml, module = _pair()
+    xml = xml.replace("</Form>", "\t<Unknown/>\r\n</Form>")
+
+    result = check_managed_form(
+        xml,
+        form_name="ФормаПараметров",
+        module_bsl=module,
+    )
+
+    assert result.coverage.structural == "unsupported"
+    assert _diagnostics(result, "unsupported_xml_node")
+
+
+def test_отсутствующий_bsl_handler_даёт_warning_а_не_ложную_ошибку():
+    xml, _module = _pair()
+
+    result = check_managed_form(
+        xml,
+        form_name="ФормаПараметров",
+        module_bsl="",
+    )
+
+    assert result.coverage.bsl_static == "warning"
+    assert len(_diagnostics(result, "handler_not_found")) == 2
+
+
+def test_неверная_директива_и_арность_bsl_handler_дают_failed():
+    xml, module = _pair()
+    module = module.replace("&НаСервере", "&НаКлиенте", 1).replace(
+        "(Отказ, СтандартнаяОбработка)", "()", 1
+    )
+
+    result = check_managed_form(
+        xml,
+        form_name="ФормаПараметров",
+        module_bsl=module,
+    )
+
+    assert result.coverage.bsl_static == "failed"
+    assert _diagnostics(result, "handler_directive_mismatch")
+    assert _diagnostics(result, "handler_arity_mismatch")
+
+
+def test_отличающаяся_арность_без_других_ошибок_даёт_warning():
+    xml, module = _pair()
+    module = module.replace("(Команда)", "()", 1)
+
+    result = check_managed_form(
+        xml,
+        form_name="ФормаПараметров",
+        module_bsl=module,
+    )
+
+    assert result.coverage.bsl_static == "warning"
+    assert _diagnostics(result, "handler_arity_mismatch")[0].status == "warning"
+
+
+def test_без_module_bsl_уровень_остаётся_not_checked_с_причиной():
+    xml, _module = _pair()
+
+    result = check_managed_form(xml, form_name="ФормаПараметров")
+
+    assert result.coverage.bsl_static == "not_checked"
+    assert _diagnostics(result, "module_not_provided")
+
+
+def test_unresolved_form_command_сохраняет_structural_failed():
+    xml, module = _pair()
+    xml = xml.replace("Form.Command.Выполнить", "Form.Command.Неизвестная")
+
+    result = check_managed_form(
+        xml,
+        form_name="ФормаПараметров",
+        module_bsl=module,
+    )
+
+    assert result.coverage.structural == "failed"
+    assert _diagnostics(result, "unresolved_command")
+
+
+def test_checker_не_пишет_файлы(monkeypatch, tmp_path):
+    xml, module = _pair()
+    before = list(tmp_path.iterdir())
+
+    def forbidden_write(*_args, **_kwargs):
+        raise AssertionError("checker не должен писать файлы")
+
+    monkeypatch.setattr(Path, "write_text", forbidden_write)
+    monkeypatch.setattr(Path, "write_bytes", forbidden_write)
+    monkeypatch.setattr("builtins.open", forbidden_write)
+    result = check_managed_form(
+        xml,
+        form_name="ФормаПараметров",
+        module_bsl=module,
+    )
+
+    assert result.status == "checked"
+    assert list(tmp_path.iterdir()) == before

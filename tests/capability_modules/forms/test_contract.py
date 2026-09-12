@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from mcp1c.capability_modules.forms.models import (
+    BSL_RESERVED_KEYWORDS,
     FormsContractError,
     ManagedFormSpec,
     parse_managed_form_spec,
@@ -34,7 +35,7 @@ def test_минимальная_спецификация_разбирается_
         "ПервоеЗначение",
         "ВтороеЗначение",
     ]
-    assert form.elements[0].children[2].command == "Выполнить"
+    assert form.elements[0].children[2].command == "Проверить"
     assert form.events[0].event == "OnCreateAtServer"
 
 
@@ -155,3 +156,18 @@ def test_id_не_является_частью_публичной_специфи
         parse_managed_form_spec(payload)
 
     assert ("unknown_key", "$.commands[0].id") in _codes(caught.value)
+
+
+@pytest.mark.parametrize("reserved", sorted(BSL_RESERVED_KEYWORDS))
+def test_зарезервированное_слово_bsl_не_может_быть_именем_обработчика(
+    reserved,
+):
+    payload = _payload()
+    payload["commands"][0]["action"] = reserved
+
+    with pytest.raises(FormsContractError) as caught:
+        parse_managed_form_spec(payload)
+
+    assert ("reserved_bsl_keyword", "$.commands[0].action") in _codes(
+        caught.value
+    )

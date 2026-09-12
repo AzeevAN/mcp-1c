@@ -132,15 +132,15 @@ def test_один_action_двух_команд_создаёт_одну_проц�
     payload = _payload()
     payload["commands"].append(
         {
-            "name": "ВыполнитьПовторно",
-            "title": {"ru": "Выполнить повторно"},
-            "action": "Выполнить",
+            "name": "ПроверитьПовторно",
+            "title": {"ru": "Проверить повторно"},
+            "action": "Проверить",
         }
     )
 
     module = compile_managed_form(payload).artifacts[1].content
 
-    assert module.count("Процедура Выполнить(Команда)") == 1
+    assert module.count("Процедура Проверить(Команда)") == 1
 
 
 def test_сгенерированные_bsl_каркасы_читаются_текущим_лексером():
@@ -150,7 +150,7 @@ def test_сгенерированные_bsl_каркасы_читаются_те
 
     assert [item.имя for item in procedures] == [
         "ПриСозданииНаСервере",
-        "Выполнить",
+        "Проверить",
     ]
     assert [item.директива for item in procedures] == ["НаСервере", "НаКлиенте"]
     assert [item.параметры for item in procedures] == [

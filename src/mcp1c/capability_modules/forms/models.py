@@ -18,6 +18,28 @@ from .diagnostics import Diagnostic
 SPECIFICATION_VERSION = 1
 SUPPORTED_FORMAT_VERSION = "2.16"
 _IDENTIFIER = re.compile(r"[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*\Z")
+BSL_RESERVED_KEYWORDS = frozenset(
+    word.casefold()
+    for word in (
+        "Если", "If", "Тогда", "Then", "ИначеЕсли", "ElsIf",
+        "Иначе", "Else", "КонецЕсли", "EndIf", "Для", "For",
+        "Каждого", "Each", "Из", "In", "По", "To", "Пока", "While",
+        "Цикл", "Do", "КонецЦикла", "EndDo", "Ждать", "Await",
+        "Процедура", "Procedure", "Функция", "Function",
+        "КонецПроцедуры", "EndProcedure", "КонецФункции", "EndFunction",
+        "Перем", "Var", "Перейти", "Goto", "Возврат", "Return",
+        "Продолжить", "Continue", "Прервать", "Break", "И", "And",
+        "Или", "Or", "Не", "Not", "Попытка", "Try",
+        "Исключение", "Except", "ВызватьИсключение", "Raise",
+        "КонецПопытки", "EndTry", "Новый", "New", "Выполнить", "Execute",
+    )
+)
+
+
+def is_reserved_bsl_keyword(value: str) -> bool:
+    """Проверить точное русское или английское ключевое слово BSL."""
+
+    return value.casefold() in BSL_RESERVED_KEYWORDS
 
 
 class LocalizedTextSpec(TypedDict):
@@ -230,6 +252,12 @@ class _Reader:
             self.issue("surrounding_whitespace", path, "Пробелы по краям запрещены.")
         if identifier and not _IDENTIFIER.fullmatch(value):
             self.issue("invalid_identifier", path, "Недопустимый идентификатор 1С.")
+        elif identifier and is_reserved_bsl_keyword(value):
+            self.issue(
+                "reserved_bsl_keyword",
+                path,
+                "Зарезервированное слово BSL нельзя использовать как идентификатор 1С.",
+            )
         return value
 
     def boolean(self, value: object, path: str) -> bool:

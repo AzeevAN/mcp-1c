@@ -61,7 +61,11 @@ def test_specification_возвращает_тот_же_минимальный_�
 
     assert payload["example"] == fixture
     assert "id" not in json.dumps(payload["example"], ensure_ascii=False)
-    assert any(rule["code"] == "unknown_keys_rejected" for rule in payload["rules"])
+    by_code = {rule["code"]: rule for rule in payload["rules"]}
+    assert "зарезервированными словами BSL" in by_code["identifier_syntax"][
+        "summary"
+    ]
+    assert "unknown_keys_rejected" in by_code
 
 
 def test_elements_описывают_только_принятые_kinds_и_companions():

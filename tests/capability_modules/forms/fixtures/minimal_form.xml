@@ -34,11 +34,11 @@
 					<ContextMenu name="ВтороеЗначениеКонтекстноеМеню" id="7"/>
 					<ExtendedTooltip name="ВтороеЗначениеРасширеннаяПодсказка" id="8"/>
 				</InputField>
-				<Button name="Выполнить" id="9">
+				<Button name="Проверить" id="9">
 					<Type>UsualButton</Type>
 					<DefaultButton>true</DefaultButton>
-					<CommandName>Form.Command.Выполнить</CommandName>
-					<ExtendedTooltip name="ВыполнитьРасширеннаяПодсказка" id="10"/>
+					<CommandName>Form.Command.Проверить</CommandName>
+					<ExtendedTooltip name="ПроверитьРасширеннаяПодсказка" id="10"/>
 				</Button>
 			</ChildItems>
 		</UsualGroup>
@@ -64,20 +64,20 @@
 		</Attribute>
 	</Attributes>
 	<Commands>
-		<Command name="Выполнить" id="1">
+		<Command name="Проверить" id="1">
 			<Title>
 				<v8:item>
 					<v8:lang>ru</v8:lang>
-					<v8:content>Выполнить</v8:content>
+					<v8:content>Проверить</v8:content>
 				</v8:item>
 			</Title>
 			<ToolTip>
 				<v8:item>
 					<v8:lang>ru</v8:lang>
-					<v8:content>Выполнить</v8:content>
+					<v8:content>Проверить</v8:content>
 				</v8:item>
 			</ToolTip>
-			<Action>Выполнить</Action>
+			<Action>Проверить</Action>
 		</Command>
 	</Commands>
 </Form>

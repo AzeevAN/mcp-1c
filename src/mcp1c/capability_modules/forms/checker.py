@@ -10,6 +10,7 @@ from mcp1c.bsl_lex import разобрать
 
 from .decompiler import decompile_managed_form
 from .diagnostics import Coverage, Diagnostic, FormsResult
+from .models import is_reserved_bsl_keyword
 
 
 _LOGFORM = "http://v8.1c.ru/8.3/xcf/logform"
@@ -303,6 +304,17 @@ def _check_bsl(
         by_name.setdefault(procedure.имя.casefold(), []).append(procedure)
     diagnostics: list[Diagnostic] = []
     for handler, expected_directive, expected_arity, path in expected:
+        if is_reserved_bsl_keyword(handler):
+            diagnostics.append(
+                _diagnostic(
+                    "failed",
+                    "reserved_bsl_keyword",
+                    path,
+                    f"Обработчик {handler} совпадает с зарезервированным словом BSL.",
+                    level="bsl_static",
+                )
+            )
+            continue
         matches = by_name.get(handler.casefold(), [])
         if not matches:
             diagnostics.append(

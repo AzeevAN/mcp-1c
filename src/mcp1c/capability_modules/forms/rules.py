@@ -120,7 +120,7 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
         FormRule(
             "identifier_syntax",
             "required",
-            "Имена используют буквы, цифры и подчёркивание и не начинаются с цифры.",
+            "Имена используют буквы, цифры и подчёркивание, не начинаются с цифры и не совпадают с русскими или английскими зарезервированными словами BSL.",
             "contract_decision",
         ),
     ),
@@ -307,8 +307,8 @@ def _minimal_example() -> dict[str, object]:
                     },
                     {
                         "kind": "button",
-                        "name": "Выполнить",
-                        "command": "Выполнить",
+                        "name": "Проверить",
+                        "command": "Проверить",
                         "default": True,
                     },
                 ],
@@ -316,9 +316,9 @@ def _minimal_example() -> dict[str, object]:
         ],
         "commands": [
             {
-                "name": "Выполнить",
-                "title": {"ru": "Выполнить"},
-                "action": "Выполнить",
+                "name": "Проверить",
+                "title": {"ru": "Проверить"},
+                "action": "Проверить",
             }
         ],
         "events": [

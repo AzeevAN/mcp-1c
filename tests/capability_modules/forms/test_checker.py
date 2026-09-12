@@ -186,6 +186,21 @@ def test_отличающаяся_арность_без_других_ошибо�
     assert _diagnostics(result, "handler_arity_mismatch")[0].status == "warning"
 
 
+def test_зарезервированное_имя_xml_handler_даёт_bsl_failed():
+    xml, module = _pair()
+    xml = xml.replace("<Action>Проверить</Action>", "<Action>Выполнить</Action>")
+    module = module.replace("Процедура Проверить(", "Процедура Выполнить(")
+
+    result = check_managed_form(
+        xml,
+        form_name="ФормаПараметров",
+        module_bsl=module,
+    )
+
+    assert result.coverage.bsl_static == "failed"
+    assert _diagnostics(result, "reserved_bsl_keyword")
+
+
 def test_без_module_bsl_уровень_остаётся_not_checked_с_причиной():
     xml, _module = _pair()
 
@@ -197,7 +212,7 @@ def test_без_module_bsl_уровень_остаётся_not_checked_с_при
 
 def test_unresolved_form_command_сохраняет_structural_failed():
     xml, module = _pair()
-    xml = xml.replace("Form.Command.Выполнить", "Form.Command.Неизвестная")
+    xml = xml.replace("Form.Command.Проверить", "Form.Command.Неизвестная")
 
     result = check_managed_form(
         xml,

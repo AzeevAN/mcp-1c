@@ -10,6 +10,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from importlib import import_module
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -25,6 +26,7 @@ SERVER_SETTINGS_VERSION = 1
 MAX_SERVER_SETTINGS_BYTES = 64 * 1024
 _NAME_PATTERN = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 _NO_ENV_FALLBACK: Final = object()
+logger = logging.getLogger(__name__)
 
 
 class CapabilityConfigurationError(ValueError):
@@ -240,7 +242,7 @@ class CapabilitySettingsStore:
         return self.fallback
 
     def save(self, enabled: tuple[str, ...]) -> tuple[str, ...]:
-        """Атомарно заменить только capability-секцию общего файла."""
+        """Атомарно заменить секцию; успешный replace считается commit-точкой."""
         normalized = self.normalize(list(enabled))
         with self._lock:
             payload = self._read_payload()
@@ -271,14 +273,24 @@ class CapabilitySettingsStore:
                         stream.flush()
                         os.fsync(stream.fileno())
                     os.replace(temporary, self.path)
-                    directory = os.open(
-                        self.path.parent,
-                        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
-                    )
                     try:
-                        os.fsync(directory)
-                    finally:
-                        os.close(directory)
+                        directory = os.open(
+                            self.path.parent,
+                            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+                        )
+                        try:
+                            os.fsync(directory)
+                        finally:
+                            os.close(directory)
+                    except OSError:
+                        # После replace новые bytes уже видимы текущему процессу.
+                        # Ошибка durability-барьера не должна превращать
+                        # применённую запись в ложный HTTP-отказ.
+                        logger.warning(
+                            "%s: server settings заменён, но каталог не синхронизирован.",
+                            self.path,
+                            exc_info=True,
+                        )
                 finally:
                     temporary.unlink(missing_ok=True)
             except OSError as error:

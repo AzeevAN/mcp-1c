@@ -441,6 +441,28 @@ def test_ошибка_atomic_replace_не_портит_предыдущие_sett
     assert list(tmp_path.glob(".server-settings.json.tmp-*")) == []
 
 
+def test_ошибка_directory_fsync_после_replace_считается_применённой(
+    tmp_path,
+    monkeypatch,
+):
+    import mcp1c.capabilities as capability_module
+
+    store = CapabilitySettingsStore(tmp_path)
+    store.save(())
+    original_fsync = capability_module.os.fsync
+
+    def fsync_with_directory_failure(descriptor):
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            raise OSError("synthetic directory fsync")
+        return original_fsync(descriptor)
+
+    monkeypatch.setattr(capability_module.os, "fsync", fsync_with_directory_failure)
+
+    assert store.save(("diagnostics",)) == ("diagnostics",)
+    assert store.load() == ("diagnostics",)
+    assert list(tmp_path.glob(".server-settings.json.tmp-*")) == []
+
+
 @pytest.mark.parametrize("transport", ("stdio", "streamable-http"))
 def test_main_передаёт_capability_в_оба_транспорта(
     transport,

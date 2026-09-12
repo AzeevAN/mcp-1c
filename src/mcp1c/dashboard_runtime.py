@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import secrets
 import shutil
@@ -36,6 +37,7 @@ from .capabilities import (
     CapabilityConfigurationError,
     CapabilityRuntime,
     CapabilitySettingsStore,
+    MAX_SERVER_SETTINGS_BYTES,
 )
 from .dashboard_backend import (
     COOKIE,
@@ -662,6 +664,34 @@ async def _json_body(request: Request) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
+def _strict_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    payload: dict[str, object] = {}
+    for key, value in pairs:
+        if key in payload:
+            raise ValueError(f"Повторяющийся JSON-ключ: {key}")
+        payload[key] = value
+    return payload
+
+
+def _reject_json_constant(value: str) -> object:
+    raise ValueError(f"Недопустимое JSON-значение: {value}")
+
+
+async def _strict_json_body(request: Request) -> dict | None:
+    try:
+        encoded = await request.body()
+        if len(encoded) > MAX_SERVER_SETTINGS_BYTES:
+            return None
+        payload = json.loads(
+            encoded,
+            object_pairs_hook=_strict_json_object,
+            parse_constant=_reject_json_constant,
+        )
+    except (RecursionError, UnicodeError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def _spa_routes(
     registry: Registry,
     static_dir: Path,
@@ -1241,7 +1271,9 @@ def _spa_routes(
         if denied is not None:
             return denied
         try:
-            return JSONResponse(await run_in_threadpool(capabilities.payload))
+            payload = await run_in_threadpool(capabilities.payload)
+            payload["runtime"] = {"self_restart": restart.enabled}
+            return JSONResponse(payload)
         except CapabilityConfigurationError as error:
             return _json_error(str(error), 409)
 
@@ -1249,7 +1281,12 @@ def _spa_routes(
         denied = _mutation_denied(request, action="Изменение настроек модулей")
         if denied is not None:
             return denied
-        payload = await _json_body(request)
+        payload = await _strict_json_body(request)
+        if payload is None:
+            return _json_error(
+                "Нужен однозначный JSON-объект без повторяющихся ключей.",
+                422,
+            )
         enabled = payload.get("enabled")
         if (
             set(payload) != {"enabled"}
@@ -1271,6 +1308,7 @@ def _spa_routes(
             )
         except CapabilityConfigurationError as error:
             return _json_error(str(error), 409)
+        result["runtime"] = {"self_restart": restart.enabled}
         return JSONResponse(result)
 
     async def directory_sources_api(request: Request) -> JSONResponse:

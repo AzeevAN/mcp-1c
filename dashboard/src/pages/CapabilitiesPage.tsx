@@ -201,15 +201,22 @@ export function CapabilitiesPage() {
             <strong>Для применения нужен полный перезапуск сервера</strong>
             <small>Клиент MCP потребуется подключить заново после старта нового процесса.</small>
           </div>
-          <button
-            ref={restartTrigger}
-            className="button-danger"
-            type="button"
-            disabled={dirty || save.isPending || restarting}
-            onClick={() => setConfirmRestart(true)}
-          >
-            <RotateCw size={16} aria-hidden="true" />Перезапустить и применить
-          </button>
+          {status.runtime.self_restart ? (
+            <button
+              ref={restartTrigger}
+              className="button-danger"
+              type="button"
+              disabled={dirty || save.isPending || restarting}
+              onClick={() => setConfirmRestart(true)}
+            >
+              <RotateCw size={16} aria-hidden="true" />Перезапустить и применить
+            </button>
+          ) : (
+            <div className="inline-warning">
+              <AlertTriangle size={18} aria-hidden="true" />
+              Перезапуск из дашборда выключен; изменение должен применить оператор сервера.
+            </div>
+          )}
         </section>
       )}
 

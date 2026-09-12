@@ -16,6 +16,7 @@ const ready = {
   active: [],
   desired: [],
   pending_restart: false,
+  runtime: { self_restart: true },
 };
 
 beforeEach(() => {
@@ -100,6 +101,20 @@ it("сохраняет весь desired-набор и показывает pendi
   expect(await screen.findByText("Изменение сохранено и ожидает перезапуска.")).toBeInTheDocument();
   expect(screen.getByText("В текущем процессе: выключен")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Перезапустить и применить" })).toBeEnabled();
+});
+
+it("при выключенном self-restart оставляет операторскую инструкцию вместо кнопки", async () => {
+  const pending = {
+    ...ready,
+    desired: ["diagnostics"],
+    pending_restart: true,
+    runtime: { self_restart: false },
+  };
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => pending }));
+  mount();
+
+  expect(await screen.findByText(/изменение должен применить оператор сервера/i)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Перезапустить и применить" })).not.toBeInTheDocument();
 });
 
 it("требует отдельного подтверждения restart и возвращает фокус по Escape", async () => {

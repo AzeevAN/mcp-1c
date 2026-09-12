@@ -18,12 +18,22 @@ from mcp1c.reference_provider import ReferenceService
 from mcp1c.registry import Registry
 
 
-def _client(tmp_path, *, active=(), terminate=lambda: None):
+def _client(
+    tmp_path,
+    *,
+    active=(),
+    terminate=lambda: None,
+    restart_enabled=True,
+):
     registry = Registry(tmp_path / "data")
     store = CapabilitySettingsStore(registry.data_dir, fallback=active)
     capabilities = CapabilityRuntime(store, active=active)
     reference = ReferenceService.discover(registry.data_dir)
-    restart = RestartController(enabled=True, terminate=terminate, delay=0)
+    restart = RestartController(
+        enabled=restart_enabled,
+        terminate=terminate,
+        delay=0,
+    )
     client = живой_клиент(
         Starlette(
             routes=routes(
@@ -58,6 +68,7 @@ def test_status_различает_active_desired_и_pending_restart(tmp_path, m
         "active": [],
         "desired": ["diagnostics"],
         "pending_restart": True,
+        "runtime": {"self_restart": True},
     }
     assert store.load() == ("diagnostics",)
 
@@ -119,6 +130,7 @@ def test_mutation_сохраняет_desired_и_возвращает_status(
         "active": [],
         "desired": ["diagnostics"],
         "pending_restart": True,
+        "runtime": {"self_restart": True},
     }
     assert json.loads(store.path.read_text(encoding="utf-8")) == {
         "version": 1,
@@ -182,6 +194,38 @@ def test_mutation_отклоняет_malformed_json_без_записи(tmp_path
 
     assert response.status_code == 422
     assert store.path.exists() is False
+
+
+def test_mutation_отклоняет_повторный_root_key_без_записи(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    client, store, _restart = _client(tmp_path)
+    _login(client)
+
+    response = client.put(
+        "/api/v1/capabilities",
+        content=b'{"enabled":[],"enabled":["diagnostics"]}',
+        headers={"content-type": "application/json"},
+    )
+
+    assert response.status_code == 422
+    assert store.path.exists() is False
+
+
+def test_status_публикует_запрет_self_restart(tmp_path, monkeypatch):
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    client, store, _restart = _client(tmp_path, restart_enabled=False)
+    _login(client)
+    store.save(("diagnostics",))
+
+    response = client.get("/api/v1/capabilities")
+
+    assert response.status_code == 200
+    assert response.json()["runtime"] == {"self_restart": False}
 
 
 def test_mutation_требует_admin_и_same_origin(tmp_path, monkeypatch):

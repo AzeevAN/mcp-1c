@@ -5,6 +5,7 @@ export type CapabilitiesStatus = {
   active: string[];
   desired: string[];
   pending_restart: boolean;
+  runtime: { self_restart: boolean };
 };
 
 type ErrorPayload = { error?: string };

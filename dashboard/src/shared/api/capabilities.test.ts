@@ -12,6 +12,7 @@ it("читает capability-статус с same-origin credentials", async () =
     active: [],
     desired: ["diagnostics"],
     pending_restart: true,
+    runtime: { self_restart: true },
   };
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
     ok: true,
@@ -33,6 +34,7 @@ it("передаёт полный desired-массив через PUT", async ()
       active: [],
       desired: ["diagnostics"],
       pending_restart: true,
+      runtime: { self_restart: true },
     }),
   }));
 

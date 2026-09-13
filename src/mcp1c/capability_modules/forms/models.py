@@ -10,6 +10,7 @@ from typing import Literal, NotRequired, TypeAlias, TypedDict
 from .command_catalog import standard_command_supported
 from .diagnostics import Diagnostic
 from .event_catalog import event_signature
+from .metadata_types import metadata_object_xml_type
 from .version_catalog import normalized_platform_version, platform_profile
 
 
@@ -99,7 +100,16 @@ class ValueTableTypeSpec(TypedDict):
     columns: list[ValueTableColumnSpec]
 
 
-AttributeTypeSpec: TypeAlias = ScalarTypeSpec | ValueTableTypeSpec
+class MetadataObjectTypeSpec(TypedDict):
+    __pydantic_config__ = {"extra": "forbid"}
+
+    kind: Literal["metadata_object"]
+    object: str
+
+
+AttributeTypeSpec: TypeAlias = (
+    ScalarTypeSpec | ValueTableTypeSpec | MetadataObjectTypeSpec
+)
 
 
 class FormAttributeSpec(TypedDict):
@@ -315,7 +325,13 @@ class ValueTableType:
     kind: Literal["value_table"] = "value_table"
 
 
-AttributeType: TypeAlias = ScalarType | ValueTableType
+@dataclass(frozen=True, slots=True)
+class MetadataObjectType:
+    object: str
+    kind: Literal["metadata_object"] = "metadata_object"
+
+
+AttributeType: TypeAlias = ScalarType | ValueTableType | MetadataObjectType
 
 
 @dataclass(frozen=True, slots=True)
@@ -671,6 +687,16 @@ def _value_table_column(
 
 def _attribute_type(reader: _Reader, value: object, path: str) -> AttributeType:
     item = reader.object(value, path)
+    if item.get("kind") == "metadata_object":
+        reader.exact_keys(item, path, required=frozenset({"kind", "object"}))
+        object_name = reader.string(item.get("object"), f"{path}.object")
+        if metadata_object_xml_type(object_name) is None:
+            reader.issue(
+                "invalid_metadata_object",
+                f"{path}.object",
+                "Ожидалась поддержанная ссылка вида Обработка.ИмяОбъекта.",
+            )
+        return MetadataObjectType(object_name)
     if item.get("kind") != "value_table":
         return _scalar_type(reader, value, path)
     reader.exact_keys(item, path, required=frozenset({"kind", "columns"}))
@@ -1248,15 +1274,28 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
     for element, path, table in walked:
         if isinstance(element, (InputField, CheckBoxField)):
             if table is None:
-                attribute = attribute_by_name.get(element.data_path)
+                root_name, separator, _nested_path = element.data_path.partition(
+                    "."
+                )
+                attribute = attribute_by_name.get(root_name)
                 if attribute is None:
                     reader.issue(
                         "unresolved_data_path",
                         f"{path}.data_path",
                         "DataPath не разрешается в реквизит формы.",
                     )
+                elif separator and not isinstance(
+                    attribute.type, MetadataObjectType
+                ):
+                    reader.issue(
+                        "unresolved_data_path",
+                        f"{path}.data_path",
+                        "Вложенный DataPath допустим только для объектного реквизита.",
+                    )
                 elif isinstance(element, CheckBoxField) and not isinstance(
                     attribute.type, BooleanType
+                ) and not (
+                    separator and isinstance(attribute.type, MetadataObjectType)
                 ):
                     reader.issue(
                         "check_box_requires_boolean",
@@ -1265,9 +1304,11 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
                     )
                 elif (
                     isinstance(element, InputField)
-                    and
-                    element.choice_list
+                    and element.choice_list
                     and not isinstance(attribute.type, StringType)
+                    and not (
+                        separator and isinstance(attribute.type, MetadataObjectType)
+                    )
                 ):
                     reader.issue(
                         "choice_list_requires_string",
@@ -1437,6 +1478,8 @@ def _type_to_spec(value: AttributeType) -> dict[str, object]:
         }
     if isinstance(value, DateType):
         return {"kind": "date", "fractions": value.fractions}
+    if isinstance(value, MetadataObjectType):
+        return {"kind": "metadata_object", "object": value.object}
     return {
         "kind": "value_table",
         "columns": [

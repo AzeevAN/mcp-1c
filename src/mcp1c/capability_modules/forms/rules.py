@@ -202,9 +202,16 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
         FormRule(
             "basic_attribute_types",
             "supported",
-            "Базовый слой поддерживает строку, boolean, число, дату и таблицу значений.",
+            "Базовый слой поддерживает строку, boolean, число, дату, таблицу значений и одиночный объект метаданных.",
             "observed_pattern",
-            ["string", "boolean", "number", "date", "value_table"],
+            [
+                "string",
+                "boolean",
+                "number",
+                "date",
+                "value_table",
+                "metadata_object",
+            ],
         ),
         FormRule(
             "main_attribute_optional",
@@ -215,7 +222,7 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
         FormRule(
             "simple_data_path",
             "required",
-            "Обычное поле ссылается на реквизит, колонка — на РеквизитТаблицы.Колонка.",
+            "Обычное поле ссылается на реквизит; объектный реквизит допускает путь Объект.Поле; колонка таблицы значений — РеквизитТаблицы.Колонка.",
             "contract_decision",
         ),
         FormRule(
@@ -227,7 +234,7 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
         FormRule(
             "registry_types_boundary",
             "boundary",
-            "Ссылочные, составные и DynamicList типы требуют Registry-aware слоя.",
+            "Одиночный объектный тип и вложенный путь сохраняются структурно, но существование объекта и поля пока не проверяется; ссылочные значения, составные типы и DynamicList требуют Registry-aware слоя.",
             "contract_decision",
         ),
     ),

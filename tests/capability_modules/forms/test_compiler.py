@@ -114,6 +114,28 @@ def test_кодирование_даёт_utf8_bom_crlf_и_валидный_logfo
     assert root.attrib["version"] == "2.16"
 
 
+def test_compiler_пишет_объектный_главный_реквизит_без_имени_конфигурации():
+    payload = _payload()
+    payload["attributes"][0] = {
+        "name": "Объект",
+        "type": {
+            "kind": "metadata_object",
+            "object": "Обработка.НоваяОбработка",
+        },
+        "main": True,
+    }
+    payload["elements"][0]["children"][0].update(
+        {"name": "Комментарий", "data_path": "Объект.Комментарий"}
+    )
+
+    result = compile_managed_form(payload)
+    xml = result.artifacts[0].content
+
+    assert "<v8:Type>cfg:DataProcessorObject.НоваяОбработка</v8:Type>" in xml
+    assert "<MainAttribute>true</MainAttribute>" in xml
+    assert "Конфигурация" not in xml
+
+
 def test_id_детерминированы_и_пространства_элементов_реквизитов_команд_разделены():
     root = ET.fromstring(compile_managed_form(_payload()).artifacts[0].content)
     child_items = root.find(f"{{{LOGFORM}}}ChildItems")

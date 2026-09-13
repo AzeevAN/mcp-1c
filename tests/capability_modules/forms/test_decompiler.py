@@ -144,6 +144,31 @@ def test_явная_версия_платформы_сохраняется_в_lo
     assert result.coverage.structural == "passed"
 
 
+def test_объектный_главный_реквизит_даёт_lossless_roundtrip():
+    payload = _payload()
+    payload["attributes"][0] = {
+        "name": "Объект",
+        "type": {
+            "kind": "metadata_object",
+            "object": "Обработка.НоваяОбработка",
+        },
+        "main": True,
+    }
+    payload["elements"][0]["children"][0].update(
+        {"name": "Комментарий", "data_path": "Объект.Комментарий"}
+    )
+    compiled = compile_managed_form(payload)
+
+    result = decompile_managed_form(
+        compiled.artifacts[0].content,
+        form_name=payload["form_name"],
+        module_bsl=compiled.artifacts[1].content,
+    )
+
+    assert result.status == "decompiled"
+    assert result.specification == compiled.specification
+
+
 def test_decompiler_разрешает_неизвестную_версию_с_предупреждением():
     result = decompile_managed_form(
         _xml(),

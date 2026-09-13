@@ -9,6 +9,7 @@ from xml.etree import ElementTree as ET
 from .command_catalog import ITEM_STANDARD_COMMANDS, standard_command_supported
 from .diagnostics import Coverage, Diagnostic, FormsResult
 from .event_catalog import event_signature
+from .metadata_types import metadata_object_registry_ref
 from .models import (
     SUPPORTED_FORMAT_VERSION,
     FormsContractError,
@@ -973,6 +974,9 @@ def _type(
                     item["type"] = column_type
                 columns.append(item)
         return {"kind": "value_table", "columns": columns}
+    metadata_object = metadata_object_registry_ref(name)
+    if metadata_object is not None and allow_value_table:
+        return {"kind": "metadata_object", "object": metadata_object}
     inventory.issue(
         "unsupported_attribute_type",
         inventory.paths[id(type_name)],

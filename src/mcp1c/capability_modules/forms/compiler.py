@@ -8,6 +8,7 @@ from xml.sax.saxutils import escape, quoteattr
 
 from .diagnostics import Artifact, Coverage, Diagnostic, FormsResult
 from .event_catalog import event_signature
+from .metadata_types import metadata_object_xml_type
 from .models import (
     BooleanType,
     Button,
@@ -18,6 +19,7 @@ from .models import (
     InputField,
     LocalizedText,
     ManagedForm,
+    MetadataObjectType,
     NumberType,
     Page,
     Pages,
@@ -599,6 +601,11 @@ def _emit_type(lines: list[str], value: object, indent: int) -> None:
         _append(lines, indent + 1, "</v8:DateQualifiers>")
     elif isinstance(value, ValueTableType):
         _append(lines, indent + 1, "<v8:Type>v8:ValueTable</v8:Type>")
+    elif isinstance(value, MetadataObjectType):
+        xml_type = metadata_object_xml_type(value.object)
+        if xml_type is None:  # pragma: no cover - checked by the contract
+            raise TypeError(f"Неподдержанный объектный тип: {value.object!r}")
+        _append(lines, indent + 1, f"<v8:Type>{escape(xml_type)}</v8:Type>")
     else:  # pragma: no cover - typed model does not admit other values
         raise TypeError(f"Неподдержанный тип: {type(value)!r}")
     _append(lines, indent, "</Type>")

@@ -264,6 +264,44 @@ def test_ноль_главных_реквизитов_допустим_а_два
     assert ("multiple_main_attributes", "$.attributes") in _codes(caught.value)
 
 
+def test_объектный_главный_реквизит_разрешает_путь_к_его_полю():
+    payload = _payload()
+    payload["attributes"][0] = {
+        "name": "Объект",
+        "type": {
+            "kind": "metadata_object",
+            "object": "Обработка.НоваяОбработка",
+        },
+        "main": True,
+    }
+    field = payload["elements"][0]["children"][0]
+    field.update({"name": "Комментарий", "data_path": "Объект.Комментарий"})
+
+    form = parse_managed_form_spec(payload)
+
+    assert form.attributes[0].type.object == "Обработка.НоваяОбработка"
+    assert form.attributes[0].main is True
+
+
+@pytest.mark.parametrize(
+    "object_name",
+    ["НеизвестныйВид.Объект", "Обработка", "Обработка.Неверное-Имя"],
+)
+def test_некорректный_объектный_тип_отклоняется(object_name):
+    payload = _payload()
+    payload["attributes"][0]["type"] = {
+        "kind": "metadata_object",
+        "object": object_name,
+    }
+
+    with pytest.raises(FormsContractError) as caught:
+        parse_managed_form_spec(payload)
+
+    assert ("invalid_metadata_object", "$.attributes[0].type.object") in _codes(
+        caught.value
+    )
+
+
 def test_id_не_является_частью_публичной_спецификации():
     payload = _payload()
     payload["commands"][0]["id"] = 1

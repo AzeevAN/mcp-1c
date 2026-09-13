@@ -23,6 +23,7 @@ from .models import (
     FormAttribute,
     FormEvent,
     InputField,
+    LabelDecoration,
     LocalizedText,
     ManagedForm,
     MetadataObjectType,
@@ -218,6 +219,53 @@ def _emit_check_box(
     )
     _emit_events(lines, events_by_owner.get(item.name, ()), indent + 1)
     _append(lines, indent, "</CheckBoxField>")
+
+
+def _emit_label_decoration(
+    lines: list[str],
+    item: LabelDecoration,
+    allocator: _IdAllocator,
+    events_by_owner: dict[str | None, tuple[FormEvent, ...]],
+    indent: int,
+) -> None:
+    element_id = allocator.next()
+    _append(
+        lines,
+        indent,
+        f"<LabelDecoration name={quoteattr(item.name)} id={quoteattr(element_id)}>",
+    )
+    if item.horizontal_stretch is not None:
+        _append(
+            lines,
+            indent + 1,
+            f"<HorizontalStretch>{str(item.horizontal_stretch).lower()}</HorizontalStretch>",
+        )
+    if item.vertical_stretch is not None:
+        _append(
+            lines,
+            indent + 1,
+            f"<VerticalStretch>{str(item.vertical_stretch).lower()}</VerticalStretch>",
+        )
+    if item.title is not None:
+        _localized(lines, "Title", item.title, indent + 1)
+    if item.hyperlink:
+        _append(lines, indent + 1, "<Hyperlink>true</Hyperlink>")
+    context_id = allocator.next()
+    _append(
+        lines,
+        indent + 1,
+        f"<ContextMenu name={quoteattr(item.name + 'КонтекстноеМеню')} "
+        f"id={quoteattr(context_id)}/>",
+    )
+    tooltip_id = allocator.next()
+    _append(
+        lines,
+        indent + 1,
+        f"<ExtendedTooltip name={quoteattr(item.name + 'РасширеннаяПодсказка')} "
+        f"id={quoteattr(tooltip_id)}/>",
+    )
+    _emit_events(lines, events_by_owner.get(item.name, ()), indent + 1)
+    _append(lines, indent, "</LabelDecoration>")
 
 
 def _emit_button(
@@ -529,6 +577,8 @@ def _emit_element(
         _emit_input(lines, item, allocator, events_by_owner, indent)
     elif isinstance(item, CheckBoxField):
         _emit_check_box(lines, item, allocator, events_by_owner, indent)
+    elif isinstance(item, LabelDecoration):
+        _emit_label_decoration(lines, item, allocator, events_by_owner, indent)
     elif isinstance(item, Button):
         _emit_button(lines, item, allocator, events_by_owner, indent)
     elif isinstance(item, Table):

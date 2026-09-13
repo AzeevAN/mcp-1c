@@ -79,6 +79,7 @@ _SINGLETON_TAGS = frozenset(
         "Value",
         "CheckState",
         "CheckBoxType",
+        "Hyperlink",
         "PagesRepresentation",
         "AdditionSource",
         "ToolTip",
@@ -498,6 +499,31 @@ def _check_box_field(
     return item
 
 
+def _label_decoration(
+    inventory: _Inventory, node: ET.Element
+) -> dict[str, object]:
+    inventory.mark(node, "name", "id")
+    item: dict[str, object] = {
+        "kind": "label_decoration",
+        "name": _attribute_value(inventory, node, "name"),
+    }
+    _subset_attribute(inventory, node, "id")
+    horizontal_stretch = _optional_boolean(inventory, node, "HorizontalStretch")
+    if horizontal_stretch is not None:
+        item["horizontal_stretch"] = horizontal_stretch
+    vertical_stretch = _optional_boolean(inventory, node, "VerticalStretch")
+    if vertical_stretch is not None:
+        item["vertical_stretch"] = vertical_stretch
+    title = _optional_localized(inventory, node, "Title")
+    if title is not None:
+        item["title"] = title
+    if _optional_true(inventory, node, "Hyperlink"):
+        item["hyperlink"] = True
+    _companion(inventory, node, "ContextMenu")
+    _companion(inventory, node, "ExtendedTooltip")
+    return item
+
+
 def _button(inventory: _Inventory, node: ET.Element) -> dict[str, object]:
     inventory.mark(node, "name", "id")
     item: dict[str, object] = {
@@ -802,6 +828,8 @@ def _element(
         return _input_field(inventory, node)
     if node.tag == _q("CheckBoxField"):
         return _check_box_field(inventory, node)
+    if node.tag == _q("LabelDecoration"):
+        return _label_decoration(inventory, node)
     if node.tag == _q("Button"):
         return _button(inventory, node)
     if node.tag == _q("UsualGroup"):
@@ -1262,6 +1290,7 @@ def _events(
     owner_kinds = {
         _q("InputField"): "input_field",
         _q("CheckBoxField"): "check_box_field",
+        _q("LabelDecoration"): "label_decoration",
         _q("Pages"): "pages",
         _q("Table"): "table",
     }

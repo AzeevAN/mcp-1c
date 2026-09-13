@@ -69,6 +69,41 @@ def test_богатая_форма_импорта_проходит_статич�
     assert result.specification == compiled.specification
 
 
+def test_checker_проверяет_label_decoration_и_его_клиентские_события():
+    payload = _payload()
+    payload["elements"].append(
+        {
+            "kind": "label_decoration",
+            "name": "Пояснение",
+            "title": {"ru": "Проверьте параметры"},
+            "hyperlink": True,
+        }
+    )
+    payload["events"] = [
+        {
+            "owner": "Пояснение",
+            "event": "Click",
+            "handler": "ПояснениеНажатие",
+        },
+        {
+            "owner": "Пояснение",
+            "event": "URLProcessing",
+            "handler": "ПояснениеОбработкаСсылки",
+        },
+    ]
+    compiled = compile_managed_form(payload)
+
+    result = check_managed_form(
+        compiled.artifacts[0].content,
+        form_name=payload["form_name"],
+        module_bsl=compiled.artifacts[1].content,
+    )
+
+    assert result.coverage.structural == "passed"
+    assert result.coverage.bsl_static == "passed"
+    assert result.specification == compiled.specification
+
+
 def test_checker_использует_явный_версионный_профиль_событий():
     payload = _rich_payload()
     payload["platform_version"] = "8.3.25"

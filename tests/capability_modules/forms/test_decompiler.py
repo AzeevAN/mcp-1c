@@ -299,6 +299,82 @@ def test_автоматический_dynamic_list_даёт_lossless_roundtrip()
     assert result.specification == compiled.specification
 
 
+def test_label_decoration_с_событиями_даёт_lossless_roundtrip():
+    payload = _payload()
+    payload["elements"].append(
+        {
+            "kind": "label_decoration",
+            "name": "Пояснение",
+            "title": {"ru": "Проверьте параметры"},
+            "hyperlink": True,
+            "horizontal_stretch": False,
+            "vertical_stretch": True,
+        }
+    )
+    payload["events"].extend(
+        [
+            {
+                "owner": "Пояснение",
+                "event": "Click",
+                "handler": "ПояснениеНажатие",
+            },
+            {
+                "owner": "Пояснение",
+                "event": "URLProcessing",
+                "handler": "ПояснениеОбработкаСсылки",
+            },
+        ]
+    )
+    compiled = compile_managed_form(payload)
+
+    result = decompile_managed_form(
+        compiled.artifacts[0].content,
+        form_name=payload["form_name"],
+        module_bsl=compiled.artifacts[1].content,
+    )
+
+    assert result.specification == compiled.specification
+    assert result.coverage.structural == "passed"
+
+
+def test_label_decoration_без_или_с_повтором_context_menu_остаётся_inventory():
+    payload = _payload()
+    payload["elements"].append(
+        {
+            "kind": "label_decoration",
+            "name": "Пояснение",
+            "title": {"ru": "Проверьте параметры"},
+        }
+    )
+    original = compile_managed_form(payload).artifacts[0].content
+
+    for mutation in ("missing", "repeated"):
+        root = ET.fromstring(original)
+        label = next(
+            node
+            for node in root.iter(
+                "{http://v8.1c.ru/8.3/xcf/logform}LabelDecoration"
+            )
+            if node.attrib.get("name") == "Пояснение"
+        )
+        context_menu = label.find(
+            "{http://v8.1c.ru/8.3/xcf/logform}ContextMenu"
+        )
+        assert context_menu is not None
+        if mutation == "missing":
+            label.remove(context_menu)
+        else:
+            label.append(copy.deepcopy(context_menu))
+
+        result = decompile_managed_form(
+            ET.tostring(root, encoding="unicode"),
+            form_name=payload["form_name"],
+        )
+
+        assert result.coverage.structural == "unsupported"
+        assert _diagnostics(result, "missing_or_repeated_xml_node")
+
+
 def test_ручной_dynamic_list_остаётся_inventory():
     payload = _payload()
     payload["attributes"][0]["type"] = {

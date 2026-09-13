@@ -61,6 +61,21 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                 raise RuntimeError("Строгая вложенная specification-схема не опубликована.")
 
             specification = json.loads(FIXTURE.read_text(encoding="utf-8"))
+            specification["elements"].append(
+                {
+                    "kind": "label_decoration",
+                    "name": "Пояснение",
+                    "title": {"ru": "Проверьте параметры"},
+                    "hyperlink": True,
+                }
+            )
+            specification["events"].append(
+                {
+                    "owner": "Пояснение",
+                    "event": "URLProcessing",
+                    "handler": "ПояснениеОбработкаСсылки",
+                }
+            )
             rules = await session.call_tool(
                 "get_managed_form_rules", {"topic": "overview"}
             )

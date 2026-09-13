@@ -84,6 +84,9 @@ def test_справочный_профиль_8_3_5_сохраняет_отлич
     before_close = event_signature("form", "BeforeClose", profile="8.3.5")
     start_choice = event_signature("input_field", "StartChoice", profile="8.3.5")
     auto_complete = event_signature("input_field", "AutoComplete", profile="8.3.5")
+    url_processing = event_signature(
+        "label_decoration", "URLProcessing", profile="8.3.5"
+    )
 
     assert before_close is not None
     assert before_close.parameters == ("Отказ", "СтандартнаяОбработка")
@@ -95,11 +98,20 @@ def test_справочный_профиль_8_3_5_сохраняет_отлич
     )
     assert auto_complete is not None
     assert auto_complete.parameters[3] == "Параметры"
+    assert url_processing is not None
+    assert url_processing.parameters == (
+        "Элемент",
+        "НавигационнаяСсылка",
+        "СтандартнаяОбработка",
+    )
 
 
 def test_современный_профиль_не_смешивает_сигнатуру_8_3_5():
     before_close = event_signature("form", "BeforeClose", profile="modern")
     start_choice = event_signature("input_field", "StartChoice", profile="modern")
+    url_processing = event_signature(
+        "label_decoration", "URLProcessing", profile="modern"
+    )
 
     assert before_close is not None
     assert before_close.parameters == (
@@ -107,6 +119,10 @@ def test_современный_профиль_не_смешивает_сигн�
         "ЗавершениеРаботы",
         "ТекстПредупреждения",
         "СтандартнаяОбработка",
+    )
+    assert url_processing is not None
+    assert url_processing.parameters[1] == (
+        "НавигационнаяСсылкаФорматированнойСтроки"
     )
     assert start_choice is not None
     assert "ВыборДобавлением" in start_choice.parameters

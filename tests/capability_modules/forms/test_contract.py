@@ -77,6 +77,43 @@ def test_спецификация_импорта_поддерживает_тип
     assert pages.pages[2].children[5].kind == "check_box_field"
 
 
+def test_статическая_надпись_имеет_собственный_kind_и_не_требует_data_path():
+    payload = _payload()
+    payload["elements"].append(
+        {
+            "kind": "label_decoration",
+            "name": "Пояснение",
+            "title": {"ru": "Проверьте параметры"},
+            "hyperlink": True,
+            "horizontal_stretch": False,
+            "vertical_stretch": True,
+        }
+    )
+    payload["events"].extend(
+        [
+            {
+                "owner": "Пояснение",
+                "event": "Click",
+                "handler": "ПояснениеНажатие",
+            },
+            {
+                "owner": "Пояснение",
+                "event": "URLProcessing",
+                "handler": "ПояснениеОбработкаСсылки",
+            },
+        ]
+    )
+
+    form = parse_managed_form_spec(payload)
+
+    label = form.elements[-1]
+    assert label.kind == "label_decoration"
+    assert label.title.ru == "Проверьте параметры"
+    assert label.hyperlink is True
+    assert label.horizontal_stretch is False
+    assert label.vertical_stretch is True
+
+
 def test_таблица_отклоняет_путь_к_необъявленной_колонке():
     payload = _rich_payload()
     payload["elements"][0]["children"][1]["pages"][0]["children"][0][

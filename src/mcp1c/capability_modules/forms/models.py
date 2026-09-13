@@ -190,6 +190,17 @@ class CheckBoxFieldSpec(TypedDict):
     read_only: NotRequired[bool]
 
 
+class LabelDecorationSpec(TypedDict):
+    __pydantic_config__ = {"extra": "forbid"}
+
+    kind: Literal["label_decoration"]
+    name: str
+    title: NotRequired[LocalizedTextSpec]
+    hyperlink: NotRequired[bool]
+    horizontal_stretch: NotRequired[bool]
+    vertical_stretch: NotRequired[bool]
+
+
 class ButtonSpec(TypedDict):
     __pydantic_config__ = {"extra": "forbid"}
 
@@ -254,6 +265,7 @@ class UsualGroupSpec(TypedDict):
 ElementSpec: TypeAlias = (
     InputFieldSpec
     | CheckBoxFieldSpec
+    | LabelDecorationSpec
     | ButtonSpec
     | TableSpec
     | PagesSpec
@@ -304,6 +316,8 @@ class FormEventSpec(TypedDict):
         "OnWriteAtServer",
         "AfterWriteAtServer",
         "AfterWrite",
+        "Click",
+        "URLProcessing",
     ]
     handler: str
 
@@ -439,6 +453,16 @@ class CheckBoxField:
 
 
 @dataclass(frozen=True, slots=True)
+class LabelDecoration:
+    name: str
+    title: LocalizedText | None = None
+    hyperlink: bool = False
+    horizontal_stretch: bool | None = None
+    vertical_stretch: bool | None = None
+    kind: Literal["label_decoration"] = "label_decoration"
+
+
+@dataclass(frozen=True, slots=True)
 class Button:
     name: str
     command: str
@@ -495,7 +519,7 @@ class UsualGroup:
 
 
 Element: TypeAlias = (
-    InputField | CheckBoxField | Button | Table | Pages | UsualGroup
+    InputField | CheckBoxField | LabelDecoration | Button | Table | Pages | UsualGroup
 )
 GroupChild: TypeAlias = Element
 
@@ -983,6 +1007,39 @@ def _check_box_field(
     )
 
 
+def _label_decoration(
+    reader: _Reader, item: Mapping[str, object], path: str
+) -> LabelDecoration:
+    reader.exact_keys(
+        item,
+        path,
+        required=frozenset({"kind", "name"}),
+        optional=frozenset(
+            {
+                "title",
+                "hyperlink",
+                "horizontal_stretch",
+                "vertical_stretch",
+            }
+        ),
+    )
+    return LabelDecoration(
+        name=reader.string(item.get("name"), f"{path}.name", identifier=True),
+        title=_optional_localized(reader, item, path),
+        hyperlink=(
+            reader.boolean(item["hyperlink"], f"{path}.hyperlink")
+            if "hyperlink" in item
+            else False
+        ),
+        horizontal_stretch=_optional_boolean(
+            reader, item, "horizontal_stretch", path
+        ),
+        vertical_stretch=_optional_boolean(
+            reader, item, "vertical_stretch", path
+        ),
+    )
+
+
 def _button(reader: _Reader, item: Mapping[str, object], path: str) -> Button:
     reader.exact_keys(
         item,
@@ -1204,6 +1261,8 @@ def _element(reader: _Reader, value: object, path: str) -> Element:
         return _input_field(reader, item, path)
     if kind == "check_box_field":
         return _check_box_field(reader, item, path)
+    if kind == "label_decoration":
+        return _label_decoration(reader, item, path)
     if kind == "button":
         return _button(reader, item, path)
     if kind == "table":
@@ -1732,6 +1791,17 @@ def _element_to_spec(element: Element) -> dict[str, object]:
         }
         if element.read_only:
             item["read_only"] = True
+    elif isinstance(element, LabelDecoration):
+        item = {
+            "kind": "label_decoration",
+            "name": element.name,
+        }
+        if element.hyperlink:
+            item["hyperlink"] = True
+        if element.horizontal_stretch is not None:
+            item["horizontal_stretch"] = element.horizontal_stretch
+        if element.vertical_stretch is not None:
+            item["vertical_stretch"] = element.vertical_stretch
     elif isinstance(element, Button):
         item = {
             "kind": "button",
@@ -1884,6 +1954,8 @@ __all__ = [
     "GroupChildSpec",
     "InputField",
     "InputFieldSpec",
+    "LabelDecoration",
+    "LabelDecorationSpec",
     "LocalizedText",
     "LocalizedTextSpec",
     "ManagedForm",

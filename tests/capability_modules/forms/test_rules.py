@@ -77,6 +77,7 @@ def test_elements_описывают_только_принятые_kinds_и_comp
             "usual_group",
             "input_field",
             "check_box_field",
+            "label_decoration",
             "button",
             "pages",
             "table",
@@ -85,6 +86,7 @@ def test_elements_описывают_только_принятые_kinds_и_comp
             "usual_group",
             "input_field",
             "check_box_field",
+            "label_decoration",
             "button",
             "pages",
             "table",
@@ -98,6 +100,10 @@ def test_elements_описывают_только_принятые_kinds_и_comp
     ]
     assert by_code["button_companions"]["value"] == ["ExtendedTooltip"]
     assert by_code["check_box_requires_boolean"]["value"] == [
+        "ContextMenu",
+        "ExtendedTooltip",
+    ]
+    assert by_code["label_decoration_companions"]["value"] == [
         "ContextMenu",
         "ExtendedTooltip",
     ]
@@ -189,6 +195,7 @@ def test_events_публикуют_закрытый_owner_aware_каталог_�
                 "Opening",
             ],
             "check_box_field": ["OnChange"],
+            "label_decoration": ["Click", "URLProcessing"],
             "pages": ["OnCurrentPageChange"],
             "table": [
                 "Selection",

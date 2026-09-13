@@ -313,6 +313,7 @@ def _expected_handlers(
     owner_kinds = {
         _q("InputField"): "input_field",
         _q("CheckBoxField"): "check_box_field",
+        _q("LabelDecoration"): "label_decoration",
         _q("Pages"): "pages",
         _q("Table"): "table",
     }

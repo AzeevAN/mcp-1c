@@ -59,6 +59,7 @@ def test_терминология_покрывает_все_поддержанн
         "command",
         "command_kind",
         "command_owner",
+        "command_source",
         "commands",
         "data_path",
         "default",
@@ -75,6 +76,7 @@ def test_терминология_покрывает_все_поддержанн
         "horizontal_location",
         "horizontal_stretch",
         "hyperlink",
+        "item",
         "kind",
         "length",
         "list_choice_mode",
@@ -154,6 +156,24 @@ def test_поиск_русского_значения_возвращает_св�
     ]
 
 
+@pytest.mark.parametrize(
+    "query",
+    [
+        "источник команд",
+        "ИсточникКоманд",
+        "command source",
+        "CommandSource",
+        "command_source",
+    ],
+)
+def test_поиск_источника_команд_возвращает_каноническое_свойство(query):
+    payload = get_managed_form_rules("terminology", query=query)
+
+    assert [entry["canonical"] for entry in payload["matches"]] == [
+        "command_source"
+    ]
+
+
 def test_поиск_неизвестного_термина_возвращает_пустой_результат_без_догадки():
     payload = get_managed_form_rules("terminology", query="трехмерная диаграмма")
 
@@ -179,6 +199,7 @@ def test_новый_element_или_property_нельзя_добавить_без
         models.ChoiceListItemSpec,
         models.PageSpec,
         models.FormCommandSpec,
+        models.CommandSourceSpec,
         models.FormEventSpec,
     }
     implemented_elements = {
@@ -329,6 +350,12 @@ def test_elements_описывают_только_принятые_kinds_и_comp
         "ExtendedTooltip",
         "ChildItems<Button>",
     ]
+    assert by_code["command_source_structure"]["value"] == {
+        "containers": ["command_bar", "popup", "button_group"],
+        "kinds": ["form", "form_global_commands", "item"],
+        "item_target": "existing_attribute_or_element",
+        "children": "optional_with_command_source",
+    }
 
 
 def test_layout_оставляет_смысловое_решение_агенту_а_compiler_его_сохраняет():

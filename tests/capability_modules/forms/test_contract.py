@@ -356,6 +356,86 @@ def test_группа_кнопок_доступна_в_панели_и_подм�
     ) in _codes(caught.value)
 
 
+def test_источник_команд_поддерживает_форму_глобальные_команды_и_item():
+    payload = _payload()
+    payload["elements"].append(
+        {
+            "kind": "command_bar",
+            "name": "Действия",
+            "command_source": {"kind": "form"},
+            "children": [
+                {
+                    "kind": "button_group",
+                    "name": "ГлобальныеКоманды",
+                    "command_source": {"kind": "form_global_commands"},
+                },
+                {
+                    "kind": "popup",
+                    "name": "КомандыРеквизита",
+                    "title": {"ru": "Команды реквизита"},
+                    "command_source": {
+                        "kind": "item",
+                        "item": "ПервоеЗначение",
+                    },
+                    "children": [],
+                },
+            ],
+        }
+    )
+
+    form = parse_managed_form_spec(payload)
+    bar = form.elements[-1]
+
+    assert bar.command_source.kind == "form"
+    assert bar.children[0].command_source.kind == "form_global_commands"
+    assert bar.children[0].children == ()
+    assert bar.children[1].command_source.kind == "item"
+    assert bar.children[1].command_source.item == "ПервоеЗначение"
+    assert bar.children[1].children == ()
+
+
+@pytest.mark.parametrize(
+    ("source", "code", "path"),
+    [
+        (
+            {"kind": "item"},
+            "missing_key",
+            "$.elements[1].command_source.item",
+        ),
+        (
+            {"kind": "form", "item": "ПервоеЗначение"},
+            "unexpected_command_source_item",
+            "$.elements[1].command_source.item",
+        ),
+        (
+            {"kind": "unknown"},
+            "invalid_command_source_kind",
+            "$.elements[1].command_source.kind",
+        ),
+        (
+            {"kind": "item", "item": "НеизвестныйЭлемент"},
+            "unresolved_command_source_item",
+            "$.elements[1].command_source.item",
+        ),
+    ],
+)
+def test_невалидный_источник_команд_отклоняется(source, code, path):
+    payload = _payload()
+    payload["elements"].append(
+        {
+            "kind": "command_bar",
+            "name": "Действия",
+            "command_source": source,
+            "children": [],
+        }
+    )
+
+    with pytest.raises(FormsContractError) as caught:
+        parse_managed_form_spec(payload)
+
+    assert (code, path) in _codes(caught.value)
+
+
 def test_таблица_отклоняет_путь_к_необъявленной_колонке():
     payload = _rich_payload()
     payload["elements"][0]["children"][1]["pages"][0]["children"][0][

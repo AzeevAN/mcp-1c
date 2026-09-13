@@ -236,8 +236,8 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
             "command_bar_structure",
             "required",
             (
-                "Первый authoring-слой CommandBar содержит одну или более "
-                "кнопок, подменю либо групп кнопок и получает наблюдаемую "
+                "CommandBar без CommandSource содержит одну или более кнопок, "
+                "подменю либо групп кнопок; панель всегда получает наблюдаемую "
                 "расширенную подсказку."
             ),
             "observed_pattern",
@@ -247,9 +247,8 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
             "popup_structure",
             "required",
             (
-                "Первый authoring-слой Popup имеет локализованный заголовок, "
-                "одну или более кнопок либо групп кнопок и расширенную "
-                "подсказку."
+                "Popup имеет локализованный заголовок и расширенную подсказку; "
+                "без CommandSource нужны кнопки либо группы кнопок."
             ),
             "observed_pattern",
             ["Title", "ExtendedTooltip", "ChildItems<Button|ButtonGroup>"],
@@ -258,11 +257,27 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
             "button_group_structure",
             "required",
             (
-                "Первый authoring-слой ButtonGroup содержит одну или более "
-                "прямых кнопок и получает расширенную подсказку."
+                "ButtonGroup получает расширенную подсказку; без "
+                "CommandSource нужна одна или более прямых кнопок."
             ),
             "observed_pattern",
             ["ExtendedTooltip", "ChildItems<Button>"],
+        ),
+        FormRule(
+            "command_source_structure",
+            "supported",
+            (
+                "CommandSource автоматически добавляет команды формы, "
+                "глобальные команды панели формы либо команды существующего "
+                "реквизита или элемента; явные кнопки можно добавлять после них."
+            ),
+            "platform_documentation",
+            {
+                "containers": ["command_bar", "popup", "button_group"],
+                "kinds": ["form", "form_global_commands", "item"],
+                "item_target": "existing_attribute_or_element",
+                "children": "optional_with_command_source",
+            },
         ),
         FormRule(
             "separate_id_spaces",

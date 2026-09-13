@@ -97,6 +97,7 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                     "kind": "command_bar",
                     "name": "Действия",
                     "horizontal_location": "right",
+                    "command_source": {"kind": "form"},
                     "children": [
                         {
                             "kind": "button",
@@ -117,6 +118,9 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                                     "kind": "button_group",
                                     "name": "ГруппаДополнительныхДействий",
                                     "representation": "compact",
+                                    "command_source": {
+                                        "kind": "form_global_commands"
+                                    },
                                     "children": [
                                         {
                                             "kind": "button",
@@ -161,6 +165,18 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                     {"topic": "terminology", "query": query},
                 )
                 terminology_results.append(json.loads(result.content[0].text))
+            command_source_terms = []
+            for query in (
+                "источник команд",
+                "ИсточникКоманд",
+                "command source",
+                "CommandSource",
+            ):
+                result = await session.call_tool(
+                    "get_managed_form_rules",
+                    {"topic": "terminology", "query": query},
+                )
+                command_source_terms.append(json.loads(result.content[0].text))
             compiled = await session.call_tool(
                 "compile_managed_form", {"specification": specification}
             )
@@ -203,6 +219,12 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
             ]
             if canonical_matches != [["command_bar"]] * 3:
                 raise RuntimeError("Русский и английский поиск терминов расходятся.")
+            command_source_matches = [
+                [match["canonical"] for match in result["matches"]]
+                for result in command_source_terms
+            ]
+            if command_source_matches != [["command_source"]] * 4:
+                raise RuntimeError("Источник команд не найден двуязычным поиском.")
             return {
                 "mode": mode,
                 "forms_tools": len(present),
@@ -217,6 +239,7 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                 ),
                 "unknown_field_rejected": True,
                 "bilingual_term_search": "command_bar",
+                "command_source": "form_and_form_global_commands",
             }
 
 

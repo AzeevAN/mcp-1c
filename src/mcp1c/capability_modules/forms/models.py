@@ -239,14 +239,22 @@ class ButtonSpec(TypedDict):
     title: NotRequired[LocalizedTextSpec]
 
 
+class CommandSourceSpec(TypedDict):
+    __pydantic_config__ = {"extra": "forbid"}
+
+    kind: Literal["form", "form_global_commands", "item"]
+    item: NotRequired[str]
+
+
 class ButtonGroupSpec(TypedDict):
     __pydantic_config__ = {"extra": "forbid"}
 
     kind: Literal["button_group"]
     name: str
-    children: list[ButtonSpec]
+    children: NotRequired[list[ButtonSpec]]
     title: NotRequired[LocalizedTextSpec]
     representation: NotRequired[Literal["usual", "compact"]]
+    command_source: NotRequired[CommandSourceSpec]
 
 
 class PopupSpec(TypedDict):
@@ -255,7 +263,8 @@ class PopupSpec(TypedDict):
     kind: Literal["popup"]
     name: str
     title: LocalizedTextSpec
-    children: list[ButtonSpec | ButtonGroupSpec]
+    children: NotRequired[list[ButtonSpec | ButtonGroupSpec]]
+    command_source: NotRequired[CommandSourceSpec]
 
 
 class CommandBarSpec(TypedDict):
@@ -263,13 +272,14 @@ class CommandBarSpec(TypedDict):
 
     kind: Literal["command_bar"]
     name: str
-    children: list[ButtonSpec | PopupSpec | ButtonGroupSpec]
+    children: NotRequired[list[ButtonSpec | PopupSpec | ButtonGroupSpec]]
     title: NotRequired[LocalizedTextSpec]
     horizontal_location: NotRequired[
         Literal["auto", "left", "center", "right"]
     ]
     horizontal_stretch: NotRequired[bool]
     vertical_stretch: NotRequired[bool]
+    command_source: NotRequired[CommandSourceSpec]
 
 
 class TableSpec(TypedDict):
@@ -560,11 +570,18 @@ class Button:
 
 
 @dataclass(frozen=True, slots=True)
+class CommandSource:
+    kind: Literal["form", "form_global_commands", "item"]
+    item: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ButtonGroup:
     name: str
     children: tuple[Button, ...]
     title: LocalizedText | None = None
     representation: Literal["usual", "compact"] = "usual"
+    command_source: CommandSource | None = None
     kind: Literal["button_group"] = "button_group"
 
 
@@ -573,6 +590,7 @@ class Popup:
     name: str
     title: LocalizedText
     children: tuple[Button | ButtonGroup, ...]
+    command_source: CommandSource | None = None
     kind: Literal["popup"] = "popup"
 
 
@@ -584,6 +602,7 @@ class CommandBar:
     horizontal_location: Literal["auto", "left", "center", "right"] = "auto"
     horizontal_stretch: bool | None = None
     vertical_stretch: bool | None = None
+    command_source: CommandSource | None = None
     kind: Literal["command_bar"] = "command_bar"
 
 
@@ -1321,24 +1340,79 @@ def _button(reader: _Reader, item: Mapping[str, object], path: str) -> Button:
     )
 
 
+def _command_source(
+    reader: _Reader,
+    value: object,
+    path: str,
+) -> CommandSource:
+    item = reader.object(value, path)
+    reader.exact_keys(
+        item,
+        path,
+        required=frozenset({"kind"}),
+        optional=frozenset({"item"}),
+    )
+    kind = item.get("kind")
+    if kind not in {"form", "form_global_commands", "item"}:
+        reader.issue(
+            "invalid_command_source_kind",
+            f"{path}.kind",
+            "Допустимы form, form_global_commands и item.",
+        )
+        kind = "form"
+
+    source_item = None
+    if kind == "item":
+        if "item" not in item:
+            reader.issue(
+                "missing_key",
+                f"{path}.item",
+                "Для источника item обязательно имя реквизита или элемента.",
+            )
+        else:
+            source_item = reader.string(
+                item.get("item"),
+                f"{path}.item",
+                identifier=True,
+            )
+    elif "item" in item:
+        reader.issue(
+            "unexpected_command_source_item",
+            f"{path}.item",
+            "Имя элемента допустимо только для источника item.",
+        )
+    return CommandSource(kind=kind, item=source_item)
+
+
 def _command_bar(
     reader: _Reader, item: Mapping[str, object], path: str
 ) -> CommandBar:
     reader.exact_keys(
         item,
         path,
-        required=frozenset({"kind", "name", "children"}),
+        required=frozenset({"kind", "name"}),
         optional=frozenset(
             {
                 "title",
                 "horizontal_location",
                 "horizontal_stretch",
                 "vertical_stretch",
+                "command_source",
+                "children",
             }
         ),
     )
+    command_source = (
+        _command_source(
+            reader,
+            item["command_source"],
+            f"{path}.command_source",
+        )
+        if "command_source" in item
+        else None
+    )
     raw_children = reader.array(
-        item.get("children"), f"{path}.children", allow_empty=True
+        item.get("children", []), f"{path}.children", allow_empty=True
     )
     children: list[Button | Popup | ButtonGroup] = []
     for index, raw in enumerate(raw_children):
@@ -1356,7 +1430,7 @@ def _command_bar(
                 f"{child_path}.kind",
                 "CommandBar поддерживает кнопки, подменю и группы кнопок.",
             )
-    if not children:
+    if not children and command_source is None:
         reader.issue(
             "command_bar_items_required",
             f"{path}.children",
@@ -1381,6 +1455,7 @@ def _command_bar(
         vertical_stretch=_optional_boolean(
             reader, item, "vertical_stretch", path
         ),
+        command_source=command_source,
     )
 
 
@@ -1388,10 +1463,20 @@ def _popup(reader: _Reader, item: Mapping[str, object], path: str) -> Popup:
     reader.exact_keys(
         item,
         path,
-        required=frozenset({"kind", "name", "title", "children"}),
+        required=frozenset({"kind", "name", "title"}),
+        optional=frozenset({"command_source", "children"}),
+    )
+    command_source = (
+        _command_source(
+            reader,
+            item["command_source"],
+            f"{path}.command_source",
+        )
+        if "command_source" in item
+        else None
     )
     raw_children = reader.array(
-        item.get("children"), f"{path}.children", allow_empty=True
+        item.get("children", []), f"{path}.children", allow_empty=True
     )
     children: list[Button | ButtonGroup] = []
     for index, raw in enumerate(raw_children):
@@ -1407,7 +1492,7 @@ def _popup(reader: _Reader, item: Mapping[str, object], path: str) -> Popup:
                 f"{child_path}.kind",
                 "Popup поддерживает прямые кнопки и группы кнопок.",
             )
-    if not children:
+    if not children and command_source is None:
         reader.issue(
             "popup_buttons_required",
             f"{path}.children",
@@ -1417,6 +1502,7 @@ def _popup(reader: _Reader, item: Mapping[str, object], path: str) -> Popup:
         name=reader.string(item.get("name"), f"{path}.name", identifier=True),
         title=_localized(reader, item.get("title"), f"{path}.title"),
         children=tuple(children),
+        command_source=command_source,
     )
 
 
@@ -1426,11 +1512,22 @@ def _button_group(
     reader.exact_keys(
         item,
         path,
-        required=frozenset({"kind", "name", "children"}),
-        optional=frozenset({"title", "representation"}),
+        required=frozenset({"kind", "name"}),
+        optional=frozenset(
+            {"title", "representation", "command_source", "children"}
+        ),
+    )
+    command_source = (
+        _command_source(
+            reader,
+            item["command_source"],
+            f"{path}.command_source",
+        )
+        if "command_source" in item
+        else None
     )
     raw_children = reader.array(
-        item.get("children"), f"{path}.children", allow_empty=True
+        item.get("children", []), f"{path}.children", allow_empty=True
     )
     children: list[Button] = []
     for index, raw in enumerate(raw_children):
@@ -1444,7 +1541,7 @@ def _button_group(
             )
             continue
         children.append(_button(reader, child, child_path))
-    if not children:
+    if not children and command_source is None:
         reader.issue(
             "button_group_buttons_required",
             f"{path}.children",
@@ -1463,6 +1560,7 @@ def _button_group(
         children=tuple(children),
         title=_optional_localized(reader, item, path),
         representation=representation,
+        command_source=command_source,
     )
 
 
@@ -1869,6 +1967,21 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
         and main_object.object.split(".", 1)[0] == "Документ"
     )
     for element, path, table in walked:
+        command_source = (
+            element.command_source
+            if isinstance(element, (CommandBar, Popup, ButtonGroup))
+            else None
+        )
+        if command_source is not None and command_source.kind == "item":
+            source_name = command_source.item or ""
+            attribute_target = attribute_by_name.get(source_name)
+            element_target = element_by_name.get(source_name)
+            if attribute_target is None and element_target is None:
+                reader.issue(
+                    "unresolved_command_source_item",
+                    f"{path}.command_source.item",
+                    "Источник команд не разрешается в реквизит или элемент формы.",
+                )
         if isinstance(
             element, (InputField, CheckBoxField, LabelField, RadioButtonField)
         ):
@@ -2157,6 +2270,13 @@ def _type_to_spec(value: AttributeType) -> dict[str, object]:
     }
 
 
+def _command_source_to_spec(source: CommandSource) -> dict[str, object]:
+    result: dict[str, object] = {"kind": source.kind}
+    if source.item is not None:
+        result["item"] = source.item
+    return result
+
+
 def _element_to_spec(element: Element) -> dict[str, object]:
     if isinstance(element, InputField):
         item: dict[str, object] = {
@@ -2256,6 +2376,10 @@ def _element_to_spec(element: Element) -> dict[str, object]:
                 _element_to_spec(child) for child in element.children
             ],
         }
+        if element.command_source is not None:
+            item["command_source"] = _command_source_to_spec(
+                element.command_source
+            )
     elif isinstance(element, ButtonGroup):
         item = {
             "kind": "button_group",
@@ -2266,6 +2390,10 @@ def _element_to_spec(element: Element) -> dict[str, object]:
         }
         if element.representation != "usual":
             item["representation"] = element.representation
+        if element.command_source is not None:
+            item["command_source"] = _command_source_to_spec(
+                element.command_source
+            )
     elif isinstance(element, CommandBar):
         item = {
             "kind": "command_bar",
@@ -2280,6 +2408,10 @@ def _element_to_spec(element: Element) -> dict[str, object]:
             item["horizontal_stretch"] = element.horizontal_stretch
         if element.vertical_stretch is not None:
             item["vertical_stretch"] = element.vertical_stretch
+        if element.command_source is not None:
+            item["command_source"] = _command_source_to_spec(
+                element.command_source
+            )
     elif isinstance(element, Table):
         item = {
             "kind": "table",
@@ -2401,6 +2533,8 @@ __all__ = [
     "ButtonSpec",
     "CommandBar",
     "CommandBarSpec",
+    "CommandSource",
+    "CommandSourceSpec",
     "CheckBoxField",
     "CheckBoxFieldSpec",
     "CompositeType",

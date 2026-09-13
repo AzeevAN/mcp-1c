@@ -11,7 +11,7 @@ from typing import Literal, TypeAlias
 TermCategory: TypeAlias = Literal["element", "property", "attribute_type"]
 MAX_TERM_QUERY_LENGTH = 160
 _SEPARATORS = re.compile(r"[_\-]+")
-_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-zа-яё0-9])(?=[A-ZА-ЯЁ])")
 _SPACES = re.compile(r"\s+")
 
 
@@ -183,6 +183,20 @@ PROPERTY_TERMS: tuple[FormTerm, ...] = (
         },
     ),
     _property("command_owner", ("владелец команды",), "command owner", ("button",)),
+    _property(
+        "command_source",
+        ("источник команд",),
+        "command source",
+        ("command_bar", "popup", "button_group"),
+        {
+            "form": ("форма", "form"),
+            "form_global_commands": (
+                "глобальные команды командной панели формы",
+                "form command panel global commands",
+            ),
+            "item": ("реквизит или элемент формы", "form item"),
+        },
+    ),
     _property("default", ("кнопка по умолчанию",), "default button", ("button",)),
     _property("children", ("дочерние элементы",), "children", ("container",)),
     _property(
@@ -228,6 +242,12 @@ PROPERTY_TERMS: tuple[FormTerm, ...] = (
     _property("owner", ("владелец события",), "event owner", ("event",)),
     _property("event", ("событие",), "event", ("event",)),
     _property("handler", ("обработчик события",), "event handler", ("event",)),
+    _property(
+        "item",
+        ("элемент источника команд", "реквизит источника команд"),
+        "command source item",
+        ("command_source",),
+    ),
 )
 
 

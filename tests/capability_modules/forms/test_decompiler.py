@@ -670,6 +670,67 @@ def test_button_group_с_кнопками_даёт_lossless_roundtrip():
         assert _diagnostics(unsupported, "missing_or_repeated_xml_node")
 
 
+def test_источники_команд_с_явными_и_пустыми_детьми_дают_lossless_roundtrip():
+    payload = _payload()
+    payload["elements"].append(
+        {
+            "kind": "command_bar",
+            "name": "Действия",
+            "command_source": {"kind": "form"},
+            "children": [
+                {
+                    "kind": "button_group",
+                    "name": "ГлобальныеКоманды",
+                    "command_source": {"kind": "form_global_commands"},
+                    "children": [],
+                },
+                {
+                    "kind": "popup",
+                    "name": "КомандыРеквизита",
+                    "title": {"ru": "Команды реквизита"},
+                    "command_source": {
+                        "kind": "item",
+                        "item": "ПервоеЗначение",
+                    },
+                    "children": [],
+                },
+            ],
+        }
+    )
+    compiled = compile_managed_form(payload)
+
+    result = decompile_managed_form(
+        compiled.artifacts[0].content,
+        form_name=payload["form_name"],
+        module_bsl=compiled.artifacts[1].content,
+    )
+
+    assert result.specification == compiled.specification
+    assert result.coverage.structural == "passed"
+
+
+def test_неизвестный_источник_команд_остаётся_inventory():
+    payload = _payload()
+    payload["elements"].append(
+        {
+            "kind": "command_bar",
+            "name": "Действия",
+            "command_source": {"kind": "form"},
+            "children": [],
+        }
+    )
+    compiled = compile_managed_form(payload)
+    xml = compiled.artifacts[0].content.replace(
+        "<CommandSource>Form</CommandSource>",
+        "<CommandSource>Unknown.Source</CommandSource>",
+    )
+
+    result = decompile_managed_form(xml, form_name=payload["form_name"])
+
+    assert result.coverage.structural == "unsupported"
+    assert _diagnostics(result, "unsupported_command_source")
+
+
 def test_ручной_dynamic_list_остаётся_inventory():
     payload = _payload()
     payload["attributes"][0]["type"] = {

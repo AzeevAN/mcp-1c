@@ -48,6 +48,7 @@ _SINGLETON_TAGS = frozenset(
         "AutoCommandBar",
         "Events",
         "ChildItems",
+        "CommandSource",
         "Attributes",
         "Commands",
         "Group",
@@ -710,6 +711,38 @@ def _button(inventory: _Inventory, node: ET.Element) -> dict[str, object]:
     return item
 
 
+def _optional_command_source(
+    inventory: _Inventory,
+    parent: ET.Element,
+) -> dict[str, str] | None:
+    matches = [child for child in parent if child.tag == _q("CommandSource")]
+    if not matches:
+        return None
+    source = matches[0]
+    inventory.mark(source)
+    if len(matches) > 1:
+        inventory.issue(
+            "repeated_xml_node",
+            inventory.paths[id(source)],
+            "XML-узел CommandSource повторяется.",
+            status="unsupported",
+        )
+    value = _text(source).strip()
+    if value == "Form":
+        return {"kind": "form"}
+    if value == "FormCommandPanelGlobalCommands":
+        return {"kind": "form_global_commands"}
+    if value.startswith("Item.") and _IDENTIFIER.fullmatch(value[5:]):
+        return {"kind": "item", "item": value[5:]}
+    inventory.issue(
+        "unsupported_command_source",
+        inventory.paths[id(source)],
+        "Источник команд не входит в поддержанное подмножество.",
+        status="unsupported",
+    )
+    return None
+
+
 def _command_bar(
     inventory: _Inventory, node: ET.Element
 ) -> dict[str, object]:
@@ -749,8 +782,18 @@ def _command_bar(
     vertical_stretch = _optional_boolean(inventory, node, "VerticalStretch")
     if vertical_stretch is not None:
         result["vertical_stretch"] = vertical_stretch
+    command_source = _optional_command_source(inventory, node)
+    if command_source is not None:
+        result["command_source"] = command_source
     _companion(inventory, node, "ExtendedTooltip")
-    container = inventory.required_child(node, "ChildItems")
+    container = inventory.optional_container(node, "ChildItems")
+    if container is None and command_source is None:
+        inventory.issue(
+            "missing_or_repeated_xml_node",
+            inventory.paths[id(node)] + "/ChildItems",
+            "Без CommandSource ожидается ровно один XML-узел ChildItems.",
+            status="unsupported",
+        )
     children: list[dict[str, object]] = []
     if container is not None:
         inventory.mark(container)
@@ -761,7 +804,7 @@ def _command_bar(
                 children.append(_popup(inventory, child))
             elif child.tag == _q("ButtonGroup"):
                 children.append(_button_group(inventory, child))
-    if not children:
+    if not children and command_source is None:
         inventory.issue(
             "command_bar_items_required",
             (
@@ -784,8 +827,18 @@ def _popup(inventory: _Inventory, node: ET.Element) -> dict[str, object]:
         "title": _localized(inventory, node, "Title"),
     }
     _subset_attribute(inventory, node, "id")
+    command_source = _optional_command_source(inventory, node)
+    if command_source is not None:
+        result["command_source"] = command_source
     _companion(inventory, node, "ExtendedTooltip")
-    container = inventory.required_child(node, "ChildItems")
+    container = inventory.optional_container(node, "ChildItems")
+    if container is None and command_source is None:
+        inventory.issue(
+            "missing_or_repeated_xml_node",
+            inventory.paths[id(node)] + "/ChildItems",
+            "Без CommandSource ожидается ровно один XML-узел ChildItems.",
+            status="unsupported",
+        )
     children: list[dict[str, object]] = []
     if container is not None:
         inventory.mark(container)
@@ -794,7 +847,7 @@ def _popup(inventory: _Inventory, node: ET.Element) -> dict[str, object]:
                 children.append(_button(inventory, child))
             elif child.tag == _q("ButtonGroup"):
                 children.append(_button_group(inventory, child))
-    if not children:
+    if not children and command_source is None:
         inventory.issue(
             "popup_buttons_required",
             (
@@ -840,15 +893,25 @@ def _button_group(
             )
         elif representation != "usual":
             result["representation"] = representation
+    command_source = _optional_command_source(inventory, node)
+    if command_source is not None:
+        result["command_source"] = command_source
     _companion(inventory, node, "ExtendedTooltip")
-    container = inventory.required_child(node, "ChildItems")
+    container = inventory.optional_container(node, "ChildItems")
+    if container is None and command_source is None:
+        inventory.issue(
+            "missing_or_repeated_xml_node",
+            inventory.paths[id(node)] + "/ChildItems",
+            "Без CommandSource ожидается ровно один XML-узел ChildItems.",
+            status="unsupported",
+        )
     children: list[dict[str, object]] = []
     if container is not None:
         inventory.mark(container)
         for child in container:
             if child.tag == _q("Button"):
                 children.append(_button(inventory, child))
-    if not children:
+    if not children and command_source is None:
         inventory.issue(
             "button_group_buttons_required",
             (

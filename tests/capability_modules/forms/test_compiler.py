@@ -377,6 +377,59 @@ def test_compiler_создаёт_button_group_внутри_command_bar():
     ]
 
 
+def test_compiler_создаёт_источники_команд_с_явными_и_пустыми_детьми():
+    payload = _payload()
+    payload["elements"].append(
+        {
+            "kind": "command_bar",
+            "name": "Действия",
+            "command_source": {"kind": "form"},
+            "children": [
+                {
+                    "kind": "button_group",
+                    "name": "ГлобальныеКоманды",
+                    "command_source": {"kind": "form_global_commands"},
+                    "children": [],
+                },
+                {
+                    "kind": "popup",
+                    "name": "КомандыРеквизита",
+                    "title": {"ru": "Команды реквизита"},
+                    "command_source": {
+                        "kind": "item",
+                        "item": "ПервоеЗначение",
+                    },
+                    "children": [],
+                },
+            ],
+        }
+    )
+
+    root = ET.fromstring(compile_managed_form(payload).artifacts[0].content)
+    q = lambda name: f"{{{LOGFORM}}}{name}"
+    bar = next(node for node in root.iter(q("CommandBar")))
+    group = next(node for node in root.iter(q("ButtonGroup")))
+    popup = next(node for node in root.iter(q("Popup")))
+
+    assert [child.tag.rsplit("}", 1)[-1] for child in bar] == [
+        "CommandSource",
+        "ExtendedTooltip",
+        "ChildItems",
+    ]
+    assert bar.find(q("CommandSource")).text == "Form"
+    assert [child.tag.rsplit("}", 1)[-1] for child in group] == [
+        "CommandSource",
+        "ExtendedTooltip",
+    ]
+    assert group.find(q("CommandSource")).text == "FormCommandPanelGlobalCommands"
+    assert [child.tag.rsplit("}", 1)[-1] for child in popup] == [
+        "Title",
+        "CommandSource",
+        "ExtendedTooltip",
+    ]
+    assert popup.find(q("CommandSource")).text == "Item.ПервоеЗначение"
+
+
 def test_кодирование_даёт_utf8_bom_crlf_и_валидный_logform_xml():
     result = compile_managed_form(_payload())
     xml = result.artifacts[0]

@@ -19,6 +19,7 @@ from .models import (
     ButtonGroup,
     CheckBoxField,
     CommandBar,
+    CommandSource,
     CompositeType,
     DateType,
     DynamicListType,
@@ -434,6 +435,22 @@ def _emit_button(
     _append(lines, indent, "</Button>")
 
 
+def _emit_command_source(
+    lines: list[str],
+    source: CommandSource | None,
+    indent: int,
+) -> None:
+    if source is None:
+        return
+    if source.kind == "form":
+        value = "Form"
+    elif source.kind == "form_global_commands":
+        value = "FormCommandPanelGlobalCommands"
+    else:
+        value = f"Item.{source.item}"
+    _append(lines, indent, f"<CommandSource>{escape(value)}</CommandSource>")
+
+
 def _emit_command_bar(
     lines: list[str],
     item: CommandBar,
@@ -472,6 +489,7 @@ def _emit_command_bar(
             indent + 1,
             f"<VerticalStretch>{str(item.vertical_stretch).lower()}</VerticalStretch>",
         )
+    _emit_command_source(lines, item.command_source, indent + 1)
     tooltip_id = allocator.next()
     _append(
         lines,
@@ -480,17 +498,18 @@ def _emit_command_bar(
         f"name={quoteattr(item.name + 'РасширеннаяПодсказка')} "
         f"id={quoteattr(tooltip_id)}/>",
     )
-    _append(lines, indent + 1, "<ChildItems>")
-    for child in item.children:
-        if isinstance(child, Button):
-            _emit_button(lines, child, allocator, events_by_owner, indent + 2)
-        elif isinstance(child, ButtonGroup):
-            _emit_button_group(
-                lines, child, allocator, events_by_owner, indent + 2
-            )
-        else:
-            _emit_popup(lines, child, allocator, events_by_owner, indent + 2)
-    _append(lines, indent + 1, "</ChildItems>")
+    if item.children:
+        _append(lines, indent + 1, "<ChildItems>")
+        for child in item.children:
+            if isinstance(child, Button):
+                _emit_button(lines, child, allocator, events_by_owner, indent + 2)
+            elif isinstance(child, ButtonGroup):
+                _emit_button_group(
+                    lines, child, allocator, events_by_owner, indent + 2
+                )
+            else:
+                _emit_popup(lines, child, allocator, events_by_owner, indent + 2)
+        _append(lines, indent + 1, "</ChildItems>")
     _append(lines, indent, "</CommandBar>")
 
 
@@ -508,6 +527,7 @@ def _emit_popup(
         f"<Popup name={quoteattr(item.name)} id={quoteattr(popup_id)}>",
     )
     _localized(lines, "Title", item.title, indent + 1)
+    _emit_command_source(lines, item.command_source, indent + 1)
     tooltip_id = allocator.next()
     _append(
         lines,
@@ -516,15 +536,16 @@ def _emit_popup(
         f"name={quoteattr(item.name + 'РасширеннаяПодсказка')} "
         f"id={quoteattr(tooltip_id)}/>",
     )
-    _append(lines, indent + 1, "<ChildItems>")
-    for child in item.children:
-        if isinstance(child, Button):
-            _emit_button(lines, child, allocator, events_by_owner, indent + 2)
-        else:
-            _emit_button_group(
-                lines, child, allocator, events_by_owner, indent + 2
-            )
-    _append(lines, indent + 1, "</ChildItems>")
+    if item.children:
+        _append(lines, indent + 1, "<ChildItems>")
+        for child in item.children:
+            if isinstance(child, Button):
+                _emit_button(lines, child, allocator, events_by_owner, indent + 2)
+            else:
+                _emit_button_group(
+                    lines, child, allocator, events_by_owner, indent + 2
+                )
+        _append(lines, indent + 1, "</ChildItems>")
     _append(lines, indent, "</Popup>")
 
 
@@ -545,6 +566,7 @@ def _emit_button_group(
         _localized(lines, "Title", item.title, indent + 1)
     if item.representation != "usual":
         _append(lines, indent + 1, "<Representation>Compact</Representation>")
+    _emit_command_source(lines, item.command_source, indent + 1)
     tooltip_id = allocator.next()
     _append(
         lines,
@@ -553,10 +575,11 @@ def _emit_button_group(
         f"name={quoteattr(item.name + 'РасширеннаяПодсказка')} "
         f"id={quoteattr(tooltip_id)}/>",
     )
-    _append(lines, indent + 1, "<ChildItems>")
-    for child in item.children:
-        _emit_button(lines, child, allocator, events_by_owner, indent + 2)
-    _append(lines, indent + 1, "</ChildItems>")
+    if item.children:
+        _append(lines, indent + 1, "<ChildItems>")
+        for child in item.children:
+            _emit_button(lines, child, allocator, events_by_owner, indent + 2)
+        _append(lines, indent + 1, "</ChildItems>")
     _append(lines, indent, "</ButtonGroup>")
 
 

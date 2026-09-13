@@ -37,6 +37,21 @@ def test_счётчики_pytest_в_публичных_документах_со
     assert int(статус.group(1)) == int(collected.group(1))
 
 
+def test_readme_выделяет_модульную_систему_и_forms() -> None:
+    текст = (ROOT / "README.md").read_text(encoding="utf-8")
+    раздел = текст.split("## Модульная система возможностей", 1)[1]
+    раздел = раздел.split("\n## ", 1)[0]
+
+    assert "постоянного read-only ядра" in раздел
+    assert "Первый подключаемый модуль" in раздел
+    assert "Forms («Управляемые формы»)" in раздел
+    assert "get_managed_form_rules" in раздел
+    assert "compile_managed_form" in раздел
+    assert "check_managed_form" in раздел
+    assert "decompile_managed_form" in раздел
+    assert "сам не изменяет конфигурацию" in раздел
+
+
 def test_список_исходников_называет_индексы_вызовов_и_форм():
     текст = (ROOT / "docs" / "architecture.md").read_text(encoding="utf-8")
     дерево = текст.split("## Основные модули", 1)[1].split("```", 2)[1]

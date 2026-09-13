@@ -479,8 +479,11 @@ async def test_agent_проходит_rules_compile_check_decompile_через_m
 
 
 @pytest.mark.anyio
-async def test_ошибка_контракта_forms_остаётся_mcp_tool_error(tmp_path):
+async def test_ошибка_контракта_forms_возвращает_структурированный_rejected(tmp_path):
     server = _server(tmp_path, enabled=("forms",))
+    specification = _payload()
+    specification["events"] = []
+    specification["elements"][0]["children"] = []
 
     async with create_client_server_memory_streams() as (client_streams, server_streams):
         async with anyio.create_task_group() as tasks:
@@ -493,13 +496,28 @@ async def test_ошибка_контракта_forms_остаётся_mcp_tool_e
                 async with ClientSession(*client_streams) as session:
                     await session.initialize()
                     result = await session.call_tool(
-                        "compile_managed_form", {"specification": {}}
+                        "compile_managed_form", {"specification": specification}
                     )
             finally:
                 tasks.cancel_scope.cancel()
 
-    assert result.is_error is True
-    assert "specification.schema_version" in result.content[0].text
+    assert result.is_error is False
+    payload = json.loads(result.content[0].text)
+    assert payload["status"] == "rejected"
+    assert payload["artifacts"] == []
+    assert payload["coverage"]["structural"] == "failed"
+    assert {
+        (item["code"], item["path"])
+        for item in payload["diagnostics"]
+    } >= {
+        ("empty_collection", "$.events"),
+        ("empty_collection", "$.elements[0].children"),
+    }
+    assert payload["instructions"] == [
+        "Исправьте поля по diagnostics и повторите compile_managed_form.",
+        "Не передавайте пустой массив: удалите необязательное поле либо "
+        "добавьте минимум один поддержанный элемент.",
+    ]
 
 
 @pytest.mark.anyio

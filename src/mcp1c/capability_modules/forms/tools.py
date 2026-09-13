@@ -8,7 +8,7 @@ from ...capabilities import CapabilityTool
 from .checker import check_managed_form
 from .compiler import compile_managed_form
 from .decompiler import MAX_FORM_XML_BYTES, decompile_managed_form
-from .diagnostics import FormsResult
+from .diagnostics import Coverage, FormsResult
 from .limits import (
     MAX_CONCURRENT_OPERATIONS,
     MAX_MODULE_BYTES,
@@ -21,7 +21,7 @@ from .limits import (
     FormsToolResultError,
     FormsToolTimeoutError,
 )
-from .models import ManagedFormSpec
+from .models import FormsContractError, ManagedFormSpec
 from .registry_context import (
     RegistryResolver,
     apply_registry_resolution,
@@ -53,6 +53,25 @@ def _rules_tool(topic: RuleTopic = "overview", query: str | None = None) -> str:
     return _json(get_managed_form_rules(topic, query=query))
 
 
+def _contract_rejection(error: FormsContractError) -> str:
+    instructions = [
+        "Исправьте поля по diagnostics и повторите compile_managed_form."
+    ]
+    if any(item.code == "empty_collection" for item in error.diagnostics):
+        instructions.append(
+            "Не передавайте пустой массив: удалите необязательное поле либо "
+            "добавьте минимум один поддержанный элемент."
+        )
+    return _json(
+        FormsResult(
+            status="rejected",
+            diagnostics=error.diagnostics,
+            coverage=Coverage(structural="failed"),
+            instructions=tuple(instructions),
+        ).to_dict()
+    )
+
+
 async def _compile_tool(
     specification: ManagedFormSpec,
     configuration: str | None = None,
@@ -73,7 +92,10 @@ async def _compile_tool(
     def run() -> str:
         resolution = resolve_registry_snapshot(registry, configuration)
         prepared = specification_with_registry_platform(specification, resolution)
-        result = compile_managed_form(prepared)
+        try:
+            result = compile_managed_form(prepared)
+        except FormsContractError as error:
+            return _contract_rejection(error)
         if not isinstance(result, FormsResult):
             return _json(result.to_dict())
         checked = validate_registry_links(result.specification, resolution)
@@ -210,6 +232,8 @@ def load(registry: RegistryResolver | None = None) -> tuple[CapabilityTool, ...]
                 "единственный контекст выбирается автоматически. Компоновка "
                 "задаётся явно; compiler не переставляет элементы. Возвращает текстовые "
                 "артефакты, ничего не записывает и не выполняет импорт в 1С. "
+                "Ошибку содержимого specification возвращает как status=rejected с "
+                "точными путями diagnostics, а не как внутренний сбой MCP. "
                 "Размер specification ограничен 256 КиБ."
             ),
         ),

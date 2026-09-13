@@ -65,6 +65,7 @@ async def _decompile_tool(
     form_xml: str,
     form_name: str,
     module_bsl: str | None = None,
+    platform_version: str | None = None,
 ) -> str:
     _input(form_xml, "form_xml", MAX_FORM_XML_BYTES)
     if module_bsl is not None:
@@ -75,6 +76,7 @@ async def _decompile_tool(
                 form_xml,
                 form_name=form_name,
                 module_bsl=module_bsl,
+                platform_version=platform_version,
             ).to_dict()
         )
     )
@@ -84,6 +86,7 @@ async def _check_tool(
     form_xml: str,
     form_name: str,
     module_bsl: str | None = None,
+    platform_version: str | None = None,
 ) -> str:
     _input(form_xml, "form_xml", MAX_FORM_XML_BYTES)
     if module_bsl is not None:
@@ -94,6 +97,7 @@ async def _check_tool(
                 form_xml,
                 form_name=form_name,
                 module_bsl=module_bsl,
+                platform_version=platform_version,
             ).to_dict()
         )
     )
@@ -116,8 +120,9 @@ def load() -> tuple[CapabilityTool, ...]:
             function=_compile_tool,
             description=(
                 "Детерминированно собрать Form.xml 2.16 и Form/Module.bsl из "
-                "строгой спецификации поддержанного слоя. Агент задаёт "
-                "компоновку явно; compiler не переставляет элементы. Возвращает текстовые "
+                "строгой спецификации поддержанного слоя. Если версия целевой "
+                "платформы известна, агент задаёт platform_version. Компоновка "
+                "задаётся явно; compiler не переставляет элементы. Возвращает текстовые "
                 "артефакты, ничего не записывает и не выполняет импорт в 1С. "
                 "Размер specification ограничен 256 КиБ."
             ),
@@ -129,6 +134,7 @@ def load() -> tuple[CapabilityTool, ...]:
                 "Разобрать Form.xml в каноническую спецификацию либо честный "
                 "inventory со всеми непокрытыми XML-путями. Не используйте "
                 "inventory для обратной компиляции: allow_lossy отсутствует. "
+                "Передайте platform_version для выбора того же профиля событий. "
                 "Form.xml и Module.bsl ограничены 2 МиБ каждый."
             ),
         ),
@@ -138,7 +144,8 @@ def load() -> tuple[CapabilityTool, ...]:
             description=(
                 "Раздельно проверить XML, структуру, локальные ссылки и, если "
                 "передан, Module.bsl. Статический результат не доказывает "
-                "Registry, импорт или внешний вид формы в 1С. Form.xml и "
+                "Registry, импорт или внешний вид формы в 1С; platform_version "
+                "выбирает версионный профиль событий. Form.xml и "
                 "Module.bsl ограничены 2 МиБ каждый."
             ),
         ),

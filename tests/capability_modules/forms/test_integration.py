@@ -111,12 +111,14 @@ async def test_agent_проходит_rules_compile_check_decompile_через_m
             try:
                 async with ClientSession(*client_streams) as session:
                     await session.initialize()
+                    specification = _payload()
+                    specification["platform_version"] = "8.3.24"
                     listed = await session.list_tools()
                     rules = await session.call_tool(
                         "get_managed_form_rules", {"topic": "overview"}
                     )
                     compiled = await session.call_tool(
-                        "compile_managed_form", {"specification": _payload()}
+                        "compile_managed_form", {"specification": specification}
                     )
                     compile_payload = json.loads(compiled.content[0].text)
                     artifacts = {
@@ -129,6 +131,7 @@ async def test_agent_проходит_rules_compile_check_decompile_через_m
                                 "Forms/ФормаПараметров/Ext/Form.xml"
                             ]["content"],
                             "form_name": "ФормаПараметров",
+                            "platform_version": "8.3.24",
                             "module_bsl": artifacts[
                                 "Forms/ФормаПараметров/Ext/Form/Module.bsl"
                             ]["content"],
@@ -141,6 +144,7 @@ async def test_agent_проходит_rules_compile_check_decompile_через_m
                                 "Forms/ФормаПараметров/Ext/Form.xml"
                             ]["content"],
                             "form_name": "ФормаПараметров",
+                            "platform_version": "8.3.24",
                         },
                     )
             finally:
@@ -152,6 +156,7 @@ async def test_agent_проходит_rules_compile_check_decompile_через_m
     )
     assert json.loads(rules.content[0].text)["topic"] == "overview"
     assert compile_payload["status"] == "compiled"
+    assert compile_payload["specification"]["platform_version"] == "8.3.24"
     assert json.loads(checked.content[0].text)["coverage"]["bsl_static"] == "passed"
     assert json.loads(decompiled.content[0].text)["specification"] == (
         compile_payload["specification"]

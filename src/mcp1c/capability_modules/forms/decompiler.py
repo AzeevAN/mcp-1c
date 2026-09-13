@@ -15,6 +15,7 @@ from .models import (
     managed_form_to_spec,
     parse_managed_form_spec,
 )
+from .version_catalog import normalized_platform_version, platform_profile
 
 
 # Предел не даёт синхронному stdlib parser принимать неограниченный вход;
@@ -1057,6 +1058,7 @@ def _events_for_owner(
     *,
     owner: str | None,
     owner_kind: str,
+    event_profile: str,
 ) -> list[dict[str, object]]:
     container = inventory.optional_container(node, "Events")
     if container is None:
@@ -1067,7 +1069,11 @@ def _events_for_owner(
             continue
         inventory.mark(event_node, "name")
         event_name = _attribute_value(inventory, event_node, "name")
-        if event_signature(owner_kind, event_name) is None:
+        if event_signature(
+            owner_kind,
+            event_name,
+            profile=event_profile,
+        ) is None:
             inventory.issue(
                 "unsupported_event",
                 f"{inventory.paths[id(event_node)]}/@name",
@@ -1084,9 +1090,18 @@ def _events_for_owner(
     return result
 
 
-def _events(inventory: _Inventory, root: ET.Element) -> list[dict[str, object]]:
+def _events(
+    inventory: _Inventory,
+    root: ET.Element,
+    *,
+    event_profile: str,
+) -> list[dict[str, object]]:
     result = _events_for_owner(
-        inventory, root, owner=None, owner_kind="form"
+        inventory,
+        root,
+        owner=None,
+        owner_kind="form",
+        event_profile=event_profile,
     )
     owner_kinds = {
         _q("InputField"): "input_field",
@@ -1104,6 +1119,7 @@ def _events(inventory: _Inventory, root: ET.Element) -> list[dict[str, object]]:
                 node,
                 owner=_attribute_value(inventory, node, "name"),
                 owner_kind=owner_kind,
+                event_profile=event_profile,
             )
         )
     return result
@@ -1198,10 +1214,46 @@ def decompile_managed_form(
     *,
     form_name: object,
     module_bsl: object | None = None,
+    platform_version: object | None = None,
 ) -> FormsResult:
     """Разобрать Form.xml без записи и без молчаливой потери неизвестных узлов."""
 
     safe_module = module_bsl if isinstance(module_bsl, str) else None
+    safe_platform_version: str | None = None
+    profile = platform_profile(None)
+    if platform_version is not None:
+        if not isinstance(platform_version, str) or (
+            normalized_platform_version(platform_version) is None
+        ):
+            return _rejected(
+                "invalid_platform_version",
+                "$platform_version",
+                "Версия платформы должна иметь вид 8.3.23 или 8.3.23.1997.",
+                xml_status="not_checked",
+                module_bsl=safe_module,
+            )
+        safe_platform_version = platform_version
+        profile = platform_profile(platform_version)
+        if profile is None:
+            return _rejected(
+                "unsupported_platform_version",
+                "$platform_version",
+                "Для версии платформы нет доказанного профиля Forms.",
+                xml_status="not_checked",
+                module_bsl=safe_module,
+            )
+        if profile.support != "compiler":
+            return _rejected(
+                "unsupported_platform_form_profile",
+                "$platform_version",
+                (
+                    "События версии известны по справке, но совместимый "
+                    "Form.xml ещё не доказан."
+                ),
+                xml_status="not_checked",
+                module_bsl=safe_module,
+            )
+    assert profile is not None
     if not isinstance(form_xml, str):
         return _rejected(
             "invalid_form_xml",
@@ -1308,11 +1360,20 @@ def decompile_managed_form(
         "schema_version": 1,
         "form_name": form_name,
         "format_version": version,
+        **(
+            {"platform_version": safe_platform_version}
+            if safe_platform_version is not None
+            else {}
+        ),
         "title": title,
         "attributes": _attributes(inventory, root),
         "elements": _elements(inventory, root),
         "commands": _commands(inventory, root),
-        "events": _events(inventory, root),
+        "events": _events(
+            inventory,
+            root,
+            event_profile=profile.event_profile,
+        ),
     }
     inventory.report_uncovered(root)
 

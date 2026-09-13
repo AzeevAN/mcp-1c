@@ -126,6 +126,35 @@ def test_расширенный_каталог_событий_даёт_lossless_
     assert result.coverage.structural == "passed"
 
 
+def test_явная_версия_платформы_сохраняется_в_lossless_roundtrip():
+    payload = _rich_payload()
+    payload["platform_version"] = "8.3.24"
+    payload["events"] = [{"event": "BeforeClose", "handler": "ПередЗакрытием"}]
+    compiled = compile_managed_form(payload)
+
+    result = decompile_managed_form(
+        compiled.artifacts[0].content,
+        form_name=payload["form_name"],
+        module_bsl=compiled.artifacts[1].content,
+        platform_version="8.3.24",
+    )
+
+    assert result.specification == compiled.specification
+    assert result.specification["platform_version"] == "8.3.24"
+    assert result.coverage.structural == "passed"
+
+
+def test_decompiler_не_угадывает_неизвестную_версию_платформы():
+    result = decompile_managed_form(
+        _xml(),
+        form_name="ФормаПараметров",
+        platform_version="8.3.16",
+    )
+
+    assert result.status == "rejected"
+    assert _diagnostics(result, "unsupported_platform_version")
+
+
 def test_стандартные_команды_формы_и_таблицы_дают_lossless_roundtrip():
     payload = _rich_payload()
     payload["elements"][0]["children"].extend(

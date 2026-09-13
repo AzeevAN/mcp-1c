@@ -11,6 +11,8 @@ import copy
 from dataclasses import dataclass
 from typing import Literal, TypeAlias
 
+from .version_catalog import platform_profiles_payload
+
 
 RuleTopic: TypeAlias = Literal[
     "overview",
@@ -397,6 +399,16 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
             "platform_documentation",
         ),
         FormRule(
+            "platform_version_matrix",
+            "supported",
+            (
+                "platform_version выбирает доказанный профиль событий и "
+                "Form.xml; отсутствие поля сохраняет прежний современный профиль."
+            ),
+            "contract_decision",
+            platform_profiles_payload(),
+        ),
+        FormRule(
             "async_client_contract",
             "required",
             (
@@ -589,6 +601,11 @@ def get_managed_form_rules(topic: RuleTopic = "overview") -> dict[str, object]:
         }
     elif topic == "commands_events":
         payload["supported"] = {
+            "platform_version": (
+                "необязательная версия вида 8.3.23 или 8.3.23.1997; "
+                "явная неизвестная версия не угадывается"
+            ),
+            "platform_profiles": platform_profiles_payload(),
             "event_owner": "поле owner отсутствует для формы либо содержит имя элемента",
             "form_events": [
                 "OnCreateAtServer",

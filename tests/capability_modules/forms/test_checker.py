@@ -69,6 +69,24 @@ def test_богатая_форма_импорта_проходит_статич�
     assert result.specification == compiled.specification
 
 
+def test_checker_использует_явный_версионный_профиль_событий():
+    payload = _rich_payload()
+    payload["platform_version"] = "8.3.25"
+    payload["events"] = [{"event": "BeforeClose", "handler": "ПередЗакрытием"}]
+    compiled = compile_managed_form(payload)
+
+    result = check_managed_form(
+        compiled.artifacts[0].content,
+        form_name=payload["form_name"],
+        module_bsl=compiled.artifacts[1].content,
+        platform_version="8.3.25",
+    )
+
+    assert result.coverage.structural == "passed"
+    assert result.coverage.bsl_static == "passed"
+    assert result.specification == compiled.specification
+
+
 def test_дубликат_id_внутри_элементов_даёт_structural_failed():
     xml, module = _pair()
     xml = xml.replace('name="ВтороеЗначение" id="6"', 'name="ВтороеЗначение" id="3"')

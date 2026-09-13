@@ -113,5 +113,77 @@ EVENT_SIGNATURES: dict[tuple[str, str], EventSignature] = {
 }
 
 
-def event_signature(owner_kind: str, event: str) -> EventSignature | None:
-    return EVENT_SIGNATURES.get((owner_kind, event))
+DOCUMENTED_8_3_5_EVENT_SIGNATURES: dict[tuple[str, str], EventSignature] = {
+    ("form", "BeforeClose"): EventSignature(
+        "НаКлиенте", ("Отказ", "СтандартнаяОбработка")
+    ),
+    ("form", "OnClose"): EventSignature("НаКлиенте", ()),
+    ("form", "ChoiceProcessing"): EventSignature(
+        "НаКлиенте", ("ВыбранноеЗначение", "ИсточникВыбора")
+    ),
+    ("input_field", "StartChoice"): EventSignature(
+        "НаКлиенте", ("Элемент", "ДанныеВыбора", "СтандартнаяОбработка")
+    ),
+    ("input_field", "Clearing"): EventSignature(
+        "НаКлиенте", ("Элемент", "СтандартнаяОбработка")
+    ),
+    ("input_field", "ChoiceProcessing"): EventSignature(
+        "НаКлиенте", ("Элемент", "ВыбранноеЗначение", "СтандартнаяОбработка")
+    ),
+    ("input_field", "AutoComplete"): EventSignature(
+        "НаКлиенте",
+        (
+            "Элемент",
+            "Текст",
+            "ДанныеВыбора",
+            "Параметры",
+            "Ожидание",
+            "СтандартнаяОбработка",
+        ),
+    ),
+    ("input_field", "TextEditEnd"): EventSignature(
+        "НаКлиенте",
+        ("Элемент", "Текст", "ДанныеВыбора", "Параметры", "СтандартнаяОбработка"),
+    ),
+    ("input_field", "Opening"): EventSignature(
+        "НаКлиенте", ("Элемент", "СтандартнаяОбработка")
+    ),
+    ("table", "ChoiceProcessing"): EventSignature(
+        "НаКлиенте", ("Элемент", "ВыбранноеЗначение", "СтандартнаяОбработка")
+    ),
+    ("table", "OnStartEdit"): EventSignature(
+        "НаКлиенте", ("Элемент", "НоваяСтрока", "Копирование")
+    ),
+    ("table", "BeforeAddRow"): EventSignature(
+        "НаКлиенте",
+        ("Элемент", "Отказ", "Копирование", "Родитель", "ЭтоГруппа", "Параметр"),
+    ),
+    ("table", "BeforeRowChange"): EventSignature(
+        "НаКлиенте", ("Элемент", "Отказ")
+    ),
+    ("table", "BeforeDeleteRow"): EventSignature(
+        "НаКлиенте", ("Элемент", "Отказ")
+    ),
+    ("table", "AfterDeleteRow"): EventSignature("НаКлиенте", ("Элемент",)),
+    ("table", "OnChange"): EventSignature("НаКлиенте", ("Элемент",)),
+    ("table", "OnEditEnd"): EventSignature(
+        "НаКлиенте", ("Элемент", "НоваяСтрока", "ОтменаРедактирования")
+    ),
+}
+
+EVENT_PROFILES = {
+    "modern": EVENT_SIGNATURES,
+    "8.3.5": DOCUMENTED_8_3_5_EVENT_SIGNATURES,
+}
+
+
+def event_signature(
+    owner_kind: str,
+    event: str,
+    *,
+    profile: str = "modern",
+) -> EventSignature | None:
+    catalog = EVENT_PROFILES.get(profile)
+    if catalog is None:
+        return None
+    return catalog.get((owner_kind, event))

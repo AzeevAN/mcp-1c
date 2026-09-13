@@ -684,7 +684,11 @@ def _compile_module(form: ManagedForm) -> str:
                 if element.name == event.owner:
                     owner_kind = element.kind
                     break
-        signature = event_signature(owner_kind, event.event)
+        signature = event_signature(
+            owner_kind,
+            event.event,
+            profile=form.event_profile,
+        )
         assert signature is not None
         parameters = ", ".join(signature.parameters)
         lines.extend(

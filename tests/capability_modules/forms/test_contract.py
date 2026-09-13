@@ -120,6 +120,7 @@ def test_typed_dict_даёт_mcp_точную_вложенную_json_schema():
     definition = schema["$defs"]["ManagedFormSpec"]
     assert definition["properties"]["schema_version"]["const"] == 1
     assert definition["properties"]["format_version"]["const"] == "2.16"
+    assert definition["properties"]["platform_version"]["type"] == "string"
     assert set(definition["required"]) == {
         "schema_version",
         "form_name",
@@ -133,6 +134,49 @@ def test_typed_dict_даёт_mcp_точную_вложенную_json_schema():
     assert schema["properties"]["specification"]["$ref"].endswith(
         "/ManagedFormSpec"
     )
+
+
+@pytest.mark.parametrize("version", ["8.3.23", "8.3.24", "8.3.27.2130"])
+def test_доказанный_интервал_платформы_принимается_явно(version):
+    payload = _payload()
+    payload["platform_version"] = version
+
+    form = parse_managed_form_spec(payload)
+
+    assert form.platform_version == version
+    assert form.event_profile == "modern"
+
+
+@pytest.mark.parametrize(
+    ("version", "code"),
+    [
+        ("8.3.16", "unsupported_platform_version"),
+        ("8.3.22", "unsupported_platform_version"),
+        ("8.3.28", "unsupported_platform_version"),
+        ("8.3", "invalid_platform_version"),
+    ],
+)
+def test_неизвестная_или_невалидная_версия_не_угадывается(version, code):
+    payload = _payload()
+    payload["platform_version"] = version
+
+    with pytest.raises(FormsContractError) as caught:
+        parse_managed_form_spec(payload)
+
+    assert (code, "$.platform_version") in _codes(caught.value)
+
+
+def test_8_3_5_не_выдаётся_за_поддержку_form_xml_2_16():
+    payload = _payload()
+    payload["platform_version"] = "8.3.5.1570"
+
+    with pytest.raises(FormsContractError) as caught:
+        parse_managed_form_spec(payload)
+
+    assert (
+        "unsupported_platform_form_profile",
+        "$.platform_version",
+    ) in _codes(caught.value)
 
 
 @pytest.mark.parametrize(

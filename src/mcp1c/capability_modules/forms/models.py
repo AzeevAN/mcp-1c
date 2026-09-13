@@ -10,6 +10,7 @@ from typing import Literal, NotRequired, TypeAlias, TypedDict
 from .command_catalog import standard_command_supported
 from .diagnostics import Diagnostic
 from .event_catalog import event_signature
+from .version_catalog import normalized_platform_version, platform_profile
 
 
 SPECIFICATION_VERSION = 1
@@ -260,6 +261,7 @@ class ManagedFormSpec(TypedDict):
     schema_version: Literal[1]
     form_name: str
     format_version: Literal["2.16"]
+    platform_version: NotRequired[str]
     title: LocalizedTextSpec
     attributes: list[FormAttributeSpec]
     elements: list[ElementSpec]
@@ -434,6 +436,8 @@ class ManagedForm:
     schema_version: Literal[1]
     form_name: str
     format_version: Literal["2.16"]
+    platform_version: str | None
+    event_profile: str
     title: LocalizedText
     attributes: tuple[FormAttribute, ...]
     elements: tuple[Element, ...]
@@ -1135,6 +1139,7 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
                 "events",
             }
         ),
+        optional=frozenset({"platform_version"}),
     )
     if (
         type(root.get("schema_version")) is not int
@@ -1151,6 +1156,42 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
             "$.format_version",
             "Compiler поддерживает только формат 2.16.",
         )
+
+    platform_version: str | None = None
+    profile = platform_profile(None)
+    if "platform_version" in root:
+        raw_platform_version = root.get("platform_version")
+        if not isinstance(raw_platform_version, str) or (
+            normalized_platform_version(raw_platform_version) is None
+        ):
+            reader.issue(
+                "invalid_platform_version",
+                "$.platform_version",
+                "Версия платформы должна иметь вид 8.3.23 или 8.3.23.1997.",
+            )
+            profile = None
+        else:
+            platform_version = raw_platform_version
+            profile = platform_profile(platform_version)
+            if profile is None:
+                reader.issue(
+                    "unsupported_platform_version",
+                    "$.platform_version",
+                    "Для версии платформы нет доказанного профиля Forms.",
+                )
+            elif (
+                profile.support != "compiler"
+                or root.get("format_version") not in profile.formats
+            ):
+                reader.issue(
+                    "unsupported_platform_form_profile",
+                    "$.platform_version",
+                    (
+                        "События версии известны по справке, но совместимый "
+                        "Form.xml ещё не доказан."
+                    ),
+                )
+    event_profile = profile.event_profile if profile is not None else "modern"
 
     form_name = reader.string(
         root.get("form_name"), "$.form_name", identifier=True
@@ -1322,7 +1363,11 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
                 )
                 continue
             owner_kind = owner.kind
-        signature = event_signature(owner_kind, event.event)
+        signature = event_signature(
+            owner_kind,
+            event.event,
+            profile=event_profile,
+        )
         if signature is None:
             reader.issue(
                 "unsupported_owner_event",
@@ -1376,6 +1421,8 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
         1,
         form_name,
         "2.16",
+        platform_version,
+        event_profile,
         title,
         attributes,
         elements,
@@ -1548,6 +1595,11 @@ def managed_form_to_spec(form: ManagedForm) -> dict[str, object]:
         "schema_version": form.schema_version,
         "form_name": form.form_name,
         "format_version": form.format_version,
+        **(
+            {"platform_version": form.platform_version}
+            if form.platform_version is not None
+            else {}
+        ),
         "title": _localized_spec(form.title),
         "attributes": attributes,
         "elements": [

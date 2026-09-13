@@ -13,6 +13,7 @@ from .decompiler import decompile_managed_form
 from .diagnostics import Coverage, Diagnostic, FormsResult
 from .event_catalog import event_signature
 from .models import is_reserved_bsl_keyword
+from .version_catalog import platform_profile
 
 
 _LOGFORM = "http://v8.1c.ru/8.3/xcf/logform"
@@ -281,7 +282,11 @@ def _arity(parameters: str) -> int:
     return 0 if not stripped else len(stripped.split(","))
 
 
-def _expected_handlers(root: ET.Element) -> list[tuple[str, str, int, str]]:
+def _expected_handlers(
+    root: ET.Element,
+    *,
+    event_profile: str,
+) -> list[tuple[str, str, int, str]]:
     result: list[tuple[str, str, int, str]] = []
 
     def append_events(node: ET.Element, owner_kind: str, path: str) -> None:
@@ -289,7 +294,11 @@ def _expected_handlers(root: ET.Element) -> list[tuple[str, str, int, str]]:
         if events is None:
             return
         for event in events.findall(_q("Event")):
-            signature = event_signature(owner_kind, event.attrib.get("name", ""))
+            signature = event_signature(
+                owner_kind,
+                event.attrib.get("name", ""),
+                profile=event_profile,
+            )
             if signature is not None and (event.text or ""):
                 result.append(
                     (
@@ -397,6 +406,8 @@ def _check_async_contract(procedures: list[object]) -> list[Diagnostic]:
 def _check_bsl(
     root: ET.Element,
     module_bsl: str | None,
+    *,
+    event_profile: str,
 ) -> tuple[str, list[Diagnostic]]:
     if module_bsl is None:
         return (
@@ -411,7 +422,7 @@ def _check_bsl(
                 )
             ],
         )
-    expected = _expected_handlers(root)
+    expected = _expected_handlers(root, event_profile=event_profile)
     if not expected:
         return (
             "not_checked",
@@ -535,6 +546,7 @@ def check_managed_form(
     *,
     form_name: object,
     module_bsl: object | None = None,
+    platform_version: object | None = None,
 ) -> FormsResult:
     """Проверить доступные уровни, не обращаясь к Registry, диску или 1С."""
 
@@ -542,6 +554,7 @@ def check_managed_form(
         form_xml,
         form_name=form_name,
         module_bsl=module_bsl,
+        platform_version=platform_version,
     )
     if decompiled.coverage.xml_parse != "passed":
         return FormsResult(
@@ -581,7 +594,15 @@ def check_managed_form(
         structural_status = decompiled.coverage.structural
 
     safe_module = module_bsl if isinstance(module_bsl, str) else None
-    bsl_status, bsl_diagnostics = _check_bsl(root, safe_module)
+    profile = platform_profile(
+        platform_version if isinstance(platform_version, str) else None
+    )
+    assert profile is not None
+    bsl_status, bsl_diagnostics = _check_bsl(
+        root,
+        safe_module,
+        event_profile=profile.event_profile,
+    )
     diagnostics.extend(bsl_diagnostics)
     diagnostics.append(
         _diagnostic(

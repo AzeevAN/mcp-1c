@@ -119,6 +119,34 @@ def test_events_публикуют_закрытый_owner_aware_каталог_�
     payload = get_managed_form_rules("commands_events")
 
     assert payload["supported"] == {
+        "platform_version": (
+            "необязательная версия вида 8.3.23 или 8.3.23.1997; "
+            "явная неизвестная версия не угадывается"
+        ),
+        "platform_profiles": [
+            {
+                "name": "managed_form_8_3_5_documented",
+                "minimum": "8.3.5",
+                "maximum": "8.3.5",
+                "documented_versions": ["8.3.5.1570"],
+                "event_profile": "8.3.5",
+                "form_formats": [],
+                "support": "documentation_only",
+            },
+            {
+                "name": "managed_form_2_16_modern",
+                "minimum": "8.3.23",
+                "maximum": "8.3.27",
+                "documented_versions": [
+                    "8.3.23.1997",
+                    "8.3.26.15",
+                    "8.3.27.2130",
+                ],
+                "event_profile": "modern",
+                "form_formats": ["2.16"],
+                "support": "compiler",
+            },
+        ],
         "event_owner": "поле owner отсутствует для формы либо содержит имя элемента",
         "form_events": [
             "OnCreateAtServer",
@@ -170,6 +198,7 @@ def test_events_публикуют_закрытый_owner_aware_каталог_�
     assert by_code["unknown_event_not_checked"]["status"] == "boundary"
     assert by_code["owner_aware_event_catalog"]["status"] == "supported"
     assert by_code["managed_form_2_16_event_profile"]["status"] == "boundary"
+    assert by_code["platform_version_matrix"]["status"] == "supported"
     assert by_code["standard_command_catalog"]["value"]["table"] == [
         "Add",
         "Delete",

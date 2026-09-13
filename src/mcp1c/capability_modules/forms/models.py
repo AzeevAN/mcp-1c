@@ -214,6 +214,19 @@ class LabelFieldSpec(TypedDict):
     vertical_stretch: NotRequired[bool]
 
 
+class RadioButtonFieldSpec(TypedDict):
+    __pydantic_config__ = {"extra": "forbid"}
+
+    kind: Literal["radio_button_field"]
+    name: str
+    data_path: str
+    choice_list: list[ChoiceListItemSpec]
+    title: NotRequired[LocalizedTextSpec]
+    radio_button_type: NotRequired[Literal["auto", "tumbler", "radio_buttons"]]
+    columns_count: NotRequired[int]
+    read_only: NotRequired[bool]
+
+
 class ButtonSpec(TypedDict):
     __pydantic_config__ = {"extra": "forbid"}
 
@@ -280,6 +293,7 @@ ElementSpec: TypeAlias = (
     | CheckBoxFieldSpec
     | LabelDecorationSpec
     | LabelFieldSpec
+    | RadioButtonFieldSpec
     | ButtonSpec
     | TableSpec
     | PagesSpec
@@ -489,6 +503,18 @@ class LabelField:
 
 
 @dataclass(frozen=True, slots=True)
+class RadioButtonField:
+    name: str
+    data_path: str
+    choice_list: tuple[ChoiceListItem, ...]
+    title: LocalizedText | None = None
+    radio_button_type: Literal["auto", "tumbler", "radio_buttons"] = "auto"
+    columns_count: int | None = None
+    read_only: bool = False
+    kind: Literal["radio_button_field"] = "radio_button_field"
+
+
+@dataclass(frozen=True, slots=True)
 class Button:
     name: str
     command: str
@@ -549,6 +575,7 @@ Element: TypeAlias = (
     | CheckBoxField
     | LabelDecoration
     | LabelField
+    | RadioButtonField
     | Button
     | Table
     | Pages
@@ -1115,6 +1142,72 @@ def _label_field(
     )
 
 
+def _radio_button_field(
+    reader: _Reader, item: Mapping[str, object], path: str
+) -> RadioButtonField:
+    reader.exact_keys(
+        item,
+        path,
+        required=frozenset({"kind", "name", "data_path", "choice_list"}),
+        optional=frozenset(
+            {"title", "radio_button_type", "columns_count", "read_only"}
+        ),
+    )
+    choices = tuple(
+        _choice_item(reader, raw, f"{path}.choice_list[{index}]")
+        for index, raw in enumerate(
+            reader.array(item.get("choice_list"), f"{path}.choice_list")
+        )
+    )
+    if len(choices) < 2:
+        reader.issue(
+            "radio_button_choices_too_small",
+            f"{path}.choice_list",
+            "Переключателю нужны хотя бы два варианта.",
+        )
+    _duplicates(
+        reader,
+        [
+            (choice.value, f"{path}.choice_list[{index}].value")
+            for index, choice in enumerate(choices)
+        ],
+        code="duplicate_choice_value",
+        message="Значение списка выбора повторяется.",
+    )
+    radio_type = item.get("radio_button_type", "auto")
+    if radio_type not in {"auto", "tumbler", "radio_buttons"}:
+        reader.issue(
+            "invalid_radio_button_type",
+            f"{path}.radio_button_type",
+            "Неизвестный вид переключателя.",
+        )
+        radio_type = "auto"
+    return RadioButtonField(
+        name=reader.string(item.get("name"), f"{path}.name", identifier=True),
+        data_path=reader.string(
+            item.get("data_path"), f"{path}.data_path", data_path=True
+        ),
+        choice_list=choices,
+        title=_optional_localized(reader, item, path),
+        radio_button_type=radio_type,
+        columns_count=(
+            reader.integer(
+                item["columns_count"],
+                f"{path}.columns_count",
+                minimum=1,
+                maximum=100,
+            )
+            if "columns_count" in item
+            else None
+        ),
+        read_only=(
+            reader.boolean(item["read_only"], f"{path}.read_only")
+            if "read_only" in item
+            else False
+        ),
+    )
+
+
 def _button(reader: _Reader, item: Mapping[str, object], path: str) -> Button:
     reader.exact_keys(
         item,
@@ -1343,6 +1436,8 @@ def _element(reader: _Reader, value: object, path: str) -> Element:
         return _label_decoration(reader, item, path)
     if kind == "label_field":
         return _label_field(reader, item, path)
+    if kind == "radio_button_field":
+        return _radio_button_field(reader, item, path)
     if kind == "button":
         return _button(reader, item, path)
     if kind == "table":
@@ -1558,7 +1653,9 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
         and main_object.object.split(".", 1)[0] == "Документ"
     )
     for element, path, table in walked:
-        if isinstance(element, (InputField, CheckBoxField, LabelField)):
+        if isinstance(
+            element, (InputField, CheckBoxField, LabelField, RadioButtonField)
+        ):
             if table is None:
                 root_name, separator, _nested_path = element.data_path.partition(
                     "."
@@ -1607,6 +1704,14 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
                         "choice_list_requires_string",
                         f"{path}.choice_list",
                         "Строковый ChoiceList требует строковый реквизит.",
+                    )
+                elif isinstance(element, RadioButtonField) and not isinstance(
+                    attribute.type, StringType
+                ):
+                    reader.issue(
+                        "radio_button_requires_string",
+                        f"{path}.data_path",
+                        "Строковый переключатель требует строковый реквизит.",
                     )
             else:
                 table_attribute = attribute_by_name.get(table.data_path)
@@ -1896,6 +2001,25 @@ def _element_to_spec(element: Element) -> dict[str, object]:
             item["horizontal_stretch"] = element.horizontal_stretch
         if element.vertical_stretch is not None:
             item["vertical_stretch"] = element.vertical_stretch
+    elif isinstance(element, RadioButtonField):
+        item = {
+            "kind": "radio_button_field",
+            "name": element.name,
+            "data_path": element.data_path,
+            "choice_list": [
+                {
+                    "value": choice.value,
+                    "presentation": _localized_spec(choice.presentation),
+                }
+                for choice in element.choice_list
+            ],
+        }
+        if element.radio_button_type != "auto":
+            item["radio_button_type"] = element.radio_button_type
+        if element.columns_count is not None:
+            item["columns_count"] = element.columns_count
+        if element.read_only:
+            item["read_only"] = True
     elif isinstance(element, Button):
         item = {
             "kind": "button",
@@ -2052,6 +2176,8 @@ __all__ = [
     "LabelDecorationSpec",
     "LabelField",
     "LabelFieldSpec",
+    "RadioButtonField",
+    "RadioButtonFieldSpec",
     "LocalizedText",
     "LocalizedTextSpec",
     "ManagedForm",

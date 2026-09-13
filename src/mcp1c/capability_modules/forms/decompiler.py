@@ -565,6 +565,71 @@ def _label_field(inventory: _Inventory, node: ET.Element) -> dict[str, object]:
     return item
 
 
+def _radio_button_field(
+    inventory: _Inventory, node: ET.Element
+) -> dict[str, object]:
+    inventory.mark(node, "name", "id")
+    item: dict[str, object] = {
+        "kind": "radio_button_field",
+        "name": _attribute_value(inventory, node, "name"),
+    }
+    _subset_attribute(inventory, node, "id")
+    data_path = inventory.required_child(node, "DataPath")
+    if data_path is not None:
+        inventory.mark(data_path)
+    item["data_path"] = _text(data_path)
+    title = _optional_localized(inventory, node, "Title")
+    if title is not None:
+        item["title"] = title
+    if _optional_true(inventory, node, "ReadOnly"):
+        item["read_only"] = True
+    type_node = inventory.required_child(node, "RadioButtonType")
+    if type_node is not None:
+        inventory.mark(type_node)
+    radio_type = {
+        "Auto": "auto",
+        "Tumbler": "tumbler",
+        "RadioButtons": "radio_buttons",
+    }.get(_text(type_node))
+    if radio_type is None:
+        inventory.issue(
+            "unsupported_xml_value",
+            (
+                inventory.paths[id(type_node)]
+                if type_node is not None
+                else inventory.paths[id(node)]
+            ),
+            "Неподдержанный RadioButtonType.",
+            status="unsupported",
+        )
+    elif radio_type != "auto":
+        item["radio_button_type"] = radio_type
+    columns = [child for child in node if child.tag == _q("ColumnsCount")]
+    if columns:
+        inventory.mark(columns[0])
+        try:
+            item["columns_count"] = int(_text(columns[0]))
+        except ValueError:
+            inventory.issue(
+                "unsupported_xml_value",
+                inventory.paths[id(columns[0])],
+                "ColumnsCount должен быть целым числом.",
+                status="unsupported",
+            )
+    choices = _choice_list(inventory, node)
+    item["choice_list"] = choices
+    if len(choices) < 2:
+        inventory.issue(
+            "missing_or_repeated_xml_node",
+            inventory.paths[id(node)] + "/ChoiceList",
+            "Ожидались хотя бы два варианта ChoiceList.",
+            status="unsupported",
+        )
+    _companion(inventory, node, "ContextMenu")
+    _companion(inventory, node, "ExtendedTooltip")
+    return item
+
+
 def _button(inventory: _Inventory, node: ET.Element) -> dict[str, object]:
     inventory.mark(node, "name", "id")
     item: dict[str, object] = {
@@ -875,6 +940,8 @@ def _element(
         return _label_decoration(inventory, node)
     if node.tag == _q("LabelField"):
         return _label_field(inventory, node)
+    if node.tag == _q("RadioButtonField"):
+        return _radio_button_field(inventory, node)
     if node.tag == _q("Button"):
         return _button(inventory, node)
     if node.tag == _q("UsualGroup"):
@@ -1337,6 +1404,7 @@ def _events(
         _q("CheckBoxField"): "check_box_field",
         _q("LabelDecoration"): "label_decoration",
         _q("LabelField"): "label_field",
+        _q("RadioButtonField"): "radio_button_field",
         _q("Pages"): "pages",
         _q("Table"): "table",
     }

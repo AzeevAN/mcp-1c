@@ -120,6 +120,9 @@ EVENT_SIGNATURES: dict[tuple[str, str], EventSignature] = {
             "СтандартнаяОбработка",
         ),
     ),
+    ("radio_button_field", "OnChange"): EventSignature(
+        "НаКлиенте", ("Элемент",)
+    ),
     ("pages", "OnCurrentPageChange"): EventSignature(
         "НаКлиенте", ("Элемент", "ТекущаяСтраница")
     ),

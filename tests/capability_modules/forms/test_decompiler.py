@@ -41,7 +41,6 @@ def test_fixture_декомпилируется_в_каноническую_сп
     assert result.coverage.xml_parse == "passed"
     assert result.coverage.structural == "passed"
 
-
 def test_compile_decompile_даёт_нормализованный_roundtrip():
     payload = _payload()
     payload["title"]["ru"] = 'A & <B> "C"'
@@ -55,6 +54,7 @@ def test_compile_decompile_даёт_нормализованный_roundtrip():
 
     assert result.specification == compiled.specification
     assert result.coverage.structural == "passed"
+
     assert result.coverage.bsl_static == "not_checked"
     assert _diagnostics(result, "bsl_check_deferred")
 
@@ -455,6 +455,54 @@ def test_label_field_без_data_path_остаётся_inventory():
 
     assert result.coverage.structural == "unsupported"
     assert _diagnostics(result, "missing_or_repeated_xml_node")
+
+
+def test_radio_button_field_даёт_lossless_roundtrip():
+    payload = _payload()
+    payload["elements"].append(
+        {
+            "kind": "radio_button_field",
+            "name": "Режим",
+            "data_path": "ПервоеЗначение",
+            "radio_button_type": "radio_buttons",
+            "columns_count": 2,
+            "choice_list": [
+                {"value": "A", "presentation": {"ru": "Первый"}},
+                {"value": "B", "presentation": {"ru": "Второй"}},
+            ],
+        }
+    )
+    payload["events"].append(
+        {"owner": "Режим", "event": "OnChange", "handler": "РежимИзменён"}
+    )
+    compiled = compile_managed_form(payload)
+
+    result = decompile_managed_form(
+        compiled.artifacts[0].content,
+        form_name=payload["form_name"],
+        module_bsl=compiled.artifacts[1].content,
+    )
+
+    assert result.specification == compiled.specification
+    assert result.coverage.structural == "passed"
+
+    root = ET.fromstring(compiled.artifacts[0].content)
+    field = next(
+        node
+        for node in root.iter(
+            "{http://v8.1c.ru/8.3/xcf/logform}RadioButtonField"
+        )
+    )
+    choice_list = field.find("{http://v8.1c.ru/8.3/xcf/logform}ChoiceList")
+    assert choice_list is not None
+    field.remove(choice_list)
+    unsupported = decompile_managed_form(
+        ET.tostring(root, encoding="unicode"),
+        form_name=payload["form_name"],
+    )
+
+    assert unsupported.coverage.structural == "unsupported"
+    assert _diagnostics(unsupported, "missing_or_repeated_xml_node")
 
 
 def test_ручной_dynamic_list_остаётся_inventory():

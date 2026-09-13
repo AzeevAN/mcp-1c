@@ -315,6 +315,7 @@ def _expected_handlers(
         _q("CheckBoxField"): "check_box_field",
         _q("LabelDecoration"): "label_decoration",
         _q("LabelField"): "label_field",
+        _q("RadioButtonField"): "radio_button_field",
         _q("Pages"): "pages",
         _q("Table"): "table",
     }

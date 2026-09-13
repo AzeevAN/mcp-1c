@@ -78,6 +78,17 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                     "read_only": True,
                 }
             )
+            specification["elements"].append(
+                {
+                    "kind": "radio_button_field",
+                    "name": "Режим",
+                    "data_path": "ВтороеЗначение",
+                    "choice_list": [
+                        {"value": "A", "presentation": {"ru": "Первый"}},
+                        {"value": "B", "presentation": {"ru": "Второй"}},
+                    ],
+                }
+            )
             specification["events"].append(
                 {
                     "owner": "Пояснение",
@@ -90,6 +101,13 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                     "owner": "Итог",
                     "event": "Click",
                     "handler": "ИтогНажатие",
+                }
+            )
+            specification["events"].append(
+                {
+                    "owner": "Режим",
+                    "event": "OnChange",
+                    "handler": "РежимИзменён",
                 }
             )
             rules = await session.call_tool(

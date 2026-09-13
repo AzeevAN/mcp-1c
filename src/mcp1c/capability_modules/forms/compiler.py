@@ -32,6 +32,7 @@ from .models import (
     NumberType,
     Page,
     Pages,
+    RadioButtonField,
     StringType,
     Table,
     UsualGroup,
@@ -317,6 +318,75 @@ def _emit_label_field(
     )
     _emit_events(lines, events_by_owner.get(item.name, ()), indent + 1)
     _append(lines, indent, "</LabelField>")
+
+
+def _emit_radio_button_field(
+    lines: list[str],
+    item: RadioButtonField,
+    allocator: _IdAllocator,
+    events_by_owner: dict[str | None, tuple[FormEvent, ...]],
+    indent: int,
+) -> None:
+    element_id = allocator.next()
+    _append(
+        lines,
+        indent,
+        f"<RadioButtonField name={quoteattr(item.name)} "
+        f"id={quoteattr(element_id)}>",
+    )
+    _append(lines, indent + 1, f"<DataPath>{escape(item.data_path)}</DataPath>")
+    if item.title is not None:
+        _localized(lines, "Title", item.title, indent + 1)
+    if item.read_only:
+        _append(lines, indent + 1, "<ReadOnly>true</ReadOnly>")
+    radio_types = {
+        "auto": "Auto",
+        "tumbler": "Tumbler",
+        "radio_buttons": "RadioButtons",
+    }
+    _append(
+        lines,
+        indent + 1,
+        f"<RadioButtonType>{radio_types[item.radio_button_type]}</RadioButtonType>",
+    )
+    if item.columns_count is not None:
+        _append(
+            lines,
+            indent + 1,
+            f"<ColumnsCount>{item.columns_count}</ColumnsCount>",
+        )
+    _append(lines, indent + 1, "<ChoiceList>")
+    for choice in item.choice_list:
+        _append(lines, indent + 2, "<xr:Item>")
+        _append(lines, indent + 3, "<xr:Presentation/>")
+        _append(lines, indent + 3, "<xr:CheckState>0</xr:CheckState>")
+        _append(
+            lines,
+            indent + 3,
+            '<xr:Value xsi:type="FormChoiceListDesTimeValue">',
+        )
+        _localized(lines, "Presentation", choice.presentation, indent + 4)
+        _append(
+            lines,
+            indent + 4,
+            f'<Value xsi:type="xs:string">{escape(choice.value)}</Value>',
+        )
+        _append(lines, indent + 3, "</xr:Value>")
+        _append(lines, indent + 2, "</xr:Item>")
+    _append(lines, indent + 1, "</ChoiceList>")
+    for suffix, tag in (
+        ("КонтекстноеМеню", "ContextMenu"),
+        ("РасширеннаяПодсказка", "ExtendedTooltip"),
+    ):
+        companion_id = allocator.next()
+        _append(
+            lines,
+            indent + 1,
+            f"<{tag} name={quoteattr(item.name + suffix)} "
+            f"id={quoteattr(companion_id)}/>",
+        )
+    _emit_events(lines, events_by_owner.get(item.name, ()), indent + 1)
+    _append(lines, indent, "</RadioButtonField>")
 
 
 def _emit_button(
@@ -632,6 +702,8 @@ def _emit_element(
         _emit_label_decoration(lines, item, allocator, events_by_owner, indent)
     elif isinstance(item, LabelField):
         _emit_label_field(lines, item, allocator, events_by_owner, indent)
+    elif isinstance(item, RadioButtonField):
+        _emit_radio_button_field(lines, item, allocator, events_by_owner, indent)
     elif isinstance(item, Button):
         _emit_button(lines, item, allocator, events_by_owner, indent)
     elif isinstance(item, Table):

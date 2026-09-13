@@ -79,6 +79,7 @@ def test_elements_описывают_только_принятые_kinds_и_comp
             "check_box_field",
             "label_decoration",
             "label_field",
+            "radio_button_field",
             "button",
             "pages",
             "table",
@@ -89,6 +90,7 @@ def test_elements_описывают_только_принятые_kinds_и_comp
             "check_box_field",
             "label_decoration",
             "label_field",
+            "radio_button_field",
             "button",
             "pages",
             "table",
@@ -110,6 +112,13 @@ def test_elements_описывают_только_принятые_kinds_и_comp
         "ExtendedTooltip",
     ]
     assert by_code["label_field_companions"]["value"] == [
+        "ContextMenu",
+        "ExtendedTooltip",
+    ]
+    assert by_code["radio_button_field_structure"]["value"] == [
+        "DataPath",
+        "RadioButtonType",
+        "ChoiceList",
         "ContextMenu",
         "ExtendedTooltip",
     ]
@@ -203,6 +212,7 @@ def test_events_публикуют_закрытый_owner_aware_каталог_�
             "check_box_field": ["OnChange"],
             "label_decoration": ["Click", "URLProcessing"],
             "label_field": ["OnChange", "Click", "URLProcessing"],
+            "radio_button_field": ["OnChange"],
             "pages": ["OnCurrentPageChange"],
             "table": [
                 "Selection",

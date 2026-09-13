@@ -154,6 +154,32 @@ def test_поле_надписи_имеет_data_path_и_собственные_
     assert table_column.hyperlink is True
 
 
+def test_переключатель_требует_данные_и_варианты():
+    payload = _payload()
+    payload["elements"].append(
+        {
+            "kind": "radio_button_field",
+            "name": "Режим",
+            "data_path": "ПервоеЗначение",
+            "title": {"ru": "Режим"},
+            "radio_button_type": "tumbler",
+            "columns_count": 2,
+            "choice_list": [
+                {"value": "A", "presentation": {"ru": "Первый"}},
+                {"value": "B", "presentation": {"ru": "Второй"}},
+            ],
+        }
+    )
+
+    form = parse_managed_form_spec(payload)
+    field = form.elements[-1]
+
+    assert field.kind == "radio_button_field"
+    assert field.radio_button_type == "tumbler"
+    assert field.columns_count == 2
+    assert [item.value for item in field.choice_list] == ["A", "B"]
+
+
 def test_таблица_отклоняет_путь_к_необъявленной_колонке():
     payload = _rich_payload()
     payload["elements"][0]["children"][1]["pages"][0]["children"][0][

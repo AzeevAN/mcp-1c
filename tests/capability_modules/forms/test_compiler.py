@@ -220,6 +220,46 @@ def test_compiler_создаёт_label_field_с_hiperlink_и_событиями(
     )
 
 
+def test_compiler_создаёт_radio_button_field_с_choice_list():
+    payload = _payload()
+    payload["elements"].append(
+        {
+            "kind": "radio_button_field",
+            "name": "Режим",
+            "data_path": "ПервоеЗначение",
+            "title": {"ru": "Режим"},
+            "radio_button_type": "tumbler",
+            "columns_count": 2,
+            "choice_list": [
+                {"value": "A", "presentation": {"ru": "Первый"}},
+                {"value": "B", "presentation": {"ru": "Второй"}},
+            ],
+        }
+    )
+    payload["events"].append(
+        {"owner": "Режим", "event": "OnChange", "handler": "РежимИзменён"}
+    )
+
+    result = compile_managed_form(payload)
+    root = ET.fromstring(result.artifacts[0].content)
+    q = lambda name: f"{{{LOGFORM}}}{name}"
+    field = next(node for node in root.iter(q("RadioButtonField")))
+
+    assert [child.tag.rsplit("}", 1)[-1] for child in field] == [
+        "DataPath",
+        "Title",
+        "RadioButtonType",
+        "ColumnsCount",
+        "ChoiceList",
+        "ContextMenu",
+        "ExtendedTooltip",
+        "Events",
+    ]
+    assert field.find(q("RadioButtonType")).text == "Tumbler"
+    assert len(field.find(q("ChoiceList"))) == 2
+    assert "Процедура РежимИзменён(Элемент)" in result.artifacts[1].content
+
+
 def test_кодирование_даёт_utf8_bom_crlf_и_валидный_logform_xml():
     result = compile_managed_form(_payload())
     xml = result.artifacts[0]

@@ -136,6 +136,34 @@ def test_checker_проверяет_label_field_и_его_события():
     assert result.specification == compiled.specification
 
 
+def test_checker_проверяет_radio_button_field():
+    payload = _payload()
+    payload["elements"].append(
+        {
+            "kind": "radio_button_field",
+            "name": "Режим",
+            "data_path": "ПервоеЗначение",
+            "choice_list": [
+                {"value": "A", "presentation": {"ru": "Первый"}},
+                {"value": "B", "presentation": {"ru": "Второй"}},
+            ],
+        }
+    )
+    payload["events"] = [
+        {"owner": "Режим", "event": "OnChange", "handler": "РежимИзменён"}
+    ]
+    compiled = compile_managed_form(payload)
+
+    result = check_managed_form(
+        compiled.artifacts[0].content,
+        form_name=payload["form_name"],
+        module_bsl=compiled.artifacts[1].content,
+    )
+
+    assert result.coverage.structural == "passed"
+    assert result.coverage.bsl_static == "passed"
+
+
 def test_checker_использует_явный_версионный_профиль_событий():
     payload = _rich_payload()
     payload["platform_version"] = "8.3.25"

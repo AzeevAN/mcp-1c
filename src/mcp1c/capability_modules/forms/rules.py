@@ -151,6 +151,7 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
                 "check_box_field",
                 "label_decoration",
                 "label_field",
+                "radio_button_field",
                 "button",
                 "pages",
                 "table",
@@ -190,6 +191,22 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
             "LabelField получает наблюдаемые служебные дочерние элементы.",
             "corpus_invariant",
             ["ContextMenu", "ExtendedTooltip"],
+        ),
+        FormRule(
+            "radio_button_field_structure",
+            "required",
+            (
+                "RadioButtonField требует DataPath, минимум два ChoiceList "
+                "и служебные элементы."
+            ),
+            "corpus_invariant",
+            [
+                "DataPath",
+                "RadioButtonType",
+                "ChoiceList",
+                "ContextMenu",
+                "ExtendedTooltip",
+            ],
         ),
         FormRule(
             "separate_id_spaces",
@@ -415,6 +432,7 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
                 "check_box_field": ["OnChange"],
                 "label_decoration": ["Click", "URLProcessing"],
                 "label_field": ["OnChange", "Click", "URLProcessing"],
+                "radio_button_field": ["OnChange"],
                 "pages": ["OnCurrentPageChange"],
                 "table": [
                     "Selection",
@@ -669,6 +687,7 @@ def get_managed_form_rules(topic: RuleTopic = "overview") -> dict[str, object]:
                 "check_box_field",
                 "label_decoration",
                 "label_field",
+                "radio_button_field",
                 "button",
                 "pages",
                 "table",
@@ -679,6 +698,7 @@ def get_managed_form_rules(topic: RuleTopic = "overview") -> dict[str, object]:
                 "check_box_field",
                 "label_decoration",
                 "label_field",
+                "radio_button_field",
                 "button",
                 "pages",
                 "table",
@@ -742,6 +762,7 @@ def get_managed_form_rules(topic: RuleTopic = "overview") -> dict[str, object]:
                 "check_box_field": ["OnChange"],
                 "label_decoration": ["Click", "URLProcessing"],
                 "label_field": ["OnChange", "Click", "URLProcessing"],
+                "radio_button_field": ["OnChange"],
                 "pages": ["OnCurrentPageChange"],
                 "table": [
                     "Selection",

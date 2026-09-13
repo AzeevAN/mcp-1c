@@ -114,6 +114,11 @@ def _registry_with_object(tmp_path) -> Registry:
             Field("Активен", types=["Булево"]),
         ],
     )
+    config.objects["Справочник.Товары"] = MetadataObject(
+        full_name="Справочник.Товары",
+        kind="Справочник",
+        name="Товары",
+    )
     incoming = tmp_path / "incoming"
     incoming.mkdir()
     registry.add_configuration(write_export(incoming, config))
@@ -133,6 +138,10 @@ async def test_compile_сам_берёт_платформу_и_проверяе�
             "object": "Обработка.НоваяОбработка",
         },
         "main": True,
+    }
+    specification["attributes"][1]["type"] = {
+        "kind": "metadata_reference",
+        "object": "Справочник.Товары",
     }
     specification["elements"][0]["children"][0].update(
         {"name": "Комментарий", "data_path": "Объект.Комментарий"}
@@ -181,6 +190,37 @@ async def test_отсутствующая_ссылка_не_блокирует_�
         item["code"] == "metadata_object_not_found"
         for item in payload["diagnostics"]
     )
+
+
+@pytest.mark.anyio
+async def test_registry_проверяет_ссылки_в_одиночном_и_составном_типе(tmp_path):
+    registry = _registry_with_object(tmp_path)
+    specification = _payload()
+    specification["attributes"][0]["type"] = {
+        "kind": "metadata_reference",
+        "object": "Справочник.Товары",
+    }
+    specification["attributes"][1]["type"] = {
+        "kind": "composite",
+        "variants": [
+            {"kind": "metadata_reference", "object": "Документ.Заказ"},
+            {"kind": "string", "length": 20},
+        ],
+    }
+
+    tools = {item.name: item.function for item in forms_tools.load(registry)}
+    result = await tools["compile_managed_form"](specification)
+    payload = json.loads(result)
+
+    assert payload["status"] == "compiled"
+    assert payload["coverage"]["configuration_links"] == "warning"
+    warnings = [
+        item for item in payload["diagnostics"]
+        if item["code"] == "metadata_reference_not_found"
+    ]
+    assert [item["path"] for item in warnings] == [
+        "$.attributes[1].type.variants[0].object"
+    ]
 
 
 @pytest.mark.anyio
@@ -283,6 +323,10 @@ async def test_три_операции_используют_один_registry_к
             "object": "Обработка.НоваяОбработка",
         },
         "main": True,
+    }
+    specification["attributes"][1]["type"] = {
+        "kind": "metadata_reference",
+        "object": "Справочник.Товары",
     }
     specification["elements"][0]["children"][0].update(
         {"name": "Активен", "data_path": "Объект.Активен"}

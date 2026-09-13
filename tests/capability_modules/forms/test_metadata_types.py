@@ -3,6 +3,8 @@ import pytest
 from mcp1c.capability_modules.forms.metadata_types import (
     metadata_object_registry_ref,
     metadata_object_xml_type,
+    metadata_reference_registry_ref,
+    metadata_reference_xml_type,
 )
 
 
@@ -58,3 +60,38 @@ def test_неподдержанная_ссылка_registry_не_преобра�
 )
 def test_неподдержанный_xml_тип_не_выдаётся_за_объект_registry(value):
     assert metadata_object_registry_ref(value) is None
+
+
+@pytest.mark.parametrize(
+    ("registry_ref", "xml_type"),
+    [
+        ("Справочник.Товары", "cfg:CatalogRef.Товары"),
+        ("Документ.Заказ", "cfg:DocumentRef.Заказ"),
+        ("Перечисление.Состояния", "cfg:EnumRef.Состояния"),
+        ("ПланОбмена.Основной", "cfg:ExchangePlanRef.Основной"),
+        ("БизнесПроцесс.Заявка", "cfg:BusinessProcessRef.Заявка"),
+        ("Задача.Исполнение", "cfg:TaskRef.Исполнение"),
+        (
+            "ПланВидовХарактеристик.Свойства",
+            "cfg:ChartOfCharacteristicTypesRef.Свойства",
+        ),
+        ("ПланСчетов.Основной", "cfg:ChartOfAccountsRef.Основной"),
+        (
+            "ПланВидовРасчета.Начисления",
+            "cfg:ChartOfCalculationTypesRef.Начисления",
+        ),
+    ],
+)
+def test_ссылочный_тип_имеет_взаимно_однозначное_отображение(
+    registry_ref, xml_type
+):
+    assert metadata_reference_xml_type(registry_ref) == xml_type
+    assert metadata_reference_registry_ref(xml_type) == registry_ref
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["Обработка.Импорт", "НеизвестныйВид.Объект", "Справочник", "Справочник.А-Б"],
+)
+def test_неподдержанная_ссылочная_ссылка_registry_не_преобразуется(value):
+    assert metadata_reference_xml_type(value) is None

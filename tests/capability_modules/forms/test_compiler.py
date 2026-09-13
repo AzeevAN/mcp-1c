@@ -136,6 +136,30 @@ def test_compiler_пишет_объектный_главный_реквизит_
     assert "Конфигурация" not in xml
 
 
+def test_compiler_пишет_ссылочный_и_составной_типы_в_порядке_спецификации():
+    payload = _payload()
+    payload["attributes"][0]["type"] = {
+        "kind": "metadata_reference",
+        "object": "Справочник.Товары",
+    }
+    payload["attributes"][1]["type"] = {
+        "kind": "composite",
+        "variants": [
+            {"kind": "metadata_reference", "object": "Документ.Заказ"},
+            {"kind": "string", "length": 50},
+        ],
+    }
+
+    xml = compile_managed_form(payload).artifacts[0].content
+
+    assert "<v8:Type>cfg:CatalogRef.Товары</v8:Type>" in xml
+    document = xml.index("<v8:Type>cfg:DocumentRef.Заказ</v8:Type>")
+    string = xml.index("<v8:Type>xs:string</v8:Type>", document)
+    qualifiers = xml.index("<v8:StringQualifiers>", string)
+    assert document < string < qualifiers
+    assert "<v8:Length>50</v8:Length>" in xml[qualifiers:]
+
+
 def test_id_детерминированы_и_пространства_элементов_реквизитов_команд_разделены():
     root = ET.fromstring(compile_managed_form(_payload()).artifacts[0].content)
     child_items = root.find(f"{{{LOGFORM}}}ChildItems")

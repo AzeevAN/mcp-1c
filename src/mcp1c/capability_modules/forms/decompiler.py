@@ -9,7 +9,10 @@ from xml.etree import ElementTree as ET
 from .command_catalog import ITEM_STANDARD_COMMANDS, standard_command_supported
 from .diagnostics import Coverage, Diagnostic, FormsResult
 from .event_catalog import event_signature
-from .metadata_types import metadata_object_registry_ref
+from .metadata_types import (
+    metadata_object_registry_ref,
+    metadata_reference_registry_ref,
+)
 from .models import (
     SUPPORTED_FORMAT_VERSION,
     FormsContractError,
@@ -859,10 +862,60 @@ def _type(
         )
         return None
     inventory.mark(container)
-    type_name = inventory.required_child(container, "Type", namespace=_V8)
-    if type_name is None:
+    type_names = [node for node in container if node.tag == _q("Type", _V8)]
+    if not type_names:
+        inventory.issue(
+            "missing_or_repeated_xml_node",
+            f"{inventory.paths[id(container)]}/Type",
+            "Ожидался хотя бы один XML-узел Type.",
+            status="unsupported",
+        )
         return None
-    inventory.mark(type_name)
+    for type_name in type_names:
+        inventory.mark(type_name)
+    if len(type_names) > 1:
+        variants = [
+            _atomic_type(inventory, container, type_name)
+            for type_name in type_names
+        ]
+        if any(variant is None for variant in variants):
+            return None
+        return {"kind": "composite", "variants": variants}
+
+    type_name = type_names[0]
+    name = _text(type_name)
+    if name == "v8:ValueTable" and allow_value_table:
+        columns_node = inventory.required_child(parent, "Columns")
+        columns: list[dict[str, object]] = []
+        if columns_node is not None:
+            inventory.mark(columns_node)
+            for column in columns_node:
+                if column.tag != _q("Column"):
+                    continue
+                inventory.mark(column, "name", "id")
+                item: dict[str, object] = {
+                    "name": _attribute_value(inventory, column, "name"),
+                }
+                _subset_attribute(inventory, column, "id")
+                title = _optional_localized(inventory, column, "Title")
+                if title is not None:
+                    item["title"] = title
+                column_type = _type(inventory, column, allow_value_table=False)
+                if column_type is not None:
+                    item["type"] = column_type
+                columns.append(item)
+        return {"kind": "value_table", "columns": columns}
+    metadata_object = metadata_object_registry_ref(name)
+    if metadata_object is not None and allow_value_table:
+        return {"kind": "metadata_object", "object": metadata_object}
+    return _atomic_type(inventory, container, type_name)
+
+
+def _atomic_type(
+    inventory: _Inventory,
+    container: ET.Element,
+    type_name: ET.Element,
+) -> dict[str, object] | None:
     name = _text(type_name)
     if name == "xs:string":
         qualifiers = inventory.required_child(
@@ -951,32 +1004,9 @@ def _type(
             )
             value = "date_time"
         return {"kind": "date", "fractions": value}
-    if name == "v8:ValueTable" and allow_value_table:
-        columns_node = inventory.required_child(parent, "Columns")
-        columns: list[dict[str, object]] = []
-        if columns_node is not None:
-            inventory.mark(columns_node)
-            for column in columns_node:
-                if column.tag != _q("Column"):
-                    continue
-                inventory.mark(column, "name", "id")
-                item: dict[str, object] = {
-                    "name": _attribute_value(inventory, column, "name"),
-                }
-                _subset_attribute(inventory, column, "id")
-                title = _optional_localized(inventory, column, "Title")
-                if title is not None:
-                    item["title"] = title
-                column_type = _type(
-                    inventory, column, allow_value_table=False
-                )
-                if column_type is not None:
-                    item["type"] = column_type
-                columns.append(item)
-        return {"kind": "value_table", "columns": columns}
-    metadata_object = metadata_object_registry_ref(name)
-    if metadata_object is not None and allow_value_table:
-        return {"kind": "metadata_object", "object": metadata_object}
+    metadata_reference = metadata_reference_registry_ref(name)
+    if metadata_reference is not None:
+        return {"kind": "metadata_reference", "object": metadata_reference}
     inventory.issue(
         "unsupported_attribute_type",
         inventory.paths[id(type_name)],

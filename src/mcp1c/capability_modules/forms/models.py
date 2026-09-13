@@ -10,7 +10,7 @@ from typing import Literal, NotRequired, TypeAlias, TypedDict
 from .command_catalog import standard_command_supported
 from .diagnostics import Diagnostic
 from .event_catalog import event_signature
-from .metadata_types import metadata_object_xml_type
+from .metadata_types import metadata_object_xml_type, metadata_reference_xml_type
 from .version_catalog import normalized_platform_version, platform_profile
 
 
@@ -85,11 +85,28 @@ ScalarTypeSpec: TypeAlias = (
 )
 
 
+class MetadataReferenceTypeSpec(TypedDict):
+    __pydantic_config__ = {"extra": "forbid"}
+
+    kind: Literal["metadata_reference"]
+    object: str
+
+
+ValueTypeSpec: TypeAlias = ScalarTypeSpec | MetadataReferenceTypeSpec
+
+
+class CompositeTypeSpec(TypedDict):
+    __pydantic_config__ = {"extra": "forbid"}
+
+    kind: Literal["composite"]
+    variants: list[ValueTypeSpec]
+
+
 class ValueTableColumnSpec(TypedDict):
     __pydantic_config__ = {"extra": "forbid"}
 
     name: str
-    type: ScalarTypeSpec
+    type: ValueTypeSpec | CompositeTypeSpec
     title: NotRequired[LocalizedTextSpec]
 
 
@@ -108,7 +125,7 @@ class MetadataObjectTypeSpec(TypedDict):
 
 
 AttributeTypeSpec: TypeAlias = (
-    ScalarTypeSpec | ValueTableTypeSpec | MetadataObjectTypeSpec
+    ValueTypeSpec | CompositeTypeSpec | ValueTableTypeSpec | MetadataObjectTypeSpec
 )
 
 
@@ -313,9 +330,24 @@ ScalarType: TypeAlias = StringType | BooleanType | NumberType | DateType
 
 
 @dataclass(frozen=True, slots=True)
+class MetadataReferenceType:
+    object: str
+    kind: Literal["metadata_reference"] = "metadata_reference"
+
+
+ValueType: TypeAlias = ScalarType | MetadataReferenceType
+
+
+@dataclass(frozen=True, slots=True)
+class CompositeType:
+    variants: tuple[ValueType, ...]
+    kind: Literal["composite"] = "composite"
+
+
+@dataclass(frozen=True, slots=True)
 class ValueTableColumn:
     name: str
-    type: ScalarType
+    type: ValueType | CompositeType
     title: LocalizedText | None = None
 
 
@@ -331,7 +363,7 @@ class MetadataObjectType:
     kind: Literal["metadata_object"] = "metadata_object"
 
 
-AttributeType: TypeAlias = ScalarType | ValueTableType | MetadataObjectType
+AttributeType: TypeAlias = ValueType | CompositeType | ValueTableType | MetadataObjectType
 
 
 @dataclass(frozen=True, slots=True)
@@ -600,9 +632,19 @@ def _duplicates(
         seen.add(value)
 
 
-def _scalar_type(reader: _Reader, value: object, path: str) -> ScalarType:
+def _value_type(reader: _Reader, value: object, path: str) -> ValueType:
     item = reader.object(value, path)
     kind = item.get("kind")
+    if kind == "metadata_reference":
+        reader.exact_keys(item, path, required=frozenset({"kind", "object"}))
+        object_name = reader.string(item.get("object"), f"{path}.object")
+        if metadata_reference_xml_type(object_name) is None:
+            reader.issue(
+                "invalid_metadata_reference",
+                f"{path}.object",
+                "Ожидалась поддержанная ссылка вида Справочник.ИмяОбъекта.",
+            )
+        return MetadataReferenceType(object_name)
     if kind == "string":
         reader.exact_keys(item, path, required=frozenset({"kind", "length"}))
         return StringType(
@@ -663,7 +705,7 @@ def _scalar_type(reader: _Reader, value: object, path: str) -> ScalarType:
     reader.issue(
         "unsupported_attribute_type",
         f"{path}.kind",
-        "Поддержаны string, boolean, number, date и value_table.",
+        "Поддержаны string, boolean, number, date и metadata_reference.",
     )
     return StringType(1)
 
@@ -680,7 +722,7 @@ def _value_table_column(
     )
     return ValueTableColumn(
         name=reader.string(item.get("name"), f"{path}.name", identifier=True),
-        type=_scalar_type(reader, item.get("type"), f"{path}.type"),
+        type=_composite_or_value_type(reader, item.get("type"), f"{path}.type"),
         title=_optional_localized(reader, item, path),
     )
 
@@ -698,7 +740,7 @@ def _attribute_type(reader: _Reader, value: object, path: str) -> AttributeType:
             )
         return MetadataObjectType(object_name)
     if item.get("kind") != "value_table":
-        return _scalar_type(reader, value, path)
+        return _composite_or_value_type(reader, value, path)
     reader.exact_keys(item, path, required=frozenset({"kind", "columns"}))
     columns = tuple(
         _value_table_column(reader, raw, f"{path}.columns[{index}]")
@@ -716,6 +758,45 @@ def _attribute_type(reader: _Reader, value: object, path: str) -> AttributeType:
         message="Имя колонки таблицы значений повторяется.",
     )
     return ValueTableType(columns)
+
+
+def _composite_or_value_type(
+    reader: _Reader, value: object, path: str
+) -> ValueType | CompositeType:
+    item = reader.object(value, path)
+    if item.get("kind") != "composite":
+        return _value_type(reader, value, path)
+    reader.exact_keys(item, path, required=frozenset({"kind", "variants"}))
+    variants = tuple(
+        _value_type(reader, raw, f"{path}.variants[{index}]")
+        for index, raw in enumerate(
+            reader.array(item.get("variants"), f"{path}.variants")
+        )
+    )
+    if len(variants) < 2:
+        reader.issue(
+            "composite_type_too_small",
+            f"{path}.variants",
+            "Составной тип должен содержать не менее 2 вариантов.",
+        )
+    _duplicates(
+        reader,
+        [
+            (
+                (
+                    variant.kind,
+                    variant.object
+                    if isinstance(variant, MetadataReferenceType)
+                    else None,
+                ),
+                f"{path}.variants[{index}]",
+            )
+            for index, variant in enumerate(variants)
+        ],
+        code="duplicate_composite_type_variant",
+        message="Вариант составного типа повторяется.",
+    )
+    return CompositeType(variants)
 
 
 def _attribute(reader: _Reader, value: object, path: str) -> FormAttribute:
@@ -1478,6 +1559,13 @@ def _type_to_spec(value: AttributeType) -> dict[str, object]:
         }
     if isinstance(value, DateType):
         return {"kind": "date", "fractions": value.fractions}
+    if isinstance(value, MetadataReferenceType):
+        return {"kind": "metadata_reference", "object": value.object}
+    if isinstance(value, CompositeType):
+        return {
+            "kind": "composite",
+            "variants": [_type_to_spec(variant) for variant in value.variants],
+        }
     if isinstance(value, MetadataObjectType):
         return {"kind": "metadata_object", "object": value.object}
     return {
@@ -1663,6 +1751,8 @@ __all__ = [
     "ButtonSpec",
     "CheckBoxField",
     "CheckBoxFieldSpec",
+    "CompositeType",
+    "CompositeTypeSpec",
     "ChoiceListItem",
     "ChoiceListItemSpec",
     "DateType",
@@ -1684,6 +1774,8 @@ __all__ = [
     "LocalizedTextSpec",
     "ManagedForm",
     "ManagedFormSpec",
+    "MetadataReferenceType",
+    "MetadataReferenceTypeSpec",
     "NumberType",
     "NumberTypeSpec",
     "Page",
@@ -1702,6 +1794,8 @@ __all__ = [
     "ValueTableColumnSpec",
     "ValueTableType",
     "ValueTableTypeSpec",
+    "ValueType",
+    "ValueTypeSpec",
     "is_reserved_bsl_keyword",
     "managed_form_to_spec",
     "parse_managed_form_spec",

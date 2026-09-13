@@ -169,6 +169,52 @@ def test_объектный_главный_реквизит_даёт_lossless_ro
     assert result.specification == compiled.specification
 
 
+def test_ссылочный_и_составной_типы_дают_lossless_roundtrip():
+    payload = _payload()
+    payload["attributes"][0]["type"] = {
+        "kind": "metadata_reference",
+        "object": "Справочник.Товары",
+    }
+    payload["attributes"][1]["type"] = {
+        "kind": "composite",
+        "variants": [
+            {"kind": "metadata_reference", "object": "Перечисление.Состояния"},
+            {"kind": "string", "length": 30},
+        ],
+    }
+    compiled = compile_managed_form(payload)
+
+    result = decompile_managed_form(
+        compiled.artifacts[0].content,
+        form_name=payload["form_name"],
+        module_bsl=compiled.artifacts[1].content,
+    )
+
+    assert result.status == "decompiled"
+    assert result.specification == compiled.specification
+
+
+def test_составной_тип_колонки_таблицы_даёт_lossless_roundtrip():
+    payload = _rich_payload()
+    payload["attributes"][13]["type"]["columns"][0]["type"] = {
+        "kind": "composite",
+        "variants": [
+            {"kind": "metadata_reference", "object": "Справочник.Товары"},
+            {"kind": "string", "length": 100},
+        ],
+    }
+    compiled = compile_managed_form(payload)
+
+    result = decompile_managed_form(
+        compiled.artifacts[0].content,
+        form_name=payload["form_name"],
+        module_bsl=compiled.artifacts[1].content,
+    )
+
+    assert result.status == "decompiled"
+    assert result.specification == compiled.specification
+
+
 def test_decompiler_разрешает_неизвестную_версию_с_предупреждением():
     result = decompile_managed_form(
         _xml(),

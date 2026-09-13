@@ -167,6 +167,33 @@ def _required_registry_type(element: Mapping[str, object]) -> str | None:
     return None
 
 
+def _walk_metadata_references(
+    value_type: object, path: str
+) -> Iterator[tuple[str, str]]:
+    if not isinstance(value_type, Mapping):
+        return
+    kind = value_type.get("kind")
+    if kind == "metadata_reference":
+        reference = value_type.get("object")
+        if isinstance(reference, str):
+            yield reference, f"{path}.object"
+    elif kind == "composite":
+        variants = value_type.get("variants")
+        if isinstance(variants, list):
+            for index, variant in enumerate(variants):
+                yield from _walk_metadata_references(
+                    variant, f"{path}.variants[{index}]"
+                )
+    elif kind == "value_table":
+        columns = value_type.get("columns")
+        if isinstance(columns, list):
+            for index, column in enumerate(columns):
+                if isinstance(column, Mapping):
+                    yield from _walk_metadata_references(
+                        column.get("type"), f"{path}.columns[{index}].type"
+                    )
+
+
 def validate_registry_links(
     specification: Mapping[str, object] | None,
     resolution: RegistryResolution,
@@ -183,9 +210,22 @@ def validate_registry_links(
             if not isinstance(raw, Mapping):
                 continue
             value_type = raw.get("type")
-            if not isinstance(value_type, Mapping) or (
-                value_type.get("kind") != "metadata_object"
+            if not isinstance(value_type, Mapping):
+                continue
+            for reference, reference_path in _walk_metadata_references(
+                value_type, f"$.attributes[{index}].type"
             ):
+                if snapshot.object(reference) is None:
+                    diagnostics.append(
+                        Diagnostic(
+                            "configuration_links",
+                            "warning",
+                            "metadata_reference_not_found",
+                            reference_path,
+                            "Ссылочный тип не найден в выбранном Registry snapshot; ссылка не подтверждена.",
+                        )
+                    )
+            if value_type.get("kind") != "metadata_object":
                 continue
             name = raw.get("name")
             reference = value_type.get("object")

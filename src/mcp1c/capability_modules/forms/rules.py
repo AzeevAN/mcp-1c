@@ -202,7 +202,7 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
         FormRule(
             "basic_attribute_types",
             "supported",
-            "Базовый слой поддерживает строку, boolean, число, дату, таблицу значений и одиночный объект метаданных.",
+            "Базовый слой поддерживает скалярные, ссылочные и составные типы, таблицу значений и одиночный объект метаданных.",
             "observed_pattern",
             [
                 "string",
@@ -211,6 +211,8 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
                 "date",
                 "value_table",
                 "metadata_object",
+                "metadata_reference",
+                "composite",
             ],
         ),
         FormRule(
@@ -234,7 +236,7 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
         FormRule(
             "registry_types_boundary",
             "boundary",
-            "При доступном Registry-контексте проверяются объект, вложенное поле и доказуемые ограничения типа; без контекста генерация продолжается с предупреждением. Ссылочные значения, составные типы и DynamicList ещё не поддержаны.",
+            "При доступном Registry-контексте проверяются объект, вложенное поле, ссылочные варианты и доказуемые ограничения типа; без контекста генерация продолжается с предупреждением. DynamicList ещё не поддержан.",
             "contract_decision",
         ),
     ),
@@ -595,6 +597,8 @@ def get_managed_form_rules(topic: RuleTopic = "overview") -> dict[str, object]:
     elif topic == "attributes":
         payload["supported"] = {
             "scalar": ["string", "boolean", "number", "date"],
+            "reference": ["metadata_reference"],
+            "composite": ["scalar", "metadata_reference"],
             "collection": ["value_table"],
             "string_length_zero": "unlimited",
         }

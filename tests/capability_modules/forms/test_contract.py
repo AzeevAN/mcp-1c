@@ -302,6 +302,62 @@ def test_некорректный_объектный_тип_отклоняетс
     )
 
 
+def test_ссылочный_и_составной_типы_разбираются_в_типизированную_модель():
+    payload = _payload()
+    payload["attributes"][0]["type"] = {
+        "kind": "metadata_reference",
+        "object": "Справочник.Товары",
+    }
+    payload["attributes"][1]["type"] = {
+        "kind": "composite",
+        "variants": [
+            {"kind": "metadata_reference", "object": "Документ.Заказ"},
+            {"kind": "string", "length": 50},
+        ],
+    }
+
+    form = parse_managed_form_spec(payload)
+
+    assert form.attributes[0].type.object == "Справочник.Товары"
+    assert [variant.kind for variant in form.attributes[1].type.variants] == [
+        "metadata_reference",
+        "string",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("value_type", "expected"),
+    [
+        (
+            {"kind": "metadata_reference", "object": "Обработка.Импорт"},
+            ("invalid_metadata_reference", "$.attributes[0].type.object"),
+        ),
+        (
+            {"kind": "composite", "variants": [{"kind": "boolean"}]},
+            ("composite_type_too_small", "$.attributes[0].type.variants"),
+        ),
+        (
+            {
+                "kind": "composite",
+                "variants": [{"kind": "boolean"}, {"kind": "boolean"}],
+            },
+            (
+                "duplicate_composite_type_variant",
+                "$.attributes[0].type.variants[1]",
+            ),
+        ),
+    ],
+)
+def test_некорректный_ссылочный_или_составной_тип_отклоняется(value_type, expected):
+    payload = _payload()
+    payload["attributes"][0]["type"] = value_type
+
+    with pytest.raises(FormsContractError) as caught:
+        parse_managed_form_spec(payload)
+
+    assert expected in _codes(caught.value)
+
+
 def test_id_не_является_частью_публичной_спецификации():
     payload = _payload()
     payload["commands"][0]["id"] = 1

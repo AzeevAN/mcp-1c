@@ -8,11 +8,12 @@ from xml.sax.saxutils import escape, quoteattr
 
 from .diagnostics import Artifact, Coverage, Diagnostic, FormsResult
 from .event_catalog import event_signature
-from .metadata_types import metadata_object_xml_type
+from .metadata_types import metadata_object_xml_type, metadata_reference_xml_type
 from .models import (
     BooleanType,
     Button,
     CheckBoxField,
+    CompositeType,
     DateType,
     FormAttribute,
     FormEvent,
@@ -20,6 +21,7 @@ from .models import (
     LocalizedText,
     ManagedForm,
     MetadataObjectType,
+    MetadataReferenceType,
     NumberType,
     Page,
     Pages,
@@ -569,36 +571,11 @@ def _walk_form_elements(form: ManagedForm):
 
 def _emit_type(lines: list[str], value: object, indent: int) -> None:
     _append(lines, indent, "<Type>")
-    if isinstance(value, StringType):
-        _append(lines, indent + 1, "<v8:Type>xs:string</v8:Type>")
-        _append(lines, indent + 1, "<v8:StringQualifiers>")
-        _append(lines, indent + 2, f"<v8:Length>{value.length}</v8:Length>")
-        _append(lines, indent + 2, "<v8:AllowedLength>Variable</v8:AllowedLength>")
-        _append(lines, indent + 1, "</v8:StringQualifiers>")
-    elif isinstance(value, BooleanType):
-        _append(lines, indent + 1, "<v8:Type>xs:boolean</v8:Type>")
-    elif isinstance(value, NumberType):
-        _append(lines, indent + 1, "<v8:Type>xs:decimal</v8:Type>")
-        _append(lines, indent + 1, "<v8:NumberQualifiers>")
-        _append(lines, indent + 2, f"<v8:Digits>{value.digits}</v8:Digits>")
-        _append(
-            lines,
-            indent + 2,
-            f"<v8:FractionDigits>{value.fraction_digits}</v8:FractionDigits>",
-        )
-        sign = "Any" if value.allowed_sign == "any" else "Nonnegative"
-        _append(lines, indent + 2, f"<v8:AllowedSign>{sign}</v8:AllowedSign>")
-        _append(lines, indent + 1, "</v8:NumberQualifiers>")
-    elif isinstance(value, DateType):
-        _append(lines, indent + 1, "<v8:Type>xs:dateTime</v8:Type>")
-        _append(lines, indent + 1, "<v8:DateQualifiers>")
-        fractions = "Date" if value.fractions == "date" else "DateTime"
-        _append(
-            lines,
-            indent + 2,
-            f"<v8:DateFractions>{fractions}</v8:DateFractions>",
-        )
-        _append(lines, indent + 1, "</v8:DateQualifiers>")
+    if isinstance(value, CompositeType):
+        for variant in value.variants:
+            _emit_value_type_name(lines, variant, indent + 1)
+        for variant in value.variants:
+            _emit_value_qualifiers(lines, variant, indent + 1)
     elif isinstance(value, ValueTableType):
         _append(lines, indent + 1, "<v8:Type>v8:ValueTable</v8:Type>")
     elif isinstance(value, MetadataObjectType):
@@ -606,9 +583,56 @@ def _emit_type(lines: list[str], value: object, indent: int) -> None:
         if xml_type is None:  # pragma: no cover - checked by the contract
             raise TypeError(f"Неподдержанный объектный тип: {value.object!r}")
         _append(lines, indent + 1, f"<v8:Type>{escape(xml_type)}</v8:Type>")
+    else:
+        _emit_value_type_name(lines, value, indent + 1)
+        _emit_value_qualifiers(lines, value, indent + 1)
+    _append(lines, indent, "</Type>")
+
+
+def _emit_value_type_name(lines: list[str], value: object, indent: int) -> None:
+    if isinstance(value, StringType):
+        _append(lines, indent, "<v8:Type>xs:string</v8:Type>")
+    elif isinstance(value, BooleanType):
+        _append(lines, indent, "<v8:Type>xs:boolean</v8:Type>")
+    elif isinstance(value, NumberType):
+        _append(lines, indent, "<v8:Type>xs:decimal</v8:Type>")
+    elif isinstance(value, DateType):
+        _append(lines, indent, "<v8:Type>xs:dateTime</v8:Type>")
+    elif isinstance(value, MetadataReferenceType):
+        xml_type = metadata_reference_xml_type(value.object)
+        if xml_type is None:  # pragma: no cover - checked by the contract
+            raise TypeError(f"Неподдержанный ссылочный тип: {value.object!r}")
+        _append(lines, indent, f"<v8:Type>{escape(xml_type)}</v8:Type>")
     else:  # pragma: no cover - typed model does not admit other values
         raise TypeError(f"Неподдержанный тип: {type(value)!r}")
-    _append(lines, indent, "</Type>")
+
+
+def _emit_value_qualifiers(lines: list[str], value: object, indent: int) -> None:
+    if isinstance(value, StringType):
+        _append(lines, indent, "<v8:StringQualifiers>")
+        _append(lines, indent + 1, f"<v8:Length>{value.length}</v8:Length>")
+        _append(lines, indent + 1, "<v8:AllowedLength>Variable</v8:AllowedLength>")
+        _append(lines, indent, "</v8:StringQualifiers>")
+    elif isinstance(value, NumberType):
+        _append(lines, indent, "<v8:NumberQualifiers>")
+        _append(lines, indent + 1, f"<v8:Digits>{value.digits}</v8:Digits>")
+        _append(
+            lines,
+            indent + 1,
+            f"<v8:FractionDigits>{value.fraction_digits}</v8:FractionDigits>",
+        )
+        sign = "Any" if value.allowed_sign == "any" else "Nonnegative"
+        _append(lines, indent + 1, f"<v8:AllowedSign>{sign}</v8:AllowedSign>")
+        _append(lines, indent, "</v8:NumberQualifiers>")
+    elif isinstance(value, DateType):
+        _append(lines, indent, "<v8:DateQualifiers>")
+        fractions = "Date" if value.fractions == "date" else "DateTime"
+        _append(
+            lines,
+            indent + 1,
+            f"<v8:DateFractions>{fractions}</v8:DateFractions>",
+        )
+        _append(lines, indent, "</v8:DateQualifiers>")
 
 
 def _emit_table_column(

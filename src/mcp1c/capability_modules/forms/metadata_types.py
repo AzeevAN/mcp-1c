@@ -24,6 +24,22 @@ _XML_OBJECT_TO_REGISTRY_KIND = {
     for registry_kind, xml_kind in _REGISTRY_KIND_TO_XML_OBJECT.items()
 }
 
+_REGISTRY_KIND_TO_XML_REFERENCE = {
+    "Справочник": "CatalogRef",
+    "Документ": "DocumentRef",
+    "Перечисление": "EnumRef",
+    "ПланОбмена": "ExchangePlanRef",
+    "БизнесПроцесс": "BusinessProcessRef",
+    "Задача": "TaskRef",
+    "ПланВидовХарактеристик": "ChartOfCharacteristicTypesRef",
+    "ПланСчетов": "ChartOfAccountsRef",
+    "ПланВидовРасчета": "ChartOfCalculationTypesRef",
+}
+_XML_REFERENCE_TO_REGISTRY_KIND = {
+    xml_kind: registry_kind
+    for registry_kind, xml_kind in _REGISTRY_KIND_TO_XML_REFERENCE.items()
+}
+
 
 def metadata_object_xml_type(value: str) -> str | None:
     """Преобразовать каноническую ссылку Registry в тип Form.xml."""
@@ -48,6 +64,34 @@ def metadata_object_registry_ref(value: str) -> str | None:
         return None
     xml_kind, name = parts
     registry_kind = _XML_OBJECT_TO_REGISTRY_KIND.get(xml_kind)
+    if registry_kind is None:
+        return None
+    return f"{registry_kind}.{name}"
+
+
+def metadata_reference_xml_type(value: str) -> str | None:
+    """Преобразовать ссылочный тип Registry в тип Form.xml."""
+
+    parts = value.split(".")
+    if len(parts) != 2 or not all(_IDENTIFIER.fullmatch(part) for part in parts):
+        return None
+    kind, name = parts
+    xml_kind = _REGISTRY_KIND_TO_XML_REFERENCE.get(kind)
+    if xml_kind is None:
+        return None
+    return f"cfg:{xml_kind}.{name}"
+
+
+def metadata_reference_registry_ref(value: str) -> str | None:
+    """Преобразовать поддержанный ссылочный тип Form.xml в ссылку Registry."""
+
+    if not value.startswith("cfg:"):
+        return None
+    parts = value.removeprefix("cfg:").split(".")
+    if len(parts) != 2 or not all(_IDENTIFIER.fullmatch(part) for part in parts):
+        return None
+    xml_kind, name = parts
+    registry_kind = _XML_REFERENCE_TO_REGISTRY_KIND.get(xml_kind)
     if registry_kind is None:
         return None
     return f"{registry_kind}.{name}"

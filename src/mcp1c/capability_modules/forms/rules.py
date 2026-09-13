@@ -312,6 +312,19 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
             {"directive": "&НаКлиенте", "parameters": ["Команда"]},
         ),
         FormRule(
+            "standard_command_catalog",
+            "supported",
+            (
+                "Стандартная команда не создаёт пользовательский Action и "
+                "разрешается только для доказанного вида владельца."
+            ),
+            "observed_pattern",
+            {
+                "form": ["Help", "Close", "CustomizeForm"],
+                "table": ["Add", "Delete", "MoveUp", "MoveDown"],
+            },
+        ),
+        FormRule(
             "no_synchronous_file_exists_on_client",
             "required",
             (
@@ -559,6 +572,10 @@ def get_managed_form_rules(topic: RuleTopic = "overview") -> dict[str, object]:
                 "table": ["Selection", "OnActivateRow"],
             },
             "command_reference": "Form.Command.<name>",
+            "standard_commands": {
+                "form": ["Help", "Close", "CustomizeForm"],
+                "table": ["Add", "Delete", "MoveUp", "MoveDown"],
+            },
             "async": "Асинх и Ждать только в клиентском контексте платформы 8.3.18+",
         }
     return payload

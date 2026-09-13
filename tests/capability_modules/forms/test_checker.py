@@ -294,6 +294,37 @@ def test_unresolved_form_command_сохраняет_structural_failed():
     assert _diagnostics(result, "unresolved_command")
 
 
+def test_checker_разрешает_поддержанные_стандартные_команды_формы_и_таблицы():
+    payload = _rich_payload()
+    payload["elements"][0]["children"].extend(
+        [
+            {
+                "kind": "button",
+                "name": "НастроитьФорму",
+                "command": "CustomizeForm",
+                "command_kind": "form_standard",
+            },
+            {
+                "kind": "button",
+                "name": "СтрокуВверх",
+                "command": "MoveUp",
+                "command_kind": "item_standard",
+                "command_owner": "ТаблицаДанныхПоле",
+            },
+        ]
+    )
+    compiled = compile_managed_form(payload)
+
+    result = check_managed_form(
+        compiled.artifacts[0].content,
+        form_name=payload["form_name"],
+        module_bsl=compiled.artifacts[1].content,
+    )
+
+    assert result.coverage.structural == "passed"
+    assert not _diagnostics(result, "non_form_command_not_checked")
+
+
 def test_checker_не_пишет_файлы(monkeypatch, tmp_path):
     xml, module = _pair()
     before = list(tmp_path.iterdir())

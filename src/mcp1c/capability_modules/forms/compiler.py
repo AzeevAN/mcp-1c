@@ -226,10 +226,18 @@ def _emit_button(
     _append(lines, indent + 1, "<Type>UsualButton</Type>")
     if item.default:
         _append(lines, indent + 1, "<DefaultButton>true</DefaultButton>")
+    if item.command_kind == "custom":
+        command_path = f"Form.Command.{item.command}"
+    elif item.command_kind == "form_standard":
+        command_path = f"Form.StandardCommand.{item.command}"
+    else:
+        command_path = (
+            f"Form.Item.{item.command_owner}.StandardCommand.{item.command}"
+        )
     _append(
         lines,
         indent + 1,
-        f"<CommandName>Form.Command.{escape(item.command)}</CommandName>",
+        f"<CommandName>{escape(command_path)}</CommandName>",
     )
     if item.title is not None:
         _localized(lines, "Title", item.title, indent + 1)

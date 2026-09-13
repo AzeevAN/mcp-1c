@@ -226,6 +226,64 @@ def test_id_не_является_частью_публичной_специфи
     assert ("unknown_key", "$.commands[0].id") in _codes(caught.value)
 
 
+def test_стандартные_команды_формы_и_таблицы_не_требуют_custom_command():
+    payload = _payload()
+    payload["commands"] = []
+    payload["elements"][0]["children"][2] = {
+        "kind": "button",
+        "name": "ЗакрытьФорму",
+        "command": "Close",
+        "command_kind": "form_standard",
+    }
+
+    form = parse_managed_form_spec(payload)
+
+    assert form.commands == ()
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected"),
+    [
+        (
+            lambda button: button.update(
+                {"command": "Write", "command_kind": "form_standard"}
+            ),
+            ("unsupported_standard_command", "$.elements[0].children[2].command"),
+        ),
+        (
+            lambda button: button.update(
+                {"command": "Add", "command_kind": "item_standard"}
+            ),
+            ("missing_key", "$.elements[0].children[2].command_owner"),
+        ),
+        (
+            lambda button: button.update(
+                {
+                    "command": "Add",
+                    "command_kind": "item_standard",
+                    "command_owner": "ПервоеЗначение",
+                }
+            ),
+            (
+                "unsupported_standard_command_owner",
+                "$.elements[0].children[2].command_owner",
+            ),
+        ),
+    ],
+)
+def test_закрытый_каталог_стандартных_команд_отклоняет_недоказанные_ссылки(
+    mutate, expected
+):
+    payload = _payload()
+    button = payload["elements"][0]["children"][2]
+    mutate(button)
+
+    with pytest.raises(FormsContractError) as caught:
+        parse_managed_form_spec(payload)
+
+    assert expected in _codes(caught.value)
+
+
 @pytest.mark.parametrize("reserved", sorted(BSL_RESERVED_KEYWORDS))
 def test_зарезервированное_слово_bsl_не_может_быть_именем_обработчика(
     reserved,

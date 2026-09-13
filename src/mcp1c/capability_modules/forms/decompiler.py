@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass, field
 from xml.etree import ElementTree as ET
 
+from .command_catalog import ITEM_STANDARD_COMMANDS, standard_command_supported
 from .diagnostics import Coverage, Diagnostic, FormsResult
 from .event_catalog import event_signature
 from .models import (
@@ -511,17 +512,53 @@ def _button(inventory: _Inventory, node: ET.Element) -> dict[str, object]:
     if command is not None:
         inventory.mark(command)
     command_name = _text(command)
-    prefix = "Form.Command."
-    if not command_name.startswith(prefix):
+    custom_prefix = "Form.Command."
+    form_prefix = "Form.StandardCommand."
+    item_prefix = "Form.Item."
+    if command_name.startswith(custom_prefix):
+        item["command"] = command_name.removeprefix(custom_prefix)
+    elif command_name.startswith(form_prefix):
+        item["command"] = command_name.removeprefix(form_prefix)
+        item["command_kind"] = "form_standard"
+        if not standard_command_supported("form", str(item["command"])):
+            inventory.issue(
+                "unsupported_standard_command",
+                inventory.paths[id(command)],
+                "Стандартная команда формы не входит в закрытый каталог.",
+                status="unsupported",
+            )
+    elif (
+        command_name.startswith(item_prefix)
+        and ".StandardCommand." in command_name
+    ):
+        owner, command_value = command_name.removeprefix(item_prefix).rsplit(
+            ".StandardCommand.", 1
+        )
+        item["command"] = command_value
+        item["command_kind"] = "item_standard"
+        item["command_owner"] = owner
+        if not any(
+            command_value in commands
+            for commands in ITEM_STANDARD_COMMANDS.values()
+        ):
+            inventory.issue(
+                "unsupported_standard_command",
+                inventory.paths[id(command)],
+                "Стандартная команда элемента не входит в закрытый каталог.",
+                status="unsupported",
+            )
+    else:
         inventory.issue(
             "unsupported_command_path",
-            inventory.paths[id(command)] if command is not None else inventory.paths[id(node)],
-            "Поддерживается только ссылка Form.Command.<Имя>.",
+            (
+                inventory.paths[id(command)]
+                if command is not None
+                else inventory.paths[id(node)]
+            ),
+            "Ссылка команды не входит в поддержанное подмножество.",
             status="unsupported",
         )
-    item["command"] = (
-        command_name.removeprefix(prefix) if command_name.startswith(prefix) else command_name
-    )
+        item["command"] = command_name
     title = _optional_localized(inventory, node, "Title")
     if title is not None:
         item["title"] = title
@@ -1282,7 +1319,6 @@ def decompile_managed_form(
     collections = (
         specification["attributes"],
         specification["elements"],
-        specification["commands"],
         specification["events"],
     )
     if any(not collection for collection in collections):

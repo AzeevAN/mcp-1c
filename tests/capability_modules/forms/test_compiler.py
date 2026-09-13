@@ -171,6 +171,40 @@ def test_один_action_двух_команд_создаёт_одну_проц�
     assert module.count("Процедура Проверить(Команда)") == 1
 
 
+def test_стандартные_команды_формы_и_таблицы_компилируются_без_bsl_каркасов():
+    payload = _rich_payload()
+    payload["elements"][0]["children"].extend(
+        [
+            {
+                "kind": "button",
+                "name": "ЗакрытьФорму",
+                "command": "Close",
+                "command_kind": "form_standard",
+            },
+            {
+                "kind": "button",
+                "name": "ДобавитьСтроку",
+                "command": "Add",
+                "command_kind": "item_standard",
+                "command_owner": "ТаблицаДанныхПоле",
+            },
+        ]
+    )
+
+    result = compile_managed_form(payload)
+
+    assert (
+        "<CommandName>Form.StandardCommand.Close</CommandName>"
+        in result.artifacts[0].content
+    )
+    assert (
+        "<CommandName>Form.Item.ТаблицаДанныхПоле.StandardCommand.Add</CommandName>"
+        in result.artifacts[0].content
+    )
+    assert "ЗакрытьФорму(" not in result.artifacts[1].content
+    assert "ДобавитьСтроку(" not in result.artifacts[1].content
+
+
 def test_сгенерированные_bsl_каркасы_читаются_текущим_лексером():
     module = compile_managed_form(_payload()).artifacts[1].content
 

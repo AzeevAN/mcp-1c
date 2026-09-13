@@ -8,6 +8,7 @@ from xml.etree import ElementTree as ET
 
 from mcp1c.bsl_lex import разобрать
 
+from .command_catalog import standard_command_supported
 from .decompiler import decompile_managed_form
 from .diagnostics import Coverage, Diagnostic, FormsResult
 from .event_catalog import event_signature
@@ -213,6 +214,9 @@ def _check_local_links(root: ET.Element, *, strict: bool) -> list[Diagnostic]:
                 )
             )
     prefix = "Form.Command."
+    table_names = {
+        node.attrib.get("name", "") for node in root.iter(_q("Table"))
+    }
     for node in root.iter(_q("Button")):
         command = node.find(_q("CommandName"))
         value = "" if command is None else (command.text or "")
@@ -224,6 +228,31 @@ def _check_local_links(root: ET.Element, *, strict: bool) -> list[Diagnostic]:
                         "unresolved_command",
                         "/Form/ChildItems/Button/CommandName",
                         "Кнопка ссылается на неизвестную команду формы.",
+                    )
+                )
+        elif value.startswith("Form.StandardCommand."):
+            standard = value.removeprefix("Form.StandardCommand.")
+            if not standard_command_supported("form", standard):
+                diagnostics.append(
+                    _diagnostic(
+                        "failed",
+                        "unsupported_standard_command",
+                        "/Form/ChildItems/Button/CommandName",
+                        "Стандартная команда формы не входит в закрытый каталог.",
+                    )
+                )
+        elif value.startswith("Form.Item.") and ".StandardCommand." in value:
+            owner, standard = value.removeprefix("Form.Item.").rsplit(
+                ".StandardCommand.", 1
+            )
+            normalized_kind = "table" if owner in table_names else ""
+            if not standard_command_supported(normalized_kind, standard):
+                diagnostics.append(
+                    _diagnostic(
+                        "failed",
+                        "unsupported_standard_command",
+                        "/Form/ChildItems/Button/CommandName",
+                        "Стандартная команда элемента или её владелец не поддержаны.",
                     )
                 )
         else:
@@ -241,7 +270,7 @@ def _check_local_links(root: ET.Element, *, strict: bool) -> list[Diagnostic]:
                 "passed",
                 "local_form_links_resolved",
                 "/Form",
-                "Обычные DataPath и Form.Command ссылки разрешены локально.",
+                "Обычные DataPath и поддержанные ссылки команд разрешены локально.",
             )
         )
     return diagnostics

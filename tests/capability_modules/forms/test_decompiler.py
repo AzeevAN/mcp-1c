@@ -99,6 +99,72 @@ def test_owner_aware_события_элементов_дают_lossless_roundtr
     assert result.coverage.structural == "passed"
 
 
+def test_стандартные_команды_формы_и_таблицы_дают_lossless_roundtrip():
+    payload = _rich_payload()
+    payload["elements"][0]["children"].extend(
+        [
+            {
+                "kind": "button",
+                "name": "СправкаФормы",
+                "command": "Help",
+                "command_kind": "form_standard",
+            },
+            {
+                "kind": "button",
+                "name": "УдалитьСтроку",
+                "command": "Delete",
+                "command_kind": "item_standard",
+                "command_owner": "ТаблицаДанныхПоле",
+            },
+        ]
+    )
+    compiled = compile_managed_form(payload)
+
+    result = decompile_managed_form(
+        compiled.artifacts[0].content,
+        form_name=payload["form_name"],
+        module_bsl=compiled.artifacts[1].content,
+    )
+
+    assert result.specification == compiled.specification
+    assert result.coverage.structural == "passed"
+
+
+def test_форма_только_со_стандартной_командой_даёт_lossless_roundtrip():
+    payload = _payload()
+    payload["commands"] = []
+    payload["elements"][0]["children"][2] = {
+        "kind": "button",
+        "name": "ЗакрытьФорму",
+        "command": "Close",
+        "command_kind": "form_standard",
+    }
+    compiled = compile_managed_form(payload)
+
+    result = decompile_managed_form(
+        compiled.artifacts[0].content,
+        form_name=payload["form_name"],
+        module_bsl=compiled.artifacts[1].content,
+    )
+
+    assert result.specification == compiled.specification
+    assert result.coverage.structural == "passed"
+    assert not _diagnostics(result, "outside_compiler_subset")
+
+
+def test_неподдержанная_стандартная_команда_остаётся_inventory():
+    xml = _xml().replace(
+        "Form.Command.Проверить", "Form.StandardCommand.Write"
+    )
+
+    result = decompile_managed_form(xml, form_name="ФормаПараметров")
+
+    assert result.status == "decompiled"
+    assert result.coverage.structural == "unsupported"
+    assert result.specification["elements"][0]["children"][2]["command"] == "Write"
+    assert _diagnostics(result, "unsupported_standard_command")
+
+
 def test_неизвестное_событие_элемента_остаётся_inventory_а_не_угадывается():
     payload = _rich_payload()
     payload["events"] = [

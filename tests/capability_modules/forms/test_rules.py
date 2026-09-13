@@ -134,6 +134,10 @@ def test_events_публикуют_закрытый_owner_aware_каталог_�
             "table": ["Selection", "OnActivateRow"],
         },
         "command_reference": "Form.Command.<name>",
+        "standard_commands": {
+            "form": ["Help", "Close", "CustomizeForm"],
+            "table": ["Add", "Delete", "MoveUp", "MoveDown"],
+        },
         "async": "Асинх и Ждать только в клиентском контексте платформы 8.3.18+",
     }
     by_code = {rule["code"]: rule for rule in payload["rules"]}
@@ -143,6 +147,12 @@ def test_events_публикуют_закрытый_owner_aware_каталог_�
     }
     assert by_code["unknown_event_not_checked"]["status"] == "boundary"
     assert by_code["owner_aware_event_catalog"]["status"] == "supported"
+    assert by_code["standard_command_catalog"]["value"]["table"] == [
+        "Add",
+        "Delete",
+        "MoveUp",
+        "MoveDown",
+    ]
     assert by_code["async_client_contract"]["status"] == "required"
     assert by_code["no_synchronous_file_exists_on_client"]["status"] == "required"
     assert "Файл.Существует()" in by_code[

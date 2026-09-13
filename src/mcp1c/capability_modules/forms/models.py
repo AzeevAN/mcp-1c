@@ -7,6 +7,7 @@ from collections.abc import Hashable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Literal, NotRequired, TypeAlias, TypedDict
 
+from .command_catalog import standard_command_supported
 from .diagnostics import Diagnostic
 from .event_catalog import event_signature
 
@@ -147,6 +148,8 @@ class ButtonSpec(TypedDict):
     kind: Literal["button"]
     name: str
     command: str
+    command_kind: NotRequired[Literal["custom", "form_standard", "item_standard"]]
+    command_owner: NotRequired[str]
     default: NotRequired[bool]
     title: NotRequired[LocalizedTextSpec]
 
@@ -340,6 +343,8 @@ class CheckBoxField:
 class Button:
     name: str
     command: str
+    command_kind: Literal["custom", "form_standard", "item_standard"] = "custom"
+    command_owner: str | None = None
     default: bool = False
     title: LocalizedText | None = None
     kind: Literal["button"] = "button"
@@ -511,11 +516,13 @@ class _Reader:
             return minimum
         return value
 
-    def array(self, value: object, path: str) -> list[object]:
+    def array(
+        self, value: object, path: str, *, allow_empty: bool = False
+    ) -> list[object]:
         if not isinstance(value, list):
             self.issue("invalid_type", path, "Ожидался массив.")
             return []
-        if not value:
+        if not value and not allow_empty:
             self.issue("empty_collection", path, "Пустой массив не поддержан.")
         return value
 
@@ -802,13 +809,42 @@ def _button(reader: _Reader, item: Mapping[str, object], path: str) -> Button:
         item,
         path,
         required=frozenset({"kind", "name", "command"}),
-        optional=frozenset({"default", "title"}),
+        optional=frozenset(
+            {"command_kind", "command_owner", "default", "title"}
+        ),
     )
+    command_kind = item.get("command_kind", "custom")
+    if command_kind not in {"custom", "form_standard", "item_standard"}:
+        reader.issue(
+            "invalid_command_kind",
+            f"{path}.command_kind",
+            "Допустимы custom, form_standard и item_standard.",
+        )
+        command_kind = "custom"
+    command_owner = None
+    if "command_owner" in item:
+        command_owner = reader.string(
+            item.get("command_owner"), f"{path}.command_owner", identifier=True
+        )
+    if command_kind == "item_standard" and "command_owner" not in item:
+        reader.issue(
+            "missing_key",
+            f"{path}.command_owner",
+            "Для item_standard обязателен владелец команды.",
+        )
+    elif command_kind != "item_standard" and "command_owner" in item:
+        reader.issue(
+            "unexpected_command_owner",
+            f"{path}.command_owner",
+            "Владелец допустим только для item_standard.",
+        )
     return Button(
         name=reader.string(item.get("name"), f"{path}.name", identifier=True),
         command=reader.string(
             item.get("command"), f"{path}.command", identifier=True
         ),
+        command_kind=command_kind,
+        command_owner=command_owner,
         default=(
             reader.boolean(item["default"], f"{path}.default")
             if "default" in item
@@ -1121,7 +1157,7 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
     commands = tuple(
         _command(reader, value, f"$.commands[{index}]")
         for index, value in enumerate(
-            reader.array(root.get("commands"), "$.commands")
+            reader.array(root.get("commands"), "$.commands", allow_empty=True)
         )
     )
     events = tuple(
@@ -1227,15 +1263,35 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
                     f"{path}.data_path",
                     "Таблица должна ссылаться на реквизит value_table.",
                 )
-        elif (
-            isinstance(element, Button)
-            and element.command not in command_names
-        ):
-            reader.issue(
-                "unresolved_command",
-                f"{path}.command",
-                "Кнопка ссылается на неизвестную команду.",
-            )
+        elif isinstance(element, Button):
+            if element.command_kind == "custom":
+                if element.command not in command_names:
+                    reader.issue(
+                        "unresolved_command",
+                        f"{path}.command",
+                        "Кнопка ссылается на неизвестную команду.",
+                    )
+            elif element.command_kind == "form_standard":
+                if not standard_command_supported("form", element.command):
+                    reader.issue(
+                        "unsupported_standard_command",
+                        f"{path}.command",
+                        "Стандартная команда формы не входит в закрытый каталог.",
+                    )
+            else:
+                owner = element_by_name.get(element.command_owner or "")
+                if owner is None or owner.kind != "table":
+                    reader.issue(
+                        "unsupported_standard_command_owner",
+                        f"{path}.command_owner",
+                        "Поддержан владелец стандартной команды вида table.",
+                    )
+                elif not standard_command_supported(owner.kind, element.command):
+                    reader.issue(
+                        "unsupported_standard_command",
+                        f"{path}.command",
+                        "Стандартная команда элемента не входит в закрытый каталог.",
+                    )
 
     event_signatures: dict[str, set[tuple[str, tuple[str, ...]]]] = {}
     for index, event in enumerate(events):
@@ -1390,6 +1446,10 @@ def _element_to_spec(element: Element) -> dict[str, object]:
             "name": element.name,
             "command": element.command,
         }
+        if element.command_kind != "custom":
+            item["command_kind"] = element.command_kind
+        if element.command_owner is not None:
+            item["command_owner"] = element.command_owner
         if element.default:
             item["default"] = True
     elif isinstance(element, Table):

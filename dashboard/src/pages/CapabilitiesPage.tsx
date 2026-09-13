@@ -9,10 +9,6 @@ import {
 import { requestServerRestart, waitForServerRestart } from "../shared/api/sourceAdmin";
 
 const moduleCopy: Record<string, { title: string; description: string; details?: string }> = {
-  diagnostics: {
-    title: "Диагностика сервера",
-    description: "Добавляет административный инструмент проверки состояния capability-контура.",
-  },
   forms: {
     title: "Управляемые формы",
     description: "Добавляет 4 инструмента: двуязычный поиск правил, компиляцию, декомпиляцию и статическую проверку. Файлы и конфигурацию 1С не изменяет.",

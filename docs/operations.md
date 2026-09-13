@@ -356,11 +356,11 @@ PYTHONPATH=src .venv/bin/python -m mcp1c.server \
 `data/server-settings.json`, schema v1:
 
 ```json
-{"version":1,"capabilities":{"enabled":["diagnostics"]}}
+{"version":1,"capabilities":{"enabled":["forms"]}}
 ```
 
 Пустой `enabled` сохраняет основной каталог инструментов. Пока файла нет,
-`MCP1C_CAPABILITIES=off|diagnostics` используется только как bootstrap;
+`MCP1C_CAPABILITIES=off|forms` используется только как bootstrap;
 существующий файл всегда важнее env. Файл ограничен 64 КиБ, читается до
 Registry и при повреждении останавливает startup. `GET /api/v1/capabilities`
 для администратора показывает available/active/desired и `pending_restart`.

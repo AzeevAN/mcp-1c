@@ -12,7 +12,7 @@ vi.mock("../shared/api/sourceAdmin", async (importOriginal) => ({
 }));
 
 const ready = {
-  available: ["diagnostics", "forms"],
+  available: ["forms"],
   active: [],
   desired: [],
   pending_restart: false,
@@ -51,7 +51,6 @@ it.each([360, 1440])(
     mount();
 
     expect(await screen.findByRole("heading", { name: "Дополнительные модули" })).toBeInTheDocument();
-    expect(screen.getByRole("checkbox", { name: /diagnostics/i })).toBeVisible();
     expect(screen.getByRole("checkbox", { name: /forms/i })).toBeVisible();
     expect(screen.getByRole("button", { name: "Сохранить выбор" })).toBeVisible();
   },
@@ -62,13 +61,13 @@ it("показывает active отдельно от несохранённог
   mount();
 
   expect(await screen.findByRole("heading", { name: "Дополнительные модули" })).toBeInTheDocument();
-  const diagnostics = screen.getByRole("checkbox", { name: /diagnostics/i });
-  expect(diagnostics).not.toBeChecked();
-  expect(within(diagnostics.closest("label")!).getByText("В текущем процессе: выключен")).toBeInTheDocument();
+  const forms = screen.getByRole("checkbox", { name: /forms/i });
+  expect(forms).not.toBeChecked();
+  expect(within(forms.closest("label")!).getByText("В текущем процессе: выключен")).toBeInTheDocument();
 
-  fireEvent.click(diagnostics);
+  fireEvent.click(forms);
 
-  expect(diagnostics).toBeChecked();
+  expect(forms).toBeChecked();
   expect(screen.getByText("Выбор ещё не сохранён.")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Сохранить выбор" })).toBeEnabled();
 });
@@ -89,39 +88,39 @@ it("объясняет границу Forms до включения", async () =
 it("не теряет несохранённый выбор при фоновом обновлении статуса", async () => {
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ready }));
   const client = mount();
-  const diagnostics = await screen.findByRole("checkbox", { name: /diagnostics/i });
-  fireEvent.click(diagnostics);
+  const forms = await screen.findByRole("checkbox", { name: /forms/i });
+  fireEvent.click(forms);
 
   client.setQueryData(["capabilities"], {
     ...ready,
-    active: ["diagnostics"],
+    active: ["forms"],
   });
 
-  await waitFor(() => expect(within(diagnostics.closest("label")!).getByText("В текущем процессе: включён")).toBeInTheDocument());
-  expect(diagnostics).toBeChecked();
+  await waitFor(() => expect(within(forms.closest("label")!).getByText("В текущем процессе: включён")).toBeInTheDocument());
+  expect(forms).toBeChecked();
   expect(screen.getByText("Выбор ещё не сохранён.")).toBeInTheDocument();
 });
 
 it("сохраняет весь desired-набор и показывает pending", async () => {
-  const pending = { ...ready, desired: ["diagnostics"], pending_restart: true };
+  const pending = { ...ready, desired: ["forms"], pending_restart: true };
   vi.stubGlobal("fetch", vi.fn(async (_path, options?: RequestInit) => ({
     ok: true,
     json: async () => options?.method === "PUT" ? pending : ready,
   })));
   mount();
-  fireEvent.click(await screen.findByRole("checkbox", { name: /diagnostics/i }));
+  fireEvent.click(await screen.findByRole("checkbox", { name: /forms/i }));
   fireEvent.click(screen.getByRole("button", { name: "Сохранить выбор" }));
 
   expect(await screen.findByText("Изменение сохранено и ожидает перезапуска.")).toBeInTheDocument();
-  const diagnostics = screen.getByRole("checkbox", { name: /diagnostics/i });
-  expect(within(diagnostics.closest("label")!).getByText("В текущем процессе: выключен")).toBeInTheDocument();
+  const forms = screen.getByRole("checkbox", { name: /forms/i });
+  expect(within(forms.closest("label")!).getByText("В текущем процессе: выключен")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Перезапустить и применить" })).toBeEnabled();
 });
 
 it("при выключенном self-restart оставляет операторскую инструкцию вместо кнопки", async () => {
   const pending = {
     ...ready,
-    desired: ["diagnostics"],
+    desired: ["forms"],
     pending_restart: true,
     runtime: { self_restart: false },
   };
@@ -133,7 +132,7 @@ it("при выключенном self-restart оставляет операто
 });
 
 it("требует отдельного подтверждения restart и возвращает фокус по Escape", async () => {
-  const pending = { ...ready, desired: ["diagnostics"], pending_restart: true };
+  const pending = { ...ready, desired: ["forms"], pending_restart: true };
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => pending }));
   mount();
   const trigger = await screen.findByRole("button", { name: "Перезапустить и применить" });

@@ -63,10 +63,6 @@ class CapabilityModule:
 
 
 CAPABILITY_DEFINITIONS: Mapping[str, CapabilityDefinition] = {
-    "diagnostics": CapabilityDefinition(
-        "diagnostics",
-        "mcp1c.capability_modules.diagnostics:load",
-    ),
     "forms": CapabilityDefinition(
         "forms",
         "mcp1c.capability_modules.forms:load",

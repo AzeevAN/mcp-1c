@@ -47,6 +47,12 @@ CORE_TOOLS = [
     "search_syntax",
     "get_syntax",
 ]
+FORMS_TOOLS = [
+    "get_managed_form_rules",
+    "compile_managed_form",
+    "decompile_managed_form",
+    "check_managed_form",
+]
 
 
 @pytest.fixture
@@ -67,13 +73,13 @@ def _names(server) -> list[str]:
     return [tool.name for tool in asyncio.run(server.list_tools())]
 
 
-def test_default_не_меняет_публичный_каталог_и_не_импортирует_демо(tmp_path):
-    sys.modules.pop("mcp1c.capability_modules.diagnostics", None)
+def test_default_не_меняет_публичный_каталог_и_не_импортирует_forms(tmp_path):
+    sys.modules.pop("mcp1c.capability_modules.forms", None)
 
     server = _server(tmp_path)
 
     assert _names(server) == CORE_TOOLS
-    assert "mcp1c.capability_modules.diagnostics" not in sys.modules
+    assert "mcp1c.capability_modules.forms" not in sys.modules
 
 
 def test_off_не_импортирует_и_не_инициализирует_синтетический_модуль(
@@ -163,8 +169,8 @@ def test_loader_передаёт_модулю_только_его_явную_з�
 
 @pytest.mark.parametrize(
     "value",
-    ("", "diagnostics,", ",diagnostics", " diagnostics", "diagnostics ",
-     "diagnostics,diagnostics", "off,diagnostics", "DIAGNOSTICS"),
+    ("", "forms,", ",forms", " forms", "forms ",
+     "forms,forms", "off,forms", "FORMS"),
 )
 def test_некорректная_конфигурация_отклоняется(value):
     with pytest.raises(CapabilityConfigurationError):
@@ -174,6 +180,11 @@ def test_некорректная_конфигурация_отклоняетс�
 def test_неизвестный_модуль_отклоняется_до_import():
     with pytest.raises(CapabilityConfigurationError, match="unknown"):
         parse_capability_config("unknown")
+
+
+def test_удалённая_заглушка_diagnostics_не_входит_в_закрытый_каталог():
+    with pytest.raises(CapabilityConfigurationError, match="diagnostics"):
+        parse_capability_config("diagnostics")
 
 
 def test_main_отклоняет_неизвестный_модуль_до_registry(tmp_path, monkeypatch):
@@ -192,15 +203,15 @@ def test_main_отклоняет_неизвестный_модуль_до_regist
 
 def test_server_settings_важнее_env_и_переживают_restart(tmp_path):
     store = CapabilitySettingsStore(tmp_path / "data")
-    store.save(("diagnostics",))
+    store.save(("forms",))
 
     resolved_store, enabled = resolve_capability_settings(
         tmp_path / "data",
         environment="unknown",
     )
 
-    assert enabled == ("diagnostics",)
-    assert resolved_store.load() == ("diagnostics",)
+    assert enabled == ("forms",)
+    assert resolved_store.load() == ("forms",)
 
 
 def test_enable_и_disable_применяются_двумя_независимыми_startup(
@@ -243,46 +254,46 @@ print(json.dumps([tool.name for tool in asyncio.run(server.list_tools())]))
         )
         return json.loads(result.stdout)
 
-    store.save(("diagnostics",))
+    store.save(("forms",))
     enabled_tools = startup_tools()
     store.save(())
     disabled_tools = startup_tools()
 
-    assert enabled_tools == [*CORE_TOOLS, "diagnostics_status"]
+    assert enabled_tools == [*CORE_TOOLS, *FORMS_TOOLS]
     assert disabled_tools == CORE_TOOLS
 
 
 def test_после_удаления_settings_status_снова_предсказывает_env_bootstrap(tmp_path):
     initial = CapabilitySettingsStore(tmp_path / "data")
-    initial.save(("diagnostics",))
+    initial.save(("forms",))
     store, active = resolve_capability_settings(
         tmp_path / "data",
-        environment="diagnostics",
+        environment="forms",
     )
     runtime = CapabilityRuntime(store, active=active)
 
     store.path.unlink()
 
-    assert runtime.payload()["desired"] == ["diagnostics"]
+    assert runtime.payload()["desired"] == ["forms"]
     assert runtime.pending_restart() is False
 
 
 def test_env_служит_fallback_только_пока_server_settings_не_созданы(tmp_path):
     store, enabled = resolve_capability_settings(
         tmp_path / "data",
-        environment="diagnostics",
+        environment="forms",
     )
     runtime = CapabilityRuntime(store, active=enabled)
 
-    assert enabled == ("diagnostics",)
+    assert enabled == ("forms",)
     assert store.path.exists() is False
     assert runtime.payload()["pending_restart"] is False
 
     store.save(())
 
     assert runtime.payload() == {
-        "available": ["diagnostics", "forms"],
-        "active": ["diagnostics"],
+        "available": ["forms"],
+        "active": ["forms"],
         "desired": [],
         "pending_restart": True,
     }
@@ -319,8 +330,8 @@ def test_повреждённые_server_settings_отклоняются_до_re
         {"version": 1.0, "capabilities": {"enabled": []}},
         {"version": 1},
         {"version": 1, "capabilities": []},
-        {"version": 1, "capabilities": {"enabled": "diagnostics"}},
-        {"version": 1, "capabilities": {"enabled": ["diagnostics", "diagnostics"]}},
+        {"version": 1, "capabilities": {"enabled": "forms"}},
+        {"version": 1, "capabilities": {"enabled": ["forms", "forms"]}},
         {"version": 1, "capabilities": {"enabled": [], "extra": True}},
     ),
 )
@@ -337,7 +348,7 @@ def test_server_settings_fail_closed_на_неверной_schema(tmp_path, payl
     "raw",
     (
         '{"version":2,"version":1,"capabilities":{"enabled":[]}}',
-        '{"version":1,"capabilities":{"enabled":[],"enabled":["diagnostics"]}}',
+        '{"version":1,"capabilities":{"enabled":[],"enabled":["forms"]}}',
         '{"version":1,"capabilities":{"enabled":[]},"future":NaN}',
     ),
 )
@@ -439,11 +450,11 @@ def test_save_атомарно_заменяет_секцию_и_сохраняе
         encoding="utf-8",
     )
 
-    store.save(("diagnostics",))
+    store.save(("forms",))
 
     payload = json.loads(store.path.read_text(encoding="utf-8"))
     assert payload["future"] == {"kept": True}
-    assert payload["capabilities"] == {"enabled": ["diagnostics"]}
+    assert payload["capabilities"] == {"enabled": ["forms"]}
     assert os.stat(store.path).st_mode & 0o777 == 0o600
 
 
@@ -463,7 +474,7 @@ def test_ошибка_atomic_replace_не_портит_предыдущие_sett
     )
 
     with pytest.raises(CapabilityConfigurationError, match="сохранить"):
-        store.save(("diagnostics",))
+        store.save(("forms",))
 
     assert store.path.read_bytes() == original
     assert list(tmp_path.glob(".server-settings.json.tmp-*")) == []
@@ -486,8 +497,8 @@ def test_ошибка_directory_fsync_после_replace_считается_пр
 
     monkeypatch.setattr(capability_module.os, "fsync", fsync_with_directory_failure)
 
-    assert store.save(("diagnostics",)) == ("diagnostics",)
-    assert store.load() == ("diagnostics",)
+    assert store.save(("forms",)) == ("forms",)
+    assert store.load() == ("forms",)
     assert list(tmp_path.glob(".server-settings.json.tmp-*")) == []
 
 
@@ -519,7 +530,7 @@ def test_main_передаёт_capability_в_оба_транспорта(
         captured["enabled"] = kwargs["enabled_capabilities"]
         return FakeServer()
 
-    monkeypatch.setenv("MCP1C_CAPABILITIES", "diagnostics")
+    monkeypatch.setenv("MCP1C_CAPABILITIES", "forms")
     monkeypatch.setattr(server_module, "Registry", FakeRegistry)
     monkeypatch.setattr(server_module, "build_server", fake_build)
     monkeypatch.setattr(
@@ -531,29 +542,28 @@ def test_main_передаёт_capability_в_оба_транспорта(
     assert server_module.main(
         ["--data", str(tmp_path), "--transport", transport]
     ) == 0
-    assert captured["enabled"] == ("diagnostics",)
+    assert captured["enabled"] == ("forms",)
     assert ("run" in captured) is (transport == "stdio")
     assert ("http" in captured) is (transport == "streamable-http")
 
 
-def test_enabled_добавляет_ровно_один_диагностический_инструмент(tmp_path):
-    server = _server(tmp_path, enabled_capabilities=("diagnostics",))
+def test_enabled_добавляет_ровно_четыре_forms_инструмента(tmp_path):
+    server = _server(tmp_path, enabled_capabilities=("forms",))
 
     tools = asyncio.run(server.list_tools())
     names = [tool.name for tool in tools]
 
-    assert names == [*CORE_TOOLS, "diagnostics_status"]
-    diagnostic = tools[-1]
-    assert diagnostic.input_schema["properties"] == {}
-    assert "не читает Registry" in (diagnostic.description or "")
-    assert "не изменяет данные" in (diagnostic.description or "")
+    assert names == [*CORE_TOOLS, *FORMS_TOOLS]
+    rules = tools[-4]
+    assert "topic" in rules.input_schema["properties"]
+    assert "не читает Registry" in (rules.description or "")
 
 
 @pytest.mark.anyio
-async def test_диагностический_инструмент_работает_через_полную_mcp_сессию(
+async def test_forms_инструмент_работает_через_полную_mcp_сессию(
     tmp_path,
 ):
-    server = _server(tmp_path, enabled_capabilities=("diagnostics",))
+    server = _server(tmp_path, enabled_capabilities=("forms",))
 
     async with create_client_server_memory_streams() as (client_streams, server_streams):
         async with anyio.create_task_group() as tasks:
@@ -566,18 +576,13 @@ async def test_диагностический_инструмент_работа�
                 async with ClientSession(*client_streams) as session:
                     await session.initialize()
                     listed = await session.list_tools()
-                    result = await session.call_tool("diagnostics_status", {})
+                    result = await session.call_tool("get_managed_form_rules", {})
             finally:
                 tasks.cancel_scope.cancel()
 
-    assert [tool.name for tool in listed.tools] == [*CORE_TOOLS, "diagnostics_status"]
+    assert [tool.name for tool in listed.tools] == [*CORE_TOOLS, *FORMS_TOOLS]
     assert result.is_error is False
-    assert json.loads(result.content[0].text) == {
-        "capability": "diagnostics",
-        "state": "ready",
-        "data_access": False,
-        "write_access": False,
-    }
+    assert json.loads(result.content[0].text)["topic"] == "overview"
 
 
 def _noop() -> str:
@@ -682,8 +687,10 @@ def test_public_startup_документирует_settings_и_bootstrap_env():
     assert "`PUT /api/v1/capabilities`" in readme
     assert "«Дополнительные модули»" in readme
     assert "tests/measure_capability_startup.py --runs 10" in readme
-    assert "`diagnostics_status`" in tools_doc
+    assert "`get_managed_form_rules`" in tools_doc
+    assert "`diagnostics_status`" not in tools_doc
+    assert "`diagnostics_status`" not in readme
     assert "`PUT` того же admin-" in tools_doc
     assert "`data/server-settings.json`" in operations
     assert "`PUT /api/v1/capabilities`" in operations
-    assert '"capabilities":{"enabled":["diagnostics"]}' in operations
+    assert '"capabilities":{"enabled":["forms"]}' in operations

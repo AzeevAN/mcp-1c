@@ -27,7 +27,6 @@ role-операции появляются, только когда хотя б�
 | `get_reference` | `item_id`, `section_id`, `cursor`, `max_chars`, `platform` | страница точной карточки или раздела и `next_cursor` |
 | `find_roles_for_access` | `full_name`, `operations`, `config`, `child_path`, `include_conditional`, `cursor`, `limit` | роли-кандидаты, доказанные пробелы и точное сопоставление операций правам платформы |
 | `get_role_access` | `role`, `config`, `full_name`, `detail`, `cursor`, `limit`, `restriction_ref`, `restriction_cursor`, `max_chars` | компактные объекты роли, явная дочерняя/аудитная детализация либо окно RLS/шаблона |
-| `diagnostics_status` | — | условно: статический статус демонстрационного capability-модуля без чтения Registry или данных |
 | `get_managed_form_rules` | `topic` (`overview` по умолчанию) | условно: один компактный раздел доказанных правил первой вертикали Forms |
 | `compile_managed_form` | `specification` | условно: каноническая спецификация и тексты `Form.xml`/`Form/Module.bsl`, без записи |
 | `decompile_managed_form` | `form_xml`, `form_name`, `module_bsl` (необязательно) | условно: каноническая спецификация либо честный inventory непокрытых XML-путей |
@@ -48,17 +47,16 @@ restart: после intake confirm, удаления источника или a
 уведомлению; клиент без такой поддержки должен переподключиться. Пока ни
 одного `roles=ready` нет, постоянная цена двух схем в контексте равна нулю.
 
-`diagnostics_status` появляется только при startup, если `diagnostics` входит в
-`capabilities.enabled` файла `data/server-settings.json`. Имя `forms` тем же
-способом добавляет ровно четыре Forms-инструмента. Пока файла нет,
-`MCP1C_CAPABILITIES=diagnostics,forms` служит bootstrap; существующий файл всегда
+Четыре Forms-инструмента появляются только при startup, если `forms` входит в
+`capabilities.enabled` файла `data/server-settings.json`. Пока файла нет,
+`MCP1C_CAPABILITIES=forms` служит bootstrap; существующий файл всегда
 важнее env. Пустой массив сохраняет прежний каталог и не импортирует реализации
 модулей. Повторы, неизвестные имена и повреждённая schema останавливают процесс
 до Registry. Capability-модули выбираются только из встроенного каталога;
 произвольный import path не принимается. `GET /api/v1/capabilities` различает
 active и desired и показывает pending полного restart; `PUT` того же admin-
 маршрута сохраняет полный desired-набор. Экран «Дополнительные модули» показывает
-оба модуля до включения, те же состояния, требует явного сохранения и отдельно
+модуль до включения, те же состояния, требует явного сохранения и отдельно
 подтверждает полный restart. Startup-изменение не создаёт
 `tools/list_changed`.
 

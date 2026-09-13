@@ -8,9 +8,9 @@ beforeEach(() => {
 
 it("читает capability-статус с same-origin credentials", async () => {
   const payload = {
-    available: ["diagnostics"],
+    available: ["forms"],
     active: [],
-    desired: ["diagnostics"],
+    desired: ["forms"],
     pending_restart: true,
     runtime: { self_restart: true },
   };
@@ -30,20 +30,20 @@ it("передаёт полный desired-массив через PUT", async ()
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
     ok: true,
     json: async () => ({
-      available: ["diagnostics"],
+      available: ["forms"],
       active: [],
-      desired: ["diagnostics"],
+      desired: ["forms"],
       pending_restart: true,
       runtime: { self_restart: true },
     }),
   }));
 
-  await saveCapabilities(["diagnostics"]);
+  await saveCapabilities(["forms"]);
 
   expect(fetch).toHaveBeenCalledWith("/api/v1/capabilities", {
     method: "PUT",
     headers: { accept: "application/json", "content-type": "application/json" },
     credentials: "same-origin",
-    body: JSON.stringify({ enabled: ["diagnostics"] }),
+    body: JSON.stringify({ enabled: ["forms"] }),
   });
 });

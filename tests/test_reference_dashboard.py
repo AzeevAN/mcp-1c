@@ -365,7 +365,7 @@ def test_restart_перечисляет_reference_и_capability_pending(tmp_path
         files={"file": ("reference.mcp1cref", artifact.read_bytes())},
     )
     assert uploaded.status_code == 201
-    store.save(("diagnostics",))
+    store.save(("forms",))
 
     response = client.post("/api/v1/server/restart", json={})
 

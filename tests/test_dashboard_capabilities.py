@@ -59,18 +59,18 @@ def test_status_различает_active_desired_и_pending_restart(tmp_path, m
     client, store, _restart = _client(tmp_path)
     _login(client)
 
-    store.save(("diagnostics",))
+    store.save(("forms",))
     status = client.get("/api/v1/capabilities")
 
     assert status.status_code == 200
     assert status.json() == {
-        "available": ["diagnostics", "forms"],
+        "available": ["forms"],
         "active": [],
-        "desired": ["diagnostics"],
+        "desired": ["forms"],
         "pending_restart": True,
         "runtime": {"self_restart": True},
     }
-    assert store.load() == ("diagnostics",)
+    assert store.load() == ("forms",)
 
 
 def test_capability_pending_разрешает_существующий_full_restart(
@@ -84,7 +84,7 @@ def test_capability_pending_разрешает_существующий_full_res
     terminated = Event()
     client, store, restart = _client(tmp_path, terminate=terminated.set)
     _login(client)
-    store.save(("diagnostics",))
+    store.save(("forms",))
 
     response = client.post("/api/v1/server/restart", json={})
 
@@ -121,20 +121,20 @@ def test_mutation_сохраняет_desired_и_возвращает_status(
 
     response = client.put(
         "/api/v1/capabilities",
-        json={"enabled": ["diagnostics", "forms"]},
+        json={"enabled": ["forms"]},
     )
 
     assert response.status_code == 200
     assert response.json() == {
-        "available": ["diagnostics", "forms"],
+        "available": ["forms"],
         "active": [],
-        "desired": ["diagnostics", "forms"],
+        "desired": ["forms"],
         "pending_restart": True,
         "runtime": {"self_restart": True},
     }
     assert json.loads(store.path.read_text(encoding="utf-8")) == {
         "version": 1,
-        "capabilities": {"enabled": ["diagnostics", "forms"]},
+        "capabilities": {"enabled": ["forms"]},
     }
     assert os.stat(store.path).st_mode & 0o777 == 0o600
 
@@ -142,13 +142,13 @@ def test_mutation_сохраняет_desired_и_возвращает_status(
 def test_mutation_отключает_модуль_только_после_restart(tmp_path, monkeypatch):
     monkeypatch.delenv("API_TOKEN", raising=False)
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
-    client, store, _restart = _client(tmp_path, active=("diagnostics",))
+    client, store, _restart = _client(tmp_path, active=("forms",))
     _login(client)
 
     response = client.put("/api/v1/capabilities", json={"enabled": []})
 
     assert response.status_code == 200
-    assert response.json()["active"] == ["diagnostics"]
+    assert response.json()["active"] == ["forms"]
     assert response.json()["desired"] == []
     assert response.json()["pending_restart"] is True
     assert store.load() == ()
@@ -158,9 +158,9 @@ def test_mutation_отключает_модуль_только_после_restar
     "payload",
     (
         {},
-        {"enabled": "diagnostics"},
+        {"enabled": "forms"},
         {"enabled": ["unknown"]},
-        {"enabled": ["diagnostics", "diagnostics"]},
+        {"enabled": ["forms", "forms"]},
         {"enabled": [], "extra": True},
     ),
 )
@@ -207,7 +207,7 @@ def test_mutation_отклоняет_повторный_root_key_без_запи
 
     response = client.put(
         "/api/v1/capabilities",
-        content=b'{"enabled":[],"enabled":["diagnostics"]}',
+        content=b'{"enabled":[],"enabled":["forms"]}',
         headers={"content-type": "application/json"},
     )
 
@@ -220,7 +220,7 @@ def test_status_публикует_запрет_self_restart(tmp_path, monkeypat
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
     client, store, _restart = _client(tmp_path, restart_enabled=False)
     _login(client)
-    store.save(("diagnostics",))
+    store.save(("forms",))
 
     response = client.get("/api/v1/capabilities")
 
@@ -236,13 +236,13 @@ def test_mutation_требует_admin_и_same_origin(tmp_path, monkeypatch):
 
     read_only = client.put(
         "/api/v1/capabilities",
-        json={"enabled": ["diagnostics"]},
+        json={"enabled": ["forms"]},
     )
     client.cookies.clear()
     _login(client)
     foreign_origin = client.put(
         "/api/v1/capabilities",
-        json={"enabled": ["diagnostics"]},
+        json={"enabled": ["forms"]},
         headers={"origin": "http://sibling.test"},
     )
 
@@ -271,7 +271,7 @@ def test_mutation_при_ошибке_записи_сохраняет_прежн
 
     response = client.put(
         "/api/v1/capabilities",
-        json={"enabled": ["diagnostics"]},
+        json={"enabled": ["forms"]},
     )
 
     assert response.status_code == 409
@@ -291,7 +291,7 @@ def test_mutation_не_перезаписывает_повреждённые_set
 
     response = client.put(
         "/api/v1/capabilities",
-        json={"enabled": ["diagnostics"]},
+        json={"enabled": ["forms"]},
     )
 
     assert response.status_code == 409
@@ -319,15 +319,15 @@ def test_параллельные_mutation_возвращают_свой_status_
         return client.put("/api/v1/capabilities", json={"enabled": enabled})
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        enabled = pool.submit(update, ["diagnostics"])
+        enabled = pool.submit(update, ["forms"])
         disabled = pool.submit(update, [])
         responses = (enabled.result(), disabled.result())
 
     assert [response.status_code for response in responses] == [200, 200]
-    assert responses[0].json()["desired"] == ["diagnostics"]
+    assert responses[0].json()["desired"] == ["forms"]
     assert responses[1].json()["desired"] == []
     payload = json.loads(store.path.read_text(encoding="utf-8"))
-    assert payload["capabilities"]["enabled"] in (["diagnostics"], [])
+    assert payload["capabilities"]["enabled"] in (["forms"], [])
 
 
 def test_повреждённые_settings_не_разрешают_restart(tmp_path, monkeypatch):

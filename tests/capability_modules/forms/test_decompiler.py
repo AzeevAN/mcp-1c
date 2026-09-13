@@ -99,6 +99,33 @@ def test_owner_aware_события_элементов_дают_lossless_roundtr
     assert result.coverage.structural == "passed"
 
 
+def test_расширенный_каталог_событий_даёт_lossless_roundtrip():
+    payload = _rich_payload()
+    payload["events"] = [
+        {"event": "BeforeClose", "handler": "ПередЗакрытием"},
+        {
+            "owner": "ПутьКФайлуПоле",
+            "event": "StartChoice",
+            "handler": "НачалоВыбора",
+        },
+        {
+            "owner": "ТаблицаДанныхПоле",
+            "event": "BeforeAddRow",
+            "handler": "ПередДобавлением",
+        },
+    ]
+    compiled = compile_managed_form(payload)
+
+    result = decompile_managed_form(
+        compiled.artifacts[0].content,
+        form_name=payload["form_name"],
+        module_bsl=compiled.artifacts[1].content,
+    )
+
+    assert result.specification == compiled.specification
+    assert result.coverage.structural == "passed"
+
+
 def test_стандартные_команды_формы_и_таблицы_дают_lossless_roundtrip():
     payload = _rich_payload()
     payload["elements"][0]["children"].extend(

@@ -30,13 +30,13 @@
 | Роли | объявленные права из native generation; без готового слоя две role-ручки отсутствуют |
 | Дашборд | современная SPA включена по умолчанию; светлая и тёмная темы; ссылка на GitHub; `on` либо `off` |
 | Авторизация Docker | два разных обязательных токена: `API_TOKEN` на чтение, `ADMIN_TOKEN` на запись |
-| Тесты | `.venv/bin/python -m pytest`, 2554 |
+| Тесты | `.venv/bin/python -m pytest`, 2557 |
 
 Воспроизводимый прогон:
 
 ```bash
 .venv/bin/pip install --require-hashes -r requirements-dev-lock.txt
-.venv/bin/python -m pytest          # 2554 теста (прогон 2026-09-13)
+.venv/bin/python -m pytest          # 2557 тестов (прогон 2026-09-13)
 ```
 
 ## Навигация
@@ -1542,11 +1542,19 @@ checker также отклоняет доказанную нативной пр
 
 События задаются в общем списке спецификации. Отсутствующий `owner` означает
 форму; строковый `owner` должен точно совпасть с именем элемента. Закрытый
-каталог поддерживает `OnCreateAtServer`, `OnOpen`, `NotificationProcessing`,
-`ExternalEvent`, `FillCheckProcessingAtServer`, `OnChange` полей ввода и
-флажков, `OnCurrentPageChange` страниц, а также `Selection` и `OnActivateRow`
-таблиц. Compiler помещает `<Events>` внутрь правильного XML-владельца и
-генерирует доказанную директиву и сигнатуру. BSL-lexer сохраняет признак
+каталог формы поддерживает `OnCreateAtServer`, `OnOpen`,
+`NotificationProcessing`, `ExternalEvent`, `FillCheckProcessingAtServer`,
+`BeforeClose`, `OnClose` и `ChoiceProcessing`. Для полей ввода поддержаны
+`OnChange`, `StartChoice`, `Clearing`, `ChoiceProcessing`, `AutoComplete`,
+`TextEditEnd` и `Opening`; для флажков — `OnChange`; для страниц —
+`OnCurrentPageChange`; для таблиц — `Selection`, `OnActivateRow`,
+`ChoiceProcessing`, `OnStartEdit`, `BeforeAddRow`, `BeforeRowChange`,
+`BeforeDeleteRow`, `AfterDeleteRow`, `OnChange` и `OnEditEnd`. Compiler
+помещает `<Events>` внутрь правильного XML-владельца и генерирует доказанную
+директиву и полную каноническую сигнатуру. Каталог ориентирован на современную
+управляемую форму формата `2.16`; отличающиеся варианты платформы 8.3.5 и
+события, зависящие от типа основного реквизита, остаются за границей контракта.
+BSL-lexer сохраняет признак
 `Асинх`; checker отклоняет `Ждать` вне `Асинх` и асинхронную процедуру вне
 клиентского контекста. Доступность async API по версии платформы и смысловой
 поток данных через временное хранилище статически не заявляются проверенными.
@@ -1556,7 +1564,7 @@ Forms появляется в `tools/list` только после включе�
 MCP-сессии; после restart агент должен подключиться заново.
 
 Замер 2026-09-13 по каноническому JSON фактической дельты `tools/list` дал
-11 854 байта и приблизительно **2 825 токенов** для четырёх схем Forms при
+12 055 байт и приблизительно **2 873 токена** для четырёх схем Forms при
 `tiktoken 0.11.0 / o200k_base`. Это постоянная стартовая цена определений;
 ответы `tools/call` в неё не входят, а фактический расход зависит от клиента и
 модели. Runtime не получает tokenizer-зависимость. Воспроизвести и проверить

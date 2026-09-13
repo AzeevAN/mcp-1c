@@ -348,6 +348,122 @@ def test_весь_стабильный_каталог_событий_генер�
     } == expected
 
 
+def test_расширенный_каталог_событий_формы_полей_и_таблицы_даёт_точные_каркасы():
+    payload = _rich_payload()
+    payload["events"] = [
+        {"event": "BeforeClose", "handler": "ПередЗакрытием"},
+        {"event": "OnClose", "handler": "ПриЗакрытии"},
+        {"event": "ChoiceProcessing", "handler": "ВыборФормы"},
+        {
+            "owner": "ПутьКФайлуПоле",
+            "event": "StartChoice",
+            "handler": "НачалоВыбора",
+        },
+        {"owner": "ПутьКФайлуПоле", "event": "Clearing", "handler": "ОчисткаПоля"},
+        {
+            "owner": "ПутьКФайлуПоле",
+            "event": "ChoiceProcessing",
+            "handler": "ВыборПоля",
+        },
+        {
+            "owner": "ПутьКФайлуПоле",
+            "event": "AutoComplete",
+            "handler": "АвтоПодбор",
+        },
+        {
+            "owner": "ПутьКФайлуПоле",
+            "event": "TextEditEnd",
+            "handler": "КонецВвода",
+        },
+        {"owner": "ПутьКФайлуПоле", "event": "Opening", "handler": "ОткрытиеПоля"},
+        {
+            "owner": "ТаблицаДанныхПоле",
+            "event": "ChoiceProcessing",
+            "handler": "ВыборТаблицы",
+        },
+        {
+            "owner": "ТаблицаДанныхПоле",
+            "event": "OnStartEdit",
+            "handler": "НачалоПравки",
+        },
+        {
+            "owner": "ТаблицаДанныхПоле",
+            "event": "BeforeAddRow",
+            "handler": "ПередДобавлением",
+        },
+        {
+            "owner": "ТаблицаДанныхПоле",
+            "event": "BeforeRowChange",
+            "handler": "ПередИзменением",
+        },
+        {
+            "owner": "ТаблицаДанныхПоле",
+            "event": "BeforeDeleteRow",
+            "handler": "ПередУдалением",
+        },
+        {
+            "owner": "ТаблицаДанныхПоле",
+            "event": "AfterDeleteRow",
+            "handler": "ПослеУдаления",
+        },
+        {
+            "owner": "ТаблицаДанныхПоле",
+            "event": "OnChange",
+            "handler": "ИзменениеТаблицы",
+        },
+        {
+            "owner": "ТаблицаДанныхПоле",
+            "event": "OnEditEnd",
+            "handler": "КонецПравки",
+        },
+    ]
+
+    module = compile_managed_form(payload).artifacts[1].content
+    parsed = {item.имя: item for item in разобрать(module)}
+    expected = {
+        "ПередЗакрытием": (
+            "Отказ, ЗавершениеРаботы, ТекстПредупреждения, "
+            "СтандартнаяОбработка"
+        ),
+        "ПриЗакрытии": "ЗавершениеРаботы",
+        "ВыборФормы": "ВыбранноеЗначение, ИсточникВыбора",
+        "НачалоВыбора": (
+            "Элемент, ДанныеВыбора, ВыборДобавлением, СтандартнаяОбработка"
+        ),
+        "ОчисткаПоля": "Элемент, СтандартнаяОбработка",
+        "ВыборПоля": (
+            "Элемент, ВыбранноеЗначение, ДополнительныеДанные, "
+            "ВыборДобавлением, СтандартнаяОбработка"
+        ),
+        "АвтоПодбор": (
+            "Элемент, Текст, ДанныеВыбора, ПараметрыПолученияДанных, "
+            "Ожидание, СтандартнаяОбработка"
+        ),
+        "КонецВвода": (
+            "Элемент, Текст, ДанныеВыбора, ПараметрыПолученияДанных, "
+            "СтандартнаяОбработка"
+        ),
+        "ОткрытиеПоля": "Элемент, СтандартнаяОбработка",
+        "ВыборТаблицы": "Элемент, ВыбранноеЗначение, СтандартнаяОбработка",
+        "НачалоПравки": "Элемент, НоваяСтрока, Копирование",
+        "ПередДобавлением": (
+            "Элемент, Отказ, Копирование, Родитель, ЭтоГруппа, Параметр"
+        ),
+        "ПередИзменением": "Элемент, Отказ",
+        "ПередУдалением": "Элемент, Отказ",
+        "ПослеУдаления": "Элемент",
+        "ИзменениеТаблицы": "Элемент",
+        "КонецПравки": "Элемент, НоваяСтрока, ОтменаРедактирования",
+    }
+
+    assert {
+        name: procedure.параметры
+        for name, procedure in parsed.items()
+        if name in expected
+    } == expected
+    assert all(parsed[name].директива == "НаКлиенте" for name in expected)
+
+
 def test_событие_неподходящего_owner_отклоняется_до_compiler():
     payload = _rich_payload()
     payload["events"] = [
@@ -357,6 +473,16 @@ def test_событие_неподходящего_owner_отклоняется_
             "handler": "НеверныйОбработчик",
         }
     ]
+
+    with pytest.raises(FormsContractError) as caught:
+        compile_managed_form(payload)
+
+    assert any(item.code == "unsupported_owner_event" for item in caught.value.diagnostics)
+
+
+def test_объектно_зависимое_событие_формы_остаётся_за_границей_контракта():
+    payload = _rich_payload()
+    payload["events"] = [{"event": "OnReadAtServer", "handler": "ПриЧтенииНаСервере"}]
 
     with pytest.raises(FormsContractError) as caught:
         compile_managed_form(payload)

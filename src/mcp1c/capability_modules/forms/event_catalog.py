@@ -25,7 +25,61 @@ EVENT_SIGNATURES: dict[tuple[str, str], EventSignature] = {
     ("form", "FillCheckProcessingAtServer"): EventSignature(
         "НаСервере", ("Отказ", "ПроверяемыеРеквизиты")
     ),
+    ("form", "BeforeClose"): EventSignature(
+        "НаКлиенте",
+        (
+            "Отказ",
+            "ЗавершениеРаботы",
+            "ТекстПредупреждения",
+            "СтандартнаяОбработка",
+        ),
+    ),
+    ("form", "OnClose"): EventSignature("НаКлиенте", ("ЗавершениеРаботы",)),
+    ("form", "ChoiceProcessing"): EventSignature(
+        "НаКлиенте", ("ВыбранноеЗначение", "ИсточникВыбора")
+    ),
     ("input_field", "OnChange"): EventSignature("НаКлиенте", ("Элемент",)),
+    ("input_field", "StartChoice"): EventSignature(
+        "НаКлиенте",
+        ("Элемент", "ДанныеВыбора", "ВыборДобавлением", "СтандартнаяОбработка"),
+    ),
+    ("input_field", "Clearing"): EventSignature(
+        "НаКлиенте", ("Элемент", "СтандартнаяОбработка")
+    ),
+    ("input_field", "ChoiceProcessing"): EventSignature(
+        "НаКлиенте",
+        (
+            "Элемент",
+            "ВыбранноеЗначение",
+            "ДополнительныеДанные",
+            "ВыборДобавлением",
+            "СтандартнаяОбработка",
+        ),
+    ),
+    ("input_field", "AutoComplete"): EventSignature(
+        "НаКлиенте",
+        (
+            "Элемент",
+            "Текст",
+            "ДанныеВыбора",
+            "ПараметрыПолученияДанных",
+            "Ожидание",
+            "СтандартнаяОбработка",
+        ),
+    ),
+    ("input_field", "TextEditEnd"): EventSignature(
+        "НаКлиенте",
+        (
+            "Элемент",
+            "Текст",
+            "ДанныеВыбора",
+            "ПараметрыПолученияДанных",
+            "СтандартнаяОбработка",
+        ),
+    ),
+    ("input_field", "Opening"): EventSignature(
+        "НаКлиенте", ("Элемент", "СтандартнаяОбработка")
+    ),
     ("check_box_field", "OnChange"): EventSignature("НаКлиенте", ("Элемент",)),
     ("pages", "OnCurrentPageChange"): EventSignature(
         "НаКлиенте", ("Элемент", "ТекущаяСтраница")
@@ -35,6 +89,27 @@ EVENT_SIGNATURES: dict[tuple[str, str], EventSignature] = {
         ("Элемент", "ВыбраннаяСтрока", "Поле", "СтандартнаяОбработка"),
     ),
     ("table", "OnActivateRow"): EventSignature("НаКлиенте", ("Элемент",)),
+    ("table", "ChoiceProcessing"): EventSignature(
+        "НаКлиенте", ("Элемент", "ВыбранноеЗначение", "СтандартнаяОбработка")
+    ),
+    ("table", "OnStartEdit"): EventSignature(
+        "НаКлиенте", ("Элемент", "НоваяСтрока", "Копирование")
+    ),
+    ("table", "BeforeAddRow"): EventSignature(
+        "НаКлиенте",
+        ("Элемент", "Отказ", "Копирование", "Родитель", "ЭтоГруппа", "Параметр"),
+    ),
+    ("table", "BeforeRowChange"): EventSignature(
+        "НаКлиенте", ("Элемент", "Отказ")
+    ),
+    ("table", "BeforeDeleteRow"): EventSignature(
+        "НаКлиенте", ("Элемент", "Отказ")
+    ),
+    ("table", "AfterDeleteRow"): EventSignature("НаКлиенте", ("Элемент",)),
+    ("table", "OnChange"): EventSignature("НаКлиенте", ("Элемент",)),
+    ("table", "OnEditEnd"): EventSignature(
+        "НаКлиенте", ("Элемент", "НоваяСтрока", "ОтменаРедактирования")
+    ),
 }
 
 

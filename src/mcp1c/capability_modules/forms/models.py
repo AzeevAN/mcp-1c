@@ -236,6 +236,20 @@ class FormEventSpec(TypedDict):
         "OnCurrentPageChange",
         "Selection",
         "OnActivateRow",
+        "BeforeClose",
+        "OnClose",
+        "ChoiceProcessing",
+        "StartChoice",
+        "Clearing",
+        "AutoComplete",
+        "TextEditEnd",
+        "Opening",
+        "OnStartEdit",
+        "BeforeAddRow",
+        "BeforeRowChange",
+        "BeforeDeleteRow",
+        "AfterDeleteRow",
+        "OnEditEnd",
     ]
     handler: str
 

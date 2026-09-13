@@ -293,6 +293,40 @@ def test_стандартные_команды_формы_и_таблицы_ко
     assert "ДобавитьСтроку(" not in result.artifacts[1].content
 
 
+def test_документные_команды_компилируются_как_стандартные_без_bsl():
+    payload = _payload()
+    payload["attributes"][0] = {
+        "name": "Объект",
+        "type": {
+            "kind": "metadata_object",
+            "object": "Документ.ТестовыйДокумент",
+        },
+        "main": True,
+    }
+    payload["elements"][0]["children"][0]["data_path"] = "Объект.Наименование"
+    payload["elements"][0]["children"].extend(
+        {
+            "kind": "button",
+            "name": f"Команда{index}",
+            "command": command,
+            "command_kind": "form_standard",
+        }
+        for index, command in enumerate(
+            ("Post", "PostAndClose", "UndoPosting"), 1
+        )
+    )
+
+    result = compile_managed_form(payload)
+    xml = result.artifacts[0].content
+    module = result.artifacts[1].content
+
+    for command in ("Post", "PostAndClose", "UndoPosting"):
+        assert f"Form.StandardCommand.{command}" in xml
+    assert "Команда1(" not in module
+    assert "Команда2(" not in module
+    assert "Команда3(" not in module
+
+
 def test_сгенерированные_bsl_каркасы_читаются_текущим_лексером():
     module = compile_managed_form(_payload()).artifacts[1].content
 

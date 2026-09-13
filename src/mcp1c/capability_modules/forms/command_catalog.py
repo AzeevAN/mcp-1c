@@ -7,8 +7,13 @@ UNIVERSAL_FORM_STANDARD_COMMANDS = frozenset(
     {"Help", "Close", "CustomizeForm"}
 )
 OBJECT_FORM_STANDARD_COMMANDS = frozenset({"Write", "WriteAndClose"})
+DOCUMENT_FORM_STANDARD_COMMANDS = frozenset(
+    {"Post", "PostAndClose", "UndoPosting"}
+)
 FORM_STANDARD_COMMANDS = (
-    UNIVERSAL_FORM_STANDARD_COMMANDS | OBJECT_FORM_STANDARD_COMMANDS
+    UNIVERSAL_FORM_STANDARD_COMMANDS
+    | OBJECT_FORM_STANDARD_COMMANDS
+    | DOCUMENT_FORM_STANDARD_COMMANDS
 )
 ITEM_STANDARD_COMMANDS = {
     "table": frozenset({"Add", "Delete", "MoveUp", "MoveDown"}),
@@ -25,6 +30,7 @@ def standard_command_supported(owner_kind: str, command: str) -> bool:
 
 __all__ = [
     "FORM_STANDARD_COMMANDS",
+    "DOCUMENT_FORM_STANDARD_COMMANDS",
     "OBJECT_FORM_STANDARD_COMMANDS",
     "UNIVERSAL_FORM_STANDARD_COMMANDS",
     "ITEM_STANDARD_COMMANDS",

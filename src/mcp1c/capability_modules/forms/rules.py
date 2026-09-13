@@ -334,6 +334,7 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
             {
                 "form": ["Help", "Close", "CustomizeForm"],
                 "object_form": ["Write", "WriteAndClose"],
+                "document_form": ["Post", "PostAndClose", "UndoPosting"],
                 "table": ["Add", "Delete", "MoveUp", "MoveDown"],
             },
         ),
@@ -450,6 +451,16 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
                     "parameters": ["ПараметрыЗаписи"],
                 },
             },
+        ),
+        FormRule(
+            "document_posting_events_not_form_events",
+            "boundary",
+            (
+                "События BeforePosting, BeforeUndoPosting, Posting и "
+                "UndoPosting не принадлежат форме документа и не должны "
+                "добавляться в её список Events."
+            ),
+            "platform_documentation",
         ),
         FormRule(
             "managed_form_2_16_event_profile",
@@ -721,6 +732,7 @@ def get_managed_form_rules(topic: RuleTopic = "overview") -> dict[str, object]:
             "standard_commands": {
                 "form": ["Help", "Close", "CustomizeForm"],
                 "object_form": ["Write", "WriteAndClose"],
+                "document_form": ["Post", "PostAndClose", "UndoPosting"],
                 "table": ["Add", "Delete", "MoveUp", "MoveDown"],
             },
             "async": "Асинх и Ждать только в клиентском контексте платформы 8.3.18+",

@@ -200,6 +200,40 @@ def test_объектные_события_и_команда_записи_даю
     assert result.specification == compiled.specification
 
 
+def test_документные_команды_дают_lossless_roundtrip():
+    payload = _payload()
+    payload["attributes"][0] = {
+        "name": "Объект",
+        "type": {
+            "kind": "metadata_object",
+            "object": "Документ.ТестовыйДокумент",
+        },
+        "main": True,
+    }
+    payload["elements"][0]["children"][0]["data_path"] = "Объект.Наименование"
+    payload["elements"][0]["children"].extend(
+        {
+            "kind": "button",
+            "name": f"Команда{index}",
+            "command": command,
+            "command_kind": "form_standard",
+        }
+        for index, command in enumerate(
+            ("Post", "PostAndClose", "UndoPosting"), 1
+        )
+    )
+    compiled = compile_managed_form(payload)
+
+    result = decompile_managed_form(
+        compiled.artifacts[0].content,
+        form_name=payload["form_name"],
+        module_bsl=compiled.artifacts[1].content,
+    )
+
+    assert result.status == "decompiled"
+    assert result.specification == compiled.specification
+
+
 def test_ссылочный_и_составной_типы_дают_lossless_roundtrip():
     payload = _payload()
     payload["attributes"][0]["type"] = {
@@ -352,14 +386,14 @@ def test_форма_только_со_стандартной_командой_д
 
 def test_неподдержанная_стандартная_команда_остаётся_inventory():
     xml = _xml().replace(
-        "Form.Command.Проверить", "Form.StandardCommand.Post"
+        "Form.Command.Проверить", "Form.StandardCommand.Create"
     )
 
     result = decompile_managed_form(xml, form_name="ФормаПараметров")
 
     assert result.status == "decompiled"
     assert result.coverage.structural == "unsupported"
-    assert result.specification["elements"][0]["children"][2]["command"] == "Post"
+    assert result.specification["elements"][0]["children"][2]["command"] == "Create"
     assert _diagnostics(result, "unsupported_standard_command")
 
 

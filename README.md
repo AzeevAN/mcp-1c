@@ -30,13 +30,13 @@
 | Роли | объявленные права из native generation; без готового слоя две role-ручки отсутствуют |
 | Дашборд | современная SPA включена по умолчанию; светлая и тёмная темы; ссылка на GitHub; `on` либо `off` |
 | Авторизация Docker | два разных обязательных токена: `API_TOKEN` на чтение, `ADMIN_TOKEN` на запись |
-| Тесты | `.venv/bin/python -m pytest`, 2661 |
+| Тесты | `.venv/bin/python -m pytest`, 2666 |
 
 Воспроизводимый прогон:
 
 ```bash
 .venv/bin/pip install --require-hashes -r requirements-dev-lock.txt
-.venv/bin/python -m pytest          # 2661 тест (прогон 2026-09-13)
+.venv/bin/python -m pytest          # 2666 тестов (прогон 2026-09-13)
 ```
 
 ## Навигация
@@ -1539,11 +1539,13 @@ CRLF. Поддержаны рекурсивные группы, страницы
 Кнопка по умолчанию использует пользовательскую команду `Form.Command.<name>`.
 Для `command_kind=form_standard` поддержаны `Help`, `Close` и
 `CustomizeForm`. При главном реквизите `metadata_object` дополнительно
-поддержаны `Write` и `WriteAndClose`; для `command_kind=item_standard` с
-обязательным `command_owner` таблицы — `Add`, `Delete`, `MoveUp` и `MoveDown`.
+поддержаны `Write` и `WriteAndClose`, а при главном объекте `Документ.*` —
+`Post`, `PostAndClose` и `UndoPosting`. Для `command_kind=item_standard` с
+обязательным `command_owner` таблицы поддержаны `Add`, `Delete`, `MoveUp` и
+`MoveDown`.
 Эти ссылки не требуют записи в `commands` и не создают BSL-каркас `Action`.
-Проведение, отмена проведения и другие команды отдельных видов объектов
-остаются за границей текущего контракта.
+Другие команды отдельных видов объектов остаются за границей текущего
+контракта.
 `check_managed_form(form_xml, form_name, module_bsl?, configuration?)`
 статически проверяет результат. `decompile_managed_form` с теми же параметрами восстанавливает
 каноническую спецификацию этого подмножества; более широкие формы и форматы

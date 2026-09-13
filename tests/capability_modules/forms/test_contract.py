@@ -442,6 +442,33 @@ def test_команда_записи_разрешена_для_главного_
     assert form.elements[0].children[2].command == "WriteAndClose"
 
 
+@pytest.mark.parametrize("command", ["Post", "PostAndClose", "UndoPosting"])
+def test_команда_проведения_разрешена_только_для_главного_документа(command):
+    payload = _payload()
+    payload["attributes"][0] = {
+        "name": "Объект",
+        "type": {"kind": "metadata_object", "object": "Справочник.Товары"},
+        "main": True,
+    }
+    payload["elements"][0]["children"][0]["data_path"] = "Объект.Наименование"
+    payload["elements"][0]["children"][2] = {
+        "kind": "button",
+        "name": "КомандаДокумента",
+        "command": command,
+        "command_kind": "form_standard",
+    }
+    with pytest.raises(FormsContractError) as caught:
+        parse_managed_form_spec(payload)
+    assert (
+        "document_standard_command_requires_document_main_object",
+        "$.elements[0].children[2].command",
+    ) in _codes(caught.value)
+
+    payload["attributes"][0]["type"]["object"] = "Документ.ТестовыйДокумент"
+    form = parse_managed_form_spec(payload)
+    assert form.elements[0].children[2].command == command
+
+
 def test_события_жизненного_цикла_разрешены_только_объектной_форме():
     payload = _payload()
     payload["events"] = [

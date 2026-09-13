@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Literal, NotRequired, TypeAlias, TypedDict
 
 from .command_catalog import (
+    DOCUMENT_FORM_STANDARD_COMMANDS,
     OBJECT_FORM_STANDARD_COMMANDS,
     standard_command_supported,
 )
@@ -1413,6 +1414,10 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
         ),
         None,
     )
+    document_main_object = (
+        main_object is not None
+        and main_object.object.split(".", 1)[0] == "Документ"
+    )
     for element, path, table in walked:
         if isinstance(element, (InputField, CheckBoxField)):
             if table is None:
@@ -1514,6 +1519,15 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
                         "unsupported_standard_command",
                         f"{path}.command",
                         "Стандартная команда формы не входит в закрытый каталог.",
+                    )
+                elif (
+                    element.command in DOCUMENT_FORM_STANDARD_COMMANDS
+                    and not document_main_object
+                ):
+                    reader.issue(
+                        "document_standard_command_requires_document_main_object",
+                        f"{path}.command",
+                        "Команда проведения требует главный объект Документ.*.",
                     )
                 elif (
                     element.command in OBJECT_FORM_STANDARD_COMMANDS

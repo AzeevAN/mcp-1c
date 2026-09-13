@@ -207,6 +207,7 @@ def test_events_публикуют_закрытый_owner_aware_каталог_�
         "standard_commands": {
             "form": ["Help", "Close", "CustomizeForm"],
             "object_form": ["Write", "WriteAndClose"],
+            "document_form": ["Post", "PostAndClose", "UndoPosting"],
             "table": ["Add", "Delete", "MoveUp", "MoveDown"],
         },
         "async": "Асинх и Ждать только в клиентском контексте платформы 8.3.18+",
@@ -227,6 +228,9 @@ def test_events_публикуют_закрытый_owner_aware_каталог_�
         "directive": "&НаСервере",
         "parameters": ["Отказ", "ТекущийОбъект", "ПараметрыЗаписи"],
     }
+    assert by_code["document_posting_events_not_form_events"]["status"] == (
+        "boundary"
+    )
     assert by_code["managed_form_2_16_event_profile"]["status"] == "boundary"
     assert by_code["platform_version_matrix"]["status"] == "supported"
     assert by_code["standard_command_catalog"]["value"]["table"] == [
@@ -234,6 +238,11 @@ def test_events_публикуют_закрытый_owner_aware_каталог_�
         "Delete",
         "MoveUp",
         "MoveDown",
+    ]
+    assert by_code["standard_command_catalog"]["value"]["document_form"] == [
+        "Post",
+        "PostAndClose",
+        "UndoPosting",
     ]
     assert by_code["async_client_contract"]["status"] == "required"
     assert by_code["no_synchronous_file_exists_on_client"]["status"] == "required"

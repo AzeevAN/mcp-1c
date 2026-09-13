@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import os
 from pathlib import Path
@@ -59,6 +60,21 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
             schema_text = json.dumps(compile_schema, ensure_ascii=False)
             if "ManagedFormSpec" not in schema_text or "additionalProperties" not in schema_text:
                 raise RuntimeError("Строгая вложенная specification-схема не опубликована.")
+            definitions = compile_schema["$defs"]
+            for definition, property_name, minimum in (
+                ("ManagedFormSpec", "attributes", 1),
+                ("ManagedFormSpec", "elements", 1),
+                ("ManagedFormSpec", "events", 1),
+                ("CompositeTypeSpec", "variants", 2),
+                ("RadioButtonFieldSpec", "choice_list", 2),
+            ):
+                actual = definitions[definition]["properties"][property_name].get(
+                    "minItems"
+                )
+                if actual != minimum:
+                    raise RuntimeError(
+                        f"Схема потеряла {definition}.{property_name} minItems."
+                    )
             rules_schema = tools["get_managed_form_rules"].input_schema
             if "query" not in rules_schema.get("properties", {}):
                 raise RuntimeError("Двуязычный поиск терминов не опубликован.")
@@ -292,8 +308,27 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
             rejected = await session.call_tool(
                 "compile_managed_form", {"specification": invalid}
             )
+            empty = copy.deepcopy(specification)
+            empty["events"] = []
+            empty["elements"][0]["children"] = []
+            empty_rejected = await session.call_tool(
+                "compile_managed_form", {"specification": empty}
+            )
+            empty_payload = json.loads(empty_rejected.content[0].text)
+            empty_paths = {
+                item["path"]
+                for item in empty_payload["diagnostics"]
+                if item["code"] == "empty_collection"
+            }
             results = (rules, compiled, checked, decompiled)
-            if any(result.is_error for result in results) or not rejected.is_error:
+            if (
+                any(result.is_error for result in results)
+                or not rejected.is_error
+                or empty_rejected.is_error
+                or empty_payload["status"] != "rejected"
+                or empty_paths
+                != {"$.events", "$.elements[0].children"}
+            ):
                 raise RuntimeError("Внешняя MCP-последовательность дала неверный статус.")
             canonical_matches = [
                 [match["canonical"] for match in result["matches"]]
@@ -343,6 +378,8 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                     json.loads(decompiled.content[0].text)["specification"]
                     == compiled_payload["specification"]
                 ),
+                "array_minima_published": True,
+                "empty_arrays_structured_rejected": True,
                 "unknown_field_rejected": True,
                 "bilingual_term_search": "command_bar",
                 "command_source": "form_and_form_global_commands",

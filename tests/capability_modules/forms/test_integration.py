@@ -117,6 +117,42 @@ def test_on_добавляет_ровно_четыре_forms_tools_в_стаби
     )
 
 
+def test_compile_schema_публикует_фактические_минимумы_массивов(tmp_path):
+    tools = asyncio.run(_server(tmp_path, enabled=("forms",)).list_tools())
+    definitions = tools[-3].input_schema["$defs"]
+
+    for definition, property_name, minimum in (
+        ("ManagedFormSpec", "attributes", 1),
+        ("ManagedFormSpec", "elements", 1),
+        ("ManagedFormSpec", "events", 1),
+        ("CompositeTypeSpec", "variants", 2),
+        ("ValueTableTypeSpec", "columns", 1),
+        ("InputFieldSpec", "choice_list", 1),
+        ("RadioButtonFieldSpec", "choice_list", 2),
+        ("TableSpec", "columns", 1),
+        ("PageSpec", "children", 1),
+        ("PagesSpec", "pages", 1),
+        ("UsualGroupSpec", "children", 1),
+    ):
+        assert definitions[definition]["properties"][property_name][
+            "minItems"
+        ] == minimum
+
+    assert "minItems" not in definitions["ManagedFormSpec"]["properties"][
+        "commands"
+    ]
+    for definition in (
+        "ButtonGroupSpec",
+        "PopupSpec",
+        "CommandBarSpec",
+        "AutoCommandBarSpec",
+        "ContextMenuSpec",
+    ):
+        assert "minItems" not in definitions[definition]["properties"][
+            "children"
+        ]
+
+
 def _registry_with_object(tmp_path) -> Registry:
     registry = Registry(tmp_path / "data")
     object_name = "Обработка.НоваяОбработка"

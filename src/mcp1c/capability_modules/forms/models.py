@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Hashable, Iterator, Mapping
+from collections.abc import Callable, Hashable, Iterator, Mapping
 from dataclasses import dataclass
-from typing import Literal, NotRequired, TypeAlias, TypedDict
+from typing import Annotated, Literal, NotRequired, TypeAlias, TypedDict
 
 from .command_catalog import (
     DOCUMENT_FORM_STANDARD_COMMANDS,
@@ -45,6 +45,26 @@ BSL_RESERVED_KEYWORDS = frozenset(
         "КонецПопытки", "EndTry", "Новый", "New", "Выполнить", "Execute",
     )
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _JsonSchemaMinItems:
+    """Опубликовать минимум, не перехватывая предметную диагностику Forms."""
+
+    minimum: int
+
+    def __get_pydantic_json_schema__(
+        self,
+        core_schema: object,
+        handler: Callable[[object], dict[str, object]],
+    ) -> dict[str, object]:
+        schema = dict(handler(core_schema))
+        schema["minItems"] = self.minimum
+        return schema
+
+
+_AT_LEAST_ONE = _JsonSchemaMinItems(1)
+_AT_LEAST_TWO = _JsonSchemaMinItems(2)
 
 
 def is_reserved_bsl_keyword(value: str) -> bool:
@@ -107,7 +127,7 @@ class CompositeTypeSpec(TypedDict):
     __pydantic_config__ = {"extra": "forbid"}
 
     kind: Literal["composite"]
-    variants: list[ValueTypeSpec]
+    variants: Annotated[list[ValueTypeSpec], _AT_LEAST_TWO]
 
 
 class ValueTableColumnSpec(TypedDict):
@@ -122,7 +142,7 @@ class ValueTableTypeSpec(TypedDict):
     __pydantic_config__ = {"extra": "forbid"}
 
     kind: Literal["value_table"]
-    columns: list[ValueTableColumnSpec]
+    columns: Annotated[list[ValueTableColumnSpec], _AT_LEAST_ONE]
 
 
 class MetadataObjectTypeSpec(TypedDict):
@@ -175,7 +195,9 @@ class InputFieldSpec(TypedDict):
     multiline: NotRequired[bool]
     read_only: NotRequired[bool]
     list_choice_mode: NotRequired[bool]
-    choice_list: NotRequired[list[ChoiceListItemSpec]]
+    choice_list: NotRequired[
+        Annotated[list[ChoiceListItemSpec], _AT_LEAST_ONE]
+    ]
     horizontal_stretch: NotRequired[bool]
     vertical_stretch: NotRequired[bool]
 
@@ -220,7 +242,7 @@ class RadioButtonFieldSpec(TypedDict):
     kind: Literal["radio_button_field"]
     name: str
     data_path: str
-    choice_list: list[ChoiceListItemSpec]
+    choice_list: Annotated[list[ChoiceListItemSpec], _AT_LEAST_TWO]
     title: NotRequired[LocalizedTextSpec]
     radio_button_type: NotRequired[Literal["auto", "tumbler", "radio_buttons"]]
     columns_count: NotRequired[int]
@@ -304,7 +326,9 @@ class TableSpec(TypedDict):
     kind: Literal["table"]
     name: str
     data_path: str
-    columns: list[InputFieldSpec | LabelFieldSpec]
+    columns: Annotated[
+        list[InputFieldSpec | LabelFieldSpec], _AT_LEAST_ONE
+    ]
     title: NotRequired[LocalizedTextSpec]
     read_only: NotRequired[bool]
     horizontal_stretch: NotRequired[bool]
@@ -318,7 +342,7 @@ class PageSpec(TypedDict):
 
     name: str
     title: LocalizedTextSpec
-    children: list["ElementSpec"]
+    children: Annotated[list["ElementSpec"], _AT_LEAST_ONE]
 
 
 class PagesSpec(TypedDict):
@@ -328,7 +352,7 @@ class PagesSpec(TypedDict):
     name: str
     title: LocalizedTextSpec
     representation: Literal["tabs_on_top"]
-    pages: list[PageSpec]
+    pages: Annotated[list[PageSpec], _AT_LEAST_ONE]
     horizontal_stretch: NotRequired[bool]
     vertical_stretch: NotRequired[bool]
 
@@ -339,7 +363,7 @@ class UsualGroupSpec(TypedDict):
     kind: Literal["usual_group"]
     name: str
     title: LocalizedTextSpec
-    children: list["ElementSpec"]
+    children: Annotated[list["ElementSpec"], _AT_LEAST_ONE]
     orientation: NotRequired[Literal["vertical", "horizontal", "always_horizontal"]]
     representation: NotRequired[
         Literal["none", "normal_separation", "strong_separation"]
@@ -420,10 +444,10 @@ class ManagedFormSpec(TypedDict):
     format_version: Literal["2.16"]
     platform_version: NotRequired[str]
     title: LocalizedTextSpec
-    attributes: list[FormAttributeSpec]
-    elements: list[ElementSpec]
+    attributes: Annotated[list[FormAttributeSpec], _AT_LEAST_ONE]
+    elements: Annotated[list[ElementSpec], _AT_LEAST_ONE]
     commands: list[FormCommandSpec]
-    events: list[FormEventSpec]
+    events: Annotated[list[FormEventSpec], _AT_LEAST_ONE]
 
 
 @dataclass(frozen=True, slots=True)

@@ -333,6 +333,7 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
             "observed_pattern",
             {
                 "form": ["Help", "Close", "CustomizeForm"],
+                "object_form": ["Write", "WriteAndClose"],
                 "table": ["Add", "Delete", "MoveUp", "MoveDown"],
             },
         ),
@@ -373,6 +374,14 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
                     "OnClose",
                     "ChoiceProcessing",
                 ],
+                "object_form": [
+                    "OnReadAtServer",
+                    "BeforeWrite",
+                    "BeforeWriteAtServer",
+                    "OnWriteAtServer",
+                    "AfterWriteAtServer",
+                    "AfterWrite",
+                ],
                 "input_field": [
                     "OnChange",
                     "StartChoice",
@@ -396,6 +405,50 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
                     "OnChange",
                     "OnEditEnd",
                 ],
+            },
+        ),
+        FormRule(
+            "object_form_lifecycle_catalog",
+            "supported",
+            (
+                "События чтения и записи разрешены только при главном "
+                "реквизите metadata_object и получают документированные "
+                "контексты и параметры."
+            ),
+            "platform_documentation",
+            {
+                "OnReadAtServer": {
+                    "directive": "&НаСервере",
+                    "parameters": ["ТекущийОбъект"],
+                },
+                "BeforeWrite": {
+                    "directive": "&НаКлиенте",
+                    "parameters": ["Отказ", "ПараметрыЗаписи"],
+                },
+                "BeforeWriteAtServer": {
+                    "directive": "&НаСервере",
+                    "parameters": [
+                        "Отказ",
+                        "ТекущийОбъект",
+                        "ПараметрыЗаписи",
+                    ],
+                },
+                "OnWriteAtServer": {
+                    "directive": "&НаСервере",
+                    "parameters": [
+                        "Отказ",
+                        "ТекущийОбъект",
+                        "ПараметрыЗаписи",
+                    ],
+                },
+                "AfterWriteAtServer": {
+                    "directive": "&НаСервере",
+                    "parameters": ["ТекущийОбъект", "ПараметрыЗаписи"],
+                },
+                "AfterWrite": {
+                    "directive": "&НаКлиенте",
+                    "parameters": ["ПараметрыЗаписи"],
+                },
             },
         ),
         FormRule(
@@ -631,6 +684,14 @@ def get_managed_form_rules(topic: RuleTopic = "overview") -> dict[str, object]:
                 "OnClose",
                 "ChoiceProcessing",
             ],
+            "object_form_events": [
+                "OnReadAtServer",
+                "BeforeWrite",
+                "BeforeWriteAtServer",
+                "OnWriteAtServer",
+                "AfterWriteAtServer",
+                "AfterWrite",
+            ],
             "element_events": {
                 "input_field": [
                     "OnChange",
@@ -659,6 +720,7 @@ def get_managed_form_rules(topic: RuleTopic = "overview") -> dict[str, object]:
             "command_reference": "Form.Command.<name>",
             "standard_commands": {
                 "form": ["Help", "Close", "CustomizeForm"],
+                "object_form": ["Write", "WriteAndClose"],
                 "table": ["Add", "Delete", "MoveUp", "MoveDown"],
             },
             "async": "Асинх и Ждать только в клиентском контексте платформы 8.3.18+",

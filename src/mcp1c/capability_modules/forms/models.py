@@ -7,9 +7,12 @@ from collections.abc import Hashable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Literal, NotRequired, TypeAlias, TypedDict
 
-from .command_catalog import standard_command_supported
+from .command_catalog import (
+    OBJECT_FORM_STANDARD_COMMANDS,
+    standard_command_supported,
+)
 from .diagnostics import Diagnostic
-from .event_catalog import event_signature
+from .event_catalog import OBJECT_FORM_EVENTS, event_signature
 from .metadata_types import (
     dynamic_list_xml_table,
     metadata_object_xml_type,
@@ -294,6 +297,12 @@ class FormEventSpec(TypedDict):
         "BeforeDeleteRow",
         "AfterDeleteRow",
         "OnEditEnd",
+        "OnReadAtServer",
+        "BeforeWrite",
+        "BeforeWriteAtServer",
+        "OnWriteAtServer",
+        "AfterWriteAtServer",
+        "AfterWrite",
     ]
     handler: str
 
@@ -1396,6 +1405,14 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
     attribute_by_name = {item.name: item for item in attributes}
     command_names = {item.name for item in commands}
     element_by_name = {item.name: item for item, _path, _table in walked}
+    main_object = next(
+        (
+            attribute.type
+            for attribute in attributes
+            if attribute.main and isinstance(attribute.type, MetadataObjectType)
+        ),
+        None,
+    )
     for element, path, table in walked:
         if isinstance(element, (InputField, CheckBoxField)):
             if table is None:
@@ -1498,6 +1515,15 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
                         f"{path}.command",
                         "Стандартная команда формы не входит в закрытый каталог.",
                     )
+                elif (
+                    element.command in OBJECT_FORM_STANDARD_COMMANDS
+                    and main_object is None
+                ):
+                    reader.issue(
+                        "object_standard_command_requires_main_object",
+                        f"{path}.command",
+                        "Команда записи требует главный реквизит metadata_object.",
+                    )
             else:
                 owner = element_by_name.get(element.command_owner or "")
                 if owner is None or owner.kind != "table":
@@ -1538,6 +1564,17 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
                 "unsupported_owner_event",
                 f"{path}.event",
                 "Событие не поддерживается для указанного владельца.",
+            )
+            continue
+        if (
+            event.owner is None
+            and event.event in OBJECT_FORM_EVENTS
+            and main_object is None
+        ):
+            reader.issue(
+                "object_event_requires_main_object",
+                f"{path}.event",
+                "Событие жизненного цикла требует главный реквизит metadata_object.",
             )
             continue
         event_signatures.setdefault(event.handler.casefold(), set()).add(

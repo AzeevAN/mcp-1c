@@ -38,6 +38,24 @@ EVENT_SIGNATURES: dict[tuple[str, str], EventSignature] = {
     ("form", "ChoiceProcessing"): EventSignature(
         "НаКлиенте", ("ВыбранноеЗначение", "ИсточникВыбора")
     ),
+    ("form", "OnReadAtServer"): EventSignature(
+        "НаСервере", ("ТекущийОбъект",)
+    ),
+    ("form", "BeforeWrite"): EventSignature(
+        "НаКлиенте", ("Отказ", "ПараметрыЗаписи")
+    ),
+    ("form", "BeforeWriteAtServer"): EventSignature(
+        "НаСервере", ("Отказ", "ТекущийОбъект", "ПараметрыЗаписи")
+    ),
+    ("form", "OnWriteAtServer"): EventSignature(
+        "НаСервере", ("Отказ", "ТекущийОбъект", "ПараметрыЗаписи")
+    ),
+    ("form", "AfterWriteAtServer"): EventSignature(
+        "НаСервере", ("ТекущийОбъект", "ПараметрыЗаписи")
+    ),
+    ("form", "AfterWrite"): EventSignature(
+        "НаКлиенте", ("ПараметрыЗаписи",)
+    ),
     ("input_field", "OnChange"): EventSignature("НаКлиенте", ("Элемент",)),
     ("input_field", "StartChoice"): EventSignature(
         "НаКлиенте",
@@ -111,6 +129,18 @@ EVENT_SIGNATURES: dict[tuple[str, str], EventSignature] = {
         "НаКлиенте", ("Элемент", "НоваяСтрока", "ОтменаРедактирования")
     ),
 }
+
+
+OBJECT_FORM_EVENTS = frozenset(
+    {
+        "OnReadAtServer",
+        "BeforeWrite",
+        "BeforeWriteAtServer",
+        "OnWriteAtServer",
+        "AfterWriteAtServer",
+        "AfterWrite",
+    }
+)
 
 
 DOCUMENTED_8_3_5_EVENT_SIGNATURES: dict[tuple[str, str], EventSignature] = {

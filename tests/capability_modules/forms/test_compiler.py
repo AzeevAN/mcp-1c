@@ -568,14 +568,41 @@ def test_событие_неподходящего_owner_отклоняется_
     assert any(item.code == "unsupported_owner_event" for item in caught.value.diagnostics)
 
 
-def test_объектно_зависимое_событие_формы_остаётся_за_границей_контракта():
-    payload = _rich_payload()
-    payload["events"] = [{"event": "OnReadAtServer", "handler": "ПриЧтенииНаСервере"}]
+def test_объектные_события_дают_доказанные_директивы_и_сигнатуры():
+    payload = _payload()
+    payload["attributes"][0] = {
+        "name": "Объект",
+        "type": {"kind": "metadata_object", "object": "Справочник.Товары"},
+        "main": True,
+    }
+    payload["elements"][0]["children"][0]["data_path"] = "Объект.Наименование"
+    payload["events"] = [
+        {"event": "OnReadAtServer", "handler": "ПриЧтенииНаСервере"},
+        {"event": "BeforeWrite", "handler": "ПередЗаписью"},
+        {"event": "BeforeWriteAtServer", "handler": "ПередЗаписьюНаСервере"},
+        {"event": "OnWriteAtServer", "handler": "ПриЗаписиНаСервере"},
+        {"event": "AfterWriteAtServer", "handler": "ПослеЗаписиНаСервере"},
+        {"event": "AfterWrite", "handler": "ПослеЗаписи"},
+    ]
 
-    with pytest.raises(FormsContractError) as caught:
-        compile_managed_form(payload)
+    result = compile_managed_form(payload)
+    module = result.artifacts[1].content
 
-    assert any(item.code == "unsupported_owner_event" for item in caught.value.diagnostics)
+    assert "Процедура ПриЧтенииНаСервере(ТекущийОбъект)" in module
+    assert "Процедура ПередЗаписью(Отказ, ПараметрыЗаписи)" in module
+    assert (
+        "Процедура ПередЗаписьюНаСервере(Отказ, ТекущийОбъект, ПараметрыЗаписи)"
+        in module
+    )
+    assert (
+        "Процедура ПриЗаписиНаСервере(Отказ, ТекущийОбъект, ПараметрыЗаписи)"
+        in module
+    )
+    assert (
+        "Процедура ПослеЗаписиНаСервере(ТекущийОбъект, ПараметрыЗаписи)"
+        in module
+    )
+    assert "Процедура ПослеЗаписи(ПараметрыЗаписи)" in module
 
 
 def test_повторяется_пара_owner_и_event_а_не_одно_имя_event():

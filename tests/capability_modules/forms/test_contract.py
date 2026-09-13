@@ -237,7 +237,7 @@ def test_8_3_5_разрешается_как_непроверенный_form_xml
             ("invalid_type", "$.elements[0].children[2].default"),
         ),
         (
-            lambda value: value["events"][0].update({"event": "OnReadAtServer"}),
+            lambda value: value["events"][0].update({"event": "UnknownEvent"}),
             ("unsupported_owner_event", "$.events[0].event"),
         ),
     ],
@@ -422,6 +422,47 @@ def test_стандартные_команды_формы_и_таблицы_не
     assert form.commands == ()
 
 
+def test_команда_записи_разрешена_для_главного_объектного_реквизита():
+    payload = _payload()
+    payload["attributes"][0] = {
+        "name": "Объект",
+        "type": {"kind": "metadata_object", "object": "Справочник.Товары"},
+        "main": True,
+    }
+    payload["elements"][0]["children"][0]["data_path"] = "Объект.Наименование"
+    payload["elements"][0]["children"][2] = {
+        "kind": "button",
+        "name": "ЗаписатьИЗакрыть",
+        "command": "WriteAndClose",
+        "command_kind": "form_standard",
+    }
+
+    form = parse_managed_form_spec(payload)
+
+    assert form.elements[0].children[2].command == "WriteAndClose"
+
+
+def test_события_жизненного_цикла_разрешены_только_объектной_форме():
+    payload = _payload()
+    payload["events"] = [
+        {"event": "OnReadAtServer", "handler": "ПриЧтенииНаСервере"}
+    ]
+    with pytest.raises(FormsContractError) as caught:
+        parse_managed_form_spec(payload)
+    assert ("object_event_requires_main_object", "$.events[0].event") in _codes(
+        caught.value
+    )
+
+    payload["attributes"][0] = {
+        "name": "Объект",
+        "type": {"kind": "metadata_object", "object": "Справочник.Товары"},
+        "main": True,
+    }
+    payload["elements"][0]["children"][0]["data_path"] = "Объект.Наименование"
+    form = parse_managed_form_spec(payload)
+    assert form.events[0].event == "OnReadAtServer"
+
+
 @pytest.mark.parametrize(
     ("mutate", "expected"),
     [
@@ -429,7 +470,10 @@ def test_стандартные_команды_формы_и_таблицы_не
             lambda button: button.update(
                 {"command": "Write", "command_kind": "form_standard"}
             ),
-            ("unsupported_standard_command", "$.elements[0].children[2].command"),
+            (
+                "object_standard_command_requires_main_object",
+                "$.elements[0].children[2].command",
+            ),
         ),
         (
             lambda button: button.update(

@@ -170,6 +170,14 @@ def test_events_публикуют_закрытый_owner_aware_каталог_�
             "OnClose",
             "ChoiceProcessing",
         ],
+        "object_form_events": [
+            "OnReadAtServer",
+            "BeforeWrite",
+            "BeforeWriteAtServer",
+            "OnWriteAtServer",
+            "AfterWriteAtServer",
+            "AfterWrite",
+        ],
         "element_events": {
             "input_field": [
                 "OnChange",
@@ -198,6 +206,7 @@ def test_events_публикуют_закрытый_owner_aware_каталог_�
         "command_reference": "Form.Command.<name>",
         "standard_commands": {
             "form": ["Help", "Close", "CustomizeForm"],
+            "object_form": ["Write", "WriteAndClose"],
             "table": ["Add", "Delete", "MoveUp", "MoveDown"],
         },
         "async": "Асинх и Ждать только в клиентском контексте платформы 8.3.18+",
@@ -209,6 +218,15 @@ def test_events_публикуют_закрытый_owner_aware_каталог_�
     }
     assert by_code["unknown_event_not_checked"]["status"] == "boundary"
     assert by_code["owner_aware_event_catalog"]["status"] == "supported"
+    assert by_code["object_form_lifecycle_catalog"]["evidence_level"] == (
+        "platform_documentation"
+    )
+    assert by_code["object_form_lifecycle_catalog"]["value"][
+        "BeforeWriteAtServer"
+    ] == {
+        "directive": "&НаСервере",
+        "parameters": ["Отказ", "ТекущийОбъект", "ПараметрыЗаписи"],
+    }
     assert by_code["managed_form_2_16_event_profile"]["status"] == "boundary"
     assert by_code["platform_version_matrix"]["status"] == "supported"
     assert by_code["standard_command_catalog"]["value"]["table"] == [

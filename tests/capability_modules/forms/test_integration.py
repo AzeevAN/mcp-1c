@@ -98,7 +98,19 @@ def test_on_добавляет_ровно_четыре_forms_tools_в_стаби
     compile_schema = tools[-3].input_schema
     assert "specification" in compile_schema["properties"]
     assert "configuration" in compile_schema["properties"]
-    assert "ManagedFormSpec" in json.dumps(compile_schema, ensure_ascii=False)
+    schema_text = json.dumps(compile_schema, ensure_ascii=False)
+    assert "ManagedFormSpec" in schema_text
+    assert all(
+        event in schema_text
+        for event in (
+            "OnReadAtServer",
+            "BeforeWrite",
+            "BeforeWriteAtServer",
+            "OnWriteAtServer",
+            "AfterWriteAtServer",
+            "AfterWrite",
+        )
+    )
 
 
 def _registry_with_object(tmp_path) -> Registry:
@@ -351,6 +363,15 @@ async def test_три_операции_используют_один_registry_к
     }
     specification["elements"][0]["children"][0].update(
         {"name": "Активен", "data_path": "Объект.Активен"}
+    )
+    specification["elements"][0]["children"][2] = {
+        "kind": "button",
+        "name": "Записать",
+        "command": "Write",
+        "command_kind": "form_standard",
+    }
+    specification["events"].append(
+        {"event": "OnReadAtServer", "handler": "ПриЧтенииНаСервере"}
     )
     tools = {item.name: item.function for item in forms_tools.load(registry)}
     compiled = json.loads(await tools["compile_managed_form"](specification))

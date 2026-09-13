@@ -224,7 +224,8 @@ def load(registry: RegistryResolver | None = None) -> tuple[CapabilityTool, ...]
             name="compile_managed_form",
             function=compile_tool,
             description=(
-                "Детерминированно собрать Form.xml 2.16 и Form/Module.bsl из "
+                "Детерминированно собрать Form.xml указанной числовой версии и "
+                "Form/Module.bsl из "
                 "строгой спецификации поддержанного слоя. Если версия целевой "
                 "платформы известна без Registry, агент задаёт platform_version; "
                 "неизвестная или отсутствующая версия даёт предупреждение вместо отказа. "

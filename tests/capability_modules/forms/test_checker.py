@@ -55,6 +55,22 @@ def test_compiler_pair_проходит_заявленные_статическ�
     assert "valid" not in result.to_dict()
 
 
+def test_checker_принимает_сгенерированную_пару_формата_2_20():
+    payload = _payload()
+    payload["format_version"] = "2.20"
+    compiled = compile_managed_form(payload)
+
+    result = check_managed_form(
+        compiled.artifacts[0].content,
+        form_name="ФормаПараметров",
+        module_bsl=compiled.artifacts[1].content,
+    )
+
+    assert result.coverage.structural == "passed"
+    assert result.coverage.bsl_static == "passed"
+    assert result.specification == compiled.specification
+
+
 def test_богатая_форма_импорта_проходит_статические_уровни():
     compiled = compile_managed_form(_rich_payload())
 

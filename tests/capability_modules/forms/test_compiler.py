@@ -687,11 +687,36 @@ def test_result_не_объявляет_статический_green_натив�
     }
 
 
-def test_невалидная_спецификация_отклоняется_до_создания_результата():
+def test_формат_2_20_сохраняется_в_Form_xml():
     payload = _payload()
     payload["format_version"] = "2.20"
 
-    with pytest.raises(FormsContractError, match="2.16"):
+    result = compile_managed_form(payload)
+
+    assert result.status == "compiled"
+    assert ET.fromstring(result.artifacts[0].content).attrib["version"] == "2.20"
+
+
+def test_неподтверждённая_версия_формата_сохраняется_с_предупреждением():
+    payload = _payload()
+    payload["format_version"] = "2.21"
+
+    result = compile_managed_form(payload)
+
+    assert result.status == "compiled"
+    assert ET.fromstring(result.artifacts[0].content).attrib["version"] == "2.21"
+    assert any(
+        item.code == "form_format_compatibility_unverified"
+        and item.status == "warning"
+        for item in result.diagnostics
+    )
+
+
+def test_некорректная_версия_формата_отклоняется_до_создания_результата():
+    payload = _payload()
+    payload["format_version"] = "latest"
+
+    with pytest.raises(FormsContractError, match="число.число"):
         compile_managed_form(payload)
 
 

@@ -7,6 +7,10 @@ import re
 from typing import Literal
 
 
+FORM_FORMAT_PATTERN = r"^\d+\.\d+$"
+CONFIRMED_FORM_FORMATS = ("2.16", "2.20")
+_FORM_FORMAT = re.compile(r"^(\d+)\.(\d+)$")
+
 PlatformSupport = Literal["compiler", "documentation_only"]
 PlatformConfidence = Literal[
     "confirmed", "inferred", "unverified", "unspecified"
@@ -50,12 +54,12 @@ DOCUMENTED_8_3_5_PROFILE = PlatformProfile(
 )
 
 DEFAULT_PLATFORM_PROFILE = PlatformProfile(
-    name="managed_form_2_16_modern",
+    name="managed_form_modern",
     minimum=(8, 3, 23),
     maximum=(8, 3, 27),
     documented_versions=("8.3.23.1997", "8.3.26.15", "8.3.27.2130"),
     event_profile="modern",
-    formats=("2.16",),
+    formats=CONFIRMED_FORM_FORMATS,
     support="compiler",
 )
 
@@ -72,6 +76,32 @@ def normalized_platform_version(value: str) -> tuple[int, int, int] | None:
     if match is None:
         return None
     return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+
+
+def normalized_form_format(value: str) -> tuple[int, int] | None:
+    """Разобрать безопасную числовую версию формата без угадывания диалекта."""
+
+    match = _FORM_FORMAT.fullmatch(value)
+    if match is None:
+        return None
+    return (int(match.group(1)), int(match.group(2)))
+
+
+def form_format_compatibility_note(
+    value: str,
+) -> PlatformCompatibilityNote | None:
+    """Предупредить о недоказанном формате, не отвергая числовую версию."""
+
+    if value in CONFIRMED_FORM_FORMATS:
+        return None
+    return PlatformCompatibilityNote(
+        "form_format_compatibility_unverified",
+        (
+            f"Формат {value} не подтверждён корпусом; сгенерирован известный "
+            "диалект формы с буквально сохранённой запрошенной версией. "
+            "Нативный импорт обязателен для подтверждения совместимости."
+        ),
+    )
 
 
 def _documented_version(profile: PlatformProfile, version: str) -> bool:

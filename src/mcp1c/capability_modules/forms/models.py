@@ -22,11 +22,17 @@ from .metadata_types import (
     metadata_object_xml_type,
     metadata_reference_xml_type,
 )
-from .version_catalog import normalized_platform_version, platform_profile
+from .version_catalog import (
+    CONFIRMED_FORM_FORMATS,
+    FORM_FORMAT_PATTERN,
+    normalized_form_format,
+    normalized_platform_version,
+    platform_profile,
+)
 
 
 SPECIFICATION_VERSION = 1
-SUPPORTED_FORMAT_VERSION = "2.16"
+DEFAULT_FORMAT_VERSION = CONFIRMED_FORM_FORMATS[0]
 _IDENTIFIER = re.compile(r"[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*\Z")
 _DATA_PATH = re.compile(
     r"[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*"
@@ -484,7 +490,7 @@ class ManagedFormSpec(TypedDict):
 
     schema_version: Literal[1]
     form_name: str
-    format_version: Literal["2.16"]
+    format_version: Annotated[str, _JsonSchemaPattern(FORM_FORMAT_PATTERN)]
     platform_version: NotRequired[str]
     title: LocalizedTextSpec
     attributes: Annotated[list[FormAttributeSpec], _AT_LEAST_ONE]
@@ -785,7 +791,7 @@ class FormEvent:
 class ManagedForm:
     schema_version: Literal[1]
     form_name: str
-    format_version: Literal["2.16"]
+    format_version: str
     platform_version: str | None
     event_profile: str
     title: LocalizedText
@@ -2087,12 +2093,18 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
             "$.schema_version",
             "Поддерживается только schema_version=1.",
         )
-    if root.get("format_version") != SUPPORTED_FORMAT_VERSION:
+    raw_format_version = root.get("format_version")
+    if not isinstance(raw_format_version, str) or (
+        normalized_form_format(raw_format_version) is None
+    ):
         reader.issue(
             "unsupported_format_version",
             "$.format_version",
-            "Compiler поддерживает только формат 2.16.",
+            "Версия формата должна иметь вид число.число, например 2.20.",
         )
+        format_version = DEFAULT_FORMAT_VERSION
+    else:
+        format_version = raw_format_version
 
     platform_version: str | None = None
     profile = platform_profile(None)
@@ -2437,7 +2449,7 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
     return ManagedForm(
         1,
         form_name,
-        "2.16",
+        format_version,
         platform_version,
         event_profile,
         title,
@@ -2840,8 +2852,8 @@ __all__ = [
     "PagesSpec",
     "Popup",
     "PopupSpec",
+    "DEFAULT_FORMAT_VERSION",
     "SPECIFICATION_VERSION",
-    "SUPPORTED_FORMAT_VERSION",
     "StringType",
     "StringTypeSpec",
     "Table",

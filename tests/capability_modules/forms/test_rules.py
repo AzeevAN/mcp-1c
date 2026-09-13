@@ -286,8 +286,9 @@ def test_overview_не_выдаёт_корпус_за_платформенную
 
     assert payload["target"] == {
         "format": "configurator_xml",
-        "compiler_versions": ["2.16"],
-        "other_versions": "inventory_only",
+        "confirmed_versions": ["2.16", "2.20"],
+        "other_numeric_versions": "compiled_with_warning",
+        "version_source": "Configuration.xml:/MetaDataObject/@version",
     }
     assert payload["evidence"] == {
         "kind": "anonymized_corpus",
@@ -295,6 +296,12 @@ def test_overview_не_выдаёт_корпус_за_платформенную
         "platform_requirement": "not_proven",
     }
     assert all(rule["evidence_level"] != "platform_guarantee" for rule in payload["rules"])
+    by_code = {rule["code"]: rule for rule in payload["rules"]}
+    assert by_code["explicit_format_version"]["value"] == {
+        "confirmed": ["2.16", "2.20"],
+        "other": "compiled_with_warning",
+        "selection": "match_target_configuration_root_version",
+    }
 
 
 def test_specification_возвращает_тот_же_минимальный_пример_что_fixture():
@@ -494,7 +501,7 @@ def test_events_публикуют_закрытый_owner_aware_каталог_�
                 },
             },
             {
-                "name": "managed_form_2_16_modern",
+                "name": "managed_form_modern",
                 "minimum": "8.3.23",
                 "maximum": "8.3.27",
                 "documented_versions": [
@@ -503,7 +510,7 @@ def test_events_публикуют_закрытый_owner_aware_каталог_�
                     "8.3.27.2130",
                 ],
                 "event_profile": "modern",
-                "form_formats": ["2.16"],
+                "form_formats": ["2.16", "2.20"],
                 "support": "compiler",
                 "evidence": {
                     "documented": [
@@ -590,7 +597,7 @@ def test_events_публикуют_закрытый_owner_aware_каталог_�
     assert by_code["document_posting_events_not_form_events"]["status"] == (
         "boundary"
     )
-    assert by_code["managed_form_2_16_event_profile"]["status"] == "boundary"
+    assert by_code["managed_form_event_profile"]["status"] == "boundary"
     assert by_code["platform_version_matrix"]["status"] == "supported"
     assert by_code["standard_command_catalog"]["value"]["table"] == [
         "Add",

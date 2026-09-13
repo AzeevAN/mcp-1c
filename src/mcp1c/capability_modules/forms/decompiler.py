@@ -14,13 +14,10 @@ from .metadata_types import (
     metadata_object_registry_ref,
     metadata_reference_registry_ref,
 )
-from .models import (
-    SUPPORTED_FORMAT_VERSION,
-    FormsContractError,
-    managed_form_to_spec,
-    parse_managed_form_spec,
-)
+from .models import FormsContractError, managed_form_to_spec, parse_managed_form_spec
 from .version_catalog import (
+    form_format_compatibility_note,
+    normalized_form_format,
     normalized_platform_version,
     platform_compatibility_note,
     platform_profile,
@@ -1931,11 +1928,17 @@ def decompile_managed_form(
     inventory = _Inventory(_path_map(root))
     inventory.mark(root, "version")
     version = _subset_attribute(inventory, root, "version")
-    if version != SUPPORTED_FORMAT_VERSION:
+    format_is_valid = isinstance(version, str) and (
+        normalized_form_format(version) is not None
+    )
+    if not format_is_valid:
         inventory.issue(
             "unsupported_format_version",
             "/Form/@version",
-            f"Формат {version or '<пусто>'} читается только как inventory.",
+            (
+                f"Формат {version or '<пусто>'} читается только как inventory: "
+                "ожидается версия вида число.число."
+            ),
             status="unsupported",
         )
 
@@ -1988,7 +1991,7 @@ def decompile_managed_form(
         )
 
     if (
-        version == SUPPORTED_FORMAT_VERSION
+        format_is_valid
         and not inventory.unsupported
         and not inventory.failed
     ):
@@ -2030,6 +2033,18 @@ def decompile_managed_form(
         ),
         *inventory.diagnostics,
     ]
+    if format_is_valid:
+        format_note = form_format_compatibility_note(version)
+        if format_note is not None:
+            diagnostics.append(
+                Diagnostic(
+                    "platform_import",
+                    "warning",
+                    format_note.code,
+                    "/Form/@version",
+                    format_note.message,
+                )
+            )
     platform_note = platform_compatibility_note(safe_platform_version)
     if platform_note is not None:
         diagnostics.append(

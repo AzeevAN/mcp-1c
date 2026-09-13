@@ -1,4 +1,4 @@
-"""Детерминированный compiler доказанного подмножества Form.xml 2.16."""
+"""Детерминированный compiler доказанного подмножества управляемой формы."""
 
 from __future__ import annotations
 
@@ -46,7 +46,10 @@ from .models import (
     managed_form_to_spec,
     parse_managed_form_spec,
 )
-from .version_catalog import platform_compatibility_note
+from .version_catalog import (
+    form_format_compatibility_note,
+    platform_compatibility_note,
+)
 
 
 _NAMESPACES = (
@@ -1202,6 +1205,7 @@ def compile_managed_form(specification: object) -> FormsResult:
     xml = _compile_xml(form)
     module = _compile_module(form)
     platform_note = platform_compatibility_note(form.platform_version)
+    format_note = form_format_compatibility_note(form.format_version)
     diagnostics = (
         Diagnostic(
             "xml_parse",
@@ -1230,6 +1234,19 @@ def compile_managed_form(specification: object) -> FormsResult:
             "handler_stubs_generated",
             "artifacts[1]",
             "Для поддержанных событий и команд созданы BSL-каркасы.",
+        ),
+        *(
+            (
+                Diagnostic(
+                    "platform_import",
+                    "warning",
+                    format_note.code,
+                    "$.format_version",
+                    format_note.message,
+                ),
+            )
+            if format_note is not None
+            else ()
         ),
         *(
             (

@@ -87,9 +87,18 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
         FormRule(
             "explicit_format_version",
             "required",
-            "Версия формата обязательна; compiler первой вертикали принимает 2.16.",
-            "corpus_invariant",
-            "2.16",
+            (
+                "Версия формата обязательна и должна совпадать с version корня "
+                "Configuration.xml целевой выгрузки. Форматы 2.16 и 2.20 "
+                "подтверждены корпусом; другая числовая версия сохраняется буквально "
+                "с предупреждением до нативного импорта."
+            ),
+            "contract_decision",
+            {
+                "confirmed": ["2.16", "2.20"],
+                "other": "compiled_with_warning",
+                "selection": "match_target_configuration_root_version",
+            },
         ),
         FormRule(
             "text_result_without_write",
@@ -633,11 +642,11 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
             "platform_documentation",
         ),
         FormRule(
-            "managed_form_2_16_event_profile",
+            "managed_form_event_profile",
             "boundary",
             (
                 "Каталог выбирает известные сигнатуры по версии платформы. "
-                "Непроверенная совместимость Form.xml 2.16 не блокирует "
+                "Непроверенная совместимость версии Form.xml не блокирует "
                 "генерацию, но возвращается предупреждением."
             ),
             "platform_documentation",
@@ -806,8 +815,9 @@ def get_managed_form_rules(
         "topic": topic,
         "target": {
             "format": "configurator_xml",
-            "compiler_versions": ["2.16"],
-            "other_versions": "inventory_only",
+            "confirmed_versions": ["2.16", "2.20"],
+            "other_numeric_versions": "compiled_with_warning",
+            "version_source": "Configuration.xml:/MetaDataObject/@version",
         },
         "evidence": {
             "kind": "anonymized_corpus",

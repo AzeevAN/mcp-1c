@@ -653,7 +653,8 @@ def test_typed_dict_даёт_mcp_точную_вложенную_json_schema():
 
     definition = schema["$defs"]["ManagedFormSpec"]
     assert definition["properties"]["schema_version"]["const"] == 1
-    assert definition["properties"]["format_version"]["const"] == "2.16"
+    assert definition["properties"]["format_version"]["type"] == "string"
+    assert definition["properties"]["format_version"]["pattern"] == r"^\d+\.\d+$"
     assert definition["properties"]["platform_version"]["type"] == "string"
     assert set(definition["required"]) == {
         "schema_version",
@@ -725,7 +726,7 @@ def test_8_3_5_разрешается_как_непроверенный_form_xml
             ("unknown_key", "$.неизвестное"),
         ),
         (
-            lambda value: value.update({"format_version": "2.20"}),
+            lambda value: value.update({"format_version": "latest"}),
             ("unsupported_format_version", "$.format_version"),
         ),
         (

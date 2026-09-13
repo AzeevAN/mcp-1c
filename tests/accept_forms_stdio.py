@@ -62,6 +62,13 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
             if "ManagedFormSpec" not in schema_text or "additionalProperties" not in schema_text:
                 raise RuntimeError("Строгая вложенная specification-схема не опубликована.")
             definitions = compile_schema["$defs"]
+            format_pattern = definitions["ManagedFormSpec"]["properties"][
+                "format_version"
+            ]["pattern"]
+            if not re.fullmatch(format_pattern, "2.20") or re.fullmatch(
+                format_pattern, "latest"
+            ):
+                raise RuntimeError("Схема потеряла безопасный формат версии Form.xml.")
             for definition, property_name, minimum in (
                 ("ManagedFormSpec", "attributes", 1),
                 ("ManagedFormSpec", "elements", 1),
@@ -114,6 +121,7 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                 raise RuntimeError("Двуязычный поиск терминов не опубликован.")
 
             specification = json.loads(FIXTURE.read_text(encoding="utf-8"))
+            specification["format_version"] = "2.20"
             specification["elements"].append(
                 {
                     "kind": "label_decoration",
@@ -348,6 +356,12 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
             empty_rejected = await session.call_tool(
                 "compile_managed_form", {"specification": empty}
             )
+            unverified = copy.deepcopy(specification)
+            unverified["format_version"] = "2.21"
+            unverified_result = await session.call_tool(
+                "compile_managed_form", {"specification": unverified}
+            )
+            unverified_payload = json.loads(unverified_result.content[0].text)
             empty_payload = json.loads(empty_rejected.content[0].text)
             empty_paths = {
                 item["path"]
@@ -359,11 +373,22 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                 any(result.is_error for result in results)
                 or not rejected.is_error
                 or empty_rejected.is_error
+                or unverified_result.is_error
                 or empty_payload["status"] != "rejected"
                 or empty_paths
                 != {"$.events", "$.elements[0].children"}
             ):
                 raise RuntimeError("Внешняя MCP-последовательность дала неверный статус.")
+            if (
+                'version="2.20"' not in form_xml
+                or unverified_payload["status"] != "compiled"
+                or not any(
+                    item["code"] == "form_format_compatibility_unverified"
+                    and item["status"] == "warning"
+                    for item in unverified_payload["diagnostics"]
+                )
+            ):
+                raise RuntimeError("Версионный контракт Form.xml выполнен неверно.")
             canonical_matches = [
                 [match["canonical"] for match in result["matches"]]
                 for result in terminology_results
@@ -412,6 +437,8 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                     json.loads(decompiled.content[0].text)["specification"]
                     == compiled_payload["specification"]
                 ),
+                "format_version": "2.20",
+                "unverified_format_version": "compiled_with_warning",
                 "array_minima_published": True,
                 "empty_arrays_structured_rejected": True,
                 "unknown_field_rejected": True,

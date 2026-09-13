@@ -18,9 +18,9 @@ def test_современный_профиль_покрывает_весь_пр�
     profile = platform_profile(version)
 
     assert profile is not None
-    assert profile.name == "managed_form_2_16_modern"
+    assert profile.name == "managed_form_modern"
     assert profile.event_profile == "modern"
-    assert profile.formats == ("2.16",)
+    assert profile.formats == ("2.16", "2.20")
     assert profile.support == "compiler"
 
 

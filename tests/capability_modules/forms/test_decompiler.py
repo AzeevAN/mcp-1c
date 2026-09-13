@@ -1005,8 +1005,19 @@ def test_неизвестный_элемент_остаётся_в_inventory_с_
     assert "allow_lossy" in result.instructions[0]
 
 
-@pytest.mark.parametrize("version", ["2.19", "2.20"])
-def test_новая_версия_читается_только_как_inventory(version):
+def test_формат_2_20_декомпилируется_lossless():
+    xml = _xml().replace('version="2.16"', 'version="2.20"', 1)
+
+    result = decompile_managed_form(xml, form_name="ФормаПараметров")
+
+    assert result.status == "decompiled"
+    assert result.specification["format_version"] == "2.20"
+    assert result.coverage.structural == "passed"
+    assert not _diagnostics(result, "unsupported_format_version")
+
+
+@pytest.mark.parametrize("version", ["2.19", "2.21"])
+def test_неподтверждённая_версия_читается_lossless_с_предупреждением(version):
     xml = _xml().replace('version="2.16"', f'version="{version}"', 1)
 
     result = decompile_managed_form(xml, form_name="ФормаПараметров")
@@ -1014,6 +1025,17 @@ def test_новая_версия_читается_только_как_inventory(
     assert result.status == "decompiled"
     assert result.specification["format_version"] == version
     assert result.coverage.xml_parse == "passed"
+    assert result.coverage.structural == "passed"
+    warning = _diagnostics(result, "form_format_compatibility_unverified")[0]
+    assert warning.path == "/Form/@version"
+    assert warning.status == "warning"
+
+
+def test_некорректная_версия_читается_только_как_inventory():
+    xml = _xml().replace('version="2.16"', 'version="latest"', 1)
+
+    result = decompile_managed_form(xml, form_name="ФормаПараметров")
+
     assert result.coverage.structural == "unsupported"
     assert _diagnostics(result, "unsupported_format_version")[0].path == (
         "/Form/@version"

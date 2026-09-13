@@ -215,6 +215,45 @@ def test_составной_тип_колонки_таблицы_даёт_lossle
     assert result.specification == compiled.specification
 
 
+def test_автоматический_dynamic_list_даёт_lossless_roundtrip():
+    payload = _payload()
+    payload["attributes"][0]["type"] = {
+        "kind": "dynamic_list",
+        "main_table": "РегистрСведений.Цены",
+        "dynamic_data_read": True,
+    }
+    compiled = compile_managed_form(payload)
+
+    result = decompile_managed_form(
+        compiled.artifacts[0].content,
+        form_name=payload["form_name"],
+        module_bsl=compiled.artifacts[1].content,
+    )
+
+    assert result.status == "decompiled"
+    assert result.specification == compiled.specification
+
+
+def test_ручной_dynamic_list_остаётся_inventory():
+    payload = _payload()
+    payload["attributes"][0]["type"] = {
+        "kind": "dynamic_list",
+        "main_table": "Справочник.Товары",
+        "dynamic_data_read": True,
+    }
+    compiled = compile_managed_form(payload)
+    xml = compiled.artifacts[0].content.replace(
+        "<ManualQuery>false</ManualQuery>",
+        "<ManualQuery>true</ManualQuery><QueryText>ВЫБРАТЬ 1</QueryText>",
+    )
+
+    result = decompile_managed_form(xml, form_name=payload["form_name"])
+
+    assert result.status == "decompiled"
+    assert result.coverage.structural == "unsupported"
+    assert _diagnostics(result, "manual_dynamic_list_not_supported")
+
+
 def test_decompiler_разрешает_неизвестную_версию_с_предупреждением():
     result = decompile_managed_form(
         _xml(),

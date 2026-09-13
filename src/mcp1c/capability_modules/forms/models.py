@@ -10,7 +10,11 @@ from typing import Literal, NotRequired, TypeAlias, TypedDict
 from .command_catalog import standard_command_supported
 from .diagnostics import Diagnostic
 from .event_catalog import event_signature
-from .metadata_types import metadata_object_xml_type, metadata_reference_xml_type
+from .metadata_types import (
+    dynamic_list_xml_table,
+    metadata_object_xml_type,
+    metadata_reference_xml_type,
+)
 from .version_catalog import normalized_platform_version, platform_profile
 
 
@@ -124,8 +128,20 @@ class MetadataObjectTypeSpec(TypedDict):
     object: str
 
 
+class DynamicListTypeSpec(TypedDict):
+    __pydantic_config__ = {"extra": "forbid"}
+
+    kind: Literal["dynamic_list"]
+    main_table: str
+    dynamic_data_read: bool
+
+
 AttributeTypeSpec: TypeAlias = (
-    ValueTypeSpec | CompositeTypeSpec | ValueTableTypeSpec | MetadataObjectTypeSpec
+    ValueTypeSpec
+    | CompositeTypeSpec
+    | ValueTableTypeSpec
+    | MetadataObjectTypeSpec
+    | DynamicListTypeSpec
 )
 
 
@@ -363,7 +379,16 @@ class MetadataObjectType:
     kind: Literal["metadata_object"] = "metadata_object"
 
 
-AttributeType: TypeAlias = ValueType | CompositeType | ValueTableType | MetadataObjectType
+@dataclass(frozen=True, slots=True)
+class DynamicListType:
+    main_table: str
+    dynamic_data_read: bool
+    kind: Literal["dynamic_list"] = "dynamic_list"
+
+
+AttributeType: TypeAlias = (
+    ValueType | CompositeType | ValueTableType | MetadataObjectType | DynamicListType
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -729,6 +754,25 @@ def _value_table_column(
 
 def _attribute_type(reader: _Reader, value: object, path: str) -> AttributeType:
     item = reader.object(value, path)
+    if item.get("kind") == "dynamic_list":
+        reader.exact_keys(
+            item,
+            path,
+            required=frozenset({"kind", "main_table", "dynamic_data_read"}),
+        )
+        main_table = reader.string(item.get("main_table"), f"{path}.main_table")
+        if dynamic_list_xml_table(main_table) is None:
+            reader.issue(
+                "invalid_dynamic_list_main_table",
+                f"{path}.main_table",
+                "Ожидалась прямая ссылка на поддержанный объект Registry.",
+            )
+        return DynamicListType(
+            main_table,
+            reader.boolean(
+                item.get("dynamic_data_read"), f"{path}.dynamic_data_read"
+            ),
+        )
     if item.get("kind") == "metadata_object":
         reader.exact_keys(item, path, required=frozenset({"kind", "object"}))
         object_name = reader.string(item.get("object"), f"{path}.object")
@@ -1366,17 +1410,21 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
                         "DataPath не разрешается в реквизит формы.",
                     )
                 elif separator and not isinstance(
-                    attribute.type, MetadataObjectType
+                    attribute.type, (MetadataObjectType, DynamicListType)
                 ):
                     reader.issue(
                         "unresolved_data_path",
                         f"{path}.data_path",
-                        "Вложенный DataPath допустим только для объектного реквизита.",
+                        "Вложенный DataPath допустим только для объектного "
+                        "реквизита или DynamicList.",
                     )
                 elif isinstance(element, CheckBoxField) and not isinstance(
                     attribute.type, BooleanType
                 ) and not (
-                    separator and isinstance(attribute.type, MetadataObjectType)
+                    separator
+                    and isinstance(
+                        attribute.type, (MetadataObjectType, DynamicListType)
+                    )
                 ):
                     reader.issue(
                         "check_box_requires_boolean",
@@ -1388,7 +1436,10 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
                     and element.choice_list
                     and not isinstance(attribute.type, StringType)
                     and not (
-                        separator and isinstance(attribute.type, MetadataObjectType)
+                        separator
+                        and isinstance(
+                            attribute.type, (MetadataObjectType, DynamicListType)
+                        )
                     )
                 ):
                     reader.issue(
@@ -1409,24 +1460,28 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
                     and isinstance(table_attribute.type, ValueTableType)
                     else set()
                 )
+                dynamic_list = (
+                    table_attribute is not None
+                    and isinstance(table_attribute.type, DynamicListType)
+                )
                 if (
                     not element.data_path.startswith(prefix)
-                    or column_name not in declared
+                    or (not dynamic_list and column_name not in declared)
                 ):
                     reader.issue(
                         "unresolved_table_column",
                         f"{path}.data_path",
-                        "DataPath не разрешается в колонку таблицы значений.",
+                        "DataPath не разрешается в колонку таблицы.",
                     )
         elif isinstance(element, Table):
             attribute = attribute_by_name.get(element.data_path)
             if attribute is None or not isinstance(
-                attribute.type, ValueTableType
+                attribute.type, (ValueTableType, DynamicListType)
             ):
                 reader.issue(
                     "table_requires_value_table",
                     f"{path}.data_path",
-                    "Таблица должна ссылаться на реквизит value_table.",
+                    "Таблица должна ссылаться на реквизит value_table или dynamic_list.",
                 )
         elif isinstance(element, Button):
             if element.command_kind == "custom":
@@ -1568,6 +1623,12 @@ def _type_to_spec(value: AttributeType) -> dict[str, object]:
         }
     if isinstance(value, MetadataObjectType):
         return {"kind": "metadata_object", "object": value.object}
+    if isinstance(value, DynamicListType):
+        return {
+            "kind": "dynamic_list",
+            "main_table": value.main_table,
+            "dynamic_data_read": value.dynamic_data_read,
+        }
     return {
         "kind": "value_table",
         "columns": [
@@ -1757,6 +1818,8 @@ __all__ = [
     "ChoiceListItemSpec",
     "DateType",
     "DateTypeSpec",
+    "DynamicListType",
+    "DynamicListTypeSpec",
     "Element",
     "ElementSpec",
     "FormAttribute",

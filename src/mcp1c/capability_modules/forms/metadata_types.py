@@ -40,6 +40,27 @@ _XML_REFERENCE_TO_REGISTRY_KIND = {
     for registry_kind, xml_kind in _REGISTRY_KIND_TO_XML_REFERENCE.items()
 }
 
+_REGISTRY_KIND_TO_DYNAMIC_LIST_TABLE = {
+    "Справочник": "Catalog",
+    "Документ": "Document",
+    "ЖурналДокументов": "DocumentJournal",
+    "ПланОбмена": "ExchangePlan",
+    "ПланВидовХарактеристик": "ChartOfCharacteristicTypes",
+    "ПланСчетов": "ChartOfAccounts",
+    "ПланВидовРасчета": "ChartOfCalculationTypes",
+    "РегистрСведений": "InformationRegister",
+    "РегистрНакопления": "AccumulationRegister",
+    "РегистрБухгалтерии": "AccountingRegister",
+    "РегистрРасчета": "CalculationRegister",
+    "БизнесПроцесс": "BusinessProcess",
+    "Задача": "Task",
+    "КритерийОтбора": "FilterCriterion",
+}
+_DYNAMIC_LIST_TABLE_TO_REGISTRY_KIND = {
+    table_kind: registry_kind
+    for registry_kind, table_kind in _REGISTRY_KIND_TO_DYNAMIC_LIST_TABLE.items()
+}
+
 
 def metadata_object_xml_type(value: str) -> str | None:
     """Преобразовать каноническую ссылку Registry в тип Form.xml."""
@@ -92,6 +113,32 @@ def metadata_reference_registry_ref(value: str) -> str | None:
         return None
     xml_kind, name = parts
     registry_kind = _XML_REFERENCE_TO_REGISTRY_KIND.get(xml_kind)
+    if registry_kind is None:
+        return None
+    return f"{registry_kind}.{name}"
+
+
+def dynamic_list_xml_table(value: str) -> str | None:
+    """Преобразовать прямую ссылку Registry в MainTable динамического списка."""
+
+    parts = value.split(".")
+    if len(parts) != 2 or not all(_IDENTIFIER.fullmatch(part) for part in parts):
+        return None
+    kind, name = parts
+    table_kind = _REGISTRY_KIND_TO_DYNAMIC_LIST_TABLE.get(kind)
+    if table_kind is None:
+        return None
+    return f"{table_kind}.{name}"
+
+
+def dynamic_list_registry_ref(value: str) -> str | None:
+    """Преобразовать поддержанную MainTable в прямую ссылку Registry."""
+
+    parts = value.split(".")
+    if len(parts) != 2 or not all(_IDENTIFIER.fullmatch(part) for part in parts):
+        return None
+    table_kind, name = parts
+    registry_kind = _DYNAMIC_LIST_TABLE_TO_REGISTRY_KIND.get(table_kind)
     if registry_kind is None:
         return None
     return f"{registry_kind}.{name}"

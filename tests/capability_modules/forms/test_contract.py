@@ -358,6 +358,45 @@ def test_некорректный_ссылочный_или_составной_�
     assert expected in _codes(caught.value)
 
 
+def test_dynamic_list_разрешает_таблицу_и_вложенные_поля():
+    payload = _rich_payload()
+    payload["attributes"][13] = {
+        "name": "Список",
+        "type": {
+            "kind": "dynamic_list",
+            "main_table": "Справочник.Товары",
+            "dynamic_data_read": True,
+        },
+        "main": True,
+    }
+    table = payload["elements"][0]["children"][1]["pages"][0]["children"][0]
+    table["data_path"] = "Список"
+    for column in table["columns"]:
+        column["data_path"] = "Список." + column["name"]
+
+    form = parse_managed_form_spec(payload)
+
+    assert form.attributes[13].type.main_table == "Справочник.Товары"
+    assert form.attributes[13].type.dynamic_data_read is True
+
+
+def test_dynamic_list_с_непрямой_или_неизвестной_таблицей_отклоняется():
+    payload = _payload()
+    payload["attributes"][0]["type"] = {
+        "kind": "dynamic_list",
+        "main_table": "Справочник.Товары.Иерархия",
+        "dynamic_data_read": True,
+    }
+
+    with pytest.raises(FormsContractError) as caught:
+        parse_managed_form_spec(payload)
+
+    assert (
+        "invalid_dynamic_list_main_table",
+        "$.attributes[0].type.main_table",
+    ) in _codes(caught.value)
+
+
 def test_id_не_является_частью_публичной_спецификации():
     payload = _payload()
     payload["commands"][0]["id"] = 1

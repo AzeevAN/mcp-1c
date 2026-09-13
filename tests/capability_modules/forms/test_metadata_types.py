@@ -1,6 +1,8 @@
 import pytest
 
 from mcp1c.capability_modules.forms.metadata_types import (
+    dynamic_list_registry_ref,
+    dynamic_list_xml_table,
     metadata_object_registry_ref,
     metadata_object_xml_type,
     metadata_reference_registry_ref,
@@ -95,3 +97,20 @@ def test_ссылочный_тип_имеет_взаимно_однозначн�
 )
 def test_неподдержанная_ссылочная_ссылка_registry_не_преобразуется(value):
     assert metadata_reference_xml_type(value) is None
+
+
+@pytest.mark.parametrize(
+    ("registry_ref", "xml_table"),
+    [
+        ("Справочник.Товары", "Catalog.Товары"),
+        ("Документ.Заказ", "Document.Заказ"),
+        ("РегистрСведений.Цены", "InformationRegister.Цены"),
+        ("РегистрНакопления.Остатки", "AccumulationRegister.Остатки"),
+        ("ЖурналДокументов.Операции", "DocumentJournal.Операции"),
+    ],
+)
+def test_основная_таблица_dynamic_list_имеет_обратимое_отображение(
+    registry_ref, xml_table
+):
+    assert dynamic_list_xml_table(registry_ref) == xml_table
+    assert dynamic_list_registry_ref(xml_table) == registry_ref

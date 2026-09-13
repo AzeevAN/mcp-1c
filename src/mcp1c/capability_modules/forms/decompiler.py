@@ -10,6 +10,7 @@ from .command_catalog import ITEM_STANDARD_COMMANDS, standard_command_supported
 from .diagnostics import Coverage, Diagnostic, FormsResult
 from .event_catalog import event_signature
 from .metadata_types import (
+    dynamic_list_registry_ref,
     metadata_object_registry_ref,
     metadata_reference_registry_ref,
 )
@@ -31,6 +32,7 @@ from .version_catalog import (
 MAX_FORM_XML_BYTES = 2 * 1024 * 1024
 _LOGFORM = "http://v8.1c.ru/8.3/xcf/logform"
 _V8 = "http://v8.1c.ru/8.1/data/core"
+_DCSSET = "http://v8.1c.ru/8.1/data-composition-system/settings"
 _XR = "http://v8.1c.ru/8.3/xcf/readable"
 _XSI = "http://www.w3.org/2001/XMLSchema-instance"
 _IDENTIFIER = re.compile(r"[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*\Z")
@@ -908,7 +910,123 @@ def _type(
     metadata_object = metadata_object_registry_ref(name)
     if metadata_object is not None and allow_value_table:
         return {"kind": "metadata_object", "object": metadata_object}
+    if name == "cfg:DynamicList" and allow_value_table:
+        return _dynamic_list_type(inventory, parent)
     return _atomic_type(inventory, container, type_name)
+
+
+def _dynamic_list_type(
+    inventory: _Inventory, parent: ET.Element
+) -> dict[str, object] | None:
+    settings = inventory.required_child(parent, "Settings")
+    if settings is None:
+        return None
+    xsi_type = _q("type", _XSI)
+    inventory.mark(settings, xsi_type)
+    if settings.get(xsi_type) != "DynamicList":
+        inventory.issue(
+            "unsupported_dynamic_list_settings",
+            inventory.paths[id(settings)],
+            "Ожидались Settings типа DynamicList.",
+            status="unsupported",
+        )
+    manual = inventory.required_child(settings, "ManualQuery")
+    if manual is not None:
+        inventory.mark(manual)
+        if _text(manual) != "false":
+            inventory.issue(
+                "manual_dynamic_list_not_supported",
+                inventory.paths[id(manual)],
+                "Ручной запрос динамического списка пока сохраняется "
+                "только в inventory.",
+                status="unsupported",
+            )
+            return None
+    dynamic_data_read = _optional_boolean(
+        inventory, settings, "DynamicDataRead"
+    )
+    if dynamic_data_read is None:
+        inventory.issue(
+            "missing_dynamic_data_read",
+            f"{inventory.paths[id(settings)]}/DynamicDataRead",
+            "Для поддержанного динамического списка нужен DynamicDataRead.",
+            status="unsupported",
+        )
+        return None
+    main_table_node = inventory.required_child(settings, "MainTable")
+    if main_table_node is None:
+        return None
+    inventory.mark(main_table_node)
+    main_table = dynamic_list_registry_ref(_text(main_table_node))
+    if main_table is None:
+        inventory.issue(
+            "unsupported_dynamic_list_main_table",
+            inventory.paths[id(main_table_node)],
+            "Поддерживается прямая MainTable из закрытого каталога Registry.",
+            status="unsupported",
+        )
+        return None
+    if not _default_list_settings(inventory, settings):
+        return None
+    return {
+        "kind": "dynamic_list",
+        "main_table": main_table,
+        "dynamic_data_read": dynamic_data_read,
+    }
+
+
+def _default_list_settings(
+    inventory: _Inventory, settings: ET.Element
+) -> bool:
+    container = inventory.required_child(settings, "ListSettings")
+    if container is None:
+        return False
+    inventory.mark(container)
+    expected = (
+        ("filter", "dfcece9d-5077-440b-b6b3-45a5cb4538eb"),
+        ("order", "88619765-ccb3-46c6-ac52-38e9c992ebd4"),
+        ("conditionalAppearance", "b75fecce-942b-4aed-abc9-e6a02e460fb3"),
+    )
+    supported = True
+    for tag, setting_id in expected:
+        node = inventory.required_child(container, tag, namespace=_DCSSET)
+        if node is None:
+            supported = False
+            continue
+        inventory.mark(node)
+        view = inventory.required_child(node, "viewMode", namespace=_DCSSET)
+        identifier = inventory.required_child(
+            node, "userSettingID", namespace=_DCSSET
+        )
+        if view is not None:
+            inventory.mark(view)
+        if identifier is not None:
+            inventory.mark(identifier)
+        if _text(view) != "Normal" or _text(identifier) != setting_id:
+            supported = False
+    items_view = inventory.required_child(
+        container, "itemsViewMode", namespace=_DCSSET
+    )
+    items_id = inventory.required_child(
+        container, "itemsUserSettingID", namespace=_DCSSET
+    )
+    if items_view is not None:
+        inventory.mark(items_view)
+    if items_id is not None:
+        inventory.mark(items_id)
+    if _text(items_view) != "Normal" or _text(items_id) != (
+        "911b6018-f537-43e8-a417-da56b22f9aec"
+    ):
+        supported = False
+    if not supported:
+        inventory.issue(
+            "nondefault_dynamic_list_settings",
+            inventory.paths[id(container)],
+            "Нестандартные настройки динамического списка сохранены "
+            "только в inventory.",
+            status="unsupported",
+        )
+    return supported
 
 
 def _atomic_type(

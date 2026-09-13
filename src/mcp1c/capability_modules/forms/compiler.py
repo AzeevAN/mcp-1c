@@ -8,13 +8,18 @@ from xml.sax.saxutils import escape, quoteattr
 
 from .diagnostics import Artifact, Coverage, Diagnostic, FormsResult
 from .event_catalog import event_signature
-from .metadata_types import metadata_object_xml_type, metadata_reference_xml_type
+from .metadata_types import (
+    dynamic_list_xml_table,
+    metadata_object_xml_type,
+    metadata_reference_xml_type,
+)
 from .models import (
     BooleanType,
     Button,
     CheckBoxField,
     CompositeType,
     DateType,
+    DynamicListType,
     FormAttribute,
     FormEvent,
     InputField,
@@ -583,6 +588,8 @@ def _emit_type(lines: list[str], value: object, indent: int) -> None:
         if xml_type is None:  # pragma: no cover - checked by the contract
             raise TypeError(f"Неподдержанный объектный тип: {value.object!r}")
         _append(lines, indent + 1, f"<v8:Type>{escape(xml_type)}</v8:Type>")
+    elif isinstance(value, DynamicListType):
+        _append(lines, indent + 1, "<v8:Type>cfg:DynamicList</v8:Type>")
     else:
         _emit_value_type_name(lines, value, indent + 1)
         _emit_value_qualifiers(lines, value, indent + 1)
@@ -670,7 +677,56 @@ def _emit_attribute(
         _append(lines, 3, "</Columns>")
     if attribute.main:
         _append(lines, 3, "<MainAttribute>true</MainAttribute>")
+    if isinstance(attribute.type, DynamicListType):
+        _emit_dynamic_list_settings(lines, attribute.type, 3)
     _append(lines, 2, "</Attribute>")
+
+
+def _emit_dynamic_list_settings(
+    lines: list[str], value: DynamicListType, indent: int
+) -> None:
+    table = dynamic_list_xml_table(value.main_table)
+    if table is None:  # pragma: no cover - checked by the contract
+        raise TypeError(
+            f"Неподдержанная таблица динамического списка: {value.main_table!r}"
+        )
+    _append(lines, indent, '<Settings xsi:type="DynamicList">')
+    _append(lines, indent + 1, "<ManualQuery>false</ManualQuery>")
+    dynamic_data_read = "true" if value.dynamic_data_read else "false"
+    _append(
+        lines,
+        indent + 1,
+        f"<DynamicDataRead>{dynamic_data_read}</DynamicDataRead>",
+    )
+    _append(lines, indent + 1, f"<MainTable>{escape(table)}</MainTable>")
+    _append(lines, indent + 1, "<ListSettings>")
+    for tag, setting_id in (
+        ("filter", "dfcece9d-5077-440b-b6b3-45a5cb4538eb"),
+        ("order", "88619765-ccb3-46c6-ac52-38e9c992ebd4"),
+        ("conditionalAppearance", "b75fecce-942b-4aed-abc9-e6a02e460fb3"),
+    ):
+        _append(lines, indent + 2, f"<dcsset:{tag}>")
+        _append(lines, indent + 3, "<dcsset:viewMode>Normal</dcsset:viewMode>")
+        _append(
+            lines,
+            indent + 3,
+            f"<dcsset:userSettingID>{setting_id}</dcsset:userSettingID>",
+        )
+        _append(lines, indent + 2, f"</dcsset:{tag}>")
+    _append(
+        lines,
+        indent + 2,
+        "<dcsset:itemsViewMode>Normal</dcsset:itemsViewMode>",
+    )
+    _append(
+        lines,
+        indent + 2,
+        "<dcsset:itemsUserSettingID>"
+        "911b6018-f537-43e8-a417-da56b22f9aec"
+        "</dcsset:itemsUserSettingID>",
+    )
+    _append(lines, indent + 1, "</ListSettings>")
+    _append(lines, indent, "</Settings>")
 
 
 def _compile_xml(form: ManagedForm) -> str:

@@ -226,6 +226,23 @@ def validate_registry_links(
                         )
                     )
             if value_type.get("kind") != "metadata_object":
+                if value_type.get("kind") == "dynamic_list":
+                    name = raw.get("name")
+                    main_table = value_type.get("main_table")
+                    if isinstance(name, str) and isinstance(main_table, str):
+                        item = snapshot.object(main_table)
+                        object_attributes[name] = item
+                        if item is None:
+                            diagnostics.append(
+                                Diagnostic(
+                                    "configuration_links",
+                                    "warning",
+                                    "dynamic_list_main_table_not_found",
+                                    f"$.attributes[{index}].type.main_table",
+                                    "Основная таблица динамического списка "
+                                    "не найдена в Registry snapshot.",
+                                )
+                            )
                 continue
             name = raw.get("name")
             reference = value_type.get("object")

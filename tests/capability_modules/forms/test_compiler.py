@@ -160,6 +160,24 @@ def test_compiler_пишет_ссылочный_и_составной_типы_�
     assert "<v8:Length>50</v8:Length>" in xml[qualifiers:]
 
 
+def test_compiler_пишет_автоматический_dynamic_list_с_основной_таблицей():
+    payload = _payload()
+    payload["attributes"][0]["type"] = {
+        "kind": "dynamic_list",
+        "main_table": "Справочник.Товары",
+        "dynamic_data_read": False,
+    }
+
+    xml = compile_managed_form(payload).artifacts[0].content
+
+    assert "<v8:Type>cfg:DynamicList</v8:Type>" in xml
+    assert '<Settings xsi:type="DynamicList">' in xml
+    assert "<ManualQuery>false</ManualQuery>" in xml
+    assert "<DynamicDataRead>false</DynamicDataRead>" in xml
+    assert "<MainTable>Catalog.Товары</MainTable>" in xml
+    assert "<dcsset:itemsViewMode>Normal</dcsset:itemsViewMode>" in xml
+
+
 def test_id_детерминированы_и_пространства_элементов_реквизитов_команд_разделены():
     root = ET.fromstring(compile_managed_form(_payload()).artifacts[0].content)
     child_items = root.find(f"{{{LOGFORM}}}ChildItems")

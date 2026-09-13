@@ -213,6 +213,7 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
                 "metadata_object",
                 "metadata_reference",
                 "composite",
+                "dynamic_list",
             ],
         ),
         FormRule(
@@ -236,7 +237,7 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
         FormRule(
             "registry_types_boundary",
             "boundary",
-            "При доступном Registry-контексте проверяются объект, вложенное поле, ссылочные варианты и доказуемые ограничения типа; без контекста генерация продолжается с предупреждением. DynamicList ещё не поддержан.",
+            "При доступном Registry-контексте проверяются объект, вложенное поле, ссылочные варианты, основная таблица DynamicList и доказуемые ограничения типа; без контекста генерация продолжается с предупреждением.",
             "contract_decision",
         ),
     ),
@@ -600,6 +601,7 @@ def get_managed_form_rules(topic: RuleTopic = "overview") -> dict[str, object]:
             "reference": ["metadata_reference"],
             "composite": ["scalar", "metadata_reference"],
             "collection": ["value_table"],
+            "query": ["dynamic_list"],
             "string_length_zero": "unlimited",
         }
     elif topic == "layout":

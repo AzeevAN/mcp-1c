@@ -118,6 +118,7 @@ def _registry_with_object(tmp_path) -> Registry:
         full_name="Справочник.Товары",
         kind="Справочник",
         name="Товары",
+        attributes=[Field("Наименование", types=["Строка"])],
     )
     incoming = tmp_path / "incoming"
     incoming.mkdir()
@@ -221,6 +222,26 @@ async def test_registry_проверяет_ссылки_в_одиночном_и
     assert [item["path"] for item in warnings] == [
         "$.attributes[1].type.variants[0].object"
     ]
+
+
+@pytest.mark.anyio
+async def test_registry_проверяет_основную_таблицу_и_поле_dynamic_list(tmp_path):
+    registry = _registry_with_object(tmp_path)
+    specification = _payload()
+    specification["attributes"][0]["type"] = {
+        "kind": "dynamic_list",
+        "main_table": "Справочник.Товары",
+        "dynamic_data_read": True,
+    }
+    specification["elements"][0]["children"][0]["data_path"] = (
+        "ПервоеЗначение.Наименование"
+    )
+
+    tools = {item.name: item.function for item in forms_tools.load(registry)}
+    payload = json.loads(await tools["compile_managed_form"](specification))
+
+    assert payload["status"] == "compiled"
+    assert payload["coverage"]["configuration_links"] == "passed"
 
 
 @pytest.mark.anyio

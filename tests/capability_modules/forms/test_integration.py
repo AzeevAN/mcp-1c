@@ -95,6 +95,10 @@ def test_on_добавляет_ровно_четыре_forms_tools_в_стаби
 
     assert names[-4:] == FORM_TOOLS
     assert len(names) == CORE_TOOL_COUNT + 4
+    rules_schema = tools[-4].input_schema
+    assert "query" in rules_schema["properties"]
+    assert "terminology" in json.dumps(rules_schema, ensure_ascii=False)
+    assert "русскому или английскому" in tools[-4].description
     compile_schema = tools[-3].input_schema
     assert "specification" in compile_schema["properties"]
     assert "configuration" in compile_schema["properties"]

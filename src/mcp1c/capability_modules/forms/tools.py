@@ -49,8 +49,8 @@ def _input(value: str, name: str, limit: int) -> None:
         raise FormsToolInputError(f"{name} превышает лимит {limit} байт.")
 
 
-def _rules_tool(topic: RuleTopic = "overview") -> str:
-    return _json(get_managed_form_rules(topic))
+def _rules_tool(topic: RuleTopic = "overview", query: str | None = None) -> str:
+    return _json(get_managed_form_rules(topic, query=query))
 
 
 async def _compile_tool(
@@ -193,7 +193,9 @@ def load(registry: RegistryResolver | None = None) -> tuple[CapabilityTool, ...]
             function=_rules_tool,
             description=(
                 "Получить один компактный раздел правил управляемых форм. "
-                "Начните с topic=overview; инструмент не читает Registry или data/."
+                "Начните с topic=overview. Для поиска канонического ключа по "
+                "русскому или английскому понятию вызовите topic=terminology "
+                "с параметром query; инструмент не читает Registry или data/."
             ),
         ),
         CapabilityTool(

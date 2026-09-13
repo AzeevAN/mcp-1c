@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import get_args, get_type_hints
 
 import pytest
 
@@ -10,11 +11,13 @@ from mcp1c.capability_modules.forms.rules import (
     FormsRuleQueryError,
     get_managed_form_rules,
 )
+from mcp1c.capability_modules.forms import models
 
 
 def test_темы_правил_закрыты_и_имеют_стабильный_порядок():
     assert RULE_TOPICS == (
         "overview",
+        "terminology",
         "specification",
         "elements",
         "attributes",
@@ -22,6 +25,193 @@ def test_темы_правил_закрыты_и_имеют_стабильный
         "commands_events",
         "diagnostics",
     )
+
+
+def test_терминология_покрывает_все_поддержанные_элементы_и_свойства():
+    payload = get_managed_form_rules("terminology")
+    entries = payload["entries"]
+
+    elements = set(entries["element"])
+    assert elements == {
+        "usual_group",
+        "input_field",
+        "check_box_field",
+        "label_decoration",
+        "label_field",
+        "radio_button_field",
+        "button",
+        "command_bar",
+        "popup",
+        "button_group",
+        "pages",
+        "table",
+    }
+
+    properties = set(entries["property"])
+    assert properties == {
+        "action",
+        "allowed_sign",
+        "attributes",
+        "choice_list",
+        "children",
+        "columns",
+        "columns_count",
+        "command",
+        "command_kind",
+        "command_owner",
+        "commands",
+        "data_path",
+        "default",
+        "digits",
+        "dynamic_data_read",
+        "elements",
+        "event",
+        "events",
+        "format_version",
+        "form_name",
+        "fraction_digits",
+        "fractions",
+        "handler",
+        "horizontal_location",
+        "horizontal_stretch",
+        "hyperlink",
+        "kind",
+        "length",
+        "list_choice_mode",
+        "main",
+        "main_table",
+        "multiline",
+        "name",
+        "object",
+        "orientation",
+        "owner",
+        "pages",
+        "platform_version",
+        "presentation",
+        "radio_button_type",
+        "read_only",
+        "representation",
+        "ru",
+        "schema_version",
+        "show_title",
+        "title",
+        "type",
+        "value",
+        "variants",
+        "vertical_stretch",
+    }
+    assert set(entries["attribute_type"]) == {
+        get_args(get_type_hints(spec)["kind"])[0]
+        for spec in get_args(models.AttributeTypeSpec)
+    }
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["панель команд", "command bar", "CommandBar", "command_bar"],
+)
+def test_поиск_панели_команд_одинаково_работает_на_русском_и_английском(query):
+    payload = get_managed_form_rules("terminology", query=query)
+
+    assert [entry["canonical"] for entry in payload["matches"]] == ["command_bar"]
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "положение по горизонтали",
+        "horizontal location",
+        "HorizontalLocation",
+        "horizontal_location",
+    ],
+)
+def test_поиск_свойства_одинаково_работает_на_русском_и_английском(query):
+    payload = get_managed_form_rules("terminology", query=query)
+
+    assert [entry["canonical"] for entry in payload["matches"]] == [
+        "horizontal_location"
+    ]
+
+
+def test_поиск_русского_значения_возвращает_свойство_и_каноническое_значение():
+    payload = get_managed_form_rules("terminology", query="слева")
+
+    assert payload["matches"] == [
+        {
+            "canonical": "horizontal_location",
+            "category": "property",
+            "russian": ["положение по горизонтали", "горизонтальное положение"],
+            "english": ["horizontal location"],
+            "scopes": ["command_bar"],
+            "values": {
+                "auto": ["автоматически", "auto"],
+                "left": ["слева", "left"],
+                "center": ["по центру", "center"],
+                "right": ["справа", "right"],
+            },
+            "matched_values": ["left"],
+        }
+    ]
+
+
+def test_поиск_неизвестного_термина_возвращает_пустой_результат_без_догадки():
+    payload = get_managed_form_rules("terminology", query="трехмерная диаграмма")
+
+    assert payload["matches"] == []
+    assert payload["match_policy"] == "exact_alias_or_all_query_tokens"
+
+
+def test_новый_element_или_property_нельзя_добавить_без_терминологии():
+    payload = get_managed_form_rules("terminology")
+    entries = payload["entries"]
+    element_terms = set(entries["element"])
+    property_terms = set(entries["property"])
+
+    element_specs = set(get_args(models.ElementSpec)) | {
+        models.PopupSpec,
+        models.ButtonGroupSpec,
+    }
+    contract_specs = element_specs | set(get_args(models.AttributeTypeSpec)) | {
+        models.ManagedFormSpec,
+        models.LocalizedTextSpec,
+        models.FormAttributeSpec,
+        models.ValueTableColumnSpec,
+        models.ChoiceListItemSpec,
+        models.PageSpec,
+        models.FormCommandSpec,
+        models.FormEventSpec,
+    }
+    implemented_elements = {
+        get_args(get_type_hints(spec)["kind"])[0] for spec in element_specs
+    }
+    implemented_properties = {
+        property_name
+        for spec in contract_specs
+        for property_name in get_type_hints(spec)
+    }
+
+    assert element_terms == implemented_elements
+    assert property_terms == implemented_properties
+
+
+@pytest.mark.parametrize("query", ["", "   ", "я" * 161])
+def test_невалидный_поисковый_запрос_отклоняется(query):
+    with pytest.raises(FormsRuleQueryError, match="запрос"):
+        get_managed_form_rules("terminology", query=query)
+
+
+def test_query_нельзя_передать_в_другую_тему():
+    with pytest.raises(FormsRuleQueryError, match="topic=terminology"):
+        get_managed_form_rules("overview", query="форма")
+
+
+def test_результат_поиска_можно_менять_не_повреждая_индекс():
+    first = get_managed_form_rules("terminology", query="панель команд")
+    first["matches"][0]["russian"].append("чужой термин")
+
+    second = get_managed_form_rules("terminology", query="панель команд")
+
+    assert "чужой термин" not in second["matches"][0]["russian"]
 
 
 @pytest.mark.parametrize("topic", RULE_TOPICS)

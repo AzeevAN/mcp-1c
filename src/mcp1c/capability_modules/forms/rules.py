@@ -11,11 +11,13 @@ import copy
 from dataclasses import dataclass
 from typing import Literal, TypeAlias
 
+from .terminology import MAX_TERM_QUERY_LENGTH, all_form_terms, search_form_terms
 from .version_catalog import platform_profiles_payload
 
 
 RuleTopic: TypeAlias = Literal[
     "overview",
+    "terminology",
     "specification",
     "elements",
     "attributes",
@@ -33,6 +35,7 @@ EvidenceLevel: TypeAlias = Literal[
 
 RULE_TOPICS: tuple[RuleTopic, ...] = (
     "overview",
+    "terminology",
     "specification",
     "elements",
     "attributes",
@@ -100,6 +103,26 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
                 "check_managed_form",
                 "decompile_managed_form",
             ],
+        ),
+    ),
+    "terminology": (
+        FormRule(
+            "canonical_keys_only",
+            "required",
+            (
+                "Русские и английские термины используются только для поиска; "
+                "в specification всегда передаётся найденный canonical-ключ."
+            ),
+            "contract_decision",
+        ),
+        FormRule(
+            "terminology_required_for_new_contracts",
+            "required",
+            (
+                "Каждый новый элемент или свойство Forms добавляется вместе "
+                "с русским и английским поисковым соответствием."
+            ),
+            "contract_decision",
         ),
     ),
     "specification": (
@@ -682,13 +705,27 @@ def _minimal_example() -> dict[str, object]:
     }
 
 
-def get_managed_form_rules(topic: RuleTopic = "overview") -> dict[str, object]:
+def get_managed_form_rules(
+    topic: RuleTopic = "overview",
+    query: str | None = None,
+) -> dict[str, object]:
     """Вернуть один bounded-раздел правил без чтения файлов или Registry."""
 
     if topic not in RULE_TOPICS:
         raise FormsRuleQueryError(
             "Неизвестная тема. Доступны: " + ", ".join(RULE_TOPICS) + "."
         )
+    if query is not None:
+        if topic != "terminology":
+            raise FormsRuleQueryError(
+                "Параметр query доступен только для topic=terminology."
+            )
+        if not query.strip():
+            raise FormsRuleQueryError("Поисковый запрос не должен быть пустым.")
+        if len(query) > MAX_TERM_QUERY_LENGTH:
+            raise FormsRuleQueryError(
+                f"Поисковый запрос длиннее {MAX_TERM_QUERY_LENGTH} символов."
+            )
 
     payload: dict[str, object] = {
         "schema_version": 1,
@@ -710,7 +747,15 @@ def get_managed_form_rules(topic: RuleTopic = "overview") -> dict[str, object]:
         },
         "rules": [rule.to_dict() for rule in _RULES[topic]],
     }
-    if topic == "specification":
+    if topic == "terminology":
+        payload["languages"] = ["ru", "en", "canonical"]
+        payload["match_policy"] = "exact_alias_or_all_query_tokens"
+        if query is None:
+            payload["entries"] = all_form_terms()
+        else:
+            payload["query"] = query
+            payload["matches"] = search_form_terms(query)
+    elif topic == "specification":
         payload["example"] = _minimal_example()
     elif topic == "elements":
         payload["supported"] = {

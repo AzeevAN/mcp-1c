@@ -59,6 +59,9 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
             schema_text = json.dumps(compile_schema, ensure_ascii=False)
             if "ManagedFormSpec" not in schema_text or "additionalProperties" not in schema_text:
                 raise RuntimeError("Строгая вложенная specification-схема не опубликована.")
+            rules_schema = tools["get_managed_form_rules"].input_schema
+            if "query" not in rules_schema.get("properties", {}):
+                raise RuntimeError("Двуязычный поиск терминов не опубликован.")
 
             specification = json.loads(FIXTURE.read_text(encoding="utf-8"))
             specification["elements"].append(
@@ -151,6 +154,13 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
             rules = await session.call_tool(
                 "get_managed_form_rules", {"topic": "overview"}
             )
+            terminology_results = []
+            for query in ("панель команд", "command bar", "CommandBar"):
+                result = await session.call_tool(
+                    "get_managed_form_rules",
+                    {"topic": "terminology", "query": query},
+                )
+                terminology_results.append(json.loads(result.content[0].text))
             compiled = await session.call_tool(
                 "compile_managed_form", {"specification": specification}
             )
@@ -187,6 +197,12 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
             results = (rules, compiled, checked, decompiled)
             if any(result.is_error for result in results) or not rejected.is_error:
                 raise RuntimeError("Внешняя MCP-последовательность дала неверный статус.")
+            canonical_matches = [
+                [match["canonical"] for match in result["matches"]]
+                for result in terminology_results
+            ]
+            if canonical_matches != [["command_bar"]] * 3:
+                raise RuntimeError("Русский и английский поиск терминов расходятся.")
             return {
                 "mode": mode,
                 "forms_tools": len(present),
@@ -200,6 +216,7 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                     == compiled_payload["specification"]
                 ),
                 "unknown_field_rejected": True,
+                "bilingual_term_search": "command_bar",
             }
 
 

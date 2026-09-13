@@ -180,6 +180,58 @@ def test_переключатель_требует_данные_и_вариан�
     assert [item.value for item in field.choice_list] == ["A", "B"]
 
 
+def test_панель_команд_содержит_только_явные_кнопки():
+    payload = _payload()
+    payload["elements"].append(
+        {
+            "kind": "command_bar",
+            "name": "Действия",
+            "title": {"ru": "Действия"},
+            "horizontal_location": "right",
+            "horizontal_stretch": True,
+            "children": [
+                {
+                    "kind": "button",
+                    "name": "ПроверитьНаПанели",
+                    "command": "Проверить",
+                }
+            ],
+        }
+    )
+
+    form = parse_managed_form_spec(payload)
+    bar = form.elements[-1]
+
+    assert bar.kind == "command_bar"
+    assert bar.title.ru == "Действия"
+    assert bar.horizontal_location == "right"
+    assert bar.horizontal_stretch is True
+    assert [item.name for item in bar.children] == ["ПроверитьНаПанели"]
+
+    payload["elements"][-1]["children"] = []
+    with pytest.raises(FormsContractError) as caught:
+        parse_managed_form_spec(payload)
+
+    assert (
+        "command_bar_buttons_required",
+        "$.elements[1].children",
+    ) in _codes(caught.value)
+
+    payload["elements"][-1]["children"] = [
+        {
+            "kind": "label_decoration",
+            "name": "НедопустимоеПояснение",
+        }
+    ]
+    with pytest.raises(FormsContractError) as caught:
+        parse_managed_form_spec(payload)
+
+    assert (
+        "unsupported_command_bar_child_kind",
+        "$.elements[1].children[0].kind",
+    ) in _codes(caught.value)
+
+
 def test_таблица_отклоняет_путь_к_необъявленной_колонке():
     payload = _rich_payload()
     payload["elements"][0]["children"][1]["pages"][0]["children"][0][

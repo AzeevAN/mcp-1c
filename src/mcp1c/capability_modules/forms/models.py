@@ -239,6 +239,20 @@ class ButtonSpec(TypedDict):
     title: NotRequired[LocalizedTextSpec]
 
 
+class CommandBarSpec(TypedDict):
+    __pydantic_config__ = {"extra": "forbid"}
+
+    kind: Literal["command_bar"]
+    name: str
+    children: list[ButtonSpec]
+    title: NotRequired[LocalizedTextSpec]
+    horizontal_location: NotRequired[
+        Literal["auto", "left", "center", "right"]
+    ]
+    horizontal_stretch: NotRequired[bool]
+    vertical_stretch: NotRequired[bool]
+
+
 class TableSpec(TypedDict):
     __pydantic_config__ = {"extra": "forbid"}
 
@@ -295,6 +309,7 @@ ElementSpec: TypeAlias = (
     | LabelFieldSpec
     | RadioButtonFieldSpec
     | ButtonSpec
+    | CommandBarSpec
     | TableSpec
     | PagesSpec
     | UsualGroupSpec
@@ -526,6 +541,17 @@ class Button:
 
 
 @dataclass(frozen=True, slots=True)
+class CommandBar:
+    name: str
+    children: tuple[Button, ...]
+    title: LocalizedText | None = None
+    horizontal_location: Literal["auto", "left", "center", "right"] = "auto"
+    horizontal_stretch: bool | None = None
+    vertical_stretch: bool | None = None
+    kind: Literal["command_bar"] = "command_bar"
+
+
+@dataclass(frozen=True, slots=True)
 class Table:
     name: str
     data_path: str
@@ -577,6 +603,7 @@ Element: TypeAlias = (
     | LabelField
     | RadioButtonField
     | Button
+    | CommandBar
     | Table
     | Pages
     | UsualGroup
@@ -1258,6 +1285,65 @@ def _button(reader: _Reader, item: Mapping[str, object], path: str) -> Button:
     )
 
 
+def _command_bar(
+    reader: _Reader, item: Mapping[str, object], path: str
+) -> CommandBar:
+    reader.exact_keys(
+        item,
+        path,
+        required=frozenset({"kind", "name", "children"}),
+        optional=frozenset(
+            {
+                "title",
+                "horizontal_location",
+                "horizontal_stretch",
+                "vertical_stretch",
+            }
+        ),
+    )
+    raw_children = reader.array(
+        item.get("children"), f"{path}.children", allow_empty=True
+    )
+    children: list[Button] = []
+    for index, raw in enumerate(raw_children):
+        child_path = f"{path}.children[{index}]"
+        child = reader.object(raw, child_path)
+        if child.get("kind") != "button":
+            reader.issue(
+                "unsupported_command_bar_child_kind",
+                f"{child_path}.kind",
+                "Первый слой CommandBar поддерживает только прямые кнопки.",
+            )
+            continue
+        children.append(_button(reader, child, child_path))
+    if not children:
+        reader.issue(
+            "command_bar_buttons_required",
+            f"{path}.children",
+            "Панели команд нужна хотя бы одна явная кнопка.",
+        )
+    horizontal_location = item.get("horizontal_location", "auto")
+    if horizontal_location not in {"auto", "left", "center", "right"}:
+        reader.issue(
+            "invalid_command_bar_horizontal_location",
+            f"{path}.horizontal_location",
+            "Допустимы auto, left, center и right.",
+        )
+        horizontal_location = "auto"
+    return CommandBar(
+        name=reader.string(item.get("name"), f"{path}.name", identifier=True),
+        children=tuple(children),
+        title=_optional_localized(reader, item, path),
+        horizontal_location=horizontal_location,
+        horizontal_stretch=_optional_boolean(
+            reader, item, "horizontal_stretch", path
+        ),
+        vertical_stretch=_optional_boolean(
+            reader, item, "vertical_stretch", path
+        ),
+    )
+
+
 def _table(reader: _Reader, item: Mapping[str, object], path: str) -> Table:
     reader.exact_keys(
         item,
@@ -1440,6 +1526,8 @@ def _element(reader: _Reader, value: object, path: str) -> Element:
         return _radio_button_field(reader, item, path)
     if kind == "button":
         return _button(reader, item, path)
+    if kind == "command_bar":
+        return _command_bar(reader, item, path)
     if kind == "table":
         return _table(reader, item, path)
     if kind == "pages":
@@ -1512,6 +1600,8 @@ def _walk_elements(
             yield from _walk_elements(
                 element.columns, f"{path}.columns", table=element
             )
+        elif isinstance(element, CommandBar):
+            yield from _walk_elements(element.children, f"{path}.children")
 
 
 def parse_managed_form_spec(payload: object) -> ManagedForm:
@@ -2032,6 +2122,20 @@ def _element_to_spec(element: Element) -> dict[str, object]:
             item["command_owner"] = element.command_owner
         if element.default:
             item["default"] = True
+    elif isinstance(element, CommandBar):
+        item = {
+            "kind": "command_bar",
+            "name": element.name,
+            "children": [
+                _element_to_spec(child) for child in element.children
+            ],
+        }
+        if element.horizontal_location != "auto":
+            item["horizontal_location"] = element.horizontal_location
+        if element.horizontal_stretch is not None:
+            item["horizontal_stretch"] = element.horizontal_stretch
+        if element.vertical_stretch is not None:
+            item["vertical_stretch"] = element.vertical_stretch
     elif isinstance(element, Table):
         item = {
             "kind": "table",
@@ -2149,6 +2253,8 @@ __all__ = [
     "BooleanTypeSpec",
     "Button",
     "ButtonSpec",
+    "CommandBar",
+    "CommandBarSpec",
     "CheckBoxField",
     "CheckBoxFieldSpec",
     "CompositeType",

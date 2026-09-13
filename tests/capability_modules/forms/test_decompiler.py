@@ -505,6 +505,58 @@ def test_radio_button_field_даёт_lossless_roundtrip():
     assert _diagnostics(unsupported, "missing_or_repeated_xml_node")
 
 
+def test_command_bar_с_кнопками_даёт_lossless_roundtrip():
+    payload = _payload()
+    payload["elements"].append(
+        {
+            "kind": "command_bar",
+            "name": "Действия",
+            "title": {"ru": "Действия"},
+            "horizontal_location": "center",
+            "horizontal_stretch": True,
+            "vertical_stretch": False,
+            "children": [
+                {
+                    "kind": "button",
+                    "name": "ПроверитьНаПанели",
+                    "command": "Проверить",
+                }
+            ],
+        }
+    )
+    compiled = compile_managed_form(payload)
+
+    result = decompile_managed_form(
+        compiled.artifacts[0].content,
+        form_name=payload["form_name"],
+        module_bsl=compiled.artifacts[1].content,
+    )
+
+    assert result.specification == compiled.specification
+    assert result.coverage.structural == "passed"
+
+    for missing_tag in ("ExtendedTooltip", "ChildItems"):
+        root = ET.fromstring(compiled.artifacts[0].content)
+        bar = next(
+            node
+            for node in root.iter(
+                "{http://v8.1c.ru/8.3/xcf/logform}CommandBar"
+            )
+        )
+        node = bar.find(
+            f"{{http://v8.1c.ru/8.3/xcf/logform}}{missing_tag}"
+        )
+        assert node is not None
+        bar.remove(node)
+        unsupported = decompile_managed_form(
+            ET.tostring(root, encoding="unicode"),
+            form_name=payload["form_name"],
+        )
+
+        assert unsupported.coverage.structural == "unsupported"
+        assert _diagnostics(unsupported, "missing_or_repeated_xml_node")
+
+
 def test_ручной_dynamic_list_остаётся_inventory():
     payload = _payload()
     payload["attributes"][0]["type"] = {

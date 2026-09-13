@@ -153,6 +153,7 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
                 "label_field",
                 "radio_button_field",
                 "button",
+                "command_bar",
                 "pages",
                 "table",
             ],
@@ -207,6 +208,16 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
                 "ContextMenu",
                 "ExtendedTooltip",
             ],
+        ),
+        FormRule(
+            "command_bar_structure",
+            "required",
+            (
+                "Первый authoring-слой CommandBar содержит одну или более "
+                "прямых кнопок и получает наблюдаемую расширенную подсказку."
+            ),
+            "observed_pattern",
+            ["ExtendedTooltip", "ChildItems<Button>"],
         ),
         FormRule(
             "separate_id_spaces",
@@ -689,6 +700,7 @@ def get_managed_form_rules(topic: RuleTopic = "overview") -> dict[str, object]:
                 "label_field",
                 "radio_button_field",
                 "button",
+                "command_bar",
                 "pages",
                 "table",
             ],
@@ -700,6 +712,7 @@ def get_managed_form_rules(topic: RuleTopic = "overview") -> dict[str, object]:
                 "label_field",
                 "radio_button_field",
                 "button",
+                "command_bar",
                 "pages",
                 "table",
             ],

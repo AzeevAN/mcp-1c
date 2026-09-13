@@ -89,6 +89,20 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                     ],
                 }
             )
+            specification["elements"].append(
+                {
+                    "kind": "command_bar",
+                    "name": "Действия",
+                    "horizontal_location": "right",
+                    "children": [
+                        {
+                            "kind": "button",
+                            "name": "ПроверитьНаПанели",
+                            "command": "Проверить",
+                        }
+                    ],
+                }
+            )
             specification["events"].append(
                 {
                     "owner": "Пояснение",

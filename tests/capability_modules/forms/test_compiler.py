@@ -260,6 +260,46 @@ def test_compiler_создаёт_radio_button_field_с_choice_list():
     assert "Процедура РежимИзменён(Элемент)" in result.artifacts[1].content
 
 
+def test_compiler_создаёт_command_bar_с_явными_кнопками():
+    payload = _payload()
+    payload["elements"].append(
+        {
+            "kind": "command_bar",
+            "name": "Действия",
+            "title": {"ru": "Действия"},
+            "horizontal_location": "right",
+            "horizontal_stretch": True,
+            "vertical_stretch": False,
+            "children": [
+                {
+                    "kind": "button",
+                    "name": "ПроверитьНаПанели",
+                    "command": "Проверить",
+                }
+            ],
+        }
+    )
+
+    result = compile_managed_form(payload)
+    root = ET.fromstring(result.artifacts[0].content)
+    q = lambda name: f"{{{LOGFORM}}}{name}"
+    bar = next(node for node in root.iter(q("CommandBar")))
+
+    assert [child.tag.rsplit("}", 1)[-1] for child in bar] == [
+        "Title",
+        "HorizontalLocation",
+        "HorizontalStretch",
+        "VerticalStretch",
+        "ExtendedTooltip",
+        "ChildItems",
+    ]
+    assert bar.find(q("HorizontalLocation")).text == "Right"
+    assert [
+        child.tag.rsplit("}", 1)[-1]
+        for child in bar.find(q("ChildItems"))
+    ] == ["Button"]
+
+
 def test_кодирование_даёт_utf8_bom_crlf_и_валидный_logform_xml():
     result = compile_managed_form(_payload())
     xml = result.artifacts[0]

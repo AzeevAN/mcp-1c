@@ -17,6 +17,7 @@ from .models import (
     BooleanType,
     Button,
     CheckBoxField,
+    CommandBar,
     CompositeType,
     DateType,
     DynamicListType,
@@ -431,6 +432,59 @@ def _emit_button(
     _append(lines, indent, "</Button>")
 
 
+def _emit_command_bar(
+    lines: list[str],
+    item: CommandBar,
+    allocator: _IdAllocator,
+    events_by_owner: dict[str | None, tuple[FormEvent, ...]],
+    indent: int,
+) -> None:
+    bar_id = allocator.next()
+    _append(
+        lines,
+        indent,
+        f"<CommandBar name={quoteattr(item.name)} id={quoteattr(bar_id)}>",
+    )
+    if item.title is not None:
+        _localized(lines, "Title", item.title, indent + 1)
+    if item.horizontal_location != "auto":
+        location = {
+            "left": "Left",
+            "center": "Center",
+            "right": "Right",
+        }[item.horizontal_location]
+        _append(
+            lines,
+            indent + 1,
+            f"<HorizontalLocation>{location}</HorizontalLocation>",
+        )
+    if item.horizontal_stretch is not None:
+        _append(
+            lines,
+            indent + 1,
+            f"<HorizontalStretch>{str(item.horizontal_stretch).lower()}</HorizontalStretch>",
+        )
+    if item.vertical_stretch is not None:
+        _append(
+            lines,
+            indent + 1,
+            f"<VerticalStretch>{str(item.vertical_stretch).lower()}</VerticalStretch>",
+        )
+    tooltip_id = allocator.next()
+    _append(
+        lines,
+        indent + 1,
+        "<ExtendedTooltip "
+        f"name={quoteattr(item.name + 'РасширеннаяПодсказка')} "
+        f"id={quoteattr(tooltip_id)}/>",
+    )
+    _append(lines, indent + 1, "<ChildItems>")
+    for child in item.children:
+        _emit_button(lines, child, allocator, events_by_owner, indent + 2)
+    _append(lines, indent + 1, "</ChildItems>")
+    _append(lines, indent, "</CommandBar>")
+
+
 def _emit_group(
     lines: list[str],
     group: UsualGroup,
@@ -706,6 +760,8 @@ def _emit_element(
         _emit_radio_button_field(lines, item, allocator, events_by_owner, indent)
     elif isinstance(item, Button):
         _emit_button(lines, item, allocator, events_by_owner, indent)
+    elif isinstance(item, CommandBar):
+        _emit_command_bar(lines, item, allocator, events_by_owner, indent)
     elif isinstance(item, Table):
         _emit_table(lines, item, allocator, events_by_owner, indent)
     elif isinstance(item, Pages):
@@ -745,6 +801,8 @@ def _walk_form_elements(form: ManagedForm):
                     yield from walk(page.children)
             elif isinstance(element, Table):
                 yield from walk(element.columns)
+            elif isinstance(element, CommandBar):
+                yield from walk(element.children)
 
     yield from walk(form.elements)
 

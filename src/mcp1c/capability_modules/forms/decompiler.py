@@ -74,6 +74,7 @@ _SINGLETON_TAGS = frozenset(
         "ListChoiceMode",
         "HorizontalStretch",
         "VerticalStretch",
+        "HorizontalLocation",
         "ChoiceList",
         "Presentation",
         "Value",
@@ -709,6 +710,68 @@ def _button(inventory: _Inventory, node: ET.Element) -> dict[str, object]:
     return item
 
 
+def _command_bar(
+    inventory: _Inventory, node: ET.Element
+) -> dict[str, object]:
+    inventory.mark(node, "name", "id")
+    result: dict[str, object] = {
+        "kind": "command_bar",
+        "name": _attribute_value(inventory, node, "name"),
+    }
+    _subset_attribute(inventory, node, "id")
+    title = _optional_localized(inventory, node, "Title")
+    if title is not None:
+        result["title"] = title
+    locations = [
+        child for child in node if child.tag == _q("HorizontalLocation")
+    ]
+    if locations:
+        location_node = locations[0]
+        inventory.mark(location_node)
+        location = {
+            "Auto": "auto",
+            "Left": "left",
+            "Center": "center",
+            "Right": "right",
+        }.get(_text(location_node))
+        if len(locations) > 1 or location is None:
+            inventory.issue(
+                "unsupported_xml_value",
+                inventory.paths[id(location_node)],
+                "Неподдержанное горизонтальное положение CommandBar.",
+                status="unsupported",
+            )
+        elif location != "auto":
+            result["horizontal_location"] = location
+    horizontal_stretch = _optional_boolean(inventory, node, "HorizontalStretch")
+    if horizontal_stretch is not None:
+        result["horizontal_stretch"] = horizontal_stretch
+    vertical_stretch = _optional_boolean(inventory, node, "VerticalStretch")
+    if vertical_stretch is not None:
+        result["vertical_stretch"] = vertical_stretch
+    _companion(inventory, node, "ExtendedTooltip")
+    container = inventory.required_child(node, "ChildItems")
+    children: list[dict[str, object]] = []
+    if container is not None:
+        inventory.mark(container)
+        for child in container:
+            if child.tag == _q("Button"):
+                children.append(_button(inventory, child))
+    if not children:
+        inventory.issue(
+            "command_bar_buttons_required",
+            (
+                inventory.paths[id(container)]
+                if container is not None
+                else inventory.paths[id(node)] + "/ChildItems"
+            ),
+            "Первый слой CommandBar требует хотя бы одну прямую кнопку.",
+            status="unsupported",
+        )
+    result["children"] = children
+    return result
+
+
 def _children(
     inventory: _Inventory, parent: ET.Element
 ) -> list[dict[str, object]]:
@@ -944,6 +1007,8 @@ def _element(
         return _radio_button_field(inventory, node)
     if node.tag == _q("Button"):
         return _button(inventory, node)
+    if node.tag == _q("CommandBar"):
+        return _command_bar(inventory, node)
     if node.tag == _q("UsualGroup"):
         return _group(inventory, node)
     if node.tag == _q("Pages"):

@@ -81,6 +81,7 @@ def test_elements_описывают_только_принятые_kinds_и_comp
             "label_field",
             "radio_button_field",
             "button",
+            "command_bar",
             "pages",
             "table",
         ],
@@ -92,6 +93,7 @@ def test_elements_описывают_только_принятые_kinds_и_comp
             "label_field",
             "radio_button_field",
             "button",
+            "command_bar",
             "pages",
             "table",
         ],
@@ -121,6 +123,10 @@ def test_elements_описывают_только_принятые_kinds_и_comp
         "ChoiceList",
         "ContextMenu",
         "ExtendedTooltip",
+    ]
+    assert by_code["command_bar_structure"]["value"] == [
+        "ExtendedTooltip",
+        "ChildItems<Button>",
     ]
 
 

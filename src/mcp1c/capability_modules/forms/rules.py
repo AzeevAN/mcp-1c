@@ -300,6 +300,22 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
             ],
         ),
         FormRule(
+            "auto_command_bar_structure",
+            "supported",
+            (
+                "Table всегда получает AutoCommandBar; по умолчанию платформа "
+                "заполняет его сама, а явный слой может отключить Autofill и "
+                "добавить кнопки, подменю или группы кнопок."
+            ),
+            "observed_pattern",
+            {
+                "container": "table",
+                "autofill": "default_true_explicit_false",
+                "children": ["button", "popup", "button_group"],
+                "own_events": False,
+            },
+        ),
+        FormRule(
             "specialized_elements_boundary",
             "boundary",
             "Специализированные поля документов, диаграмм и схем пока читаются только как inventory.",

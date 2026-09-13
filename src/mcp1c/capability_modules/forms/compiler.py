@@ -791,12 +791,40 @@ def _emit_table(
         f"id={quoteattr(context_id)}/>",
     )
     command_bar_id = allocator.next()
-    _append(
-        lines,
-        indent + 1,
-        f"<AutoCommandBar name={quoteattr(item.name + 'КоманднаяПанель')} "
-        f"id={quoteattr(command_bar_id)}/>",
-    )
+    auto_command_bar = item.auto_command_bar
+    if auto_command_bar is None:
+        _append(
+            lines,
+            indent + 1,
+            f"<AutoCommandBar name={quoteattr(item.name + 'КоманднаяПанель')} "
+            f"id={quoteattr(command_bar_id)}/>",
+        )
+    else:
+        _append(
+            lines,
+            indent + 1,
+            f"<AutoCommandBar name={quoteattr(item.name + 'КоманднаяПанель')} "
+            f"id={quoteattr(command_bar_id)}>",
+        )
+        if not auto_command_bar.autofill:
+            _append(lines, indent + 2, "<Autofill>false</Autofill>")
+        if auto_command_bar.children:
+            _append(lines, indent + 2, "<ChildItems>")
+            for child in auto_command_bar.children:
+                if isinstance(child, Button):
+                    _emit_button(
+                        lines, child, allocator, events_by_owner, indent + 3
+                    )
+                elif isinstance(child, Popup):
+                    _emit_popup(
+                        lines, child, allocator, events_by_owner, indent + 3
+                    )
+                else:
+                    _emit_button_group(
+                        lines, child, allocator, events_by_owner, indent + 3
+                    )
+            _append(lines, indent + 2, "</ChildItems>")
+        _append(lines, indent + 1, "</AutoCommandBar>")
     tooltip_id = allocator.next()
     _append(
         lines,

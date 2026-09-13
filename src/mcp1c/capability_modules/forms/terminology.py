@@ -108,6 +108,25 @@ PROPERTY_TERMS: tuple[FormTerm, ...] = (
     _property("platform_version", ("версия платформы",), "platform version", ("form",)),
     _property("title", ("заголовок",), "title", ("form", "attribute", "element", "command")),
     _property("attributes", ("реквизиты", "реквизиты формы"), "attributes", ("form",)),
+    _property(
+        "auto_command_bar",
+        (
+            "автоматическая панель команд",
+            "автоматическая командная панель",
+        ),
+        "automatic command bar",
+        ("table",),
+    ),
+    _property(
+        "autofill",
+        ("автозаполнение команд", "автоматическое заполнение команд"),
+        "command autofill",
+        ("auto_command_bar",),
+        {
+            "true": ("включено", "enabled"),
+            "false": ("выключено", "disabled"),
+        },
+    ),
     _property("elements", ("элементы", "элементы формы"), "elements", ("form",)),
     _property("commands", ("команды", "команды формы"), "commands", ("form",)),
     _property("events", ("события", "события формы"), "events", ("form",)),

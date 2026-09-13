@@ -72,6 +72,90 @@ def test_богатая_форма_импорта_даёт_lossless_roundtrip():
     assert result.coverage.structural == "passed"
 
 
+def test_автоматическая_панель_таблицы_даёт_lossless_roundtrip():
+    payload = _rich_payload()
+    table = payload["elements"][0]["children"][1]["pages"][0]["children"][0]
+    table["auto_command_bar"] = {
+        "kind": "auto_command_bar",
+        "autofill": False,
+        "children": [
+            {
+                "kind": "button",
+                "name": "ДобавитьСтроку",
+                "command": "Add",
+                "command_kind": "item_standard",
+                "command_owner": "ТаблицаДанныхПоле",
+            },
+            {
+                "kind": "popup",
+                "name": "Дополнительно",
+                "title": {"ru": "Дополнительно"},
+                "children": [
+                    {
+                        "kind": "button",
+                        "name": "ВыполнитьИмпортИзМеню",
+                        "command": "ВыполнитьИмпорт",
+                    }
+                ],
+            },
+        ],
+    }
+    compiled = compile_managed_form(payload)
+
+    result = decompile_managed_form(
+        compiled.artifacts[0].content,
+        form_name=payload["form_name"],
+        module_bsl=compiled.artifacts[1].content,
+    )
+
+    assert result.specification == compiled.specification
+    assert result.coverage.structural == "passed"
+
+
+def test_неподдержанное_выравнивание_автоматической_панели_остаётся_inventory():
+    compiled = compile_managed_form(_rich_payload())
+    root = ET.fromstring(compiled.artifacts[0].content)
+    namespace = "http://v8.1c.ru/8.3/xcf/logform"
+    q = lambda name: f"{{{namespace}}}{name}"
+    table = next(
+        node
+        for node in root.iter(q("Table"))
+        if node.attrib.get("name") == "ТаблицаДанныхПоле"
+    )
+    bar = table.find(q("AutoCommandBar"))
+    ET.SubElement(bar, q("HorizontalAlign")).text = "Right"
+
+    result = decompile_managed_form(
+        ET.tostring(root, encoding="unicode"),
+        form_name=compiled.specification["form_name"],
+    )
+
+    assert result.coverage.structural == "unsupported"
+    assert _diagnostics(result, "unsupported_xml_node")
+
+
+def test_пустые_child_items_автоматической_панели_остаются_inventory():
+    compiled = compile_managed_form(_rich_payload())
+    root = ET.fromstring(compiled.artifacts[0].content)
+    namespace = "http://v8.1c.ru/8.3/xcf/logform"
+    q = lambda name: f"{{{namespace}}}{name}"
+    table = next(
+        node
+        for node in root.iter(q("Table"))
+        if node.attrib.get("name") == "ТаблицаДанныхПоле"
+    )
+    bar = table.find(q("AutoCommandBar"))
+    ET.SubElement(bar, q("ChildItems"))
+
+    result = decompile_managed_form(
+        ET.tostring(root, encoding="unicode"),
+        form_name=compiled.specification["form_name"],
+    )
+
+    assert result.coverage.structural == "unsupported"
+    assert _diagnostics(result, "auto_command_bar_items_required")
+
+
 def test_owner_aware_события_элементов_дают_lossless_roundtrip():
     payload = _rich_payload()
     payload["events"] = [

@@ -282,6 +282,14 @@ class CommandBarSpec(TypedDict):
     command_source: NotRequired[CommandSourceSpec]
 
 
+class AutoCommandBarSpec(TypedDict):
+    __pydantic_config__ = {"extra": "forbid"}
+
+    kind: Literal["auto_command_bar"]
+    autofill: NotRequired[bool]
+    children: NotRequired[list[ButtonSpec | PopupSpec | ButtonGroupSpec]]
+
+
 class TableSpec(TypedDict):
     __pydantic_config__ = {"extra": "forbid"}
 
@@ -293,6 +301,7 @@ class TableSpec(TypedDict):
     read_only: NotRequired[bool]
     horizontal_stretch: NotRequired[bool]
     vertical_stretch: NotRequired[bool]
+    auto_command_bar: NotRequired[AutoCommandBarSpec]
 
 
 class PageSpec(TypedDict):
@@ -607,6 +616,13 @@ class CommandBar:
 
 
 @dataclass(frozen=True, slots=True)
+class AutoCommandBar:
+    autofill: bool = True
+    children: tuple[Button | Popup | ButtonGroup, ...] = ()
+    kind: Literal["auto_command_bar"] = "auto_command_bar"
+
+
+@dataclass(frozen=True, slots=True)
 class Table:
     name: str
     data_path: str
@@ -615,6 +631,7 @@ class Table:
     read_only: bool = False
     horizontal_stretch: bool | None = None
     vertical_stretch: bool | None = None
+    auto_command_bar: AutoCommandBar | None = None
     kind: Literal["table"] = "table"
 
 
@@ -1564,6 +1581,53 @@ def _button_group(
     )
 
 
+def _auto_command_bar(
+    reader: _Reader,
+    value: object,
+    path: str,
+) -> AutoCommandBar | None:
+    item = reader.object(value, path)
+    reader.exact_keys(
+        item,
+        path,
+        required=frozenset({"kind"}),
+        optional=frozenset({"autofill", "children"}),
+    )
+    if item.get("kind") != "auto_command_bar":
+        reader.issue(
+            "invalid_auto_command_bar_kind",
+            f"{path}.kind",
+            "Ожидается kind=auto_command_bar.",
+        )
+    autofill = (
+        reader.boolean(item["autofill"], f"{path}.autofill")
+        if "autofill" in item
+        else True
+    )
+    raw_children = reader.array(
+        item.get("children", []), f"{path}.children", allow_empty=True
+    )
+    children: list[Button | Popup | ButtonGroup] = []
+    for index, raw in enumerate(raw_children):
+        child_path = f"{path}.children[{index}]"
+        child = reader.object(raw, child_path)
+        if child.get("kind") == "button":
+            children.append(_button(reader, child, child_path))
+        elif child.get("kind") == "popup":
+            children.append(_popup(reader, child, child_path))
+        elif child.get("kind") == "button_group":
+            children.append(_button_group(reader, child, child_path))
+        else:
+            reader.issue(
+                "unsupported_auto_command_bar_child_kind",
+                f"{child_path}.kind",
+                "AutoCommandBar поддерживает кнопки, подменю и группы кнопок.",
+            )
+    if autofill and not children:
+        return None
+    return AutoCommandBar(autofill=autofill, children=tuple(children))
+
+
 def _table(reader: _Reader, item: Mapping[str, object], path: str) -> Table:
     reader.exact_keys(
         item,
@@ -1575,6 +1639,7 @@ def _table(reader: _Reader, item: Mapping[str, object], path: str) -> Table:
                 "read_only",
                 "horizontal_stretch",
                 "vertical_stretch",
+                "auto_command_bar",
             }
         ),
     )
@@ -1612,6 +1677,15 @@ def _table(reader: _Reader, item: Mapping[str, object], path: str) -> Table:
         ),
         vertical_stretch=_optional_boolean(
             reader, item, "vertical_stretch", path
+        ),
+        auto_command_bar=(
+            _auto_command_bar(
+                reader,
+                item["auto_command_bar"],
+                f"{path}.auto_command_bar",
+            )
+            if "auto_command_bar" in item
+            else None
         ),
     )
 
@@ -1820,6 +1894,11 @@ def _walk_elements(
             yield from _walk_elements(
                 element.columns, f"{path}.columns", table=element
             )
+            if element.auto_command_bar is not None:
+                yield from _walk_elements(
+                    element.auto_command_bar.children,
+                    f"{path}.auto_command_bar.children",
+                )
         elif isinstance(element, CommandBar):
             yield from _walk_elements(element.children, f"{path}.children")
         elif isinstance(element, Popup):
@@ -2277,6 +2356,17 @@ def _command_source_to_spec(source: CommandSource) -> dict[str, object]:
     return result
 
 
+def _auto_command_bar_to_spec(value: AutoCommandBar) -> dict[str, object]:
+    result: dict[str, object] = {"kind": "auto_command_bar"}
+    if not value.autofill:
+        result["autofill"] = False
+    if value.children:
+        result["children"] = [
+            _element_to_spec(child) for child in value.children
+        ]
+    return result
+
+
 def _element_to_spec(element: Element) -> dict[str, object]:
     if isinstance(element, InputField):
         item: dict[str, object] = {
@@ -2427,6 +2517,10 @@ def _element_to_spec(element: Element) -> dict[str, object]:
             item["horizontal_stretch"] = element.horizontal_stretch
         if element.vertical_stretch is not None:
             item["vertical_stretch"] = element.vertical_stretch
+        if element.auto_command_bar is not None:
+            item["auto_command_bar"] = _auto_command_bar_to_spec(
+                element.auto_command_bar
+            )
     elif isinstance(element, Pages):
         item = {
             "kind": "pages",
@@ -2525,6 +2619,8 @@ def managed_form_to_spec(form: ManagedForm) -> dict[str, object]:
 
 __all__ = [
     "BSL_RESERVED_KEYWORDS",
+    "AutoCommandBar",
+    "AutoCommandBarSpec",
     "BooleanType",
     "BooleanTypeSpec",
     "Button",

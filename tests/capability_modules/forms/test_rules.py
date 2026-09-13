@@ -52,6 +52,8 @@ def test_терминология_покрывает_все_поддержанн
         "action",
         "allowed_sign",
         "attributes",
+        "auto_command_bar",
+        "autofill",
         "choice_list",
         "children",
         "columns",
@@ -116,6 +118,23 @@ def test_поиск_панели_команд_одинаково_работае�
     payload = get_managed_form_rules("terminology", query=query)
 
     assert [entry["canonical"] for entry in payload["matches"]] == ["command_bar"]
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "автоматическая панель команд",
+        "automatic command bar",
+        "AutoCommandBar",
+        "auto_command_bar",
+    ],
+)
+def test_поиск_автоматической_панели_одинаково_работает_на_двух_языках(query):
+    payload = get_managed_form_rules("terminology", query=query)
+
+    assert [entry["canonical"] for entry in payload["matches"]] == [
+        "auto_command_bar"
+    ]
 
 
 @pytest.mark.parametrize(
@@ -200,6 +219,7 @@ def test_новый_element_или_property_нельзя_добавить_без
         models.PageSpec,
         models.FormCommandSpec,
         models.CommandSourceSpec,
+        models.AutoCommandBarSpec,
         models.FormEventSpec,
     }
     implemented_elements = {
@@ -355,6 +375,12 @@ def test_elements_описывают_только_принятые_kinds_и_comp
         "kinds": ["form", "form_global_commands", "item"],
         "item_target": "existing_attribute_or_element",
         "children": "optional_with_command_source",
+    }
+    assert by_code["auto_command_bar_structure"]["value"] == {
+        "container": "table",
+        "autofill": "default_true_explicit_false",
+        "children": ["button", "popup", "button_group"],
+        "own_events": False,
     }
 
 

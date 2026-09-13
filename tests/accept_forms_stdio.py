@@ -134,6 +134,47 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                     ],
                 }
             )
+            specification["attributes"].append(
+                {
+                    "name": "Строки",
+                    "type": {
+                        "kind": "value_table",
+                        "columns": [
+                            {
+                                "name": "Значение",
+                                "type": {"kind": "string", "length": 100},
+                            }
+                        ],
+                    },
+                }
+            )
+            specification["elements"].append(
+                {
+                    "kind": "table",
+                    "name": "СтрокиПоле",
+                    "data_path": "Строки",
+                    "columns": [
+                        {
+                            "kind": "input_field",
+                            "name": "СтрокиЗначение",
+                            "data_path": "Строки.Значение",
+                        }
+                    ],
+                    "auto_command_bar": {
+                        "kind": "auto_command_bar",
+                        "autofill": False,
+                        "children": [
+                            {
+                                "kind": "button",
+                                "name": "ДобавитьСтроку",
+                                "command": "Add",
+                                "command_kind": "item_standard",
+                                "command_owner": "СтрокиПоле",
+                            }
+                        ],
+                    },
+                }
+            )
             specification["events"].append(
                 {
                     "owner": "Пояснение",
@@ -177,9 +218,25 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                     {"topic": "terminology", "query": query},
                 )
                 command_source_terms.append(json.loads(result.content[0].text))
+            auto_command_bar_terms = []
+            for query in (
+                "автоматическая панель команд",
+                "automatic command bar",
+                "AutoCommandBar",
+                "auto_command_bar",
+            ):
+                result = await session.call_tool(
+                    "get_managed_form_rules",
+                    {"topic": "terminology", "query": query},
+                )
+                auto_command_bar_terms.append(
+                    json.loads(result.content[0].text)
+                )
             compiled = await session.call_tool(
                 "compile_managed_form", {"specification": specification}
             )
+            if compiled.is_error:
+                raise RuntimeError(compiled.content[0].text)
             compiled_payload = json.loads(compiled.content[0].text)
             artifacts = {
                 item["path"]: item["content"]
@@ -225,6 +282,21 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
             ]
             if command_source_matches != [["command_source"]] * 4:
                 raise RuntimeError("Источник команд не найден двуязычным поиском.")
+            auto_command_bar_matches = [
+                [match["canonical"] for match in result["matches"]]
+                for result in auto_command_bar_terms
+            ]
+            if auto_command_bar_matches != [["auto_command_bar"]] * 4:
+                raise RuntimeError(
+                    "Автоматическая панель не найдена двуязычным поиском."
+                )
+            if (
+                "<Autofill>false</Autofill>" not in form_xml
+                or "Form.Item.СтрокиПоле.StandardCommand.Add" not in form_xml
+            ):
+                raise RuntimeError(
+                    "Автоматическая панель таблицы скомпилирована неверно."
+                )
             return {
                 "mode": mode,
                 "forms_tools": len(present),
@@ -240,6 +312,7 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                 "unknown_field_rejected": True,
                 "bilingual_term_search": "command_bar",
                 "command_source": "form_and_form_global_commands",
+                "auto_command_bar": "table_autofill_false_with_button",
             }
 
 

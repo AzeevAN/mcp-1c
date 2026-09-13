@@ -96,6 +96,73 @@ def test_compiler_создаёт_богатую_форму_импорта_дет
     assert len(list(root.iter(q("VerticalStretch")))) >= 4
 
 
+def test_compiler_создаёт_настраиваемую_автоматическую_панель_таблицы():
+    payload = _rich_payload()
+    table = payload["elements"][0]["children"][1]["pages"][0]["children"][0]
+    table["auto_command_bar"] = {
+        "kind": "auto_command_bar",
+        "autofill": False,
+        "children": [
+            {
+                "kind": "button",
+                "name": "ДобавитьСтроку",
+                "command": "Add",
+                "command_kind": "item_standard",
+                "command_owner": "ТаблицаДанныхПоле",
+            },
+            {
+                "kind": "popup",
+                "name": "Дополнительно",
+                "title": {"ru": "Дополнительно"},
+                "children": [
+                    {
+                        "kind": "button",
+                        "name": "ВыполнитьИмпортИзМеню",
+                        "command": "ВыполнитьИмпорт",
+                    }
+                ],
+            },
+            {
+                "kind": "button_group",
+                "name": "Строки",
+                "children": [
+                    {
+                        "kind": "button",
+                        "name": "УдалитьСтроку",
+                        "command": "Delete",
+                        "command_kind": "item_standard",
+                        "command_owner": "ТаблицаДанныхПоле",
+                    }
+                ],
+            },
+        ],
+    }
+
+    xml = compile_managed_form(payload).artifacts[0].content
+    root = ET.fromstring(xml)
+    q = lambda name: f"{{{LOGFORM}}}{name}"
+    table_node = next(
+        node
+        for node in root.iter(q("Table"))
+        if node.attrib.get("name") == "ТаблицаДанныхПоле"
+    )
+    bar = table_node.find(q("AutoCommandBar"))
+
+    assert bar is not None
+    assert [child.tag for child in bar] == [q("Autofill"), q("ChildItems")]
+    assert bar.find(q("Autofill")).text == "false"
+    children = bar.find(q("ChildItems"))
+    assert [child.tag for child in children] == [
+        q("Button"),
+        q("Popup"),
+        q("ButtonGroup"),
+    ]
+    assert (
+        children.find(q("Button")).find(q("CommandName")).text
+        == "Form.Item.ТаблицаДанныхПоле.StandardCommand.Add"
+    )
+
+
 def test_compiler_создаёт_label_decoration_с_companions_и_событиями():
     payload = _payload()
     payload["elements"].append(

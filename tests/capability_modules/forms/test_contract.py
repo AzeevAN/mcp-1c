@@ -394,6 +394,102 @@ def test_источник_команд_поддерживает_форму_гл�
     assert bar.children[1].children == ()
 
 
+def test_автоматическая_панель_таблицы_поддерживает_автозаполнение_и_явные_команды():
+    payload = _rich_payload()
+    table = payload["elements"][0]["children"][1]["pages"][0]["children"][0]
+    table["auto_command_bar"] = {
+        "kind": "auto_command_bar",
+        "autofill": False,
+        "children": [
+            {
+                "kind": "button",
+                "name": "ДобавитьСтроку",
+                "command": "Add",
+                "command_kind": "item_standard",
+                "command_owner": "ТаблицаДанныхПоле",
+            },
+            {
+                "kind": "popup",
+                "name": "Дополнительно",
+                "title": {"ru": "Дополнительно"},
+                "children": [
+                    {
+                        "kind": "button",
+                        "name": "ВыполнитьИмпортИзМеню",
+                        "command": "ВыполнитьИмпорт",
+                    }
+                ],
+            },
+            {
+                "kind": "button_group",
+                "name": "Строки",
+                "children": [
+                    {
+                        "kind": "button",
+                        "name": "УдалитьСтроку",
+                        "command": "Delete",
+                        "command_kind": "item_standard",
+                        "command_owner": "ТаблицаДанныхПоле",
+                    }
+                ],
+            },
+        ],
+    }
+
+    form = parse_managed_form_spec(payload)
+    parsed = form.elements[0].children[1].pages[0].children[0].auto_command_bar
+
+    assert parsed.autofill is False
+    assert [child.kind for child in parsed.children] == [
+        "button",
+        "popup",
+        "button_group",
+    ]
+    assert parsed.children[0].command == "Add"
+
+
+@pytest.mark.parametrize(
+    ("auto_command_bar", "code", "path"),
+    [
+        (
+            {"kind": "command_bar", "autofill": False},
+            "invalid_auto_command_bar_kind",
+            "$.elements[0].children[1].pages[0].children[0].auto_command_bar.kind",
+        ),
+        (
+            {"kind": "auto_command_bar", "autofill": "нет"},
+            "invalid_type",
+            "$.elements[0].children[1].pages[0].children[0].auto_command_bar.autofill",
+        ),
+        (
+            {
+                "kind": "auto_command_bar",
+                "children": [
+                    {
+                        "kind": "input_field",
+                        "name": "ЛишнееПоле",
+                        "data_path": "ПутьКФайлу",
+                    }
+                ],
+            },
+            "unsupported_auto_command_bar_child_kind",
+            "$.elements[0].children[1].pages[0].children[0].auto_command_bar.children[0].kind",
+        ),
+    ],
+)
+def test_невалидная_автоматическая_панель_таблицы_отклоняется(
+    auto_command_bar, code, path
+):
+    payload = _rich_payload()
+    table = payload["elements"][0]["children"][1]["pages"][0]["children"][0]
+    table["auto_command_bar"] = auto_command_bar
+
+    with pytest.raises(FormsContractError) as caught:
+        parse_managed_form_spec(payload)
+
+    assert (code, path) in _codes(caught.value)
+
+
 @pytest.mark.parametrize(
     ("source", "code", "path"),
     [

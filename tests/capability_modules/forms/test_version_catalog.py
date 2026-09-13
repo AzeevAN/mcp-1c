@@ -87,6 +87,9 @@ def test_справочный_профиль_8_3_5_сохраняет_отлич
     url_processing = event_signature(
         "label_decoration", "URLProcessing", profile="8.3.5"
     )
+    label_field_url = event_signature(
+        "label_field", "URLProcessing", profile="8.3.5"
+    )
 
     assert before_close is not None
     assert before_close.parameters == ("Отказ", "СтандартнаяОбработка")
@@ -104,6 +107,8 @@ def test_справочный_профиль_8_3_5_сохраняет_отлич
         "НавигационнаяСсылка",
         "СтандартнаяОбработка",
     )
+    assert label_field_url is not None
+    assert label_field_url.parameters[1] == "НавигационнаяСсылка"
 
 
 def test_современный_профиль_не_смешивает_сигнатуру_8_3_5():
@@ -112,6 +117,7 @@ def test_современный_профиль_не_смешивает_сигн�
     url_processing = event_signature(
         "label_decoration", "URLProcessing", profile="modern"
     )
+    label_field_click = event_signature("label_field", "Click", profile="modern")
 
     assert before_close is not None
     assert before_close.parameters == (
@@ -124,5 +130,7 @@ def test_современный_профиль_не_смешивает_сигн�
     assert url_processing.parameters[1] == (
         "НавигационнаяСсылкаФорматированнойСтроки"
     )
+    assert label_field_click is not None
+    assert label_field_click.parameters == ("Элемент", "СтандартнаяОбработка")
     assert start_choice is not None
     assert "ВыборДобавлением" in start_choice.parameters

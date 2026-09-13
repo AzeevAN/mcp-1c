@@ -201,6 +201,19 @@ class LabelDecorationSpec(TypedDict):
     vertical_stretch: NotRequired[bool]
 
 
+class LabelFieldSpec(TypedDict):
+    __pydantic_config__ = {"extra": "forbid"}
+
+    kind: Literal["label_field"]
+    name: str
+    data_path: str
+    title: NotRequired[LocalizedTextSpec]
+    hyperlink: NotRequired[bool]
+    read_only: NotRequired[bool]
+    horizontal_stretch: NotRequired[bool]
+    vertical_stretch: NotRequired[bool]
+
+
 class ButtonSpec(TypedDict):
     __pydantic_config__ = {"extra": "forbid"}
 
@@ -219,7 +232,7 @@ class TableSpec(TypedDict):
     kind: Literal["table"]
     name: str
     data_path: str
-    columns: list[InputFieldSpec]
+    columns: list[InputFieldSpec | LabelFieldSpec]
     title: NotRequired[LocalizedTextSpec]
     read_only: NotRequired[bool]
     horizontal_stretch: NotRequired[bool]
@@ -266,6 +279,7 @@ ElementSpec: TypeAlias = (
     InputFieldSpec
     | CheckBoxFieldSpec
     | LabelDecorationSpec
+    | LabelFieldSpec
     | ButtonSpec
     | TableSpec
     | PagesSpec
@@ -463,6 +477,18 @@ class LabelDecoration:
 
 
 @dataclass(frozen=True, slots=True)
+class LabelField:
+    name: str
+    data_path: str
+    title: LocalizedText | None = None
+    hyperlink: bool = False
+    read_only: bool = False
+    horizontal_stretch: bool | None = None
+    vertical_stretch: bool | None = None
+    kind: Literal["label_field"] = "label_field"
+
+
+@dataclass(frozen=True, slots=True)
 class Button:
     name: str
     command: str
@@ -477,7 +503,7 @@ class Button:
 class Table:
     name: str
     data_path: str
-    columns: tuple[InputField, ...]
+    columns: tuple[InputField | LabelField, ...]
     title: LocalizedText | None = None
     read_only: bool = False
     horizontal_stretch: bool | None = None
@@ -519,7 +545,14 @@ class UsualGroup:
 
 
 Element: TypeAlias = (
-    InputField | CheckBoxField | LabelDecoration | Button | Table | Pages | UsualGroup
+    InputField
+    | CheckBoxField
+    | LabelDecoration
+    | LabelField
+    | Button
+    | Table
+    | Pages
+    | UsualGroup
 )
 GroupChild: TypeAlias = Element
 
@@ -1040,6 +1073,48 @@ def _label_decoration(
     )
 
 
+def _label_field(
+    reader: _Reader, item: Mapping[str, object], path: str
+) -> LabelField:
+    reader.exact_keys(
+        item,
+        path,
+        required=frozenset({"kind", "name", "data_path"}),
+        optional=frozenset(
+            {
+                "title",
+                "hyperlink",
+                "read_only",
+                "horizontal_stretch",
+                "vertical_stretch",
+            }
+        ),
+    )
+    return LabelField(
+        name=reader.string(item.get("name"), f"{path}.name", identifier=True),
+        data_path=reader.string(
+            item.get("data_path"), f"{path}.data_path", data_path=True
+        ),
+        title=_optional_localized(reader, item, path),
+        hyperlink=(
+            reader.boolean(item["hyperlink"], f"{path}.hyperlink")
+            if "hyperlink" in item
+            else False
+        ),
+        read_only=(
+            reader.boolean(item["read_only"], f"{path}.read_only")
+            if "read_only" in item
+            else False
+        ),
+        horizontal_stretch=_optional_boolean(
+            reader, item, "horizontal_stretch", path
+        ),
+        vertical_stretch=_optional_boolean(
+            reader, item, "vertical_stretch", path
+        ),
+    )
+
+
 def _button(reader: _Reader, item: Mapping[str, object], path: str) -> Button:
     reader.exact_keys(
         item,
@@ -1104,20 +1179,23 @@ def _table(reader: _Reader, item: Mapping[str, object], path: str) -> Table:
             }
         ),
     )
-    columns: list[InputField] = []
+    columns: list[InputField | LabelField] = []
     for index, raw in enumerate(
         reader.array(item.get("columns"), f"{path}.columns")
     ):
         column_path = f"{path}.columns[{index}]"
         column = reader.object(raw, column_path)
-        if column.get("kind") != "input_field":
+        if column.get("kind") not in {"input_field", "label_field"}:
             reader.issue(
                 "unsupported_table_column_kind",
                 f"{column_path}.kind",
-                "В базовом слое колонка таблицы должна быть input_field.",
+                "Колонка таблицы должна быть input_field либо label_field.",
             )
             continue
-        columns.append(_input_field(reader, column, column_path))
+        if column.get("kind") == "label_field":
+            columns.append(_label_field(reader, column, column_path))
+        else:
+            columns.append(_input_field(reader, column, column_path))
     return Table(
         name=reader.string(item.get("name"), f"{path}.name", identifier=True),
         data_path=reader.string(
@@ -1263,6 +1341,8 @@ def _element(reader: _Reader, value: object, path: str) -> Element:
         return _check_box_field(reader, item, path)
     if kind == "label_decoration":
         return _label_decoration(reader, item, path)
+    if kind == "label_field":
+        return _label_field(reader, item, path)
     if kind == "button":
         return _button(reader, item, path)
     if kind == "table":
@@ -1478,7 +1558,7 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
         and main_object.object.split(".", 1)[0] == "Документ"
     )
     for element, path, table in walked:
-        if isinstance(element, (InputField, CheckBoxField)):
+        if isinstance(element, (InputField, CheckBoxField, LabelField)):
             if table is None:
                 root_name, separator, _nested_path = element.data_path.partition(
                     "."
@@ -1802,6 +1882,20 @@ def _element_to_spec(element: Element) -> dict[str, object]:
             item["horizontal_stretch"] = element.horizontal_stretch
         if element.vertical_stretch is not None:
             item["vertical_stretch"] = element.vertical_stretch
+    elif isinstance(element, LabelField):
+        item = {
+            "kind": "label_field",
+            "name": element.name,
+            "data_path": element.data_path,
+        }
+        if element.hyperlink:
+            item["hyperlink"] = True
+        if element.read_only:
+            item["read_only"] = True
+        if element.horizontal_stretch is not None:
+            item["horizontal_stretch"] = element.horizontal_stretch
+        if element.vertical_stretch is not None:
+            item["vertical_stretch"] = element.vertical_stretch
     elif isinstance(element, Button):
         item = {
             "kind": "button",
@@ -1956,6 +2050,8 @@ __all__ = [
     "InputFieldSpec",
     "LabelDecoration",
     "LabelDecorationSpec",
+    "LabelField",
+    "LabelFieldSpec",
     "LocalizedText",
     "LocalizedTextSpec",
     "ManagedForm",

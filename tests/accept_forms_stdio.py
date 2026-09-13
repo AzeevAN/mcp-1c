@@ -69,11 +69,27 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                     "hyperlink": True,
                 }
             )
+            specification["elements"].append(
+                {
+                    "kind": "label_field",
+                    "name": "Итог",
+                    "data_path": "ПервоеЗначение",
+                    "hyperlink": True,
+                    "read_only": True,
+                }
+            )
             specification["events"].append(
                 {
                     "owner": "Пояснение",
                     "event": "URLProcessing",
                     "handler": "ПояснениеОбработкаСсылки",
+                }
+            )
+            specification["events"].append(
+                {
+                    "owner": "Итог",
+                    "event": "Click",
+                    "handler": "ИтогНажатие",
                 }
             )
             rules = await session.call_tool(

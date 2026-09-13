@@ -80,6 +80,7 @@ _SINGLETON_TAGS = frozenset(
         "CheckState",
         "CheckBoxType",
         "Hyperlink",
+        "Hiperlink",
         "PagesRepresentation",
         "AdditionSource",
         "ToolTip",
@@ -524,6 +525,46 @@ def _label_decoration(
     return item
 
 
+def _label_field(inventory: _Inventory, node: ET.Element) -> dict[str, object]:
+    inventory.mark(node, "name", "id")
+    item: dict[str, object] = {
+        "kind": "label_field",
+        "name": _attribute_value(inventory, node, "name"),
+    }
+    _subset_attribute(inventory, node, "id")
+    data_path = inventory.required_child(node, "DataPath")
+    if data_path is not None:
+        inventory.mark(data_path)
+    item["data_path"] = _text(data_path)
+    if not _DATA_PATH.fullmatch(_text(data_path)):
+        inventory.issue(
+            "unsupported_data_path",
+            (
+                inventory.paths[id(data_path)]
+                if data_path is not None
+                else inventory.paths[id(node)]
+            ),
+            "DataPath сохранён в inventory, но не входит в compiler первой вертикали.",
+            status="unsupported",
+        )
+    title = _optional_localized(inventory, node, "Title")
+    if title is not None:
+        item["title"] = title
+    if _optional_true(inventory, node, "Hiperlink"):
+        item["hyperlink"] = True
+    if _optional_true(inventory, node, "ReadOnly"):
+        item["read_only"] = True
+    horizontal_stretch = _optional_boolean(inventory, node, "HorizontalStretch")
+    if horizontal_stretch is not None:
+        item["horizontal_stretch"] = horizontal_stretch
+    vertical_stretch = _optional_boolean(inventory, node, "VerticalStretch")
+    if vertical_stretch is not None:
+        item["vertical_stretch"] = vertical_stretch
+    _companion(inventory, node, "ContextMenu")
+    _companion(inventory, node, "ExtendedTooltip")
+    return item
+
+
 def _button(inventory: _Inventory, node: ET.Element) -> dict[str, object]:
     inventory.mark(node, "name", "id")
     item: dict[str, object] = {
@@ -817,6 +858,8 @@ def _table(inventory: _Inventory, node: ET.Element) -> dict[str, object]:
         for child in container:
             if child.tag == _q("InputField"):
                 columns.append(_input_field(inventory, child))
+            elif child.tag == _q("LabelField"):
+                columns.append(_label_field(inventory, child))
     result["columns"] = columns
     return result
 
@@ -830,6 +873,8 @@ def _element(
         return _check_box_field(inventory, node)
     if node.tag == _q("LabelDecoration"):
         return _label_decoration(inventory, node)
+    if node.tag == _q("LabelField"):
+        return _label_field(inventory, node)
     if node.tag == _q("Button"):
         return _button(inventory, node)
     if node.tag == _q("UsualGroup"):
@@ -1291,6 +1336,7 @@ def _events(
         _q("InputField"): "input_field",
         _q("CheckBoxField"): "check_box_field",
         _q("LabelDecoration"): "label_decoration",
+        _q("LabelField"): "label_field",
         _q("Pages"): "pages",
         _q("Table"): "table",
     }

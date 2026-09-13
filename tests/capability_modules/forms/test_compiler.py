@@ -158,6 +158,68 @@ def test_compiler_создаёт_label_decoration_с_companions_и_событи�
     )
 
 
+def test_compiler_создаёт_label_field_с_hiperlink_и_событиями():
+    payload = _payload()
+    payload["elements"].append(
+        {
+            "kind": "label_field",
+            "name": "Итог",
+            "data_path": "ПервоеЗначение",
+            "title": {"ru": "Итог"},
+            "hyperlink": True,
+            "read_only": True,
+            "horizontal_stretch": False,
+            "vertical_stretch": True,
+        }
+    )
+    payload["events"].extend(
+        [
+            {"owner": "Итог", "event": "OnChange", "handler": "ИтогИзменён"},
+            {"owner": "Итог", "event": "Click", "handler": "ИтогНажатие"},
+            {
+                "owner": "Итог",
+                "event": "URLProcessing",
+                "handler": "ИтогОбработкаСсылки",
+            },
+        ]
+    )
+
+    result = compile_managed_form(payload)
+    root = ET.fromstring(result.artifacts[0].content)
+    q = lambda name: f"{{{LOGFORM}}}{name}"
+    field = next(
+        node
+        for node in root.iter(q("LabelField"))
+        if node.attrib.get("name") == "Итог"
+    )
+
+    assert [child.tag.rsplit("}", 1)[-1] for child in field] == [
+        "DataPath",
+        "Title",
+        "HorizontalStretch",
+        "VerticalStretch",
+        "Hiperlink",
+        "ReadOnly",
+        "ContextMenu",
+        "ExtendedTooltip",
+        "Events",
+    ]
+    assert field.find(q("Hiperlink")).text == "true"
+    assert [event.attrib["name"] for event in field.find(q("Events"))] == [
+        "OnChange",
+        "Click",
+        "URLProcessing",
+    ]
+    module = result.artifacts[1].content
+    assert "Процедура ИтогИзменён(Элемент)" in module
+    assert "Процедура ИтогНажатие(Элемент, СтандартнаяОбработка)" in module
+    assert (
+        "Процедура ИтогОбработкаСсылки(Элемент, "
+        "НавигационнаяСсылкаФорматированнойСтроки, СтандартнаяОбработка)"
+        in module
+    )
+
+
 def test_кодирование_даёт_utf8_bom_crlf_и_валидный_logform_xml():
     result = compile_managed_form(_payload())
     xml = result.artifacts[0]

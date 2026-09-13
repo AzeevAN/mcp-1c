@@ -375,6 +375,88 @@ def test_label_decoration_без_или_с_повтором_context_menu_ост�
         assert _diagnostics(result, "missing_or_repeated_xml_node")
 
 
+def test_label_field_с_событиями_даёт_lossless_roundtrip():
+    payload = _payload()
+    payload["elements"].append(
+        {
+            "kind": "label_field",
+            "name": "Итог",
+            "data_path": "ПервоеЗначение",
+            "title": {"ru": "Итог"},
+            "hyperlink": True,
+            "read_only": True,
+            "horizontal_stretch": False,
+            "vertical_stretch": True,
+        }
+    )
+    payload["events"].extend(
+        [
+            {"owner": "Итог", "event": "OnChange", "handler": "ИтогИзменён"},
+            {"owner": "Итог", "event": "Click", "handler": "ИтогНажатие"},
+            {
+                "owner": "Итог",
+                "event": "URLProcessing",
+                "handler": "ИтогОбработкаСсылки",
+            },
+        ]
+    )
+    compiled = compile_managed_form(payload)
+
+    result = decompile_managed_form(
+        compiled.artifacts[0].content,
+        form_name=payload["form_name"],
+        module_bsl=compiled.artifacts[1].content,
+    )
+
+    assert result.specification == compiled.specification
+    assert result.coverage.structural == "passed"
+
+    table_payload = _rich_payload()
+    column = table_payload["elements"][0]["children"][1]["pages"][0][
+        "children"
+    ][0]["columns"][0]
+    column["kind"] = "label_field"
+    column["hyperlink"] = True
+    table_compiled = compile_managed_form(table_payload)
+
+    table_result = decompile_managed_form(
+        table_compiled.artifacts[0].content,
+        form_name=table_payload["form_name"],
+        module_bsl=table_compiled.artifacts[1].content,
+    )
+
+    assert table_result.specification == table_compiled.specification
+    assert table_result.coverage.structural == "passed"
+
+
+def test_label_field_без_data_path_остаётся_inventory():
+    payload = _payload()
+    payload["elements"].append(
+        {
+            "kind": "label_field",
+            "name": "Итог",
+            "data_path": "ПервоеЗначение",
+        }
+    )
+    root = ET.fromstring(compile_managed_form(payload).artifacts[0].content)
+    field = next(
+        node
+        for node in root.iter("{http://v8.1c.ru/8.3/xcf/logform}LabelField")
+        if node.attrib.get("name") == "Итог"
+    )
+    data_path = field.find("{http://v8.1c.ru/8.3/xcf/logform}DataPath")
+    assert data_path is not None
+    field.remove(data_path)
+
+    result = decompile_managed_form(
+        ET.tostring(root, encoding="unicode"),
+        form_name=payload["form_name"],
+    )
+
+    assert result.coverage.structural == "unsupported"
+    assert _diagnostics(result, "missing_or_repeated_xml_node")
+
+
 def test_ручной_dynamic_list_остаётся_inventory():
     payload = _payload()
     payload["attributes"][0]["type"] = {

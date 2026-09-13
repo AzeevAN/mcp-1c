@@ -114,6 +114,46 @@ def test_статическая_надпись_имеет_собственный
     assert label.vertical_stretch is True
 
 
+def test_поле_надписи_имеет_data_path_и_собственные_свойства():
+    payload = _payload()
+    payload["elements"].append(
+        {
+            "kind": "label_field",
+            "name": "Итог",
+            "data_path": "ПервоеЗначение",
+            "title": {"ru": "Итог"},
+            "hyperlink": True,
+            "read_only": True,
+            "horizontal_stretch": False,
+            "vertical_stretch": True,
+        }
+    )
+
+    form = parse_managed_form_spec(payload)
+
+    field = form.elements[-1]
+    assert field.kind == "label_field"
+    assert field.data_path == "ПервоеЗначение"
+    assert field.title.ru == "Итог"
+    assert field.hyperlink is True
+    assert field.read_only is True
+    assert field.horizontal_stretch is False
+    assert field.vertical_stretch is True
+
+    table_payload = _rich_payload()
+    column = table_payload["elements"][0]["children"][1]["pages"][0][
+        "children"
+    ][0]["columns"][0]
+    column["kind"] = "label_field"
+    column["hyperlink"] = True
+
+    table_form = parse_managed_form_spec(table_payload)
+    table_column = table_form.elements[0].children[1].pages[0].children[0].columns[0]
+
+    assert table_column.kind == "label_field"
+    assert table_column.hyperlink is True
+
+
 def test_таблица_отклоняет_путь_к_необъявленной_колонке():
     payload = _rich_payload()
     payload["elements"][0]["children"][1]["pages"][0]["children"][0][

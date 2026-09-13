@@ -108,6 +108,18 @@ EVENT_SIGNATURES: dict[tuple[str, str], EventSignature] = {
             "СтандартнаяОбработка",
         ),
     ),
+    ("label_field", "OnChange"): EventSignature("НаКлиенте", ("Элемент",)),
+    ("label_field", "Click"): EventSignature(
+        "НаКлиенте", ("Элемент", "СтандартнаяОбработка")
+    ),
+    ("label_field", "URLProcessing"): EventSignature(
+        "НаКлиенте",
+        (
+            "Элемент",
+            "НавигационнаяСсылкаФорматированнойСтроки",
+            "СтандартнаяОбработка",
+        ),
+    ),
     ("pages", "OnCurrentPageChange"): EventSignature(
         "НаКлиенте", ("Элемент", "ТекущаяСтраница")
     ),
@@ -188,6 +200,10 @@ DOCUMENTED_8_3_5_EVENT_SIGNATURES: dict[tuple[str, str], EventSignature] = {
         "НаКлиенте", ("Элемент", "СтандартнаяОбработка")
     ),
     ("label_decoration", "URLProcessing"): EventSignature(
+        "НаКлиенте",
+        ("Элемент", "НавигационнаяСсылка", "СтандартнаяОбработка"),
+    ),
+    ("label_field", "URLProcessing"): EventSignature(
         "НаКлиенте",
         ("Элемент", "НавигационнаяСсылка", "СтандартнаяОбработка"),
     ),

@@ -139,13 +139,18 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
         FormRule(
             "supported_basic_elements",
             "supported",
-            "Базовый authoring-слой поддерживает группы, поля ввода, флажки, статические надписи, кнопки, страницы и таблицы.",
+            (
+                "Базовый authoring-слой поддерживает группы, поля ввода, "
+                "флажки, статические и связанные с данными надписи, кнопки, "
+                "страницы и таблицы."
+            ),
             "observed_pattern",
             [
                 "usual_group",
                 "input_field",
                 "check_box_field",
                 "label_decoration",
+                "label_field",
                 "button",
                 "pages",
                 "table",
@@ -176,6 +181,13 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
             "label_decoration_companions",
             "required",
             "LabelDecoration получает наблюдаемые служебные дочерние элементы.",
+            "corpus_invariant",
+            ["ContextMenu", "ExtendedTooltip"],
+        ),
+        FormRule(
+            "label_field_companions",
+            "required",
+            "LabelField получает наблюдаемые служебные дочерние элементы.",
             "corpus_invariant",
             ["ContextMenu", "ExtendedTooltip"],
         ),
@@ -402,6 +414,7 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
                 ],
                 "check_box_field": ["OnChange"],
                 "label_decoration": ["Click", "URLProcessing"],
+                "label_field": ["OnChange", "Click", "URLProcessing"],
                 "pages": ["OnCurrentPageChange"],
                 "table": [
                     "Selection",
@@ -655,6 +668,7 @@ def get_managed_form_rules(topic: RuleTopic = "overview") -> dict[str, object]:
                 "input_field",
                 "check_box_field",
                 "label_decoration",
+                "label_field",
                 "button",
                 "pages",
                 "table",
@@ -664,6 +678,7 @@ def get_managed_form_rules(topic: RuleTopic = "overview") -> dict[str, object]:
                 "input_field",
                 "check_box_field",
                 "label_decoration",
+                "label_field",
                 "button",
                 "pages",
                 "table",
@@ -726,6 +741,7 @@ def get_managed_form_rules(topic: RuleTopic = "overview") -> dict[str, object]:
                 ],
                 "check_box_field": ["OnChange"],
                 "label_decoration": ["Click", "URLProcessing"],
+                "label_field": ["OnChange", "Click", "URLProcessing"],
                 "pages": ["OnCurrentPageChange"],
                 "table": [
                     "Selection",

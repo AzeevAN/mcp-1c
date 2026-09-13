@@ -24,6 +24,7 @@ from .models import (
     FormEvent,
     InputField,
     LabelDecoration,
+    LabelField,
     LocalizedText,
     ManagedForm,
     MetadataObjectType,
@@ -266,6 +267,56 @@ def _emit_label_decoration(
     )
     _emit_events(lines, events_by_owner.get(item.name, ()), indent + 1)
     _append(lines, indent, "</LabelDecoration>")
+
+
+def _emit_label_field(
+    lines: list[str],
+    item: LabelField,
+    allocator: _IdAllocator,
+    events_by_owner: dict[str | None, tuple[FormEvent, ...]],
+    indent: int,
+) -> None:
+    element_id = allocator.next()
+    _append(
+        lines,
+        indent,
+        f"<LabelField name={quoteattr(item.name)} id={quoteattr(element_id)}>",
+    )
+    _append(lines, indent + 1, f"<DataPath>{escape(item.data_path)}</DataPath>")
+    if item.title is not None:
+        _localized(lines, "Title", item.title, indent + 1)
+    if item.horizontal_stretch is not None:
+        _append(
+            lines,
+            indent + 1,
+            f"<HorizontalStretch>{str(item.horizontal_stretch).lower()}</HorizontalStretch>",
+        )
+    if item.vertical_stretch is not None:
+        _append(
+            lines,
+            indent + 1,
+            f"<VerticalStretch>{str(item.vertical_stretch).lower()}</VerticalStretch>",
+        )
+    if item.hyperlink:
+        _append(lines, indent + 1, "<Hiperlink>true</Hiperlink>")
+    if item.read_only:
+        _append(lines, indent + 1, "<ReadOnly>true</ReadOnly>")
+    context_id = allocator.next()
+    _append(
+        lines,
+        indent + 1,
+        f"<ContextMenu name={quoteattr(item.name + 'КонтекстноеМеню')} "
+        f"id={quoteattr(context_id)}/>",
+    )
+    tooltip_id = allocator.next()
+    _append(
+        lines,
+        indent + 1,
+        f"<ExtendedTooltip name={quoteattr(item.name + 'РасширеннаяПодсказка')} "
+        f"id={quoteattr(tooltip_id)}/>",
+    )
+    _emit_events(lines, events_by_owner.get(item.name, ()), indent + 1)
+    _append(lines, indent, "</LabelField>")
 
 
 def _emit_button(
@@ -561,7 +612,7 @@ def _emit_table(
     _emit_events(lines, events_by_owner.get(item.name, ()), indent + 1)
     _append(lines, indent + 1, "<ChildItems>")
     for column in item.columns:
-        _emit_input(lines, column, allocator, events_by_owner, indent + 2)
+        _emit_element(lines, column, allocator, events_by_owner, indent + 2)
     _append(lines, indent + 1, "</ChildItems>")
     _append(lines, indent, "</Table>")
 
@@ -579,6 +630,8 @@ def _emit_element(
         _emit_check_box(lines, item, allocator, events_by_owner, indent)
     elif isinstance(item, LabelDecoration):
         _emit_label_decoration(lines, item, allocator, events_by_owner, indent)
+    elif isinstance(item, LabelField):
+        _emit_label_field(lines, item, allocator, events_by_owner, indent)
     elif isinstance(item, Button):
         _emit_button(lines, item, allocator, events_by_owner, indent)
     elif isinstance(item, Table):

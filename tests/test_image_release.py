@@ -46,8 +46,8 @@ def test_release_contract_отклоняет_расхождение_versions_и_
             validate_release("v2.0.0", project, package, compose_text, env_text)
 
 
-def test_текущий_установочный_контракт_закрепляет_v3_1() -> None:
-    expected = f"{IMAGE}:3.1.0"
+def test_текущий_установочный_контракт_закрепляет_v3_2() -> None:
+    expected = f"{IMAGE}:3.2.0"
 
     assert expected in (ROOT / "compose.yaml").read_text(encoding="utf-8")
     assert expected in (ROOT / ".env.example").read_text(encoding="utf-8")

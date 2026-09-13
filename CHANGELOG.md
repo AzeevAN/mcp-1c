@@ -7,7 +7,7 @@
 устройстве 1С и её форматов, вместе с опровергнутыми гипотезами. Правила —
 в публичном [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## [Unreleased]
+## [3.2.0] - 2026-09-14
 
 ### Удалено
 
@@ -6183,7 +6183,8 @@ JSON-журнал schema v1 для основной выгрузки и кажд
 Неразрешённых ссылок — ноль. Ошибок приведения типов — ноль. Оба формата дают
 одинаковый набор из 30 ключей модели.
 
-[Unreleased]: https://github.com/AzeevAN/mcp-1c/compare/v3.1.0...HEAD
+[Unreleased]: https://github.com/AzeevAN/mcp-1c/compare/v3.2.0...HEAD
+[3.2.0]: https://github.com/AzeevAN/mcp-1c/compare/v3.1.0...v3.2.0
 [3.1.0]: https://github.com/AzeevAN/mcp-1c/compare/v3.0.0...v3.1.0
 [3.0.0]: https://github.com/AzeevAN/mcp-1c/compare/v2.2.0...v3.0.0
 [2.2.0]: https://github.com/AzeevAN/mcp-1c/compare/v2.1.0...v2.2.0

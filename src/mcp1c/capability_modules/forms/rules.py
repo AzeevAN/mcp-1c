@@ -214,10 +214,21 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
             "required",
             (
                 "Первый authoring-слой CommandBar содержит одну или более "
-                "прямых кнопок и получает наблюдаемую расширенную подсказку."
+                "прямых кнопок либо подменю и получает наблюдаемую "
+                "расширенную подсказку."
             ),
             "observed_pattern",
-            ["ExtendedTooltip", "ChildItems<Button>"],
+            ["ExtendedTooltip", "ChildItems<Button|Popup>"],
+        ),
+        FormRule(
+            "popup_structure",
+            "required",
+            (
+                "Первый authoring-слой Popup имеет локализованный заголовок, "
+                "одну или более прямых кнопок и расширенную подсказку."
+            ),
+            "observed_pattern",
+            ["Title", "ExtendedTooltip", "ChildItems<Button>"],
         ),
         FormRule(
             "separate_id_spaces",
@@ -717,6 +728,7 @@ def get_managed_form_rules(topic: RuleTopic = "overview") -> dict[str, object]:
                 "table",
             ],
             "page_representations": ["tabs_on_top"],
+            "command_bar_children": ["button", "popup"],
         }
     elif topic == "attributes":
         payload["supported"] = {

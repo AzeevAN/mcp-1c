@@ -300,6 +300,43 @@ def test_compiler_создаёт_command_bar_с_явными_кнопками():
     ] == ["Button"]
 
 
+def test_compiler_создаёт_popup_внутри_command_bar():
+    payload = _payload()
+    payload["elements"].append(
+        {
+            "kind": "command_bar",
+            "name": "Действия",
+            "children": [
+                {
+                    "kind": "popup",
+                    "name": "Дополнительно",
+                    "title": {"ru": "Дополнительно"},
+                    "children": [
+                        {
+                            "kind": "button",
+                            "name": "ПроверитьДополнительно",
+                            "command": "Проверить",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    root = ET.fromstring(compile_managed_form(payload).artifacts[0].content)
+    q = lambda name: f"{{{LOGFORM}}}{name}"
+    popup = next(node for node in root.iter(q("Popup")))
+
+    assert [child.tag.rsplit("}", 1)[-1] for child in popup] == [
+        "Title",
+        "ExtendedTooltip",
+        "ChildItems",
+    ]
+    assert [child.tag.rsplit("}", 1)[-1] for child in popup.find(q("ChildItems"))] == [
+        "Button"
+    ]
+
+
 def test_кодирование_даёт_utf8_bom_crlf_и_валидный_logform_xml():
     result = compile_managed_form(_payload())
     xml = result.artifacts[0]

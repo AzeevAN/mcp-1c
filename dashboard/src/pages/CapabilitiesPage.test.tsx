@@ -82,7 +82,7 @@ it("объясняет границу Forms до включения", async () =
   expect(within(card).getByText("Управляемые формы")).toBeInTheDocument();
   expect(within(card).getByText(/4 инструмента/)).toBeInTheDocument();
   expect(within(card).getByText(/конфигурацию 1С не изменяет/)).toBeInTheDocument();
-  expect(within(card).getByText(/4 257.*o200k_base/)).toBeInTheDocument();
+  expect(within(card).getByText(/4 366.*o200k_base/)).toBeInTheDocument();
   expect(forms).not.toBeChecked();
 });
 

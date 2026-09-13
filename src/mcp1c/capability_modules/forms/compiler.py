@@ -33,6 +33,7 @@ from .models import (
     NumberType,
     Page,
     Pages,
+    Popup,
     RadioButtonField,
     StringType,
     Table,
@@ -480,9 +481,41 @@ def _emit_command_bar(
     )
     _append(lines, indent + 1, "<ChildItems>")
     for child in item.children:
-        _emit_button(lines, child, allocator, events_by_owner, indent + 2)
+        if isinstance(child, Button):
+            _emit_button(lines, child, allocator, events_by_owner, indent + 2)
+        else:
+            _emit_popup(lines, child, allocator, events_by_owner, indent + 2)
     _append(lines, indent + 1, "</ChildItems>")
     _append(lines, indent, "</CommandBar>")
+
+
+def _emit_popup(
+    lines: list[str],
+    item: Popup,
+    allocator: _IdAllocator,
+    events_by_owner: dict[str | None, tuple[FormEvent, ...]],
+    indent: int,
+) -> None:
+    popup_id = allocator.next()
+    _append(
+        lines,
+        indent,
+        f"<Popup name={quoteattr(item.name)} id={quoteattr(popup_id)}>",
+    )
+    _localized(lines, "Title", item.title, indent + 1)
+    tooltip_id = allocator.next()
+    _append(
+        lines,
+        indent + 1,
+        "<ExtendedTooltip "
+        f"name={quoteattr(item.name + 'РасширеннаяПодсказка')} "
+        f"id={quoteattr(tooltip_id)}/>",
+    )
+    _append(lines, indent + 1, "<ChildItems>")
+    for child in item.children:
+        _emit_button(lines, child, allocator, events_by_owner, indent + 2)
+    _append(lines, indent + 1, "</ChildItems>")
+    _append(lines, indent, "</Popup>")
 
 
 def _emit_group(
@@ -802,6 +835,8 @@ def _walk_form_elements(form: ManagedForm):
             elif isinstance(element, Table):
                 yield from walk(element.columns)
             elif isinstance(element, CommandBar):
+                yield from walk(element.children)
+            elif isinstance(element, Popup):
                 yield from walk(element.children)
 
     yield from walk(form.elements)

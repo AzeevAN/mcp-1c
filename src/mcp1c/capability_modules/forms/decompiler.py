@@ -757,15 +757,48 @@ def _command_bar(
         for child in container:
             if child.tag == _q("Button"):
                 children.append(_button(inventory, child))
+            elif child.tag == _q("Popup"):
+                children.append(_popup(inventory, child))
     if not children:
         inventory.issue(
-            "command_bar_buttons_required",
+            "command_bar_items_required",
             (
                 inventory.paths[id(container)]
                 if container is not None
                 else inventory.paths[id(node)] + "/ChildItems"
             ),
-            "Первый слой CommandBar требует хотя бы одну прямую кнопку.",
+            "CommandBar требует хотя бы одну прямую кнопку либо подменю.",
+            status="unsupported",
+        )
+    result["children"] = children
+    return result
+
+
+def _popup(inventory: _Inventory, node: ET.Element) -> dict[str, object]:
+    inventory.mark(node, "name", "id")
+    result: dict[str, object] = {
+        "kind": "popup",
+        "name": _attribute_value(inventory, node, "name"),
+        "title": _localized(inventory, node, "Title"),
+    }
+    _subset_attribute(inventory, node, "id")
+    _companion(inventory, node, "ExtendedTooltip")
+    container = inventory.required_child(node, "ChildItems")
+    children: list[dict[str, object]] = []
+    if container is not None:
+        inventory.mark(container)
+        for child in container:
+            if child.tag == _q("Button"):
+                children.append(_button(inventory, child))
+    if not children:
+        inventory.issue(
+            "popup_buttons_required",
+            (
+                inventory.paths[id(container)]
+                if container is not None
+                else inventory.paths[id(node)] + "/ChildItems"
+            ),
+            "Первый слой Popup требует хотя бы одну прямую кнопку.",
             status="unsupported",
         )
     result["children"] = children

@@ -213,7 +213,7 @@ def test_панель_команд_содержит_только_явные_кн
         parse_managed_form_spec(payload)
 
     assert (
-        "command_bar_buttons_required",
+        "command_bar_items_required",
         "$.elements[1].children",
     ) in _codes(caught.value)
 
@@ -229,6 +229,58 @@ def test_панель_команд_содержит_только_явные_кн
     assert (
         "unsupported_command_bar_child_kind",
         "$.elements[1].children[0].kind",
+    ) in _codes(caught.value)
+
+
+def test_подменю_доступно_только_внутри_панели_команд():
+    payload = _payload()
+    popup = {
+        "kind": "popup",
+        "name": "Дополнительно",
+        "title": {"ru": "Дополнительно"},
+        "children": [
+            {
+                "kind": "button",
+                "name": "ПроверитьДополнительно",
+                "command": "Проверить",
+            }
+        ],
+    }
+    payload["elements"].append(
+        {
+            "kind": "command_bar",
+            "name": "Действия",
+            "children": [popup],
+        }
+    )
+
+    form = parse_managed_form_spec(payload)
+    submenu = form.elements[-1].children[0]
+
+    assert submenu.kind == "popup"
+    assert submenu.title.ru == "Дополнительно"
+    assert [item.name for item in submenu.children] == [
+        "ПроверитьДополнительно"
+    ]
+
+    popup_children = popup["children"]
+    payload["elements"][-1]["children"][0]["children"] = []
+    with pytest.raises(FormsContractError) as caught:
+        parse_managed_form_spec(payload)
+
+    assert (
+        "popup_buttons_required",
+        "$.elements[1].children[0].children",
+    ) in _codes(caught.value)
+
+    payload["elements"][-1]["children"][0]["children"] = popup_children
+    payload["elements"][-1] = popup
+    with pytest.raises(FormsContractError) as caught:
+        parse_managed_form_spec(payload)
+
+    assert (
+        "unsupported_element_kind",
+        "$.elements[1].kind",
     ) in _codes(caught.value)
 
 

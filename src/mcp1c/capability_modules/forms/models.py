@@ -239,12 +239,21 @@ class ButtonSpec(TypedDict):
     title: NotRequired[LocalizedTextSpec]
 
 
+class PopupSpec(TypedDict):
+    __pydantic_config__ = {"extra": "forbid"}
+
+    kind: Literal["popup"]
+    name: str
+    title: LocalizedTextSpec
+    children: list[ButtonSpec]
+
+
 class CommandBarSpec(TypedDict):
     __pydantic_config__ = {"extra": "forbid"}
 
     kind: Literal["command_bar"]
     name: str
-    children: list[ButtonSpec]
+    children: list[ButtonSpec | PopupSpec]
     title: NotRequired[LocalizedTextSpec]
     horizontal_location: NotRequired[
         Literal["auto", "left", "center", "right"]
@@ -541,9 +550,17 @@ class Button:
 
 
 @dataclass(frozen=True, slots=True)
+class Popup:
+    name: str
+    title: LocalizedText
+    children: tuple[Button, ...]
+    kind: Literal["popup"] = "popup"
+
+
+@dataclass(frozen=True, slots=True)
 class CommandBar:
     name: str
-    children: tuple[Button, ...]
+    children: tuple[Button | Popup, ...]
     title: LocalizedText | None = None
     horizontal_location: Literal["auto", "left", "center", "right"] = "auto"
     horizontal_stretch: bool | None = None
@@ -1304,23 +1321,25 @@ def _command_bar(
     raw_children = reader.array(
         item.get("children"), f"{path}.children", allow_empty=True
     )
-    children: list[Button] = []
+    children: list[Button | Popup] = []
     for index, raw in enumerate(raw_children):
         child_path = f"{path}.children[{index}]"
         child = reader.object(raw, child_path)
-        if child.get("kind") != "button":
+        if child.get("kind") == "button":
+            children.append(_button(reader, child, child_path))
+        elif child.get("kind") == "popup":
+            children.append(_popup(reader, child, child_path))
+        else:
             reader.issue(
                 "unsupported_command_bar_child_kind",
                 f"{child_path}.kind",
-                "Первый слой CommandBar поддерживает только прямые кнопки.",
+                "CommandBar поддерживает прямые кнопки и подменю.",
             )
-            continue
-        children.append(_button(reader, child, child_path))
     if not children:
         reader.issue(
-            "command_bar_buttons_required",
+            "command_bar_items_required",
             f"{path}.children",
-            "Панели команд нужна хотя бы одна явная кнопка.",
+            "Панели команд нужен хотя бы один явный элемент.",
         )
     horizontal_location = item.get("horizontal_location", "auto")
     if horizontal_location not in {"auto", "left", "center", "right"}:
@@ -1341,6 +1360,40 @@ def _command_bar(
         vertical_stretch=_optional_boolean(
             reader, item, "vertical_stretch", path
         ),
+    )
+
+
+def _popup(reader: _Reader, item: Mapping[str, object], path: str) -> Popup:
+    reader.exact_keys(
+        item,
+        path,
+        required=frozenset({"kind", "name", "title", "children"}),
+    )
+    raw_children = reader.array(
+        item.get("children"), f"{path}.children", allow_empty=True
+    )
+    children: list[Button] = []
+    for index, raw in enumerate(raw_children):
+        child_path = f"{path}.children[{index}]"
+        child = reader.object(raw, child_path)
+        if child.get("kind") != "button":
+            reader.issue(
+                "unsupported_popup_child_kind",
+                f"{child_path}.kind",
+                "Первый слой Popup поддерживает только прямые кнопки.",
+            )
+            continue
+        children.append(_button(reader, child, child_path))
+    if not children:
+        reader.issue(
+            "popup_buttons_required",
+            f"{path}.children",
+            "Подменю нужна хотя бы одна явная кнопка.",
+        )
+    return Popup(
+        name=reader.string(item.get("name"), f"{path}.name", identifier=True),
+        title=_localized(reader, item.get("title"), f"{path}.title"),
+        children=tuple(children),
     )
 
 
@@ -1601,6 +1654,8 @@ def _walk_elements(
                 element.columns, f"{path}.columns", table=element
             )
         elif isinstance(element, CommandBar):
+            yield from _walk_elements(element.children, f"{path}.children")
+        elif isinstance(element, Popup):
             yield from _walk_elements(element.children, f"{path}.children")
 
 
@@ -2122,6 +2177,14 @@ def _element_to_spec(element: Element) -> dict[str, object]:
             item["command_owner"] = element.command_owner
         if element.default:
             item["default"] = True
+    elif isinstance(element, Popup):
+        item = {
+            "kind": "popup",
+            "name": element.name,
+            "children": [
+                _element_to_spec(child) for child in element.children
+            ],
+        }
     elif isinstance(element, CommandBar):
         item = {
             "kind": "command_bar",
@@ -2296,6 +2359,8 @@ __all__ = [
     "PageSpec",
     "Pages",
     "PagesSpec",
+    "Popup",
+    "PopupSpec",
     "SPECIFICATION_VERSION",
     "SUPPORTED_FORMAT_VERSION",
     "StringType",

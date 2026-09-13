@@ -316,6 +316,21 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
             },
         ),
         FormRule(
+            "table_context_menu_structure",
+            "supported",
+            (
+                "Table всегда получает ContextMenu; по умолчанию платформа "
+                "заполняет его сама, а явный слой может отключить Autofill и "
+                "добавить кнопки, подменю или группы кнопок."
+            ),
+            "observed_pattern",
+            {
+                "container": "table",
+                "autofill": "default_true_explicit_false",
+                "children": ["button", "popup", "button_group"],
+            },
+        ),
+        FormRule(
             "specialized_elements_boundary",
             "boundary",
             "Специализированные поля документов, диаграмм и схем пока читаются только как inventory.",

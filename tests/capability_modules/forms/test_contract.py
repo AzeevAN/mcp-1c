@@ -448,6 +448,43 @@ def test_автоматическая_панель_таблицы_поддерж
     assert parsed.children[0].command == "Add"
 
 
+def test_контекстное_меню_таблицы_поддерживает_автозаполнение_и_явные_команды():
+    payload = _rich_payload()
+    table = payload["elements"][0]["children"][1]["pages"][0]["children"][0]
+    table["context_menu"] = {
+        "kind": "context_menu",
+        "autofill": False,
+        "children": [
+            {
+                "kind": "button",
+                "name": "УдалитьСтрокуИзМеню",
+                "command": "Delete",
+                "command_kind": "item_standard",
+                "command_owner": "ТаблицаДанныхПоле",
+            },
+            {
+                "kind": "popup",
+                "name": "ДополнительноВМеню",
+                "title": {"ru": "Дополнительно"},
+                "children": [
+                    {
+                        "kind": "button",
+                        "name": "ВыполнитьИмпортИзКонтекстногоМеню",
+                        "command": "ВыполнитьИмпорт",
+                    }
+                ],
+            },
+        ],
+    }
+
+    form = parse_managed_form_spec(payload)
+    parsed = form.elements[0].children[1].pages[0].children[0].context_menu
+
+    assert parsed.autofill is False
+    assert [child.kind for child in parsed.children] == ["button", "popup"]
+    assert parsed.children[0].command == "Delete"
+
+
 @pytest.mark.parametrize(
     ("auto_command_bar", "code", "path"),
     [
@@ -483,6 +520,48 @@ def test_невалидная_автоматическая_панель_табл
     payload = _rich_payload()
     table = payload["elements"][0]["children"][1]["pages"][0]["children"][0]
     table["auto_command_bar"] = auto_command_bar
+
+    with pytest.raises(FormsContractError) as caught:
+        parse_managed_form_spec(payload)
+
+    assert (code, path) in _codes(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("context_menu", "code", "path"),
+    [
+        (
+            {"kind": "auto_command_bar", "autofill": False},
+            "invalid_context_menu_kind",
+            "$.elements[0].children[1].pages[0].children[0].context_menu.kind",
+        ),
+        (
+            {"kind": "context_menu", "autofill": "нет"},
+            "invalid_type",
+            "$.elements[0].children[1].pages[0].children[0].context_menu.autofill",
+        ),
+        (
+            {
+                "kind": "context_menu",
+                "children": [
+                    {
+                        "kind": "input_field",
+                        "name": "ЛишнееПоле",
+                        "data_path": "ПутьКФайлу",
+                    }
+                ],
+            },
+            "unsupported_context_menu_child_kind",
+            "$.elements[0].children[1].pages[0].children[0].context_menu.children[0].kind",
+        ),
+    ],
+)
+def test_невалидное_контекстное_меню_таблицы_отклоняется(
+    context_menu, code, path
+):
+    payload = _rich_payload()
+    table = payload["elements"][0]["children"][1]["pages"][0]["children"][0]
+    table["context_menu"] = context_menu
 
     with pytest.raises(FormsContractError) as caught:
         parse_managed_form_spec(payload)

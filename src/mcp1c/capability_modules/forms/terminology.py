@@ -118,10 +118,16 @@ PROPERTY_TERMS: tuple[FormTerm, ...] = (
         ("table",),
     ),
     _property(
+        "context_menu",
+        ("контекстное меню", "меню по правой кнопке"),
+        "context menu",
+        ("table",),
+    ),
+    _property(
         "autofill",
         ("автозаполнение команд", "автоматическое заполнение команд"),
         "command autofill",
-        ("auto_command_bar",),
+        ("auto_command_bar", "context_menu"),
         {
             "true": ("включено", "enabled"),
             "false": ("выключено", "disabled"),

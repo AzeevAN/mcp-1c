@@ -21,6 +21,7 @@ from .models import (
     CommandBar,
     CommandSource,
     CompositeType,
+    ContextMenu,
     DateType,
     DynamicListType,
     FormAttribute,
@@ -783,48 +784,24 @@ def _emit_table(
     _append(lines, indent + 1, f"<DataPath>{escape(item.data_path)}</DataPath>")
     if item.title is not None:
         _localized(lines, "Title", item.title, indent + 1)
-    context_id = allocator.next()
-    _append(
+    _emit_table_command_container(
         lines,
-        indent + 1,
-        f"<ContextMenu name={quoteattr(item.name + 'КонтекстноеМеню')} "
-        f"id={quoteattr(context_id)}/>",
+        tag="ContextMenu",
+        name=item.name + "КонтекстноеМеню",
+        value=item.context_menu,
+        allocator=allocator,
+        events_by_owner=events_by_owner,
+        indent=indent + 1,
     )
-    command_bar_id = allocator.next()
-    auto_command_bar = item.auto_command_bar
-    if auto_command_bar is None:
-        _append(
-            lines,
-            indent + 1,
-            f"<AutoCommandBar name={quoteattr(item.name + 'КоманднаяПанель')} "
-            f"id={quoteattr(command_bar_id)}/>",
-        )
-    else:
-        _append(
-            lines,
-            indent + 1,
-            f"<AutoCommandBar name={quoteattr(item.name + 'КоманднаяПанель')} "
-            f"id={quoteattr(command_bar_id)}>",
-        )
-        if not auto_command_bar.autofill:
-            _append(lines, indent + 2, "<Autofill>false</Autofill>")
-        if auto_command_bar.children:
-            _append(lines, indent + 2, "<ChildItems>")
-            for child in auto_command_bar.children:
-                if isinstance(child, Button):
-                    _emit_button(
-                        lines, child, allocator, events_by_owner, indent + 3
-                    )
-                elif isinstance(child, Popup):
-                    _emit_popup(
-                        lines, child, allocator, events_by_owner, indent + 3
-                    )
-                else:
-                    _emit_button_group(
-                        lines, child, allocator, events_by_owner, indent + 3
-                    )
-            _append(lines, indent + 2, "</ChildItems>")
-        _append(lines, indent + 1, "</AutoCommandBar>")
+    _emit_table_command_container(
+        lines,
+        tag="AutoCommandBar",
+        name=item.name + "КоманднаяПанель",
+        value=item.auto_command_bar,
+        allocator=allocator,
+        events_by_owner=events_by_owner,
+        indent=indent + 1,
+    )
     tooltip_id = allocator.next()
     _append(
         lines,
@@ -865,6 +842,46 @@ def _emit_table(
         _emit_element(lines, column, allocator, events_by_owner, indent + 2)
     _append(lines, indent + 1, "</ChildItems>")
     _append(lines, indent, "</Table>")
+
+
+def _emit_table_command_container(
+    lines: list[str],
+    *,
+    tag: str,
+    name: str,
+    value: AutoCommandBar | ContextMenu | None,
+    allocator: _IdAllocator,
+    events_by_owner: dict[str | None, tuple[FormEvent, ...]],
+    indent: int,
+) -> None:
+    container_id = allocator.next()
+    if value is None:
+        _append(
+            lines,
+            indent,
+            f"<{tag} name={quoteattr(name)} id={quoteattr(container_id)}/>",
+        )
+        return
+    _append(
+        lines,
+        indent,
+        f"<{tag} name={quoteattr(name)} id={quoteattr(container_id)}>",
+    )
+    if not value.autofill:
+        _append(lines, indent + 1, "<Autofill>false</Autofill>")
+    if value.children:
+        _append(lines, indent + 1, "<ChildItems>")
+        for child in value.children:
+            if isinstance(child, Button):
+                _emit_button(lines, child, allocator, events_by_owner, indent + 2)
+            elif isinstance(child, Popup):
+                _emit_popup(lines, child, allocator, events_by_owner, indent + 2)
+            else:
+                _emit_button_group(
+                    lines, child, allocator, events_by_owner, indent + 2
+                )
+        _append(lines, indent + 1, "</ChildItems>")
+    _append(lines, indent, f"</{tag}>")
 
 
 def _emit_element(
@@ -927,6 +944,10 @@ def _walk_form_elements(form: ManagedForm):
                     yield from walk(page.children)
             elif isinstance(element, Table):
                 yield from walk(element.columns)
+                if element.context_menu is not None:
+                    yield from walk(element.context_menu.children)
+                if element.auto_command_bar is not None:
+                    yield from walk(element.auto_command_bar.children)
             elif isinstance(element, CommandBar):
                 yield from walk(element.children)
             elif isinstance(element, Popup):

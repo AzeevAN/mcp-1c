@@ -112,6 +112,45 @@ def test_автоматическая_панель_таблицы_даёт_lossl
     assert result.coverage.structural == "passed"
 
 
+def test_контекстное_меню_таблицы_даёт_lossless_roundtrip():
+    payload = _rich_payload()
+    table = payload["elements"][0]["children"][1]["pages"][0]["children"][0]
+    table["context_menu"] = {
+        "kind": "context_menu",
+        "autofill": False,
+        "children": [
+            {
+                "kind": "button",
+                "name": "УдалитьСтрокуИзМеню",
+                "command": "Delete",
+                "command_kind": "item_standard",
+                "command_owner": "ТаблицаДанныхПоле",
+            },
+            {
+                "kind": "button_group",
+                "name": "СтрокиВМеню",
+                "children": [
+                    {
+                        "kind": "button",
+                        "name": "ВыполнитьИмпортИзКонтекстногоМеню",
+                        "command": "ВыполнитьИмпорт",
+                    }
+                ],
+            },
+        ],
+    }
+    compiled = compile_managed_form(payload)
+
+    result = decompile_managed_form(
+        compiled.artifacts[0].content,
+        form_name=payload["form_name"],
+        module_bsl=compiled.artifacts[1].content,
+    )
+
+    assert result.specification == compiled.specification
+    assert result.coverage.structural == "passed"
+
+
 def test_неподдержанное_выравнивание_автоматической_панели_остаётся_inventory():
     compiled = compile_managed_form(_rich_payload())
     root = ET.fromstring(compiled.artifacts[0].content)

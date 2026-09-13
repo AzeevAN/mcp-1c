@@ -63,6 +63,7 @@ def test_терминология_покрывает_все_поддержанн
         "command_owner",
         "command_source",
         "commands",
+        "context_menu",
         "data_path",
         "default",
         "digits",
@@ -134,6 +135,18 @@ def test_поиск_автоматической_панели_одинаково
 
     assert [entry["canonical"] for entry in payload["matches"]] == [
         "auto_command_bar"
+    ]
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["контекстное меню", "context menu", "ContextMenu", "context_menu"],
+)
+def test_поиск_контекстного_меню_одинаково_работает_на_двух_языках(query):
+    payload = get_managed_form_rules("terminology", query=query)
+
+    assert [entry["canonical"] for entry in payload["matches"]] == [
+        "context_menu"
     ]
 
 
@@ -220,6 +233,7 @@ def test_новый_element_или_property_нельзя_добавить_без
         models.FormCommandSpec,
         models.CommandSourceSpec,
         models.AutoCommandBarSpec,
+        models.ContextMenuSpec,
         models.FormEventSpec,
     }
     implemented_elements = {
@@ -381,6 +395,11 @@ def test_elements_описывают_только_принятые_kinds_и_comp
         "autofill": "default_true_explicit_false",
         "children": ["button", "popup", "button_group"],
         "own_events": False,
+    }
+    assert by_code["table_context_menu_structure"]["value"] == {
+        "container": "table",
+        "autofill": "default_true_explicit_false",
+        "children": ["button", "popup", "button_group"],
     }
 
 

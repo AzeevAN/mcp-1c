@@ -971,6 +971,51 @@ def _auto_command_bar(
     return result
 
 
+def _context_menu(
+    inventory: _Inventory,
+    node: ET.Element,
+) -> dict[str, object] | None:
+    inventory.mark(node, "name", "id")
+    _subset_attribute(inventory, node, "name")
+    _subset_attribute(inventory, node, "id")
+    result: dict[str, object] = {"kind": "context_menu"}
+    autofill = _optional_boolean(inventory, node, "Autofill")
+    if autofill is False:
+        result["autofill"] = False
+    elif autofill is True:
+        inventory.issue(
+            "unsupported_context_menu_autofill",
+            inventory.paths[id(node)] + "/Autofill",
+            (
+                "Явное Autofill=true не подтверждено корпусом; "
+                "используйте значение по умолчанию."
+            ),
+            status="unsupported",
+        )
+    container = inventory.optional_container(node, "ChildItems")
+    children: list[dict[str, object]] = []
+    if container is not None:
+        if len(container) == 0:
+            inventory.issue(
+                "context_menu_items_required",
+                inventory.paths[id(container)],
+                "XML-секция ChildItems контекстного меню не должна быть пустой.",
+                status="unsupported",
+            )
+        for child in container:
+            if child.tag == _q("Button"):
+                children.append(_button(inventory, child))
+            elif child.tag == _q("Popup"):
+                children.append(_popup(inventory, child))
+            elif child.tag == _q("ButtonGroup"):
+                children.append(_button_group(inventory, child))
+    if children:
+        result["children"] = children
+    if len(result) == 1:
+        return None
+    return result
+
+
 def _children(
     inventory: _Inventory, parent: ET.Element
 ) -> list[dict[str, object]]:
@@ -1161,7 +1206,11 @@ def _table(inventory: _Inventory, node: ET.Element) -> dict[str, object]:
     title = _optional_localized(inventory, node, "Title")
     if title is not None:
         result["title"] = title
-    _companion(inventory, node, "ContextMenu")
+    context_menu_node = inventory.required_child(node, "ContextMenu")
+    if context_menu_node is not None:
+        context_menu = _context_menu(inventory, context_menu_node)
+        if context_menu is not None:
+            result["context_menu"] = context_menu
     auto_command_bar_node = inventory.required_child(node, "AutoCommandBar")
     if auto_command_bar_node is not None:
         auto_command_bar = _auto_command_bar(inventory, auto_command_bar_node)

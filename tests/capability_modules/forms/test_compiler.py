@@ -163,6 +163,56 @@ def test_compiler_создаёт_настраиваемую_автоматиче
     )
 
 
+def test_compiler_создаёт_настраиваемое_контекстное_меню_таблицы():
+    payload = _rich_payload()
+    table = payload["elements"][0]["children"][1]["pages"][0]["children"][0]
+    table["context_menu"] = {
+        "kind": "context_menu",
+        "autofill": False,
+        "children": [
+            {
+                "kind": "button",
+                "name": "УдалитьСтрокуИзМеню",
+                "command": "Delete",
+                "command_kind": "item_standard",
+                "command_owner": "ТаблицаДанныхПоле",
+            },
+            {
+                "kind": "popup",
+                "name": "ДополнительноВМеню",
+                "title": {"ru": "Дополнительно"},
+                "children": [
+                    {
+                        "kind": "button",
+                        "name": "ВыполнитьИмпортИзКонтекстногоМеню",
+                        "command": "ВыполнитьИмпорт",
+                    }
+                ],
+            },
+        ],
+    }
+
+    xml = compile_managed_form(payload).artifacts[0].content
+    root = ET.fromstring(xml)
+    q = lambda name: f"{{{LOGFORM}}}{name}"
+    table_node = next(
+        node
+        for node in root.iter(q("Table"))
+        if node.attrib.get("name") == "ТаблицаДанныхПоле"
+    )
+    menu = table_node.find(q("ContextMenu"))
+
+    assert menu is not None
+    assert [child.tag for child in menu] == [q("Autofill"), q("ChildItems")]
+    assert menu.find(q("Autofill")).text == "false"
+    children = menu.find(q("ChildItems"))
+    assert [child.tag for child in children] == [q("Button"), q("Popup")]
+    assert (
+        children.find(q("Button")).find(q("CommandName")).text
+        == "Form.Item.ТаблицаДанныхПоле.StandardCommand.Delete"
+    )
+
+
 def test_compiler_создаёт_label_decoration_с_companions_и_событиями():
     payload = _payload()
     payload["elements"].append(

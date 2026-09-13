@@ -173,6 +173,19 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                             }
                         ],
                     },
+                    "context_menu": {
+                        "kind": "context_menu",
+                        "autofill": False,
+                        "children": [
+                            {
+                                "kind": "button",
+                                "name": "УдалитьСтрокуИзМеню",
+                                "command": "Delete",
+                                "command_kind": "item_standard",
+                                "command_owner": "СтрокиПоле",
+                            }
+                        ],
+                    },
                 }
             )
             specification["events"].append(
@@ -232,6 +245,18 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                 auto_command_bar_terms.append(
                     json.loads(result.content[0].text)
                 )
+            context_menu_terms = []
+            for query in (
+                "контекстное меню",
+                "context menu",
+                "ContextMenu",
+                "context_menu",
+            ):
+                result = await session.call_tool(
+                    "get_managed_form_rules",
+                    {"topic": "terminology", "query": query},
+                )
+                context_menu_terms.append(json.loads(result.content[0].text))
             compiled = await session.call_tool(
                 "compile_managed_form", {"specification": specification}
             )
@@ -290,12 +315,21 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                 raise RuntimeError(
                     "Автоматическая панель не найдена двуязычным поиском."
                 )
+            context_menu_matches = [
+                [match["canonical"] for match in result["matches"]]
+                for result in context_menu_terms
+            ]
+            if context_menu_matches != [["context_menu"]] * 4:
+                raise RuntimeError(
+                    "Контекстное меню не найдено двуязычным поиском."
+                )
             if (
                 "<Autofill>false</Autofill>" not in form_xml
                 or "Form.Item.СтрокиПоле.StandardCommand.Add" not in form_xml
+                or "Form.Item.СтрокиПоле.StandardCommand.Delete" not in form_xml
             ):
                 raise RuntimeError(
-                    "Автоматическая панель таблицы скомпилирована неверно."
+                    "Командные контейнеры таблицы скомпилированы неверно."
                 )
             return {
                 "mode": mode,
@@ -313,6 +347,7 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                 "bilingual_term_search": "command_bar",
                 "command_source": "form_and_form_global_commands",
                 "auto_command_bar": "table_autofill_false_with_button",
+                "context_menu": "table_autofill_false_with_button",
             }
 
 

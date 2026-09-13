@@ -290,6 +290,14 @@ class AutoCommandBarSpec(TypedDict):
     children: NotRequired[list[ButtonSpec | PopupSpec | ButtonGroupSpec]]
 
 
+class ContextMenuSpec(TypedDict):
+    __pydantic_config__ = {"extra": "forbid"}
+
+    kind: Literal["context_menu"]
+    autofill: NotRequired[bool]
+    children: NotRequired[list[ButtonSpec | PopupSpec | ButtonGroupSpec]]
+
+
 class TableSpec(TypedDict):
     __pydantic_config__ = {"extra": "forbid"}
 
@@ -302,6 +310,7 @@ class TableSpec(TypedDict):
     horizontal_stretch: NotRequired[bool]
     vertical_stretch: NotRequired[bool]
     auto_command_bar: NotRequired[AutoCommandBarSpec]
+    context_menu: NotRequired[ContextMenuSpec]
 
 
 class PageSpec(TypedDict):
@@ -623,6 +632,13 @@ class AutoCommandBar:
 
 
 @dataclass(frozen=True, slots=True)
+class ContextMenu:
+    autofill: bool = True
+    children: tuple[Button | Popup | ButtonGroup, ...] = ()
+    kind: Literal["context_menu"] = "context_menu"
+
+
+@dataclass(frozen=True, slots=True)
 class Table:
     name: str
     data_path: str
@@ -632,6 +648,7 @@ class Table:
     horizontal_stretch: bool | None = None
     vertical_stretch: bool | None = None
     auto_command_bar: AutoCommandBar | None = None
+    context_menu: ContextMenu | None = None
     kind: Literal["table"] = "table"
 
 
@@ -1628,6 +1645,53 @@ def _auto_command_bar(
     return AutoCommandBar(autofill=autofill, children=tuple(children))
 
 
+def _context_menu(
+    reader: _Reader,
+    value: object,
+    path: str,
+) -> ContextMenu | None:
+    item = reader.object(value, path)
+    reader.exact_keys(
+        item,
+        path,
+        required=frozenset({"kind"}),
+        optional=frozenset({"autofill", "children"}),
+    )
+    if item.get("kind") != "context_menu":
+        reader.issue(
+            "invalid_context_menu_kind",
+            f"{path}.kind",
+            "Ожидается kind=context_menu.",
+        )
+    autofill = (
+        reader.boolean(item["autofill"], f"{path}.autofill")
+        if "autofill" in item
+        else True
+    )
+    raw_children = reader.array(
+        item.get("children", []), f"{path}.children", allow_empty=True
+    )
+    children: list[Button | Popup | ButtonGroup] = []
+    for index, raw in enumerate(raw_children):
+        child_path = f"{path}.children[{index}]"
+        child = reader.object(raw, child_path)
+        if child.get("kind") == "button":
+            children.append(_button(reader, child, child_path))
+        elif child.get("kind") == "popup":
+            children.append(_popup(reader, child, child_path))
+        elif child.get("kind") == "button_group":
+            children.append(_button_group(reader, child, child_path))
+        else:
+            reader.issue(
+                "unsupported_context_menu_child_kind",
+                f"{child_path}.kind",
+                "ContextMenu поддерживает кнопки, подменю и группы кнопок.",
+            )
+    if autofill and not children:
+        return None
+    return ContextMenu(autofill=autofill, children=tuple(children))
+
+
 def _table(reader: _Reader, item: Mapping[str, object], path: str) -> Table:
     reader.exact_keys(
         item,
@@ -1640,6 +1704,7 @@ def _table(reader: _Reader, item: Mapping[str, object], path: str) -> Table:
                 "horizontal_stretch",
                 "vertical_stretch",
                 "auto_command_bar",
+                "context_menu",
             }
         ),
     )
@@ -1685,6 +1750,15 @@ def _table(reader: _Reader, item: Mapping[str, object], path: str) -> Table:
                 f"{path}.auto_command_bar",
             )
             if "auto_command_bar" in item
+            else None
+        ),
+        context_menu=(
+            _context_menu(
+                reader,
+                item["context_menu"],
+                f"{path}.context_menu",
+            )
+            if "context_menu" in item
             else None
         ),
     )
@@ -1898,6 +1972,11 @@ def _walk_elements(
                 yield from _walk_elements(
                     element.auto_command_bar.children,
                     f"{path}.auto_command_bar.children",
+                )
+            if element.context_menu is not None:
+                yield from _walk_elements(
+                    element.context_menu.children,
+                    f"{path}.context_menu.children",
                 )
         elif isinstance(element, CommandBar):
             yield from _walk_elements(element.children, f"{path}.children")
@@ -2367,6 +2446,17 @@ def _auto_command_bar_to_spec(value: AutoCommandBar) -> dict[str, object]:
     return result
 
 
+def _context_menu_to_spec(value: ContextMenu) -> dict[str, object]:
+    result: dict[str, object] = {"kind": "context_menu"}
+    if not value.autofill:
+        result["autofill"] = False
+    if value.children:
+        result["children"] = [
+            _element_to_spec(child) for child in value.children
+        ]
+    return result
+
+
 def _element_to_spec(element: Element) -> dict[str, object]:
     if isinstance(element, InputField):
         item: dict[str, object] = {
@@ -2521,6 +2611,10 @@ def _element_to_spec(element: Element) -> dict[str, object]:
             item["auto_command_bar"] = _auto_command_bar_to_spec(
                 element.auto_command_bar
             )
+        if element.context_menu is not None:
+            item["context_menu"] = _context_menu_to_spec(
+                element.context_menu
+            )
     elif isinstance(element, Pages):
         item = {
             "kind": "pages",
@@ -2631,6 +2725,8 @@ __all__ = [
     "CommandBarSpec",
     "CommandSource",
     "CommandSourceSpec",
+    "ContextMenu",
+    "ContextMenuSpec",
     "CheckBoxField",
     "CheckBoxFieldSpec",
     "CompositeType",

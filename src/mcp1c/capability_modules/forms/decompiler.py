@@ -15,7 +15,11 @@ from .models import (
     managed_form_to_spec,
     parse_managed_form_spec,
 )
-from .version_catalog import normalized_platform_version, platform_profile
+from .version_catalog import (
+    normalized_platform_version,
+    platform_compatibility_note,
+    platform_profile,
+)
 
 
 # Предел не даёт синхронному stdlib parser принимать неограниченный вход;
@@ -1234,25 +1238,6 @@ def decompile_managed_form(
             )
         safe_platform_version = platform_version
         profile = platform_profile(platform_version)
-        if profile is None:
-            return _rejected(
-                "unsupported_platform_version",
-                "$platform_version",
-                "Для версии платформы нет доказанного профиля Forms.",
-                xml_status="not_checked",
-                module_bsl=safe_module,
-            )
-        if profile.support != "compiler":
-            return _rejected(
-                "unsupported_platform_form_profile",
-                "$platform_version",
-                (
-                    "События версии известны по справке, но совместимый "
-                    "Form.xml ещё не доказан."
-                ),
-                xml_status="not_checked",
-                module_bsl=safe_module,
-            )
     assert profile is not None
     if not isinstance(form_xml, str):
         return _rejected(
@@ -1433,6 +1418,17 @@ def decompile_managed_form(
         ),
         *inventory.diagnostics,
     ]
+    platform_note = platform_compatibility_note(safe_platform_version)
+    if platform_note is not None:
+        diagnostics.append(
+            Diagnostic(
+                "platform_import",
+                "warning",
+                platform_note.code,
+                "$platform_version",
+                platform_note.message,
+            )
+        )
     if structural_status == "passed":
         diagnostics.append(
             Diagnostic(

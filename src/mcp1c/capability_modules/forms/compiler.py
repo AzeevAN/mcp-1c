@@ -29,6 +29,7 @@ from .models import (
     managed_form_to_spec,
     parse_managed_form_spec,
 )
+from .version_catalog import platform_compatibility_note
 
 
 _NAMESPACES = (
@@ -729,6 +730,7 @@ def compile_managed_form(specification: object) -> FormsResult:
     form = parse_managed_form_spec(specification)
     xml = _compile_xml(form)
     module = _compile_module(form)
+    platform_note = platform_compatibility_note(form.platform_version)
     diagnostics = (
         Diagnostic(
             "xml_parse",
@@ -757,6 +759,19 @@ def compile_managed_form(specification: object) -> FormsResult:
             "handler_stubs_generated",
             "artifacts[1]",
             "Для поддержанных событий и команд созданы BSL-каркасы.",
+        ),
+        *(
+            (
+                Diagnostic(
+                    "platform_import",
+                    "warning",
+                    platform_note.code,
+                    "$.platform_version",
+                    platform_note.message,
+                ),
+            )
+            if platform_note is not None
+            else ()
         ),
         Diagnostic(
             "platform_import",

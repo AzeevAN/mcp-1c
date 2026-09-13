@@ -392,9 +392,9 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
             "managed_form_2_16_event_profile",
             "boundary",
             (
-                "Каталог использует современные сигнатуры управляемой формы "
-                "формата 2.16. Варианты платформы 8.3.5 и события, зависящие "
-                "от типа основного реквизита, в этот контракт не входят."
+                "Каталог выбирает известные сигнатуры по версии платформы. "
+                "Непроверенная совместимость Form.xml 2.16 не блокирует "
+                "генерацию, но возвращается предупреждением."
             ),
             "platform_documentation",
         ),
@@ -402,8 +402,9 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
             "platform_version_matrix",
             "supported",
             (
-                "platform_version выбирает доказанный профиль событий и "
-                "Form.xml; отсутствие поля сохраняет прежний современный профиль."
+                "platform_version выбирает профиль событий и Form.xml вместе "
+                "с уровнем доказательности; неизвестная версия разрешается с "
+                "предупреждением."
             ),
             "contract_decision",
             platform_profiles_payload(),
@@ -603,7 +604,7 @@ def get_managed_form_rules(topic: RuleTopic = "overview") -> dict[str, object]:
         payload["supported"] = {
             "platform_version": (
                 "необязательная версия вида 8.3.23 или 8.3.23.1997; "
-                "явная неизвестная версия не угадывается"
+                "неизвестная версия использует ближайший профиль с предупреждением"
             ),
             "platform_profiles": platform_profiles_payload(),
             "event_owner": "поле owner отсутствует для формы либо содержит имя элемента",

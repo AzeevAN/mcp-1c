@@ -121,7 +121,7 @@ def test_events_публикуют_закрытый_owner_aware_каталог_�
     assert payload["supported"] == {
         "platform_version": (
             "необязательная версия вида 8.3.23 или 8.3.23.1997; "
-            "явная неизвестная версия не угадывается"
+            "неизвестная версия использует ближайший профиль с предупреждением"
         ),
         "platform_profiles": [
             {
@@ -132,6 +132,10 @@ def test_events_публикуют_закрытый_owner_aware_каталог_�
                 "event_profile": "8.3.5",
                 "form_formats": [],
                 "support": "documentation_only",
+                "evidence": {
+                    "documented": ["8.3.5.1570"],
+                    "interval": "exact_only",
+                },
             },
             {
                 "name": "managed_form_2_16_modern",
@@ -145,6 +149,14 @@ def test_events_публикуют_закрытый_owner_aware_каталог_�
                 "event_profile": "modern",
                 "form_formats": ["2.16"],
                 "support": "compiler",
+                "evidence": {
+                    "documented": [
+                        "8.3.23.1997",
+                        "8.3.26.15",
+                        "8.3.27.2130",
+                    ],
+                    "interval": "inferred_between_confirmed_versions",
+                },
             },
         ],
         "event_owner": "поле owner отсутствует для формы либо содержит имя элемента",

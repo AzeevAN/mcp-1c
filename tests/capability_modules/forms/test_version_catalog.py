@@ -6,6 +6,7 @@ from mcp1c.capability_modules.forms.event_catalog import event_signature
 from mcp1c.capability_modules.forms.version_catalog import (
     DEFAULT_PLATFORM_PROFILE,
     platform_profile,
+    platform_resolution,
 )
 
 
@@ -33,13 +34,45 @@ def test_профиль_8_3_5_известен_по_справке_но_не_в�
     assert profile.support == "documentation_only"
 
 
-@pytest.mark.parametrize("version", ["8.3.16", "8.3.22", "8.3.28", "9.0.1"])
-def test_версия_вне_доказанных_интервалов_остаётся_unknown(version):
-    assert platform_profile(version) is None
+@pytest.mark.parametrize(
+    ("version", "event_profile"),
+    [
+        ("8.3.16", "8.3.5"),
+        ("8.3.22", "8.3.5"),
+        ("8.3.28", "modern"),
+        ("9.0.1", "modern"),
+    ],
+)
+def test_версия_вне_доказанных_интервалов_получает_непроверенный_fallback(
+    version, event_profile
+):
+    resolution = platform_resolution(version)
+
+    assert resolution is not None
+    assert resolution.confidence == "unverified"
+    assert resolution.profile.event_profile == event_profile
+    assert platform_profile(version) is resolution.profile
 
 
 def test_отсутствующая_версия_сохраняет_совместимость_с_текущим_контрактом():
     assert platform_profile(None) is DEFAULT_PLATFORM_PROFILE
+    assert platform_resolution(None).confidence == "unspecified"
+
+
+@pytest.mark.parametrize(
+    ("version", "confidence"),
+    [
+        ("8.3.23.1997", "confirmed"),
+        ("8.3.23.1000", "inferred"),
+        ("8.3.24", "inferred"),
+        ("8.3.26.15", "confirmed"),
+        ("8.3.27.2130", "confirmed"),
+    ],
+)
+def test_профиль_отделяет_подтверждение_от_выведенной_совместимости(
+    version, confidence
+):
+    assert platform_resolution(version).confidence == confidence
 
 
 @pytest.mark.parametrize("version", ["", "8.3", "8.3.x", " 8.3.23", "8.3.23.1.2"])

@@ -1173,23 +1173,11 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
         else:
             platform_version = raw_platform_version
             profile = platform_profile(platform_version)
-            if profile is None:
+            if profile is None:  # pragma: no cover - формат уже проверен выше
                 reader.issue(
-                    "unsupported_platform_version",
+                    "invalid_platform_version",
                     "$.platform_version",
-                    "Для версии платформы нет доказанного профиля Forms.",
-                )
-            elif (
-                profile.support != "compiler"
-                or root.get("format_version") not in profile.formats
-            ):
-                reader.issue(
-                    "unsupported_platform_form_profile",
-                    "$.platform_version",
-                    (
-                        "События версии известны по справке, но совместимый "
-                        "Form.xml ещё не доказан."
-                    ),
+                    "Не удалось выбрать профиль для корректной версии.",
                 )
     event_profile = profile.event_profile if profile is not None else "modern"
 

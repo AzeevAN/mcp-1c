@@ -148,35 +148,39 @@ def test_доказанный_интервал_платформы_принима
 
 
 @pytest.mark.parametrize(
-    ("version", "code"),
-    [
-        ("8.3.16", "unsupported_platform_version"),
-        ("8.3.22", "unsupported_platform_version"),
-        ("8.3.28", "unsupported_platform_version"),
-        ("8.3", "invalid_platform_version"),
-    ],
+    ("version", "event_profile"),
+    [("8.3.16", "8.3.5"), ("8.3.22", "8.3.5"), ("8.3.28", "modern")],
 )
-def test_неизвестная_или_невалидная_версия_не_угадывается(version, code):
+def test_неподтверждённая_версия_не_отклоняется(version, event_profile):
     payload = _payload()
     payload["platform_version"] = version
 
+    form = parse_managed_form_spec(payload)
+
+    assert form.platform_version == version
+    assert form.event_profile == event_profile
+
+
+def test_невалидная_версия_по_прежнему_отклоняется():
+    payload = _payload()
+    payload["platform_version"] = "8.3"
+
     with pytest.raises(FormsContractError) as caught:
         parse_managed_form_spec(payload)
 
-    assert (code, "$.platform_version") in _codes(caught.value)
+    assert ("invalid_platform_version", "$.platform_version") in _codes(
+        caught.value
+    )
 
 
-def test_8_3_5_не_выдаётся_за_поддержку_form_xml_2_16():
+def test_8_3_5_разрешается_как_непроверенный_form_xml_2_16():
     payload = _payload()
     payload["platform_version"] = "8.3.5.1570"
 
-    with pytest.raises(FormsContractError) as caught:
-        parse_managed_form_spec(payload)
+    form = parse_managed_form_spec(payload)
 
-    assert (
-        "unsupported_platform_form_profile",
-        "$.platform_version",
-    ) in _codes(caught.value)
+    assert form.platform_version == "8.3.5.1570"
+    assert form.event_profile == "8.3.5"
 
 
 @pytest.mark.parametrize(

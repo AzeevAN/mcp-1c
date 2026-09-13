@@ -144,15 +144,16 @@ def test_явная_версия_платформы_сохраняется_в_lo
     assert result.coverage.structural == "passed"
 
 
-def test_decompiler_не_угадывает_неизвестную_версию_платформы():
+def test_decompiler_разрешает_неизвестную_версию_с_предупреждением():
     result = decompile_managed_form(
         _xml(),
         form_name="ФормаПараметров",
         platform_version="8.3.16",
     )
 
-    assert result.status == "rejected"
-    assert _diagnostics(result, "unsupported_platform_version")
+    assert result.status == "decompiled"
+    assert result.specification["platform_version"] == "8.3.16"
+    assert _diagnostics(result, "platform_compatibility_unverified")
 
 
 def test_стандартные_команды_формы_и_таблицы_дают_lossless_roundtrip():

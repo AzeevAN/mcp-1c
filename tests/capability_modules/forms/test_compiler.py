@@ -50,6 +50,30 @@ def test_compiler_byte_deterministic_и_совпадает_с_обезличен
     ].content == _expected("minimal_module.bsl")
 
 
+def test_неизвестная_версия_компилируется_с_предупреждением():
+    payload = _payload()
+    payload["platform_version"] = "8.3.28"
+
+    result = compile_managed_form(payload)
+
+    assert result.status == "compiled"
+    assert any(
+        item.code == "platform_compatibility_unverified"
+        and item.status == "warning"
+        for item in result.diagnostics
+    )
+
+
+def test_отсутствующая_версия_компилируется_с_явной_неопределённостью():
+    result = compile_managed_form(_payload())
+
+    assert any(
+        item.code == "platform_version_unspecified"
+        and item.status == "warning"
+        for item in result.diagnostics
+    )
+
+
 def test_compiler_создаёт_богатую_форму_импорта_детерминированно():
     first = compile_managed_form(_rich_payload())
     second = compile_managed_form(_rich_payload())

@@ -8,6 +8,9 @@ from typing import Literal
 
 
 PlatformSupport = Literal["compiler", "documentation_only"]
+PlatformConfidence = Literal[
+    "confirmed", "inferred", "unverified", "unspecified"
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +25,18 @@ class PlatformProfile:
 
     def contains(self, version: tuple[int, int, int]) -> bool:
         return self.minimum <= version <= self.maximum
+
+
+@dataclass(frozen=True, slots=True)
+class PlatformResolution:
+    profile: PlatformProfile
+    confidence: PlatformConfidence
+
+
+@dataclass(frozen=True, slots=True)
+class PlatformCompatibilityNote:
+    code: str
+    message: str
 
 
 DOCUMENTED_8_3_5_PROFILE = PlatformProfile(
@@ -59,17 +74,86 @@ def normalized_platform_version(value: str) -> tuple[int, int, int] | None:
     return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
 
 
-def platform_profile(version: str | None) -> PlatformProfile | None:
-    """Найти доказанный профиль; отсутствие версии сохраняет прежний контракт."""
+def _documented_version(profile: PlatformProfile, version: str) -> bool:
+    if version in profile.documented_versions:
+        return True
+    if version.count(".") != 2:
+        return False
+    normalized = normalized_platform_version(version)
+    return any(
+        normalized_platform_version(documented) == normalized
+        for documented in profile.documented_versions
+    )
+
+
+def platform_resolution(version: str | None) -> PlatformResolution | None:
+    """Выбрать профиль и отдельно вернуть степень доказанности выбора."""
 
     if version is None:
-        return DEFAULT_PLATFORM_PROFILE
+        return PlatformResolution(DEFAULT_PLATFORM_PROFILE, "unspecified")
     normalized = normalized_platform_version(version)
     if normalized is None:
         return None
-    return next(
+    direct = next(
         (profile for profile in PLATFORM_PROFILES if profile.contains(normalized)),
         None,
+    )
+    if direct is not None:
+        if direct.support != "compiler":
+            return PlatformResolution(direct, "unverified")
+        confidence: PlatformConfidence = (
+            "confirmed" if _documented_version(direct, version) else "inferred"
+        )
+        return PlatformResolution(direct, confidence)
+
+    earlier = [
+        profile for profile in PLATFORM_PROFILES if profile.minimum <= normalized
+    ]
+    fallback = (
+        max(earlier, key=lambda profile: profile.minimum)
+        if earlier
+        else min(PLATFORM_PROFILES, key=lambda profile: profile.minimum)
+    )
+    return PlatformResolution(fallback, "unverified")
+
+
+def platform_profile(version: str | None) -> PlatformProfile | None:
+    """Вернуть выбранный профиль; доказательность доступна отдельно."""
+
+    resolution = platform_resolution(version)
+    return resolution.profile if resolution is not None else None
+
+
+def platform_compatibility_note(
+    version: str | None,
+) -> PlatformCompatibilityNote | None:
+    """Вернуть предупреждение, когда профиль выбран не по прямому доказательству."""
+
+    resolution = platform_resolution(version)
+    if resolution is None or resolution.confidence == "confirmed":
+        return None
+    if resolution.confidence == "unspecified":
+        return PlatformCompatibilityNote(
+            "platform_version_unspecified",
+            (
+                "Целевая версия платформы не указана; использован нейтральный "
+                "профиль совместимости без гарантии импорта."
+            ),
+        )
+    if resolution.confidence == "inferred":
+        return PlatformCompatibilityNote(
+            "platform_compatibility_inferred",
+            (
+                "Совместимость версии выведена из подтверждённых границ "
+                "интервала, но отдельно на этой версии не проверялась."
+            ),
+        )
+    return PlatformCompatibilityNote(
+        "platform_compatibility_unverified",
+        (
+            "Для целевой версии нет прямого доказательства; использован "
+            "ближайший известный профиль без гарантии импорта."
+        ),
     )
 
 
@@ -85,6 +169,14 @@ def platform_profiles_payload() -> list[dict[str, object]]:
             "event_profile": profile.event_profile,
             "form_formats": list(profile.formats),
             "support": profile.support,
+            "evidence": {
+                "documented": list(profile.documented_versions),
+                "interval": (
+                    "exact_only"
+                    if profile.minimum == profile.maximum
+                    else "inferred_between_confirmed_versions"
+                ),
+            },
         }
         for profile in PLATFORM_PROFILES
     ]
@@ -95,7 +187,12 @@ __all__ = [
     "DOCUMENTED_8_3_5_PROFILE",
     "PLATFORM_PROFILES",
     "PlatformProfile",
+    "PlatformResolution",
+    "PlatformConfidence",
+    "PlatformCompatibilityNote",
     "normalized_platform_version",
+    "platform_compatibility_note",
     "platform_profile",
+    "platform_resolution",
     "platform_profiles_payload",
 ]

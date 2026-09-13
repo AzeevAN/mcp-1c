@@ -173,7 +173,9 @@ DOCUMENTED_8_3_5_EVENT_SIGNATURES: dict[tuple[str, str], EventSignature] = {
 
 EVENT_PROFILES = {
     "modern": EVENT_SIGNATURES,
-    "8.3.5": DOCUMENTED_8_3_5_EVENT_SIGNATURES,
+    # Старый профиль хранит только доказанные отличия сигнатур; остальные
+    # события закрытого каталога используют общую сигнатуру.
+    "8.3.5": {**EVENT_SIGNATURES, **DOCUMENTED_8_3_5_EVENT_SIGNATURES},
 }
 
 

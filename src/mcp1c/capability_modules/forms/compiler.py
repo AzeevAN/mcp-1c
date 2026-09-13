@@ -7,12 +7,14 @@ from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape, quoteattr
 
 from .diagnostics import Artifact, Coverage, Diagnostic, FormsResult
+from .event_catalog import event_signature
 from .models import (
     BooleanType,
     Button,
     CheckBoxField,
     DateType,
     FormAttribute,
+    FormEvent,
     InputField,
     LocalizedText,
     ManagedForm,
@@ -74,6 +76,21 @@ def _localized(
     _append(lines, indent, f"</{tag}>")
 
 
+def _emit_events(
+    lines: list[str], events: tuple[FormEvent, ...], indent: int
+) -> None:
+    if not events:
+        return
+    _append(lines, indent, "<Events>")
+    for event in events:
+        _append(
+            lines,
+            indent + 1,
+            f"<Event name={quoteattr(event.event)}>{escape(event.handler)}</Event>",
+        )
+    _append(lines, indent, "</Events>")
+
+
 def _root_opening(form: ManagedForm) -> str:
     declarations = " ".join(
         f"xmlns{':' + prefix if prefix else ''}={quoteattr(uri)}"
@@ -83,7 +100,11 @@ def _root_opening(form: ManagedForm) -> str:
 
 
 def _emit_input(
-    lines: list[str], item: InputField, allocator: _IdAllocator, indent: int
+    lines: list[str],
+    item: InputField,
+    allocator: _IdAllocator,
+    events_by_owner: dict[str | None, tuple[FormEvent, ...]],
+    indent: int,
 ) -> None:
     element_id = allocator.next()
     _append(
@@ -148,6 +169,7 @@ def _emit_input(
         f"name={quoteattr(item.name + 'РасширеннаяПодсказка')} "
         f"id={quoteattr(tooltip_id)}/>",
     )
+    _emit_events(lines, events_by_owner.get(item.name, ()), indent + 1)
     _append(lines, indent, "</InputField>")
 
 
@@ -155,6 +177,7 @@ def _emit_check_box(
     lines: list[str],
     item: CheckBoxField,
     allocator: _IdAllocator,
+    events_by_owner: dict[str | None, tuple[FormEvent, ...]],
     indent: int,
 ) -> None:
     element_id = allocator.next()
@@ -183,11 +206,16 @@ def _emit_check_box(
         f"<ExtendedTooltip name={quoteattr(item.name + 'РасширеннаяПодсказка')} "
         f"id={quoteattr(tooltip_id)}/>",
     )
+    _emit_events(lines, events_by_owner.get(item.name, ()), indent + 1)
     _append(lines, indent, "</CheckBoxField>")
 
 
 def _emit_button(
-    lines: list[str], item: Button, allocator: _IdAllocator, indent: int
+    lines: list[str],
+    item: Button,
+    allocator: _IdAllocator,
+    events_by_owner: dict[str | None, tuple[FormEvent, ...]],
+    indent: int,
 ) -> None:
     element_id = allocator.next()
     _append(
@@ -220,6 +248,7 @@ def _emit_group(
     lines: list[str],
     group: UsualGroup,
     allocator: _IdAllocator,
+    events_by_owner: dict[str | None, tuple[FormEvent, ...]],
     indent: int,
 ) -> None:
     group_id = allocator.next()
@@ -269,7 +298,7 @@ def _emit_group(
     )
     _append(lines, indent + 1, "<ChildItems>")
     for child in group.children:
-        _emit_element(lines, child, allocator, indent + 2)
+        _emit_element(lines, child, allocator, events_by_owner, indent + 2)
     _append(lines, indent + 1, "</ChildItems>")
     _append(lines, indent, "</UsualGroup>")
 
@@ -278,6 +307,7 @@ def _emit_page(
     lines: list[str],
     page: Page,
     allocator: _IdAllocator,
+    events_by_owner: dict[str | None, tuple[FormEvent, ...]],
     indent: int,
 ) -> None:
     page_id = allocator.next()
@@ -297,7 +327,7 @@ def _emit_page(
     )
     _append(lines, indent + 1, "<ChildItems>")
     for child in page.children:
-        _emit_element(lines, child, allocator, indent + 2)
+        _emit_element(lines, child, allocator, events_by_owner, indent + 2)
     _append(lines, indent + 1, "</ChildItems>")
     _append(lines, indent, "</Page>")
 
@@ -306,6 +336,7 @@ def _emit_pages(
     lines: list[str],
     item: Pages,
     allocator: _IdAllocator,
+    events_by_owner: dict[str | None, tuple[FormEvent, ...]],
     indent: int,
 ) -> None:
     pages_id = allocator.next()
@@ -336,9 +367,10 @@ def _emit_pages(
         f"name={quoteattr(item.name + 'РасширеннаяПодсказка')} "
         f"id={quoteattr(tooltip_id)}/>",
     )
+    _emit_events(lines, events_by_owner.get(item.name, ()), indent + 1)
     _append(lines, indent + 1, "<ChildItems>")
     for page in item.pages:
-        _emit_page(lines, page, allocator, indent + 2)
+        _emit_page(lines, page, allocator, events_by_owner, indent + 2)
     _append(lines, indent + 1, "</ChildItems>")
     _append(lines, indent, "</Pages>")
 
@@ -385,6 +417,7 @@ def _emit_table(
     lines: list[str],
     item: Table,
     allocator: _IdAllocator,
+    events_by_owner: dict[str | None, tuple[FormEvent, ...]],
     indent: int,
 ) -> None:
     table_id = allocator.next()
@@ -459,9 +492,10 @@ def _emit_table(
         allocator=allocator,
         indent=indent + 1,
     )
+    _emit_events(lines, events_by_owner.get(item.name, ()), indent + 1)
     _append(lines, indent + 1, "<ChildItems>")
     for column in item.columns:
-        _emit_input(lines, column, allocator, indent + 2)
+        _emit_input(lines, column, allocator, events_by_owner, indent + 2)
     _append(lines, indent + 1, "</ChildItems>")
     _append(lines, indent, "</Table>")
 
@@ -470,30 +504,56 @@ def _emit_element(
     lines: list[str],
     item: object,
     allocator: _IdAllocator,
+    events_by_owner: dict[str | None, tuple[FormEvent, ...]],
     indent: int,
 ) -> None:
     if isinstance(item, InputField):
-        _emit_input(lines, item, allocator, indent)
+        _emit_input(lines, item, allocator, events_by_owner, indent)
     elif isinstance(item, CheckBoxField):
-        _emit_check_box(lines, item, allocator, indent)
+        _emit_check_box(lines, item, allocator, events_by_owner, indent)
     elif isinstance(item, Button):
-        _emit_button(lines, item, allocator, indent)
+        _emit_button(lines, item, allocator, events_by_owner, indent)
     elif isinstance(item, Table):
-        _emit_table(lines, item, allocator, indent)
+        _emit_table(lines, item, allocator, events_by_owner, indent)
     elif isinstance(item, Pages):
-        _emit_pages(lines, item, allocator, indent)
+        _emit_pages(lines, item, allocator, events_by_owner, indent)
     elif isinstance(item, UsualGroup):
-        _emit_group(lines, item, allocator, indent)
+        _emit_group(lines, item, allocator, events_by_owner, indent)
     else:  # pragma: no cover - typed model does not admit other values
         raise TypeError(f"Неподдержанный элемент: {type(item)!r}")
 
 
 def _emit_elements(lines: list[str], form: ManagedForm) -> None:
     allocator = _IdAllocator()
+    events_by_owner = _events_by_owner(form)
     _append(lines, 1, "<ChildItems>")
     for item in form.elements:
-        _emit_element(lines, item, allocator, 2)
+        _emit_element(lines, item, allocator, events_by_owner, 2)
     _append(lines, 1, "</ChildItems>")
+
+
+def _events_by_owner(
+    form: ManagedForm,
+) -> dict[str | None, tuple[FormEvent, ...]]:
+    result: dict[str | None, list[FormEvent]] = {}
+    for event in form.events:
+        result.setdefault(event.owner, []).append(event)
+    return {owner: tuple(events) for owner, events in result.items()}
+
+
+def _walk_form_elements(form: ManagedForm):
+    def walk(elements):
+        for element in elements:
+            yield element, "", None
+            if isinstance(element, UsualGroup):
+                yield from walk(element.children)
+            elif isinstance(element, Pages):
+                for page in element.pages:
+                    yield from walk(page.children)
+            elif isinstance(element, Table):
+                yield from walk(element.columns)
+
+    yield from walk(form.elements)
 
 
 def _emit_type(lines: list[str], value: object, indent: int) -> None:
@@ -577,14 +637,7 @@ def _compile_xml(form: ManagedForm) -> str:
     lines = ['<?xml version="1.0" encoding="UTF-8"?>', _root_opening(form)]
     _localized(lines, "Title", form.title, 1)
     _append(lines, 1, '<AutoCommandBar name="ФормаКоманднаяПанель" id="-1"/>')
-    _append(lines, 1, "<Events>")
-    for event in form.events:
-        _append(
-            lines,
-            2,
-            f"<Event name={quoteattr(event.event)}>{escape(event.handler)}</Event>",
-        )
-    _append(lines, 1, "</Events>")
+    _emit_events(lines, _events_by_owner(form).get(None, ()), 1)
     _emit_elements(lines, form)
     _append(lines, 1, "<Attributes>")
     for attribute_id, attribute in enumerate(form.attributes, 1):
@@ -611,11 +664,25 @@ def _compile_xml(form: ManagedForm) -> str:
 
 def _compile_module(form: ManagedForm) -> str:
     lines: list[str] = ["#Область ОбработчикиСобытийФормы", ""]
+    emitted: set[str] = set()
     for event in form.events:
+        normalized_handler = event.handler.casefold()
+        if normalized_handler in emitted:
+            continue
+        emitted.add(normalized_handler)
+        owner_kind = "form"
+        if event.owner is not None:
+            for element, _path, _table in _walk_form_elements(form):
+                if element.name == event.owner:
+                    owner_kind = element.kind
+                    break
+        signature = event_signature(owner_kind, event.event)
+        assert signature is not None
+        parameters = ", ".join(signature.parameters)
         lines.extend(
             [
-                "&НаСервере",
-                f"Процедура {event.handler}(Отказ, СтандартнаяОбработка)",
+                f"&{signature.directive}",
+                f"Процедура {event.handler}({parameters})",
                 "",
                 "\t// TODO: Реализовать обработчик события формы.",
                 "",
@@ -624,11 +691,11 @@ def _compile_module(form: ManagedForm) -> str:
             ]
         )
     lines.extend(["#КонецОбласти", "", "#Область ОбработчикиКомандФормы", ""])
-    emitted: set[str] = set()
     for command in form.commands:
-        if command.action in emitted:
+        normalized_action = command.action.casefold()
+        if normalized_action in emitted:
             continue
-        emitted.add(command.action)
+        emitted.add(normalized_action)
         lines.extend(
             [
                 "&НаКлиенте",

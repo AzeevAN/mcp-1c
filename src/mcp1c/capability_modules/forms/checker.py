@@ -10,6 +10,7 @@ from mcp1c.bsl_lex import разобрать
 
 from .decompiler import decompile_managed_form
 from .diagnostics import Coverage, Diagnostic, FormsResult
+from .event_catalog import event_signature
 from .models import is_reserved_bsl_keyword
 
 
@@ -253,13 +254,38 @@ def _arity(parameters: str) -> int:
 
 def _expected_handlers(root: ET.Element) -> list[tuple[str, str, int, str]]:
     result: list[tuple[str, str, int, str]] = []
-    events = root.find(_q("Events"))
-    if events is not None:
+
+    def append_events(node: ET.Element, owner_kind: str, path: str) -> None:
+        events = node.find(_q("Events"))
+        if events is None:
+            return
         for event in events.findall(_q("Event")):
-            if event.attrib.get("name") == "OnCreateAtServer" and (event.text or ""):
+            signature = event_signature(owner_kind, event.attrib.get("name", ""))
+            if signature is not None and (event.text or ""):
                 result.append(
-                    (event.text or "", "насервере", 2, "/Form/Events/Event")
+                    (
+                        event.text or "",
+                        signature.directive.casefold(),
+                        len(signature.parameters),
+                        f"{path}/Events/Event",
+                    )
                 )
+
+    append_events(root, "form", "/Form")
+    owner_kinds = {
+        _q("InputField"): "input_field",
+        _q("CheckBoxField"): "check_box_field",
+        _q("Pages"): "pages",
+        _q("Table"): "table",
+    }
+    for node in root.iter():
+        owner_kind = owner_kinds.get(node.tag)
+        if owner_kind is not None:
+            append_events(
+                node,
+                owner_kind,
+                f"/Form/ChildItems/{_local(node.tag)}[@name='{node.attrib.get('name', '')}']",
+            )
     commands = root.find(_q("Commands"))
     if commands is not None:
         for command in commands.findall(_q("Command")):
@@ -311,6 +337,34 @@ def _check_forbidden_synchronous_client_calls(
     return diagnostics
 
 
+def _check_async_contract(procedures: list[object]) -> list[Diagnostic]:
+    diagnostics: list[Diagnostic] = []
+    for procedure in procedures:
+        path = f"$module_bsl:{procedure.строка}"
+        directive = procedure.директива.casefold()
+        if procedure.асинх and directive != "наклиенте":
+            diagnostics.append(
+                _diagnostic(
+                    "failed",
+                    "async_requires_client_context",
+                    path,
+                    f"Асинхронная процедура {procedure.имя} должна быть клиентской.",
+                    level="bsl_static",
+                )
+            )
+        if procedure.ожидания and not procedure.асинх:
+            diagnostics.append(
+                _diagnostic(
+                    "failed",
+                    "await_requires_async",
+                    f"$module_bsl:{procedure.ожидания[0]}",
+                    f"Ждать внутри {procedure.имя} требует объявления Асинх.",
+                    level="bsl_static",
+                )
+            )
+    return diagnostics
+
+
 def _check_bsl(
     root: ET.Element,
     module_bsl: str | None,
@@ -342,7 +396,7 @@ def _check_bsl(
                 )
             ],
         )
-    procedures = разобрать(module_bsl)
+    procedures = разобрать(module_bsl, отслеживать_ждать=True)
     by_name: dict[str, list[object]] = {}
     for procedure in procedures:
         by_name.setdefault(procedure.имя.casefold(), []).append(procedure)
@@ -428,6 +482,7 @@ def _check_bsl(
     diagnostics.extend(
         _check_forbidden_synchronous_client_calls(module_bsl, procedures)
     )
+    diagnostics.extend(_check_async_contract(procedures))
     if any(item.status == "failed" for item in diagnostics):
         return "failed", diagnostics
     if any(item.status == "warning" for item in diagnostics):

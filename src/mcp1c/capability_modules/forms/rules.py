@@ -26,6 +26,7 @@ EvidenceLevel: TypeAlias = Literal[
     "corpus_invariant",
     "observed_pattern",
     "contract_decision",
+    "platform_documentation",
 ]
 
 RULE_TOPICS: tuple[RuleTopic, ...] = (
@@ -332,6 +333,44 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
             },
         ),
         FormRule(
+            "owner_aware_event_catalog",
+            "supported",
+            "Событие связывается с формой либо с точным именем элемента.",
+            "observed_pattern",
+            {
+                "form": [
+                    "OnCreateAtServer",
+                    "OnOpen",
+                    "NotificationProcessing",
+                    "ExternalEvent",
+                    "FillCheckProcessingAtServer",
+                ],
+                "input_field": ["OnChange"],
+                "check_box_field": ["OnChange"],
+                "pages": ["OnCurrentPageChange"],
+                "table": ["Selection", "OnActivateRow"],
+            },
+        ),
+        FormRule(
+            "async_client_contract",
+            "required",
+            (
+                "Ждать допустим только внутри Асинх-процедуры, а Асинх-процедура "
+                "должна выполняться на клиенте. Callback API Начать... остаётся "
+                "допустимым без Асинх."
+            ),
+            "platform_documentation",
+        ),
+        FormRule(
+            "file_transfer_via_temporary_storage",
+            "required",
+            (
+                "Локальный файл выбирается на клиенте; сервер получает адрес "
+                "временного хранилища, а не локальный путь клиента."
+            ),
+            "platform_documentation",
+        ),
+        FormRule(
             "unknown_event_not_checked",
             "boundary",
             "Иное событие не получает угаданную сигнатуру и остаётся not_checked.",
@@ -505,8 +544,22 @@ def get_managed_form_rules(topic: RuleTopic = "overview") -> dict[str, object]:
         }
     elif topic == "commands_events":
         payload["supported"] = {
-            "form_events": ["OnCreateAtServer"],
+            "event_owner": "поле owner отсутствует для формы либо содержит имя элемента",
+            "form_events": [
+                "OnCreateAtServer",
+                "OnOpen",
+                "NotificationProcessing",
+                "ExternalEvent",
+                "FillCheckProcessingAtServer",
+            ],
+            "element_events": {
+                "input_field": ["OnChange"],
+                "check_box_field": ["OnChange"],
+                "pages": ["OnCurrentPageChange"],
+                "table": ["Selection", "OnActivateRow"],
+            },
             "command_reference": "Form.Command.<name>",
+            "async": "Асинх и Ждать только в клиентском контексте платформы 8.3.18+",
         }
     return payload
 

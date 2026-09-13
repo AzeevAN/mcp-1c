@@ -209,6 +209,164 @@ def test_повторяющееся_событие_формы_отклоняет
     assert any(item.code == "duplicate_event" for item in caught.value.diagnostics)
 
 
+def test_owner_aware_события_попадают_к_своим_элементам_и_получают_точные_каркасы():
+    payload = _rich_payload()
+    payload["events"] = [
+        {"event": "OnOpen", "handler": "ПриОткрытии"},
+        {
+            "owner": "ПутьКФайлуПоле",
+            "event": "OnChange",
+            "handler": "ПутьКФайлуПриИзменении",
+        },
+        {
+            "owner": "СтраницыРезультата",
+            "event": "OnCurrentPageChange",
+            "handler": "СтраницыРезультатаПриСменеСтраницы",
+        },
+        {
+            "owner": "ТаблицаДанныхПоле",
+            "event": "Selection",
+            "handler": "ТаблицаДанныхПолеВыбор",
+        },
+    ]
+
+    result = compile_managed_form(payload)
+    root = ET.fromstring(result.artifacts[0].content)
+    q = lambda name: f"{{{LOGFORM}}}{name}"
+    by_name = {
+        node.attrib.get("name"): node
+        for node in root.iter()
+        if "name" in node.attrib
+    }
+    assert root.find(f"{q('Events')}/{q('Event')}").attrib["name"] == "OnOpen"
+    assert by_name["ПутьКФайлуПоле"].find(
+        f"{q('Events')}/{q('Event')}"
+    ).attrib["name"] == "OnChange"
+    assert by_name["СтраницыРезультата"].find(
+        f"{q('Events')}/{q('Event')}"
+    ).attrib["name"] == "OnCurrentPageChange"
+    assert by_name["ТаблицаДанныхПоле"].find(
+        f"{q('Events')}/{q('Event')}"
+    ).attrib["name"] == "Selection"
+
+    module = result.artifacts[1].content
+    assert "&НаКлиенте\r\nПроцедура ПриОткрытии(Отказ)" in module
+    assert "Процедура ПутьКФайлуПриИзменении(Элемент)" in module
+    assert (
+        "Процедура СтраницыРезультатаПриСменеСтраницы(Элемент, ТекущаяСтраница)"
+        in module
+    )
+    assert (
+        "Процедура ТаблицаДанныхПолеВыбор(Элемент, ВыбраннаяСтрока, Поле, "
+        "СтандартнаяОбработка)" in module
+    )
+
+
+def test_весь_стабильный_каталог_событий_генерирует_доказанные_сигнатуры():
+    payload = _rich_payload()
+    payload["events"] = [
+        {"event": "OnCreateAtServer", "handler": "Создание"},
+        {"event": "OnOpen", "handler": "Открытие"},
+        {"event": "NotificationProcessing", "handler": "Оповещение"},
+        {"event": "ExternalEvent", "handler": "Внешнее"},
+        {"event": "FillCheckProcessingAtServer", "handler": "ПроверкаЗаполнения"},
+        {"owner": "ПутьКФайлуПоле", "event": "OnChange", "handler": "ПутьИзменён"},
+        {
+            "owner": "ПерваяСтрокаЗаголовокПоле",
+            "event": "OnChange",
+            "handler": "ФлагИзменён",
+        },
+        {
+            "owner": "СтраницыРезультата",
+            "event": "OnCurrentPageChange",
+            "handler": "СтраницаИзменена",
+        },
+        {"owner": "ТаблицаДанныхПоле", "event": "Selection", "handler": "Выбор"},
+        {
+            "owner": "ТаблицаДанныхПоле",
+            "event": "OnActivateRow",
+            "handler": "СтрокаАктивна",
+        },
+    ]
+
+    module = compile_managed_form(payload).artifacts[1].content
+    parsed = {item.имя: item for item in разобрать(module)}
+    expected = {
+        "Создание": ("НаСервере", "Отказ, СтандартнаяОбработка"),
+        "Открытие": ("НаКлиенте", "Отказ"),
+        "Оповещение": ("НаКлиенте", "ИмяСобытия, Параметр, Источник"),
+        "Внешнее": ("НаКлиенте", "Источник, Событие, Данные"),
+        "ПроверкаЗаполнения": ("НаСервере", "Отказ, ПроверяемыеРеквизиты"),
+        "ПутьИзменён": ("НаКлиенте", "Элемент"),
+        "ФлагИзменён": ("НаКлиенте", "Элемент"),
+        "СтраницаИзменена": ("НаКлиенте", "Элемент, ТекущаяСтраница"),
+        "Выбор": (
+            "НаКлиенте",
+            "Элемент, ВыбраннаяСтрока, Поле, СтандартнаяОбработка",
+        ),
+        "СтрокаАктивна": ("НаКлиенте", "Элемент"),
+    }
+
+    assert {
+        name: (procedure.директива, procedure.параметры)
+        for name, procedure in parsed.items()
+        if name in expected
+    } == expected
+
+
+def test_событие_неподходящего_owner_отклоняется_до_compiler():
+    payload = _rich_payload()
+    payload["events"] = [
+        {
+            "owner": "СтраницыРезультата",
+            "event": "OnChange",
+            "handler": "НеверныйОбработчик",
+        }
+    ]
+
+    with pytest.raises(FormsContractError) as caught:
+        compile_managed_form(payload)
+
+    assert any(item.code == "unsupported_owner_event" for item in caught.value.diagnostics)
+
+
+def test_повторяется_пара_owner_и_event_а_не_одно_имя_event():
+    payload = _payload()
+    payload["events"] = [
+        {"owner": "ПервоеЗначение", "event": "OnChange", "handler": "Первое"},
+        {"owner": "ВтороеЗначение", "event": "OnChange", "handler": "Второе"},
+    ]
+
+    result = compile_managed_form(payload)
+
+    assert result.status == "compiled"
+
+
+def test_один_handler_одинаковой_сигнатуры_двух_элементов_создаётся_один_раз():
+    payload = _payload()
+    payload["events"] = [
+        {"owner": "ПервоеЗначение", "event": "OnChange", "handler": "Изменение"},
+        {"owner": "ВтороеЗначение", "event": "OnChange", "handler": "Изменение"},
+    ]
+
+    module = compile_managed_form(payload).artifacts[1].content
+
+    assert module.count("Процедура Изменение(Элемент)") == 1
+
+
+def test_один_handler_разных_событий_с_разными_сигнатурами_отклоняется():
+    payload = _payload()
+    payload["events"] = [
+        {"event": "OnOpen", "handler": "Общий"},
+        {"owner": "ПервоеЗначение", "event": "OnChange", "handler": "Общий"},
+    ]
+
+    with pytest.raises(FormsContractError) as caught:
+        compile_managed_form(payload)
+
+    assert any(item.code == "handler_signature_conflict" for item in caught.value.diagnostics)
+
+
 def test_compiler_не_пишет_файлы_и_возвращает_только_два_текстовых_artifact(
     tmp_path,
     monkeypatch,

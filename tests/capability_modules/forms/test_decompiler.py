@@ -72,6 +72,59 @@ def test_богатая_форма_импорта_даёт_lossless_roundtrip():
     assert result.coverage.structural == "passed"
 
 
+def test_owner_aware_события_элементов_дают_lossless_roundtrip():
+    payload = _rich_payload()
+    payload["events"] = [
+        {"event": "OnOpen", "handler": "ПриОткрытии"},
+        {
+            "owner": "ПутьКФайлуПоле",
+            "event": "OnChange",
+            "handler": "ПутьКФайлуПриИзменении",
+        },
+        {
+            "owner": "ТаблицаДанныхПоле",
+            "event": "OnActivateRow",
+            "handler": "ТаблицаДанныхПолеПриАктивизацииСтроки",
+        },
+    ]
+    compiled = compile_managed_form(payload)
+
+    result = decompile_managed_form(
+        compiled.artifacts[0].content,
+        form_name=payload["form_name"],
+        module_bsl=compiled.artifacts[1].content,
+    )
+
+    assert result.specification == compiled.specification
+    assert result.coverage.structural == "passed"
+
+
+def test_неизвестное_событие_элемента_остаётся_inventory_а_не_угадывается():
+    payload = _rich_payload()
+    payload["events"] = [
+        {
+            "owner": "ПутьКФайлуПоле",
+            "event": "OnChange",
+            "handler": "ПутьКФайлуПриИзменении",
+        }
+    ]
+    xml = compile_managed_form(payload).artifacts[0].content.replace(
+        'name="OnChange"', 'name="BeforeClose"', 1
+    )
+
+    result = decompile_managed_form(xml, form_name=payload["form_name"])
+
+    assert result.coverage.structural == "unsupported"
+    assert result.specification["events"] == [
+        {
+            "owner": "ПутьКФайлуПоле",
+            "event": "BeforeClose",
+            "handler": "ПутьКФайлуПриИзменении",
+        }
+    ]
+    assert _diagnostics(result, "unsupported_event")
+
+
 def test_неизвестный_элемент_остаётся_в_inventory_с_точным_путём_и_tag():
     xml = _xml().replace(
         "\t</ChildItems>\n\t<Attributes>",

@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator, Mapping
+from collections.abc import Hashable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Literal, NotRequired, TypeAlias, TypedDict
 
 from .diagnostics import Diagnostic
+from .event_catalog import event_signature
 
 
 SPECIFICATION_VERSION = 1
@@ -221,7 +222,18 @@ class FormCommandSpec(TypedDict):
 class FormEventSpec(TypedDict):
     __pydantic_config__ = {"extra": "forbid"}
 
-    event: Literal["OnCreateAtServer"]
+    owner: NotRequired[str]
+    event: Literal[
+        "OnCreateAtServer",
+        "OnOpen",
+        "NotificationProcessing",
+        "ExternalEvent",
+        "FillCheckProcessingAtServer",
+        "OnChange",
+        "OnCurrentPageChange",
+        "Selection",
+        "OnActivateRow",
+    ]
     handler: str
 
 
@@ -393,7 +405,8 @@ class FormCommand:
 
 @dataclass(frozen=True, slots=True)
 class FormEvent:
-    event: Literal["OnCreateAtServer"]
+    owner: str | None
+    event: str
     handler: str
 
 
@@ -534,12 +547,12 @@ def _optional_boolean(
 
 def _duplicates(
     reader: _Reader,
-    values: list[tuple[str, str]],
+    values: list[tuple[Hashable, str]],
     *,
     code: str,
     message: str,
 ) -> None:
-    seen: set[str] = set()
+    seen: set[Hashable] = set()
     for value, path in values:
         if value and value in seen:
             reader.issue(code, path, message)
@@ -1009,16 +1022,18 @@ def _command(reader: _Reader, value: object, path: str) -> FormCommand:
 def _event(reader: _Reader, value: object, path: str) -> FormEvent:
     item = reader.object(value, path)
     reader.exact_keys(
-        item, path, required=frozenset({"event", "handler"})
+        item,
+        path,
+        required=frozenset({"event", "handler"}),
+        optional=frozenset({"owner"}),
     )
-    if item.get("event") != "OnCreateAtServer":
-        reader.issue(
-            "unsupported_event",
-            f"{path}.event",
-            "Базовый compiler поддерживает только OnCreateAtServer.",
-        )
     return FormEvent(
-        event="OnCreateAtServer",
+        owner=(
+            reader.string(item.get("owner"), f"{path}.owner", identifier=True)
+            if "owner" in item
+            else None
+        ),
+        event=reader.string(item.get("event"), f"{path}.event"),
         handler=reader.string(
             item.get("handler"), f"{path}.handler", identifier=True
         ),
@@ -1150,6 +1165,7 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
 
     attribute_by_name = {item.name: item for item in attributes}
     command_names = {item.name for item in commands}
+    element_by_name = {item.name: item for item, _path, _table in walked}
     for element, path, table in walked:
         if isinstance(element, (InputField, CheckBoxField)):
             if table is None:
@@ -1221,26 +1237,71 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
                 "Кнопка ссылается на неизвестную команду.",
             )
 
-    event_handlers = {item.handler for item in events}
+    event_signatures: dict[str, set[tuple[str, tuple[str, ...]]]] = {}
+    for index, event in enumerate(events):
+        path = f"$.events[{index}]"
+        if event.owner is None:
+            owner_kind = "form"
+        else:
+            owner = element_by_name.get(event.owner)
+            if owner is None:
+                reader.issue(
+                    "unresolved_event_owner",
+                    f"{path}.owner",
+                    "Владелец события не разрешается в элемент формы.",
+                )
+                continue
+            owner_kind = owner.kind
+        signature = event_signature(owner_kind, event.event)
+        if signature is None:
+            reader.issue(
+                "unsupported_owner_event",
+                f"{path}.event",
+                "Событие не поддерживается для указанного владельца.",
+            )
+            continue
+        event_signatures.setdefault(event.handler.casefold(), set()).add(
+            (signature.directive.casefold(), signature.parameters)
+        )
+
     for index, command in enumerate(commands):
-        if command.action in event_handlers:
+        signatures = event_signatures.setdefault(command.action.casefold(), set())
+        signatures.add(("наклиенте", ("Команда",)))
+        if len(signatures) > 1:
             reader.issue(
                 "handler_signature_conflict",
                 f"$.commands[{index}].action",
                 "Один обработчик нельзя сгенерировать с сигнатурами события и команды.",
             )
+    for index, event in enumerate(events):
+        if len(event_signatures.get(event.handler.casefold(), ())) > 1:
+            reader.issue(
+                "handler_signature_conflict",
+                f"$.events[{index}].handler",
+                "Один обработчик нельзя сгенерировать с разными сигнатурами событий.",
+            )
     _duplicates(
         reader,
         [
-            (item.event, f"$.events[{index}].event")
+            ((item.owner, item.event), f"$.events[{index}].event")
             for index, item in enumerate(events)
         ],
         code="duplicate_event",
-        message="Событие формы повторяется.",
+        message="Привязка события к владельцу повторяется.",
     )
 
     if reader.diagnostics:
         raise FormsContractError(tuple(reader.diagnostics))
+    owner_order = {None: 0}
+    owner_order.update(
+        {element.name: index for index, (element, _path, _table) in enumerate(walked, 1)}
+    )
+    events = tuple(
+        event
+        for _index, event in sorted(
+            enumerate(events), key=lambda item: (owner_order[item[1].owner], item[0])
+        )
+    )
     return ManagedForm(
         1,
         form_name,
@@ -1427,7 +1488,11 @@ def managed_form_to_spec(form: ManagedForm) -> dict[str, object]:
             for command in form.commands
         ],
         "events": [
-            {"event": event.event, "handler": event.handler}
+            {
+                **({"owner": event.owner} if event.owner is not None else {}),
+                "event": event.event,
+                "handler": event.handler,
+            }
             for event in form.events
         ],
     }

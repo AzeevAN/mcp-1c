@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from xml.etree import ElementTree as ET
 
 from .diagnostics import Coverage, Diagnostic, FormsResult
+from .event_catalog import event_signature
 from .models import (
     SUPPORTED_FORMAT_VERSION,
     FormsContractError,
@@ -1013,24 +1014,61 @@ def _commands(inventory: _Inventory, root: ET.Element) -> list[dict[str, object]
     return result
 
 
-def _events(inventory: _Inventory, root: ET.Element) -> list[dict[str, object]]:
-    container = inventory.optional_container(root, "Events")
+def _events_for_owner(
+    inventory: _Inventory,
+    node: ET.Element,
+    *,
+    owner: str | None,
+    owner_kind: str,
+) -> list[dict[str, object]]:
+    container = inventory.optional_container(node, "Events")
     if container is None:
         return []
     result: list[dict[str, object]] = []
-    for node in container:
-        if node.tag != _q("Event"):
+    for event_node in container:
+        if event_node.tag != _q("Event"):
             continue
-        inventory.mark(node, "name")
-        event_name = _attribute_value(inventory, node, "name")
-        if event_name != "OnCreateAtServer":
+        inventory.mark(event_node, "name")
+        event_name = _attribute_value(inventory, event_node, "name")
+        if event_signature(owner_kind, event_name) is None:
             inventory.issue(
                 "unsupported_event",
-                f"{inventory.paths[id(node)]}/@name",
+                f"{inventory.paths[id(event_node)]}/@name",
                 f"Событие {event_name or '<пусто>'} сохранено только в inventory.",
                 status="unsupported",
             )
-        result.append({"event": event_name, "handler": _text(node)})
+        result.append(
+            {
+                **({"owner": owner} if owner is not None else {}),
+                "event": event_name,
+                "handler": _text(event_node),
+            }
+        )
+    return result
+
+
+def _events(inventory: _Inventory, root: ET.Element) -> list[dict[str, object]]:
+    result = _events_for_owner(
+        inventory, root, owner=None, owner_kind="form"
+    )
+    owner_kinds = {
+        _q("InputField"): "input_field",
+        _q("CheckBoxField"): "check_box_field",
+        _q("Pages"): "pages",
+        _q("Table"): "table",
+    }
+    for node in root.iter():
+        owner_kind = owner_kinds.get(node.tag)
+        if owner_kind is None:
+            continue
+        result.extend(
+            _events_for_owner(
+                inventory,
+                node,
+                owner=_attribute_value(inventory, node, "name"),
+                owner_kind=owner_kind,
+            )
+        )
     return result
 
 

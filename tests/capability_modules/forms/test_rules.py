@@ -115,12 +115,26 @@ def test_layout_оставляет_смысловое_решение_агент�
     assert payload["example"]["tree"][1].startswith("pages:")
 
 
-def test_events_не_обобщают_сигнатуры_вне_первой_вертикали():
+def test_events_публикуют_закрытый_owner_aware_каталог_и_async_границу():
     payload = get_managed_form_rules("commands_events")
 
     assert payload["supported"] == {
-        "form_events": ["OnCreateAtServer"],
+        "event_owner": "поле owner отсутствует для формы либо содержит имя элемента",
+        "form_events": [
+            "OnCreateAtServer",
+            "OnOpen",
+            "NotificationProcessing",
+            "ExternalEvent",
+            "FillCheckProcessingAtServer",
+        ],
+        "element_events": {
+            "input_field": ["OnChange"],
+            "check_box_field": ["OnChange"],
+            "pages": ["OnCurrentPageChange"],
+            "table": ["Selection", "OnActivateRow"],
+        },
         "command_reference": "Form.Command.<name>",
+        "async": "Асинх и Ждать только в клиентском контексте платформы 8.3.18+",
     }
     by_code = {rule["code"]: rule for rule in payload["rules"]}
     assert by_code["on_create_at_server_stub"]["value"] == {
@@ -128,6 +142,8 @@ def test_events_не_обобщают_сигнатуры_вне_первой_в�
         "parameters": ["Отказ", "СтандартнаяОбработка"],
     }
     assert by_code["unknown_event_not_checked"]["status"] == "boundary"
+    assert by_code["owner_aware_event_catalog"]["status"] == "supported"
+    assert by_code["async_client_contract"]["status"] == "required"
     assert by_code["no_synchronous_file_exists_on_client"]["status"] == "required"
     assert "Файл.Существует()" in by_code[
         "no_synchronous_file_exists_on_client"

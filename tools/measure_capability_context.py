@@ -73,7 +73,7 @@ def measurement(capability: str) -> dict[str, object]:
         "canonical_bytes": len(payload),
         "canonical_sha256": hashlib.sha256(payload).hexdigest(),
         "payload": "tools_list_delta",
-        "measured_at": "2026-09-12",
+        "measured_at": "2026-09-13",
     }
 
 

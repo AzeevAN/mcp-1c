@@ -312,3 +312,74 @@ def test_checker_не_пишет_файлы(monkeypatch, tmp_path):
 
     assert result.status == "checked"
     assert list(tmp_path.iterdir()) == before
+
+
+def test_ждать_в_обычной_процедуре_даёт_failed():
+    xml, module = _pair()
+    module = module.replace(
+        "\t// TODO: Реализовать обработчик команды.",
+        "\tРезультат = Ждать ПолучитьРезультатАсинх();",
+    )
+
+    result = check_managed_form(
+        xml, form_name="ФормаПараметров", module_bsl=module
+    )
+
+    assert result.coverage.bsl_static == "failed"
+    assert _diagnostics(result, "await_requires_async")
+
+
+def test_асинх_серверная_процедура_даёт_failed():
+    xml, module = _pair()
+    module = module.replace(
+        "Процедура ПриСозданииНаСервере(",
+        "Асинх Процедура ПриСозданииНаСервере(",
+    )
+
+    result = check_managed_form(
+        xml, form_name="ФормаПараметров", module_bsl=module
+    )
+
+    assert result.coverage.bsl_static == "failed"
+    assert _diagnostics(result, "async_requires_client_context")
+
+
+def test_ждать_в_асинхронной_клиентской_процедуре_проходит():
+    xml, module = _pair()
+    module = module.replace(
+        "Процедура Проверить(", "Асинх Процедура Проверить("
+    ).replace(
+        "\t// TODO: Реализовать обработчик команды.",
+        "\tРезультат = Ждать ПолучитьРезультатАсинх();",
+    )
+
+    result = check_managed_form(
+        xml, form_name="ФормаПараметров", module_bsl=module
+    )
+
+    assert result.coverage.bsl_static == "passed"
+    assert not _diagnostics(result, "await_requires_async")
+    assert not _diagnostics(result, "async_requires_client_context")
+
+
+def test_checker_проверяет_директиву_события_элемента():
+    payload = json.loads(
+        (FIXTURES / "file_import_form.json").read_text(encoding="utf-8")
+    )
+    payload["events"] = [
+        {
+            "owner": "ПутьКФайлуПоле",
+            "event": "OnChange",
+            "handler": "ПутьКФайлуПриИзменении",
+        }
+    ]
+    compiled = compile_managed_form(payload)
+    xml, module = (item.content for item in compiled.artifacts)
+    module = module.replace("&НаКлиенте", "&НаСервере", 1)
+
+    result = check_managed_form(
+        xml, form_name=payload["form_name"], module_bsl=module
+    )
+
+    assert result.coverage.bsl_static == "failed"
+    assert _diagnostics(result, "handler_directive_mismatch")

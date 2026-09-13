@@ -189,8 +189,8 @@ def test_typed_dict_даёт_mcp_точную_вложенную_json_schema():
             ("invalid_type", "$.elements[0].children[2].default"),
         ),
         (
-            lambda value: value["events"][0].update({"event": "OnOpen"}),
-            ("unsupported_event", "$.events[0].event"),
+            lambda value: value["events"][0].update({"event": "BeforeClose"}),
+            ("unsupported_owner_event", "$.events[0].event"),
         ),
     ],
 )

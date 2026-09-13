@@ -15,6 +15,9 @@ from .command_catalog import (
 from .diagnostics import Diagnostic
 from .event_catalog import OBJECT_FORM_EVENTS, event_signature
 from .metadata_types import (
+    DYNAMIC_LIST_REF_PATTERN,
+    METADATA_OBJECT_REF_PATTERN,
+    METADATA_REFERENCE_REF_PATTERN,
     dynamic_list_xml_table,
     metadata_object_xml_type,
     metadata_reference_xml_type,
@@ -63,8 +66,40 @@ class _JsonSchemaMinItems:
         return schema
 
 
+@dataclass(frozen=True, slots=True)
+class _JsonSchemaPattern:
+    """Показать формат агенту, сохранив FormsResult для ошибочного клиента."""
+
+    pattern: str
+
+    def __get_pydantic_json_schema__(
+        self,
+        core_schema: object,
+        handler: Callable[[object], dict[str, object]],
+    ) -> dict[str, object]:
+        schema = dict(handler(core_schema))
+        schema["pattern"] = self.pattern
+        return schema
+
+
 _AT_LEAST_ONE = _JsonSchemaMinItems(1)
 _AT_LEAST_TWO = _JsonSchemaMinItems(2)
+_BUTTON_COMMAND_OWNER_CONDITION = {
+    "if": {
+        "properties": {"command_kind": {"const": "item_standard"}},
+        "required": ["command_kind"],
+    },
+    "then": {"required": ["command_owner"]},
+    "else": {"not": {"required": ["command_owner"]}},
+}
+_COMMAND_SOURCE_ITEM_CONDITION = {
+    "if": {
+        "properties": {"kind": {"const": "item"}},
+        "required": ["kind"],
+    },
+    "then": {"required": ["item"]},
+    "else": {"not": {"required": ["item"]}},
+}
 
 
 def is_reserved_bsl_keyword(value: str) -> bool:
@@ -117,7 +152,9 @@ class MetadataReferenceTypeSpec(TypedDict):
     __pydantic_config__ = {"extra": "forbid"}
 
     kind: Literal["metadata_reference"]
-    object: str
+    object: Annotated[
+        str, _JsonSchemaPattern(METADATA_REFERENCE_REF_PATTERN)
+    ]
 
 
 ValueTypeSpec: TypeAlias = ScalarTypeSpec | MetadataReferenceTypeSpec
@@ -149,14 +186,14 @@ class MetadataObjectTypeSpec(TypedDict):
     __pydantic_config__ = {"extra": "forbid"}
 
     kind: Literal["metadata_object"]
-    object: str
+    object: Annotated[str, _JsonSchemaPattern(METADATA_OBJECT_REF_PATTERN)]
 
 
 class DynamicListTypeSpec(TypedDict):
     __pydantic_config__ = {"extra": "forbid"}
 
     kind: Literal["dynamic_list"]
-    main_table: str
+    main_table: Annotated[str, _JsonSchemaPattern(DYNAMIC_LIST_REF_PATTERN)]
     dynamic_data_read: bool
 
 
@@ -250,7 +287,10 @@ class RadioButtonFieldSpec(TypedDict):
 
 
 class ButtonSpec(TypedDict):
-    __pydantic_config__ = {"extra": "forbid"}
+    __pydantic_config__ = {
+        "extra": "forbid",
+        "json_schema_extra": {"allOf": [_BUTTON_COMMAND_OWNER_CONDITION]},
+    }
 
     kind: Literal["button"]
     name: str
@@ -262,7 +302,10 @@ class ButtonSpec(TypedDict):
 
 
 class CommandSourceSpec(TypedDict):
-    __pydantic_config__ = {"extra": "forbid"}
+    __pydantic_config__ = {
+        "extra": "forbid",
+        "json_schema_extra": {"allOf": [_COMMAND_SOURCE_ITEM_CONDITION]},
+    }
 
     kind: Literal["form", "form_global_commands", "item"]
     item: NotRequired[str]
@@ -901,7 +944,8 @@ def _value_type(reader: _Reader, value: object, path: str) -> ValueType:
             reader.issue(
                 "invalid_metadata_reference",
                 f"{path}.object",
-                "Ожидалась поддержанная ссылка вида Справочник.ИмяОбъекта.",
+                "Ожидалась поддержанная каноническая ссылка Registry вида "
+                "ВидМетаданных.Имя.",
             )
         return MetadataReferenceType(object_name)
     if kind == "string":
@@ -999,7 +1043,8 @@ def _attribute_type(reader: _Reader, value: object, path: str) -> AttributeType:
             reader.issue(
                 "invalid_dynamic_list_main_table",
                 f"{path}.main_table",
-                "Ожидалась прямая ссылка на поддержанный объект Registry.",
+                "Ожидалась поддержанная каноническая ссылка Registry вида "
+                "ВидМетаданных.Имя.",
             )
         return DynamicListType(
             main_table,
@@ -1014,7 +1059,8 @@ def _attribute_type(reader: _Reader, value: object, path: str) -> AttributeType:
             reader.issue(
                 "invalid_metadata_object",
                 f"{path}.object",
-                "Ожидалась поддержанная ссылка вида Обработка.ИмяОбъекта.",
+                "Ожидалась поддержанная каноническая ссылка Registry вида "
+                "ВидМетаданных.Имя.",
             )
         return MetadataObjectType(object_name)
     if item.get("kind") != "value_table":

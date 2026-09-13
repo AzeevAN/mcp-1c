@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import threading
@@ -151,6 +152,54 @@ def test_compile_schema_публикует_фактические_минимум
         assert "minItems" not in definitions[definition]["properties"][
             "children"
         ]
+
+
+def test_compile_schema_объясняет_registry_ссылки_и_условные_поля(tmp_path):
+    tools = asyncio.run(_server(tmp_path, enabled=("forms",)).list_tools())
+    definitions = tools[-3].input_schema["$defs"]
+
+    patterns = {
+        "MetadataObjectTypeSpec": (
+            "object",
+            ("Обработка.Импорт", "Документ.Заказ"),
+            "ВнешняяОбработка.Импорт",
+        ),
+        "MetadataReferenceTypeSpec": (
+            "object",
+            ("Справочник.Товары", "Перечисление.ВидыОпераций"),
+            "Обработка.Импорт",
+        ),
+        "DynamicListTypeSpec": (
+            "main_table",
+            ("Справочник.Товары", "РегистрСведений.Цены"),
+            "Обработка.Импорт",
+        ),
+    }
+    for definition, (property_name, accepted, rejected) in patterns.items():
+        pattern = definitions[definition]["properties"][property_name]["pattern"]
+        assert all(re.fullmatch(pattern, value) for value in accepted)
+        assert re.fullmatch(pattern, rejected) is None
+
+    assert definitions["ButtonSpec"]["allOf"] == [
+        {
+            "if": {
+                "properties": {"command_kind": {"const": "item_standard"}},
+                "required": ["command_kind"],
+            },
+            "then": {"required": ["command_owner"]},
+            "else": {"not": {"required": ["command_owner"]}},
+        }
+    ]
+    assert definitions["CommandSourceSpec"]["allOf"] == [
+        {
+            "if": {
+                "properties": {"kind": {"const": "item"}},
+                "required": ["kind"],
+            },
+            "then": {"required": ["item"]},
+            "else": {"not": {"required": ["item"]}},
+        }
+    ]
 
 
 def _registry_with_object(tmp_path) -> Registry:
@@ -452,7 +501,10 @@ async def test_три_операции_используют_один_registry_к
 async def test_agent_проходит_rules_compile_check_decompile_через_mcp(tmp_path):
     server = _server(tmp_path, enabled=("forms",))
 
-    async with create_client_server_memory_streams() as (client_streams, server_streams):
+    async with create_client_server_memory_streams() as (
+        client_streams,
+        server_streams,
+    ):
         async with anyio.create_task_group() as tasks:
             tasks.start_soon(
                 server._lowlevel_server.run,
@@ -554,6 +606,49 @@ async def test_ошибка_контракта_forms_возвращает_стр
         "Не передавайте пустой массив: удалите необязательное поле либо "
         "добавьте минимум один поддержанный элемент.",
     ]
+
+
+@pytest.mark.anyio
+async def test_schema_подсказки_не_заменяют_предметную_диагностику(tmp_path):
+    server = _server(tmp_path, enabled=("forms",))
+    specification = _payload()
+    specification["attributes"][0]["type"] = {
+        "kind": "metadata_object",
+        "object": "ВнешняяОбработка.НеверныйПрефикс",
+    }
+    specification["elements"][0]["children"][2].update(
+        {"command": "Add", "command_kind": "item_standard"}
+    )
+
+    async with create_client_server_memory_streams() as (
+        client_streams,
+        server_streams,
+    ):
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(
+                server._lowlevel_server.run,
+                *server_streams,
+                server._lowlevel_server.create_initialization_options(),
+            )
+            try:
+                async with ClientSession(*client_streams) as session:
+                    await session.initialize()
+                    result = await session.call_tool(
+                        "compile_managed_form", {"specification": specification}
+                    )
+            finally:
+                tasks.cancel_scope.cancel()
+
+    assert result.is_error is False
+    payload = json.loads(result.content[0].text)
+    assert payload["status"] == "rejected"
+    assert {
+        (item["code"], item["path"])
+        for item in payload["diagnostics"]
+    } >= {
+        ("invalid_metadata_object", "$.attributes[0].type.object"),
+        ("missing_key", "$.elements[0].children[2].command_owner"),
+    }
 
 
 @pytest.mark.anyio

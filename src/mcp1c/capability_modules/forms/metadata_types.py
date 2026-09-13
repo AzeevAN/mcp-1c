@@ -19,6 +19,7 @@ _REGISTRY_KIND_TO_XML_OBJECT = {
     "ПланСчетов": "ChartOfAccountsObject",
     "ПланВидовРасчета": "ChartOfCalculationTypesObject",
 }
+METADATA_OBJECT_KINDS = tuple(_REGISTRY_KIND_TO_XML_OBJECT)
 _XML_OBJECT_TO_REGISTRY_KIND = {
     xml_kind: registry_kind
     for registry_kind, xml_kind in _REGISTRY_KIND_TO_XML_OBJECT.items()
@@ -35,6 +36,7 @@ _REGISTRY_KIND_TO_XML_REFERENCE = {
     "ПланСчетов": "ChartOfAccountsRef",
     "ПланВидовРасчета": "ChartOfCalculationTypesRef",
 }
+METADATA_REFERENCE_KINDS = tuple(_REGISTRY_KIND_TO_XML_REFERENCE)
 _XML_REFERENCE_TO_REGISTRY_KIND = {
     xml_kind: registry_kind
     for registry_kind, xml_kind in _REGISTRY_KIND_TO_XML_REFERENCE.items()
@@ -56,10 +58,24 @@ _REGISTRY_KIND_TO_DYNAMIC_LIST_TABLE = {
     "Задача": "Task",
     "КритерийОтбора": "FilterCriterion",
 }
+DYNAMIC_LIST_KINDS = tuple(_REGISTRY_KIND_TO_DYNAMIC_LIST_TABLE)
 _DYNAMIC_LIST_TABLE_TO_REGISTRY_KIND = {
     table_kind: registry_kind
     for registry_kind, table_kind in _REGISTRY_KIND_TO_DYNAMIC_LIST_TABLE.items()
 }
+
+
+def _canonical_reference_pattern(kinds: tuple[str, ...]) -> str:
+    alternatives = "|".join(re.escape(kind) for kind in kinds)
+    identifier = r"[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*"
+    return rf"^(?:{alternatives})\.{identifier}$"
+
+
+METADATA_OBJECT_REF_PATTERN = _canonical_reference_pattern(METADATA_OBJECT_KINDS)
+METADATA_REFERENCE_REF_PATTERN = _canonical_reference_pattern(
+    METADATA_REFERENCE_KINDS
+)
+DYNAMIC_LIST_REF_PATTERN = _canonical_reference_pattern(DYNAMIC_LIST_KINDS)
 
 
 def metadata_object_xml_type(value: str) -> str | None:

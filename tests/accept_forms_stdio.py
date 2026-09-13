@@ -7,6 +7,7 @@ import copy
 import json
 import os
 from pathlib import Path
+import re
 import sys
 from tempfile import TemporaryDirectory
 
@@ -75,6 +76,39 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                     raise RuntimeError(
                         f"Схема потеряла {definition}.{property_name} minItems."
                     )
+            for definition, property_name, accepted, rejected in (
+                (
+                    "MetadataObjectTypeSpec",
+                    "object",
+                    "Документ.Заказ",
+                    "ВнешняяОбработка.Импорт",
+                ),
+                (
+                    "MetadataReferenceTypeSpec",
+                    "object",
+                    "Перечисление.ВидыОпераций",
+                    "Обработка.Импорт",
+                ),
+                (
+                    "DynamicListTypeSpec",
+                    "main_table",
+                    "РегистрСведений.Цены",
+                    "Обработка.Импорт",
+                ),
+            ):
+                pattern = definitions[definition]["properties"][property_name][
+                    "pattern"
+                ]
+                if not re.fullmatch(pattern, accepted) or re.fullmatch(
+                    pattern, rejected
+                ):
+                    raise RuntimeError(
+                        f"Схема потеряла формат {definition}.{property_name}."
+                    )
+            if "allOf" not in definitions["ButtonSpec"]:
+                raise RuntimeError("Схема не объясняет условный command_owner.")
+            if "allOf" not in definitions["CommandSourceSpec"]:
+                raise RuntimeError("Схема не объясняет условный item.")
             rules_schema = tools["get_managed_form_rules"].input_schema
             if "query" not in rules_schema.get("properties", {}):
                 raise RuntimeError("Двуязычный поиск терминов не опубликован.")

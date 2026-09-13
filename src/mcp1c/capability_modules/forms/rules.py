@@ -11,6 +11,11 @@ import copy
 from dataclasses import dataclass
 from typing import Literal, TypeAlias
 
+from .metadata_types import (
+    DYNAMIC_LIST_KINDS,
+    METADATA_OBJECT_KINDS,
+    METADATA_REFERENCE_KINDS,
+)
 from .terminology import MAX_TERM_QUERY_LENGTH, all_form_terms, search_form_terms
 from .version_catalog import platform_profiles_payload
 
@@ -378,6 +383,29 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
             "boundary",
             "При доступном Registry-контексте проверяются объект, вложенное поле, ссылочные варианты, основная таблица DynamicList и доказуемые ограничения типа; без контекста генерация продолжается с предупреждением.",
             "contract_decision",
+        ),
+        FormRule(
+            "registry_reference_formats",
+            "required",
+            (
+                "Object и main_table используют каноническую ссылку Registry "
+                "ВидМетаданных.Имя; допустимые виды различаются по типу."
+            ),
+            "contract_decision",
+            {
+                "metadata_object": {
+                    "format": "ВидМетаданных.Имя",
+                    "kinds": list(METADATA_OBJECT_KINDS),
+                },
+                "metadata_reference": {
+                    "format": "ВидМетаданных.Имя",
+                    "kinds": list(METADATA_REFERENCE_KINDS),
+                },
+                "dynamic_list": {
+                    "format": "ВидМетаданных.Имя",
+                    "kinds": list(DYNAMIC_LIST_KINDS),
+                },
+            },
         ),
     ),
     "layout": (

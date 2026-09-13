@@ -109,6 +109,18 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                                     "kind": "button",
                                     "name": "ПроверитьДополнительно",
                                     "command": "Проверить",
+                                },
+                                {
+                                    "kind": "button_group",
+                                    "name": "ГруппаДополнительныхДействий",
+                                    "representation": "compact",
+                                    "children": [
+                                        {
+                                            "kind": "button",
+                                            "name": "ПроверитьВГруппе",
+                                            "command": "Проверить",
+                                        }
+                                    ],
                                 }
                             ],
                         }

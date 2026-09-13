@@ -337,6 +337,46 @@ def test_compiler_создаёт_popup_внутри_command_bar():
     ]
 
 
+def test_compiler_создаёт_button_group_внутри_command_bar():
+    payload = _payload()
+    payload["elements"].append(
+        {
+            "kind": "command_bar",
+            "name": "Действия",
+            "children": [
+                {
+                    "kind": "button_group",
+                    "name": "ОсновныеДействия",
+                    "title": {"ru": "Основные действия"},
+                    "representation": "compact",
+                    "children": [
+                        {
+                            "kind": "button",
+                            "name": "ПроверитьВГруппе",
+                            "command": "Проверить",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    root = ET.fromstring(compile_managed_form(payload).artifacts[0].content)
+    q = lambda name: f"{{{LOGFORM}}}{name}"
+    group = next(node for node in root.iter(q("ButtonGroup")))
+
+    assert [child.tag.rsplit("}", 1)[-1] for child in group] == [
+        "Title",
+        "Representation",
+        "ExtendedTooltip",
+        "ChildItems",
+    ]
+    assert group.find(q("Representation")).text == "Compact"
+    assert [child.tag.rsplit("}", 1)[-1] for child in group.find(q("ChildItems"))] == [
+        "Button"
+    ]
+
+
 def test_кодирование_даёт_utf8_bom_crlf_и_валидный_logform_xml():
     result = compile_managed_form(_payload())
     xml = result.artifacts[0]

@@ -759,6 +759,8 @@ def _command_bar(
                 children.append(_button(inventory, child))
             elif child.tag == _q("Popup"):
                 children.append(_popup(inventory, child))
+            elif child.tag == _q("ButtonGroup"):
+                children.append(_button_group(inventory, child))
     if not children:
         inventory.issue(
             "command_bar_items_required",
@@ -790,6 +792,8 @@ def _popup(inventory: _Inventory, node: ET.Element) -> dict[str, object]:
         for child in container:
             if child.tag == _q("Button"):
                 children.append(_button(inventory, child))
+            elif child.tag == _q("ButtonGroup"):
+                children.append(_button_group(inventory, child))
     if not children:
         inventory.issue(
             "popup_buttons_required",
@@ -799,6 +803,60 @@ def _popup(inventory: _Inventory, node: ET.Element) -> dict[str, object]:
                 else inventory.paths[id(node)] + "/ChildItems"
             ),
             "Первый слой Popup требует хотя бы одну прямую кнопку.",
+            status="unsupported",
+        )
+    result["children"] = children
+    return result
+
+
+def _button_group(
+    inventory: _Inventory, node: ET.Element
+) -> dict[str, object]:
+    inventory.mark(node, "name", "id")
+    result: dict[str, object] = {
+        "kind": "button_group",
+        "name": _attribute_value(inventory, node, "name"),
+    }
+    _subset_attribute(inventory, node, "id")
+    title = _optional_localized(inventory, node, "Title")
+    if title is not None:
+        result["title"] = title
+    representation_nodes = [
+        child for child in node if child.tag == _q("Representation")
+    ]
+    if representation_nodes:
+        representation_node = representation_nodes[0]
+        inventory.mark(representation_node)
+        representation = {
+            "Usual": "usual",
+            "Compact": "compact",
+        }.get(_text(representation_node))
+        if len(representation_nodes) > 1 or representation is None:
+            inventory.issue(
+                "unsupported_xml_value",
+                inventory.paths[id(representation_node)],
+                "Неподдержанное представление ButtonGroup.",
+                status="unsupported",
+            )
+        elif representation != "usual":
+            result["representation"] = representation
+    _companion(inventory, node, "ExtendedTooltip")
+    container = inventory.required_child(node, "ChildItems")
+    children: list[dict[str, object]] = []
+    if container is not None:
+        inventory.mark(container)
+        for child in container:
+            if child.tag == _q("Button"):
+                children.append(_button(inventory, child))
+    if not children:
+        inventory.issue(
+            "button_group_buttons_required",
+            (
+                inventory.paths[id(container)]
+                if container is not None
+                else inventory.paths[id(node)] + "/ChildItems"
+            ),
+            "Первый слой ButtonGroup требует хотя бы одну прямую кнопку.",
             status="unsupported",
         )
     result["children"] = children

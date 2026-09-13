@@ -98,7 +98,8 @@ def test_elements_описывают_только_принятые_kinds_и_comp
             "table",
         ],
         "page_representations": ["tabs_on_top"],
-        "command_bar_children": ["button", "popup"],
+        "command_bar_children": ["button", "popup", "button_group"],
+        "popup_children": ["button", "button_group"],
     }
     by_code = {rule["code"]: rule for rule in payload["rules"]}
     assert by_code["input_field_companions"]["value"] == [
@@ -127,10 +128,14 @@ def test_elements_описывают_только_принятые_kinds_и_comp
     ]
     assert by_code["command_bar_structure"]["value"] == [
         "ExtendedTooltip",
-        "ChildItems<Button|Popup>",
+        "ChildItems<Button|Popup|ButtonGroup>",
     ]
     assert by_code["popup_structure"]["value"] == [
         "Title",
+        "ExtendedTooltip",
+        "ChildItems<Button|ButtonGroup>",
+    ]
+    assert by_code["button_group_structure"]["value"] == [
         "ExtendedTooltip",
         "ChildItems<Button>",
     ]

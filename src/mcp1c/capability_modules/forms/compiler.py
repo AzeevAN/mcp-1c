@@ -16,6 +16,7 @@ from .metadata_types import (
 from .models import (
     BooleanType,
     Button,
+    ButtonGroup,
     CheckBoxField,
     CommandBar,
     CompositeType,
@@ -483,6 +484,10 @@ def _emit_command_bar(
     for child in item.children:
         if isinstance(child, Button):
             _emit_button(lines, child, allocator, events_by_owner, indent + 2)
+        elif isinstance(child, ButtonGroup):
+            _emit_button_group(
+                lines, child, allocator, events_by_owner, indent + 2
+            )
         else:
             _emit_popup(lines, child, allocator, events_by_owner, indent + 2)
     _append(lines, indent + 1, "</ChildItems>")
@@ -513,9 +518,46 @@ def _emit_popup(
     )
     _append(lines, indent + 1, "<ChildItems>")
     for child in item.children:
-        _emit_button(lines, child, allocator, events_by_owner, indent + 2)
+        if isinstance(child, Button):
+            _emit_button(lines, child, allocator, events_by_owner, indent + 2)
+        else:
+            _emit_button_group(
+                lines, child, allocator, events_by_owner, indent + 2
+            )
     _append(lines, indent + 1, "</ChildItems>")
     _append(lines, indent, "</Popup>")
+
+
+def _emit_button_group(
+    lines: list[str],
+    item: ButtonGroup,
+    allocator: _IdAllocator,
+    events_by_owner: dict[str | None, tuple[FormEvent, ...]],
+    indent: int,
+) -> None:
+    group_id = allocator.next()
+    _append(
+        lines,
+        indent,
+        f"<ButtonGroup name={quoteattr(item.name)} id={quoteattr(group_id)}>",
+    )
+    if item.title is not None:
+        _localized(lines, "Title", item.title, indent + 1)
+    if item.representation != "usual":
+        _append(lines, indent + 1, "<Representation>Compact</Representation>")
+    tooltip_id = allocator.next()
+    _append(
+        lines,
+        indent + 1,
+        "<ExtendedTooltip "
+        f"name={quoteattr(item.name + 'РасширеннаяПодсказка')} "
+        f"id={quoteattr(tooltip_id)}/>",
+    )
+    _append(lines, indent + 1, "<ChildItems>")
+    for child in item.children:
+        _emit_button(lines, child, allocator, events_by_owner, indent + 2)
+    _append(lines, indent + 1, "</ChildItems>")
+    _append(lines, indent, "</ButtonGroup>")
 
 
 def _emit_group(
@@ -837,6 +879,8 @@ def _walk_form_elements(form: ManagedForm):
             elif isinstance(element, CommandBar):
                 yield from walk(element.children)
             elif isinstance(element, Popup):
+                yield from walk(element.children)
+            elif isinstance(element, ButtonGroup):
                 yield from walk(element.children)
 
     yield from walk(form.elements)

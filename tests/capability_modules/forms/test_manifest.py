@@ -29,15 +29,15 @@ def test_manifest_совпадает_с_фактическим_tools_list_и_д�
         "context_budget": {
             "status": "measured",
             "tool_count": 4,
-            "approx_tokens": 4366,
+            "approx_tokens": 4504,
             "tokenizer": "tiktoken 0.11.0 / o200k_base",
             "method": (
                 "canonical tools/list delta: UTF-8 JSON, sort_keys, "
                 "compact separators"
             ),
-            "canonical_bytes": 18565,
+            "canonical_bytes": 19111,
             "canonical_sha256": (
-                "32ee09f851a0c54dd82df86f3c502c75e877f64489f75a2448f9f16e3099ac3f"
+                "50decec4f7609bec7d8243b264e566908487d7338e4a72ed80c4cc9c169637ef"
             ),
             "payload": "tools_list_delta",
             "measured_at": "2026-09-13",
@@ -49,5 +49,5 @@ def test_manifest_совпадает_с_фактическим_tools_list_и_д�
         payload["context_budget"]["canonical_sha256"]
     )
     for text in (readme, dashboard):
-        assert "4 366" in text
+        assert "4 504" in text
         assert "o200k_base" in text

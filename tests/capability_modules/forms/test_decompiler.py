@@ -613,6 +613,63 @@ def test_popup_с_кнопками_даёт_lossless_roundtrip():
         assert _diagnostics(unsupported, "missing_or_repeated_xml_node")
 
 
+def test_button_group_с_кнопками_даёт_lossless_roundtrip():
+    payload = _payload()
+    payload["elements"].append(
+        {
+            "kind": "command_bar",
+            "name": "Действия",
+            "children": [
+                {
+                    "kind": "button_group",
+                    "name": "ОсновныеДействия",
+                    "title": {"ru": "Основные действия"},
+                    "representation": "compact",
+                    "children": [
+                        {
+                            "kind": "button",
+                            "name": "ПроверитьВГруппе",
+                            "command": "Проверить",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    compiled = compile_managed_form(payload)
+
+    result = decompile_managed_form(
+        compiled.artifacts[0].content,
+        form_name=payload["form_name"],
+        module_bsl=compiled.artifacts[1].content,
+    )
+
+    assert result.specification == compiled.specification
+    assert result.coverage.structural == "passed"
+
+    for missing_tag in ("ExtendedTooltip", "ChildItems"):
+        root = ET.fromstring(compiled.artifacts[0].content)
+        group = next(
+            node
+            for node in root.iter(
+                "{http://v8.1c.ru/8.3/xcf/logform}ButtonGroup"
+            )
+        )
+        child = group.find(
+            f"{{http://v8.1c.ru/8.3/xcf/logform}}{missing_tag}"
+        )
+        assert child is not None
+        group.remove(child)
+
+        unsupported = decompile_managed_form(
+            ET.tostring(root, encoding="unicode"),
+            form_name=payload["form_name"],
+        )
+
+        assert unsupported.coverage.structural == "unsupported"
+        assert _diagnostics(unsupported, "missing_or_repeated_xml_node")
+
+
 def test_ручной_dynamic_list_остаётся_inventory():
     payload = _payload()
     payload["attributes"][0]["type"] = {

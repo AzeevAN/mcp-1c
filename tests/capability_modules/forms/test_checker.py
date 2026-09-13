@@ -227,6 +227,40 @@ def test_checker_проверяет_popup_внутри_command_bar():
     assert result.specification == compiled.specification
 
 
+def test_checker_проверяет_button_group_внутри_command_bar():
+    payload = _payload()
+    payload["elements"].append(
+        {
+            "kind": "command_bar",
+            "name": "Действия",
+            "children": [
+                {
+                    "kind": "button_group",
+                    "name": "ОсновныеДействия",
+                    "children": [
+                        {
+                            "kind": "button",
+                            "name": "ПроверитьВГруппе",
+                            "command": "Проверить",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    compiled = compile_managed_form(payload)
+
+    result = check_managed_form(
+        compiled.artifacts[0].content,
+        form_name=payload["form_name"],
+        module_bsl=compiled.artifacts[1].content,
+    )
+
+    assert result.coverage.structural == "passed"
+    assert result.coverage.bsl_static == "passed"
+    assert result.specification == compiled.specification
+
+
 def test_checker_использует_явный_версионный_профиль_событий():
     payload = _rich_payload()
     payload["platform_version"] = "8.3.25"

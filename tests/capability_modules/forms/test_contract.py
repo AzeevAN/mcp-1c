@@ -284,6 +284,78 @@ def test_подменю_доступно_только_внутри_панели_
     ) in _codes(caught.value)
 
 
+def test_группа_кнопок_доступна_в_панели_и_подменю():
+    payload = _payload()
+    group = {
+        "kind": "button_group",
+        "name": "ОсновныеДействия",
+        "title": {"ru": "Основные действия"},
+        "representation": "compact",
+        "children": [
+            {
+                "kind": "button",
+                "name": "ПроверитьВГруппе",
+                "command": "Проверить",
+            }
+        ],
+    }
+    payload["elements"].append(
+        {
+            "kind": "command_bar",
+            "name": "Действия",
+            "children": [
+                group,
+                {
+                    "kind": "popup",
+                    "name": "Дополнительно",
+                    "title": {"ru": "Дополнительно"},
+                    "children": [
+                        {
+                            **group,
+                            "name": "ДополнительныеДействия",
+                            "children": [
+                                {
+                                    "kind": "button",
+                                    "name": "ПроверитьДополнительно",
+                                    "command": "Проверить",
+                                }
+                            ],
+                        }
+                    ],
+                },
+            ],
+        }
+    )
+
+    form = parse_managed_form_spec(payload)
+    bar = form.elements[-1]
+
+    assert bar.children[0].kind == "button_group"
+    assert bar.children[0].representation == "compact"
+    assert bar.children[1].children[0].kind == "button_group"
+    assert bar.children[1].children[0].children[0].command == "Проверить"
+
+    group_buttons = group["children"]
+    payload["elements"][-1]["children"][0]["children"] = []
+    with pytest.raises(FormsContractError) as caught:
+        parse_managed_form_spec(payload)
+
+    assert (
+        "button_group_buttons_required",
+        "$.elements[1].children[0].children",
+    ) in _codes(caught.value)
+
+    group["children"] = group_buttons
+    payload["elements"][-1] = group
+    with pytest.raises(FormsContractError) as caught:
+        parse_managed_form_spec(payload)
+
+    assert (
+        "unsupported_element_kind",
+        "$.elements[1].kind",
+    ) in _codes(caught.value)
+
+
 def test_таблица_отклоняет_путь_к_необъявленной_колонке():
     payload = _rich_payload()
     payload["elements"][0]["children"][1]["pages"][0]["children"][0][

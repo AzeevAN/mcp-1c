@@ -200,6 +200,9 @@ def test_compile_schema_объясняет_registry_ссылки_и_условн
             "else": {"not": {"required": ["item"]}},
         }
     ]
+    command_schema = definitions["ButtonSpec"]["properties"]["command"]
+    assert "только имя команды" in command_schema["description"]
+    assert "Form.Command." in command_schema["description"]
 
 
 def _registry_with_object(tmp_path) -> Registry:

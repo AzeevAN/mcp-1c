@@ -88,6 +88,22 @@ class _JsonSchemaPattern:
         return schema
 
 
+@dataclass(frozen=True, slots=True)
+class _JsonSchemaDescription:
+    """Объяснить агенту различие JSON-значения и сгенерированного XML."""
+
+    description: str
+
+    def __get_pydantic_json_schema__(
+        self,
+        core_schema: object,
+        handler: Callable[[object], dict[str, object]],
+    ) -> dict[str, object]:
+        schema = dict(handler(core_schema))
+        schema["description"] = self.description
+        return schema
+
+
 _AT_LEAST_ONE = _JsonSchemaMinItems(1)
 _AT_LEAST_TWO = _JsonSchemaMinItems(2)
 _BUTTON_COMMAND_OWNER_CONDITION = {
@@ -300,7 +316,15 @@ class ButtonSpec(TypedDict):
 
     kind: Literal["button"]
     name: str
-    command: str
+    command: Annotated[
+        str,
+        _JsonSchemaDescription(
+            "Для пользовательской команды передавайте только имя команды без "
+            "префикса Form.Command.; compiler сам создаст XML-ссылку "
+            "Form.Command.<имя>. Для стандартной команды передавайте имя из "
+            "каталога вместе с подходящим command_kind."
+        ),
+    ]
     command_kind: NotRequired[Literal["custom", "form_standard", "item_standard"]]
     command_owner: NotRequired[str]
     default: NotRequired[bool]

@@ -569,7 +569,10 @@ def test_events_публикуют_закрытый_owner_aware_каталог_�
                 "OnEditEnd",
             ],
         },
-        "command_reference": "Form.Command.<name>",
+        "command_reference": {
+            "specification": "<name>",
+            "generated_xml": "Form.Command.<name>",
+        },
         "standard_commands": {
             "form": ["Help", "Close", "CustomizeForm"],
             "object_form": ["Write", "WriteAndClose"],
@@ -584,6 +587,10 @@ def test_events_публикуют_закрытый_owner_aware_каталог_�
         "parameters": ["Отказ", "СтандартнаяОбработка"],
     }
     assert by_code["unknown_event_not_checked"]["status"] == "boundary"
+    assert by_code["custom_command_reference"]["value"] == {
+        "specification": "<name>",
+        "generated_xml": "Form.Command.<name>",
+    }
     assert by_code["owner_aware_event_catalog"]["status"] == "supported"
     assert by_code["object_form_lifecycle_catalog"]["evidence_level"] == (
         "platform_documentation"
@@ -615,6 +622,18 @@ def test_events_публикуют_закрытый_owner_aware_каталог_�
     assert "Файл.Существует()" in by_code[
         "no_synchronous_file_exists_on_client"
     ]["summary"]
+
+
+def test_diagnostics_объясняет_предупреждение_для_нового_объекта() -> None:
+    payload = get_managed_form_rules("diagnostics")
+    by_code = {rule["code"]: rule for rule in payload["rules"]}
+
+    rule = by_code["new_metadata_object_registry_warning"]
+    assert rule["status"] == "boundary"
+    assert rule["value"] == {
+        "code": "metadata_object_not_found",
+        "configuration_links": "warning",
+    }
 
 
 def test_неизвестная_тема_отклоняется_с_перечнем_доступных():

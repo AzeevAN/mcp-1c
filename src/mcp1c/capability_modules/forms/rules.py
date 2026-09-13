@@ -488,9 +488,16 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
         FormRule(
             "custom_command_reference",
             "required",
-            "Кнопка ссылается на существующую команду через Form.Command.<name>.",
+            (
+                "В JSON-свойстве button.command передавайте только имя "
+                "существующей команды без префикса; compiler сам создаёт "
+                "XML-ссылку Form.Command.<name>."
+            ),
             "corpus_invariant",
-            "Form.Command.<name>",
+            {
+                "specification": "<name>",
+                "generated_xml": "Form.Command.<name>",
+            },
         ),
         FormRule(
             "command_action_stub",
@@ -727,6 +734,21 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
             "Статический GREEN не доказывает импорт или внешний вид в 1С.",
             "contract_decision",
         ),
+        FormRule(
+            "new_metadata_object_registry_warning",
+            "boundary",
+            (
+                "Для новой обработки или другого ещё не загруженного объекта "
+                "Registry закономерно возвращает metadata_object_not_found и "
+                "configuration_links=warning; это не блокирует генерацию, а "
+                "снимается после загрузки нового объекта и обновления snapshot."
+            ),
+            "contract_decision",
+            {
+                "code": "metadata_object_not_found",
+                "configuration_links": "warning",
+            },
+        ),
     ),
 }
 
@@ -943,7 +965,10 @@ def get_managed_form_rules(
                     "OnEditEnd",
                 ],
             },
-            "command_reference": "Form.Command.<name>",
+            "command_reference": {
+                "specification": "<name>",
+                "generated_xml": "Form.Command.<name>",
+            },
             "standard_commands": {
                 "form": ["Help", "Close", "CustomizeForm"],
                 "object_form": ["Write", "WriteAndClose"],

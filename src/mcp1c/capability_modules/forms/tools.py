@@ -8,6 +8,7 @@ from ...capabilities import CapabilityTool
 from .checker import check_managed_form
 from .compiler import compile_managed_form
 from .decompiler import MAX_FORM_XML_BYTES, decompile_managed_form
+from .diagnostics import FormsResult
 from .limits import (
     MAX_CONCURRENT_OPERATIONS,
     MAX_MODULE_BYTES,
@@ -21,6 +22,13 @@ from .limits import (
     FormsToolTimeoutError,
 )
 from .models import ManagedFormSpec
+from .registry_context import (
+    RegistryResolver,
+    apply_registry_resolution,
+    resolve_registry_snapshot,
+    specification_with_registry_platform,
+    validate_registry_links,
+)
 from .rules import RuleTopic, get_managed_form_rules
 
 
@@ -45,7 +53,12 @@ def _rules_tool(topic: RuleTopic = "overview") -> str:
     return _json(get_managed_form_rules(topic))
 
 
-async def _compile_tool(specification: ManagedFormSpec) -> str:
+async def _compile_tool(
+    specification: ManagedFormSpec,
+    configuration: str | None = None,
+    *,
+    registry: RegistryResolver | None = None,
+) -> str:
     encoded = json.dumps(
         specification,
         ensure_ascii=False,
@@ -56,9 +69,17 @@ async def _compile_tool(specification: ManagedFormSpec) -> str:
         raise FormsToolInputError(
             f"specification превышает лимит {MAX_SPECIFICATION_BYTES} байт."
         )
-    return await _GATE.run(
-        lambda: _json(compile_managed_form(specification).to_dict())
-    )
+
+    def run() -> str:
+        resolution = resolve_registry_snapshot(registry, configuration)
+        prepared = specification_with_registry_platform(specification, resolution)
+        result = compile_managed_form(prepared)
+        if not isinstance(result, FormsResult):
+            return _json(result.to_dict())
+        checked = validate_registry_links(result.specification, resolution)
+        return _json(apply_registry_resolution(result, checked).to_dict())
+
+    return await _GATE.run(run)
 
 
 async def _decompile_tool(
@@ -66,20 +87,29 @@ async def _decompile_tool(
     form_name: str,
     module_bsl: str | None = None,
     platform_version: str | None = None,
+    configuration: str | None = None,
+    *,
+    registry: RegistryResolver | None = None,
 ) -> str:
     _input(form_xml, "form_xml", MAX_FORM_XML_BYTES)
     if module_bsl is not None:
         _input(module_bsl, "module_bsl", MAX_MODULE_BYTES)
-    return await _GATE.run(
-        lambda: _json(
-            decompile_managed_form(
-                form_xml,
-                form_name=form_name,
-                module_bsl=module_bsl,
-                platform_version=platform_version,
-            ).to_dict()
+
+    def run() -> str:
+        resolution = resolve_registry_snapshot(registry, configuration)
+        effective_platform = platform_version
+        if effective_platform is None and resolution.snapshot is not None:
+            effective_platform = resolution.snapshot.platform_version
+        result = decompile_managed_form(
+            form_xml,
+            form_name=form_name,
+            module_bsl=module_bsl,
+            platform_version=effective_platform,
         )
-    )
+        checked = validate_registry_links(result.specification, resolution)
+        return _json(apply_registry_resolution(result, checked).to_dict())
+
+    return await _GATE.run(run)
 
 
 async def _check_tool(
@@ -87,24 +117,75 @@ async def _check_tool(
     form_name: str,
     module_bsl: str | None = None,
     platform_version: str | None = None,
+    configuration: str | None = None,
+    *,
+    registry: RegistryResolver | None = None,
 ) -> str:
     _input(form_xml, "form_xml", MAX_FORM_XML_BYTES)
     if module_bsl is not None:
         _input(module_bsl, "module_bsl", MAX_MODULE_BYTES)
-    return await _GATE.run(
-        lambda: _json(
-            check_managed_form(
-                form_xml,
-                form_name=form_name,
-                module_bsl=module_bsl,
-                platform_version=platform_version,
-            ).to_dict()
+
+    def run() -> str:
+        resolution = resolve_registry_snapshot(registry, configuration)
+        effective_platform = platform_version
+        if effective_platform is None and resolution.snapshot is not None:
+            effective_platform = resolution.snapshot.platform_version
+        result = check_managed_form(
+            form_xml,
+            form_name=form_name,
+            module_bsl=module_bsl,
+            platform_version=effective_platform,
         )
-    )
+        checked = validate_registry_links(result.specification, resolution)
+        return _json(apply_registry_resolution(result, checked).to_dict())
+
+    return await _GATE.run(run)
 
 
-def load() -> tuple[CapabilityTool, ...]:
+def load(registry: RegistryResolver | None = None) -> tuple[CapabilityTool, ...]:
     """Загрузить четыре чистых инструмента в принятом порядке работы."""
+
+    async def compile_tool(
+        specification: ManagedFormSpec,
+        configuration: str | None = None,
+    ) -> str:
+        return await _compile_tool(
+            specification,
+            configuration,
+            registry=registry,
+        )
+
+    async def decompile_tool(
+        form_xml: str,
+        form_name: str,
+        module_bsl: str | None = None,
+        platform_version: str | None = None,
+        configuration: str | None = None,
+    ) -> str:
+        return await _decompile_tool(
+            form_xml,
+            form_name,
+            module_bsl,
+            platform_version,
+            configuration,
+            registry=registry,
+        )
+
+    async def check_tool(
+        form_xml: str,
+        form_name: str,
+        module_bsl: str | None = None,
+        platform_version: str | None = None,
+        configuration: str | None = None,
+    ) -> str:
+        return await _check_tool(
+            form_xml,
+            form_name,
+            module_bsl,
+            platform_version,
+            configuration,
+            registry=registry,
+        )
 
     return (
         CapabilityTool(
@@ -117,12 +198,14 @@ def load() -> tuple[CapabilityTool, ...]:
         ),
         CapabilityTool(
             name="compile_managed_form",
-            function=_compile_tool,
+            function=compile_tool,
             description=(
                 "Детерминированно собрать Form.xml 2.16 и Form/Module.bsl из "
                 "строгой спецификации поддержанного слоя. Если версия целевой "
-                "платформы известна, агент задаёт platform_version; неизвестная "
-                "или отсутствующая версия даёт предупреждение вместо отказа. Компоновка "
+                "платформы известна без Registry, агент задаёт platform_version; "
+                "неизвестная или отсутствующая версия даёт предупреждение вместо отказа. "
+                "Параметр configuration выбирает read-only Registry-контекст; "
+                "единственный контекст выбирается автоматически. Компоновка "
                 "задаётся явно; compiler не переставляет элементы. Возвращает текстовые "
                 "артефакты, ничего не записывает и не выполняет импорт в 1С. "
                 "Размер specification ограничен 256 КиБ."
@@ -130,23 +213,25 @@ def load() -> tuple[CapabilityTool, ...]:
         ),
         CapabilityTool(
             name="decompile_managed_form",
-            function=_decompile_tool,
+            function=decompile_tool,
             description=(
                 "Разобрать Form.xml в каноническую спецификацию либо честный "
                 "inventory со всеми непокрытыми XML-путями. Не используйте "
                 "inventory для обратной компиляции: allow_lossy отсутствует. "
                 "Передайте platform_version для выбора того же профиля событий; "
                 "неподтверждённая версия будет явно помечена предупреждением. "
+                "configuration включает read-only проверку объектных ссылок. "
                 "Form.xml и Module.bsl ограничены 2 МиБ каждый."
             ),
         ),
         CapabilityTool(
             name="check_managed_form",
-            function=_check_tool,
+            function=check_tool,
             description=(
                 "Раздельно проверить XML, структуру, локальные ссылки и, если "
                 "передан, Module.bsl. Статический результат не доказывает "
-                "Registry, импорт или внешний вид формы в 1С; platform_version "
+                "импорт или внешний вид формы в 1С; configuration включает "
+                "read-only проверку Registry, а platform_version "
                 "выбирает версионный профиль событий и сообщает степень "
                 "доказанности предупреждением. Form.xml и "
                 "Module.bsl ограничены 2 МиБ каждый."

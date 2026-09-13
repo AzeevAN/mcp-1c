@@ -419,8 +419,10 @@ def load_capability_modules(
     names: tuple[str, ...],
     *,
     definitions: Mapping[str, CapabilityDefinition] = CAPABILITY_DEFINITIONS,
+    dependencies: Mapping[str, object] | None = None,
 ) -> tuple[CapabilityModule, ...]:
     """Лениво импортировать и инициализировать только выбранные модули."""
+    dependencies = dependencies or {}
     loaded: list[CapabilityModule] = []
     for name in names:
         definition = definitions.get(name)
@@ -430,7 +432,11 @@ def load_capability_modules(
             )
         factory = _load_factory(definition)
         try:
-            raw_tools = factory()
+            raw_tools = (
+                factory(dependencies[name])
+                if name in dependencies
+                else factory()
+            )
             tools = tuple(raw_tools)
         except Exception as error:
             raise CapabilityContractError(

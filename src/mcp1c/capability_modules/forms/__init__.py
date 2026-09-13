@@ -10,12 +10,12 @@ from .decompiler import decompile_managed_form
 from .rules import FormsRuleQueryError, RULE_TOPICS, get_managed_form_rules
 
 
-def load():
+def load(registry=None):
     """Лениво загрузить только транспортные обёртки capability."""
 
     from .tools import load as load_tools
 
-    return load_tools()
+    return load_tools(registry)
 
 
 __all__ = [

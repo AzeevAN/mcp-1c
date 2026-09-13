@@ -133,6 +133,34 @@ def test_enabled_импортирует_и_инициализирует_толь
     assert init_marker.read_text(encoding="utf-8") == "initialized"
 
 
+def test_loader_передаёт_модулю_только_его_явную_зависимость(
+    tmp_path,
+    monkeypatch,
+):
+    received = tmp_path / "received"
+    module_name = "synthetic_dependency_capability_canary"
+    (tmp_path / f"{module_name}.py").write_text(
+        "from pathlib import Path\n"
+        "def load(dependency):\n"
+        f"    Path({str(received)!r}).write_text(dependency)\n"
+        "    return ()\n",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    definitions = {
+        "canary": CapabilityDefinition("canary", f"{module_name}:load")
+    }
+
+    modules = load_capability_modules(
+        ("canary",),
+        definitions=definitions,
+        dependencies={"canary": "registry-view"},
+    )
+
+    assert modules == (CapabilityModule("canary", ()),)
+    assert received.read_text(encoding="utf-8") == "registry-view"
+
+
 @pytest.mark.parametrize(
     "value",
     ("", "diagnostics,", ",diagnostics", " diagnostics", "diagnostics ",

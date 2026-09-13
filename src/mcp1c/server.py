@@ -1268,7 +1268,12 @@ def build_server(
                     structured_content={"result": message}, is_error=True,
                 )
 
-    server.add_capability_modules(load_capability_modules(enabled_capabilities))
+    server.add_capability_modules(
+        load_capability_modules(
+            enabled_capabilities,
+            dependencies={"forms": registry},
+        )
+    )
     _add_http_routes(server, registry, reference, restart, capability_runtime)
     return server
 

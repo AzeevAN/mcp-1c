@@ -14,9 +14,11 @@ from mcp import ClientSession
 from mcp.shared.memory import create_client_server_memory_streams
 
 from mcp1c.reference_provider import ReferenceService
+from mcp1c.model import Configuration, Field, MetadataObject
 from mcp1c.registry import Registry
 from mcp1c.server import build_server
 from mcp1c.capability_modules.forms import tools as forms_tools
+from conftest import write_export
 
 
 FIXTURES = Path(__file__).with_name("fixtures")
@@ -38,9 +40,10 @@ def _payload() -> dict:
     return json.loads((FIXTURES / "minimal_form.json").read_text(encoding="utf-8"))
 
 
-def _server(tmp_path, *, enabled=()):
+def _server(tmp_path, *, enabled=(), registry=None):
+    registry = registry or Registry(tmp_path)
     return build_server(
-        Registry(tmp_path),
+        registry,
         reference=ReferenceService.discover(tmp_path, database_path="off"),
         enabled_capabilities=enabled,
     )
@@ -94,7 +97,229 @@ def test_on_добавляет_ровно_четыре_forms_tools_в_стаби
     assert len(names) == CORE_TOOL_COUNT + 4
     compile_schema = tools[-3].input_schema
     assert "specification" in compile_schema["properties"]
+    assert "configuration" in compile_schema["properties"]
     assert "ManagedFormSpec" in json.dumps(compile_schema, ensure_ascii=False)
+
+
+def _registry_with_object(tmp_path) -> Registry:
+    registry = Registry(tmp_path / "data")
+    object_name = "Обработка.НоваяОбработка"
+    config = Configuration(name="КонтекстА", platform="8.3.23.1997")
+    config.objects[object_name] = MetadataObject(
+        full_name=object_name,
+        kind="Обработка",
+        name="НоваяОбработка",
+        attributes=[
+            Field("Комментарий", types=["Строка"]),
+            Field("Активен", types=["Булево"]),
+        ],
+    )
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    registry.add_configuration(write_export(incoming, config))
+    return registry
+
+
+@pytest.mark.anyio
+async def test_compile_сам_берёт_платформу_и_проверяет_ссылки_из_registry(tmp_path):
+    registry = _registry_with_object(tmp_path)
+    server = _server(tmp_path, enabled=("forms",), registry=registry)
+    specification = _payload()
+    specification.pop("platform_version", None)
+    specification["attributes"][0] = {
+        "name": "Объект",
+        "type": {
+            "kind": "metadata_object",
+            "object": "Обработка.НоваяОбработка",
+        },
+        "main": True,
+    }
+    specification["elements"][0]["children"][0].update(
+        {"name": "Комментарий", "data_path": "Объект.Комментарий"}
+    )
+
+    result = await server.call_tool(
+        "compile_managed_form",
+        {"specification": specification, "configuration": "КонтекстА"},
+    )
+    assert result.is_error is False
+    payload = json.loads(result.content[0].text)
+
+    assert payload["status"] == "compiled"
+    assert payload["specification"]["platform_version"] == "8.3.23.1997"
+    assert payload["coverage"]["configuration_links"] == "passed"
+    assert any(
+        item["code"] == "registry_links_verified"
+        for item in payload["diagnostics"]
+    )
+
+
+@pytest.mark.anyio
+async def test_отсутствующая_ссылка_не_блокирует_генерацию_но_даёт_warning(tmp_path):
+    registry = _registry_with_object(tmp_path)
+    specification = _payload()
+    specification["attributes"][0] = {
+        "name": "Объект",
+        "type": {
+            "kind": "metadata_object",
+            "object": "Обработка.НовыйОбъект",
+        },
+        "main": True,
+    }
+    specification["elements"][0]["children"][0].update(
+        {"name": "Поле", "data_path": "Объект.Поле"}
+    )
+
+    tools = {item.name: item.function for item in forms_tools.load(registry)}
+    result = await tools["compile_managed_form"](specification)
+    payload = json.loads(result)
+
+    assert payload["status"] == "compiled"
+    assert payload["artifacts"]
+    assert payload["coverage"]["configuration_links"] == "warning"
+    assert any(
+        item["code"] == "metadata_object_not_found"
+        for item in payload["diagnostics"]
+    )
+
+
+@pytest.mark.anyio
+async def test_доказанный_конфликт_типа_поля_отклоняет_артефакты(tmp_path):
+    registry = _registry_with_object(tmp_path)
+    specification = _payload()
+    specification["attributes"][0] = {
+        "name": "Объект",
+        "type": {
+            "kind": "metadata_object",
+            "object": "Обработка.НоваяОбработка",
+        },
+        "main": True,
+    }
+    specification["elements"][0]["children"][0] = {
+        "kind": "check_box_field",
+        "name": "Комментарий",
+        "data_path": "Объект.Комментарий",
+    }
+
+    tools = {item.name: item.function for item in forms_tools.load(registry)}
+    result = await tools["compile_managed_form"](specification)
+    payload = json.loads(result)
+
+    assert payload["status"] == "rejected"
+    assert payload["artifacts"] == []
+    assert payload["coverage"]["configuration_links"] == "failed"
+    assert any(
+        item["code"] == "registry_field_type_conflict"
+        for item in payload["diagnostics"]
+    )
+
+
+@pytest.mark.anyio
+async def test_явная_версия_не_может_противоречить_registry(tmp_path):
+    registry = _registry_with_object(tmp_path)
+    specification = _payload()
+    specification["platform_version"] = "8.3.27"
+
+    tools = {item.name: item.function for item in forms_tools.load(registry)}
+    result = await tools["compile_managed_form"](specification)
+    payload = json.loads(result)
+
+    assert payload["status"] == "rejected"
+    assert payload["artifacts"] == []
+    assert any(
+        item["code"] == "platform_version_conflicts_with_registry"
+        for item in payload["diagnostics"]
+    )
+
+
+@pytest.mark.anyio
+async def test_empty_registry_не_блокирует_автономную_генерацию(tmp_path):
+    registry = Registry(tmp_path / "data")
+    tools = {item.name: item.function for item in forms_tools.load(registry)}
+
+    result = await tools["compile_managed_form"](_payload())
+    payload = json.loads(result)
+
+    assert payload["status"] == "compiled"
+    assert payload["coverage"]["configuration_links"] == "not_checked"
+    assert any(
+        item["code"] == "registry_context_unavailable"
+        for item in payload["diagnostics"]
+    )
+
+
+@pytest.mark.anyio
+async def test_при_нескольких_контекстах_агент_выбирает_configuration(tmp_path):
+    registry = _registry_with_object(tmp_path)
+    second = Configuration(name="КонтекстБ", platform="8.3.23.1997")
+    incoming = tmp_path / "incoming-b"
+    incoming.mkdir()
+    registry.add_configuration(write_export(incoming, second))
+    tools = {item.name: item.function for item in forms_tools.load(registry)}
+
+    without_selection = json.loads(
+        await tools["compile_managed_form"](_payload())
+    )
+    selected = json.loads(
+        await tools["compile_managed_form"](
+            _payload(),
+            configuration="КонтекстА",
+        )
+    )
+
+    assert without_selection["status"] == "compiled"
+    assert without_selection["coverage"]["configuration_links"] == "not_checked"
+    assert selected["coverage"]["configuration_links"] == "passed"
+
+
+@pytest.mark.anyio
+async def test_три_операции_используют_один_registry_контекст(tmp_path):
+    registry = _registry_with_object(tmp_path)
+    specification = _payload()
+    specification["attributes"][0] = {
+        "name": "Объект",
+        "type": {
+            "kind": "metadata_object",
+            "object": "Обработка.НоваяОбработка",
+        },
+        "main": True,
+    }
+    specification["elements"][0]["children"][0].update(
+        {"name": "Активен", "data_path": "Объект.Активен"}
+    )
+    tools = {item.name: item.function for item in forms_tools.load(registry)}
+    compiled = json.loads(await tools["compile_managed_form"](specification))
+    artifacts = {item["path"]: item for item in compiled["artifacts"]}
+    xml = artifacts["Forms/ФормаПараметров/Ext/Form.xml"]["content"]
+    module = artifacts["Forms/ФормаПараметров/Ext/Form/Module.bsl"]["content"]
+
+    decompiled = json.loads(
+        await tools["decompile_managed_form"](
+            xml,
+            "ФормаПараметров",
+            module,
+            configuration="КонтекстА",
+        )
+    )
+    checked = json.loads(
+        await tools["check_managed_form"](
+            xml,
+            "ФормаПараметров",
+            module,
+            configuration="КонтекстА",
+        )
+    )
+
+    assert decompiled["specification"] == compiled["specification"]
+    assert decompiled["coverage"]["configuration_links"] == "passed"
+    assert checked["coverage"]["configuration_links"] == "passed"
+    assert all(
+        any(
+            item["code"] == "registry_links_verified"
+            for item in result["diagnostics"]
+        )
+        for result in (decompiled, checked)
+    )
 
 
 @pytest.mark.anyio

@@ -222,6 +222,7 @@ def test_native_extended_objects_доступны_через_mcp_после_rest
         bindings=True,
         common_forms=True,
         bots=True,
+        filter_criteria=True,
     )
     registry = Registry(tmp_path / "data")
     registry.publish_generation(
@@ -236,6 +237,8 @@ def test_native_extended_objects_доступны_через_mcp_после_rest
         ("РегламентноеЗадание.Refresh", "РегламентноеЗадание"),
         ("ОбщаяФорма.Workspace", "ОбщаяФорма"),
         ("Бот.Assistant", "Бот"),
+        ("КритерийОтбора.ByItem", "КритерийОтбора"),
+        ("КритерийОтбора.DescriptorOnly", "КритерийОтбора"),
     )
 
     shutil.rmtree(collection.root)
@@ -351,6 +354,13 @@ def test_native_extended_objects_доступны_через_mcp_после_rest
         detail="full",
     )
     assert "Использовать стандартные команды: `Нет`" in common_form_card
+    criterion_relations = get_related(
+        registry,
+        "КритерийОтбора.ByItem",
+        config="DemoConfiguration",
+    )
+    assert "Справочник.Items" in criterion_relations
+    assert "применяется к" in criterion_relations
 
     restarted = Registry(registry.data_dir)
 
@@ -376,6 +386,63 @@ def test_native_extended_objects_доступны_через_mcp_после_rest
             detail="brief",
         )
         assert f"нет объекта `{full_name}`" not in card
+
+
+def test_native_filter_criterion_изменение_и_удаление_переживают_restart(
+    tmp_path,
+):
+    _collection_value, baseline = _materialized(
+        tmp_path,
+        "filter-baseline",
+        filter_criteria=True,
+    )
+    _collection_value, changed = _materialized(
+        tmp_path,
+        "filter-changed",
+        filter_criteria=True,
+        filter_criterion_comment="Обновлённый синтетический критерий",
+    )
+    _collection_value, removed = _materialized(tmp_path, "filter-removed")
+    registry = Registry(tmp_path / "data-filter-criterion")
+
+    first = registry.publish_generation(
+        registry.stage_generation(baseline.manifest, baseline.payloads)
+    )
+    original = registry.resolve("DemoConfiguration").configuration.config.get(
+        "КритерийОтбора.ByItem"
+    )
+    assert original is not None
+    assert original.comment == "Синтетический критерий отбора"
+
+    second = registry.publish_generation(
+        registry.stage_generation(changed.manifest, changed.payloads)
+    )
+    updated = registry.resolve("DemoConfiguration").configuration.config.get(
+        "КритерийОтбора.ByItem"
+    )
+    assert second.generation_id != first.generation_id
+    assert updated is not None
+    assert updated.comment == "Обновлённый синтетический критерий"
+
+    third = registry.publish_generation(
+        registry.stage_generation(removed.manifest, removed.payloads)
+    )
+    assert third.generation_id != second.generation_id
+    assert (
+        registry.resolve("DemoConfiguration").configuration.config.get(
+            "КритерийОтбора.ByItem"
+        )
+        is None
+    )
+
+    restarted = Registry(registry.data_dir)
+    assert restarted.restore() == []
+    assert (
+        restarted.resolve("DemoConfiguration").configuration.config.get(
+            "КритерийОтбора.ByItem"
+        )
+        is None
+    )
 
 
 def test_native_http_service_endpoint_доступен_через_mcp_после_restart(

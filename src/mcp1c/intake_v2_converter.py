@@ -223,6 +223,30 @@ class DocumentJournalPayload:
 
 
 @dataclass(frozen=True, slots=True)
+class FilterCriterionContentItem:
+    """Одна исходная цель ``Content`` критерия отбора."""
+
+    raw: str
+    target: str
+
+
+@dataclass(frozen=True, slots=True)
+class FilterCriterionPayload:
+    """Доказанный descriptor-контракт критерия отбора Source B."""
+
+    uuid: str = ""
+    value_type: TypeDescription = TypeDescription()
+    content: tuple[FilterCriterionContentItem, ...] = ()
+    use_standard_commands: bool | None = None
+    default_form: str = ""
+    auxiliary_form: str = ""
+    list_presentation: str = ""
+    extended_list_presentation: str = ""
+    explanation: str = ""
+    forms: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class ExchangePlanContentItem:
     raw: str
     target: str
@@ -600,6 +624,7 @@ _REFERENCE_KINDS = {
     "CommonAttribute": "ОбщийРеквизит",
     "DocumentJournal": "ЖурналДокументов",
     "DocumentNumerator": "Нумератор",
+    "FilterCriterion": "КритерийОтбора",
 }
 
 # В Source подписки платформа пишет не вид metadata, а runtime-тип объекта.
@@ -1750,6 +1775,144 @@ def _document_journal(
         code_address=full_name,
         payload=payload,
         relations=tuple(relations),
+    )
+
+
+_FILTER_CRITERION_PROPERTIES = frozenset(
+    {
+        "Name",
+        "Synonym",
+        "Comment",
+        "Type",
+        "Content",
+        "UseStandardCommands",
+        "DefaultForm",
+        "AuxiliaryForm",
+        "ListPresentation",
+        "ExtendedListPresentation",
+        "Explanation",
+    }
+)
+
+
+def _filter_criterion_content(
+    element: ET.Element | None,
+    diagnostics: _Diagnostics,
+    where: str,
+) -> tuple[FilterCriterionContentItem, ...]:
+    """Сохранить исходные Content refs, не выдавая Type за object relation."""
+    content: list[FilterCriterionContentItem] = []
+    seen_raw: set[str] = set()
+    seen_targets: set[str] = set()
+    for item in element if element is not None else ():
+        if _tag(item) != "Item":
+            diagnostics.add("unknown_child", "FilterCriterion.Content", _tag(item))
+            continue
+        item_type = next(
+            (
+                value
+                for key, value in item.attrib.items()
+                if key.rsplit("}", 1)[-1] == "type"
+            ),
+            "",
+        )
+        if item_type != "xr:MDObjectRef":
+            raise ConversionError(f"{where}.Item: ожидается xsi:type xr:MDObjectRef")
+        raw = _required_text(item, f"{where}.Item")
+        parts = raw.split(".")
+        if (
+            len(parts) == 4
+            and parts[0] in _REFERENCE_KINDS
+            and parts[2] == "Attribute"
+            and parts[1]
+            and parts[3]
+        ):
+            target = f"{_REFERENCE_KINDS[parts[0]]}.{parts[1]}.{parts[3]}"
+        elif (
+            len(parts) == 6
+            and parts[0] in _REFERENCE_KINDS
+            and parts[2] == "TabularSection"
+            and parts[4] == "Attribute"
+            and parts[1]
+            and parts[3]
+            and parts[5]
+        ):
+            target = (
+                f"{_REFERENCE_KINDS[parts[0]]}.{parts[1]}."
+                f"{parts[3]}.{parts[5]}"
+            )
+        else:
+            raise ConversionError(
+                f"{where}.Item: MDObjectRef должен указывать на Attribute "
+                "объекта или табличной части"
+            )
+        raw_key = raw.casefold()
+        target_key = target.casefold()
+        if raw_key in seen_raw or target_key in seen_targets:
+            raise ConversionError(f"{where}: Content дублирует цель")
+        seen_raw.add(raw_key)
+        seen_targets.add(target_key)
+        content.append(FilterCriterionContentItem(raw=raw, target=target))
+    return tuple(sorted(content, key=lambda value: _order(value.raw)))
+
+
+def _filter_criterion(
+    root: ET.Element,
+    diagnostics: _Diagnostics,
+    where: str,
+) -> ExtendedObject:
+    node, properties, children = _descriptor(root, "FilterCriterion", where)
+    name = _required_text(_child(properties, "Name"), f"{where}.Name")
+    _unknown_properties(
+        properties,
+        _FILTER_CRITERION_PROPERTIES,
+        diagnostics,
+        "FilterCriterion",
+    )
+    forms: list[str] = []
+    form_names: set[str] = set()
+    for item in children if children is not None else ():
+        if _tag(item) != "Form":
+            diagnostics.add("unknown_child", "FilterCriterion", _tag(item))
+            continue
+        form = _required_text(item, f"{where}.Form")
+        key = form.casefold()
+        if key in form_names:
+            raise ConversionError(f"{where}: Form дублируется")
+        form_names.add(key)
+        forms.append(form)
+    content = _filter_criterion_content(
+        _child(properties, "Content"), diagnostics, f"{where}.Content"
+    )
+    payload = FilterCriterionPayload(
+        uuid=node.attrib.get("uuid", ""),
+        value_type=_type_description(_child(properties, "Type")),
+        content=content,
+        use_standard_commands=_bool(
+            _child(properties, "UseStandardCommands"),
+            f"{where}.UseStandardCommands",
+        ),
+        default_form=_content_address(_text(_child(properties, "DefaultForm"))),
+        auxiliary_form=_content_address(_text(_child(properties, "AuxiliaryForm"))),
+        list_presentation=_localized(_child(properties, "ListPresentation")),
+        extended_list_presentation=_localized(
+            _child(properties, "ExtendedListPresentation")
+        ),
+        explanation=_localized(_child(properties, "Explanation")),
+        forms=tuple(forms),
+    )
+    return ExtendedObject(
+        full_name=f"КритерийОтбора.{name}",
+        kind="КритерийОтбора",
+        name=name,
+        synonym=_localized(_child(properties, "Synonym")),
+        comment=_text(_child(properties, "Comment")),
+        code_address=f"КритерийОтбора.{name}",
+        payload=payload,
+        relations=tuple(
+            MetadataRelation("applies_to", item.target, RelationState.UNRESOLVED)
+            for item in content
+        ),
     )
 
 
@@ -3606,6 +3769,11 @@ def convert_collection(
             if obj.full_name in extended_objects:
                 raise ConversionError(f"дублируется extended object {obj.full_name}")
             extended_objects[obj.full_name] = obj
+        elif spec.extended_adapter == "filter_criterion":
+            obj = _filter_criterion(root, diagnostics, artifact.source_path)
+            if obj.full_name in extended_objects:
+                raise ConversionError(f"дублируется extended object {obj.full_name}")
+            extended_objects[obj.full_name] = obj
         elif spec.extended_adapter == "exchange_plan":
             properties = _descriptor(root, "ExchangePlan", artifact.source_path)[1]
             name = _required_text(
@@ -3697,6 +3865,7 @@ def convert_collection(
             "document_journal",
             "event_subscription",
             "exchange_plan",
+            "filter_criterion",
             "http_service",
             "scheduled_job",
             "session_parameter",
@@ -3775,6 +3944,8 @@ __all__ = [
     "FormEventBinding",
     "FormModuleState",
     "FormStructureState",
+    "FilterCriterionContentItem",
+    "FilterCriterionPayload",
     "HTTPServiceMethod",
     "HTTPServicePayload",
     "HTTPServiceURLTemplate",

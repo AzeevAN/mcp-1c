@@ -365,6 +365,43 @@ def _document_journal(*, malformed_reference: bool = False) -> bytes:
     )
 
 
+def _filter_criterion(
+    name: str,
+    *,
+    with_forms: bool = True,
+    comment: str = "Синтетический критерий отбора",
+    duplicate_content: bool = False,
+) -> bytes:
+    duplicate = (
+        '<xr:Item xsi:type="xr:MDObjectRef">Catalog.Items.Attribute.Title</xr:Item>'
+        if duplicate_content
+        else ""
+    )
+    forms = "<Form>Card</Form><Form>List</Form>" if with_forms else ""
+    content = (
+        '<Content xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" '
+        'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
+        '<xr:Item xsi:type="xr:MDObjectRef">Catalog.Items.Attribute.Title</xr:Item>'
+        '<xr:Item xsi:type="xr:MDObjectRef">Catalog.Items.TabularSection.Lines.Attribute.Amount</xr:Item>'
+        '<xr:Item xsi:type="xr:MDObjectRef">Document.Missing.Attribute.Ref</xr:Item>'
+        f"{duplicate}</Content>"
+    )
+    properties = (
+        f"<Name>{name}</Name>"
+        f"<Synonym>{_localized('Отбор по объекту')}</Synonym>"
+        f"<Comment>{comment}</Comment>"
+        f"{_type('cfg:CatalogRef.Items', 'xs:string', string_length=24)}"
+        f"{content}<UseStandardCommands>true</UseStandardCommands>"
+        f"<DefaultForm>FilterCriterion.{name}.Form.Card</DefaultForm>"
+        f"<AuxiliaryForm>FilterCriterion.{name}.Form.List</AuxiliaryForm>"
+        f"<ListPresentation>{_localized('Список отбора')}</ListPresentation>"
+        f"<ExtendedListPresentation>{_localized('Полный список отбора')}</ExtendedListPresentation>"
+        f"<Explanation>{_localized('Показывает связанные объекты')}</Explanation>"
+    )
+    document = _document("FilterCriterion", properties, forms).decode()
+    return document.replace("<FilterCriterion>", '<FilterCriterion uuid="filter-uuid">').encode()
+
+
 def _exchange_plan() -> bytes:
     properties = (
         "<Name>Nodes</Name>"
@@ -659,6 +696,10 @@ def _collection(
     xdto_reference: str = "c:Code",
     xdto_qualified: bool = True,
     accounting_register: bool = False,
+    filter_criteria: bool = False,
+    flat_filter_criteria: bool = False,
+    filter_criterion_comment: str = "Синтетический критерий отбора",
+    filter_criterion_duplicate_content: bool = False,
 ):
     payloads = {
         "Configuration.xml": _configuration(
@@ -683,6 +724,35 @@ def _collection(
     }
     if accounting_register:
         payloads["AccountingRegisters/Ledger.xml"] = _accounting_register()
+    if filter_criteria:
+        payloads.update(
+            {
+                "FilterCriteria/ByItem.xml": _filter_criterion(
+                    "ByItem",
+                    comment=filter_criterion_comment,
+                    duplicate_content=filter_criterion_duplicate_content,
+                ),
+                "FilterCriteria/ByItem/Forms/Card.xml": b"<form-descriptor/>",
+                "FilterCriteria/ByItem/Forms/Card/Ext/Form.xml": b"<form/>",
+                "FilterCriteria/ByItem/Forms/Card/Ext/Form/Module.bsl": (
+                    b"procedure FilterCard() endprocedure"
+                ),
+                "FilterCriteria/ByItem/Forms/List.xml": b"<form-descriptor/>",
+                "FilterCriteria/ByItem/Forms/List/Ext/Form.xml": b"<form/>",
+                "FilterCriteria/DescriptorOnly.xml": _filter_criterion(
+                    "DescriptorOnly", with_forms=False
+                ),
+            }
+        )
+    if flat_filter_criteria:
+        payloads.update(
+            {
+                "FilterCriterion.FlatByItem.xml": _filter_criterion("FlatByItem"),
+                "FilterCriterion.FlatByItem.Form.Card.Form": v8_container_bytes(
+                    [("form", b"{19}"), ("module", b"procedure Flat() endprocedure")]
+                ),
+            }
+        )
     if journal:
         payloads.update(
             {
@@ -940,6 +1010,10 @@ def test_metadata_kind_spec_выбирает_структурный_adapter():
     assert specs["XDTOPackages"].layouts == frozenset({"tree"})
     assert specs["CommonCommands"].base_adapter == ""
     assert specs["CommonCommands"].extended_adapter == ""
+    assert specs["FilterCriteria"].extended_adapter == "filter_criterion"
+    assert specs["FilterCriteria"].layers == frozenset(
+        {LayerKind.EXTENDED_STRUCTURE, LayerKind.CODE, LayerKind.FORMS}
+    )
     assert specs["DocumentNumerators"].base_adapter == "numbering_rules"
     assert specs["DocumentNumerators"].extended_adapter == ""
 
@@ -1683,6 +1757,89 @@ def test_document_journal_связывает_состав_формы_и_весь
         and item.signature == "DocumentJournals"
         for item in result.diagnostics
     )
+
+
+def test_filter_criterion_сохраняет_descriptor_content_и_фактические_формы(
+    tmp_path,
+):
+    FilterCriterionPayload = _symbol("FilterCriterionPayload")
+    convert_collection = _symbol("convert_collection")
+
+    result = convert_collection(_collection(tmp_path, filter_criteria=True))
+    criterion = result.extended.get("КритерийОтбора.ByItem")
+
+    assert criterion is not None
+    assert isinstance(criterion.payload, FilterCriterionPayload)
+    assert criterion.payload.uuid == "filter-uuid"
+    assert criterion.payload.value_type.types == ("Справочник.Items", "Строка")
+    assert criterion.payload.value_type.string_length == 24
+    assert criterion.payload.default_form == "КритерийОтбора.ByItem.Форма.Card"
+    assert criterion.payload.auxiliary_form == "КритерийОтбора.ByItem.Форма.List"
+    assert criterion.payload.list_presentation == "Список отбора"
+    assert criterion.payload.extended_list_presentation == "Полный список отбора"
+    assert criterion.payload.explanation == "Показывает связанные объекты"
+    assert criterion.payload.use_standard_commands is True
+    assert [(item.raw, item.target) for item in criterion.payload.content] == [
+        (
+            "Catalog.Items.Attribute.Title",
+            "Справочник.Items.Title",
+        ),
+        (
+            "Catalog.Items.TabularSection.Lines.Attribute.Amount",
+            "Справочник.Items.Lines.Amount",
+        ),
+        (
+            "Document.Missing.Attribute.Ref",
+            "Документ.Missing.Ref",
+        ),
+    ]
+    assert criterion.modules == ("КритерийОтбора.ByItem.Форма.Card",)
+    assert criterion.forms == (
+        "КритерийОтбора.ByItem.Форма.Card",
+        "КритерийОтбора.ByItem.Форма.List",
+    )
+    assert [(item.kind, item.target, item.state.value) for item in criterion.relations] == [
+        ("applies_to", "Документ.Missing.Ref", "unresolved"),
+        ("applies_to", "Справочник.Items.Lines.Amount", "resolved"),
+        ("applies_to", "Справочник.Items.Title", "resolved"),
+    ]
+    assert any(
+        item.code == "unresolved_relation"
+        and "КритерийОтбора.ByItem -> Документ.Missing.Ref" in item.examples
+        for item in result.diagnostics
+    )
+    assert not any(
+        item.code == "unhandled_metadata_member"
+        and item.signature == "FilterCriteria"
+        for item in result.diagnostics
+    )
+
+
+def test_filter_criterion_принимает_flat_и_не_теряет_descriptor_без_форм(tmp_path):
+    convert_collection = _symbol("convert_collection")
+
+    result = convert_collection(
+        _collection(tmp_path, filter_criteria=True, flat_filter_criteria=True)
+    )
+
+    flat = result.extended.get("КритерийОтбора.FlatByItem")
+    descriptor_only = result.extended.get("КритерийОтбора.DescriptorOnly")
+    assert flat is not None
+    assert flat.forms == ("КритерийОтбора.FlatByItem.Форма.Card",)
+    assert flat.modules == ()
+    assert descriptor_only is not None
+    assert descriptor_only.forms == ()
+    assert descriptor_only.modules == ()
+
+
+def test_filter_criterion_отвергает_дублирующуюся_цель_content(tmp_path):
+    ConversionError = _symbol("ConversionError")
+    convert_collection = _symbol("convert_collection")
+
+    with pytest.raises(ConversionError, match="Content дублирует цель"):
+        convert_collection(
+            _collection(tmp_path, filter_criteria=True, filter_criterion_duplicate_content=True)
+        )
 
 
 def test_document_journal_диагностирует_отсутствующие_цели(tmp_path):

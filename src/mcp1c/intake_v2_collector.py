@@ -35,7 +35,7 @@ from .member_pack import MemberPackError, MemberPackWriter, open_stored_member
 
 
 COLLECTION_FORMAT_VERSION = 1
-SELECTION_VERSION = 8
+SELECTION_VERSION = 9
 _READ_CHUNK = 1 << 20
 _MANIFEST_LIMIT = 64 * 1024 * 1024
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -603,7 +603,8 @@ DEFAULT_KIND_SPECS = (
         "FilterCriteria",
         "КритерийОтбора",
         ("FilterCriterion",),
-        (LayerKind.CODE, LayerKind.FORMS),
+        (LayerKind.EXTENDED_STRUCTURE, LayerKind.CODE, LayerKind.FORMS),
+        extended_adapter="filter_criterion",
     ),
     _supported("WebServices", "WebСервис", ("WebService",), (LayerKind.CODE,)),
     _supported(

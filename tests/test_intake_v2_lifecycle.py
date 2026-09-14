@@ -270,6 +270,66 @@ def test_расширение_durable_до_выбора_родителя_и_star
     ) == candidate
 
 
+def test_рестарт_завершает_оборванную_parsing_job_и_сохраняет_аудит(tmp_path):
+    CandidateCatalog = _symbol("CandidateCatalog")
+    IntakeLifecycle = _symbol("IntakeLifecycle")
+
+    managed, browser, records, operations = _backend(tmp_path)
+    raw = _archive(tmp_path / "configuration.zip", _configuration())
+    browser.accept(
+        "candidate-001",
+        "configuration.zip",
+        io.BytesIO(raw),
+        expected_size=len(raw),
+    )
+    lifecycle = IntakeLifecycle(
+        CandidateCatalog(managed / "catalog"), browser, operations
+    )
+    discovered = lifecycle.refresh().candidates[0]
+    lifecycle.start("job-interrupted", discovered.candidate_id)
+    ready = records.load_job("job-interrupted")
+    records.save_job(ready.transition(CandidateJobState.PARSING))
+
+    work = operations.work_dir / "job-interrupted"
+    work.mkdir()
+    (work / "partial.bin").write_bytes(b"partial")
+    request = operations.requests_dir / "job-interrupted.json"
+    request.write_text("{}\n", encoding="utf-8")
+    preview = operations.previews_dir / "job-interrupted.json"
+    preview.write_text("{}\n", encoding="utf-8")
+
+    restarted = IntakeLifecycle(
+        CandidateCatalog(managed / "catalog"),
+        BrowserStagingStore(managed / "uploads"),
+        IntakeCoordinator(
+            managed / "operations", DurableCandidateStore(managed / "records")
+        ),
+    )
+
+    failed = restarted.operations.records.load_job("job-interrupted")
+    assert failed.state is CandidateJobState.FAILED
+    assert failed.error == (
+        "операция прервана перезапуском сервиса; "
+        "автоматическое возобновление не выполняется"
+    )
+    assert not work.exists()
+    assert not preview.exists()
+    assert request.is_file()
+
+    IntakeLifecycle(
+        CandidateCatalog(managed / "catalog"),
+        BrowserStagingStore(managed / "uploads"),
+        IntakeCoordinator(
+            managed / "operations", DurableCandidateStore(managed / "records")
+        ),
+    )
+    assert records.load_job("job-interrupted") == failed
+    assert restarted.start("job-current", discovered.candidate_id).candidate_id == (
+        discovered.candidate_id
+    )
+    assert records.load_job("job-current").state is CandidateJobState.READY
+
+
 def test_refresh_изолирует_ошибки_а_start_отвергает_изменённый_source(tmp_path):
     CandidateCatalog = _symbol("CandidateCatalog")
     IntakeLifecycle = _symbol("IntakeLifecycle")

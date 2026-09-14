@@ -1091,17 +1091,18 @@ class IntakeCoordinator:
         if job.state is CandidateJobState.DONE:
             raise OperationError("готовую job нельзя перевести в failed")
         message = self._error_text(error)
-        self._discard_preview(job_id)
-        work = self.work_dir / job_id
-        if work.is_symlink():
-            raise OperationError("operation work не может быть символической ссылкой")
+        cleanup_errors: list[str] = []
         try:
-            if work.exists():
-                shutil.rmtree(work)
-                _sync_directory(self.work_dir)
-        except OSError as cleanup_error:
+            self._discard_preview(job_id)
+        except Exception as cleanup_error:
+            cleanup_errors.append(self._error_text(cleanup_error))
+        try:
+            self._discard_work(job_id)
+        except Exception as cleanup_error:
+            cleanup_errors.append(self._error_text(cleanup_error))
+        if cleanup_errors:
             message = (
-                f"{message}; cleanup: {self._error_text(cleanup_error)}"
+                f"{message}; cleanup: {'; '.join(cleanup_errors)}"
             )[:2048]
         return self._save_job(
             job.transition(CandidateJobState.FAILED, error=message)

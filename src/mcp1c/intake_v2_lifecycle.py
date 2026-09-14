@@ -45,6 +45,10 @@ from .resource_limits import ARCHIVE_LIMITS, ResourceLimits
 _FORMAT_VERSION = 1
 _MAX_RECORD_BYTES = 64 * 1024
 _IDENTIFIER_RE = re.compile(r"[A-Za-z0-9._-]+\Z")
+_INTERRUPTED_JOB_ERROR = (
+    "операция прервана перезапуском сервиса; "
+    "автоматическое возобновление не выполняется"
+)
 
 
 class LifecycleError(RuntimeError):
@@ -436,6 +440,17 @@ class IntakeLifecycle:
         self.limits = limits
         self.directory_settle_seconds = float(directory_settle_seconds)
         self._lock = threading.RLock()
+        self._fail_interrupted_jobs()
+
+    def _fail_interrupted_jobs(self) -> None:
+        """Закрыть jobs прежнего процесса до приёма новых операций."""
+        with self._lock:
+            for job in self.operations.records.list_jobs():
+                if job.state is CandidateJobState.PARSING:
+                    self.operations.fail(
+                        job.job_id,
+                        OperationError(_INTERRUPTED_JOB_ERROR),
+                    )
 
     @staticmethod
     def _issue(source_id: str, origin_name: str, error: Exception) -> DiscoveryIssue:

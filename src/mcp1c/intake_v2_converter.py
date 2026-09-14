@@ -247,6 +247,23 @@ class FilterCriterionPayload:
 
 
 @dataclass(frozen=True, slots=True)
+class CommonCommandPayload:
+    """Доказанные свойства общей команды из descriptor Source B."""
+
+    uuid: str = ""
+    group: str = ""
+    representation: str = ""
+    tooltip: str = ""
+    picture: tuple[str, ...] = ()
+    shortcut: str = ""
+    include_help_in_contents: bool | None = None
+    parameter_type: TypeDescription = TypeDescription()
+    parameter_use_mode: str = ""
+    modifies_data: bool | None = None
+    server_unavailable_behavior: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class ExchangePlanContentItem:
     raw: str
     target: str
@@ -1793,6 +1810,96 @@ _FILTER_CRITERION_PROPERTIES = frozenset(
         "Explanation",
     }
 )
+
+
+_COMMON_COMMAND_PROPERTIES = frozenset(
+    {
+        "Name",
+        "Synonym",
+        "Comment",
+        "Group",
+        "Representation",
+        "ToolTip",
+        "Picture",
+        "Shortcut",
+        "IncludeHelpInContents",
+        "CommandParameterType",
+        "ParameterUseMode",
+        "ModifiesData",
+        # Имя с пропущенной буквой записывает сама платформа.
+        "OnMainServerUnavalableBehavior",
+    }
+)
+
+
+def _common_command(
+    root: ET.Element,
+    diagnostics: _Diagnostics,
+    where: str,
+) -> ExtendedObject:
+    node, properties, children = _descriptor(root, "CommonCommand", where)
+    _unknown_properties(
+        properties,
+        _COMMON_COMMAND_PROPERTIES,
+        diagnostics,
+        "CommonCommand",
+    )
+    name = _required_text(_child(properties, "Name"), f"{where}.Name")
+    parts = PurePosixPath(where).parts
+    tree_name = (
+        PurePosixPath(parts[1]).stem
+        if len(parts) == 2 and parts[0] == "CommonCommands"
+        else ""
+    )
+    flat = where.split(".") if len(parts) == 1 else []
+    flat_name = (
+        flat[1]
+        if len(flat) == 3 and flat[0] == "CommonCommand" and flat[2] == "xml"
+        else ""
+    )
+    if not any(
+        value.casefold() == name.casefold()
+        for value in (tree_name, flat_name)
+        if value
+    ):
+        raise ConversionError("имя общей команды не совпадает с адресом")
+    for child in children if children is not None else ():
+        diagnostics.add("unknown_child", "CommonCommand", _tag(child))
+    picture = _child(properties, "Picture")
+    picture_values = _leaf_texts(picture)
+    if not picture_values and _text(picture):
+        picture_values = (_text(picture),)
+    full_name = f"ОбщаяКоманда.{name}"
+    return ExtendedObject(
+        full_name=full_name,
+        kind="ОбщаяКоманда",
+        name=name,
+        synonym=_localized(_child(properties, "Synonym")),
+        comment=_text(_child(properties, "Comment")),
+        code_address=full_name,
+        payload=CommonCommandPayload(
+            uuid=node.attrib.get("uuid", ""),
+            group=_content_address(_text(_child(properties, "Group"))),
+            representation=_text(_child(properties, "Representation")),
+            tooltip=_localized(_child(properties, "ToolTip")),
+            picture=picture_values,
+            shortcut=_text(_child(properties, "Shortcut")),
+            include_help_in_contents=_bool(
+                _child(properties, "IncludeHelpInContents"),
+                f"{where}.IncludeHelpInContents",
+            ),
+            parameter_type=_type_description(
+                _child(properties, "CommandParameterType")
+            ),
+            parameter_use_mode=_text(_child(properties, "ParameterUseMode")),
+            modifies_data=_bool(
+                _child(properties, "ModifiesData"), f"{where}.ModifiesData"
+            ),
+            server_unavailable_behavior=_text(
+                _child(properties, "OnMainServerUnavalableBehavior")
+            ),
+        ),
+    )
 
 
 def _filter_criterion_content(
@@ -3412,6 +3519,150 @@ def _attach_content(
         )
 
 
+def _is_form_xml(artifact: CollectionArtifact) -> bool:
+    parts = PurePosixPath(artifact.source_path).parts
+    return parts[-2:] == ("Ext", "Form.xml") or (
+        len(parts) == 1 and artifact.source_path.endswith(".Form.xml")
+    )
+
+
+def _common_command_references(
+    root: ET.Element,
+    diagnostics: _Diagnostics,
+    where: str,
+) -> dict[str, set[str]]:
+    """Извлечь только статические ссылки, доказанные структурой Form.xml."""
+    references: dict[str, set[str]] = {}
+
+    def visit(element: ET.Element, inside_interface: bool = False) -> None:
+        tag = _tag(element)
+        inside_interface = inside_interface or tag == "CommandInterface"
+        declaration = (
+            "CommandName"
+            if tag == "CommandName"
+            else "CommandInterface"
+            if tag == "Command" and inside_interface
+            else ""
+        )
+        if declaration:
+            raw = _text(element)
+            if raw.startswith("CommonCommand."):
+                parts = raw.split(".")
+                if len(parts) == 2 and parts[1]:
+                    references.setdefault(
+                        f"ОбщаяКоманда.{parts[1]}", set()
+                    ).add(declaration)
+                else:
+                    diagnostics.add(
+                        "invalid_form_command_reference",
+                        declaration,
+                        f"{where}: {raw}",
+                        severity="warning",
+                    )
+        for child in element:
+            visit(child, inside_interface)
+
+    visit(root)
+    return references
+
+
+def _attach_form_command_relations(
+    collection: CollectionResult,
+    base: Configuration,
+    objects: dict[str, ExtendedObject],
+    diagnostics: _Diagnostics,
+) -> None:
+    """Добавить owner -> общая команда, сохранив точный адрес формы."""
+    addresses = tuple(
+        sorted(
+            (*base.objects, *objects),
+            key=lambda value: (-len(value), _order(value)),
+        )
+    )
+    grouped: dict[str, dict[tuple[str, str], set[str]]] = {}
+    for artifact in collection.forms:
+        if not _is_form_xml(artifact):
+            continue
+        owner = next(
+            (
+                address
+                for address in addresses
+                if artifact.address == address
+                or artifact.address.startswith(address + ".")
+            ),
+            "",
+        )
+        if not owner:
+            continue
+        try:
+            root = _parse_xml(
+                collection,
+                artifact,
+                invalid_xml=FormStructureError,
+            )
+        except FormStructureError:
+            diagnostics.add(
+                "form_command_coverage",
+                "unreadable",
+                artifact.address,
+                severity="warning",
+            )
+            continue
+        for target, declarations in _common_command_references(
+            root,
+            diagnostics,
+            artifact.source_path,
+        ).items():
+            grouped.setdefault(owner, {}).setdefault(
+                (artifact.address, target), set()
+            ).update(declarations)
+
+    for owner, references in grouped.items():
+        current = objects.get(owner)
+        if current is None:
+            base_object = base.objects[owner]
+            current = ExtendedObject(
+                full_name=owner,
+                kind=base_object.kind,
+                name=base_object.name,
+                synonym=base_object.synonym,
+                comment=base_object.comment,
+                base_object=True,
+            )
+        relations = list(current.relations)
+        for (form, target), declarations in sorted(
+            references.items(),
+            key=lambda item: (_order(item[0][0]), _order(item[0][1])),
+        ):
+            relations.append(
+                MetadataRelation(
+                    "form_command",
+                    target,
+                    RelationState.UNRESOLVED,
+                    (
+                        (
+                            "declaration",
+                            ", ".join(sorted(declarations, key=_order)),
+                        ),
+                        ("form", form),
+                    ),
+                )
+            )
+        objects[owner] = ExtendedObject(
+            full_name=current.full_name,
+            kind=current.kind,
+            name=current.name,
+            synonym=current.synonym,
+            comment=current.comment,
+            code_address=current.code_address,
+            base_object=current.base_object,
+            payload=current.payload,
+            modules=current.modules,
+            forms=current.forms,
+            relations=tuple(relations),
+        )
+
+
 def _canonical(value: object) -> object:
     if isinstance(value, Enum):
         return value.value
@@ -3774,6 +4025,11 @@ def convert_collection(
             if obj.full_name in extended_objects:
                 raise ConversionError(f"дублируется extended object {obj.full_name}")
             extended_objects[obj.full_name] = obj
+        elif spec.extended_adapter == "common_command":
+            obj = _common_command(root, diagnostics, artifact.source_path)
+            if obj.full_name in extended_objects:
+                raise ConversionError(f"дублируется extended object {obj.full_name}")
+            extended_objects[obj.full_name] = obj
         elif spec.extended_adapter == "exchange_plan":
             properties = _descriptor(root, "ExchangePlan", artifact.source_path)[1]
             name = _required_text(
@@ -3861,6 +4117,7 @@ def convert_collection(
         elif spec.extended_adapter and spec.extended_adapter not in {
             "bot",
             "common_attribute",
+            "common_command",
             "common_form",
             "document_journal",
             "event_subscription",
@@ -3892,6 +4149,12 @@ def convert_collection(
 
     _resolve_xdto_references(collection, extended_objects, diagnostics)
     _attach_content(collection, base, extended_objects, diagnostics)
+    _attach_form_command_relations(
+        collection,
+        base,
+        extended_objects,
+        diagnostics,
+    )
     _resolve_relations(extended_objects, base, diagnostics)
     extension_structure = None
     if collection.probe.source_kind is SourceKind.EXTENSION:

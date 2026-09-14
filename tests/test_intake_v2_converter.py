@@ -106,6 +106,7 @@ def _configuration(
     http_services: bool = False,
     xdto_packages: bool = False,
     accounting_register: bool = False,
+    common_commands: bool = False,
 ) -> bytes:
     extra = "<FutureFlag>Enabled</FutureFlag>" if unknown else ""
     properties = (
@@ -163,6 +164,8 @@ def _configuration(
         children += "<XDTOPackage>Main</XDTOPackage><XDTOPackage>Common</XDTOPackage>"
     if accounting_register:
         children += "<AccountingRegister>Ledger</AccountingRegister>"
+    if common_commands:
+        children += "<CommonCommand>Run</CommonCommand>"
     return _document("Configuration", properties, children)
 
 
@@ -604,6 +607,46 @@ def _common_form_xml() -> bytes:
     ).encode()
 
 
+def _common_command(name: str = "Run", *, future: str = "") -> bytes:
+    properties = (
+        f"<Name>{name}</Name>"
+        f"<Synonym>{_localized('Выполнить')}</Synonym>"
+        "<Comment>Синтетическая общая команда</Comment>"
+        "<Group>FormCommandBarImportant</Group>"
+        "<Representation>PictureAndText</Representation>"
+        f"<ToolTip>{_localized('Выполнить действие')}</ToolTip>"
+        "<Picture><v8:Ref>CommonPicture.Run</v8:Ref></Picture>"
+        "<Shortcut>F11</Shortcut>"
+        "<IncludeHelpInContents>false</IncludeHelpInContents>"
+        "<CommandParameterType><v8:TypeSet>cfg:CatalogRef.Items</v8:TypeSet>"
+        "</CommandParameterType>"
+        "<ParameterUseMode>Multiple</ParameterUseMode>"
+        "<ModifiesData>true</ModifiesData>"
+        "<OnMainServerUnavalableBehavior>Auto</OnMainServerUnavalableBehavior>"
+        f"{future}"
+    )
+    root = _document("CommonCommand", properties).decode()
+    return root.replace(
+        "<CommonCommand>", f'<CommonCommand uuid="uuid-{name}">'
+    ).encode()
+
+
+def _form_with_common_commands() -> bytes:
+    return (
+        '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform">'
+        '<ChildItems><Button name="Run">'
+        '<CommandName>CommonCommand.Run</CommandName>'
+        '</Button><Button name="Dynamic">'
+        '<CommandName>Form.Command.Dynamic</CommandName>'
+        '</Button></ChildItems>'
+        '<CommandInterface><CommandBar><Item>'
+        '<Command>CommonCommand.Run</Command>'
+        '</Item><Item><Command>CommonCommand.Absent</Command></Item>'
+        '</CommandBar></CommandInterface>'
+        '</Form>'
+    ).encode()
+
+
 def _bot(*, predefined: str = "true", unknown: bool = False) -> bytes:
     extra = "<FutureBotProperty>value</FutureBotProperty>" if unknown else ""
     properties = (
@@ -700,6 +743,10 @@ def _collection(
     flat_filter_criteria: bool = False,
     filter_criterion_comment: str = "Синтетический критерий отбора",
     filter_criterion_duplicate_content: bool = False,
+    common_commands: bool = False,
+    flat_common_commands: bool = False,
+    common_command_module: bool = True,
+    common_command_descriptor: bytes | None = None,
 ):
     payloads = {
         "Configuration.xml": _configuration(
@@ -714,6 +761,7 @@ def _collection(
             http_services=http_services or flat_http_services,
             xdto_packages=xdto_packages,
             accounting_register=accounting_register,
+            common_commands=common_commands or flat_common_commands,
         ),
         "Catalogs/Items.xml": _catalog(unknown=unknown),
         "Catalogs/Items/Ext/ObjectModule.bsl": object_module,
@@ -724,6 +772,26 @@ def _collection(
     }
     if accounting_register:
         payloads["AccountingRegisters/Ledger.xml"] = _accounting_register()
+    if common_commands:
+        payloads["CommonCommands/Run.xml"] = (
+            _common_command()
+            if common_command_descriptor is None
+            else common_command_descriptor
+        )
+        if common_command_module:
+            payloads["CommonCommands/Run/Ext/CommandModule.bsl"] = (
+                b"procedure Execute(Parameter) endprocedure"
+            )
+    if flat_common_commands:
+        payloads["CommonCommand.Run.xml"] = (
+            _common_command()
+            if common_command_descriptor is None
+            else common_command_descriptor
+        )
+        if common_command_module:
+            payloads["CommonCommand.Run.CommandModule.txt"] = (
+                b"procedure Execute(Parameter) endprocedure"
+            )
     if filter_criteria:
         payloads.update(
             {
@@ -1009,13 +1077,195 @@ def test_metadata_kind_spec_выбирает_структурный_adapter():
     )
     assert specs["XDTOPackages"].layouts == frozenset({"tree"})
     assert specs["CommonCommands"].base_adapter == ""
-    assert specs["CommonCommands"].extended_adapter == ""
+    assert specs["CommonCommands"].extended_adapter == "common_command"
+    assert specs["CommonCommands"].layers == frozenset(
+        {LayerKind.EXTENDED_STRUCTURE, LayerKind.CODE}
+    )
     assert specs["FilterCriteria"].extended_adapter == "filter_criterion"
     assert specs["FilterCriteria"].layers == frozenset(
         {LayerKind.EXTENDED_STRUCTURE, LayerKind.CODE, LayerKind.FORMS}
     )
     assert specs["DocumentNumerators"].base_adapter == "numbering_rules"
     assert specs["DocumentNumerators"].extended_adapter == ""
+
+
+def test_common_command_сохраняет_descriptor_модуль_и_ссылки_формы(tmp_path):
+    convert_collection = _symbol("convert_collection")
+
+    result = convert_collection(
+        _collection(
+            tmp_path,
+            common_commands=True,
+            item_form_xml=_form_with_common_commands(),
+        )
+    )
+    command = result.extended.get("ОбщаяКоманда.Run")
+    catalog = result.extended.get("Справочник.Items")
+
+    assert command is not None and catalog is not None
+    assert command.synonym == "Выполнить"
+    assert command.comment == "Синтетическая общая команда"
+    assert command.code_address == "ОбщаяКоманда.Run"
+    assert command.modules == ("ОбщаяКоманда.Run",)
+    assert command.payload.uuid == "uuid-Run"
+    assert command.payload.group == "FormCommandBarImportant"
+    assert command.payload.representation == "PictureAndText"
+    assert command.payload.tooltip == "Выполнить действие"
+    assert command.payload.picture == ("CommonPicture.Run",)
+    assert command.payload.shortcut == "F11"
+    assert command.payload.include_help_in_contents is False
+    assert command.payload.parameter_type.types == ("Справочник.Items",)
+    assert command.payload.parameter_use_mode == "Multiple"
+    assert command.payload.modifies_data is True
+    assert command.payload.server_unavailable_behavior == "Auto"
+    assert [
+        (relation.kind, relation.target, relation.state.value, relation.properties)
+        for relation in catalog.relations
+    ] == [
+        (
+            "form_command",
+            "ОбщаяКоманда.Absent",
+            "unresolved",
+            (
+                ("declaration", "CommandInterface"),
+                ("form", "Справочник.Items.Форма.Card"),
+            ),
+        ),
+        (
+            "form_command",
+            "ОбщаяКоманда.Run",
+            "resolved",
+            (
+                ("declaration", "CommandInterface, CommandName"),
+                ("form", "Справочник.Items.Форма.Card"),
+            ),
+        ),
+    ]
+    assert any(
+        item.code == "unresolved_relation"
+        and any("ОбщаяКоманда.Absent" in example for example in item.examples)
+        for item in result.diagnostics
+    )
+
+
+def test_common_command_tree_и_flat_дают_один_semantic_hash(tmp_path):
+    convert_collection = _symbol("convert_collection")
+
+    tree = convert_collection(
+        _collection(
+            tmp_path / "tree",
+            common_commands=True,
+            item_form_xml=_form_with_common_commands(),
+        )
+    )
+    flat = convert_collection(
+        _collection(
+            tmp_path / "flat",
+            flat_common_commands=True,
+            item_form_xml=_form_with_common_commands(),
+        )
+    )
+
+    assert tree.extended.get("ОбщаяКоманда.Run") is not None
+    assert flat.extended.get("ОбщаяКоманда.Run") is not None
+    assert flat.extended_content_sha256 == tree.extended_content_sha256
+
+
+def test_common_command_descriptor_без_модуля_остаётся_объектом(tmp_path):
+    convert_collection = _symbol("convert_collection")
+
+    result = convert_collection(
+        _collection(
+            tmp_path,
+            common_commands=True,
+            common_command_module=False,
+        )
+    )
+
+    command = result.extended.get("ОбщаяКоманда.Run")
+    assert command is not None
+    assert command.modules == ()
+
+
+def test_common_command_не_угадывает_связь_из_bsl(tmp_path):
+    convert_collection = _symbol("convert_collection")
+
+    result = convert_collection(
+        _collection(
+            tmp_path,
+            common_commands=True,
+            object_module=(
+                'Имя = "CommonCommand.Run"; Выполнить(Имя);'
+            ).encode(),
+        )
+    )
+
+    catalog = result.extended.get("Справочник.Items")
+    assert result.extended.get("ОбщаяКоманда.Run") is not None
+    assert catalog is not None
+    assert catalog.relations == ()
+
+
+def test_common_command_не_скрывает_новое_свойство(tmp_path):
+    convert_collection = _symbol("convert_collection")
+
+    result = convert_collection(
+        _collection(
+            tmp_path,
+            common_commands=True,
+            common_command_descriptor=_common_command(
+                future="<FutureCommandMode>Value</FutureCommandMode>"
+            ),
+        )
+    )
+
+    assert result.extended.get("ОбщаяКоманда.Run") is not None
+    assert any(
+        item.code == "unknown_property"
+        and item.signature == "CommonCommand"
+        and "FutureCommandMode" in item.examples
+        for item in result.diagnostics
+    )
+
+
+def test_common_command_проверяет_имя_descriptor(tmp_path):
+    convert_collection = _symbol("convert_collection")
+    ConversionError = _symbol("ConversionError")
+
+    with pytest.raises(ConversionError, match="имя общей команды"):
+        convert_collection(
+            _collection(
+                tmp_path,
+                common_commands=True,
+                common_command_descriptor=_common_command("Other"),
+            )
+        )
+
+
+def test_common_command_диагностирует_невалидную_static_ссылку(tmp_path):
+    convert_collection = _symbol("convert_collection")
+    form = (
+        '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform">'
+        '<ChildItems><Button name="Bad">'
+        '<CommandName>CommonCommand.Bad.Name</CommandName>'
+        '</Button></ChildItems></Form>'
+    ).encode()
+
+    result = convert_collection(
+        _collection(
+            tmp_path,
+            common_commands=True,
+            item_form_xml=form,
+        )
+    )
+
+    catalog = result.extended.get("Справочник.Items")
+    assert catalog is not None and catalog.relations == ()
+    assert any(
+        item.code == "invalid_form_command_reference"
+        and item.severity == "warning"
+        for item in result.diagnostics
+    )
 
 
 def test_xdto_package_строит_корень_и_производные_объекты(tmp_path):

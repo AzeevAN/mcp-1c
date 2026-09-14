@@ -35,7 +35,7 @@ from .member_pack import MemberPackError, MemberPackWriter, open_stored_member
 
 
 COLLECTION_FORMAT_VERSION = 1
-SELECTION_VERSION = 9
+SELECTION_VERSION = 10
 _READ_CHUNK = 1 << 20
 _MANIFEST_LIMIT = 64 * 1024 * 1024
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -597,7 +597,8 @@ DEFAULT_KIND_SPECS = (
         "CommonCommands",
         "ОбщаяКоманда",
         ("CommonCommand",),
-        (LayerKind.CODE,),
+        (LayerKind.EXTENDED_STRUCTURE, LayerKind.CODE),
+        extended_adapter="common_command",
     ),
     _supported(
         "FilterCriteria",

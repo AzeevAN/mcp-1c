@@ -30,7 +30,11 @@ from mcp1c.tools import (
     search_objects,
 )
 import test_intake_v2_converter as converter_fixtures
-from test_intake_v2_converter import _collection, _common_form_xml
+from test_intake_v2_converter import (
+    _collection,
+    _common_form_xml,
+    _form_with_common_commands,
+)
 
 
 def _materialized(tmp_path, name: str, **collection_options):
@@ -209,6 +213,100 @@ def test_native_плоская_xml_форма_доходит_до_runtime_вме
     assert coverage.form_structures_unread == 0
     assert coverage.form_modules_read == 1
     assert coverage.form_modules_missing == 2
+
+
+def test_native_common_command_карточка_граф_замена_и_restart(
+    tmp_path,
+    monkeypatch,
+):
+    _baseline_collection, baseline = _materialized(
+        tmp_path,
+        "common-command-baseline",
+        common_commands=True,
+        item_form_xml=_form_with_common_commands(),
+    )
+    _changed_collection, changed = _materialized(
+        tmp_path,
+        "common-command-changed",
+        common_commands=True,
+        item_form_xml=_common_form_xml(),
+    )
+    _removed_collection, removed = _materialized(
+        tmp_path,
+        "common-command-removed",
+        item_form_xml=_common_form_xml(),
+    )
+    registry = Registry(tmp_path / "data-common-command")
+
+    registry.publish_generation(
+        registry.stage_generation(baseline.manifest, baseline.payloads)
+    )
+    assert "`ОбщаяКоманда.Run`" in search_objects(
+        registry,
+        "выполнить",
+        config="DemoConfiguration",
+        kind="ОбщаяКоманда",
+    )
+    card = get_object(
+        registry,
+        "ОбщаяКоманда.Run",
+        config="DemoConfiguration",
+        detail="full",
+    )
+    assert "Синтетическая общая команда" in card
+    assert "procedure Execute" in get_procedure(
+        registry,
+        "ОбщаяКоманда.Run::Execute",
+        config="DemoConfiguration",
+    )
+    outgoing = get_related(
+        registry,
+        "Справочник.Items",
+        config="DemoConfiguration",
+    )
+    incoming = get_related(
+        registry,
+        "ОбщаяКоманда.Run",
+        config="DemoConfiguration",
+    )
+    assert "ОбщаяКоманда.Run" in outgoing
+    assert "общая команда формы" in outgoing
+    assert "Справочник.Items" in incoming
+    assert "form=Справочник.Items.Форма.Card" in incoming
+
+    registry.publish_generation(
+        registry.stage_generation(changed.manifest, changed.payloads)
+    )
+    assert "ОбщаяКоманда.Run" not in get_related(
+        registry,
+        "Справочник.Items",
+        config="DemoConfiguration",
+    )
+
+    restarted = Registry(registry.data_dir)
+
+    def reject_cold_rebuild(*_args, **_kwargs):
+        pytest.fail("неизменённая общая команда обязана подняться из кэша")
+
+    monkeypatch.setattr("mcp1c.registry.index_configuration", reject_cold_rebuild)
+    monkeypatch.setattr("mcp1c.registry.index_fields", reject_cold_rebuild)
+    assert restarted.restore() == []
+    assert "`ОбщаяКоманда.Run`" in search_objects(
+        restarted,
+        "выполнить",
+        config="DemoConfiguration",
+        kind="ОбщаяКоманда",
+    )
+
+    monkeypatch.undo()
+    restarted.publish_generation(
+        restarted.stage_generation(removed.manifest, removed.payloads)
+    )
+    assert "нет объекта `ОбщаяКоманда.Run`" in get_object(
+        restarted,
+        "ОбщаяКоманда.Run",
+        config="DemoConfiguration",
+    )
 
 
 def test_native_extended_objects_доступны_через_mcp_после_restart(

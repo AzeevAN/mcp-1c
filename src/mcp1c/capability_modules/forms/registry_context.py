@@ -146,7 +146,9 @@ def _walk_elements(
         item_path = f"{path}[{index}]"
         yield raw, item_path
         kind = raw.get("kind")
-        if kind == "usual_group":
+        if kind == "table":
+            yield from _walk_elements(raw.get("columns"), f"{item_path}.columns")
+        elif kind == "usual_group":
             yield from _walk_elements(raw.get("children"), f"{item_path}.children")
         elif kind == "pages":
             pages = raw.get("pages")

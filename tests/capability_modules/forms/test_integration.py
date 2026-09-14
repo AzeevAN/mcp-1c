@@ -222,7 +222,10 @@ def _registry_with_object(tmp_path) -> Registry:
         full_name="Справочник.Товары",
         kind="Справочник",
         name="Товары",
-        attributes=[Field("Наименование", types=["Строка"])],
+        attributes=[
+            Field("Наименование", types=["Строка"]),
+            Field("Количество", types=["Число"]),
+        ],
     )
     incoming = tmp_path / "incoming"
     incoming.mkdir()
@@ -346,6 +349,143 @@ async def test_registry_проверяет_основную_таблицу_и_п
 
     assert payload["status"] == "compiled"
     assert payload["coverage"]["configuration_links"] == "passed"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("field", "expected_status", "expected_code"),
+    [
+        ("Несуществующее", "warning", "metadata_field_not_found"),
+        ("Количество", "failed", "registry_field_type_conflict"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("placement", "expected_path"),
+    [
+        ("root", "$.elements[0].columns[0].data_path"),
+        ("group", "$.elements[0].children[0].columns[0].data_path"),
+        ("pages", "$.elements[0].pages[0].children[0].columns[0].data_path"),
+    ],
+)
+async def test_registry_проверяет_колонки_dynamic_list(
+    tmp_path,
+    field,
+    expected_status,
+    expected_code,
+    placement,
+    expected_path,
+):
+    registry = _registry_with_object(tmp_path)
+    specification = _payload()
+    specification["attributes"][0]["type"] = {
+        "kind": "dynamic_list",
+        "main_table": "Справочник.Товары",
+        "dynamic_data_read": True,
+    }
+    column = {
+        "kind": "input_field",
+        "name": "Колонка",
+        "data_path": f"ПервоеЗначение.{field}",
+    }
+    if field == "Количество":
+        column.update(
+            {
+                "list_choice_mode": True,
+                "choice_list": [
+                    {"value": "строка", "presentation": {"ru": "Строка"}}
+                ],
+            }
+        )
+    table = {
+        "kind": "table",
+        "name": "СписокПоле",
+        "data_path": "ПервоеЗначение",
+        "columns": [column],
+    }
+    if placement == "group":
+        specification["elements"] = [
+            {
+                "kind": "usual_group",
+                "name": "Группа",
+                "title": {"ru": "Группа"},
+                "children": [table],
+            }
+        ]
+    elif placement == "pages":
+        specification["elements"] = [
+            {
+                "kind": "pages",
+                "name": "Страницы",
+                "title": {"ru": "Страницы"},
+                "representation": "tabs_on_top",
+                "pages": [
+                    {
+                        "name": "Страница",
+                        "title": {"ru": "Страница"},
+                        "children": [table],
+                    }
+                ],
+            }
+        ]
+    else:
+        specification["elements"] = [table]
+
+    tools = {item.name: item.function for item in forms_tools.load(registry)}
+    payload = json.loads(await tools["compile_managed_form"](specification))
+
+    assert payload["coverage"]["configuration_links"] == expected_status
+    diagnostic = next(
+        item for item in payload["diagnostics"] if item["code"] == expected_code
+    )
+    assert diagnostic["path"] == expected_path
+    if expected_status == "failed":
+        assert payload["status"] == "rejected"
+        assert payload["artifacts"] == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("operation", ["decompile_managed_form", "check_managed_form"])
+async def test_decompile_и_check_проверяют_колонки_dynamic_list(tmp_path, operation):
+    specification = _payload()
+    specification["attributes"][0]["type"] = {
+        "kind": "dynamic_list",
+        "main_table": "Справочник.Товары",
+        "dynamic_data_read": True,
+    }
+    specification["elements"] = [
+        {
+            "kind": "table",
+            "name": "СписокПоле",
+            "data_path": "ПервоеЗначение",
+            "columns": [
+                {
+                    "kind": "input_field",
+                    "name": "Колонка",
+                    "data_path": "ПервоеЗначение.Несуществующее",
+                }
+            ],
+        }
+    ]
+    standalone = {item.name: item.function for item in forms_tools.load()}
+    compiled = json.loads(
+        await standalone["compile_managed_form"](specification)
+    )
+    xml = next(
+        item["content"]
+        for item in compiled["artifacts"]
+        if item["path"].endswith("/Form.xml")
+    )
+
+    registry = _registry_with_object(tmp_path)
+    tools = {item.name: item.function for item in forms_tools.load(registry)}
+    payload = json.loads(await tools[operation](xml, "ФормаПараметров"))
+
+    assert payload["coverage"]["configuration_links"] == "warning"
+    assert any(
+        item["code"] == "metadata_field_not_found"
+        and item["path"] == "$.elements[0].columns[0].data_path"
+        for item in payload["diagnostics"]
+    )
 
 
 @pytest.mark.anyio

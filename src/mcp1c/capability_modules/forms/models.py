@@ -877,6 +877,21 @@ class _Reader:
         if not isinstance(value, str) or not value.strip():
             self.issue("invalid_string", path, "Ожидалась непустая строка.")
             return ""
+        for index, character in enumerate(value):
+            codepoint = ord(character)
+            if not (
+                codepoint in {0x09, 0x0A, 0x0D}
+                or 0x20 <= codepoint <= 0xD7FF
+                or 0xE000 <= codepoint <= 0xFFFD
+                or 0x10000 <= codepoint <= 0x10FFFF
+            ):
+                self.issue(
+                    "invalid_xml_text",
+                    path,
+                    "Строка содержит недопустимый для XML 1.0 символ "
+                    f"U+{codepoint:04X} в позиции {index}.",
+                )
+                break
         if value != value.strip():
             self.issue("surrounding_whitespace", path, "Пробелы по краям запрещены.")
         if identifier and not _IDENTIFIER.fullmatch(value):

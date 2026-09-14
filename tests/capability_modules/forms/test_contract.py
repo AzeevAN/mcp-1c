@@ -44,6 +44,78 @@ def test_минимальная_спецификация_разбирается_
     assert form.events[0].event == "OnCreateAtServer"
 
 
+@pytest.mark.parametrize("character", ["\x00", "\x01", "\ud800", "\ufffe"])
+def test_строки_отклоняют_недопустимые_символы_xml_1_0(character):
+    payload = _payload()
+    payload["title"]["ru"] = f"Параметры{character}формы"
+
+    with pytest.raises(FormsContractError) as caught:
+        parse_managed_form_spec(payload)
+
+    assert ("invalid_xml_text", "$.title.ru") in _codes(caught.value)
+
+
+def test_строки_сохраняют_unicode_и_допустимые_xml_whitespace():
+    payload = _payload()
+    expected = "Параметры\tформы\nстрока\rпродолжение 😀"
+    payload["title"]["ru"] = expected
+
+    form = parse_managed_form_spec(payload)
+
+    assert form.title.ru == expected
+
+
+@pytest.mark.parametrize(
+    ("location", "expected_path"),
+    [
+        ("element", "$.elements[0].title.ru"),
+        ("column", "$.elements[0].columns[0].title.ru"),
+        (
+            "choice",
+            "$.elements[0].children[0].choice_list[0].presentation.ru",
+        ),
+    ],
+)
+def test_вложенный_недопустимый_текст_сохраняет_точный_путь(
+    location,
+    expected_path,
+):
+    payload = _payload()
+    bad_title = {"ru": "Недопустимо\x00"}
+    if location == "element":
+        payload["elements"][0]["title"] = bad_title
+    elif location == "column":
+        payload["elements"] = [
+            {
+                "kind": "table",
+                "name": "Таблица",
+                "data_path": "ПервоеЗначение",
+                "columns": [
+                    {
+                        "kind": "input_field",
+                        "name": "Колонка",
+                        "data_path": "ПервоеЗначение.Колонка",
+                        "title": bad_title,
+                    }
+                ],
+            }
+        ]
+    else:
+        payload["elements"][0]["children"][0].update(
+            {
+                "list_choice_mode": True,
+                "choice_list": [
+                    {"value": "1", "presentation": bad_title}
+                ],
+            }
+        )
+
+    with pytest.raises(FormsContractError) as caught:
+        parse_managed_form_spec(payload)
+
+    assert ("invalid_xml_text", expected_path) in _codes(caught.value)
+
+
 def test_спецификация_импорта_поддерживает_типы_страницы_таблицу_и_выбор():
     form = parse_managed_form_spec(_rich_payload())
 

@@ -45,7 +45,13 @@ def _json(payload: object) -> str:
 
 
 def _input(value: str, name: str, limit: int) -> None:
-    if len(value.encode("utf-8")) > limit:
+    try:
+        size = len(value.encode("utf-8"))
+    except UnicodeEncodeError as error:
+        raise FormsToolInputError(
+            f"{name} содержит недопустимый Unicode-символ."
+        ) from error
+    if size > limit:
         raise FormsToolInputError(f"{name} превышает лимит {limit} байт.")
 
 
@@ -83,7 +89,7 @@ async def _compile_tool(
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
-    ).encode("utf-8")
+    ).encode("utf-8", errors="surrogatepass")
     if len(encoded) > MAX_SPECIFICATION_BYTES:
         raise FormsToolInputError(
             f"specification превышает лимит {MAX_SPECIFICATION_BYTES} байт."

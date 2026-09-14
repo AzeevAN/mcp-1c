@@ -50,6 +50,32 @@ def _server(tmp_path, *, enabled=(), registry=None):
     )
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("bad_text", ["Параметры\x00", "Параметры\ud800"])
+async def test_compile_отклоняет_недопустимый_xml_unicode_текст(bad_text):
+    specification = _payload()
+    specification["title"]["ru"] = bad_text
+    tools = {item.name: item.function for item in forms_tools.load()}
+
+    payload = json.loads(await tools["compile_managed_form"](specification))
+
+    assert payload["status"] == "rejected"
+    assert payload["artifacts"] == []
+    assert any(
+        item["code"] == "invalid_xml_text" and item["path"] == "$.title.ru"
+        for item in payload["diagnostics"]
+    )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("operation", ["decompile_managed_form", "check_managed_form"])
+async def test_raw_xml_с_lone_surrogate_даёт_контролируемую_input_ошибку(operation):
+    tools = {item.name: item.function for item in forms_tools.load()}
+
+    with pytest.raises(forms_tools.FormsToolInputError, match="form_xml.*Unicode"):
+        await tools[operation]("<Form>\ud800</Form>", "Форма")
+
+
 def test_off_в_чистом_process_не_импортирует_forms_и_не_добавляет_tools(tmp_path):
     probe = """
 import asyncio

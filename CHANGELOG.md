@@ -11,6 +11,10 @@
 
 ### Исправлено
 
+- Forms больше не помечает `configuration_links=passed` только из-за
+  доступного Registry snapshot. Если XML не дал спецификацию, decompile/check
+  сохраняют исходную XML-ошибку и оставляют проверку ссылок `not_checked`.
+
 - Decompiler Forms учитывает значимый текст XML-контейнера и `tail` в
   structural coverage. Непокрытый mixed content получает `unsupported` с
   точным путём и больше не объявляется безопасным для roundtrip; пробельное

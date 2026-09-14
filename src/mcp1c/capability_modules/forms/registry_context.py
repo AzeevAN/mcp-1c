@@ -201,8 +201,23 @@ def validate_registry_links(
     resolution: RegistryResolution,
 ) -> RegistryResolution:
     snapshot = resolution.snapshot
-    if snapshot is None or specification is None:
+    if snapshot is None:
         return resolution
+    if specification is None:
+        return RegistryResolution(
+            snapshot,
+            resolution.diagnostics
+            + (
+                Diagnostic(
+                    "configuration_links",
+                    "not_checked",
+                    "registry_links_not_checked",
+                    "$",
+                    "Спецификация отсутствует; ссылки по Registry snapshot не проверялись.",
+                ),
+            ),
+            "not_checked",
+        )
 
     diagnostics: list[Diagnostic] = []
     object_attributes: dict[str, FormsObjectSnapshot | None] = {}

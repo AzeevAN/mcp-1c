@@ -515,6 +515,25 @@ async def test_decompile_и_check_проверяют_колонки_dynamic_list
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("operation", ["decompile_managed_form", "check_managed_form"])
+async def test_битый_xml_не_помечает_registry_ссылки_проверенными(
+    tmp_path,
+    operation,
+):
+    registry = _registry_with_object(tmp_path)
+    tools = {item.name: item.function for item in forms_tools.load(registry)}
+
+    payload = json.loads(await tools[operation]("<broken", "Форма"))
+
+    assert payload["coverage"]["xml_parse"] == "failed"
+    assert payload["coverage"]["configuration_links"] == "not_checked"
+    codes = {item["code"] for item in payload["diagnostics"]}
+    assert "malformed_xml" in codes
+    assert "registry_links_not_checked" in codes
+    assert "registry_links_verified" not in codes
+
+
+@pytest.mark.anyio
 async def test_доказанный_конфликт_типа_поля_отклоняет_артефакты(tmp_path):
     registry = _registry_with_object(tmp_path)
     specification = _payload()

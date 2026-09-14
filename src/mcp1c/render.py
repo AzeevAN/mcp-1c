@@ -136,6 +136,11 @@ def render_subsystem(
         ("Порядок подсистем", interface.get("subsystem_order", [])),
         ("Видимость подсистем", interface.get("subsystem_visibility", [])),
     )
+    content_states = {
+        relation.target: relation.state
+        for relation in obj.relations
+        if relation.kind == "subsystem_contains"
+    }
     flattened: list[tuple[str, object]] = []
     for title, values in sections:
         if isinstance(values, list):
@@ -193,6 +198,12 @@ def render_subsystem(
                 if details
                 else ""
             )
+            if title == "Состав" and isinstance(target, str):
+                state = content_states.get(target)
+                if state == "resolved":
+                    suffix += " — разрешена"
+                elif state == "unresolved":
+                    suffix += " — не разрешена"
             out.append(f"- `{target}`{suffix}")
         else:
             out.append(f"- `{value}`")

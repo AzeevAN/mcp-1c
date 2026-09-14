@@ -1134,6 +1134,12 @@ def test_subsystem_дочитывается_и_cursor_привязан_к_объ
     assert "… ещё" not in combined
     for number in range(60):
         assert combined.count(f"CommonPicture.Item{number:02}") == 1
+        line = next(
+            item
+            for item in combined.splitlines()
+            if f"CommonPicture.Item{number:02}" in item
+        )
+        assert "не разрешена" in line
     with pytest.raises(RegistryError, match="другому объекту"):
         get_object(
             registry,
@@ -1144,6 +1150,40 @@ def test_subsystem_дочитывается_и_cursor_привязан_к_объ
         )
 
 
+def test_subsystem_карточка_сохраняет_состояние_связи(tmp_path):
+    _collection_value, generation = _materialized(
+        tmp_path,
+        "subsystem-relation-state",
+        subsystems=True,
+    )
+    registry = Registry(tmp_path / "data-subsystem-relation-state")
+    registry.publish_generation(
+        registry.stage_generation(generation.manifest, generation.payloads)
+    )
+    obj = registry.resolve("DemoConfiguration").configuration.config.get(
+        "Подсистема.Sales.Retail"
+    )
+
+    assert obj is not None
+    states = {(relation.target, relation.state) for relation in obj.relations}
+    assert ("Справочник.Items", "resolved") in states
+    assert ("CommonPicture.Unknown", "unresolved") in states
+
+    card = get_object(
+        registry,
+        obj.full_name,
+        config="DemoConfiguration",
+        detail="fields",
+    )
+    unresolved = next(
+        line for line in card.splitlines() if "CommonPicture.Unknown" in line
+    )
+    resolved = next(line for line in card.splitlines() if "Справочник.Items" in line)
+
+    assert "не разрешена" in unresolved
+    assert "не разрешена" not in resolved
+
+
 def test_subsystem_переживает_restart_и_удаляется_новым_поколением(tmp_path):
     _first_collection, first = _materialized(tmp_path, "subsystem-first", subsystems=True)
     _removed_collection, removed = _materialized(tmp_path, "subsystem-removed")
@@ -1152,12 +1192,14 @@ def test_subsystem_переживает_restart_и_удаляется_новым
 
     restarted = Registry(registry.data_dir)
     assert restarted.restore() == []
-    assert "`Подсистема.Sales`" in get_object(
+    restarted_card = get_object(
         restarted,
         "Подсистема.Sales.Retail",
         config="DemoConfiguration",
         detail="fields",
     )
+    assert "`Подсистема.Sales`" in restarted_card
+    assert "`CommonPicture.Unknown` — не разрешена" in restarted_card
 
     restarted.publish_generation(
         restarted.stage_generation(removed.manifest, removed.payloads)

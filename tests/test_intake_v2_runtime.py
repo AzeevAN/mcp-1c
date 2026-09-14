@@ -1130,6 +1130,8 @@ def test_subsystem_дочитывается_и_cursor_привязан_к_объ
 
     combined = "".join(pages)
     assert len(pages) == 2
+    assert "Связи файловой выгрузки" not in combined
+    assert "… ещё" not in combined
     for number in range(60):
         assert combined.count(f"CommonPicture.Item{number:02}") == 1
     with pytest.raises(RegistryError, match="другому объекту"):

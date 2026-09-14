@@ -1811,7 +1811,7 @@ def get_object(
             obj,
             detail,
             graph=context.configuration.graph,
-            max_relations=0 if obj.kind == "Подсистема" else 40,
+            include_relations=obj.kind != "Подсистема",
             virtual_tables=table_report.tables,
             table_availability=table_report.availability,
             virtual_table_notes=table_report.notes,

@@ -1187,6 +1187,7 @@ def render_object(
     collapse_after: int = 5,
     max_incoming: int = 20,
     max_relations: int = 40,
+    include_relations: bool = True,
     virtual_tables: list | None = None,
     table_availability: list | None = None,
     virtual_table_notes: list[str] | None = None,
@@ -1299,7 +1300,7 @@ def render_object(
     if obj.forms:
         out += _refs_section("Формы", obj.forms)
 
-    if obj.relations:
+    if include_relations and obj.relations:
         lines = []
         for relation in obj.relations[:max_relations]:
             state = "разрешена" if relation.state == "resolved" else "не разрешена"

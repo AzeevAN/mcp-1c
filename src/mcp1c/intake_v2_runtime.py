@@ -704,7 +704,12 @@ def _compose_extended_structure(
         full_name = _text(
             item["full_name"], f"{label}.full_name", required=True
         )
-        if full_name != f"{kind}.{name}":
+        hierarchical_subsystem = (
+            kind == "Подсистема"
+            and full_name.startswith("Подсистема.")
+            and full_name.rsplit(".", 1)[-1] == name
+        )
+        if full_name != f"{kind}.{name}" and not hierarchical_subsystem:
             raise GenerationRuntimeError(
                 f"{label}.full_name не совпадает с kind/name"
             )

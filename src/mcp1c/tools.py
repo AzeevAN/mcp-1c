@@ -53,6 +53,7 @@ from .render import (
     http_service_path,
     render_callers,
     render_http_service,
+    render_subsystem,
     render_module_toc,
     render_object,
     render_procedure_card,
@@ -1695,6 +1696,62 @@ def _encode_http_service_cursor(
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
+def _subsystem_cursor_digest(context, obj, detail: str) -> str:
+    source = SourceSnapshot.capture(context.configuration.source)
+    state = {
+        "configuration": context.name,
+        "source": {
+            "id": source.id,
+            "sha256": source.sha256,
+            "stored_path": source.stored_path,
+            "locator_generation": source.locator_generation,
+            "selection_version": source.selection_version,
+        },
+        "structure_sha256": context.configuration.structure_sha256,
+        "object": obj.full_name,
+        "detail": detail,
+        "extended": obj.extended,
+    }
+    return hashlib.sha256(
+        json.dumps(state, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _decode_subsystem_cursor(cursor: str, digest: str) -> int:
+    try:
+        if not isinstance(cursor, str) or not 1 <= len(cursor) <= 2048:
+            raise ValueError
+        state = json.loads(
+            base64.b64decode(
+                cursor + "=" * (-len(cursor) % 4), altchars=b"-_", validate=True
+            )
+        )
+        if (
+            not isinstance(state, dict)
+            or set(state) != {"v", "sha256", "offset"}
+            or state.get("v") != 1
+            or not isinstance(state.get("sha256"), str)
+            or type(state.get("offset")) is not int
+            or state["offset"] <= 0
+        ):
+            raise ValueError
+    except (ValueError, TypeError, binascii.Error, RecursionError):
+        raise RegistryError("Некорректный курсор подсистемы; начните чтение заново.") from None
+    if state["sha256"] != digest:
+        raise RegistryError(
+            "Курсор относится к другому объекту или изменившемуся поколению; "
+            "начните чтение заново."
+        )
+    return state["offset"]
+
+
+def _encode_subsystem_cursor(digest: str, offset: int) -> str:
+    raw = json.dumps(
+        {"v": 1, "sha256": digest, "offset": offset}, separators=(",", ":")
+    ).encode()
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
 def get_object(
     registry: Registry,
     full_name: str,
@@ -1733,9 +1790,10 @@ def get_object(
             + (f"Возможно, имелось в виду:\n{suggestion}\n" if suggestion else "")
             + _notes_block(context, include_code=False)
         )
-    if cursor is not None and (obj.kind != "HTTPСервис" or detail == BRIEF):
+    if cursor is not None and (obj.kind not in {"HTTPСервис", "Подсистема"} or detail == BRIEF):
         raise RegistryError(
-            "Курсор поддерживается только для HTTP-сервиса с detail fields/full."
+            "Курсор поддерживается только для HTTP-сервиса или подсистемы "
+            "с detail fields/full."
         )
 
     # Виртуальные таблицы собираются здесь, а не в рендере: они соединяют
@@ -1753,6 +1811,7 @@ def get_object(
             obj,
             detail,
             graph=context.configuration.graph,
+            max_relations=0 if obj.kind == "Подсистема" else 40,
             virtual_tables=table_report.tables,
             table_availability=table_report.availability,
             virtual_table_notes=table_report.notes,
@@ -1805,6 +1864,27 @@ def get_object(
                 "config": context.name,
                 "detail": detail,
                 "cursor": next_cursor,
+            }
+            body += (
+                "\nПродолжение (аргументы следующего вызова):\n"
+                f"`get_object({json.dumps(arguments, ensure_ascii=False)})`\n"
+            )
+    if obj.kind == "Подсистема":
+        digest = _subsystem_cursor_digest(context, obj, detail)
+        offset = _decode_subsystem_cursor(cursor, digest) if cursor is not None else 0
+        try:
+            page = render_subsystem(obj, detail, offset=offset)
+        except ValueError:
+            raise RegistryError(
+                "Курсор содержит недопустимое смещение; начните чтение заново."
+            ) from None
+        body += page.text
+        if page.next_offset is not None:
+            arguments = {
+                "full_name": obj.full_name,
+                "config": context.name,
+                "detail": detail,
+                "cursor": _encode_subsystem_cursor(digest, page.next_offset),
             }
             body += (
                 "\nПродолжение (аргументы следующего вызова):\n"

@@ -107,6 +107,7 @@ def _configuration(
     xdto_packages: bool = False,
     accounting_register: bool = False,
     common_commands: bool = False,
+    subsystems: bool = False,
 ) -> bytes:
     extra = "<FutureFlag>Enabled</FutureFlag>" if unknown else ""
     properties = (
@@ -166,7 +167,50 @@ def _configuration(
         children += "<AccountingRegister>Ledger</AccountingRegister>"
     if common_commands:
         children += "<CommonCommand>Run</CommonCommand>"
+    if subsystems:
+        children += "<Subsystem>Sales</Subsystem>"
     return _document("Configuration", properties, children)
+
+
+def _subsystem(name: str, *, child: str = "", use_one: str | None = None) -> bytes:
+    children = f"<Subsystem>{child}</Subsystem>" if child else ""
+    use_one_xml = f"<UseOneCommand>{use_one}</UseOneCommand>" if use_one else ""
+    return _document(
+        "Subsystem",
+        (
+            f"<Name>{name}</Name><Synonym>{_localized(name)}</Synonym>"
+            "<IncludeHelpInContents>true</IncludeHelpInContents>"
+            "<IncludeInCommandInterface>false</IncludeInCommandInterface>"
+            f"{use_one_xml}<Explanation>{_localized('Назначение')}</Explanation>"
+            "<Picture/><Content>"
+            '<xr:Item xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+            'xsi:type="xr:MDObjectRef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable">'
+            "Catalog.Items</xr:Item>"
+            '<xr:Item xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+            'xsi:type="xr:MDObjectRef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable">'
+            "CommonPicture.Unknown</xr:Item></Content>"
+        ),
+        children,
+    ).replace(b"<Subsystem>", b'<Subsystem uuid="uuid-subsystem">', 1)
+
+
+def _subsystem_interface() -> bytes:
+    return (
+        f'<CommandInterface xmlns="{NS_EXTERNAL_PROPERTIES}" '
+        'xmlns:xr="http://v8.1c.ru/8.3/xcf/readable">'
+        "<CommandsVisibility><Command name=\"CommonCommand.Run\"><Visibility>"
+        "<xr:Common>false</xr:Common><xr:Value name=\"Role.Reader\">true</xr:Value>"
+        "</Visibility></Command></CommandsVisibility>"
+        "<CommandsPlacement><Command name=\"CommonCommand.Run\">"
+        "<CommandGroup>NavigationPanelImportant</CommandGroup>"
+        "</Command></CommandsPlacement>"
+        "<CommandsOrder><Command name=\"CommonCommand.Run\">"
+        "<CommandGroup>NavigationPanelImportant</CommandGroup>"
+        "</Command></CommandsOrder>"
+        "<GroupsOrder><Group>NavigationPanelImportant</Group></GroupsOrder>"
+        "<SubsystemsOrder><Subsystem>Subsystem.Sales.Subsystem.Retail</Subsystem>"
+        "</SubsystemsOrder></CommandInterface>"
+    ).encode()
 
 
 def _field(
@@ -747,6 +791,9 @@ def _collection(
     flat_common_commands: bool = False,
     common_command_module: bool = True,
     common_command_descriptor: bytes | None = None,
+    subsystems: bool = False,
+    flat_subsystems: bool = False,
+    duplicate_subsystem_leafs: bool = False,
 ):
     payloads = {
         "Configuration.xml": _configuration(
@@ -762,6 +809,7 @@ def _collection(
             xdto_packages=xdto_packages,
             accounting_register=accounting_register,
             common_commands=common_commands or flat_common_commands,
+            subsystems=subsystems or flat_subsystems,
         ),
         "Catalogs/Items.xml": _catalog(unknown=unknown),
         "Catalogs/Items/Ext/ObjectModule.bsl": object_module,
@@ -792,6 +840,42 @@ def _collection(
             payloads["CommonCommand.Run.CommandModule.txt"] = (
                 b"procedure Execute(Parameter) endprocedure"
             )
+    if subsystems:
+        payloads.update(
+            {
+                "Subsystems/Sales.xml": _subsystem("Sales", child="Retail"),
+                "Subsystems/Sales/Subsystems/Retail.xml": _subsystem(
+                    "Retail", use_one="false"
+                ),
+                "Subsystems/Sales/Subsystems/Retail/Ext/CommandInterface.xml": (
+                    _subsystem_interface()
+                ),
+            }
+        )
+    if flat_subsystems:
+        payloads.update(
+            {
+                "Subsystem.Sales.xml": _subsystem("Sales", child="Retail"),
+                "Subsystem.Sales.Subsystem.Retail.xml": _subsystem(
+                    "Retail", use_one="false"
+                ),
+                "Subsystem.Sales.Subsystem.Retail.CommandInterface.xml": (
+                    _subsystem_interface()
+                ),
+            }
+        )
+    if duplicate_subsystem_leafs:
+        payloads["Configuration.xml"] = payloads["Configuration.xml"].replace(
+            b"</ChildObjects>", b"<Subsystem>Admin</Subsystem></ChildObjects>"
+        )
+        payloads.update(
+            {
+                "Subsystems/Sales.xml": _subsystem("Sales", child="Settings"),
+                "Subsystems/Sales/Subsystems/Settings.xml": _subsystem("Settings"),
+                "Subsystems/Admin.xml": _subsystem("Admin", child="Settings"),
+                "Subsystems/Admin/Subsystems/Settings.xml": _subsystem("Settings"),
+            }
+        )
     if filter_criteria:
         payloads.update(
             {
@@ -1087,6 +1171,49 @@ def test_metadata_kind_spec_выбирает_структурный_adapter():
     )
     assert specs["DocumentNumerators"].base_adapter == "numbering_rules"
     assert specs["DocumentNumerators"].extended_adapter == ""
+    assert specs["Subsystems"].extended_adapter == "subsystem"
+    assert specs["Subsystems"].layers == frozenset({LayerKind.EXTENDED_STRUCTURE})
+
+
+@pytest.mark.parametrize("flat", [False, True])
+def test_subsystems_дерево_и_плоская_выгрузка_дают_один_контракт(tmp_path, flat):
+    convert_collection = _symbol("convert_collection")
+
+    result = convert_collection(
+        _collection(tmp_path, subsystems=not flat, flat_subsystems=flat)
+    )
+    parent = result.extended.get("Подсистема.Sales")
+    child = result.extended.get("Подсистема.Sales.Retail")
+
+    assert parent is not None and child is not None
+    assert child.payload.path == ("Sales", "Retail")
+    assert child.payload.parent == "Подсистема.Sales"
+    assert parent.payload.use_one_command is None
+    assert child.payload.use_one_command is False
+    assert [item.target for item in child.payload.content] == [
+        "Справочник.Items",
+        "CommonPicture.Unknown",
+    ]
+    assert [(item.kind, item.target, item.state.value) for item in parent.relations] == [
+        ("subsystem_child", "Подсистема.Sales.Retail", "resolved"),
+        ("subsystem_contains", "CommonPicture.Unknown", "unresolved"),
+        ("subsystem_contains", "Справочник.Items", "resolved"),
+    ]
+    interface = child.payload.command_interface
+    assert interface.command_visibility[0].common is False
+    assert interface.command_visibility[0].roles == (("Role.Reader", True),)
+    assert interface.command_placement[0].target == "ОбщаяКоманда.Run"
+    assert interface.subsystem_order == ("Подсистема.Sales.Retail",)
+
+
+def test_subsystems_одноименные_листья_различаются_полным_путем(tmp_path):
+    result = _symbol("convert_collection")(
+        _collection(tmp_path, subsystems=True, duplicate_subsystem_leafs=True)
+    )
+
+    assert result.extended.get("Подсистема.Sales.Settings") is not None
+    assert result.extended.get("Подсистема.Admin.Settings") is not None
+    assert result.extended.get("Подсистема.Settings") is None
 
 
 def test_common_command_сохраняет_descriptor_модуль_и_ссылки_формы(tmp_path):

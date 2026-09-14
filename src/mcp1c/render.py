@@ -107,6 +107,102 @@ class HTTPServicePage:
     next_method: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class SubsystemPage:
+    """Ограниченная страница состава и статического интерфейса подсистемы."""
+
+    text: str
+    next_offset: int | None = None
+
+
+def render_subsystem(
+    obj: MetadataObject,
+    detail: str,
+    *,
+    offset: int = 0,
+    max_items: int = 50,
+) -> SubsystemPage:
+    payload = obj.extended
+    content = payload.get("content", [])
+    interface = payload.get("command_interface", {})
+    if not isinstance(content, list) or not isinstance(interface, dict):
+        return SubsystemPage("")
+    sections = (
+        ("Состав", content),
+        ("Видимость команд", interface.get("command_visibility", [])),
+        ("Размещение команд", interface.get("command_placement", [])),
+        ("Порядок команд", interface.get("command_order", [])),
+        ("Порядок групп", interface.get("group_order", [])),
+        ("Порядок подсистем", interface.get("subsystem_order", [])),
+        ("Видимость подсистем", interface.get("subsystem_visibility", [])),
+    )
+    flattened: list[tuple[str, object]] = []
+    for title, values in sections:
+        if isinstance(values, list):
+            flattened.extend((title, value) for value in values)
+    if detail == BRIEF:
+        return SubsystemPage(
+            "\nПодсистема: "
+            f"элементов состава {len(content)}, статических настроек интерфейса "
+            f"{len(flattened) - len(content)}.\n"
+        )
+    if (
+        type(offset) is not int
+        or offset < 0
+        or offset > len(flattened)
+        or max_items < 1
+    ):
+        raise ValueError("недопустимое смещение карточки подсистемы")
+    out = ["# Продолжение подсистемы" if offset else "## Подсистема", ""]
+    if not offset:
+        path = payload.get("path", [])
+        parent = payload.get("parent", "")
+        out.append(f"- Иерархия: `{' / '.join(path) if isinstance(path, list) else obj.name}`")
+        if isinstance(parent, str) and parent:
+            out.append(f"- Родитель: `{parent}`")
+        for key, title in (
+            ("include_help_in_contents", "Включать справку в содержание"),
+            ("include_in_command_interface", "Включать в командный интерфейс"),
+            ("use_one_command", "Использовать одну команду"),
+        ):
+            value = payload.get(key)
+            shown = "не представлено в Source B" if value is None else str(value).lower()
+            out.append(f"- {title}: `{shown}`")
+        out.extend(
+            [
+                "",
+                "> Командный интерфейс — статическая декларация конфигурации; "
+                "фактический UI зависит от прав, функциональных опций и сеанса.",
+            ]
+        )
+    page = flattened[offset : offset + max_items]
+    current = ""
+    for title, value in page:
+        if title != current:
+            out.extend(("", f"### {title}", ""))
+            current = title
+        if isinstance(value, dict):
+            target = value.get("target", value.get("raw", ""))
+            details = {
+                key: item
+                for key, item in value.items()
+                if key not in {"target", "raw"} and item not in (None, "", [])
+            }
+            suffix = (
+                " — `" + json.dumps(details, ensure_ascii=False, separators=(",", ":")) + "`"
+                if details
+                else ""
+            )
+            out.append(f"- `{target}`{suffix}")
+        else:
+            out.append(f"- `{value}`")
+    next_offset = offset + len(page)
+    return SubsystemPage(
+        "\n".join(out) + "\n",
+        next_offset if next_offset < len(flattened) else None,
+    )
+
+
 def render_http_service(
     obj: MetadataObject,
     detail: str,

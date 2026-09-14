@@ -113,7 +113,7 @@ async def test_поиск_отправляет_к_подробностям(ин�
     assert "get_syntax" in по_имени["search_syntax"]
 
 
-async def test_get_object_объявляет_cursor_для_http_продолжения(инструменты):
+async def test_get_object_объявляет_cursor_для_http_и_подсистем(инструменты):
     (карточка,) = [t for t in await инструменты() if t.name == "get_object"]
     schema = карточка.input_schema or {}
     свойства = schema.get("properties") or {}
@@ -121,6 +121,7 @@ async def test_get_object_объявляет_cursor_для_http_продолже
     assert set(свойства) == {"full_name", "config", "detail", "cursor"}
     assert set(schema.get("required") or []) == {"full_name"}
     assert "http" in (карточка.description or "").lower()
+    assert "подсистем" in (карточка.description or "").lower()
     assert "cursor" in (карточка.description or "").lower()
     assert "без изменений" in свойства["cursor"]["description"]
 

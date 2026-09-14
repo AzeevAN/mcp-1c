@@ -20,7 +20,7 @@ from mcp1c.intake_v2_generation import materialize_generation
 from mcp1c.intake_v2_runtime import configuration_from_base_layer
 from mcp1c.model import Configuration, Field, MetadataObject
 from mcp1c.registry import Registry, RegistryError
-from mcp1c.render import render_http_service
+from mcp1c.render import render_http_service, render_subsystem
 from mcp1c.server import build_server
 from mcp1c.tools import (
     get_callers,
@@ -749,6 +749,74 @@ def test_native_xdto_проходит_mcp_сессию_после_restart(tmp_pa
     assert "межпакетная" in card.content[0].text
 
 
+def test_native_subsystem_проходит_полную_mcp_сессию(tmp_path):
+    """Агент получает дерево и состав через прежние MCP-инструменты."""
+    _collection_value, generation = _materialized(
+        tmp_path, "subsystem-mcp-session", subsystems=True
+    )
+    registry = Registry(tmp_path / "data-subsystem-mcp-session")
+    registry.publish_generation(
+        registry.stage_generation(generation.manifest, generation.payloads)
+    )
+    server = build_server(registry)
+
+    async def run_session():
+        async with create_client_server_memory_streams() as (
+            client_streams,
+            server_streams,
+        ):
+            async with anyio.create_task_group() as tasks:
+                tasks.start_soon(
+                    server._lowlevel_server.run,
+                    *server_streams,
+                    server._lowlevel_server.create_initialization_options(),
+                )
+                try:
+                    async with ClientSession(*client_streams) as session:
+                        initialized = await session.initialize()
+                        catalog = await session.list_tools()
+                        found = await session.call_tool(
+                            "search_objects",
+                            {
+                                "query": "Sales Retail",
+                                "config": "DemoConfiguration",
+                                "kind": "Подсистема",
+                            },
+                        )
+                        card = await session.call_tool(
+                            "get_object",
+                            {
+                                "full_name": "Подсистема.Sales.Retail",
+                                "config": "DemoConfiguration",
+                                "detail": "fields",
+                            },
+                        )
+                        related = await session.call_tool(
+                            "get_related",
+                            {
+                                "full_name": "Справочник.Items",
+                                "config": "DemoConfiguration",
+                            },
+                        )
+                finally:
+                    tasks.cancel_scope.cancel()
+        return initialized, catalog, found, card, related
+
+    initialized, catalog, found, card, related = anyio.run(
+        run_session, backend="asyncio"
+    )
+
+    assert initialized.server_info.name == "mcp1c"
+    assert {"search_objects", "get_object", "get_related"} <= {
+        tool.name for tool in catalog.tools
+    }
+    assert all(not result.is_error for result in (found, card, related))
+    assert "`Подсистема.Sales.Retail`" in found.content[0].text
+    assert "статическая декларация конфигурации" in card.content[0].text
+    assert "`Справочник.Items`" in card.content[0].text
+    assert "`Подсистема.Sales.Retail`" in related.content[0].text
+
+
 def test_native_http_service_change_и_удаление_endpoint_переживают_restart(
     tmp_path,
 ):
@@ -1019,6 +1087,103 @@ def test_http_service_дочитывает_81_метод_одного_шабло
     assert combined.count('`/hs/api/all`') == 1
     for number in range(81):
         assert combined.count(f'`Method{number:02}`') == 1
+
+
+def test_subsystem_дочитывается_и_cursor_привязан_к_объекту(tmp_path, monkeypatch):
+    original = converter_fixtures._subsystem
+
+    def expanded(name, **kwargs):
+        descriptor = original(name, **kwargs).decode()
+        extra = "".join(
+            '<xr:Item xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+            'xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" '
+            'xsi:type="xr:MDObjectRef">'
+            f'CommonPicture.Item{number:02}</xr:Item>'
+            for number in range(60)
+        )
+        return descriptor.replace("</Content>", extra + "</Content>").encode()
+
+    monkeypatch.setattr(converter_fixtures, "_subsystem", expanded)
+    _collection_value, generation = _materialized(
+        tmp_path, "subsystem-pagination", subsystems=True
+    )
+    registry = Registry(tmp_path / "data-subsystem-pagination")
+    registry.publish_generation(
+        registry.stage_generation(generation.manifest, generation.payloads)
+    )
+
+    pages = []
+    cursor = None
+    while True:
+        page = get_object(
+            registry,
+            "Подсистема.Sales.Retail",
+            config="DemoConfiguration",
+            detail="fields",
+            cursor=cursor,
+        )
+        pages.append(page)
+        continuation = re.search(r"`get_object\((\{.*\})\)`", page)
+        if continuation is None:
+            break
+        cursor = json.loads(continuation.group(1))["cursor"]
+
+    combined = "".join(pages)
+    assert len(pages) == 2
+    for number in range(60):
+        assert combined.count(f"CommonPicture.Item{number:02}") == 1
+    with pytest.raises(RegistryError, match="другому объекту"):
+        get_object(
+            registry,
+            "Подсистема.Sales",
+            config="DemoConfiguration",
+            detail="fields",
+            cursor=cursor,
+        )
+
+
+def test_subsystem_переживает_restart_и_удаляется_новым_поколением(tmp_path):
+    _first_collection, first = _materialized(tmp_path, "subsystem-first", subsystems=True)
+    _removed_collection, removed = _materialized(tmp_path, "subsystem-removed")
+    registry = Registry(tmp_path / "data-subsystem-restart")
+    registry.publish_generation(registry.stage_generation(first.manifest, first.payloads))
+
+    restarted = Registry(registry.data_dir)
+    assert restarted.restore() == []
+    assert "`Подсистема.Sales`" in get_object(
+        restarted,
+        "Подсистема.Sales.Retail",
+        config="DemoConfiguration",
+        detail="fields",
+    )
+
+    restarted.publish_generation(
+        restarted.stage_generation(removed.manifest, removed.payloads)
+    )
+    assert "нет объекта `Подсистема.Sales.Retail`" in get_object(
+        restarted,
+        "Подсистема.Sales.Retail",
+        config="DemoConfiguration",
+        detail="fields",
+    )
+
+
+def test_render_subsystem_кратко_не_выгружает_статический_интерфейс():
+    obj = MetadataObject(
+        full_name="Подсистема.Sales",
+        kind="Подсистема",
+        name="Sales",
+        extended={
+            "content": [{"raw": "Catalog.Items", "target": "Справочник.Items"}],
+            "command_interface": {"command_visibility": [{"target": "X"}]},
+        },
+    )
+
+    page = render_subsystem(obj, "brief")
+
+    assert page.next_offset is None
+    assert "элементов состава 1" in page.text
+    assert "`Справочник.Items`" not in page.text
 
 
 @pytest.mark.parametrize("explicit_null", [False, True])

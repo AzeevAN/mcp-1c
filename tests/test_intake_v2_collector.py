@@ -139,7 +139,7 @@ def _tree(**extra: bytes) -> MemoryTree:
         "Roles/Empty/Ext/Rights.xml": (
             b'<Rights xmlns="http://v8.1c.ru/8.2/roles" version="2.20"/>'
         ),
-        "Subsystems/Deferred.xml": b"<deferred/>",
+        "Subsystems/Deferred.xml": b"<subsystem/>",
         "SettingsStorages/Ignored/Ext/ManagerModule.bsl": b"ignored",
         "ScheduledJobs/Job/Ext/Schedule.xml": b"<ignored-schedule/>",
         "UnknownThings/One.xml": b"<unknown/>",
@@ -178,6 +178,7 @@ def test_collector_одним_проходом_сохраняет_metadata_code_
         "Roles/Reader/Ext/Rights.xml",
         "Roles/Empty.xml",
         "Roles/Empty/Ext/Rights.xml",
+        "Subsystems/Deferred.xml",
     }
     assert tree.open_count == {path: 1 for path in selected}
     assert {item.kind for item in result.artifacts} == {
@@ -316,7 +317,7 @@ def test_collector_принимает_доказанные_flat_виды_без_
             "Catalog.Products.Predefined.xml": b"<predefined/>",
             "Catalog.Products.Form.List.xml": b"<form-descriptor/>",
             "Catalog.Products.Template.Layout.xml": b"<template/>",
-            "Subsystem.Future.xml": b"<deferred/>",
+            "Subsystem.Future.xml": b"<subsystem/>",
             "XDTOPackage.Future.xml": b"<deferred/>",
             "WSReference.Future.xml": b"<deferred/>",
             "CommonPicture.Logo.xml": b"<ignored/>",
@@ -363,6 +364,11 @@ def test_collector_принимает_доказанные_flat_виды_без_
             "Sequences",
             ArtifactKind.CODE,
             "Sequence.Documents.RecordSetModule.txt",
+        ),
+        (
+            "Subsystems",
+            ArtifactKind.METADATA,
+            "Subsystems/Future.xml",
         ),
         (
             "Catalogs",
@@ -421,9 +427,9 @@ def test_collector_применяет_supported_deferred_ignored_без_чтен
     result = _collect(_tree(), tmp_path / "policies")
 
     assert by_name["Catalogs"].policy is MetadataKindPolicy.SUPPORTED
-    assert by_name["Subsystems"].policy is MetadataKindPolicy.DEFERRED
+    assert by_name["Subsystems"].policy is MetadataKindPolicy.SUPPORTED
     assert by_name["SettingsStorages"].policy is MetadataKindPolicy.IGNORED
-    assert not any("Subsystems" in item.source_path for item in result.artifacts)
+    assert any("Subsystems" in item.source_path for item in result.artifacts)
     assert not any("SettingsStorages" in item.source_path for item in result.artifacts)
 
 

@@ -35,7 +35,7 @@ from .member_pack import MemberPackError, MemberPackWriter, open_stored_member
 
 
 COLLECTION_FORMAT_VERSION = 1
-SELECTION_VERSION = 10
+SELECTION_VERSION = 11
 _READ_CHUNK = 1 << 20
 _MANIFEST_LIMIT = 64 * 1024 * 1024
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -621,11 +621,12 @@ DEFAULT_KIND_SPECS = (
         ("Sequence",),
         (LayerKind.CODE,),
     ),
-    _inactive(
+    _supported(
         "Subsystems",
         "Подсистема",
-        MetadataKindPolicy.DEFERRED,
         ("Subsystem",),
+        (LayerKind.EXTENDED_STRUCTURE,),
+        extended_adapter="subsystem",
     ),
     _supported(
         "XDTOPackages",
@@ -765,10 +766,39 @@ def _flat_metadata_path(
     if (
         len(parts) == 3
         and parts[0] in spec.aliases
+        and spec.extended_adapter != "subsystem"
         and bool(parts[1])
         and parts[2] == "xml"
     ):
         return path
+    if spec.extended_adapter == "subsystem" and parts[0] == "Subsystem":
+        body = parts[:-1] if parts[-1] == "xml" else []
+        if (
+            len(body) >= 2
+            and len(body) % 2 == 0
+            and all(body[index] == "Subsystem" for index in range(0, len(body), 2))
+            and all(body[index] for index in range(1, len(body), 2))
+        ):
+            names = body[1::2]
+            result: list[str] = []
+            for name in names:
+                result.extend(("Subsystems", name))
+            result[-1] += ".xml"
+            return "/".join(result)
+        if (
+            len(parts) >= 4
+            and parts[-2:] == ["CommandInterface", "xml"]
+            and len(parts[:-2]) % 2 == 0
+            and all(
+                parts[index] == "Subsystem"
+                for index in range(0, len(parts) - 2, 2)
+            )
+            and all(parts[index] for index in range(1, len(parts) - 2, 2))
+        ):
+            result = []
+            for name in parts[1:-2:2]:
+                result.extend(("Subsystems", name))
+            return "/".join((*result, "Ext", "CommandInterface.xml"))
     if (
         spec.source_name == "ExchangePlans"
         and len(parts) == 4
@@ -778,6 +808,23 @@ def _flat_metadata_path(
     ):
         return f"ExchangePlans/{parts[1]}/Ext/Content.xml"
     return None
+
+
+def _is_subsystem_metadata_path(path: str) -> bool:
+    parts = PurePosixPath(path).parts
+    if (
+        len(parts) >= 2
+        and len(parts) % 2 == 0
+        and all(parts[index] == "Subsystems" for index in range(0, len(parts), 2))
+        and parts[-1].endswith(".xml")
+    ):
+        return True
+    return (
+        len(parts) >= 4
+        and parts[-2:] == ("Ext", "CommandInterface.xml")
+        and len(parts[:-2]) % 2 == 0
+        and all(parts[index] == "Subsystems" for index in range(0, len(parts) - 2, 2))
+    )
 
 
 def _flat_code_address(path: str) -> str | None:
@@ -1240,6 +1287,11 @@ def collect_source_b(
                 if normalized is None:
                     continue
                 metadata_source_path = normalized
+            if (
+                spec.extended_adapter == "subsystem"
+                and not _is_subsystem_metadata_path(metadata_source_path)
+            ):
+                continue
             if source_path.endswith(".xml") and spec.layers & _STRUCTURE_LAYERS:
                 artifacts.append(
                     _copy_artifact(

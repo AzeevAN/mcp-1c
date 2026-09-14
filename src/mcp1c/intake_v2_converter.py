@@ -264,6 +264,51 @@ class CommonCommandPayload:
 
 
 @dataclass(frozen=True, slots=True)
+class SubsystemContentItem:
+    raw: str
+    target: str
+
+
+@dataclass(frozen=True, slots=True)
+class InterfaceVisibility:
+    target: str
+    common: bool | None = None
+    roles: tuple[tuple[str, bool], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class InterfacePlacement:
+    target: str
+    group: str
+
+
+@dataclass(frozen=True, slots=True)
+class SubsystemCommandInterface:
+    """Статическая настройка интерфейса из Source B, не текущий UI сеанса."""
+
+    command_visibility: tuple[InterfaceVisibility, ...] = ()
+    command_placement: tuple[InterfacePlacement, ...] = ()
+    command_order: tuple[InterfacePlacement, ...] = ()
+    group_order: tuple[str, ...] = ()
+    subsystem_order: tuple[str, ...] = ()
+    subsystem_visibility: tuple[InterfaceVisibility, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class SubsystemPayload:
+    uuid: str = ""
+    path: tuple[str, ...] = ()
+    parent: str = ""
+    include_help_in_contents: bool | None = None
+    include_in_command_interface: bool | None = None
+    use_one_command: bool | None = None
+    explanation: str = ""
+    picture: tuple[str, ...] = ()
+    content: tuple[SubsystemContentItem, ...] = ()
+    command_interface: SubsystemCommandInterface = SubsystemCommandInterface()
+
+
+@dataclass(frozen=True, slots=True)
 class ExchangePlanContentItem:
     raw: str
     target: str
@@ -642,6 +687,9 @@ _REFERENCE_KINDS = {
     "DocumentJournal": "ЖурналДокументов",
     "DocumentNumerator": "Нумератор",
     "FilterCriterion": "КритерийОтбора",
+    "CommonCommand": "ОбщаяКоманда",
+    "CommonForm": "ОбщаяФорма",
+    "Subsystem": "Подсистема",
 }
 
 # В Source подписки платформа пишет не вид metadata, а runtime-тип объекта.
@@ -1898,6 +1946,191 @@ def _common_command(
             server_unavailable_behavior=_text(
                 _child(properties, "OnMainServerUnavalableBehavior")
             ),
+        ),
+    )
+
+
+_SUBSYSTEM_PROPERTIES = {
+    "Name",
+    "Synonym",
+    "Comment",
+    "IncludeHelpInContents",
+    "IncludeInCommandInterface",
+    "UseOneCommand",
+    "Explanation",
+    "Picture",
+    "Content",
+}
+
+
+def _subsystem_path(where: str) -> tuple[str, ...]:
+    parts = PurePosixPath(where).parts
+    if len(parts) < 2 or len(parts) % 2 or not parts[-1].endswith(".xml"):
+        raise ConversionError(f"{where}: неверный адрес подсистемы")
+    names: list[str] = []
+    for index in range(0, len(parts), 2):
+        if parts[index] != "Subsystems":
+            raise ConversionError(f"{where}: неверный адрес подсистемы")
+        value = parts[index + 1]
+        name = value[:-4] if index + 1 == len(parts) - 1 else value
+        if not name:
+            raise ConversionError(f"{where}: пустое имя подсистемы")
+        names.append(name)
+    return tuple(names)
+
+
+def _subsystem_address(value: str) -> str:
+    parts = value.split(".")
+    if len(parts) < 2 or len(parts) % 2:
+        return _content_address(value)
+    if any(parts[index] != "Subsystem" for index in range(0, len(parts), 2)):
+        return _content_address(value)
+    return "Подсистема." + ".".join(parts[1::2])
+
+
+def _attribute(element: ET.Element, name: str) -> str:
+    return next(
+        (value for key, value in element.attrib.items() if key.rsplit("}", 1)[-1] == name),
+        "",
+    )
+
+
+def _interface_visibility(element: ET.Element | None) -> tuple[InterfaceVisibility, ...]:
+    result: list[InterfaceVisibility] = []
+    for item in element if element is not None else ():
+        target = _attribute(item, "name")
+        visibility = _child(item, "Visibility")
+        common = _bool(_child(visibility, "Common"), f"CommandInterface.{target}.Common")
+        roles: list[tuple[str, bool]] = []
+        for value in visibility if visibility is not None else ():
+            if _tag(value) != "Value":
+                continue
+            role = _attribute(value, "name")
+            role_value = _bool(value, f"CommandInterface.{target}.{role}")
+            if role and role_value is not None:
+                roles.append((_reference(role), role_value))
+        if target:
+            result.append(
+                InterfaceVisibility(
+                    target=_subsystem_address(target),
+                    common=common,
+                    roles=tuple(sorted(roles, key=lambda value: _order(value[0]))),
+                )
+            )
+    return tuple(result)
+
+
+def _interface_placements(element: ET.Element | None) -> tuple[InterfacePlacement, ...]:
+    result = []
+    for item in element if element is not None else ():
+        target = _attribute(item, "name")
+        group = _text(_child(item, "CommandGroup"))
+        if target:
+            result.append(InterfacePlacement(_content_address(target), _reference(group)))
+    return tuple(result)
+
+
+def _subsystem_command_interface(root: ET.Element | None) -> SubsystemCommandInterface:
+    if root is None:
+        return SubsystemCommandInterface()
+    if _tag(root) != "CommandInterface" or _namespace(root) != _NS_EXTERNAL_PROPERTIES:
+        raise ConversionError("CommandInterface.xml: неверный корневой элемент")
+    groups_order = _child(root, "GroupsOrder")
+    subsystems_order = _child(root, "SubsystemsOrder")
+    return SubsystemCommandInterface(
+        command_visibility=_interface_visibility(_child(root, "CommandsVisibility")),
+        command_placement=_interface_placements(_child(root, "CommandsPlacement")),
+        command_order=_interface_placements(_child(root, "CommandsOrder")),
+        group_order=tuple(
+            _reference(_text(item))
+            for item in (groups_order if groups_order is not None else ())
+            if _text(item)
+        ),
+        subsystem_order=tuple(
+            _subsystem_address(_text(item))
+            for item in (subsystems_order if subsystems_order is not None else ())
+            if _text(item)
+        ),
+        subsystem_visibility=_interface_visibility(
+            _child(root, "SubsystemsVisibility")
+        ),
+    )
+
+
+def _subsystem(
+    root: ET.Element,
+    command_interface: ET.Element | None,
+    diagnostics: _Diagnostics,
+    where: str,
+) -> ExtendedObject:
+    node, properties, children = _descriptor(root, "Subsystem", where)
+    _unknown_properties(properties, _SUBSYSTEM_PROPERTIES, diagnostics, "Subsystem")
+    path = _subsystem_path(where)
+    name = _required_text(_child(properties, "Name"), f"{where}.Name")
+    if name.casefold() != path[-1].casefold():
+        raise ConversionError("имя подсистемы не совпадает с иерархическим адресом")
+    content: list[SubsystemContentItem] = []
+    seen: set[str] = set()
+    content_node = _child(properties, "Content")
+    for item in content_node if content_node is not None else ():
+        if _tag(item) != "Item":
+            diagnostics.add("unknown_child", "Subsystem.Content", _tag(item))
+            continue
+        if _attribute(item, "type") != "xr:MDObjectRef":
+            raise ConversionError(
+                f"{where}.Content.Item: ожидается xsi:type xr:MDObjectRef"
+            )
+        raw = _required_text(item, f"{where}.Content.Item")
+        target = _subsystem_address(raw)
+        key = target.casefold()
+        if key in seen:
+            raise ConversionError(f"{where}: Content дублирует цель")
+        seen.add(key)
+        content.append(SubsystemContentItem(raw, target))
+    child_relations: list[MetadataRelation] = []
+    for child in children if children is not None else ():
+        if _tag(child) != "Subsystem":
+            diagnostics.add("unknown_child", "Subsystem", _tag(child))
+            continue
+        child_name = _required_text(child, f"{where}.ChildObjects.Subsystem")
+        child_relations.append(
+            MetadataRelation(
+                "subsystem_child",
+                "Подсистема." + ".".join((*path, child_name)),
+                RelationState.UNRESOLVED,
+            )
+        )
+    full_name = "Подсистема." + ".".join(path)
+    return ExtendedObject(
+        full_name=full_name,
+        kind="Подсистема",
+        name=name,
+        synonym=_localized(_child(properties, "Synonym")),
+        comment=_text(_child(properties, "Comment")),
+        payload=SubsystemPayload(
+            uuid=node.attrib.get("uuid", ""),
+            path=path,
+            parent=("Подсистема." + ".".join(path[:-1])) if len(path) > 1 else "",
+            include_help_in_contents=_bool(
+                _child(properties, "IncludeHelpInContents"),
+                f"{where}.IncludeHelpInContents",
+            ),
+            include_in_command_interface=_bool(
+                _child(properties, "IncludeInCommandInterface"),
+                f"{where}.IncludeInCommandInterface",
+            ),
+            use_one_command=_bool(
+                _child(properties, "UseOneCommand"), f"{where}.UseOneCommand"
+            ),
+            explanation=_localized(_child(properties, "Explanation")),
+            picture=_leaf_texts(_child(properties, "Picture")),
+            content=tuple(content),
+            command_interface=_subsystem_command_interface(command_interface),
+        ),
+        relations=tuple(child_relations)
+        + tuple(
+            MetadataRelation("subsystem_contains", item.target, RelationState.UNRESOLVED)
+            for item in content
         ),
     )
 
@@ -3311,6 +3544,13 @@ def _resolve_xdto_references(
 
 def _is_descriptor(artifact: CollectionArtifact, spec: MetadataKindSpec) -> bool:
     parts = PurePosixPath(artifact.source_path).parts
+    if spec.extended_adapter == "subsystem":
+        return (
+            len(parts) >= 2
+            and len(parts) % 2 == 0
+            and all(parts[index] == "Subsystems" for index in range(0, len(parts), 2))
+            and parts[-1].endswith(".xml")
+        )
     if len(parts) == 2:
         return parts[0] == spec.source_name and parts[1].endswith(".xml")
     if len(parts) != 1 or not artifact.source_path.endswith(".xml"):
@@ -3328,6 +3568,13 @@ def _known_supplementary_metadata(
     artifact: CollectionArtifact,
     spec: MetadataKindSpec,
 ) -> bool:
+    if spec.extended_adapter == "subsystem":
+        parts = PurePosixPath(artifact.source_path).parts
+        return (
+            len(parts) >= 4
+            and parts[-2:] == ("Ext", "CommandInterface.xml")
+            and all(parts[index] == "Subsystems" for index in range(0, len(parts) - 2, 2))
+        )
     if spec.extended_adapter == "xdto_package":
         parts = PurePosixPath(artifact.source_path).parts
         return (
@@ -3908,6 +4155,7 @@ def convert_collection(
     borrowed_field_targets: set[str] = set()
     exchange_plan_contents = _exchange_plan_content_artifacts(collection)
     xdto_payloads = _xdto_payloads(collection)
+    metadata_by_path = {item.source_path: item for item in collection.metadata}
     needs_binding_resolver = any(
         item.source_name in {
             "EventSubscriptions",
@@ -4030,6 +4278,22 @@ def convert_collection(
             if obj.full_name in extended_objects:
                 raise ConversionError(f"дублируется extended object {obj.full_name}")
             extended_objects[obj.full_name] = obj
+        elif spec.extended_adapter == "subsystem":
+            interface_path = (
+                artifact.source_path[:-4] + "/Ext/CommandInterface.xml"
+            )
+            interface_artifact = metadata_by_path.get(interface_path)
+            obj = _subsystem(
+                root,
+                _parse_xml(collection, interface_artifact)
+                if interface_artifact is not None
+                else None,
+                diagnostics,
+                artifact.source_path,
+            )
+            if obj.full_name in extended_objects:
+                raise ConversionError(f"дублируется extended object {obj.full_name}")
+            extended_objects[obj.full_name] = obj
         elif spec.extended_adapter == "exchange_plan":
             properties = _descriptor(root, "ExchangePlan", artifact.source_path)[1]
             name = _required_text(
@@ -4126,6 +4390,7 @@ def convert_collection(
             "http_service",
             "scheduled_job",
             "session_parameter",
+            "subsystem",
             "xdto_package",
         }:
             raise ConversionError(
@@ -4216,6 +4481,11 @@ __all__ = [
     "RelationState",
     "ScheduledJobPayload",
     "SessionParameterPayload",
+    "InterfacePlacement",
+    "InterfaceVisibility",
+    "SubsystemCommandInterface",
+    "SubsystemContentItem",
+    "SubsystemPayload",
     "StructureConversion",
     "TypeDescription",
     "XDTOMemberPayload",

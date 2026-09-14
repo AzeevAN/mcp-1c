@@ -7,7 +7,8 @@
 
 from __future__ import annotations
 
-from mcp1c.search import Doc, SearchIndex
+from mcp1c.model import Configuration, MetadataObject
+from mcp1c.search import Doc, SearchIndex, index_configuration
 
 
 def _index(**kwargs) -> SearchIndex:
@@ -430,6 +431,30 @@ def test_псевдоним_лечит_единственное_число():
 
     assert hits[0].doc.id == "Справочник.Контрагенты"
     assert hits[0].reason == "псевдоним из словаря"
+
+
+def test_подсистема_не_вытесняет_прикладной_объект_и_находится_по_виду():
+    config = Configuration(
+        name="Demo",
+        objects={
+            "Справочник.Продажи": MetadataObject(
+                full_name="Справочник.Продажи",
+                kind="Справочник",
+                name="Продажи",
+            ),
+            "Подсистема.Основное.Продажи": MetadataObject(
+                full_name="Подсистема.Основное.Продажи",
+                kind="Подсистема",
+                name="Продажи",
+            ),
+        },
+    )
+    index = index_configuration(config)
+
+    assert index.search("продажи")[0].doc.id == "Справочник.Продажи"
+    assert index.search("продажи", kinds=["Подсистема"])[0].doc.id == (
+        "Подсистема.Основное.Продажи"
+    )
 
 
 def test_оценки_не_меняются():

@@ -6,6 +6,7 @@ from importlib.resources import files
 from pathlib import Path
 
 from tools.measure_capability_context import canonical_delta
+from mcp1c.capability_modules.forms.version_catalog import CONFIRMED_FORM_FORMATS
 
 
 def test_manifest_совпадает_с_фактическим_tools_list_и_документацией():
@@ -51,3 +52,19 @@ def test_manifest_совпадает_с_фактическим_tools_list_и_д�
     for text in (readme, dashboard):
         assert "5 421" in text
         assert "o200k_base" in text
+
+
+def test_public_forms_docs_совпадают_с_каталогом_и_замером():
+    root = Path(__file__).resolve().parents[3]
+    readme = " ".join((root / "README.md").read_text(encoding="utf-8").split())
+    dashboard = (root / "dashboard" / "README.md").read_text(encoding="utf-8")
+
+    assert "`diagnostics`" not in dashboard
+    assert "2 439" not in dashboard
+    assert "5 421" in dashboard
+    assert "o200k_base" in dashboard
+    assert "2026-09-13" in dashboard
+    assert "tools/measure_capability_context.py forms" in dashboard
+    assert CONFIRMED_FORM_FORMATS == ("2.16", "2.20")
+    assert "форматы `2.19`/`2.20` читает только как inventory" not in readme
+    assert "форматы `2.16` и `2.20`" in readme

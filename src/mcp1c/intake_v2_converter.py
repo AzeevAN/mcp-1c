@@ -257,7 +257,7 @@ class CommonCommandPayload:
     picture: tuple[str, ...] = ()
     shortcut: str = ""
     include_help_in_contents: bool | None = None
-    parameter_type: TypeDescription = TypeDescription()
+    parameter_type: TypeDescription | None = None
     parameter_use_mode: str = ""
     modifies_data: bool | None = None
     server_unavailable_behavior: str = ""
@@ -1936,8 +1936,10 @@ def _common_command(
                 _child(properties, "IncludeHelpInContents"),
                 f"{where}.IncludeHelpInContents",
             ),
-            parameter_type=_type_description(
-                _child(properties, "CommandParameterType")
+            parameter_type=(
+                _type_description(_child(properties, "CommandParameterType"))
+                if _child(properties, "CommandParameterType") is not None
+                else None
             ),
             parameter_use_mode=_text(_child(properties, "ParameterUseMode")),
             modifies_data=_bool(

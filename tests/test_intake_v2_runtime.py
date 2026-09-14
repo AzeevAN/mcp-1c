@@ -254,6 +254,8 @@ def test_native_common_command_карточка_граф_замена_и_restart
         detail="full",
     )
     assert "Синтетическая общая команда" in card
+    assert "Тип параметра" in card
+    assert "Справочник.Items" in card
     assert "procedure Execute" in get_procedure(
         registry,
         "ОбщаяКоманда.Run::Execute",
@@ -297,6 +299,14 @@ def test_native_common_command_карточка_граф_замена_и_restart
         config="DemoConfiguration",
         kind="ОбщаяКоманда",
     )
+    restarted_card = get_object(
+        restarted,
+        "ОбщаяКоманда.Run",
+        config="DemoConfiguration",
+        detail="full",
+    )
+    assert "Тип параметра" in restarted_card
+    assert "Справочник.Items" in restarted_card
 
     monkeypatch.undo()
     restarted.publish_generation(
@@ -307,6 +317,75 @@ def test_native_common_command_карточка_граф_замена_и_restart
         "ОбщаяКоманда.Run",
         config="DemoConfiguration",
     )
+
+
+def test_native_common_command_карточка_показывает_тип_параметра(tmp_path):
+    descriptor = converter_fixtures._common_command(
+        parameter_type=(
+            "<CommandParameterType>"
+            "<v8:TypeSet>cfg:CatalogRef.Items</v8:TypeSet>"
+            "<v8:TypeSet>xs:string</v8:TypeSet>"
+            "<v8:StringQualifiers><v8:Length>40</v8:Length>"
+            "<v8:AllowedLength>Variable</v8:AllowedLength>"
+            "</v8:StringQualifiers></CommandParameterType>"
+        )
+    )
+    _collection_value, generation = _materialized(
+        tmp_path,
+        "common-command-parameter-type",
+        common_commands=True,
+        common_command_descriptor=descriptor,
+    )
+    registry = Registry(tmp_path / "data-common-command-parameter-type")
+    registry.publish_generation(
+        registry.stage_generation(generation.manifest, generation.payloads)
+    )
+    obj = registry.resolve("DemoConfiguration").configuration.config.get(
+        "ОбщаяКоманда.Run"
+    )
+
+    assert obj is not None
+    assert obj.extended["parameter_type"]["types"] == [
+        "Справочник.Items",
+        "Строка",
+    ]
+    assert obj.extended["parameter_type"]["string_length"] == 40
+    assert obj.extended["parameter_type"]["string_allowed_length"] == "Variable"
+    card = get_object(
+        registry,
+        obj.full_name,
+        config="DemoConfiguration",
+        detail="full",
+    )
+
+    assert "Тип параметра" in card
+    assert "Справочник.Items" in card
+    assert '"Строка"' in card
+    assert '"string_length":40' in card
+    assert '"string_allowed_length":"Variable"' in card
+
+
+def test_native_common_command_не_выдумывает_отсутствующий_тип_параметра(tmp_path):
+    descriptor = converter_fixtures._common_command(parameter_type="")
+    _collection_value, generation = _materialized(
+        tmp_path,
+        "common-command-without-parameter-type",
+        common_commands=True,
+        common_command_descriptor=descriptor,
+    )
+    registry = Registry(tmp_path / "data-common-command-without-parameter-type")
+    registry.publish_generation(
+        registry.stage_generation(generation.manifest, generation.payloads)
+    )
+
+    card = get_object(
+        registry,
+        "ОбщаяКоманда.Run",
+        config="DemoConfiguration",
+        detail="full",
+    )
+
+    assert "Тип параметра" not in card
 
 
 def test_native_extended_objects_доступны_через_mcp_после_restart(

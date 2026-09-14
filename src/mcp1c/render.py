@@ -995,6 +995,7 @@ _PROP_TITLES = {
     "use_standard_commands": "Использовать стандартные команды",
     "predefined": "Предопределённый",
     "picture": "Картинка",
+    "parameter_type": "Тип параметра",
     "value_type_string_allowed_length": "Допустимая длина строки",
     "value_type_number_allowed_sign": "Допустимый знак числа",
 }
@@ -1027,6 +1028,8 @@ def _prop_value(value: object) -> str:
     """`True` в ответе на русском читается хуже, чем «Да»."""
     if isinstance(value, bool):
         return "Да" if value else "Нет"
+    if isinstance(value, Mapping):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
     return str(value)
 
 

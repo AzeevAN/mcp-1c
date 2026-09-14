@@ -549,6 +549,22 @@ def _extended_props(
         raw = binding.get("raw")
         if isinstance(raw, str) and raw:
             result["handler" if kind == "ПодпискаНаСобытие" else "method"] = raw
+    parameter_type = payload.get("parameter_type")
+    if kind == "ОбщаяКоманда" and isinstance(parameter_type, Mapping):
+        normalized = {
+            key: parameter_type[key]
+            for key in (
+                "types",
+                "string_length",
+                "string_allowed_length",
+                "digits",
+                "fraction_digits",
+                "number_allowed_sign",
+                "date_parts",
+            )
+            if key in parameter_type and parameter_type[key] not in (None, "")
+        }
+        result["parameter_type"] = normalized
     return result
 
 

@@ -652,7 +652,15 @@ def _common_form_xml() -> bytes:
     ).encode()
 
 
-def _common_command(name: str = "Run", *, future: str = "") -> bytes:
+def _common_command(
+    name: str = "Run",
+    *,
+    future: str = "",
+    parameter_type: str = (
+        "<CommandParameterType><v8:TypeSet>cfg:CatalogRef.Items</v8:TypeSet>"
+        "</CommandParameterType>"
+    ),
+) -> bytes:
     properties = (
         f"<Name>{name}</Name>"
         f"<Synonym>{_localized('Выполнить')}</Synonym>"
@@ -663,8 +671,7 @@ def _common_command(name: str = "Run", *, future: str = "") -> bytes:
         "<Picture><v8:Ref>CommonPicture.Run</v8:Ref></Picture>"
         "<Shortcut>F11</Shortcut>"
         "<IncludeHelpInContents>false</IncludeHelpInContents>"
-        "<CommandParameterType><v8:TypeSet>cfg:CatalogRef.Items</v8:TypeSet>"
-        "</CommandParameterType>"
+        f"{parameter_type}"
         "<ParameterUseMode>Multiple</ParameterUseMode>"
         "<ModifiesData>true</ModifiesData>"
         "<OnMainServerUnavalableBehavior>Auto</OnMainServerUnavalableBehavior>"

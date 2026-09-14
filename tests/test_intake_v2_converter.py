@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import io
+import sys
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -2217,6 +2218,28 @@ def test_filter_criterion_отвергает_дублирующуюся_цель
         convert_collection(
             _collection(tmp_path, filter_criteria=True, filter_criterion_duplicate_content=True)
         )
+
+
+@pytest.mark.parametrize("flat", [False, True])
+def test_filter_criterion_отвергает_имя_не_совпадающее_с_адресом(
+    tmp_path,
+    monkeypatch,
+    flat,
+):
+    ConversionError = _symbol("ConversionError")
+    convert_collection = _symbol("convert_collection")
+    original = _filter_criterion
+
+    def renamed(name, **kwargs):
+        return original("Other" if name == "ByItem" else name, **kwargs)
+
+    monkeypatch.setattr(sys.modules[__name__], "_filter_criterion", renamed)
+    options = {"filter_criteria": True}
+    if flat:
+        options["flat_filter_criteria"] = True
+
+    with pytest.raises(ConversionError, match="имя.*не совпадает.*адрес"):
+        convert_collection(_collection(tmp_path, **options))
 
 
 def test_document_journal_диагностирует_отсутствующие_цели(tmp_path):

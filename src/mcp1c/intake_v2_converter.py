@@ -2203,6 +2203,24 @@ def _filter_criterion(
 ) -> ExtendedObject:
     node, properties, children = _descriptor(root, "FilterCriterion", where)
     name = _required_text(_child(properties, "Name"), f"{where}.Name")
+    parts = PurePosixPath(where).parts
+    tree_name = (
+        PurePosixPath(parts[1]).stem
+        if len(parts) == 2 and parts[0] == "FilterCriteria"
+        else ""
+    )
+    flat = where.split(".") if len(parts) == 1 else []
+    flat_name = (
+        flat[1]
+        if len(flat) == 3 and flat[0] == "FilterCriterion" and flat[2] == "xml"
+        else ""
+    )
+    if not any(
+        value.casefold() == name.casefold()
+        for value in (tree_name, flat_name)
+        if value
+    ):
+        raise ConversionError("имя критерия отбора не совпадает с адресом")
     _unknown_properties(
         properties,
         _FILTER_CRITERION_PROPERTIES,

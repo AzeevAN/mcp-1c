@@ -190,6 +190,20 @@ class _Inventory:
     def report_uncovered(self, root: ET.Element) -> None:
         for node in root.iter():
             path = self.paths[id(node)]
+            if len(node) and node.text is not None and node.text.strip():
+                self.issue(
+                    "unsupported_xml_text",
+                    f"{path}/text()",
+                    "Значимый текст XML-контейнера не покрыт спецификацией.",
+                    status="unsupported",
+                )
+            if node.tail is not None and node.tail.strip():
+                self.issue(
+                    "unsupported_xml_text",
+                    f"{path}/tail()",
+                    "Значимый XML-текст после узла не покрыт спецификацией.",
+                    status="unsupported",
+                )
             if id(node) not in self.known_nodes:
                 self.issue(
                     "unsupported_xml_node",

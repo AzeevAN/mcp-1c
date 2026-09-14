@@ -59,6 +59,72 @@ def test_compile_decompile_даёт_нормализованный_roundtrip():
     assert _diagnostics(result, "bsl_check_deferred")
 
 
+@pytest.mark.parametrize(
+    ("slot", "marker", "path_suffix"),
+    [
+        ("text", "<ChildItems>", "/Form/ChildItems/text()"),
+        ("tail", "</Title>", "/Form/Title/tail()"),
+    ],
+)
+def test_значимый_mixed_xml_текст_не_объявляется_lossless(
+    slot,
+    marker,
+    path_suffix,
+):
+    compiled = compile_managed_form(_payload())
+    xml = compiled.artifacts[0].content.replace(
+        marker,
+        marker + "AUDIT_UNMODELED_TEXT",
+        1,
+    )
+
+    result = decompile_managed_form(xml, form_name="ФормаПараметров")
+
+    assert result.coverage.xml_parse == "passed"
+    assert result.coverage.structural == "unsupported"
+    diagnostics = _diagnostics(result, "unsupported_xml_text")
+    assert any(item.path == path_suffix for item in diagnostics)
+    assert any("повторная компиляция запрещена" in item for item in result.instructions)
+
+
+def test_значимый_текст_вложенного_контейнера_имеет_точный_путь():
+    compiled = compile_managed_form(_payload())
+    root = ET.fromstring(compiled.artifacts[0].content)
+    namespace = "http://v8.1c.ru/8.3/xcf/logform"
+    group = next(root.iter(f"{{{namespace}}}UsualGroup"))
+    group.text = "AUDIT_UNMODELED_TEXT"
+
+    result = decompile_managed_form(
+        ET.tostring(root, encoding="unicode"),
+        form_name="ФормаПараметров",
+    )
+
+    diagnostics = _diagnostics(result, "unsupported_xml_text")
+    assert any(
+        item.path == "/Form/ChildItems/UsualGroup[1]/text()"
+        for item in diagnostics
+    )
+
+
+@pytest.mark.parametrize("slot", ["text", "tail"])
+def test_formatting_whitespace_не_становится_непокрытым_текстом(slot):
+    compiled = compile_managed_form(_payload())
+    root = ET.fromstring(compiled.artifacts[0].content)
+    namespace = "http://v8.1c.ru/8.3/xcf/logform"
+    if slot == "text":
+        root.find(f"{{{namespace}}}ChildItems").text = "\n\t  "
+    else:
+        root.find(f"{{{namespace}}}Title").tail = "\r\n  "
+
+    result = decompile_managed_form(
+        ET.tostring(root, encoding="unicode"),
+        form_name="ФормаПараметров",
+    )
+
+    assert result.coverage.structural == "passed"
+    assert not _diagnostics(result, "unsupported_xml_text")
+
+
 def test_богатая_форма_импорта_даёт_lossless_roundtrip():
     compiled = compile_managed_form(_rich_payload())
 

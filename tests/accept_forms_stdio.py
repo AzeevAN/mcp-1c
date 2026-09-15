@@ -25,6 +25,10 @@ FORM_TOOLS = (
 )
 
 
+def _context() -> dict[str, str]:
+    return {"owner": "Обработка.ТестоваяОбработка", "role": "custom"}
+
+
 async def _session(mode: str, data_dir: Path) -> dict[str, object]:
     server = StdioServerParameters(
         command=sys.executable,
@@ -62,6 +66,21 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
             if "ManagedFormSpec" not in schema_text or "additionalProperties" not in schema_text:
                 raise RuntimeError("Строгая вложенная specification-схема не опубликована.")
             definitions = compile_schema["$defs"]
+            specification_definition = definitions["ManagedFormSpec"]
+            if specification_definition["properties"]["schema_version"].get(
+                "const"
+            ) != 2:
+                raise RuntimeError("Forms принимает только schema_version=2.")
+            if "context" not in specification_definition.get("required", []):
+                raise RuntimeError("Forms schema не требует context.")
+            context_definition = definitions["FormContextSpec"]
+            if set(context_definition.get("required", [])) != {"owner", "role"}:
+                raise RuntimeError("Forms context обязан содержать owner и role.")
+            by_name = {tool.name: tool for tool in listed.tools}
+            for operation in ("decompile_managed_form", "check_managed_form"):
+                required = by_name[operation].input_schema.get("required", [])
+                if "context" not in required:
+                    raise RuntimeError(f"{operation} не требует Forms context.")
             format_pattern = definitions["ManagedFormSpec"]["properties"][
                 "format_version"
             ]["pattern"]
@@ -334,6 +353,7 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                 {
                     "form_xml": form_xml,
                     "form_name": "ФормаПараметров",
+                    "context": _context(),
                     "module_bsl": module_bsl,
                 },
             )
@@ -342,9 +362,112 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                 {
                     "form_xml": form_xml,
                     "form_name": "ФормаПараметров",
+                    "context": _context(),
                     "module_bsl": module_bsl,
                 },
             )
+            record_context = {
+                "owner": "РегистрСведений.ТестовыйРегистр",
+                "role": "record",
+            }
+            record_specification = {
+                "schema_version": 2,
+                "form_name": "ФормаЗаписи",
+                "context": record_context,
+                "format_version": "2.20",
+                "title": {"ru": "Запись тестового регистра"},
+                "attributes": [
+                    {
+                        "name": "Запись",
+                        "type": {
+                            "kind": "metadata_object",
+                            "object": "РегистрСведений.ТестовыйРегистр",
+                        },
+                        "main": True,
+                        "saved_data": True,
+                    }
+                ],
+                "elements": [
+                    {
+                        "kind": "input_field",
+                        "name": "Значение",
+                        "data_path": "Запись.Значение",
+                    }
+                ],
+                "commands": [],
+                "events": [
+                    {
+                        "event": "OnCreateAtServer",
+                        "handler": "ПриСозданииНаСервере",
+                    }
+                ],
+            }
+            record_rules = await session.call_tool(
+                "get_managed_form_rules", {"topic": "attributes"}
+            )
+            record_compiled = await session.call_tool(
+                "compile_managed_form",
+                {"specification": record_specification},
+            )
+            if record_compiled.is_error:
+                raise RuntimeError(record_compiled.content[0].text)
+            record_compiled_payload = json.loads(
+                record_compiled.content[0].text
+            )
+            record_artifacts = {
+                item["path"]: item["content"]
+                for item in record_compiled_payload["artifacts"]
+            }
+            record_xml = record_artifacts["Forms/ФормаЗаписи/Ext/Form.xml"]
+            record_module = record_artifacts[
+                "Forms/ФормаЗаписи/Ext/Form/Module.bsl"
+            ]
+            record_checked = await session.call_tool(
+                "check_managed_form",
+                {
+                    "form_xml": record_xml,
+                    "form_name": "ФормаЗаписи",
+                    "context": record_context,
+                    "module_bsl": record_module,
+                },
+            )
+            record_decompiled = await session.call_tool(
+                "decompile_managed_form",
+                {
+                    "form_xml": record_xml,
+                    "form_name": "ФормаЗаписи",
+                    "context": record_context,
+                    "module_bsl": record_module,
+                },
+            )
+            record_checked_payload = json.loads(record_checked.content[0].text)
+            record_decompiled_payload = json.loads(
+                record_decompiled.content[0].text
+            )
+            record_rule_codes = {
+                item["code"]
+                for item in json.loads(record_rules.content[0].text)["rules"]
+            }
+            if (
+                record_checked.is_error
+                or record_decompiled.is_error
+                or record_compiled_payload["coverage"]["structural"] != "passed"
+                or record_checked_payload["coverage"]["structural"] != "passed"
+                or record_decompiled_payload["coverage"]["structural"]
+                != "passed"
+                or record_decompiled_payload["specification"]
+                != record_compiled_payload["specification"]
+                or "information_register_record_main_attribute"
+                not in record_rule_codes
+                or "cfg:InformationRegisterRecordManager.ТестовыйРегистр"
+                not in record_xml
+                or "<MainAttribute>true</MainAttribute>" not in record_xml
+                or "<SavedData>true</SavedData>" not in record_xml
+                or "<DataPath>Запись.Значение</DataPath>" not in record_xml
+            ):
+                raise RuntimeError(
+                    "Внешняя MCP-последовательность role=record дала неверный результат."
+                )
             invalid = dict(specification)
             invalid["unknown"] = True
             rejected = await session.call_tool(
@@ -446,6 +569,10 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                 "command_source": "form_and_form_global_commands",
                 "auto_command_bar": "table_autofill_false_with_button",
                 "context_menu": "table_autofill_false_with_button",
+                "record_role": "compile_check_decompile_passed",
+                "record_roundtrip": True,
+                "record_main_attribute": "InformationRegisterRecordManager",
+                "record_saved_data": True,
             }
 
 

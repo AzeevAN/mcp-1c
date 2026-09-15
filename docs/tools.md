@@ -28,9 +28,9 @@ role-операции появляются, только когда хотя б�
 | `find_roles_for_access` | `full_name`, `operations`, `config`, `child_path`, `include_conditional`, `cursor`, `limit` | роли-кандидаты, доказанные пробелы и точное сопоставление операций правам платформы |
 | `get_role_access` | `role`, `config`, `full_name`, `detail`, `cursor`, `limit`, `restriction_ref`, `restriction_cursor`, `max_chars` | компактные объекты роли, явная дочерняя/аудитная детализация либо окно RLS/шаблона |
 | `get_managed_form_rules` | `topic` (`overview` по умолчанию) | условно: один компактный раздел доказанных правил первой вертикали Forms |
-| `compile_managed_form` | `specification` | условно: каноническая спецификация и тексты `Form.xml`/`Form/Module.bsl`, без записи |
-| `decompile_managed_form` | `form_xml`, `form_name`, `module_bsl` (необязательно) | условно: каноническая спецификация либо честный inventory непокрытых XML-путей |
-| `check_managed_form` | `form_xml`, `form_name`, `module_bsl` (необязательно) | условно: раздельные статические результаты XML, структуры, ссылок и BSL |
+| `compile_managed_form` | `specification` Forms schema v2 с обязательным `context` | условно: каноническая спецификация и тексты `Form.xml`/`Form/Module.bsl`, без записи |
+| `decompile_managed_form` | `form_xml`, `form_name`, `context`, `module_bsl` (необязательно) | условно: каноническая schema v2 либо честный inventory непокрытых XML-путей |
+| `check_managed_form` | `form_xml`, `form_name`, `context`, `module_bsl` (необязательно) | условно: раздельные статические результаты XML, структуры, ссылок и BSL |
 
 Если загружено больше одной конфигурации, `config` обязателен там, где он
 предусмотрен. Сервер не выбирает первую конфигурацию молча.
@@ -69,6 +69,18 @@ active и desired и показывает pending полного restart; `PUT` 
 3. `check_managed_form(...)` для статической проверки результата;
 4. `decompile_managed_form(...)`, когда нужно разобрать существующий XML или
    подтвердить канонический roundtrip.
+
+Forms принимает только `schema_version=2`. В `context.owner` передаётся
+каноническая ссылка `ВидМетаданных.Имя`, а `context.role` задаёт роль формы;
+decompile/check требуют тот же context и не угадывают его из XML. Поддержаны
+semantic-вертикали `Справочник.* + object` с совпадающим главным
+`metadata_object` и `РегистрСведений.* + record` с главным реквизитом `Запись`,
+`main=true`, `saved_data=true` и путями `Запись.<Реквизит>`. Для формы записи
+compiler использует `InformationRegisterRecordManager`; пустую корневую
+`AutoCommandBar` стандартными командами заполняет платформа. `custom` оставляет
+semantic-проверку `not_checked` и не означает поддержку конкретного вида
+объекта. Основная выгрузка конфигурации `schema v1` этим изменением не
+затрагивается.
 
 Все четыре операции чистые: не читают Registry/`data/`, не записывают файлы и
 не импортируют форму в 1С. `passed` в статическом checker не доказывает нативный

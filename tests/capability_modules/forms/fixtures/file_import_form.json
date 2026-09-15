@@ -1,5 +1,9 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
+  "context": {
+    "owner": "Обработка.ТестоваяОбработка",
+    "role": "custom"
+  },
   "form_name": "ФормаИмпортаФайла",
   "format_version": "2.16",
   "title": {

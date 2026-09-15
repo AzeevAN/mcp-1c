@@ -1064,6 +1064,8 @@ def _emit_attribute(
         _append(lines, 3, "</Columns>")
     if attribute.main:
         _append(lines, 3, "<MainAttribute>true</MainAttribute>")
+    if attribute.saved_data:
+        _append(lines, 3, "<SavedData>true</SavedData>")
     if isinstance(attribute.type, DynamicListType):
         _emit_dynamic_list_settings(lines, attribute.type, 3)
     _append(lines, 2, "</Attribute>")
@@ -1220,6 +1222,29 @@ def compile_managed_form(specification: object) -> FormsResult:
             "supported_specification_compiled",
             "$",
             "Спецификация входит в закрытое подмножество первой вертикали.",
+        ),
+        Diagnostic(
+            "structural",
+            "passed" if form.context.role in {"object", "record"} else "not_checked",
+            (
+                "catalog_object_context_verified"
+                if form.context.role == "object"
+                else (
+                    "information_register_record_context_verified"
+                    if form.context.role == "record"
+                    else "custom_form_role_semantics_not_checked"
+                )
+            ),
+            "$.context",
+            (
+                "Контекст формы объекта справочника согласован с главным реквизитом."
+                if form.context.role == "object"
+                else (
+                    "Контекст формы записи регистра сведений согласован с главным реквизитом."
+                    if form.context.role == "record"
+                    else "Для role=custom проверен общий layout без owner-specific обещаний."
+                )
+            ),
         ),
         Diagnostic(
             "configuration_links",

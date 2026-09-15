@@ -33,7 +33,9 @@ def _codes(error: FormsContractError) -> set[tuple[str, str]]:
 def test_минимальная_спецификация_разбирается_в_типизированную_модель():
     form = parse_managed_form_spec(_payload())
 
-    assert form.schema_version == 1
+    assert form.schema_version == 2
+    assert form.context.owner == "Обработка.ТестоваяОбработка"
+    assert form.context.role == "custom"
     assert form.form_name == "ФормаПараметров"
     assert form.format_version == "2.16"
     assert [item.name for item in form.attributes] == [
@@ -724,12 +726,32 @@ def test_typed_dict_даёт_mcp_точную_вложенную_json_schema():
     schema = server._tool_manager.list_tools()[0].parameters
 
     definition = schema["$defs"]["ManagedFormSpec"]
-    assert definition["properties"]["schema_version"]["const"] == 1
+    assert definition["properties"]["schema_version"]["const"] == 2
+    assert definition["properties"]["context"] == {
+        "$ref": "#/$defs/FormContextSpec"
+    }
+    context = schema["$defs"]["FormContextSpec"]
+    assert set(context["required"]) == {"owner", "role"}
+    assert context["properties"]["owner"]["type"] == "string"
+    assert context["properties"]["owner"]["pattern"] == (
+        r"^[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*\."
+        r"[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*$"
+    )
+    assert context["properties"]["role"]["enum"] == [
+        "object",
+        "list",
+        "choice",
+        "record",
+        "record_set",
+        "common",
+        "custom",
+    ]
     assert definition["properties"]["format_version"]["type"] == "string"
     assert definition["properties"]["format_version"]["pattern"] == r"^\d+\.\d+$"
     assert definition["properties"]["platform_version"]["type"] == "string"
     assert set(definition["required"]) == {
         "schema_version",
+        "context",
         "form_name",
         "format_version",
         "title",

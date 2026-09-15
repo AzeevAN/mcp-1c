@@ -548,6 +548,7 @@ def check_managed_form(
     form_xml: object,
     *,
     form_name: object,
+    context: object,
     module_bsl: object | None = None,
     platform_version: object | None = None,
 ) -> FormsResult:
@@ -556,6 +557,7 @@ def check_managed_form(
     decompiled = decompile_managed_form(
         form_xml,
         form_name=form_name,
+        context=context,
         module_bsl=module_bsl,
         platform_version=platform_version,
     )

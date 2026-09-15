@@ -220,12 +220,35 @@ def validate_registry_links(
         )
 
     diagnostics: list[Diagnostic] = []
+    context = specification.get("context")
+    record_owner: FormsObjectSnapshot | None = None
+    if isinstance(context, Mapping):
+        owner = context.get("owner")
+        if isinstance(owner, str):
+            owner_snapshot = snapshot.object(owner)
+            if context.get("role") == "record":
+                record_owner = owner_snapshot
+            if owner_snapshot is None:
+                diagnostics.append(
+                    Diagnostic(
+                        "configuration_links",
+                        "warning",
+                        "metadata_owner_not_found",
+                        "$.context.owner",
+                        "Владелец формы не найден в выбранном Registry snapshot; "
+                        "контекст размещения не подтверждён.",
+                    )
+                )
     object_attributes: dict[str, FormsObjectSnapshot | None] = {}
+    attribute_names: set[str] = set()
     attributes = specification.get("attributes")
     if isinstance(attributes, list):
         for index, raw in enumerate(attributes):
             if not isinstance(raw, Mapping):
                 continue
+            raw_name = raw.get("name")
+            if isinstance(raw_name, str):
+                attribute_names.add(raw_name)
             value_type = raw.get("type")
             if not isinstance(value_type, Mapping):
                 continue
@@ -280,7 +303,24 @@ def validate_registry_links(
 
     for element, path in _walk_elements(specification.get("elements")):
         data_path = element.get("data_path")
-        if not isinstance(data_path, str) or "." not in data_path:
+        if not isinstance(data_path, str):
+            continue
+        if "." not in data_path:
+            if (
+                record_owner is not None
+                and data_path in attribute_names
+                and data_path in record_owner.fields
+            ):
+                diagnostics.append(
+                    Diagnostic(
+                        "configuration_links",
+                        "failed",
+                        "record_field_requires_main_attribute_path",
+                        f"{path}.data_path",
+                        "Поле записи регистра должно иметь путь Запись.<Реквизит>, "
+                        "а не отдельный плоский реквизит формы.",
+                    )
+                )
             continue
         root, field_path = data_path.split(".", 1)
         if root not in object_attributes:

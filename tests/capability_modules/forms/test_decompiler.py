@@ -8,7 +8,9 @@ from xml.etree import ElementTree as ET
 import pytest
 
 from mcp1c.capability_modules.forms.compiler import compile_managed_form
-from mcp1c.capability_modules.forms.decompiler import decompile_managed_form
+from mcp1c.capability_modules.forms.decompiler import (
+    decompile_managed_form as _decompile_managed_form,
+)
 
 
 FIXTURES = Path(__file__).with_name("fixtures")
@@ -26,6 +28,22 @@ def _rich_payload() -> dict:
 
 def _xml() -> str:
     return (FIXTURES / "minimal_form.xml").read_text(encoding="utf-8")
+
+
+def _context() -> dict[str, str]:
+    return {"owner": "Обработка.ТестоваяОбработка", "role": "custom"}
+
+
+def decompile_managed_form(
+    form_xml: object, *, form_name: object, **kwargs: object
+):
+    """Вызов v2-only API с generic контекстом fixture-формы."""
+    return _decompile_managed_form(
+        form_xml,
+        form_name=form_name,
+        context=_context(),
+        **kwargs,
+    )
 
 
 def _diagnostics(result, code: str) -> list:
@@ -356,6 +374,99 @@ def test_объектный_главный_реквизит_даёт_lossless_ro
 
     assert result.status == "decompiled"
     assert result.specification == compiled.specification
+
+
+def test_форма_записи_регистра_даёт_lossless_roundtrip():
+    payload = _payload()
+    context = {
+        "owner": "РегистрСведений.ТестовыйРегистр",
+        "role": "record",
+    }
+    payload["context"] = context
+    payload["form_name"] = "ФормаЗаписи"
+    payload["attributes"] = [
+        {
+            "name": "Запись",
+            "type": {
+                "kind": "metadata_object",
+                "object": "РегистрСведений.ТестовыйРегистр",
+            },
+            "main": True,
+            "saved_data": True,
+        }
+    ]
+    payload["elements"][0]["children"] = [
+        {
+            "kind": "input_field",
+            "name": "Значение",
+            "data_path": "Запись.Значение",
+        }
+    ]
+    payload["commands"] = []
+    compiled = compile_managed_form(payload)
+
+    result = _decompile_managed_form(
+        compiled.artifacts[0].content,
+        form_name=payload["form_name"],
+        context=context,
+        module_bsl=compiled.artifacts[1].content,
+    )
+
+    assert result.status == "decompiled"
+    assert result.coverage.structural == "passed"
+    assert result.specification == compiled.specification
+    assert any(
+        item.code == "information_register_record_context_verified"
+        and item.status == "passed"
+        for item in result.diagnostics
+    )
+
+
+def test_декомпилятор_не_даёт_record_green_без_saved_data():
+    payload = _payload()
+    context = {
+        "owner": "РегистрСведений.ТестовыйРегистр",
+        "role": "record",
+    }
+    payload["context"] = context
+    payload["attributes"] = [
+        {
+            "name": "Запись",
+            "type": {
+                "kind": "metadata_object",
+                "object": "РегистрСведений.ТестовыйРегистр",
+            },
+            "main": True,
+            "saved_data": True,
+        }
+    ]
+    payload["elements"][0]["children"] = [
+        {
+            "kind": "input_field",
+            "name": "Значение",
+            "data_path": "Запись.Значение",
+        }
+    ]
+    payload["commands"] = []
+    compiled = compile_managed_form(payload)
+    xml = compiled.artifacts[0].content.replace(
+        "\t\t\t<SavedData>true</SavedData>\r\n", ""
+    )
+
+    result = _decompile_managed_form(
+        xml,
+        form_name=payload["form_name"],
+        context=context,
+        module_bsl=compiled.artifacts[1].content,
+    )
+
+    assert result.status == "rejected"
+    assert result.coverage.structural == "failed"
+    assert any(
+        item.code == "incompatible_owner_context"
+        and item.path == "$.attributes[0].saved_data"
+        for item in result.diagnostics
+    )
 
 
 def test_объектные_события_и_команда_записи_дают_lossless_roundtrip():

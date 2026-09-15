@@ -21,7 +21,7 @@ from .limits import (
     FormsToolResultError,
     FormsToolTimeoutError,
 )
-from .models import FormsContractError, ManagedFormSpec
+from .models import FormContextSpec, FormsContractError, ManagedFormSpec
 from .registry_context import (
     RegistryResolver,
     apply_registry_resolution,
@@ -113,6 +113,7 @@ async def _compile_tool(
 async def _decompile_tool(
     form_xml: str,
     form_name: str,
+    context: FormContextSpec,
     module_bsl: str | None = None,
     platform_version: str | None = None,
     configuration: str | None = None,
@@ -131,6 +132,7 @@ async def _decompile_tool(
         result = decompile_managed_form(
             form_xml,
             form_name=form_name,
+            context=context,
             module_bsl=module_bsl,
             platform_version=effective_platform,
         )
@@ -143,6 +145,7 @@ async def _decompile_tool(
 async def _check_tool(
     form_xml: str,
     form_name: str,
+    context: FormContextSpec,
     module_bsl: str | None = None,
     platform_version: str | None = None,
     configuration: str | None = None,
@@ -161,6 +164,7 @@ async def _check_tool(
         result = check_managed_form(
             form_xml,
             form_name=form_name,
+            context=context,
             module_bsl=module_bsl,
             platform_version=effective_platform,
         )
@@ -186,6 +190,7 @@ def load(registry: RegistryResolver | None = None) -> tuple[CapabilityTool, ...]
     async def decompile_tool(
         form_xml: str,
         form_name: str,
+        context: FormContextSpec,
         module_bsl: str | None = None,
         platform_version: str | None = None,
         configuration: str | None = None,
@@ -193,6 +198,7 @@ def load(registry: RegistryResolver | None = None) -> tuple[CapabilityTool, ...]
         return await _decompile_tool(
             form_xml,
             form_name,
+            context,
             module_bsl,
             platform_version,
             configuration,
@@ -202,6 +208,7 @@ def load(registry: RegistryResolver | None = None) -> tuple[CapabilityTool, ...]
     async def check_tool(
         form_xml: str,
         form_name: str,
+        context: FormContextSpec,
         module_bsl: str | None = None,
         platform_version: str | None = None,
         configuration: str | None = None,
@@ -209,6 +216,7 @@ def load(registry: RegistryResolver | None = None) -> tuple[CapabilityTool, ...]
         return await _check_tool(
             form_xml,
             form_name,
+            context,
             module_bsl,
             platform_version,
             configuration,
@@ -232,7 +240,10 @@ def load(registry: RegistryResolver | None = None) -> tuple[CapabilityTool, ...]
             description=(
                 "Детерминированно собрать Form.xml указанной числовой версии и "
                 "Form/Module.bsl из "
-                "строгой спецификации поддержанного слоя. Если версия целевой "
+                "строгой Forms schema v2 с обязательными owner и role. "
+                "Первая semantic-вертикаль — форма объекта Справочник.*; "
+                "role=custom сохраняет только общий layout без обещания "
+                "owner-specific поддержки. Если версия целевой "
                 "платформы известна без Registry, агент задаёт platform_version; "
                 "неизвестная или отсутствующая версия даёт предупреждение вместо отказа. "
                 "Параметр configuration выбирает read-only Registry-контекст; "
@@ -251,6 +262,8 @@ def load(registry: RegistryResolver | None = None) -> tuple[CapabilityTool, ...]
                 "Разобрать Form.xml в каноническую спецификацию либо честный "
                 "inventory со всеми непокрытыми XML-путями. Не используйте "
                 "inventory для обратной компиляции: allow_lossy отсутствует. "
+                "Обязательный context задаёт внешнего владельца и роль: "
+                "из XML они не угадываются. "
                 "Передайте platform_version для выбора того же профиля событий; "
                 "неподтверждённая версия будет явно помечена предупреждением. "
                 "configuration включает read-only проверку объектных ссылок. "
@@ -262,7 +275,8 @@ def load(registry: RegistryResolver | None = None) -> tuple[CapabilityTool, ...]
             function=check_tool,
             description=(
                 "Раздельно проверить XML, структуру, локальные ссылки и, если "
-                "передан, Module.bsl. Статический результат не доказывает "
+                "передан, Module.bsl. Обязательный context задаёт владельца "
+                "и роль формы. Статический результат не доказывает "
                 "импорт или внешний вид формы в 1С; configuration включает "
                 "read-only проверку Registry, а platform_version "
                 "выбирает версионный профиль событий и сообщает степень "

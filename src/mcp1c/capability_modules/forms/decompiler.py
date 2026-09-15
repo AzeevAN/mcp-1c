@@ -87,6 +87,7 @@ _SINGLETON_TAGS = frozenset(
         "lang",
         "content",
         "MainAttribute",
+        "SavedData",
     }
 )
 
@@ -1623,6 +1624,8 @@ def _attributes(inventory: _Inventory, root: ET.Element) -> list[dict[str, objec
             item["type"] = value_type
         if _optional_true(inventory, node, "MainAttribute"):
             item["main"] = True
+        if _optional_true(inventory, node, "SavedData"):
+            item["saved_data"] = True
         result.append(item)
     return result
 
@@ -1840,6 +1843,7 @@ def decompile_managed_form(
     form_xml: object,
     *,
     form_name: object,
+    context: object,
     module_bsl: object | None = None,
     platform_version: object | None = None,
 ) -> FormsResult:
@@ -1971,8 +1975,9 @@ def decompile_managed_form(
             )
 
     specification: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "form_name": form_name,
+        "context": context,
         "format_version": version,
         **(
             {"platform_version": safe_platform_version}
@@ -2078,6 +2083,37 @@ def decompile_managed_form(
                 "supported_form_decompiled",
                 "/Form",
                 "Form.xml полностью входит в подмножество первой вертикали.",
+            )
+        )
+        normalized_context = specification.get("context")
+        context_role = (
+            normalized_context.get("role")
+            if isinstance(normalized_context, dict)
+            else None
+        )
+        diagnostics.append(
+            Diagnostic(
+                "structural",
+                "passed" if context_role in {"object", "record"} else "not_checked",
+                (
+                    "catalog_object_context_verified"
+                    if context_role == "object"
+                    else (
+                        "information_register_record_context_verified"
+                        if context_role == "record"
+                        else "custom_form_role_semantics_not_checked"
+                    )
+                ),
+                "$.context",
+                (
+                    "Контекст формы объекта справочника согласован с главным реквизитом."
+                    if context_role == "object"
+                    else (
+                        "Контекст формы записи регистра сведений согласован с главным реквизитом."
+                        if context_role == "record"
+                        else "Для role=custom проверен общий layout без owner-specific обещаний."
+                    )
+                ),
             )
         )
     diagnostics.extend(_not_checked_diagnostics(safe_module))

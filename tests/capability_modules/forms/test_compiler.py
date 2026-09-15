@@ -681,6 +681,7 @@ def test_result_не_объявляет_статический_green_натив�
         if item["status"] == "not_checked"
     }
     assert not_checked == {
+        "structural",
         "configuration_links",
         "platform_import",
         "runtime_visual",

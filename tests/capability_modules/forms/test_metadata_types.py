@@ -29,6 +29,10 @@ from mcp1c.capability_modules.forms.metadata_types import (
             "ПланВидовРасчета.Начисления",
             "cfg:ChartOfCalculationTypesObject.Начисления",
         ),
+        (
+            "РегистрСведений.Курсы",
+            "cfg:InformationRegisterRecordManager.Курсы",
+        ),
     ],
 )
 def test_объектный_тип_имеет_взаимно_однозначное_отображение(

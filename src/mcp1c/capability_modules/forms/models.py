@@ -31,9 +31,41 @@ from .version_catalog import (
 )
 
 
-SPECIFICATION_VERSION = 1
+SPECIFICATION_VERSION = 2
 DEFAULT_FORMAT_VERSION = CONFIRMED_FORM_FORMATS[0]
 _IDENTIFIER = re.compile(r"[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*\Z")
+_FORM_OWNER_REFERENCE = re.compile(
+    r"[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*\."
+    r"[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*\Z"
+)
+FORM_OWNER_PATTERN = (
+    r"^[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*\."
+    r"[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*$"
+)
+_FORM_OWNER_KINDS = frozenset(
+    {
+        "БизнесПроцесс",
+        "Документ",
+        "ЖурналДокументов",
+        "Задача",
+        "Обработка",
+        "ОбщаяФорма",
+        "Отчет",
+        "Перечисление",
+        "ПланВидовХарактеристик",
+        "ПланВидовРасчета",
+        "ПланОбмена",
+        "ПланСчетов",
+        "РегистрБухгалтерии",
+        "РегистрНакопления",
+        "РегистрРасчета",
+        "РегистрСведений",
+        "Справочник",
+    }
+)
+FormRole: TypeAlias = Literal[
+    "object", "list", "choice", "record", "record_set", "common", "custom"
+]
 _DATA_PATH = re.compile(
     r"[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*"
     r"(?:\.[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*)*\Z"
@@ -235,6 +267,7 @@ class FormAttributeSpec(TypedDict):
     type: AttributeTypeSpec
     title: NotRequired[LocalizedTextSpec]
     main: NotRequired[bool]
+    saved_data: NotRequired[bool]
 
 
 class ChoiceListItemSpec(TypedDict):
@@ -509,11 +542,19 @@ class FormEventSpec(TypedDict):
     handler: str
 
 
+class FormContextSpec(TypedDict):
+    __pydantic_config__ = {"extra": "forbid"}
+
+    owner: Annotated[str, _JsonSchemaPattern(FORM_OWNER_PATTERN)]
+    role: FormRole
+
+
 class ManagedFormSpec(TypedDict):
     __pydantic_config__ = {"extra": "forbid"}
 
-    schema_version: Literal[1]
+    schema_version: Literal[2]
     form_name: str
+    context: FormContextSpec
     format_version: Annotated[str, _JsonSchemaPattern(FORM_FORMAT_PATTERN)]
     platform_version: NotRequired[str]
     title: LocalizedTextSpec
@@ -608,6 +649,7 @@ class FormAttribute:
     type: AttributeType
     title: LocalizedText | None = None
     main: bool = False
+    saved_data: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -812,9 +854,16 @@ class FormEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class FormContext:
+    owner: str
+    role: FormRole
+
+
+@dataclass(frozen=True, slots=True)
 class ManagedForm:
-    schema_version: Literal[1]
+    schema_version: Literal[2]
     form_name: str
+    context: FormContext
     format_version: str
     platform_version: str | None
     event_profile: str
@@ -944,6 +993,57 @@ def _localized(reader: _Reader, value: object, path: str) -> LocalizedText:
     item = reader.object(value, path)
     reader.exact_keys(item, path, required=frozenset({"ru"}))
     return LocalizedText(reader.string(item.get("ru"), f"{path}.ru"))
+
+
+def _form_context(reader: _Reader, value: object, path: str) -> FormContext:
+    item = reader.object(value, path)
+    reader.exact_keys(
+        item,
+        path,
+        required=frozenset({"owner", "role"}),
+    )
+    owner = reader.string(item.get("owner"), f"{path}.owner")
+    owner_kind = owner.split(".", 1)[0]
+    if (
+        _FORM_OWNER_REFERENCE.fullmatch(owner) is None
+        or owner_kind not in _FORM_OWNER_KINDS
+    ):
+        reader.issue(
+            "invalid_form_owner",
+            f"{path}.owner",
+            "Ожидалась каноническая ссылка владельца вида ВидМетаданных.Имя.",
+        )
+    raw_role = item.get("role")
+    roles = {
+        "object",
+        "list",
+        "choice",
+        "record",
+        "record_set",
+        "common",
+        "custom",
+    }
+    if raw_role not in roles:
+        reader.issue(
+            "unsupported_form_role",
+            f"{path}.role",
+            "Роль формы не входит в закрытый каталог Forms schema v2.",
+        )
+        role: FormRole = "custom"
+    else:
+        role = raw_role
+    supported_owner_role = (
+        owner_kind == "Справочник" and role == "object"
+    ) or (
+        owner_kind == "РегистрСведений" and role == "record"
+    )
+    if role != "custom" and not supported_owner_role:
+        reader.issue(
+            "unsupported_owner_role",
+            path,
+            "Сочетание владельца и роли ещё не принято отдельной вертикалью.",
+        )
+    return FormContext(owner, role)
 
 
 def _optional_localized(
@@ -1174,7 +1274,7 @@ def _attribute(reader: _Reader, value: object, path: str) -> FormAttribute:
         item,
         path,
         required=frozenset({"name", "type"}),
-        optional=frozenset({"title", "main"}),
+        optional=frozenset({"title", "main", "saved_data"}),
     )
     return FormAttribute(
         name=reader.string(item.get("name"), f"{path}.name", identifier=True),
@@ -1183,6 +1283,11 @@ def _attribute(reader: _Reader, value: object, path: str) -> FormAttribute:
         main=(
             reader.boolean(item["main"], f"{path}.main")
             if "main" in item
+            else False
+        ),
+        saved_data=(
+            reader.boolean(item["saved_data"], f"{path}.saved_data")
+            if "saved_data" in item
             else False
         ),
     )
@@ -2113,6 +2218,7 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
             {
                 "schema_version",
                 "form_name",
+                "context",
                 "format_version",
                 "title",
                 "attributes",
@@ -2130,8 +2236,9 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
         reader.issue(
             "unsupported_schema_version",
             "$.schema_version",
-            "Поддерживается только schema_version=1.",
+            "Поддерживается только Forms schema_version=2.",
         )
+    context = _form_context(reader, root.get("context"), "$.context")
     raw_format_version = root.get("format_version")
     if not isinstance(raw_format_version, str) or (
         normalized_form_format(raw_format_version) is None
@@ -2241,6 +2348,57 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
         ),
         None,
     )
+    if context.role == "object" and context.owner.startswith("Справочник."):
+        main_object_indexes = [
+            index
+            for index, attribute in enumerate(attributes)
+            if attribute.main and isinstance(attribute.type, MetadataObjectType)
+        ]
+        if not main_object_indexes:
+            reader.issue(
+                "incompatible_owner_context",
+                "$.attributes",
+                "Форма объекта справочника требует главный metadata_object.",
+            )
+        elif main_object is not None and main_object.object != context.owner:
+            reader.issue(
+                "incompatible_owner_context",
+                f"$.attributes[{main_object_indexes[0]}].type.object",
+                "Главный metadata_object должен совпадать с владельцем формы.",
+            )
+    if context.role == "record" and context.owner.startswith("РегистрСведений."):
+        main_record_indexes = [
+            index
+            for index, attribute in enumerate(attributes)
+            if attribute.main and isinstance(attribute.type, MetadataObjectType)
+        ]
+        if not main_record_indexes:
+            reader.issue(
+                "incompatible_owner_context",
+                "$.attributes",
+                "Форма записи регистра сведений требует главный metadata_object.",
+            )
+        else:
+            main_index = main_record_indexes[0]
+            main_record = attributes[main_index]
+            if main_record.name != "Запись":
+                reader.issue(
+                    "incompatible_owner_context",
+                    f"$.attributes[{main_index}].name",
+                    "Главный реквизит формы записи регистра должен называться Запись.",
+                )
+            if main_record.type.object != context.owner:
+                reader.issue(
+                    "incompatible_owner_context",
+                    f"$.attributes[{main_index}].type.object",
+                    "Главный metadata_object должен совпадать с владельцем формы.",
+                )
+            if not main_record.saved_data:
+                reader.issue(
+                    "incompatible_owner_context",
+                    f"$.attributes[{main_index}].saved_data",
+                    "Главный реквизит формы записи регистра требует saved_data=true.",
+                )
     document_main_object = (
         main_object is not None
         and main_object.object.split(".", 1)[0] == "Документ"
@@ -2486,8 +2644,9 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
         )
     )
     return ManagedForm(
-        1,
+        2,
         form_name,
+        context,
         format_version,
         platform_version,
         event_profile,
@@ -2798,10 +2957,16 @@ def managed_form_to_spec(form: ManagedForm) -> dict[str, object]:
             item["title"] = _localized_spec(attribute.title)
         if attribute.main:
             item["main"] = True
+        if attribute.saved_data:
+            item["saved_data"] = True
         attributes.append(item)
     return {
         "schema_version": form.schema_version,
         "form_name": form.form_name,
+        "context": {
+            "owner": form.context.owner,
+            "role": form.context.role,
+        },
         "format_version": form.format_version,
         **(
             {"platform_version": form.platform_version}
@@ -2864,8 +3029,12 @@ __all__ = [
     "FormAttributeSpec",
     "FormCommand",
     "FormCommandSpec",
+    "FormContext",
+    "FormContextSpec",
     "FormEvent",
     "FormEventSpec",
+    "FormRole",
+    "FORM_OWNER_PATTERN",
     "FormsContractError",
     "GroupChild",
     "GroupChildSpec",

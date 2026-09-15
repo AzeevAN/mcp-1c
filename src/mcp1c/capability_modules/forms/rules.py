@@ -141,11 +141,38 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
     ),
     "specification": (
         FormRule(
-            "schema_version_one",
+            "schema_version_two_with_context",
             "required",
-            "Спецификация использует schema_version=1.",
+            (
+                "Спецификация использует Forms schema_version=2 и обязательный "
+                "context с каноническим владельцем и ролью формы; версия 1 "
+                "не поддерживается."
+            ),
             "contract_decision",
-            1,
+            2,
+        ),
+        FormRule(
+            "catalog_object_owner_context",
+            "supported",
+            (
+                "Первая owner-aware вертикаль поддерживает role=object для "
+                "owner вида Справочник.* при совпадающем главном metadata_object."
+            ),
+            "corpus_invariant",
+            {
+                "owner": "Справочник.<Имя>",
+                "role": "object",
+                "main_attribute": "metadata_object",
+            },
+        ),
+        FormRule(
+            "custom_role_has_no_semantic_claim",
+            "boundary",
+            (
+                "role=custom сохраняет общий layout, но не подтверждает "
+                "owner-specific семантику или нативную поддержку."
+            ),
+            "contract_decision",
         ),
         FormRule(
             "unknown_keys_rejected",
@@ -374,6 +401,28 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
             "required",
             "Главных реквизитов может быть ноль или один, но не два.",
             "corpus_invariant",
+        ),
+        FormRule(
+            "information_register_record_main_attribute",
+            "required",
+            (
+                "Форма записи регистра сведений использует единственный главный "
+                "реквизит Запись типа InformationRegisterRecordManager с "
+                "MainAttribute и SavedData; поля записи имеют путь "
+                "Запись.<Реквизит>. Пустую верхнюю AutoCommandBar заполняет "
+                "стандартными командами сама платформа."
+            ),
+            "observed_pattern",
+            {
+                "owner_kind": "РегистрСведений",
+                "role": "record",
+                "name": "Запись",
+                "xml_type": "InformationRegisterRecordManager",
+                "main": True,
+                "saved_data": True,
+                "data_path": "Запись.<Реквизит>",
+                "auto_command_bar": "empty_platform_autofill",
+            },
         ),
         FormRule(
             "simple_data_path",
@@ -755,8 +804,12 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
 
 def _minimal_example() -> dict[str, object]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "form_name": "ФормаПараметров",
+        "context": {
+            "owner": "Обработка.ТестоваяОбработка",
+            "role": "custom",
+        },
         "format_version": "2.16",
         "title": {"ru": "Параметры"},
         "attributes": [

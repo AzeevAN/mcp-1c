@@ -18,6 +18,9 @@ _REGISTRY_KIND_TO_XML_OBJECT = {
     "ПланВидовХарактеристик": "ChartOfCharacteristicTypesObject",
     "ПланСчетов": "ChartOfAccountsObject",
     "ПланВидовРасчета": "ChartOfCalculationTypesObject",
+    # Форма записи регистра работает с менеджером одной записи. Для Forms это
+    # главный объектный реквизит, хотя XML-имя отличается от обычного Object.
+    "РегистрСведений": "InformationRegisterRecordManager",
 }
 METADATA_OBJECT_KINDS = tuple(_REGISTRY_KIND_TO_XML_OBJECT)
 _XML_OBJECT_TO_REGISTRY_KIND = {

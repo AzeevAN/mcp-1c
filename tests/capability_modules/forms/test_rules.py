@@ -63,6 +63,7 @@ def test_терминология_покрывает_все_поддержанн
         "command_owner",
         "command_source",
         "commands",
+        "context",
         "context_menu",
         "data_path",
         "default",
@@ -96,7 +97,9 @@ def test_терминология_покрывает_все_поддержанн
         "radio_button_type",
         "read_only",
         "representation",
+        "role",
         "ru",
+        "saved_data",
         "schema_version",
         "show_title",
         "title",
@@ -148,6 +151,46 @@ def test_поиск_контекстного_меню_одинаково_раб�
     assert [entry["canonical"] for entry in payload["matches"]] == [
         "context_menu"
     ]
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["роль формы", "form role", "FormRole", "form_role"],
+)
+def test_поиск_роли_формы_работает_во_всех_публичных_вариантах(query):
+    payload = get_managed_form_rules("terminology", query=query)
+
+    assert [entry["canonical"] for entry in payload["matches"]] == ["role"]
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["сохраняемые данные", "saved data", "SavedData", "saved_data"],
+)
+def test_поиск_saved_data_работает_во_всех_публичных_вариантах(query):
+    payload = get_managed_form_rules("terminology", query=query)
+
+    assert [entry["canonical"] for entry in payload["matches"]] == [
+        "saved_data"
+    ]
+
+
+def test_правила_описывают_native_форму_записи_регистра():
+    payload = get_managed_form_rules("attributes")
+    by_code = {rule["code"]: rule for rule in payload["rules"]}
+
+    rule = by_code["information_register_record_main_attribute"]
+    assert rule["status"] == "required"
+    assert rule["value"] == {
+        "owner_kind": "РегистрСведений",
+        "role": "record",
+        "name": "Запись",
+        "xml_type": "InformationRegisterRecordManager",
+        "main": True,
+        "saved_data": True,
+        "data_path": "Запись.<Реквизит>",
+        "auto_command_bar": "empty_platform_autofill",
+    }
 
 
 @pytest.mark.parametrize(
@@ -234,6 +277,7 @@ def test_новый_element_или_property_нельзя_добавить_без
         models.CommandSourceSpec,
         models.AutoCommandBarSpec,
         models.ContextMenuSpec,
+        models.FormContextSpec,
         models.FormEventSpec,
     }
     implemented_elements = {
@@ -440,6 +484,7 @@ def test_rules_публикуют_форматы_registry_ссылок_без_д
                 "ПланВидовХарактеристик",
                 "ПланСчетов",
                 "ПланВидовРасчета",
+                "РегистрСведений",
             ],
         },
         "metadata_reference": {

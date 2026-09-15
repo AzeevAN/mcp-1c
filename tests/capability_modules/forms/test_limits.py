@@ -54,6 +54,7 @@ async def test_checker_отклоняет_слишком_большой_module_b
         await forms_tools._check_tool(
             "<Form/>",
             "Форма",
+            {"owner": "Обработка.ТестоваяОбработка", "role": "custom"},
             "я" * forms_tools.MAX_MODULE_BYTES,
         )
 

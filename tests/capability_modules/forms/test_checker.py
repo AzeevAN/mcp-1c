@@ -4,7 +4,9 @@ import json
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from mcp1c.capability_modules.forms.checker import check_managed_form
+from mcp1c.capability_modules.forms.checker import (
+    check_managed_form as _check_managed_form,
+)
 from mcp1c.capability_modules.forms.compiler import compile_managed_form
 
 
@@ -20,6 +22,22 @@ def _payload() -> dict:
 def _rich_payload() -> dict:
     return json.loads(
         (FIXTURES / "file_import_form.json").read_text(encoding="utf-8")
+    )
+
+
+def _context() -> dict[str, str]:
+    return {"owner": "Обработка.ТестоваяОбработка", "role": "custom"}
+
+
+def check_managed_form(
+    form_xml: object, *, form_name: object, **kwargs: object
+):
+    """Вызов v2-only API с generic контекстом fixture-формы."""
+    return _check_managed_form(
+        form_xml,
+        form_name=form_name,
+        context=_context(),
+        **kwargs,
     )
 
 
@@ -53,6 +71,31 @@ def test_compiler_pair_проходит_заявленные_статическ�
         "runtime_visual": "not_checked",
     }
     assert "valid" not in result.to_dict()
+
+
+def test_checker_не_даёт_record_green_с_несовместимым_owner_context():
+    xml, module = _pair()
+
+    result = _check_managed_form(
+        xml,
+        form_name="ФормаПараметров",
+        context={
+            "owner": "РегистрСведений.ТестовыйРегистр",
+            "role": "record",
+        },
+        module_bsl=module,
+    )
+
+    assert result.coverage.structural == "failed"
+    assert any(
+        item.code == "incompatible_owner_context"
+        for item in result.diagnostics
+    )
+    assert not any(
+        item.code == "information_register_record_context_verified"
+        and item.status == "passed"
+        for item in result.diagnostics
+    )
 
 
 def test_checker_принимает_сгенерированную_пару_формата_2_20():

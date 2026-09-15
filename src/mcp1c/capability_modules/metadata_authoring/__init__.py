@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .checker import check_metadata_artifacts
+from .compiler import MetadataAuthoringContractError, compile_metadata_object
 from .rules import RULE_TOPICS, get_metadata_authoring_rules
 
 
@@ -16,7 +17,9 @@ def load(registry=None):
 
 __all__ = [
     "RULE_TOPICS",
+    "MetadataAuthoringContractError",
     "check_metadata_artifacts",
+    "compile_metadata_object",
     "get_metadata_authoring_rules",
     "load",
 ]

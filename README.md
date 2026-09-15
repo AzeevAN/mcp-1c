@@ -30,13 +30,13 @@
 | Роли | объявленные права из native generation; без готового слоя две role-ручки отсутствуют |
 | Дашборд | современная SPA включена по умолчанию; светлая и тёмная темы; ссылка на GitHub; `on` либо `off` |
 | Авторизация Docker | два разных обязательных токена: `API_TOKEN` на чтение, `ADMIN_TOKEN` на запись |
-| Тесты | `.venv/bin/python -m pytest`, 2861 |
+| Тесты | `.venv/bin/python -m pytest`, 2867 |
 
 Воспроизводимый прогон:
 
 ```bash
 .venv/bin/pip install --require-hashes -r requirements-dev-lock.txt
-.venv/bin/python -m pytest          # 2861 тест (прогон 2026-09-15)
+.venv/bin/python -m pytest          # 2867 тестов (прогон 2026-09-15)
 ```
 
 ## Модульная система возможностей
@@ -81,8 +81,9 @@ BSL-контракт различает данные формы и прикла�
 регистрацию в `Configuration.xml`, descriptor, generated types, UUID,
 QName/namespace и owner-relative descriptor формы. Первая вертикаль
 поддерживает только `Справочник.*` и `РегистрСведений.*`; она публикует
-`get_metadata_authoring_rules` и `check_metadata_artifacts`. Оба инструмента
-read-only: compiler, запись файлов и импорт в 1С пока не входят в контракт.
+`get_metadata_authoring_rules`, `compile_metadata_object` и
+`check_metadata_artifacts`. Все операции pure: запись файлов, перезапись
+`Configuration.xml` и импорт в 1С не входят в контракт.
 Статический GREEN означает полноту поддержанного комплекта, но не заменяет
 нативную загрузку в Конфигураторе.
 
@@ -1604,8 +1605,9 @@ bootstrap/fallback. Как только файл существует, он вс
 Registry, не читает его внутренние файлы, `data/` или локальные проекты и
 ничего не записывает.
 
-Имя `metadata_authoring` добавляет ровно 2 инструмента в порядке
-`get_metadata_authoring_rules`, `check_metadata_artifacts`. Они работают только
+Имя `metadata_authoring` добавляет ровно 3 инструмента в порядке
+`get_metadata_authoring_rules`, `compile_metadata_object`,
+`check_metadata_artifacts`. Они работают только
 с переданными текстами и не получают Registry: модуль не читает локальную
 конфигурацию, не пишет файлы и не импортирует их в 1С.
 
@@ -1884,6 +1886,13 @@ PYTHONPATH=src .venv/bin/python tests/accept_forms_stdio.py
 Metadata Authoring вызывается отдельно от Forms. Сначала
 `get_metadata_authoring_rules(topic="overview")`, затем тематические
 `catalog`, `information_register`, `artifacts` и `diagnostics`.
+`compile_metadata_object(specification)` принимает строгую schema v1,
+детерминированно создаёт descriptor объекта и форм, а также упаковывает
+переданные `Form.xml`/`Module.bsl`. Один явный `identity` UUID становится UUID
+объекта; остальные идентификаторы стабильно выводятся из него. Compiler не
+перезаписывает `Configuration.xml`, а возвращает отдельные `parent`, `element`,
+`value` и готовый XML-фрагмент регистрации, который агент применяет к своей
+копии.
 `check_metadata_artifacts(object_ref, artifacts)` принимает каноническую ссылку
 `Справочник.<Имя>` либо `РегистрСведений.<Имя>` и словарь
 `owner-relative путь → текст`. Checker проверяет `Configuration.xml`, descriptor
@@ -1893,8 +1902,8 @@ Metadata Authoring вызывается отдельно от Forms. Снача�
 coverage и diagnostics. Инструмент не читает локальный проект, не записывает
 файлы и не импортирует конфигурацию.
 
-Замер 2026-09-15 по канонической дельте `tools/list` дал 1 707 байт и
-приблизительно **313 токенов** для двух схем Metadata Authoring при
+Замер 2026-09-15 по канонической дельте `tools/list` дал 2 618 байт и
+приблизительно **475 токенов** для трёх схем Metadata Authoring при
 `tiktoken 0.11.0 / o200k_base`. Воспроизвести и проверить manifest:
 
 ```bash

@@ -21,6 +21,27 @@ def test_rules_публикуют_границу_и_два_поддержанн�
     ]
     assert overview["writes_files"] is False
     assert overview["imports_configuration"] is False
+    assert overview["compiler_specification"]["required"] == [
+        "schema_version",
+        "object_ref",
+        "identity",
+        "synonym",
+        "attributes",
+        "forms",
+    ]
+    assert set(overview["compiler_specification"]["field_type_kinds"]) == {
+        "string",
+        "boolean",
+        "number",
+        "date",
+        "catalog_ref",
+    }
+    assert overview["compiler_specification"]["field_types"]["number"] == {
+        "required": ["kind", "digits", "fraction_digits"],
+        "digits": "1..32",
+        "fraction_digits": "0..digits",
+        "allowed_sign": "Any",
+    }
 
 
 def test_rules_фиксируют_полные_generated_types():
@@ -49,6 +70,8 @@ def test_rules_фиксируют_полные_generated_types():
         "RecordManager",
     ]
     assert register["periodicity_property"] == "InformationRegisterPeriodicity"
+    assert register["compiler_periodicity"] == "nonperiodical"
+    assert register["generated_periodicity"] == "Nonperiodical"
     assert register["descriptor_element"] == "md:InformationRegister"
     assert register["form_declaration_value"] == "<Форма>"
     assert register["default_form_value"] == (

@@ -23,12 +23,12 @@ def test_manifest_совпадает_с_tools_list_и_публичной_док�
     assert payload["schema_version"] == 1
     assert payload["name"] == "metadata_authoring"
     budget = payload["context_budget"]
-    assert budget["tool_count"] == 2
-    assert budget["approx_tokens"] == 313
-    assert budget["canonical_bytes"] == 1707
+    assert budget["tool_count"] == 3
+    assert budget["approx_tokens"] == 475
+    assert budget["canonical_bytes"] == 2618
     assert budget["canonical_sha256"] == hashlib.sha256(canonical).hexdigest()
-    assert len(tools) == 2
-    assert len(canonical) == 1707
+    assert len(tools) == 3
+    assert len(canonical) == 2618
     for text in (readme, dashboard):
-        assert "313" in text
+        assert "475" in text
         assert "o200k_base" in text

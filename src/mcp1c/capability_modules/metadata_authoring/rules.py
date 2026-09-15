@@ -39,8 +39,73 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
         "supported_metadata_kinds": ["Справочник", "РегистрСведений"],
         "recommended_call_order": [
             "get_metadata_authoring_rules",
+            "compile_metadata_object",
             "check_metadata_artifacts",
         ],
+        "compiler_schema_version": 1,
+        "compiler_is_pure": True,
+        "compiler_identity": (
+            "identity становится UUID объекта; остальные UUID детерминированно "
+            "выводятся из identity"
+        ),
+        "compiler_specification": {
+            "required": [
+                "schema_version",
+                "object_ref",
+                "identity",
+                "synonym",
+                "attributes",
+                "forms",
+            ],
+            "schema_version": 1,
+            "identity": "UUID",
+            "field": ["name", "synonym", "type"],
+            "field_type_kinds": [
+                "string",
+                "boolean",
+                "number",
+                "date",
+                "catalog_ref",
+            ],
+            "field_types": {
+                "string": {
+                    "required": ["kind", "length"],
+                    "length": "1..1024",
+                    "allowed_length": "Variable",
+                },
+                "boolean": {"required": ["kind"]},
+                "number": {
+                    "required": ["kind", "digits", "fraction_digits"],
+                    "digits": "1..32",
+                    "fraction_digits": "0..digits",
+                    "allowed_sign": "Any",
+                },
+                "date": {
+                    "required": ["kind", "fractions"],
+                    "fractions": ["date", "time", "date_time"],
+                },
+                "catalog_ref": {
+                    "required": ["kind", "object"],
+                    "object": "Справочник.<Имя>",
+                },
+            },
+            "form": [
+                "name",
+                "synonym",
+                "default",
+                "form_xml",
+                "module_bsl",
+            ],
+            "information_register_additional_required": [
+                "periodicity",
+                "dimensions",
+                "resources",
+            ],
+        },
+        "configuration_boundary": (
+            "компилятор возвращает инструкцию регистрации, но не создаёт и не "
+            "перезаписывает Configuration.xml"
+        ),
         "writes_files": False,
         "imports_configuration": False,
         "native_import_proven": False,
@@ -79,6 +144,8 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
         "generated_types": _REGISTER_TYPES,
         "generated_type_name_pattern": "InformationRegister<Category>.<Имя>",
         "periodicity_property": "InformationRegisterPeriodicity",
+        "compiler_periodicity": "nonperiodical",
+        "generated_periodicity": "Nonperiodical",
         "unsupported_periodicity_alias": "Periodicity",
         "default_form_property": "DefaultRecordForm",
     },

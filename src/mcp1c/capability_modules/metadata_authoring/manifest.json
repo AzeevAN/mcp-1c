@@ -5,12 +5,12 @@
   "description": "Правила и статическая проверка комплектов артефактов метаданных.",
   "context_budget": {
     "status": "measured",
-    "tool_count": 2,
-    "approx_tokens": 313,
+    "tool_count": 3,
+    "approx_tokens": 475,
     "tokenizer": "tiktoken 0.11.0 / o200k_base",
     "method": "canonical tools/list delta: UTF-8 JSON, sort_keys, compact separators",
-    "canonical_bytes": 1707,
-    "canonical_sha256": "830e6cc266339dc5f730e829ee7963bdb2f86faa1befb1f9924cdaf32af1d0b1",
+    "canonical_bytes": 2618,
+    "canonical_sha256": "93e3f59b9807404b835f052d2f853102e6a1c8c88fae81fa5a0746e61ae98439",
     "payload": "tools_list_delta",
     "measured_at": "2026-09-15"
   }

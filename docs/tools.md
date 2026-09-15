@@ -32,6 +32,7 @@ role-операции появляются, только когда хотя б�
 | `decompile_managed_form` | `form_xml`, `form_name`, `context`, `module_bsl` (необязательно) | условно: каноническая schema v2 либо честный inventory непокрытых XML-путей |
 | `check_managed_form` | `form_xml`, `form_name`, `context`, `module_bsl` (необязательно) | условно: раздельные статические результаты XML, структуры, ссылок и BSL |
 | `get_metadata_authoring_rules` | `topic` (`overview` по умолчанию) | условно: правила полного комплекта справочника или регистра сведений |
+| `compile_metadata_object` | `specification` Metadata Authoring schema v1 | условно: descriptor, формы и инструкция регистрации без записи `Configuration.xml` |
 | `check_metadata_artifacts` | `object_ref`, `artifacts` | условно: read-only проверка регистрации, descriptor, generated types, UUID, QName и объявленных форм |
 
 Если загружено больше одной конфигурации, `config` обязателен там, где он
@@ -62,15 +63,19 @@ active и desired и показывает pending полного restart; `PUT` 
 подтверждает полный restart. Startup-изменение не создаёт
 `tools/list_changed`.
 
-Capability `metadata_authoring` по тем же startup-правилам добавляет ровно 2
+Capability `metadata_authoring` по тем же startup-правилам добавляет ровно 3
 инструмента. Сначала агент вызывает
 `get_metadata_authoring_rules(topic="overview")`, затем тематические разделы и
-`check_metadata_artifacts(object_ref, artifacts)`. Первая вертикаль принимает
+`compile_metadata_object(specification)`. Compiler schema v1 детерминированно
+выводит внутренние UUID из явного `identity`, возвращает текстовые артефакты и
+готовый XML-фрагмент регистрации, но не создаёт и не перезаписывает
+`Configuration.xml`. После применения фрагмента к копии агент вызывает
+`check_metadata_artifacts(object_ref, artifacts)`. Вертикаль принимает
 только `Справочник.<Имя>` и `РегистрСведений.<Имя>` и проверяет переданный
 текстовый bundle; локальные файлы, Registry и 1С не читаются и не изменяются.
-Compiler, write/apply и импорт конфигурации не входят в контракт. Статический
-GREEN не доказывает нативную загрузку. Две схемы занимают 1 707 байт, примерно
-313 токенов `tiktoken 0.11.0 / o200k_base` по замеру 2026-09-15:
+Write/apply и импорт конфигурации не входят в контракт. Статический GREEN не
+доказывает нативную загрузку. Три схемы занимают 2 618 байт, примерно 475
+токенов `tiktoken 0.11.0 / o200k_base` по замеру 2026-09-15:
 
 ```bash
 uv run --no-project --python .venv/bin/python --with tiktoken==0.11.0 \

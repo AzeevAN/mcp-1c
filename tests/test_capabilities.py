@@ -55,6 +55,7 @@ FORMS_TOOLS = [
 ]
 METADATA_AUTHORING_TOOLS = [
     "get_metadata_authoring_rules",
+    "compile_metadata_object",
     "check_metadata_artifacts",
 ]
 
@@ -589,7 +590,7 @@ async def test_forms_инструмент_работает_через_полну
     assert json.loads(result.content[0].text)["topic"] == "overview"
 
 
-def test_enabled_добавляет_ровно_два_metadata_authoring_инструмента(tmp_path):
+def test_enabled_добавляет_ровно_три_metadata_authoring_инструмента(tmp_path):
     server = _server(tmp_path, enabled_capabilities=("metadata_authoring",))
 
     tools = asyncio.run(server.list_tools())
@@ -598,8 +599,9 @@ def test_enabled_добавляет_ровно_два_metadata_authoring_инс�
         *CORE_TOOLS,
         *METADATA_AUTHORING_TOOLS,
     ]
-    assert "topic" in tools[-2].input_schema["properties"]
-    assert "ничего не пишет" in (tools[-2].description or "")
+    assert "topic" in tools[-3].input_schema["properties"]
+    assert "ничего не пишет" in (tools[-3].description or "")
+    assert tools[-2].input_schema["required"] == ["specification"]
     assert set(tools[-1].input_schema["required"]) == {
         "object_ref",
         "artifacts",
@@ -624,6 +626,9 @@ async def test_metadata_authoring_rules_работают_через_mcp_сесс
                     result = await session.call_tool(
                         "get_metadata_authoring_rules", {}
                     )
+                    rejected = await session.call_tool(
+                        "compile_metadata_object", {"specification": {}}
+                    )
                     checked = await session.call_tool(
                         "check_metadata_artifacts",
                         {
@@ -640,6 +645,8 @@ async def test_metadata_authoring_rules_работают_через_mcp_сесс
     ]
     assert result.is_error is False
     assert json.loads(result.content[0].text)["status"] == "supported"
+    assert rejected.is_error is False
+    assert json.loads(rejected.content[0].text)["status"] == "rejected"
     assert checked.is_error is False
     checked_payload = json.loads(checked.content[0].text)
     assert checked_payload["status"] == "failed"

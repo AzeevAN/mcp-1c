@@ -52,7 +52,8 @@ _COMMON = frozenset({"schema_version", "object_ref", "identity", "synonym", "att
 _KINDS = {
     "Справочник": _Kind(
         "Справочник", "Catalog", "Catalogs", (("attributes", "Attribute"),),
-        ("Object", "Ref", "Selection", "List", "Manager"), _COMMON,
+        ("Object", "Ref", "Selection", "List", "Manager"),
+        _COMMON | {"code_length", "description_length"},
     ),
     "РегистрСведений": _Kind(
         "РегистрСведений", "InformationRegister", "InformationRegisters",
@@ -183,6 +184,40 @@ def _validate_form(raw: object, path: str) -> dict[str, object]:
         _fail("invalid_form_xml", f"{path}.form_xml", f"Form.xml не разобран: {error}.")
     if root.tag != f"{{{LOGFORM}}}Form":
         _fail("invalid_form_xml_root", f"{path}.form_xml", "Корень должен быть logform Form.")
+    attributes_node = root.find(f"{{{LOGFORM}}}Attributes")
+    form_attributes = [] if attributes_node is None else list(attributes_node)
+    main_names = {
+        str(attribute.get("name"))
+        for attribute in form_attributes
+        if attribute.findtext(f"{{{LOGFORM}}}MainAttribute") == "true"
+    }
+    data_paths = {
+        node.text
+        for node in root.iter(f"{{{LOGFORM}}}DataPath")
+        if node.text
+    }
+    for main_name in main_names:
+        used_object_fields = {
+            data_path.split(".", 2)[1].casefold()
+            for data_path in data_paths
+            if data_path.startswith(main_name + ".")
+        }
+        shadowed = next(
+            (
+                str(attribute.get("name"))
+                for attribute in form_attributes
+                if str(attribute.get("name")) != main_name
+                and str(attribute.get("name")).casefold() in used_object_fields
+            ),
+            None,
+        )
+        if shadowed is not None:
+            _fail(
+                "shadowed_main_object_attribute",
+                f"{path}.form_xml",
+                f"Реквизит `{shadowed}` уже доступен как `{main_name}.{shadowed}` "
+                "и не должен дублироваться собственным реквизитом формы.",
+            )
     if not isinstance(value["module_bsl"], str):
         _fail("invalid_type", f"{path}.module_bsl", "module_bsl должен быть строкой.")
     _artifact_size(form_xml, f"{path}.form_xml")
@@ -201,7 +236,25 @@ def _validate(specification: object) -> tuple[dict[str, object], _Kind, str, uui
         _fail("unsupported_object_ref", "$specification.object_ref", "Поддержаны Справочник.<Имя> и РегистрСведений.<Имя>.")
     kind = _KINDS[match.group(1)]
     _strict(value, kind.allowed, "$specification")
-    if kind.ru == "РегистрСведений":
+    if kind.ru == "Справочник":
+        _required(
+            value,
+            ("code_length", "description_length"),
+            "$specification",
+        )
+        for field, maximum in (("code_length", 50), ("description_length", 150)):
+            length = value[field]
+            if (
+                not isinstance(length, int)
+                or isinstance(length, bool)
+                or not 0 <= length <= maximum
+            ):
+                _fail(
+                    "invalid_value",
+                    f"$specification.{field}",
+                    f"{field} должен быть целым числом от 0 до {maximum}.",
+                )
+    else:
         _required(
             value,
             ("periodicity", "dimensions", "resources"),
@@ -284,19 +337,33 @@ def _generated_types(kind: _Kind, name: str, identity: uuid.UUID) -> str:
     )
 
 
-def _catalog_properties(name: str, synonym: object, default: str) -> str:
+def _catalog_properties(
+    name: str,
+    synonym: object,
+    default: str,
+    code_length: int,
+    description_length: int,
+) -> str:
+    input_fields = ""
+    if description_length > 0:
+        input_fields += (
+            f"<xr:Field>Catalog.{escape(name)}.StandardAttribute.Description</xr:Field>"
+        )
+    if code_length > 0:
+        input_fields += (
+            f"<xr:Field>Catalog.{escape(name)}.StandardAttribute.Code</xr:Field>"
+        )
+    default_presentation = "AsDescription" if description_length > 0 else "AsCode"
     return (
         f"<Name>{escape(name)}</Name>{_synonym(synonym)}<Comment/>"
         "<Hierarchical>false</Hierarchical><HierarchyType>HierarchyFoldersAndItems</HierarchyType>"
         "<LimitLevelCount>false</LimitLevelCount><LevelCount>2</LevelCount><FoldersOnTop>true</FoldersOnTop>"
         "<UseStandardCommands>true</UseStandardCommands><Owners/><SubordinationUse>ToItems</SubordinationUse>"
-        "<CodeLength>9</CodeLength><DescriptionLength>150</DescriptionLength><CodeType>String</CodeType>"
+        f"<CodeLength>{code_length}</CodeLength><DescriptionLength>{description_length}</DescriptionLength><CodeType>String</CodeType>"
         "<CodeAllowedLength>Variable</CodeAllowedLength><CodeSeries>WholeCatalog</CodeSeries><CheckUnique>true</CheckUnique>"
-        "<Autonumbering>true</Autonumbering><DefaultPresentation>AsDescription</DefaultPresentation><Characteristics/>"
+        f"<Autonumbering>true</Autonumbering><DefaultPresentation>{default_presentation}</DefaultPresentation><Characteristics/>"
         "<PredefinedDataUpdate>Auto</PredefinedDataUpdate><EditType>InDialog</EditType><QuickChoice>false</QuickChoice>"
-        "<ChoiceMode>BothWays</ChoiceMode><InputByString>"
-        f"<xr:Field>Catalog.{escape(name)}.StandardAttribute.Description</xr:Field>"
-        f"<xr:Field>Catalog.{escape(name)}.StandardAttribute.Code</xr:Field></InputByString>"
+        f"<ChoiceMode>BothWays</ChoiceMode><InputByString>{input_fields}</InputByString>"
         "<SearchStringModeOnInputByString>Begin</SearchStringModeOnInputByString>"
         "<FullTextSearchOnInputByString>DontUse</FullTextSearchOnInputByString>"
         "<ChoiceDataGetModeOnInputByString>Directly</ChoiceDataGetModeOnInputByString>"
@@ -339,7 +406,13 @@ def compile_metadata_object(specification: dict[str, object]) -> dict[str, objec
     default_form = next((str(form["name"]) for form in forms if form["default"]), "")
     default_value = f"{kind.xml}.{name}.Form.{default_form}" if default_form else ""
     properties = (
-        _catalog_properties(name, value["synonym"], default_value)
+        _catalog_properties(
+            name,
+            value["synonym"],
+            default_value,
+            int(value["code_length"]),
+            int(value["description_length"]),
+        )
         if kind.ru == "Справочник"
         else _register_properties(name, value["synonym"], default_value)
     )
@@ -383,6 +456,38 @@ def compile_metadata_object(specification: dict[str, object]) -> dict[str, objec
             "$specification",
             f"Суммарный размер артефактов превышает {MAX_TOTAL_BYTES} байт.",
         )
+    diagnostics: list[dict[str, str]] = []
+    if kind.ru == "Справочник":
+        recommended_paths = []
+        if int(value["description_length"]) > 0:
+            recommended_paths.append("Объект.Наименование")
+        if int(value["code_length"]) > 0:
+            recommended_paths.append("Объект.Код")
+        default_form_spec = next(
+            (form for form in forms if bool(form["default"])),
+            None,
+        )
+        if default_form_spec is not None:
+            root = ET.fromstring(str(default_form_spec["form_xml"]))
+            actual_paths = {
+                node.text
+                for node in root.iter(f"{{{LOGFORM}}}DataPath")
+                if node.text
+            }
+            for recommended_path in recommended_paths:
+                if recommended_path not in actual_paths:
+                    diagnostics.append(
+                        {
+                            "status": "warning",
+                            "code": "recommended_standard_field_missing",
+                            "path": "$specification.forms",
+                            "message": (
+                                f"Обычная основная форма справочника обычно выводит "
+                                f"`{recommended_path}`. Если поле скрыто намеренно, "
+                                "предупреждение можно принять."
+                            ),
+                        }
+                    )
     return {
         "status": "compiled",
         "schema_version": 1,
@@ -395,7 +500,7 @@ def compile_metadata_object(specification: dict[str, object]) -> dict[str, objec
             "value": name,
             "xml": f"<{kind.xml}>{escape(name)}</{kind.xml}>",
         },
-        "diagnostics": [],
+        "diagnostics": diagnostics,
         "instructions": [
             "Добавьте configuration_registration в существующий Configuration.xml, не перезаписывая его.",
             "Перед нативным импортом передайте полный комплект в check_metadata_artifacts.",

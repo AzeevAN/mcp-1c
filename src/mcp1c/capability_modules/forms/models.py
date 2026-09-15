@@ -2403,6 +2403,38 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
         main_object is not None
         and main_object.object.split(".", 1)[0] == "Документ"
     )
+    main_attribute = next(
+        (
+            attribute
+            for attribute in attributes
+            if attribute.main and isinstance(attribute.type, MetadataObjectType)
+        ),
+        None,
+    )
+    if main_attribute is not None:
+        nested_main_fields = {
+            data_path.split(".", 2)[1].casefold()
+            for element, _path, _table in walked
+            if isinstance(
+                element,
+                (InputField, CheckBoxField, LabelField, RadioButtonField, Table),
+            )
+            for data_path in (element.data_path,)
+            if data_path.startswith(main_attribute.name + ".")
+            and len(data_path.split(".", 2)) >= 2
+        }
+        for index, attribute in enumerate(attributes):
+            if (
+                attribute is not main_attribute
+                and attribute.name.casefold() in nested_main_fields
+            ):
+                reader.issue(
+                    "shadowed_main_object_attribute",
+                    f"$.attributes[{index}].name",
+                    "Реквизит объекта или записи задаётся только через DataPath "
+                    f"`{main_attribute.name}.{attribute.name}`; одноимённый "
+                    "реквизит формы создаёт неиспользуемую тень.",
+                )
     for element, path, table in walked:
         command_source = (
             element.command_source

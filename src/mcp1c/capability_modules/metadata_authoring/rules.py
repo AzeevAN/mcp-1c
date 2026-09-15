@@ -96,6 +96,22 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
                 "form_xml",
                 "module_bsl",
             ],
+            "catalog_additional_required": [
+                "code_length",
+                "description_length",
+            ],
+            "catalog_standard_fields": {
+                "code_length": "0..50; Код существует только при значении > 0",
+                "description_length": (
+                    "0..150; Наименование существует только при значении > 0"
+                ),
+                "default_object_form": (
+                    "Для обычной основной формы рекомендуется вывести "
+                    "Объект.Наименование при description_length > 0 и Объект.Код "
+                    "при code_length > 0. Это DataPath главного реквизита Объект, "
+                    "а не отдельные реквизиты формы."
+                ),
+            },
             "information_register_additional_required": [
                 "periodicity",
                 "dimensions",
@@ -124,6 +140,15 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
         "generated_types": _CATALOG_TYPES,
         "generated_type_name_pattern": "Catalog<Category>.<Имя>",
         "default_form_property": "DefaultObjectForm",
+        "standard_form_fields": {
+            "Объект.Наименование": "рекомендуется при description_length > 0",
+            "Объект.Код": "рекомендуется при code_length > 0",
+        },
+        "standard_command_bar": (
+            "Не объявляйте пользовательские команды Записать/ЗаписатьИЗакрыть: "
+            "оставьте commands пустым и используйте корневую AutoCommandBar, "
+            "которую платформа заполняет по главному реквизиту Объект."
+        ),
     },
     "information_register": {
         "object_ref": "РегистрСведений.<Имя>",
@@ -148,6 +173,11 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
         "generated_periodicity": "Nonperiodical",
         "unsupported_periodicity_alias": "Periodicity",
         "default_form_property": "DefaultRecordForm",
+        "standard_command_bar": (
+            "Не объявляйте пользовательские команды Записать/ЗаписатьИЗакрыть: "
+            "оставьте commands пустым и используйте корневую AutoCommandBar, "
+            "которую платформа заполняет по главному реквизиту Запись."
+        ),
     },
     "artifacts": {
         "paths_are_owner_relative": True,

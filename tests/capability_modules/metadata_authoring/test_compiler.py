@@ -35,6 +35,8 @@ def _catalog_specification() -> dict[str, object]:
         "object_ref": "Справочник.ТестовыйСправочник",
         "identity": "40000000-0000-0000-0000-000000000001",
         "synonym": "Тестовый справочник",
+        "code_length": 9,
+        "description_length": 150,
         "attributes": [
             {
                 "name": "Артикул",
@@ -119,6 +121,11 @@ def test_catalog_compiler_детерминированно_создаёт_пол
         "Catalogs/ТестовыйСправочник.xml"
     ]
     descriptor = first["artifacts"][0]["content"]
+    assert "<CodeLength>9</CodeLength>" in descriptor
+    assert "<DescriptionLength>150</DescriptionLength>" in descriptor
+    assert descriptor.index("StandardAttribute.Description") < descriptor.index(
+        "StandardAttribute.Code"
+    )
     for category in ("Object", "Ref", "Selection", "List", "Manager"):
         assert f'category="{category}"' in descriptor
         assert f'name="Catalog{category}.ТестовыйСправочник"' in descriptor
@@ -126,6 +133,126 @@ def test_catalog_compiler_детерминированно_создаёт_пол
         "Справочник.ТестовыйСправочник", _with_configuration(first)
     )
     assert checked["status"] == "passed"
+
+
+@pytest.mark.parametrize(
+    ("code_length", "description_length", "presentation", "input_fields"),
+    [
+        (0, 150, "AsDescription", ["Description"]),
+        (9, 0, "AsCode", ["Code"]),
+        (0, 0, "AsCode", []),
+        (9, 150, "AsDescription", ["Description", "Code"]),
+    ],
+)
+def test_catalog_compiler_учитывает_доступность_стандартных_реквизитов(
+    code_length,
+    description_length,
+    presentation,
+    input_fields,
+):
+    specification = _catalog_specification()
+    specification["code_length"] = code_length
+    specification["description_length"] = description_length
+
+    result = compile_metadata_object(specification)
+
+    descriptor = result["artifacts"][0]["content"]
+    assert f"<CodeLength>{code_length}</CodeLength>" in descriptor
+    assert f"<DescriptionLength>{description_length}</DescriptionLength>" in descriptor
+    assert f"<DefaultPresentation>{presentation}</DefaultPresentation>" in descriptor
+    input_by_string = descriptor.split("<InputByString>", 1)[1].split(
+        "</InputByString>", 1
+    )[0]
+    assert [
+        field
+        for field in ("Description", "Code")
+        if f"StandardAttribute.{field}" in input_by_string
+    ] == input_fields
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("code_length", -1),
+        ("code_length", 51),
+        ("description_length", -1),
+        ("description_length", 151),
+        ("description_length", True),
+    ],
+)
+def test_catalog_compiler_отклоняет_некорректные_длины(field, value):
+    specification = _catalog_specification()
+    specification[field] = value
+
+    with pytest.raises(MetadataAuthoringContractError) as caught:
+        compile_metadata_object(specification)
+
+    assert ("invalid_value", f"$specification.{field}") in {
+        (item["code"], item["path"]) for item in caught.value.diagnostics
+    }
+
+
+@pytest.mark.parametrize("field", ["code_length", "description_length"])
+def test_catalog_compiler_требует_явную_длину_стандартного_поля(field):
+    specification = _catalog_specification()
+    specification.pop(field)
+
+    with pytest.raises(MetadataAuthoringContractError) as caught:
+        compile_metadata_object(specification)
+
+    assert ("missing_required_field", f"$specification.{field}") in {
+        (item["code"], item["path"]) for item in caught.value.diagnostics
+    }
+
+
+def test_catalog_compiler_предупреждает_о_стандартных_полях_основной_формы():
+    specification = _catalog_specification()
+    specification["forms"] = [
+        {
+            "name": "ФормаЭлемента",
+            "synonym": "Форма элемента",
+            "default": True,
+            "form_xml": '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform"/>',
+            "module_bsl": "",
+        }
+    ]
+
+    result = compile_metadata_object(specification)
+
+    assert [item["code"] for item in result["diagnostics"]] == [
+        "recommended_standard_field_missing",
+        "recommended_standard_field_missing",
+    ]
+    assert "Объект.Наименование" in result["diagnostics"][0]["message"]
+    assert "Объект.Код" in result["diagnostics"][1]["message"]
+
+
+def test_catalog_compiler_отклоняет_тени_реквизитов_объекта_в_form_xml():
+    specification = _catalog_specification()
+    specification["forms"] = [
+        {
+            "name": "ФормаЭлемента",
+            "synonym": "Форма элемента",
+            "default": True,
+            "form_xml": (
+                '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform">'
+                "<ChildItems><InputField><DataPath>Объект.Артикул</DataPath>"
+                "</InputField></ChildItems><Attributes>"
+                '<Attribute name="Объект"><MainAttribute>true'
+                "</MainAttribute></Attribute>"
+                '<Attribute name="Артикул"/>'
+                "</Attributes></Form>"
+            ),
+            "module_bsl": "",
+        }
+    ]
+
+    with pytest.raises(MetadataAuthoringContractError) as caught:
+        compile_metadata_object(specification)
+
+    assert "shadowed_main_object_attribute" in {
+        item["code"] for item in caught.value.diagnostics
+    }
 
 
 def test_register_compiler_упаковывает_forms_и_проходит_checker():

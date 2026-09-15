@@ -112,6 +112,51 @@ def test_catalog_object_context_сохраняется_в_модели():
     assert form.context.role == "object"
 
 
+def test_catalog_object_context_отклоняет_теневой_реквизит_формы():
+    payload = _catalog_object_payload()
+    attributes = payload["attributes"]
+    assert isinstance(attributes, list)
+    attributes.append(
+        {
+            "name": "Артикул",
+            "type": {"kind": "string", "length": 50},
+        }
+    )
+    elements = payload["elements"]
+    assert isinstance(elements, list)
+    group = elements[0]
+    assert isinstance(group, dict)
+    children = group["children"]
+    assert isinstance(children, list)
+    field = children[0]
+    assert isinstance(field, dict)
+    field["data_path"] = "Объект.Артикул"
+
+    with pytest.raises(FormsContractError) as caught:
+        parse_managed_form_spec(payload)
+
+    assert (
+        "shadowed_main_object_attribute",
+        "$.attributes[3].name",
+    ) in _codes(caught.value)
+
+
+def test_catalog_object_context_разрешает_собственный_реквизит_формы():
+    payload = _catalog_object_payload()
+    attributes = payload["attributes"]
+    assert isinstance(attributes, list)
+    attributes.append(
+        {
+            "name": "СтатусПроверки",
+            "type": {"kind": "string", "length": 100},
+        }
+    )
+
+    form = parse_managed_form_spec(payload)
+
+    assert form.attributes[-1].name == "СтатусПроверки"
+
+
 def test_catalog_object_context_сверяется_с_главным_реквизитом():
     payload = _catalog_object_payload()
     attributes = payload["attributes"]
@@ -168,6 +213,26 @@ def test_information_register_record_context_сохраняется_в_моде�
     assert form.attributes[0].name == "Запись"
     assert form.attributes[0].main is True
     assert form.attributes[0].saved_data is True
+
+
+def test_information_register_record_context_отклоняет_теневой_реквизит():
+    payload = _information_register_record_payload()
+    attributes = payload["attributes"]
+    assert isinstance(attributes, list)
+    attributes.append(
+        {
+            "name": "Значение",
+            "type": {"kind": "number", "digits": 10, "fraction_digits": 2},
+        }
+    )
+
+    with pytest.raises(FormsContractError) as caught:
+        parse_managed_form_spec(payload)
+
+    assert (
+        "shadowed_main_object_attribute",
+        "$.attributes[1].name",
+    ) in _codes(caught.value)
 
 
 def test_information_register_record_context_требует_главную_запись():

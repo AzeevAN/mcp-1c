@@ -78,13 +78,16 @@ def _names(server) -> list[str]:
     return [tool.name for tool in asyncio.run(server.list_tools())]
 
 
-def test_default_не_меняет_публичный_каталог_и_не_импортирует_forms(tmp_path):
+def test_default_не_публикует_и_не_импортирует_capability_модули(tmp_path):
     sys.modules.pop("mcp1c.capability_modules.forms", None)
+    sys.modules.pop("mcp1c.capability_modules.metadata_authoring", None)
 
     server = _server(tmp_path)
 
     assert _names(server) == CORE_TOOLS
     assert "mcp1c.capability_modules.forms" not in sys.modules
+    assert "mcp1c.capability_modules.metadata_authoring" not in sys.modules
+    assert set(METADATA_AUTHORING_TOOLS).isdisjoint(_names(server))
 
 
 def test_off_не_импортирует_и_не_инициализирует_синтетический_модуль(

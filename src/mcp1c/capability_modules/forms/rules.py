@@ -571,6 +571,25 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
             },
         ),
         FormRule(
+            "managed_form_bsl_data_access",
+            "required",
+            (
+                "Обращайтесь к данным управляемой формы через Объект, Запись "
+                "или собственный реквизит формы; прикладное значение "
+                "преобразуйте только в серверном контексте формы."
+            ),
+            "corpus_invariant",
+            {
+                "object_form_data": "Объект.<Реквизит>",
+                "record_form_data": "Запись.<Реквизит>",
+                "form_attribute": "<РеквизитФормы>",
+                "application_object": 'РеквизитФормыВЗначение("Объект")',
+                "record_manager": 'РеквизитФормыВЗначение("Запись")',
+                "conversion_context": "&НаСервере",
+                "client_form_data_access": "supported",
+            },
+        ),
+        FormRule(
             "no_synchronous_file_exists_on_client",
             "required",
             (

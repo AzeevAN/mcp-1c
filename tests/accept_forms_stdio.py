@@ -289,6 +289,9 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
             rules = await session.call_tool(
                 "get_managed_form_rules", {"topic": "overview"}
             )
+            bsl_rules = await session.call_tool(
+                "get_managed_form_rules", {"topic": "commands_events"}
+            )
             terminology_results = []
             for query in ("панель команд", "command bar", "CommandBar"):
                 result = await session.call_tool(
@@ -355,6 +358,21 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                     "form_name": "ФормаПараметров",
                     "context": _context(),
                     "module_bsl": module_bsl,
+                },
+            )
+            invalid_conversion = await session.call_tool(
+                "check_managed_form",
+                {
+                    "form_xml": form_xml,
+                    "form_name": "ФормаПараметров",
+                    "context": _context(),
+                    "module_bsl": module_bsl
+                    + (
+                        "\r\n&НаКлиенте\r\n"
+                        "Процедура ОшибочноеПреобразование()\r\n\r\n"
+                        '\tЗначение = РеквизитФормыВЗначение("Объект");'
+                        "\r\n\r\nКонецПроцедуры\r\n"
+                    ),
                 },
             )
             decompiled = await session.call_tool(
@@ -448,6 +466,17 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                 item["code"]
                 for item in json.loads(record_rules.content[0].text)["rules"]
             }
+            bsl_rule_codes = {
+                item["code"]
+                for item in json.loads(bsl_rules.content[0].text)["rules"]
+            }
+            invalid_conversion_payload = json.loads(
+                invalid_conversion.content[0].text
+            )
+            invalid_conversion_codes = {
+                item["code"]
+                for item in invalid_conversion_payload["diagnostics"]
+            }
             if (
                 record_checked.is_error
                 or record_decompiled.is_error
@@ -464,6 +493,13 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                 or "<MainAttribute>true</MainAttribute>" not in record_xml
                 or "<SavedData>true</SavedData>" not in record_xml
                 or "<DataPath>Запись.Значение</DataPath>" not in record_xml
+                or "Данные записи: Запись.<Реквизит>" not in record_module
+                or 'РеквизитФормыВЗначение("Запись")' not in record_module
+                or "managed_form_bsl_data_access" not in bsl_rule_codes
+                or invalid_conversion_payload["coverage"]["bsl_static"]
+                != "failed"
+                or "form_value_conversion_requires_server_context"
+                not in invalid_conversion_codes
             ):
                 raise RuntimeError(
                     "Внешняя MCP-последовательность role=record дала неверный результат."
@@ -573,6 +609,8 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                 "record_roundtrip": True,
                 "record_main_attribute": "InformationRegisterRecordManager",
                 "record_saved_data": True,
+                "bsl_data_access_rule": True,
+                "client_form_value_conversion_rejected": True,
             }
 
 

@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
+import pytest
+
 from mcp1c.capability_modules.forms.checker import (
     check_managed_form as _check_managed_form,
 )
@@ -538,6 +540,85 @@ def test_проверка_существования_файла_на_серве�
 
     assert result.coverage.bsl_static == "passed"
     assert not _diagnostics(result, "forbidden_synchronous_client_call")
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        'РеквизитФормыВЗначение("Объект")',
+        'ЗначениеВРеквизитФормы(Значение, "Объект")',
+    ],
+)
+def test_преобразование_реквизита_формы_на_клиенте_даёт_bsl_failed(call):
+    xml, module = _pair()
+    module += f"""
+
+&НаКлиенте
+Процедура ОшибочноеПреобразование()
+
+	Результат = {call};
+
+КонецПроцедуры
+"""
+
+    result = check_managed_form(
+        xml,
+        form_name="ФормаПараметров",
+        module_bsl=module,
+    )
+
+    assert result.coverage.bsl_static == "failed"
+    assert _diagnostics(result, "form_value_conversion_requires_server_context")
+
+
+def test_преобразование_реквизита_формы_на_сервере_проходит_bsl_check():
+    xml, module = _pair()
+    module += """
+
+&НаСервере
+Процедура ПреобразоватьНаСервере()
+
+	ОбъектЗначение = РеквизитФормыВЗначение("Объект");
+	ЗначениеВРеквизитФормы(ОбъектЗначение, "Объект");
+
+КонецПроцедуры
+"""
+
+    result = check_managed_form(
+        xml,
+        form_name="ФормаПараметров",
+        module_bsl=module,
+    )
+
+    assert result.coverage.bsl_static == "passed"
+    assert not _diagnostics(
+        result, "form_value_conversion_requires_server_context"
+    )
+
+
+def test_имена_преобразований_в_строке_и_комментарии_игнорируются():
+    xml, module = _pair()
+    module += '''
+
+&НаКлиенте
+Процедура ТекстНаКлиенте()
+
+	// РеквизитФормыВЗначение("Объект");
+	Текст = "ЗначениеВРеквизитФормы(Объект)";
+
+КонецПроцедуры
+'''
+
+    result = check_managed_form(
+        xml,
+        form_name="ФормаПараметров",
+        module_bsl=module,
+    )
+
+    assert result.coverage.bsl_static == "passed"
+    assert not _diagnostics(
+        result, "form_value_conversion_requires_server_context"
+    )
 
 
 def test_без_module_bsl_уровень_остаётся_not_checked_с_причиной():

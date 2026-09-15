@@ -278,8 +278,27 @@ def test_information_register_record_компилирует_native_main_attribut
     assert "<DataPath>Запись.Значение</DataPath>" in form_xml
     assert '<AutoCommandBar name="ФормаКоманднаяПанель" id="-1"/>' in form_xml
     assert "\t<Commands>\r\n\t</Commands>" in form_xml
+    module_bsl = next(
+        artifact.content
+        for artifact in result.artifacts
+        if artifact.path.endswith("/Module.bsl")
+    )
+    assert "Данные записи: Запись.<Реквизит>" in module_bsl
+    assert 'РеквизитФормыВЗначение("Запись")' in module_bsl
     assert any(
         item.code == "information_register_record_context_verified"
         and item.status == "passed"
         for item in result.diagnostics
     )
+
+
+def test_catalog_object_compiler_объясняет_доступ_к_данным_формы():
+    result = compile_managed_form(_catalog_object_payload())
+    module_bsl = next(
+        artifact.content
+        for artifact in result.artifacts
+        if artifact.path.endswith("/Module.bsl")
+    )
+
+    assert "Данные формы: Объект.<Реквизит>" in module_bsl
+    assert 'РеквизитФормыВЗначение("Объект")' in module_bsl

@@ -406,6 +406,37 @@ def _check_async_contract(procedures: list[object]) -> list[Diagnostic]:
     return diagnostics
 
 
+def _check_form_value_conversion_context(
+    procedures: list[object],
+) -> list[Diagnostic]:
+    """Преобразование данных формы требует серверного контекста формы."""
+
+    conversion_calls = {
+        "реквизитформывзначение",
+        "значениевреквизитформы",
+    }
+    diagnostics: list[Diagnostic] = []
+    for procedure in procedures:
+        if procedure.директива.casefold() == "насервере":
+            continue
+        for qualifier, name, line in procedure.вызовы:
+            if qualifier or name.casefold() not in conversion_calls:
+                continue
+            diagnostics.append(
+                _diagnostic(
+                    "failed",
+                    "form_value_conversion_requires_server_context",
+                    f"$module_bsl:{line}",
+                    (
+                        f"Вызов {name} требует &НаСервере с доступным "
+                        "контекстом формы."
+                    ),
+                    level="bsl_static",
+                )
+            )
+    return diagnostics
+
+
 def _check_bsl(
     root: ET.Element,
     module_bsl: str | None,
@@ -525,6 +556,7 @@ def _check_bsl(
     diagnostics.extend(
         _check_forbidden_synchronous_client_calls(module_bsl, procedures)
     )
+    diagnostics.extend(_check_form_value_conversion_context(procedures))
     diagnostics.extend(_check_async_contract(procedures))
     if any(item.status == "failed" for item in diagnostics):
         return "failed", diagnostics

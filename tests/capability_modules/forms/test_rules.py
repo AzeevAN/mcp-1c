@@ -667,6 +667,17 @@ def test_events_публикуют_закрытый_owner_aware_каталог_�
     assert "Файл.Существует()" in by_code[
         "no_synchronous_file_exists_on_client"
     ]["summary"]
+    access = by_code["managed_form_bsl_data_access"]
+    assert access["status"] == "required"
+    assert access["value"] == {
+        "object_form_data": "Объект.<Реквизит>",
+        "record_form_data": "Запись.<Реквизит>",
+        "form_attribute": "<РеквизитФормы>",
+        "application_object": 'РеквизитФормыВЗначение("Объект")',
+        "record_manager": 'РеквизитФормыВЗначение("Запись")',
+        "conversion_context": "&НаСервере",
+        "client_form_data_access": "supported",
+    }
 
 
 def test_diagnostics_объясняет_предупреждение_для_нового_объекта() -> None:

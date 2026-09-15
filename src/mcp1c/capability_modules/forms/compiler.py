@@ -1148,7 +1148,26 @@ def _compile_xml(form: ManagedForm) -> str:
 
 
 def _compile_module(form: ManagedForm) -> str:
-    lines: list[str] = ["#Область ОбработчикиСобытийФормы", ""]
+    access_hints: dict[str, list[str]] = {
+        "object": [
+            "// Данные формы: Объект.<Реквизит>.",
+            (
+                "// Прикладной объект только на сервере: "
+                'РеквизитФормыВЗначение("Объект").'
+            ),
+        ],
+        "record": [
+            "// Данные записи: Запись.<Реквизит>.",
+            (
+                "// Менеджер записи только на сервере: "
+                'РеквизитФормыВЗначение("Запись").'
+            ),
+        ],
+    }
+    lines: list[str] = [*access_hints.get(form.context.role, [])]
+    if lines:
+        lines.append("")
+    lines.extend(["#Область ОбработчикиСобытийФормы", ""])
     emitted: set[str] = set()
     for event in form.events:
         normalized_handler = event.handler.casefold()

@@ -35,7 +35,7 @@ def test_spa_применяет_сохранённую_тему_до_перво�
         )
 
 
-def test_package_data_включает_dashboard_и_manifest_forms() -> None:
+def test_package_data_включает_dashboard_и_manifests_capabilities() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     patterns = project["tool"]["setuptools"]["package-data"]["mcp1c"]
 
@@ -43,6 +43,7 @@ def test_package_data_включает_dashboard_и_manifest_forms() -> None:
         "dashboard_dist/*",
         "dashboard_dist/assets/*",
         "capability_modules/forms/manifest.json",
+        "capability_modules/metadata_authoring/manifest.json",
     ]
     assert DEFAULT_DASHBOARD_DIST == ROOT / "src" / "mcp1c" / "dashboard_dist"
     index = (DEFAULT_DASHBOARD_DIST / "index.html").read_text(encoding="utf-8")

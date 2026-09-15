@@ -30,13 +30,13 @@
 | Роли | объявленные права из native generation; без готового слоя две role-ручки отсутствуют |
 | Дашборд | современная SPA включена по умолчанию; светлая и тёмная темы; ссылка на GitHub; `on` либо `off` |
 | Авторизация Docker | два разных обязательных токена: `API_TOKEN` на чтение, `ADMIN_TOKEN` на запись |
-| Тесты | `.venv/bin/python -m pytest`, 2846 |
+| Тесты | `.venv/bin/python -m pytest`, 2861 |
 
 Воспроизводимый прогон:
 
 ```bash
 .venv/bin/pip install --require-hashes -r requirements-dev-lock.txt
-.venv/bin/python -m pytest          # 2846 тестов (прогон 2026-09-15)
+.venv/bin/python -m pytest          # 2861 тест (прогон 2026-09-15)
 ```
 
 ## Модульная система возможностей
@@ -75,6 +75,16 @@ BSL-контракт различает данные формы и прикла�
 `compile_managed_form` → `check_managed_form` →
 `decompile_managed_form`. Полный контракт, ограничения и пример находятся в
 [описании инструментов](docs/tools.md).
+
+Второй подключаемый модуль — **Metadata Authoring («Создание метаданных»)**.
+Он отделён от Forms и отвечает за внешний комплект объекта конфигурации:
+регистрацию в `Configuration.xml`, descriptor, generated types, UUID,
+QName/namespace и owner-relative descriptor формы. Первая вертикаль
+поддерживает только `Справочник.*` и `РегистрСведений.*`; она публикует
+`get_metadata_authoring_rules` и `check_metadata_artifacts`. Оба инструмента
+read-only: compiler, запись файлов и импорт в 1С пока не входят в контракт.
+Статический GREEN означает полноту поддержанного комплекта, но не заменяет
+нативную загрузку в Конфигураторе.
 
 ## Навигация
 
@@ -1594,6 +1604,11 @@ bootstrap/fallback. Как только файл существует, он вс
 Registry, не читает его внутренние файлы, `data/` или локальные проекты и
 ничего не записывает.
 
+Имя `metadata_authoring` добавляет ровно 2 инструмента в порядке
+`get_metadata_authoring_rules`, `check_metadata_artifacts`. Они работают только
+с переданными текстами и не получают Registry: модуль не читает локальную
+конфигурацию, не пишет файлы и не импортирует их в 1С.
+
 `get_managed_form_rules(topic="overview")` вызывается первым; затем агент
 запрашивает только нужные тематические разделы. Тема `terminology` публикует
 единый двуязычный индекс всех поддержанных элементов и свойств. Параметр
@@ -1865,6 +1880,27 @@ PYTHONPATH=src .venv/bin/python tests/accept_forms_stdio.py
 Сценарий использует только временный пустой Registry и синтетический fixture.
 Он не включает живой dashboard, контейнер, импорт в Конфигуратор или
 визуальную приёмку формы.
+
+Metadata Authoring вызывается отдельно от Forms. Сначала
+`get_metadata_authoring_rules(topic="overview")`, затем тематические
+`catalog`, `information_register`, `artifacts` и `diagnostics`.
+`check_metadata_artifacts(object_ref, artifacts)` принимает каноническую ссылку
+`Справочник.<Имя>` либо `РегистрСведений.<Имя>` и словарь
+`owner-relative путь → текст`. Checker проверяет `Configuration.xml`, descriptor
+объекта, полные generated types, уникальные UUID, QName-prefix, точное свойство
+`InformationRegisterPeriodicity` и комплект каждой объявленной формы. Не более
+32 артефактов, 2 МиБ на файл и 8 МиБ суммарно; результат содержит раздельные
+coverage и diagnostics. Инструмент не читает локальный проект, не записывает
+файлы и не импортирует конфигурацию.
+
+Замер 2026-09-15 по канонической дельте `tools/list` дал 1 707 байт и
+приблизительно **313 токенов** для двух схем Metadata Authoring при
+`tiktoken 0.11.0 / o200k_base`. Воспроизвести и проверить manifest:
+
+```bash
+uv run --no-project --python .venv/bin/python --with tiktoken==0.11.0 \
+  python tools/measure_capability_context.py metadata_authoring --check
+```
 
 Файл ограничен 64 КиБ, обязан быть обычным файлом с `version=1` и точной
 секцией `capabilities.enabled`; неизвестное имя, повтор или повреждённая схема

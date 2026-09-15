@@ -64,7 +64,7 @@ def test_status_различает_active_desired_и_pending_restart(tmp_path, m
 
     assert status.status_code == 200
     assert status.json() == {
-        "available": ["forms"],
+        "available": ["forms", "metadata_authoring"],
         "active": [],
         "desired": ["forms"],
         "pending_restart": True,
@@ -126,7 +126,7 @@ def test_mutation_сохраняет_desired_и_возвращает_status(
 
     assert response.status_code == 200
     assert response.json() == {
-        "available": ["forms"],
+        "available": ["forms", "metadata_authoring"],
         "active": [],
         "desired": ["forms"],
         "pending_restart": True,

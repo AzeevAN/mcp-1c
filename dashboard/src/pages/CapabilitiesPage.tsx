@@ -14,6 +14,11 @@ const moduleCopy: Record<string, { title: string; description: string; details?:
     description: "Добавляет 4 инструмента: двуязычный поиск правил, компиляцию, декомпиляцию и статическую проверку. Файлы и конфигурацию 1С не изменяет.",
     details: "≈ 5 949 токенов стартового контекста · o200k_base · замер 15.09.2026",
   },
+  metadata_authoring: {
+    title: "Создание метаданных",
+    description: "Добавляет 2 read-only инструмента: правила и статическую проверку полного комплекта артефактов справочника или регистра сведений.",
+    details: "≈ 313 токенов стартового контекста · o200k_base · замер 15.09.2026",
+  },
 };
 
 function errorMessage(error: unknown): string {

@@ -67,6 +67,10 @@ CAPABILITY_DEFINITIONS: Mapping[str, CapabilityDefinition] = {
         "forms",
         "mcp1c.capability_modules.forms:load",
     ),
+    "metadata_authoring": CapabilityDefinition(
+        "metadata_authoring",
+        "mcp1c.capability_modules.metadata_authoring:load",
+    ),
 }
 
 

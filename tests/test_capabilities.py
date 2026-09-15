@@ -53,6 +53,10 @@ FORMS_TOOLS = [
     "decompile_managed_form",
     "check_managed_form",
 ]
+METADATA_AUTHORING_TOOLS = [
+    "get_metadata_authoring_rules",
+    "check_metadata_artifacts",
+]
 
 
 @pytest.fixture
@@ -292,7 +296,7 @@ def test_env_служит_fallback_только_пока_server_settings_не_с
     store.save(())
 
     assert runtime.payload() == {
-        "available": ["forms"],
+        "available": ["forms", "metadata_authoring"],
         "active": ["forms"],
         "desired": [],
         "pending_restart": True,
@@ -583,6 +587,66 @@ async def test_forms_инструмент_работает_через_полну
     assert [tool.name for tool in listed.tools] == [*CORE_TOOLS, *FORMS_TOOLS]
     assert result.is_error is False
     assert json.loads(result.content[0].text)["topic"] == "overview"
+
+
+def test_enabled_добавляет_ровно_два_metadata_authoring_инструмента(tmp_path):
+    server = _server(tmp_path, enabled_capabilities=("metadata_authoring",))
+
+    tools = asyncio.run(server.list_tools())
+
+    assert [tool.name for tool in tools] == [
+        *CORE_TOOLS,
+        *METADATA_AUTHORING_TOOLS,
+    ]
+    assert "topic" in tools[-2].input_schema["properties"]
+    assert "ничего не пишет" in (tools[-2].description or "")
+    assert set(tools[-1].input_schema["required"]) == {
+        "object_ref",
+        "artifacts",
+    }
+
+
+@pytest.mark.anyio
+async def test_metadata_authoring_rules_работают_через_mcp_сессию(tmp_path):
+    server = _server(tmp_path, enabled_capabilities=("metadata_authoring",))
+
+    async with create_client_server_memory_streams() as (client_streams, server_streams):
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(
+                server._lowlevel_server.run,
+                *server_streams,
+                server._lowlevel_server.create_initialization_options(),
+            )
+            try:
+                async with ClientSession(*client_streams) as session:
+                    await session.initialize()
+                    listed = await session.list_tools()
+                    result = await session.call_tool(
+                        "get_metadata_authoring_rules", {}
+                    )
+                    checked = await session.call_tool(
+                        "check_metadata_artifacts",
+                        {
+                            "object_ref": "Справочник.Тестовый",
+                            "artifacts": {},
+                        },
+                    )
+            finally:
+                tasks.cancel_scope.cancel()
+
+    assert [tool.name for tool in listed.tools] == [
+        *CORE_TOOLS,
+        *METADATA_AUTHORING_TOOLS,
+    ]
+    assert result.is_error is False
+    assert json.loads(result.content[0].text)["status"] == "supported"
+    assert checked.is_error is False
+    checked_payload = json.loads(checked.content[0].text)
+    assert checked_payload["status"] == "failed"
+    assert any(
+        item["code"] == "missing_metadata_descriptor"
+        for item in checked_payload["diagnostics"]
+    )
 
 
 def _noop() -> str:

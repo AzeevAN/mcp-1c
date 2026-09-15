@@ -12,7 +12,7 @@ vi.mock("../shared/api/sourceAdmin", async (importOriginal) => ({
 }));
 
 const ready = {
-  available: ["forms"],
+  available: ["forms", "metadata_authoring"],
   active: [],
   desired: [],
   pending_restart: false,
@@ -52,6 +52,7 @@ it.each([360, 1440])(
 
     expect(await screen.findByRole("heading", { name: "Дополнительные модули" })).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: /forms/i })).toBeVisible();
+    expect(screen.getByRole("checkbox", { name: /metadata_authoring/i })).toBeVisible();
     expect(screen.getByRole("button", { name: "Сохранить выбор" })).toBeVisible();
   },
 );
@@ -83,6 +84,18 @@ it("объясняет границу Forms до включения", async () =
   expect(within(card).getByText(/конфигурацию 1С не изменяет/)).toBeInTheDocument();
   expect(within(card).getByText(/5 949.*o200k_base/)).toBeInTheDocument();
   expect(forms).not.toBeChecked();
+});
+
+it("объясняет границу Metadata Authoring до включения", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ready }));
+  mount();
+
+  const capability = await screen.findByRole("checkbox", { name: /metadata_authoring/i });
+  const card = capability.closest("label")!;
+  expect(within(card).getByText("Создание метаданных")).toBeInTheDocument();
+  expect(within(card).getByText(/2 read-only инструмента/)).toBeInTheDocument();
+  expect(within(card).getByText(/313.*o200k_base/)).toBeInTheDocument();
+  expect(capability).not.toBeChecked();
 });
 
 it("не теряет несохранённый выбор при фоновом обновлении статуса", async () => {

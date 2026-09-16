@@ -104,6 +104,11 @@
 
 ### Исправлено
 
+- Production Docker-контекст теперь включает opt-in пакет
+  `metadata_authoring` и его manifest. Чистая exact-HEAD сборка больше не
+  падает при startup с `ModuleNotFoundError`, а allowlist capability-модулей
+  защищён отдельным тестом.
+
 - Forms и Metadata Authoring отклоняют собственный реквизит формы, который
   неиспользуемо дублирует поле главного `Объект.*` или `Запись.*`. Compiler
   справочника теперь получает явные `code_length` и `description_length`,

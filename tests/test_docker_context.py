@@ -27,6 +27,13 @@ def test_dockerignore_закрыт_по_умолчанию() -> None:
         "src/mcp1c/capability_modules/*",
         "!src/mcp1c/capability_modules/*.py",
     } <= set(rules)
+    for module in ("forms", "metadata_authoring"):
+        assert {
+            f"!src/mcp1c/capability_modules/{module}/",
+            f"src/mcp1c/capability_modules/{module}/*",
+            f"!src/mcp1c/capability_modules/{module}/*.py",
+            f"!src/mcp1c/capability_modules/{module}/manifest.json",
+        } <= set(rules)
     assert {
         "!dashboard/package-lock.json",
         "!dashboard/src/**/*.tsx",

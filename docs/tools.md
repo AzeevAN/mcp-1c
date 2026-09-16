@@ -32,8 +32,8 @@ role-операции появляются, только когда хотя б�
 | `decompile_managed_form` | `form_xml`, `form_name`, `context`, `module_bsl` (необязательно) | условно: каноническая schema v2 либо честный inventory непокрытых XML-путей |
 | `check_managed_form` | `form_xml`, `form_name`, `context`, `module_bsl` (необязательно) | условно: раздельные статические результаты XML, структуры, ссылок и BSL |
 | `get_metadata_authoring_rules` | `topic` (`overview` по умолчанию) | условно: правила полного комплекта справочника или регистра сведений |
-| `compile_metadata_object` | `specification` Metadata Authoring schema v1 | условно: descriptor, формы и инструкция регистрации без записи `Configuration.xml` |
-| `check_metadata_artifacts` | `object_ref`, `artifacts` | условно: read-only проверка регистрации, descriptor, generated types, UUID, QName и объявленных форм |
+| `compile_metadata_object` | `specification` Metadata Authoring schema v1 с обязательным `format_version` | условно: owner-relative descriptor и формы без чтения или записи `Configuration.xml` |
+| `check_metadata_artifacts` | `object_ref`, `format_version`, `artifacts` | условно: read-only проверка owner-relative descriptor, generated types, UUID, QName и объявленных форм |
 
 Если загружено больше одной конфигурации, `config` обязателен там, где он
 предусмотрен. Сервер не выбирает первую конфигурацию молча.
@@ -67,24 +67,26 @@ Capability `metadata_authoring` по тем же startup-правилам доб
 инструмента. Сначала агент вызывает
 `get_metadata_authoring_rules(topic="overview")`, затем тематические разделы и
 `compile_metadata_object(specification)`. Compiler schema v1 детерминированно
-выводит внутренние UUID из явного `identity`, возвращает текстовые артефакты и
-готовый XML-фрагмент регистрации, но не создаёт и не перезаписывает
-`Configuration.xml`. Справочник явно задаёт `code_length` (`0..50`) и
+выводит внутренние UUID из явного `identity` и возвращает текстовые артефакты.
+Обязательный `format_version` агент читает из корневого `version` локального
+`Configuration.xml` и передаёт короткой строкой; сам файл модулю не передаётся.
+Справочник явно задаёт `code_length` (`0..50`) и
 `description_length` (`0..150`). Положительная длина включает соответствующий
 стандартный реквизит; на обычной основной форме он задаётся путём
 `Объект.Код`/`Объект.Наименование`, а не одноимённым реквизитом формы.
 Отсутствие существующего стандартного поля на основной форме отклоняет
 specification, а checker независимо отклоняет такой готовый bundle. Тень поля
-объекта или записи также отклоняется. После применения фрагмента к копии агент вызывает
-`check_metadata_artifacts(object_ref, artifacts)`. Вертикаль принимает
+объекта или записи также отклоняется. Затем агент вызывает
+`check_metadata_artifacts(object_ref, format_version, artifacts)`. Вертикаль принимает
 только `Справочник.<Имя>` и `РегистрСведений.<Имя>` и проверяет переданный
 текстовый bundle. Корневой `version` каждого объявленного `Ext/Form.xml`
-обязан совпадать с `Configuration.xml:/MetaDataObject/@version`; отсутствие
-версии или несовпадение даёт `failed`. Локальные файлы, Registry и 1С не
+обязан совпадать с переданным `format_version`; отсутствие версии или
+несовпадение даёт `failed`. `Configuration.xml`, регистрация объекта и пути вне
+каталога владельца не входят в контракт. Локальные файлы, Registry и 1С не
 читаются и не изменяются.
 Write/apply и импорт конфигурации не входят в контракт. Статический GREEN не
-доказывает нативную загрузку. Три схемы занимают 2 618 байт, примерно 475
-токенов `tiktoken 0.11.0 / o200k_base` по замеру 2026-09-15:
+доказывает нативную загрузку. Три схемы занимают 2 870 байт, примерно 529
+токенов `tiktoken 0.11.0 / o200k_base` по замеру 2026-09-16:
 
 ```bash
 uv run --no-project --python .venv/bin/python --with tiktoken==0.11.0 \

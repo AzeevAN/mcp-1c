@@ -19,11 +19,11 @@ _QNAME = re.compile(r"^([A-Za-z_][A-Za-z0-9_.-]*):[^\s:]+$")
 _OBJECT_REF = re.compile(
     r"^(Справочник|РегистрСведений)\.([A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*)$"
 )
+_FORMAT_VERSION = re.compile(r"^\d+\.\d+(?:\.\d+)*$")
 _COVERAGE_KEYS = (
     "xml",
     "descriptor",
     "generated_types",
-    "registration",
     "forms",
     "namespaces",
 )
@@ -197,82 +197,6 @@ def _normalize_artifacts(
     return normalized
 
 
-def _merge_configuration_registration(
-    configuration_xml: object,
-    registration: object,
-    object_name: str,
-    kind: _Kind,
-    report: _Report,
-) -> str | None:
-    """Добавить регистрацию в копию Configuration.xml только в памяти."""
-
-    if not isinstance(configuration_xml, str) or not isinstance(registration, dict):
-        report.fail_all(
-            "invalid_configuration_handoff",
-            "$configuration_xml",
-            "configuration_xml должен быть текстом, а configuration_registration — объектом.",
-        )
-        return None
-    try:
-        configuration_size = len(configuration_xml.encode("utf-8"))
-    except UnicodeEncodeError:
-        report.fail_all(
-            "invalid_unicode",
-            "Configuration.xml",
-            "Configuration.xml содержит недопустимый Unicode.",
-        )
-        return None
-    if configuration_size > MAX_ARTIFACT_BYTES:
-        report.fail_all(
-            "artifact_too_large",
-            "Configuration.xml",
-            f"Configuration.xml превышает {MAX_ARTIFACT_BYTES} байт.",
-        )
-        return None
-    expected = {
-        "path": "Configuration.xml",
-        "parent": "md:MetaDataObject/md:Configuration/md:ChildObjects",
-        "element": kind.xml_kind,
-        "value": object_name,
-        "xml": f"<{kind.xml_kind}>{object_name}</{kind.xml_kind}>",
-    }
-    if any(registration.get(key) != value for key, value in expected.items()):
-        report.fail_all(
-            "configuration_registration_mismatch",
-            "$configuration_registration",
-            "configuration_registration не соответствует object_ref или каноническому пути.",
-        )
-        return None
-    root, _ = _parse_xml("Configuration.xml", configuration_xml, report)
-    if root is None:
-        report.failed_coverage.update(_COVERAGE_KEYS)
-        return None
-    if not _require_metadata_root(root, "Configuration.xml", report, "registration"):
-        report.failed_coverage.update(_COVERAGE_KEYS)
-        return None
-    configuration = _find_child(root, "Configuration")
-    child_objects = _find_child(configuration, "ChildObjects")
-    if child_objects is None:
-        report.fail(
-            "registration",
-            "missing_configuration_child_objects",
-            "Configuration.xml",
-            "В Configuration.xml отсутствует Configuration/ChildObjects.",
-        )
-        report.failed_coverage.update(_COVERAGE_KEYS)
-        return None
-    already_registered = any(
-        _local(child.tag) == kind.xml_kind
-        and (child.text or "").strip() == object_name
-        for child in child_objects
-    )
-    if not already_registered:
-        element = ET.Element(f"{{{MD_NAMESPACE}}}{kind.xml_kind}")
-        element.text = object_name
-        child_objects.append(element)
-    return ET.tostring(root, encoding="unicode")
-
-
 def _require_metadata_root(
     root: ET.Element | None,
     path: str,
@@ -421,36 +345,30 @@ def _check_generated_types(
             )
 
 
-def _check_registration(
-    root: ET.Element | None,
-    object_name: str,
-    kind: _Kind,
+def _check_format_version(
+    root: ET.Element,
+    path: str,
     report: _Report,
+    coverage: str,
+    expected: str,
 ) -> None:
-    path = "Configuration.xml"
-    if root is None:
+    actual = root.attrib.get("version", "").strip()
+    if not actual:
         report.fail(
-            "registration",
-            "missing_configuration_descriptor",
+            coverage,
+            "missing_format_version",
             path,
-            "Отсутствует читаемый Configuration.xml.",
+            "Корень XML descriptor обязан содержать атрибут version.",
         )
-        return
-    if not _require_metadata_root(root, path, report, "registration"):
-        return
-    configuration = _find_child(root, "Configuration")
-    child_objects = _find_child(configuration, "ChildObjects")
-    registered = [
-        (child.text or "").strip()
-        for child in (child_objects if child_objects is not None else ())
-        if _local(child.tag) == kind.xml_kind
-    ]
-    if object_name not in registered:
+    elif actual != expected:
         report.fail(
-            "registration",
-            "metadata_object_not_registered",
+            coverage,
+            "format_version_mismatch",
             path,
-            f"В Configuration/ChildObjects нет {kind.xml_kind} `{object_name}`.",
+            (
+                f"Версия `{actual}` не совпадает с переданным "
+                f"format_version `{expected}`."
+            ),
         )
 
 
@@ -459,7 +377,7 @@ def _check_forms(
     metadata_object: ET.Element,
     artifacts: dict[str, str],
     parsed: dict[str, tuple[ET.Element, set[str]]],
-    configuration_root: ET.Element | None,
+    format_version: str,
     object_name: str,
     kind: _Kind,
     report: _Report,
@@ -478,19 +396,6 @@ def _check_forms(
             f"{owner_path}.xml",
             "Имя формы нельзя повторять в ChildObjects/Form.",
         )
-    configuration_version = None
-    if configuration_root is not None:
-        configuration_version = configuration_root.attrib.get("version", "").strip()
-        if form_names and not configuration_version:
-            report.fail(
-                "forms",
-                "missing_configuration_format_version",
-                "Configuration.xml",
-                (
-                    "При объявленных формах корень Configuration.xml обязан "
-                    "содержать атрибут version."
-                ),
-            )
     for form_name in form_names:
         descriptor_path = f"{owner_path}/Forms/{form_name}.xml"
         form_xml_path = f"{owner_path}/Forms/{form_name}/Ext/Form.xml"
@@ -508,30 +413,18 @@ def _check_forms(
                 report.fail("forms", code, path, message)
         internal_form_entry = parsed.get(form_xml_path)
         if internal_form_entry is not None:
-            form_version = internal_form_entry[0].attrib.get("version", "").strip()
-            if not form_version:
-                report.fail(
-                    "forms",
-                    "missing_form_format_version",
-                    form_xml_path,
-                    "Корень Form.xml обязан содержать атрибут version.",
-                )
-            elif configuration_version and form_version != configuration_version:
-                report.fail(
-                    "forms",
-                    "form_format_version_mismatch",
-                    form_xml_path,
-                    (
-                        f"Версия Form.xml `{form_version}` не совпадает с "
-                        f"версией Configuration.xml `{configuration_version}`."
-                    ),
-                )
+            _check_format_version(
+                internal_form_entry[0], form_xml_path, report, "forms", format_version
+            )
         form_entry = parsed.get(descriptor_path)
         if form_entry is None:
             if descriptor_path in artifacts:
                 report.failed_coverage.add("forms")
             continue
         form_root = form_entry[0]
+        _check_format_version(
+            form_root, descriptor_path, report, "forms", format_version
+        )
         if not _require_metadata_root(
             form_root, descriptor_path, report, "forms"
         ):
@@ -629,9 +522,8 @@ def _check_forms(
 
 def check_metadata_artifacts(
     object_ref: str,
+    format_version: str,
     artifacts: dict[str, str] | list[dict[str, str]],
-    configuration_xml: str | None = None,
-    configuration_registration: dict[str, str] | None = None,
 ) -> dict[str, object]:
     """Проверить bundle без чтения или записи файлов и без импорта в 1С."""
 
@@ -646,39 +538,49 @@ def check_metadata_artifacts(
             "Поддержаны только Справочник.<Имя> и РегистрСведений.<Имя>.",
         )
         return report.result()
+    if (
+        not isinstance(format_version, str)
+        or _FORMAT_VERSION.fullmatch(format_version) is None
+    ):
+        report.fail_all(
+            "invalid_format_version",
+            "$format_version",
+            "format_version должен иметь вид числовой точечной версии, например `2.20`.",
+        )
+        return report.result()
     kind = _KINDS[match.group(1)]
     object_name = match.group(2)
     normalized = _normalize_artifacts(artifacts, report)
     if normalized is None:
         return report.result()
-    has_configuration = configuration_xml is not None
-    has_registration = configuration_registration is not None
-    if has_configuration != has_registration:
+    artifacts = normalized
+    configuration_path = next(
+        (path for path in artifacts if path == "Configuration.xml" or path.endswith("/Configuration.xml")),
+        None,
+    )
+    if configuration_path is not None:
         report.fail_all(
-            "incomplete_configuration_handoff",
-            "$configuration_xml",
-            "configuration_xml и configuration_registration передаются только вместе.",
+            "external_configuration_not_supported",
+            configuration_path,
+            "Configuration.xml не является owner-relative артефактом и не поддерживается checker.",
         )
         return report.result()
-    if has_configuration:
-        if "Configuration.xml" in normalized:
-            report.fail_all(
-                "conflicting_configuration_sources",
-                "$artifacts.Configuration.xml",
-                "Передайте Configuration.xml либо в artifacts, либо в configuration_xml, но не в обоих местах.",
-            )
-            return report.result()
-        merged_configuration = _merge_configuration_registration(
-            configuration_xml,
-            configuration_registration,
-            object_name,
-            kind,
-            report,
+    owner_path = f"{kind.directory}/{object_name}"
+    invalid_path = next(
+        (
+            path
+            for path in artifacts
+            if path != f"{owner_path}.xml" and not path.startswith(owner_path + "/")
+        ),
+        None,
+    )
+    if invalid_path is not None:
+        report.fail_all(
+            "non_owner_relative_artifact",
+            invalid_path,
+            "Checker принимает только owner-relative артефакты переданного object_ref.",
         )
-        if merged_configuration is None:
-            return report.result()
-        normalized["Configuration.xml"] = merged_configuration
-    artifacts = normalized
+        return report.result()
     if len(artifacts) > MAX_ARTIFACTS:
         report.fail_all(
             "too_many_artifacts",
@@ -736,12 +638,7 @@ def check_metadata_artifacts(
     _check_qnames(parsed, report)
     _check_unique_ids(parsed, report)
 
-    owner_path = f"{kind.directory}/{object_name}"
     descriptor_path = f"{owner_path}.xml"
-    configuration = parsed.get("Configuration.xml")
-    _check_registration(
-        configuration[0] if configuration else None, object_name, kind, report
-    )
     descriptor_entry = parsed.get(descriptor_path)
     if descriptor_entry is None:
         report.fail(
@@ -753,6 +650,9 @@ def check_metadata_artifacts(
         report.failed_coverage.update({"generated_types", "forms"})
         return report.result()
     descriptor_root = descriptor_entry[0]
+    _check_format_version(
+        descriptor_root, descriptor_path, report, "descriptor", format_version
+    )
     if not _require_metadata_root(
         descriptor_root, descriptor_path, report, "descriptor"
     ):
@@ -810,7 +710,7 @@ def check_metadata_artifacts(
         metadata_object,
         artifacts,
         parsed,
-        configuration[0] if configuration else None,
+        format_version,
         object_name,
         kind,
         report,

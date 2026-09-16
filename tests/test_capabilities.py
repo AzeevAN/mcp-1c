@@ -607,12 +607,11 @@ def test_enabled_добавляет_ровно_три_metadata_authoring_инс�
     assert tools[-2].input_schema["required"] == ["specification"]
     assert set(tools[-1].input_schema["required"]) == {
         "object_ref",
+        "format_version",
         "artifacts",
     }
-    assert {
-        "configuration_xml",
-        "configuration_registration",
-    }.issubset(tools[-1].input_schema["properties"])
+    assert "configuration_xml" not in tools[-1].input_schema["properties"]
+    assert "configuration_registration" not in tools[-1].input_schema["properties"]
     assert "result.artifacts" in (tools[-1].description or "")
 
 
@@ -641,6 +640,7 @@ async def test_metadata_authoring_rules_работают_через_mcp_сесс
                         "check_metadata_artifacts",
                         {
                             "object_ref": "Справочник.Тестовый",
+                            "format_version": "2.20",
                             "artifacts": {},
                         },
                     )

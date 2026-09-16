@@ -30,6 +30,7 @@ def test_rules_публикуют_границу_и_два_поддержанн�
     assert overview["compiler_specification"]["required"] == [
         "schema_version",
         "object_ref",
+        "format_version",
         "identity",
         "synonym",
         "attributes",
@@ -115,32 +116,17 @@ def test_artifact_rules_достаточны_для_сборки_bundle_без_�
         "children": ["xr:TypeId", "xr:ValueId"],
         "uuid_unique_across_bundle": True,
     }
-    assert rules["configuration_registration"] == (
-        "md:Configuration/md:ChildObjects/<Catalog|InformationRegister>"
-    )
     assert rules["compiler_to_checker"] == {
         "tool": "check_metadata_artifacts",
         "arguments": {
             "object_ref": "compile result.object_ref",
+            "format_version": "compile result.format_version",
             "artifacts": "compile result.artifacts",
-            "configuration_xml": (
-                "текст существующего Configuration.xml целевой конфигурации"
-            ),
-            "configuration_registration": (
-                "compile result.configuration_registration"
-            ),
         },
-        "registration_is_in_memory_only": True,
-        "configuration_xml_is_not_modified": True,
-        "configuration_source": (
-            "Configuration.xml передаётся либо в artifacts, либо отдельно; два источника отклоняются"
-        ),
-        "configuration_pair_required_together": [
-            "configuration_xml",
-            "configuration_registration",
-        ],
         "legacy_artifacts_mapping_supported": True,
     }
+    assert rules["required_base"] == ["<owner>.xml"]
+    assert "configuration_registration" not in rules
     assert rules["form_descriptor"]["form_type"] == "Managed"
     assert rules["form_descriptor"]["name_value"] == (
         "точное короткое значение ChildObjects/Form"
@@ -152,8 +138,8 @@ def test_artifact_rules_достаточны_для_сборки_bundle_без_�
         ),
         "format_version": {
             "required": True,
-            "source": "Configuration.xml:/MetaDataObject/@version",
-            "constraint": "must_equal_configuration_version",
+            "source": "specification.format_version",
+            "constraint": "must_equal_supplied_format_version",
             "mismatch_status": "failed",
         },
         "not_descriptor_root": "md:MetaDataObject",

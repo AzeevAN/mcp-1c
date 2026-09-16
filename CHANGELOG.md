@@ -13,12 +13,12 @@
 
 - Новый opt-in модуль Metadata Authoring отделяет создание объекта метаданных
   от внутреннего устройства формы. Закрытая schema v1 публикует правила, pure
-  compiler и checker комплектов `Справочник.*` и `РегистрСведений.*`: регистрацию в
-  `Configuration.xml`, descriptor, 5/7 generated types, UUID, QName/namespace,
-  owner-relative descriptor и файлы объявленных управляемых форм. Compiler
-  детерминированно выводит внутренние UUID из явного `identity`, упаковывает
-  артефакты Forms и возвращает XML-фрагмент регистрации, но не меняет
-  `Configuration.xml`; запись файлов и импорт в 1С не поддерживаются.
+  compiler и checker owner-relative комплектов `Справочник.*` и
+  `РегистрСведений.*`: descriptor, 5/7 generated types, UUID, QName/namespace,
+  descriptor и файлы объявленных управляемых форм. Compiler детерминированно
+  выводит внутренние UUID из явного `identity` и упаковывает артефакты Forms;
+  чтение `Configuration.xml`, регистрация объекта, запись файлов и импорт в 1С
+  не поддерживаются.
 
 - Forms публикует BSL-контракт доступа к данным управляемой формы: поля
   объектной формы читаются и изменяются через `Объект.<Реквизит>`, поля формы
@@ -48,12 +48,12 @@
   `Объект.Наименование`, при `code_length > 0` — `Объект.Код`: compiler
   отклоняет specification, а checker независимо отклоняет готовый bundle.
 
-- Metadata Authoring связывает pure compiler и checker без скрытой
-  трансформации: checker принимает `result.artifacts`, текст
-  существующего `Configuration.xml` и `result.configuration_registration`,
-  валидирует пару и применяет регистрацию только к копии XML в
-  памяти. Старый словарь `path → text` сохранён; файлы, Registry и
-  конфигурация 1С не изменяются.
+- Metadata Authoring требует компактный `format_version` в specification и в
+  checker-вызове. Агент читает значение из своей локальной конфигурации и
+  передаёт его вместе с owner-relative `result.artifacts`; весь
+  `Configuration.xml`, инструкции регистрации и пути вне каталога владельца
+  исключены из публичного контракта. Файлы, Registry и конфигурация 1С не
+  изменяются.
 - On-demand правила `artifacts` теперь явно различают descriptor формы и
   физический `Ext/Form.xml`: публикуют его корень и namespace, минимальный
   статический пример с `DataPath` и границу недоказанного нативного импорта.
@@ -110,8 +110,8 @@
 ### Исправлено
 
 - Metadata Authoring checker сопоставляет корневой `version` каждой
-  объявленной `Ext/Form.xml` с
-  `Configuration.xml:/MetaDataObject/@version`. Отсутствующая версия и
+  объявленной `Ext/Form.xml` и descriptor объекта с обязательным
+  `format_version`. Отсутствующая версия и
   несовпадение вроде нативного RED `2.16` против `2.20` теперь дают `failed`
   до импорта; все формы проверяются независимо.
 

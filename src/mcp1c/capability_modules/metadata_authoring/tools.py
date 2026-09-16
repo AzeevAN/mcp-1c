@@ -20,16 +20,14 @@ def _rules_tool(topic: RuleTopic = "overview") -> str:
 
 def _check_tool(
     object_ref: str,
+    format_version: str,
     artifacts: dict[str, str] | list[dict[str, str]],
-    configuration_xml: str | None = None,
-    configuration_registration: dict[str, str] | None = None,
 ) -> str:
     return _json(
         check_metadata_artifacts(
             object_ref,
+            format_version,
             artifacts,
-            configuration_xml=configuration_xml,
-            configuration_registration=configuration_registration,
         )
     )
 
@@ -69,8 +67,8 @@ def load(registry=None) -> tuple[CapabilityTool, ...]:
             description=(
                 "Pure-компиляция закрытой specification schema v1 в текстовые "
                 "артефакты Справочника или РегистраСведений. Ничего не пишет, "
-                "не импортирует в 1С и не создаёт и не перезаписывает "
-                "Configuration.xml; возвращает отдельную инструкцию регистрации. "
+                "не импортирует в 1С и не читает Configuration.xml. "
+                "format_version обязан передать caller. "
                 "Сначала получите правила через get_metadata_authoring_rules."
             ),
         ),
@@ -79,14 +77,13 @@ def load(registry=None) -> tuple[CapabilityTool, ...]:
             function=_check_tool,
             description=(
                 "Read-only проверка переданных текстовых артефактов Справочника "
-                "или РегистраСведений: descriptor, generated types, регистрацию, "
+                "или РегистраСведений: descriptor, generated types, "
                 "формы и XML namespaces. Ничего не пишет и не импортирует в 1С; "
                 "успех статической проверки не доказывает нативный импорт. "
                 "После compile_metadata_object передайте result.object_ref, "
-                "result.artifacts, исходный текст Configuration.xml и "
-                "result.configuration_registration. Сервер применит регистрацию "
-                "только к копии в памяти; configuration_xml и configuration_registration "
-                "передаются вместе. Старый словарь path → text тоже поддержан."
+                "result.format_version и result.artifacts. Configuration.xml "
+                "не поддерживается; регистрацию объекта применяет caller. "
+                "Старый словарь path → text тоже поддержан."
             ),
         ),
     )

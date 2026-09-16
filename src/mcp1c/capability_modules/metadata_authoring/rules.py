@@ -52,12 +52,18 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
             "required": [
                 "schema_version",
                 "object_ref",
+                "format_version",
                 "identity",
                 "synonym",
                 "attributes",
                 "forms",
             ],
             "schema_version": 1,
+            "format_version": {
+                "required": True,
+                "pattern": "digits.digits[.digits...]",
+                "source": "caller читает format_version целевой Configuration.xml самостоятельно",
+            },
             "identity": "UUID",
             "field": ["name", "synonym", "type"],
             "field_type_kinds": [
@@ -120,9 +126,9 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
             ],
         },
         "configuration_boundary": (
-            "компилятор возвращает инструкцию регистрации, но не создаёт и не "
-            "перезаписывает Configuration.xml; checker может применить её к "
-            "переданной копии configuration_xml только в памяти"
+            "Configuration.xml и регистрация объекта не входят в контракт: caller "
+            "сам читает локальную конфигурацию, передаёт только format_version и "
+            "применяет регистрацию после проверки owner-relative артефактов"
         ),
         "recommended_preparation": (
             "до compile получите фактическую структуру целевой конфигурации "
@@ -148,7 +154,6 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
         "form_declaration_value": "<Форма>",
         "default_form_value": "Catalog.<Имя>.Form.<Форма>",
         "attribute_declaration": "ChildObjects/Attribute[@uuid]",
-        "configuration_child": "Catalog",
         "generated_types": _CATALOG_TYPES,
         "generated_type_name_pattern": "Catalog<Category>.<Имя>",
         "default_form_property": "DefaultObjectForm",
@@ -177,7 +182,6 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
             "ChildObjects/Attribute[@uuid]",
         ],
         "catalog_reference_type": "cfg:CatalogRef.<ИмяСправочника>",
-        "configuration_child": "InformationRegister",
         "generated_types": _REGISTER_TYPES,
         "generated_type_name_pattern": "InformationRegister<Category>.<Имя>",
         "periodicity_property": "InformationRegisterPeriodicity",
@@ -201,30 +205,13 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
             "logform": "http://v8.1c.ru/8.3/xcf/logform",
         },
         "descriptor_root": "md:MetaDataObject",
-        "configuration_registration": (
-            "md:Configuration/md:ChildObjects/<Catalog|InformationRegister>"
-        ),
         "compiler_to_checker": {
             "tool": "check_metadata_artifacts",
             "arguments": {
                 "object_ref": "compile result.object_ref",
+                "format_version": "compile result.format_version",
                 "artifacts": "compile result.artifacts",
-                "configuration_xml": (
-                    "текст существующего Configuration.xml целевой конфигурации"
-                ),
-                "configuration_registration": (
-                    "compile result.configuration_registration"
-                ),
             },
-            "registration_is_in_memory_only": True,
-            "configuration_xml_is_not_modified": True,
-            "configuration_source": (
-                "Configuration.xml передаётся либо в artifacts, либо отдельно; два источника отклоняются"
-            ),
-            "configuration_pair_required_together": [
-                "configuration_xml",
-                "configuration_registration",
-            ],
             "legacy_artifacts_mapping_supported": True,
         },
         "generated_type": {
@@ -234,7 +221,7 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
             "uuid_unique_across_bundle": True,
         },
         "qname_prefix_scope": "same_xml_document",
-        "required_base": ["Configuration.xml", "<owner>.xml"],
+        "required_base": ["<owner>.xml"],
         "required_for_each_declared_form": [
             "<owner>/Forms/<Форма>.xml",
             "<owner>/Forms/<Форма>/Ext/Form.xml",
@@ -253,8 +240,8 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
             ),
             "format_version": {
                 "required": True,
-                "source": "Configuration.xml:/MetaDataObject/@version",
-                "constraint": "must_equal_configuration_version",
+                "source": "specification.format_version",
+                "constraint": "must_equal_supplied_format_version",
                 "mismatch_status": "failed",
             },
             "not_descriptor_root": "md:MetaDataObject",
@@ -279,7 +266,6 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
             "xml",
             "descriptor",
             "generated_types",
-            "registration",
             "forms",
             "namespaces",
         ],

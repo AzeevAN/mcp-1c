@@ -22,12 +22,16 @@ XSI = "http://www.w3.org/2001/XMLSchema-instance"
 LOGFORM = "http://v8.1c.ru/8.3/xcf/logform"
 _NAME = re.compile(r"^[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*$")
 _OBJECT_REF = re.compile(r"^(Справочник|РегистрСведений)\.([A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*)$")
+_FORMAT_VERSION = re.compile(r"^\d+\.\d+(?:\.\d+)*$")
 _FORBIDDEN_XML = re.compile(r"<!\s*(?:DOCTYPE|ENTITY)\b", re.I)
-_ROOT_ATTRIBUTES = (
-    f'xmlns="{MD}" xmlns:app="{APP}" xmlns:cfg="{CFG}" '
-    f'xmlns:v8="{V8}" xmlns:xr="{XR}" xmlns:xs="{XS}" '
-    f'xmlns:xsi="{XSI}" version="2.20"'
-)
+
+
+def _root_attributes(format_version: str) -> str:
+    return (
+        f'xmlns="{MD}" xmlns:app="{APP}" xmlns:cfg="{CFG}" '
+        f'xmlns:v8="{V8}" xmlns:xr="{XR}" xmlns:xs="{XS}" '
+        f'xmlns:xsi="{XSI}" version="{format_version}"'
+    )
 
 
 class MetadataAuthoringContractError(ValueError):
@@ -48,7 +52,10 @@ class _Kind:
     allowed: frozenset[str]
 
 
-_COMMON = frozenset({"schema_version", "object_ref", "identity", "synonym", "attributes", "forms"})
+_COMMON = frozenset({
+    "schema_version", "object_ref", "format_version", "identity", "synonym",
+    "attributes", "forms",
+})
 _KINDS = {
     "Справочник": _Kind(
         "Справочник", "Catalog", "Catalogs", (("attributes", "Attribute"),),
@@ -167,7 +174,9 @@ def _validate_field(raw: object, path: str, xml_kind: str) -> dict[str, object]:
     return value
 
 
-def _validate_form(raw: object, path: str) -> dict[str, object]:
+def _validate_form(
+    raw: object, path: str, format_version: str
+) -> dict[str, object]:
     value = _mapping(raw, path)
     _strict(value, {"name", "synonym", "default", "form_xml", "module_bsl"}, path)
     _required(value, ("name", "synonym", "default", "form_xml", "module_bsl"), path)
@@ -184,6 +193,22 @@ def _validate_form(raw: object, path: str) -> dict[str, object]:
         _fail("invalid_form_xml", f"{path}.form_xml", f"Form.xml не разобран: {error}.")
     if root.tag != f"{{{LOGFORM}}}Form":
         _fail("invalid_form_xml_root", f"{path}.form_xml", "Корень должен быть logform Form.")
+    actual_version = root.attrib.get("version", "").strip()
+    if not actual_version:
+        _fail(
+            "missing_form_format_version",
+            f"{path}.form_xml",
+            "Корень Form.xml обязан содержать атрибут version.",
+        )
+    if actual_version != format_version:
+        _fail(
+            "form_format_version_mismatch",
+            f"{path}.form_xml",
+            (
+                f"Версия Form.xml `{actual_version}` не совпадает с "
+                f"specification.format_version `{format_version}`."
+            ),
+        )
     attributes_node = root.find(f"{{{LOGFORM}}}Attributes")
     form_attributes = [] if attributes_node is None else list(attributes_node)
     main_names = {
@@ -227,7 +252,7 @@ def _validate_form(raw: object, path: str) -> dict[str, object]:
 
 def _validate(specification: object) -> tuple[dict[str, object], _Kind, str, uuid.UUID]:
     value = _mapping(specification, "$specification")
-    _required(value, ("schema_version", "object_ref", "identity", "synonym", "attributes", "forms"), "$specification")
+    _required(value, ("schema_version", "object_ref", "format_version", "identity", "synonym", "attributes", "forms"), "$specification")
     if value["schema_version"] != 1 or isinstance(value["schema_version"], bool):
         _fail("unsupported_schema_version", "$specification.schema_version", "Поддерживается только schema_version=1.")
     object_ref = _text(value["object_ref"], "$specification.object_ref")
@@ -236,6 +261,13 @@ def _validate(specification: object) -> tuple[dict[str, object], _Kind, str, uui
         _fail("unsupported_object_ref", "$specification.object_ref", "Поддержаны Справочник.<Имя> и РегистрСведений.<Имя>.")
     kind = _KINDS[match.group(1)]
     _strict(value, kind.allowed, "$specification")
+    format_version = _text(value["format_version"], "$specification.format_version")
+    if _FORMAT_VERSION.fullmatch(format_version) is None:
+        _fail(
+            "invalid_format_version",
+            "$specification.format_version",
+            "format_version должен иметь вид числовой точечной версии, например `2.20`.",
+        )
     if kind.ru == "Справочник":
         _required(
             value,
@@ -280,7 +312,9 @@ def _validate(specification: object) -> tuple[dict[str, object], _Kind, str, uui
     forms = _list(value["forms"], "$specification.forms")
     defaults = 0
     for index, item in enumerate(forms):
-        form = _validate_form(item, f"$specification.forms[{index}]")
+        form = _validate_form(
+            item, f"$specification.forms[{index}]", format_version
+        )
         name = str(form["name"])
         key = name.casefold()
         if key in names:
@@ -387,10 +421,12 @@ def _register_properties(name: str, synonym: object, default: str) -> str:
     )
 
 
-def _form_descriptor(form: dict[str, object], identity: uuid.UUID) -> str:
+def _form_descriptor(
+    form: dict[str, object], identity: uuid.UUID, format_version: str
+) -> str:
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
-        f"<MetaDataObject {_ROOT_ATTRIBUTES}><Form uuid=\"{_uuid(identity, f'form:{form["name"]}')}\"><Properties>"
+        f"<MetaDataObject {_root_attributes(format_version)}><Form uuid=\"{_uuid(identity, f'form:{form["name"]}')}\"><Properties>"
         f"<Name>{escape(str(form['name']))}</Name>{_synonym(form['synonym'])}<Comment/><FormType>Managed</FormType>"
         "<IncludeHelpInContents>false</IncludeHelpInContents>"
         '<UsePurposes><v8:Value xsi:type="app:ApplicationUsePurpose">PlatformApplication</v8:Value></UsePurposes>'
@@ -424,7 +460,7 @@ def compile_metadata_object(specification: dict[str, object]) -> dict[str, objec
         )
     descriptor = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
-        f"<MetaDataObject {_ROOT_ATTRIBUTES}><{kind.xml} uuid=\"{identity}\">"
+        f"<MetaDataObject {_root_attributes(str(value['format_version']))}><{kind.xml} uuid=\"{identity}\">"
         f"<InternalInfo>{_generated_types(kind, name, identity)}</InternalInfo>"
         f"<Properties>{properties}</Properties><ChildObjects>{children}</ChildObjects>"
         f"</{kind.xml}></MetaDataObject>"
@@ -436,14 +472,17 @@ def compile_metadata_object(specification: dict[str, object]) -> dict[str, objec
         base = f"{owner}/Forms/{form_name}"
         artifacts.extend(
             [
-                {"path": f"{base}.xml", "content": _form_descriptor(form, identity)},
+                {
+                    "path": f"{base}.xml",
+                    "content": _form_descriptor(
+                        form, identity, str(value["format_version"])
+                    ),
+                },
                 {"path": f"{base}/Ext/Form.xml", "content": str(form["form_xml"])},
                 {"path": f"{base}/Ext/Form/Module.bsl", "content": str(form["module_bsl"])},
             ]
         )
-    # Checker считает Configuration.xml частью bundle, хотя compiler
-    # получает его от caller и не создаёт сам.
-    if len(artifacts) + 1 > MAX_ARTIFACTS:
+    if len(artifacts) > MAX_ARTIFACTS:
         _fail(
             "too_many_artifacts",
             "$specification.forms",
@@ -493,37 +532,13 @@ def compile_metadata_object(specification: dict[str, object]) -> dict[str, objec
                     )
             if missing_diagnostics:
                 raise MetadataAuthoringContractError(missing_diagnostics)
-    configuration_registration = {
-        "path": "Configuration.xml",
-        "parent": "md:MetaDataObject/md:Configuration/md:ChildObjects",
-        "element": kind.xml,
-        "value": name,
-        "xml": f"<{kind.xml}>{escape(name)}</{kind.xml}>",
-    }
     return {
         "status": "compiled",
         "schema_version": 1,
         "object_ref": str(value["object_ref"]),
+        "format_version": str(value["format_version"]),
         "artifacts": artifacts,
-        "configuration_registration": configuration_registration,
-        "checker_handoff": {
-            "tool": "check_metadata_artifacts",
-            "arguments_from_result": {
-                "object_ref": "object_ref",
-                "artifacts": "artifacts",
-                "configuration_registration": "configuration_registration",
-            },
-            "required_external_argument": "configuration_xml",
-            "configuration_xml": (
-                "Текст существующего Configuration.xml целевой "
-                "конфигурации; сервер изменяет только копию в памяти."
-            ),
-        },
         "diagnostics": diagnostics,
-        "instructions": [
-            "Передайте result.object_ref, result.artifacts, текст существующего Configuration.xml и result.configuration_registration в check_metadata_artifacts.",
-            "Checker применит регистрацию только в памяти; файлы и Configuration.xml не изменяются.",
-        ],
     }
 
 

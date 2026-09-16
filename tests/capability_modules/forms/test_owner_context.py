@@ -176,6 +176,25 @@ def test_catalog_object_context_сверяется_с_главным_рекви�
     ) in _codes(caught.value)
 
 
+def test_catalog_object_context_объясняет_как_назначить_главный_реквизит():
+    payload = _catalog_object_payload()
+    attributes = payload["attributes"]
+    assert isinstance(attributes, list)
+    main = attributes[-1]
+    assert isinstance(main, dict)
+    main["main"] = False
+
+    with pytest.raises(FormsContractError) as caught:
+        parse_managed_form_spec(payload)
+
+    diagnostic = next(
+        item
+        for item in caught.value.diagnostics
+        if item.code == "incompatible_owner_context"
+    )
+    assert "main=true" in diagnostic.message
+
+
 def test_custom_context_не_требует_объектный_главный_реквизит():
     payload = _payload()
     payload["schema_version"] = 2

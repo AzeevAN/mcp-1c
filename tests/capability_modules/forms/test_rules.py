@@ -341,6 +341,12 @@ def test_overview_не_выдаёт_корпус_за_платформенную
     }
     assert all(rule["evidence_level"] != "platform_guarantee" for rule in payload["rules"])
     by_code = {rule["code"]: rule for rule in payload["rules"]}
+    assert by_code["required_topics_before_compile"]["value"] == [
+        "specification",
+        "attributes",
+        "elements",
+        "commands_events",
+    ]
     assert by_code["explicit_format_version"]["value"] == {
         "confirmed": ["2.16", "2.20"],
         "other": "compiled_with_warning",
@@ -359,6 +365,18 @@ def test_specification_возвращает_тот_же_минимальный_�
     assert payload["example"] == fixture
     assert "id" not in json.dumps(payload["example"], ensure_ascii=False)
     by_code = {rule["code"]: rule for rule in payload["rules"]}
+    assert by_code["catalog_object_owner_context"]["value"] == {
+        "owner": "Справочник.<Имя>",
+        "role": "object",
+        "main_attribute": {
+            "name": "Объект",
+            "main": True,
+            "type": {
+                "kind": "metadata_object",
+                "object": "Справочник.<Имя>",
+            },
+        },
+    }
     assert "зарезервированными словами BSL" in by_code["identifier_syntax"][
         "summary"
     ]

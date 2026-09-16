@@ -2358,7 +2358,10 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
             reader.issue(
                 "incompatible_owner_context",
                 "$.attributes",
-                "Форма объекта справочника требует главный metadata_object.",
+                (
+                    "Форма объекта справочника требует реквизит типа "
+                    "metadata_object с main=true и ссылкой на владельца формы."
+                ),
             )
         elif main_object is not None and main_object.object != context.owner:
             reader.issue(

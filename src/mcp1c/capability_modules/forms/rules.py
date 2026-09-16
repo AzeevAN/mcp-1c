@@ -118,6 +118,21 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
                 "decompile_managed_form",
             ],
         ),
+        FormRule(
+            "required_topics_before_compile",
+            "required",
+            (
+                "Перед первой компиляцией запросите предметные темы правил; "
+                "overview не содержит owner-specific полей specification."
+            ),
+            "contract_decision",
+            [
+                "specification",
+                "attributes",
+                "elements",
+                "commands_events",
+            ],
+        ),
     ),
     "terminology": (
         FormRule(
@@ -162,7 +177,14 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
             {
                 "owner": "Справочник.<Имя>",
                 "role": "object",
-                "main_attribute": "metadata_object",
+                "main_attribute": {
+                    "name": "Объект",
+                    "main": True,
+                    "type": {
+                        "kind": "metadata_object",
+                        "object": "Справочник.<Имя>",
+                    },
+                },
             },
         ),
         FormRule(

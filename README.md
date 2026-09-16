@@ -18,7 +18,7 @@
 
 <p align="center"><sub>Интерфейс дашборда на полностью синтетических данных.</sub></p>
 
-## Состояние — 2026-09-15
+## Состояние — 2026-09-16
 
 | Контур | Состояние |
 |---|---|
@@ -30,13 +30,13 @@
 | Роли | объявленные права из native generation; без готового слоя две role-ручки отсутствуют |
 | Дашборд | современная SPA включена по умолчанию; светлая и тёмная темы; ссылка на GitHub; `on` либо `off` |
 | Авторизация Docker | два разных обязательных токена: `API_TOKEN` на чтение, `ADMIN_TOKEN` на запись |
-| Тесты | `.venv/bin/python -m pytest`, 2883 |
+| Тесты | `.venv/bin/python -m pytest`, 2888 |
 
 Воспроизводимый прогон:
 
 ```bash
 .venv/bin/pip install --require-hashes -r requirements-dev-lock.txt
-.venv/bin/python -m pytest          # 2883 теста (прогон 2026-09-15)
+.venv/bin/python -m pytest          # 2888 тестов (прогон 2026-09-16)
 ```
 
 ## Модульная система возможностей
@@ -1886,6 +1886,11 @@ PYTHONPATH=src .venv/bin/python tests/accept_forms_stdio.py
 Metadata Authoring вызывается отдельно от Forms. Сначала
 `get_metadata_authoring_rules(topic="overview")`, затем тематические
 `catalog`, `information_register`, `artifacts` и `diagnostics`.
+Перед authoring агент получает фактическую структуру целевой конфигурации
+обычными core-инструментами MCP и уже по ней формирует specification. Compiler
+и checker не выполняют скрытый повторный поиск в Registry: они корректно
+кодируют и проверяют внутреннюю структуру переданного намерения, но не
+подтверждают существование целей `catalog_ref`, `Объект.*` и `Запись.*`.
 `compile_metadata_object(specification)` принимает строгую schema v1,
 детерминированно создаёт descriptor объекта и форм, а также упаковывает
 переданные `Form.xml`/`Module.bsl`. Один явный `identity` UUID становится UUID
@@ -1899,17 +1904,30 @@ Metadata Authoring вызывается отдельно от Forms. Снача�
 главного реквизита `Объект`, а не отдельные реквизиты формы. Намеренно скрыть
 стандартное поле можно, но compiler вернёт предупреждение. Одноимённая тень
 поля `Объект.*` или `Запись.*` отклоняется как ошибка контракта.
-`check_metadata_artifacts(object_ref, artifacts)` принимает каноническую ссылку
+`check_metadata_artifacts` по-прежнему принимает каноническую ссылку
 `Справочник.<Имя>` либо `РегистрСведений.<Имя>` и словарь
-`owner-relative путь → текст`. Checker проверяет `Configuration.xml`, descriptor
-объекта, полные generated types, уникальные UUID, QName-prefix, точное свойство
+`owner-relative путь → текст`. Для прямого pure-handoff после compiler можно
+передать `result.artifacts` без ручного преобразования, а вместе с ними —
+текст существующего `Configuration.xml` в `configuration_xml` и
+`result.configuration_registration` в `configuration_registration`. Два последних
+аргумента передаются только вместе. Checker валидирует fragment, добавляет
+регистрацию только в копию XML в памяти и не изменяет переданный текст или
+файлы. Неполная пара или fragment от другого объекта отклоняются. Checker проверяет
+`Configuration.xml`, descriptor объекта, полные generated types, уникальные UUID,
+QName-prefix, точное свойство
 `InformationRegisterPeriodicity` и комплект каждой объявленной формы. Не более
 32 артефактов, 2 МиБ на файл и 8 МиБ суммарно; результат содержит раздельные
 coverage и diagnostics. Инструмент не читает локальный проект, не записывает
 файлы и не импортирует конфигурацию.
 
-Замер 2026-09-15 по канонической дельте `tools/list` дал 2 618 байт и
-приблизительно **475 токенов** для трёх схем Metadata Authoring при
+On-demand тема `artifacts` отдельно различает descriptor формы и физический
+`Ext/Form.xml`: для второго она возвращает точный корень `logform:Form`,
+минимальный статический пример с `DataPath` и шаблоны путей `Объект.*` и
+`Запись.*`. Этот пример достаточен для статической проверки, но не является
+доказательством нативного импорта в 1С.
+
+Замер 2026-09-16 по канонической дельте `tools/list` дал 3 286 байт и
+приблизительно **597 токенов** для трёх схем Metadata Authoring при
 `tiktoken 0.11.0 / o200k_base`. Воспроизвести и проверить manifest:
 
 ```bash

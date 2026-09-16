@@ -120,7 +120,18 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
         },
         "configuration_boundary": (
             "компилятор возвращает инструкцию регистрации, но не создаёт и не "
-            "перезаписывает Configuration.xml"
+            "перезаписывает Configuration.xml; checker может применить её к "
+            "переданной копии configuration_xml только в памяти"
+        ),
+        "recommended_preparation": (
+            "до compile получите фактическую структуру целевой конфигурации "
+            "core-инструментами MCP и сформируйте specification по найденным данным"
+        ),
+        "external_reference_resolution": "not_checked",
+        "caller_responsibility": (
+            "существование объектов и реквизитов из catalog_ref, Объект.* и "
+            "Запись.* обеспечивает caller; compiler кодирует переданное намерение, "
+            "но не подтверждает цель по Registry или конфигурации"
         ),
         "writes_files": False,
         "imports_configuration": False,
@@ -192,6 +203,29 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
         "configuration_registration": (
             "md:Configuration/md:ChildObjects/<Catalog|InformationRegister>"
         ),
+        "compiler_to_checker": {
+            "tool": "check_metadata_artifacts",
+            "arguments": {
+                "object_ref": "compile result.object_ref",
+                "artifacts": "compile result.artifacts",
+                "configuration_xml": (
+                    "текст существующего Configuration.xml целевой конфигурации"
+                ),
+                "configuration_registration": (
+                    "compile result.configuration_registration"
+                ),
+            },
+            "registration_is_in_memory_only": True,
+            "configuration_xml_is_not_modified": True,
+            "configuration_source": (
+                "Configuration.xml передаётся либо в artifacts, либо отдельно; два источника отклоняются"
+            ),
+            "configuration_pair_required_together": [
+                "configuration_xml",
+                "configuration_registration",
+            ],
+            "legacy_artifacts_mapping_supported": True,
+        },
         "generated_type": {
             "element": "xr:GeneratedType",
             "attributes": ["name", "category"],
@@ -210,6 +244,24 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
             "required": ["uuid", "Properties/Name", "Properties/FormType"],
             "form_type": "Managed",
             "name_value": "точное короткое значение ChildObjects/Form",
+        },
+        "form_xml": {
+            "path": "<owner>/Forms/<Форма>/Ext/Form.xml",
+            "root": (
+                'Form xmlns="http://v8.1c.ru/8.3/xcf/logform"'
+            ),
+            "not_descriptor_root": "md:MetaDataObject",
+            "minimal_static_example": (
+                '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform">'
+                '<ChildItems><InputField name="Поле" id="1">'
+                '<DataPath>Объект.Реквизит</DataPath>'
+                '</InputField></ChildItems></Form>'
+            ),
+            "data_path_patterns": [
+                "Объект.<Реквизит>",
+                "Запись.<Реквизит>",
+            ],
+            "native_import_proven": False,
         },
         "max_artifacts": 32,
         "max_artifact_bytes": 2 * 1024 * 1024,

@@ -18,8 +18,20 @@ def _rules_tool(topic: RuleTopic = "overview") -> str:
     return _json(get_metadata_authoring_rules(topic))
 
 
-def _check_tool(object_ref: str, artifacts: dict[str, str]) -> str:
-    return _json(check_metadata_artifacts(object_ref, artifacts))
+def _check_tool(
+    object_ref: str,
+    artifacts: dict[str, str] | list[dict[str, str]],
+    configuration_xml: str | None = None,
+    configuration_registration: dict[str, str] | None = None,
+) -> str:
+    return _json(
+        check_metadata_artifacts(
+            object_ref,
+            artifacts,
+            configuration_xml=configuration_xml,
+            configuration_registration=configuration_registration,
+        )
+    )
 
 
 def _compile_tool(specification: dict) -> str:
@@ -70,8 +82,11 @@ def load(registry=None) -> tuple[CapabilityTool, ...]:
                 "или РегистраСведений: descriptor, generated types, регистрацию, "
                 "формы и XML namespaces. Ничего не пишет и не импортирует в 1С; "
                 "успех статической проверки не доказывает нативный импорт. "
-                "Перед вызовом получите правила и скомпилируйте bundle через "
-                "compile_metadata_object."
+                "После compile_metadata_object передайте result.object_ref, "
+                "result.artifacts, исходный текст Configuration.xml и "
+                "result.configuration_registration. Сервер применит регистрацию "
+                "только к копии в памяти; configuration_xml и configuration_registration "
+                "передаются вместе. Старый словарь path → text тоже поддержан."
             ),
         ),
     )

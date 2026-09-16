@@ -94,7 +94,7 @@ it("объясняет границу Metadata Authoring до включения
   const card = capability.closest("label")!;
   expect(within(card).getByText("Создание метаданных")).toBeInTheDocument();
   expect(within(card).getByText(/3 pure-инструмента/)).toBeInTheDocument();
-  expect(within(card).getByText(/475.*o200k_base/)).toBeInTheDocument();
+  expect(within(card).getByText(/597.*o200k_base/)).toBeInTheDocument();
   expect(capability).not.toBeChecked();
 });
 

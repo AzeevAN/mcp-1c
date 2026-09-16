@@ -117,6 +117,19 @@ def test_catalog_compiler_детерминированно_создаёт_пол
         "value": "ТестовыйСправочник",
         "xml": "<Catalog>ТестовыйСправочник</Catalog>",
     }
+    assert first["checker_handoff"] == {
+        "tool": "check_metadata_artifacts",
+        "arguments_from_result": {
+            "object_ref": "object_ref",
+            "artifacts": "artifacts",
+            "configuration_registration": "configuration_registration",
+        },
+        "required_external_argument": "configuration_xml",
+        "configuration_xml": (
+            "Текст существующего Configuration.xml целевой конфигурации; "
+            "сервер изменяет только копию в памяти."
+        ),
+    }
     assert [item["path"] for item in first["artifacts"]] == [
         "Catalogs/ТестовыйСправочник.xml"
     ]
@@ -133,6 +146,107 @@ def test_catalog_compiler_детерминированно_создаёт_пол
         "Справочник.ТестовыйСправочник", _with_configuration(first)
     )
     assert checked["status"] == "passed"
+
+
+def test_compiler_result_напрямую_переходит_в_checker_без_записи():
+    compiled = compile_metadata_object(_catalog_specification())
+    configuration_xml = (
+        f'<MetaDataObject xmlns="{MD}"><Configuration><ChildObjects>'
+        "<Catalog>Существующий</Catalog>"
+        "</ChildObjects></Configuration></MetaDataObject>"
+    )
+    original_artifacts = [dict(item) for item in compiled["artifacts"]]
+
+    checked = check_metadata_artifacts(
+        compiled["object_ref"],
+        compiled["artifacts"],
+        configuration_xml=configuration_xml,
+        configuration_registration=compiled["configuration_registration"],
+    )
+
+    assert checked["status"] == "passed"
+    assert set(checked["coverage"].values()) == {"passed"}
+    assert compiled["artifacts"] == original_artifacts
+    assert "ТестовыйСправочник" not in configuration_xml
+
+
+def test_checker_отклоняет_неполную_пару_configuration_handoff():
+    compiled = compile_metadata_object(_catalog_specification())
+
+    checked = check_metadata_artifacts(
+        compiled["object_ref"],
+        compiled["artifacts"],
+        configuration_xml=(
+            f'<MetaDataObject xmlns="{MD}"><Configuration><ChildObjects/>'
+            "</Configuration></MetaDataObject>"
+        ),
+    )
+
+    assert checked["status"] == "failed"
+    assert checked["diagnostics"][0]["code"] == (
+        "incomplete_configuration_handoff"
+    )
+
+
+def test_checker_отклоняет_чужую_регистрацию():
+    compiled = compile_metadata_object(_catalog_specification())
+    registration = dict(compiled["configuration_registration"])
+    registration["value"] = "ЧужойСправочник"
+
+    checked = check_metadata_artifacts(
+        compiled["object_ref"],
+        compiled["artifacts"],
+        configuration_xml=(
+            f'<MetaDataObject xmlns="{MD}"><Configuration><ChildObjects/>'
+            "</Configuration></MetaDataObject>"
+        ),
+        configuration_registration=registration,
+    )
+
+    assert checked["status"] == "failed"
+    assert checked["diagnostics"][0]["code"] == (
+        "configuration_registration_mismatch"
+    )
+
+
+def test_checker_отклоняет_битый_configuration_xml():
+    compiled = compile_metadata_object(_catalog_specification())
+
+    checked = check_metadata_artifacts(
+        compiled["object_ref"],
+        compiled["artifacts"],
+        configuration_xml="<broken>",
+        configuration_registration=compiled["configuration_registration"],
+    )
+
+    assert checked["status"] == "failed"
+    assert "invalid_xml" in {
+        item["code"] for item in checked["diagnostics"]
+    }
+    assert set(checked["coverage"].values()) == {"failed"}
+
+
+def test_checker_отклоняет_два_источника_configuration():
+    compiled = compile_metadata_object(_catalog_specification())
+    artifacts = {
+        item["path"]: item["content"] for item in compiled["artifacts"]
+    }
+    artifacts["Configuration.xml"] = (
+        f'<MetaDataObject xmlns="{MD}"><Configuration><ChildObjects/>'
+        "</Configuration></MetaDataObject>"
+    )
+
+    checked = check_metadata_artifacts(
+        compiled["object_ref"],
+        artifacts,
+        configuration_xml=artifacts["Configuration.xml"],
+        configuration_registration=compiled["configuration_registration"],
+    )
+
+    assert checked["status"] == "failed"
+    assert checked["diagnostics"][0]["code"] == (
+        "conflicting_configuration_sources"
+    )
 
 
 @pytest.mark.parametrize(
@@ -272,7 +386,13 @@ def test_register_compiler_упаковывает_forms_и_проходит_chec
     assert "<InformationRegisterPeriodicity>Nonperiodical" in descriptor
     assert "<WriteMode>Independent" in descriptor
     checked = check_metadata_artifacts(
-        "РегистрСведений.ТестовыйРегистр", artifacts
+        result["object_ref"],
+        result["artifacts"],
+        configuration_xml=(
+            f'<MetaDataObject xmlns="{MD}"><Configuration><ChildObjects/>'
+            "</Configuration></MetaDataObject>"
+        ),
+        configuration_registration=result["configuration_registration"],
     )
     assert checked["status"] == "passed"
 

@@ -609,6 +609,11 @@ def test_enabled_добавляет_ровно_три_metadata_authoring_инс�
         "object_ref",
         "artifacts",
     }
+    assert {
+        "configuration_xml",
+        "configuration_registration",
+    }.issubset(tools[-1].input_schema["properties"])
+    assert "result.artifacts" in (tools[-1].description or "")
 
 
 @pytest.mark.anyio

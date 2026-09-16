@@ -441,7 +441,9 @@ def compile_metadata_object(specification: dict[str, object]) -> dict[str, objec
                 {"path": f"{base}/Ext/Form/Module.bsl", "content": str(form["module_bsl"])},
             ]
         )
-    if len(artifacts) > MAX_ARTIFACTS:
+    # Checker считает Configuration.xml частью bundle, хотя compiler
+    # получает его от caller и не создаёт сам.
+    if len(artifacts) + 1 > MAX_ARTIFACTS:
         _fail(
             "too_many_artifacts",
             "$specification.forms",
@@ -488,22 +490,36 @@ def compile_metadata_object(specification: dict[str, object]) -> dict[str, objec
                             ),
                         }
                     )
+    configuration_registration = {
+        "path": "Configuration.xml",
+        "parent": "md:MetaDataObject/md:Configuration/md:ChildObjects",
+        "element": kind.xml,
+        "value": name,
+        "xml": f"<{kind.xml}>{escape(name)}</{kind.xml}>",
+    }
     return {
         "status": "compiled",
         "schema_version": 1,
         "object_ref": str(value["object_ref"]),
         "artifacts": artifacts,
-        "configuration_registration": {
-            "path": "Configuration.xml",
-            "parent": "md:MetaDataObject/md:Configuration/md:ChildObjects",
-            "element": kind.xml,
-            "value": name,
-            "xml": f"<{kind.xml}>{escape(name)}</{kind.xml}>",
+        "configuration_registration": configuration_registration,
+        "checker_handoff": {
+            "tool": "check_metadata_artifacts",
+            "arguments_from_result": {
+                "object_ref": "object_ref",
+                "artifacts": "artifacts",
+                "configuration_registration": "configuration_registration",
+            },
+            "required_external_argument": "configuration_xml",
+            "configuration_xml": (
+                "Текст существующего Configuration.xml целевой "
+                "конфигурации; сервер изменяет только копию в памяти."
+            ),
         },
         "diagnostics": diagnostics,
         "instructions": [
-            "Добавьте configuration_registration в существующий Configuration.xml, не перезаписывая его.",
-            "Перед нативным импортом передайте полный комплект в check_metadata_artifacts.",
+            "Передайте result.object_ref, result.artifacts, текст существующего Configuration.xml и result.configuration_registration в check_metadata_artifacts.",
+            "Checker применит регистрацию только в памяти; файлы и Configuration.xml не изменяются.",
         ],
     }
 

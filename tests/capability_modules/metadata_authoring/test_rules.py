@@ -21,6 +21,12 @@ def test_rules_публикуют_границу_и_два_поддержанн�
     ]
     assert overview["writes_files"] is False
     assert overview["imports_configuration"] is False
+    assert overview["external_reference_resolution"] == "not_checked"
+    assert overview["caller_responsibility"] == (
+        "существование объектов и реквизитов из catalog_ref, Объект.* и "
+        "Запись.* обеспечивает caller; compiler кодирует переданное намерение, "
+        "но не подтверждает цель по Registry или конфигурации"
+    )
     assert overview["compiler_specification"]["required"] == [
         "schema_version",
         "object_ref",
@@ -112,8 +118,49 @@ def test_artifact_rules_достаточны_для_сборки_bundle_без_�
     assert rules["configuration_registration"] == (
         "md:Configuration/md:ChildObjects/<Catalog|InformationRegister>"
     )
+    assert rules["compiler_to_checker"] == {
+        "tool": "check_metadata_artifacts",
+        "arguments": {
+            "object_ref": "compile result.object_ref",
+            "artifacts": "compile result.artifacts",
+            "configuration_xml": (
+                "текст существующего Configuration.xml целевой конфигурации"
+            ),
+            "configuration_registration": (
+                "compile result.configuration_registration"
+            ),
+        },
+        "registration_is_in_memory_only": True,
+        "configuration_xml_is_not_modified": True,
+        "configuration_source": (
+            "Configuration.xml передаётся либо в artifacts, либо отдельно; два источника отклоняются"
+        ),
+        "configuration_pair_required_together": [
+            "configuration_xml",
+            "configuration_registration",
+        ],
+        "legacy_artifacts_mapping_supported": True,
+    }
     assert rules["form_descriptor"]["form_type"] == "Managed"
     assert rules["form_descriptor"]["name_value"] == (
         "точное короткое значение ChildObjects/Form"
     )
+    assert rules["form_xml"] == {
+        "path": "<owner>/Forms/<Форма>/Ext/Form.xml",
+        "root": (
+            'Form xmlns="http://v8.1c.ru/8.3/xcf/logform"'
+        ),
+        "not_descriptor_root": "md:MetaDataObject",
+        "minimal_static_example": (
+            '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform">'
+            '<ChildItems><InputField name="Поле" id="1">'
+            '<DataPath>Объект.Реквизит</DataPath>'
+            '</InputField></ChildItems></Form>'
+        ),
+        "data_path_patterns": [
+            "Объект.<Реквизит>",
+            "Запись.<Реквизит>",
+        ],
+        "native_import_proven": False,
+    }
     assert rules["qname_prefix_scope"] == "same_xml_document"

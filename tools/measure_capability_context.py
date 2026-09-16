@@ -24,6 +24,10 @@ from mcp1c.server import build_server  # noqa: E402
 TOKENIZER_VERSION = "0.11.0"
 ENCODING = "o200k_base"
 METHOD = "canonical tools/list delta: UTF-8 JSON, sort_keys, compact separators"
+MEASURED_AT = {
+    "forms": "2026-09-15",
+    "metadata_authoring": "2026-09-16",
+}
 
 
 def _tools(enabled: tuple[str, ...]) -> list[dict[str, object]]:
@@ -73,7 +77,7 @@ def measurement(capability: str) -> dict[str, object]:
         "canonical_bytes": len(payload),
         "canonical_sha256": hashlib.sha256(payload).hexdigest(),
         "payload": "tools_list_delta",
-        "measured_at": "2026-09-15",
+        "measured_at": MEASURED_AT.get(capability, "unmeasured"),
     }
 
 

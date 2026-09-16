@@ -144,6 +144,135 @@ def _child_text(parent: ET.Element | None, name: str) -> str | None:
     return value or None
 
 
+def _normalize_artifacts(
+    artifacts: dict[str, str] | list[dict[str, str]], report: _Report
+) -> dict[str, str] | None:
+    """Принять как каноническую карту, так и прямой результат compiler."""
+
+    if isinstance(artifacts, dict):
+        if any(
+            not isinstance(path, str) or not isinstance(text, str)
+            for path, text in artifacts.items()
+        ):
+            report.fail_all(
+                "invalid_artifacts",
+                "$artifacts",
+                "artifacts должен содержать только пары path → text.",
+            )
+            return None
+        return dict(artifacts)
+    if not isinstance(artifacts, list):
+        report.fail_all(
+            "invalid_artifacts",
+            "$artifacts",
+            "artifacts должен быть словарём path → text или массивом {path, content}.",
+        )
+        return None
+    normalized: dict[str, str] = {}
+    for index, item in enumerate(artifacts):
+        if not isinstance(item, dict):
+            report.fail_all(
+                "invalid_compiler_artifact",
+                f"$artifacts[{index}]",
+                "Элемент compiler artifacts должен быть объектом {path, content}.",
+            )
+            return None
+        path = item.get("path")
+        content = item.get("content")
+        if not isinstance(path, str) or not isinstance(content, str):
+            report.fail_all(
+                "invalid_compiler_artifact",
+                f"$artifacts[{index}]",
+                "Compiler artifact должен иметь строковые path и content.",
+            )
+            return None
+        if path in normalized:
+            report.fail_all(
+                "duplicate_artifact_path",
+                f"$artifacts[{index}].path",
+                f"Путь `{path}` повторяется в compiler artifacts.",
+            )
+            return None
+        normalized[path] = content
+    return normalized
+
+
+def _merge_configuration_registration(
+    configuration_xml: object,
+    registration: object,
+    object_name: str,
+    kind: _Kind,
+    report: _Report,
+) -> str | None:
+    """Добавить регистрацию в копию Configuration.xml только в памяти."""
+
+    if not isinstance(configuration_xml, str) or not isinstance(registration, dict):
+        report.fail_all(
+            "invalid_configuration_handoff",
+            "$configuration_xml",
+            "configuration_xml должен быть текстом, а configuration_registration — объектом.",
+        )
+        return None
+    try:
+        configuration_size = len(configuration_xml.encode("utf-8"))
+    except UnicodeEncodeError:
+        report.fail_all(
+            "invalid_unicode",
+            "Configuration.xml",
+            "Configuration.xml содержит недопустимый Unicode.",
+        )
+        return None
+    if configuration_size > MAX_ARTIFACT_BYTES:
+        report.fail_all(
+            "artifact_too_large",
+            "Configuration.xml",
+            f"Configuration.xml превышает {MAX_ARTIFACT_BYTES} байт.",
+        )
+        return None
+    expected = {
+        "path": "Configuration.xml",
+        "parent": "md:MetaDataObject/md:Configuration/md:ChildObjects",
+        "element": kind.xml_kind,
+        "value": object_name,
+        "xml": f"<{kind.xml_kind}>{object_name}</{kind.xml_kind}>",
+    }
+    if any(registration.get(key) != value for key, value in expected.items()):
+        report.fail_all(
+            "configuration_registration_mismatch",
+            "$configuration_registration",
+            "configuration_registration не соответствует object_ref или каноническому пути.",
+        )
+        return None
+    root, _ = _parse_xml("Configuration.xml", configuration_xml, report)
+    if root is None:
+        report.failed_coverage.update(_COVERAGE_KEYS)
+        return None
+    if not _require_metadata_root(root, "Configuration.xml", report, "registration"):
+        report.failed_coverage.update(_COVERAGE_KEYS)
+        return None
+    configuration = _find_child(root, "Configuration")
+    child_objects = _find_child(configuration, "ChildObjects")
+    if child_objects is None:
+        report.fail(
+            "registration",
+            "missing_configuration_child_objects",
+            "Configuration.xml",
+            "В Configuration.xml отсутствует Configuration/ChildObjects.",
+        )
+        report.failed_coverage.update(_COVERAGE_KEYS)
+        return None
+    already_registered = any(
+        _local(child.tag) == kind.xml_kind
+        and (child.text or "").strip() == object_name
+        for child in child_objects
+    )
+    if not already_registered:
+        element = ET.Element(f"{{{MD_NAMESPACE}}}{kind.xml_kind}")
+        element.text = object_name
+        child_objects.append(element)
+    return ET.tostring(root, encoding="unicode")
+
+
 def _require_metadata_root(
     root: ET.Element | None,
     path: str,
@@ -429,17 +558,15 @@ def _check_forms(
 
 
 def check_metadata_artifacts(
-    object_ref: str, artifacts: dict[str, str]
+    object_ref: str,
+    artifacts: dict[str, str] | list[dict[str, str]],
+    configuration_xml: str | None = None,
+    configuration_registration: dict[str, str] | None = None,
 ) -> dict[str, object]:
     """Проверить bundle без чтения или записи файлов и без импорта в 1С."""
 
     if not isinstance(object_ref, str):
         raise TypeError("object_ref должен быть строкой")
-    if not isinstance(artifacts, dict) or any(
-        not isinstance(path, str) or not isinstance(text, str)
-        for path, text in artifacts.items()
-    ):
-        raise TypeError("artifacts должен быть словарём строк")
     report = _Report(object_ref)
     match = _OBJECT_REF.fullmatch(object_ref)
     if match is None:
@@ -451,6 +578,37 @@ def check_metadata_artifacts(
         return report.result()
     kind = _KINDS[match.group(1)]
     object_name = match.group(2)
+    normalized = _normalize_artifacts(artifacts, report)
+    if normalized is None:
+        return report.result()
+    has_configuration = configuration_xml is not None
+    has_registration = configuration_registration is not None
+    if has_configuration != has_registration:
+        report.fail_all(
+            "incomplete_configuration_handoff",
+            "$configuration_xml",
+            "configuration_xml и configuration_registration передаются только вместе.",
+        )
+        return report.result()
+    if has_configuration:
+        if "Configuration.xml" in normalized:
+            report.fail_all(
+                "conflicting_configuration_sources",
+                "$artifacts.Configuration.xml",
+                "Передайте Configuration.xml либо в artifacts, либо в configuration_xml, но не в обоих местах.",
+            )
+            return report.result()
+        merged_configuration = _merge_configuration_registration(
+            configuration_xml,
+            configuration_registration,
+            object_name,
+            kind,
+            report,
+        )
+        if merged_configuration is None:
+            return report.result()
+        normalized["Configuration.xml"] = merged_configuration
+    artifacts = normalized
     if len(artifacts) > MAX_ARTIFACTS:
         report.fail_all(
             "too_many_artifacts",

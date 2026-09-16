@@ -109,6 +109,12 @@
 
 ### Исправлено
 
+- Metadata Authoring checker сопоставляет корневой `version` каждой
+  объявленной `Ext/Form.xml` с
+  `Configuration.xml:/MetaDataObject/@version`. Отсутствующая версия и
+  несовпадение вроде нативного RED `2.16` против `2.20` теперь дают `failed`
+  до импорта; все формы проверяются независимо.
+
 - Production Docker-контекст теперь включает opt-in пакет
   `metadata_authoring` и его manifest. Чистая exact-HEAD сборка больше не
   падает при startup с `ModuleNotFoundError`, а allowlist capability-модулей

@@ -30,13 +30,13 @@
 | Роли | объявленные права из native generation; без готового слоя две role-ручки отсутствуют |
 | Дашборд | современная SPA включена по умолчанию; светлая и тёмная темы; ссылка на GitHub; `on` либо `off` |
 | Авторизация Docker | два разных обязательных токена: `API_TOKEN` на чтение, `ADMIN_TOKEN` на запись |
-| Тесты | `.venv/bin/python -m pytest`, 2891 |
+| Тесты | `.venv/bin/python -m pytest`, 2895 |
 
 Воспроизводимый прогон:
 
 ```bash
 .venv/bin/pip install --require-hashes -r requirements-dev-lock.txt
-.venv/bin/python -m pytest          # 2891 тест (прогон 2026-09-16)
+.venv/bin/python -m pytest          # 2895 тестов (прогон 2026-09-16)
 ```
 
 ## Модульная система возможностей
@@ -1916,7 +1916,10 @@ specification, а checker — готовый bundle. Одноимённая те
 файлы. Неполная пара или fragment от другого объекта отклоняются. Checker проверяет
 `Configuration.xml`, descriptor объекта, полные generated types, уникальные UUID,
 QName-prefix, точное свойство
-`InformationRegisterPeriodicity` и комплект каждой объявленной формы. Не более
+`InformationRegisterPeriodicity` и комплект каждой объявленной формы. Для
+каждого вложенного `Ext/Form.xml` обязателен корневой `version`, точно
+совпадающий с `Configuration.xml:/MetaDataObject/@version`; отсутствие или
+несовпадение отклоняется до нативного импорта. Не более
 32 артефактов, 2 МиБ на файл и 8 МиБ суммарно; результат содержит раздельные
 coverage и diagnostics. Инструмент не читает локальный проект, не записывает
 файлы и не импортирует конфигурацию.

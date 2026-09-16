@@ -22,7 +22,7 @@ def _with_configuration(result: dict[str, object]) -> dict[str, str]:
     element = registration["element"]
     value = registration["value"]
     artifacts["Configuration.xml"] = (
-        f'<MetaDataObject xmlns="{MD}"><Configuration><ChildObjects>'
+        f'<MetaDataObject xmlns="{MD}" version="2.20"><Configuration><ChildObjects>'
         f"<{element}>{value}</{element}>"
         "</ChildObjects></Configuration></MetaDataObject>"
     )
@@ -414,7 +414,7 @@ def test_register_compiler_упаковывает_forms_и_проходит_chec
         result["object_ref"],
         result["artifacts"],
         configuration_xml=(
-            f'<MetaDataObject xmlns="{MD}"><Configuration><ChildObjects/>'
+            f'<MetaDataObject xmlns="{MD}" version="2.20"><Configuration><ChildObjects/>'
             "</Configuration></MetaDataObject>"
         ),
         configuration_registration=result["configuration_registration"],

@@ -251,9 +251,15 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
             "root": (
                 'Form xmlns="http://v8.1c.ru/8.3/xcf/logform"'
             ),
+            "format_version": {
+                "required": True,
+                "source": "Configuration.xml:/MetaDataObject/@version",
+                "constraint": "must_equal_configuration_version",
+                "mismatch_status": "failed",
+            },
             "not_descriptor_root": "md:MetaDataObject",
             "minimal_static_example": (
-                '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform">'
+                '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">'
                 '<ChildItems><InputField name="Поле" id="1">'
                 '<DataPath>Объект.Реквизит</DataPath>'
                 '</InputField></ChildItems></Form>'

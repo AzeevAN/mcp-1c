@@ -34,10 +34,10 @@ def _catalog_artifacts(*, include_xs: bool = True) -> dict[str, str]:
 <ChildObjects><Form>ФормаЭлемента</Form><Attribute uuid="20000000-0000-0000-0000-000000000002"><Properties><Name>Артикул</Name><Type><v8:Type>xs:string</v8:Type></Type></Properties></Attribute></ChildObjects>
 </Catalog></MetaDataObject>'''
     return {
-        "Configuration.xml": f'''<MetaDataObject xmlns="{MD}"><Configuration><ChildObjects><Catalog>ТестовыйСправочник</Catalog></ChildObjects></Configuration></MetaDataObject>''',
+        "Configuration.xml": f'''<MetaDataObject xmlns="{MD}" version="2.20"><Configuration><ChildObjects><Catalog>ТестовыйСправочник</Catalog></ChildObjects></Configuration></MetaDataObject>''',
         "Catalogs/ТестовыйСправочник.xml": descriptor,
         "Catalogs/ТестовыйСправочник/Forms/ФормаЭлемента.xml": f'''<MetaDataObject xmlns="{MD}" xmlns:v8="{V8}"><Form uuid="20000000-0000-0000-0000-000000000003"><Properties><Name>ФормаЭлемента</Name><FormType>Managed</FormType></Properties></Form></MetaDataObject>''',
-        "Catalogs/ТестовыйСправочник/Forms/ФормаЭлемента/Ext/Form.xml": '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform"><ChildItems><InputField><DataPath>Объект.Наименование</DataPath></InputField><InputField><DataPath>Объект.Код</DataPath></InputField></ChildItems></Form>',
+        "Catalogs/ТестовыйСправочник/Forms/ФормаЭлемента/Ext/Form.xml": '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><ChildItems><InputField><DataPath>Объект.Наименование</DataPath></InputField><InputField><DataPath>Объект.Код</DataPath></InputField></ChildItems></Form>',
         "Catalogs/ТестовыйСправочник/Forms/ФормаЭлемента/Ext/Form/Module.bsl": "",
     }
 
@@ -59,10 +59,10 @@ def _information_register_artifacts() -> dict[str, str]:
 <ChildObjects><Form>ФормаЗаписи</Form><Dimension uuid="30000000-0000-0000-0000-000000000002"><Properties><Name>Справочник</Name><Type><v8:Type>cfg:CatalogRef.ТестовыйСправочник</v8:Type></Type></Properties></Dimension></ChildObjects>
 </InformationRegister></MetaDataObject>'''
     return {
-        "Configuration.xml": f'''<MetaDataObject xmlns="{MD}"><Configuration><ChildObjects><InformationRegister>ТестовыйРегистр</InformationRegister></ChildObjects></Configuration></MetaDataObject>''',
+        "Configuration.xml": f'''<MetaDataObject xmlns="{MD}" version="2.20"><Configuration><ChildObjects><InformationRegister>ТестовыйРегистр</InformationRegister></ChildObjects></Configuration></MetaDataObject>''',
         "InformationRegisters/ТестовыйРегистр.xml": descriptor,
         "InformationRegisters/ТестовыйРегистр/Forms/ФормаЗаписи.xml": f'''<MetaDataObject xmlns="{MD}"><Form uuid="30000000-0000-0000-0000-000000000003"><Properties><Name>ФормаЗаписи</Name><FormType>Managed</FormType></Properties></Form></MetaDataObject>''',
-        "InformationRegisters/ТестовыйРегистр/Forms/ФормаЗаписи/Ext/Form.xml": '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform"/>',
+        "InformationRegisters/ТестовыйРегистр/Forms/ФормаЗаписи/Ext/Form.xml": '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"/>',
         "InformationRegisters/ТестовыйРегистр/Forms/ФормаЗаписи/Ext/Form/Module.bsl": "",
     }
 
@@ -94,6 +94,84 @@ def test_catalog_bundle_без_обязательного_стандартног
 
     assert result["status"] == "failed"
     assert "required_standard_field_missing" in _codes(result)
+
+
+def test_catalog_bundle_с_чужой_версией_формы_отклоняется():
+    artifacts = _catalog_artifacts()
+    path = "Catalogs/ТестовыйСправочник/Forms/ФормаЭлемента/Ext/Form.xml"
+    artifacts[path] = artifacts[path].replace('version="2.20"', 'version="2.16"')
+
+    result = check_metadata_artifacts(
+        "Справочник.ТестовыйСправочник", artifacts
+    )
+
+    assert result["status"] == "failed"
+    assert ("form_format_version_mismatch", path) in {
+        (item["code"], item["path"]) for item in result["diagnostics"]
+    }
+
+
+def test_catalog_bundle_без_версии_формы_отклоняется():
+    artifacts = _catalog_artifacts()
+    path = "Catalogs/ТестовыйСправочник/Forms/ФормаЭлемента/Ext/Form.xml"
+    artifacts[path] = artifacts[path].replace(' version="2.20"', "")
+
+    result = check_metadata_artifacts(
+        "Справочник.ТестовыйСправочник", artifacts
+    )
+
+    assert result["status"] == "failed"
+    assert ("missing_form_format_version", path) in {
+        (item["code"], item["path"]) for item in result["diagnostics"]
+    }
+
+
+def test_catalog_bundle_с_формой_без_версии_конфигурации_отклоняется():
+    artifacts = _catalog_artifacts()
+    artifacts["Configuration.xml"] = artifacts["Configuration.xml"].replace(
+        ' version="2.20"', ""
+    )
+
+    result = check_metadata_artifacts(
+        "Справочник.ТестовыйСправочник", artifacts
+    )
+
+    assert result["status"] == "failed"
+    assert ("missing_configuration_format_version", "Configuration.xml") in {
+        (item["code"], item["path"]) for item in result["diagnostics"]
+    }
+
+
+def test_catalog_bundle_сообщает_о_каждой_форме_чужой_версии():
+    artifacts = _catalog_artifacts()
+    descriptor_path = "Catalogs/ТестовыйСправочник.xml"
+    artifacts[descriptor_path] = artifacts[descriptor_path].replace(
+        "<Form>ФормаЭлемента</Form>",
+        "<Form>ФормаЭлемента</Form><Form>ДополнительнаяФорма</Form>",
+    )
+    first_path = "Catalogs/ТестовыйСправочник/Forms/ФормаЭлемента/Ext/Form.xml"
+    artifacts[first_path] = artifacts[first_path].replace(
+        'version="2.20"', 'version="2.16"'
+    )
+    artifacts["Catalogs/ТестовыйСправочник/Forms/ДополнительнаяФорма.xml"] = f'''<MetaDataObject xmlns="{MD}"><Form uuid="20000000-0000-0000-0000-000000000004"><Properties><Name>ДополнительнаяФорма</Name><FormType>Managed</FormType></Properties></Form></MetaDataObject>'''
+    second_path = "Catalogs/ТестовыйСправочник/Forms/ДополнительнаяФорма/Ext/Form.xml"
+    artifacts[second_path] = (
+        '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.16"/>'
+    )
+    artifacts[
+        "Catalogs/ТестовыйСправочник/Forms/ДополнительнаяФорма/Ext/Form/Module.bsl"
+    ] = ""
+
+    result = check_metadata_artifacts(
+        "Справочник.ТестовыйСправочник", artifacts
+    )
+
+    mismatches = [
+        item
+        for item in result["diagnostics"]
+        if item["code"] == "form_format_version_mismatch"
+    ]
+    assert [item["path"] for item in mismatches] == [first_path, second_path]
 
 
 def test_information_register_bundle_проходит_полную_проверку():

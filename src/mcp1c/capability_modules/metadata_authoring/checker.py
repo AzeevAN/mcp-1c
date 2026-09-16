@@ -459,6 +459,7 @@ def _check_forms(
     metadata_object: ET.Element,
     artifacts: dict[str, str],
     parsed: dict[str, tuple[ET.Element, set[str]]],
+    configuration_root: ET.Element | None,
     object_name: str,
     kind: _Kind,
     report: _Report,
@@ -477,6 +478,19 @@ def _check_forms(
             f"{owner_path}.xml",
             "Имя формы нельзя повторять в ChildObjects/Form.",
         )
+    configuration_version = None
+    if configuration_root is not None:
+        configuration_version = configuration_root.attrib.get("version", "").strip()
+        if form_names and not configuration_version:
+            report.fail(
+                "forms",
+                "missing_configuration_format_version",
+                "Configuration.xml",
+                (
+                    "При объявленных формах корень Configuration.xml обязан "
+                    "содержать атрибут version."
+                ),
+            )
     for form_name in form_names:
         descriptor_path = f"{owner_path}/Forms/{form_name}.xml"
         form_xml_path = f"{owner_path}/Forms/{form_name}/Ext/Form.xml"
@@ -492,6 +506,26 @@ def _check_forms(
         ):
             if path not in artifacts:
                 report.fail("forms", code, path, message)
+        internal_form_entry = parsed.get(form_xml_path)
+        if internal_form_entry is not None:
+            form_version = internal_form_entry[0].attrib.get("version", "").strip()
+            if not form_version:
+                report.fail(
+                    "forms",
+                    "missing_form_format_version",
+                    form_xml_path,
+                    "Корень Form.xml обязан содержать атрибут version.",
+                )
+            elif configuration_version and form_version != configuration_version:
+                report.fail(
+                    "forms",
+                    "form_format_version_mismatch",
+                    form_xml_path,
+                    (
+                        f"Версия Form.xml `{form_version}` не совпадает с "
+                        f"версией Configuration.xml `{configuration_version}`."
+                    ),
+                )
         form_entry = parsed.get(descriptor_path)
         if form_entry is None:
             if descriptor_path in artifacts:
@@ -776,6 +810,7 @@ def check_metadata_artifacts(
         metadata_object,
         artifacts,
         parsed,
+        configuration[0] if configuration else None,
         object_name,
         kind,
         report,

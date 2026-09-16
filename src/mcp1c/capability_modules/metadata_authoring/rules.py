@@ -106,10 +106,11 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
                     "0..150; Наименование существует только при значении > 0"
                 ),
                 "default_object_form": (
-                    "Для обычной основной формы рекомендуется вывести "
+                    "Основная форма обязана выводить "
                     "Объект.Наименование при description_length > 0 и Объект.Код "
                     "при code_length > 0. Это DataPath главного реквизита Объект, "
-                    "а не отдельные реквизиты формы."
+                    "а не отдельные реквизиты формы. Отсутствие обязательного "
+                    "DataPath отклоняет specification."
                 ),
             },
             "information_register_additional_required": [
@@ -152,8 +153,8 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
         "generated_type_name_pattern": "Catalog<Category>.<Имя>",
         "default_form_property": "DefaultObjectForm",
         "standard_form_fields": {
-            "Объект.Наименование": "рекомендуется при description_length > 0",
-            "Объект.Код": "рекомендуется при code_length > 0",
+            "Объект.Наименование": "обязательно при description_length > 0",
+            "Объект.Код": "обязательно при code_length > 0",
         },
         "standard_command_bar": (
             "Не объявляйте пользовательские команды Записать/ЗаписатьИЗакрыть: "

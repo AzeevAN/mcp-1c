@@ -319,7 +319,7 @@ def test_catalog_compiler_требует_явную_длину_стандарт�
     }
 
 
-def test_catalog_compiler_предупреждает_о_стандартных_полях_основной_формы():
+def test_catalog_compiler_отклоняет_основную_форму_без_стандартных_полей():
     specification = _catalog_specification()
     specification["forms"] = [
         {
@@ -331,14 +331,39 @@ def test_catalog_compiler_предупреждает_о_стандартных_�
         }
     ]
 
+    with pytest.raises(MetadataAuthoringContractError) as caught:
+        compile_metadata_object(specification)
+
+    assert [item["code"] for item in caught.value.diagnostics] == [
+        "required_standard_field_missing",
+        "required_standard_field_missing",
+    ]
+    assert "Объект.Наименование" in caught.value.diagnostics[0]["message"]
+    assert "Объект.Код" in caught.value.diagnostics[1]["message"]
+
+
+def test_catalog_compiler_принимает_стандартные_поля_основной_формы():
+    specification = _catalog_specification()
+    specification["forms"] = [
+        {
+            "name": "ФормаЭлемента",
+            "synonym": "Форма элемента",
+            "default": True,
+            "form_xml": (
+                '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform">'
+                "<ChildItems>"
+                "<InputField><DataPath>Объект.Наименование</DataPath></InputField>"
+                "<InputField><DataPath>Объект.Код</DataPath></InputField>"
+                "</ChildItems></Form>"
+            ),
+            "module_bsl": "",
+        }
+    ]
+
     result = compile_metadata_object(specification)
 
-    assert [item["code"] for item in result["diagnostics"]] == [
-        "recommended_standard_field_missing",
-        "recommended_standard_field_missing",
-    ]
-    assert "Объект.Наименование" in result["diagnostics"][0]["message"]
-    assert "Объект.Код" in result["diagnostics"][1]["message"]
+    assert result["status"] == "compiled"
+    assert result["diagnostics"] == []
 
 
 def test_catalog_compiler_отклоняет_тени_реквизитов_объекта_в_form_xml():

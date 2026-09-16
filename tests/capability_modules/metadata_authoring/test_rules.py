@@ -71,8 +71,8 @@ def test_rules_фиксируют_полные_generated_types():
     assert catalog["form_declaration_value"] == "<Форма>"
     assert catalog["default_form_value"] == "Catalog.<Имя>.Form.<Форма>"
     assert catalog["standard_form_fields"] == {
-        "Объект.Наименование": "рекомендуется при description_length > 0",
-        "Объект.Код": "рекомендуется при code_length > 0",
+        "Объект.Наименование": "обязательно при description_length > 0",
+        "Объект.Код": "обязательно при code_length > 0",
     }
     assert "commands пустым" in catalog["standard_command_bar"]
     assert register["generated_types"] == [

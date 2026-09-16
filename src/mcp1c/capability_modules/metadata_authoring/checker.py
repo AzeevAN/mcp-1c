@@ -555,6 +555,42 @@ def _check_forms(
                     "<Форма> — короткое значение ChildObjects/Form."
                 ),
             )
+        elif kind.object_kind == "Справочник":
+            required_paths = []
+            for property_name, data_path in (
+                ("DescriptionLength", "Объект.Наименование"),
+                ("CodeLength", "Объект.Код"),
+            ):
+                raw_length = _child_text(properties, property_name)
+                try:
+                    exists = raw_length is not None and int(raw_length) > 0
+                except ValueError:
+                    exists = False
+                if exists:
+                    required_paths.append(data_path)
+            default_form_name = default_form.rsplit(".", 1)[-1]
+            form_xml_path = (
+                f"{owner_path}/Forms/{default_form_name}/Ext/Form.xml"
+            )
+            form_entry = parsed.get(form_xml_path)
+            if form_entry is not None:
+                actual_paths = {
+                    (node.text or "").strip()
+                    for node in form_entry[0].iter()
+                    if _local(node.tag) == "DataPath" and (node.text or "").strip()
+                }
+                for required_path in required_paths:
+                    if required_path not in actual_paths:
+                        report.fail(
+                            "forms",
+                            "required_standard_field_missing",
+                            form_xml_path,
+                            (
+                                f"Основная форма справочника обязана выводить "
+                                f"`{required_path}`, потому что соответствующая "
+                                "длина стандартного реквизита больше нуля."
+                            ),
+                        )
 
 
 def check_metadata_artifacts(

@@ -30,14 +30,14 @@ def _catalog_artifacts(*, include_xs: bool = True) -> dict[str, str]:
     descriptor = f'''<MetaDataObject xmlns="{MD}" xmlns:xr="{XR}" xmlns:v8="{V8}"{xs}>
 <Catalog uuid="20000000-0000-0000-0000-000000000001">
 <InternalInfo>{_generated(("Object", "Ref", "Selection", "List", "Manager"), "Catalog", "ТестовыйСправочник")}</InternalInfo>
-<Properties><Name>ТестовыйСправочник</Name><DefaultObjectForm>Catalog.ТестовыйСправочник.Form.ФормаЭлемента</DefaultObjectForm></Properties>
+<Properties><Name>ТестовыйСправочник</Name><CodeLength>9</CodeLength><DescriptionLength>150</DescriptionLength><DefaultObjectForm>Catalog.ТестовыйСправочник.Form.ФормаЭлемента</DefaultObjectForm></Properties>
 <ChildObjects><Form>ФормаЭлемента</Form><Attribute uuid="20000000-0000-0000-0000-000000000002"><Properties><Name>Артикул</Name><Type><v8:Type>xs:string</v8:Type></Type></Properties></Attribute></ChildObjects>
 </Catalog></MetaDataObject>'''
     return {
         "Configuration.xml": f'''<MetaDataObject xmlns="{MD}"><Configuration><ChildObjects><Catalog>ТестовыйСправочник</Catalog></ChildObjects></Configuration></MetaDataObject>''',
         "Catalogs/ТестовыйСправочник.xml": descriptor,
         "Catalogs/ТестовыйСправочник/Forms/ФормаЭлемента.xml": f'''<MetaDataObject xmlns="{MD}" xmlns:v8="{V8}"><Form uuid="20000000-0000-0000-0000-000000000003"><Properties><Name>ФормаЭлемента</Name><FormType>Managed</FormType></Properties></Form></MetaDataObject>''',
-        "Catalogs/ТестовыйСправочник/Forms/ФормаЭлемента/Ext/Form.xml": '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform"/>',
+        "Catalogs/ТестовыйСправочник/Forms/ФормаЭлемента/Ext/Form.xml": '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform"><ChildItems><InputField><DataPath>Объект.Наименование</DataPath></InputField><InputField><DataPath>Объект.Код</DataPath></InputField></ChildItems></Form>',
         "Catalogs/ТестовыйСправочник/Forms/ФормаЭлемента/Ext/Form/Module.bsl": "",
     }
 
@@ -78,6 +78,22 @@ def test_catalog_bundle_проходит_полную_проверку():
 
     assert result["status"] == "passed"
     assert set(result["coverage"].values()) == {"passed"}
+
+
+def test_catalog_bundle_без_обязательного_стандартного_поля_отклоняется():
+    artifacts = _catalog_artifacts()
+    path = "Catalogs/ТестовыйСправочник/Forms/ФормаЭлемента/Ext/Form.xml"
+    artifacts[path] = artifacts[path].replace(
+        "<InputField><DataPath>Объект.Наименование</DataPath></InputField>",
+        "",
+    )
+
+    result = check_metadata_artifacts(
+        "Справочник.ТестовыйСправочник", artifacts
+    )
+
+    assert result["status"] == "failed"
+    assert "required_standard_field_missing" in _codes(result)
 
 
 def test_information_register_bundle_проходит_полную_проверку():

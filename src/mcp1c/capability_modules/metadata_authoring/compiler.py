@@ -460,11 +460,11 @@ def compile_metadata_object(specification: dict[str, object]) -> dict[str, objec
         )
     diagnostics: list[dict[str, str]] = []
     if kind.ru == "Справочник":
-        recommended_paths = []
+        required_paths = []
         if int(value["description_length"]) > 0:
-            recommended_paths.append("Объект.Наименование")
+            required_paths.append("Объект.Наименование")
         if int(value["code_length"]) > 0:
-            recommended_paths.append("Объект.Код")
+            required_paths.append("Объект.Код")
         default_form_spec = next(
             (form for form in forms if bool(form["default"])),
             None,
@@ -476,20 +476,23 @@ def compile_metadata_object(specification: dict[str, object]) -> dict[str, objec
                 for node in root.iter(f"{{{LOGFORM}}}DataPath")
                 if node.text
             }
-            for recommended_path in recommended_paths:
-                if recommended_path not in actual_paths:
-                    diagnostics.append(
+            missing_diagnostics = []
+            for required_path in required_paths:
+                if required_path not in actual_paths:
+                    missing_diagnostics.append(
                         {
-                            "status": "warning",
-                            "code": "recommended_standard_field_missing",
+                            "status": "failed",
+                            "code": "required_standard_field_missing",
                             "path": "$specification.forms",
                             "message": (
-                                f"Обычная основная форма справочника обычно выводит "
-                                f"`{recommended_path}`. Если поле скрыто намеренно, "
-                                "предупреждение можно принять."
+                                f"Основная форма справочника обязана выводить "
+                                f"`{required_path}`, потому что соответствующая "
+                                "длина стандартного реквизита больше нуля."
                             ),
                         }
                     )
+            if missing_diagnostics:
+                raise MetadataAuthoringContractError(missing_diagnostics)
     configuration_registration = {
         "path": "Configuration.xml",
         "parent": "md:MetaDataObject/md:Configuration/md:ChildObjects",

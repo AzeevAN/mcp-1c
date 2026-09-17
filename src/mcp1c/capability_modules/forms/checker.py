@@ -13,6 +13,7 @@ from .decompiler import decompile_managed_form
 from .diagnostics import Coverage, Diagnostic, FormsResult
 from .event_catalog import event_signature
 from .models import is_reserved_bsl_keyword
+from .query_static import check_static_queries
 from .version_catalog import platform_profile
 
 
@@ -652,6 +653,7 @@ def _check_bsl(
     )
     diagnostics.extend(_check_form_value_conversion_context(procedures))
     diagnostics.extend(_check_mutable_form_value_filled(module_bsl, procedures))
+    diagnostics.extend(check_static_queries(module_bsl, procedures))
     diagnostics.extend(_check_async_contract(procedures))
     if any(item.status == "failed" for item in diagnostics):
         return "failed", diagnostics

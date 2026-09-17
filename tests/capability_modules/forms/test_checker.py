@@ -665,6 +665,120 @@ def test_переназначенная_переменная_не_считает
     assert not _diagnostics(result, "mutable_value_filled_not_supported")
 
 
+def test_запятые_между_условиями_среза_последних_дают_bsl_failed():
+    xml, module = _pair()
+    module += '''
+
+&НаСервере
+Процедура ПроверитьЗапрос()
+
+	Запрос = Новый Запрос;
+	Запрос.Текст = "ВЫБРАТЬ Состояние ИЗ РегистрСведений.СостоянияСотрудников.СрезПоследних(&Дата, Сотрудник = &Сотрудник, Год = &Год)";
+
+КонецПроцедуры
+'''
+
+    result = check_managed_form(
+        xml,
+        form_name="ФормаПараметров",
+        module_bsl=module,
+    )
+
+    assert result.coverage.bsl_static == "failed"
+    assert _diagnostics(result, "query_virtual_table_condition_separator")
+
+
+def test_условия_среза_последних_через_и_проходят_bsl_check():
+    xml, module = _pair()
+    module += '''
+
+&НаСервере
+Процедура ПроверитьЗапрос()
+
+	Запрос = Новый Запрос;
+	Запрос.Текст = "ВЫБРАТЬ Состояние ИЗ РегистрСведений.СостоянияСотрудников.СрезПоследних(&Дата, Сотрудник = &Сотрудник И Год = &Год)";
+
+КонецПроцедуры
+'''
+
+    result = check_managed_form(
+        xml,
+        form_name="ФормаПараметров",
+        module_bsl=module,
+    )
+
+    assert result.coverage.bsl_static == "passed"
+    assert not _diagnostics(result, "query_virtual_table_condition_separator")
+
+
+def test_вложенная_запятая_в_условии_среза_последних_не_даёт_failed():
+    xml, module = _pair()
+    module += '''
+
+&НаСервере
+Процедура ПроверитьЗапрос()
+
+	Запрос = Новый Запрос;
+	Запрос.Текст = "ВЫБРАТЬ Состояние ИЗ РегистрСведений.СостоянияСотрудников.СрезПоследних(&Дата, Сотрудник В (&Первый, &Второй) И Год = &Год)";
+
+КонецПроцедуры
+'''
+
+    result = check_managed_form(
+        xml,
+        form_name="ФормаПараметров",
+        module_bsl=module,
+    )
+
+    assert result.coverage.bsl_static == "passed"
+    assert not _diagnostics(result, "query_virtual_table_condition_separator")
+
+
+def test_динамический_текст_запроса_остаётся_bsl_warning():
+    xml, module = _pair()
+    module += '''
+
+&НаСервере
+Процедура ПроверитьЗапрос(ТекстЗапроса)
+
+	Запрос = Новый Запрос;
+	Запрос.Текст = ТекстЗапроса;
+
+КонецПроцедуры
+'''
+
+    result = check_managed_form(
+        xml,
+        form_name="ФормаПараметров",
+        module_bsl=module,
+    )
+
+    assert result.coverage.bsl_static == "warning"
+    assert _diagnostics(result, "query_text_not_checked")
+
+
+def test_поле_текст_не_объекта_запрос_не_проверяется():
+    xml, module = _pair()
+    module += '''
+
+&НаСервере
+Процедура ЗаполнитьТекст()
+
+	Сообщение.Текст = "СрезПоследних(&Дата, А = 1, Б = 2)";
+
+КонецПроцедуры
+'''
+
+    result = check_managed_form(
+        xml,
+        form_name="ФормаПараметров",
+        module_bsl=module,
+    )
+
+    assert result.coverage.bsl_static == "passed"
+    assert not _diagnostics(result, "query_virtual_table_condition_separator")
+
+
 def test_имена_преобразований_в_строке_и_комментарии_игнорируются():
     xml, module = _pair()
     module += '''

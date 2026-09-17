@@ -26,6 +26,13 @@ _BSL_IDENTIFIER = r"[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*"
 _NEW_FILE_ASSIGNMENT = re.compile(
     rf"(?im)^\s*(?P<name>{_BSL_IDENTIFIER})\s*=\s*Новый\s+Файл\s*\("
 )
+_FORM_VALUE_ASSIGNMENT = re.compile(
+    rf"(?i)\b(?P<name>{_BSL_IDENTIFIER})\s*=\s*"
+    r"РеквизитФормыВЗначение\s*\("
+)
+_DIRECT_MUTABLE_VALUE_FILLED = re.compile(
+    r"(?i)\bЗначениеЗаполнено\s*\(\s*РеквизитФормыВЗначение\s*\("
+)
 
 
 def _q(local: str, namespace: str = _LOGFORM) -> str:
@@ -437,6 +444,93 @@ def _check_form_value_conversion_context(
     return diagnostics
 
 
+def _check_mutable_form_value_filled(
+    module_bsl: str,
+    procedures: list[object],
+) -> list[Diagnostic]:
+    """Не передавать прикладной объект формы в `ЗначениеЗаполнено`.
+
+    Нативная приёмка подтвердила runtime-ошибку для мутабельного результата
+    `РеквизитФормыВЗначение`. Это не полный data-flow: проверяются только
+    прямой вложенный вызов и простое присваивание в той же процедуре без
+    последующего переназначения переменной.
+    """
+
+    lines = module_bsl.splitlines()
+    diagnostics: list[Diagnostic] = []
+    for procedure in procedures:
+        conversion_lines = {
+            line
+            for qualifier, name, line in procedure.вызовы
+            if not qualifier and name.casefold() == "реквизитформывзначение"
+        }
+        filled_lines = {
+            line
+            for qualifier, name, line in procedure.вызовы
+            if not qualifier and name.casefold() == "значениезаполнено"
+        }
+        if not conversion_lines or not filled_lines:
+            continue
+
+        for line in conversion_lines & filled_lines:
+            source = lines[line - 1] if 0 < line <= len(lines) else ""
+            if _DIRECT_MUTABLE_VALUE_FILLED.search(source):
+                diagnostics.append(
+                    _diagnostic(
+                        "failed",
+                        "mutable_value_filled_not_supported",
+                        f"$module_bsl:{line}",
+                        (
+                            "ЗначениеЗаполнено не поддерживает мутабельный "
+                            "результат РеквизитФормыВЗначение. Используйте "
+                            "предметное свойство или тип полученного объекта."
+                        ),
+                        level="bsl_static",
+                    )
+                )
+
+        assignments: list[tuple[int, str]] = []
+        for line in sorted(conversion_lines):
+            source = lines[line - 1] if 0 < line <= len(lines) else ""
+            match = _FORM_VALUE_ASSIGNMENT.search(source)
+            if match is not None:
+                assignments.append((line, match.group("name")))
+
+        for filled_line in sorted(filled_lines):
+            source = lines[filled_line - 1] if 0 < filled_line <= len(lines) else ""
+            for assignment_line, variable in reversed(assignments):
+                if assignment_line >= filled_line:
+                    continue
+                value_filled = re.compile(
+                    rf"(?i)\bЗначениеЗаполнено\s*\(\s*{re.escape(variable)}\s*\)"
+                )
+                if value_filled.search(source) is None:
+                    continue
+                reassignment = re.compile(
+                    rf"(?i)^\s*{re.escape(variable)}\s*="
+                )
+                if any(
+                    reassignment.search(lines[index - 1])
+                    for index in range(assignment_line + 1, filled_line)
+                ):
+                    continue
+                diagnostics.append(
+                    _diagnostic(
+                        "failed",
+                        "mutable_value_filled_not_supported",
+                        f"$module_bsl:{filled_line}",
+                        (
+                            f"ЗначениеЗаполнено не поддерживает мутабельный "
+                            f"результат РеквизитФормыВЗначение в {variable}. "
+                            "Используйте предметное свойство или тип объекта."
+                        ),
+                        level="bsl_static",
+                    )
+                )
+                break
+    return diagnostics
+
+
 def _check_bsl(
     root: ET.Element,
     module_bsl: str | None,
@@ -557,6 +651,7 @@ def _check_bsl(
         _check_forbidden_synchronous_client_calls(module_bsl, procedures)
     )
     diagnostics.extend(_check_form_value_conversion_context(procedures))
+    diagnostics.extend(_check_mutable_form_value_filled(module_bsl, procedures))
     diagnostics.extend(_check_async_contract(procedures))
     if any(item.status == "failed" for item in diagnostics):
         return "failed", diagnostics

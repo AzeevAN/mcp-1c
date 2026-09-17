@@ -596,6 +596,75 @@ def test_преобразование_реквизита_формы_на_сер�
     )
 
 
+def test_значение_прикладного_объекта_нельзя_проверять_через_значение_заполнено():
+    xml, module = _pair()
+    module += """
+
+&НаСервере
+Процедура ПроверитьПрикладнойОбъект()
+
+	ПрикладнойОбъект = РеквизитФормыВЗначение("Объект");
+	ПризнакОбъекта = ЗначениеЗаполнено(ПрикладнойОбъект);
+
+КонецПроцедуры
+"""
+
+    result = check_managed_form(
+        xml,
+        form_name="ФормаПараметров",
+        module_bsl=module,
+    )
+
+    assert result.coverage.bsl_static == "failed"
+    assert _diagnostics(result, "mutable_value_filled_not_supported")
+
+
+def test_прямой_mutable_result_нельзя_передавать_в_значение_заполнено():
+    xml, module = _pair()
+    module += """
+
+&НаСервере
+Процедура ПроверитьПрикладнойОбъект()
+
+	ПризнакОбъекта = ЗначениеЗаполнено(РеквизитФормыВЗначение("Объект"));
+
+КонецПроцедуры
+"""
+
+    result = check_managed_form(
+        xml,
+        form_name="ФормаПараметров",
+        module_bsl=module,
+    )
+
+    assert result.coverage.bsl_static == "failed"
+    assert _diagnostics(result, "mutable_value_filled_not_supported")
+
+
+def test_переназначенная_переменная_не_считается_mutable_result():
+    xml, module = _pair()
+    module += """
+
+&НаСервере
+Процедура ПроверитьСтроку()
+
+	Результат = РеквизитФормыВЗначение("Объект");
+	Результат = "готово";
+	Признак = ЗначениеЗаполнено(Результат);
+
+КонецПроцедуры
+"""
+
+    result = check_managed_form(
+        xml,
+        form_name="ФормаПараметров",
+        module_bsl=module,
+    )
+
+    assert result.coverage.bsl_static == "passed"
+    assert not _diagnostics(result, "mutable_value_filled_not_supported")
+
+
 def test_имена_преобразований_в_строке_и_комментарии_игнорируются():
     xml, module = _pair()
     module += '''

@@ -20,6 +20,7 @@ _OBJECT_REF = re.compile(
     r"^(Справочник|РегистрСведений)\.([A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*)$"
 )
 _FORMAT_VERSION = re.compile(r"^\d+\.\d+(?:\.\d+)*$")
+_METADATA_NAME = re.compile(r"^[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*$")
 _COVERAGE_KEYS = (
     "xml",
     "descriptor",
@@ -396,10 +397,22 @@ def _check_forms(
             f"{owner_path}.xml",
             "Имя формы нельзя повторять в ChildObjects/Form.",
         )
+    valid_form_names: list[str] = []
+    expected_paths = {f"{owner_path}.xml"}
     for form_name in form_names:
+        if _METADATA_NAME.fullmatch(form_name) is None:
+            report.fail(
+                "forms",
+                "invalid_form_name",
+                f"{owner_path}.xml:ChildObjects/Form",
+                "Имя формы должно быть идентификатором метаданных без сегментов пути.",
+            )
+            continue
+        valid_form_names.append(form_name)
         descriptor_path = f"{owner_path}/Forms/{form_name}.xml"
         form_xml_path = f"{owner_path}/Forms/{form_name}/Ext/Form.xml"
         module_path = f"{owner_path}/Forms/{form_name}/Ext/Form/Module.bsl"
+        expected_paths.update({descriptor_path, form_xml_path, module_path})
         for path, code, message in (
             (
                 descriptor_path,
@@ -458,6 +471,13 @@ def _check_forms(
                 descriptor_path,
                 "Поддерживается только FormType `Managed`.",
             )
+    for path in sorted(set(artifacts) - expected_paths):
+        report.fail(
+            "forms",
+            "unexpected_artifact",
+            path,
+            "Артефакт не входит в descriptor и закрытый owner-relative комплект.",
+        )
     default_form = _child_text(properties, kind.default_form_property)
     if form_names and default_form is None:
         report.fail(
@@ -469,7 +489,7 @@ def _check_forms(
     if default_form is not None:
         allowed = {
             f"{kind.xml_kind}.{object_name}.Form.{form_name}"
-            for form_name in form_names
+            for form_name in valid_form_names
         }
         if default_form not in allowed:
             report.fail(
@@ -554,6 +574,23 @@ def check_metadata_artifacts(
     if normalized is None:
         return report.result()
     artifacts = normalized
+    unsafe_path = next(
+        (
+            path
+            for path in artifacts
+            if "\\" in path
+            or path.startswith("/")
+            or any(segment in {"", ".", ".."} for segment in path.split("/"))
+        ),
+        None,
+    )
+    if unsafe_path is not None:
+        report.fail_all(
+            "unsafe_artifact_path",
+            unsafe_path,
+            "Путь артефакта должен состоять из безопасных owner-relative сегментов.",
+        )
+        return report.result()
     configuration_path = next(
         (path for path in artifacts if path == "Configuration.xml" or path.endswith("/Configuration.xml")),
         None,

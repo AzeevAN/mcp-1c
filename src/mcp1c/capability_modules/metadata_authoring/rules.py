@@ -282,6 +282,12 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
     },
     "artifacts": {
         "paths_are_owner_relative": True,
+        "path_contract": {
+            "expected_bundle_only": True,
+            "forbidden": ["absolute", "backslash", "empty_segment", ".", ".."],
+            "unsafe_diagnostic": "unsafe_artifact_path",
+            "extra_file_diagnostic": "unexpected_artifact",
+        },
         "namespaces": {
             "md": "http://v8.1c.ru/8.3/MDClasses",
             "xr": "http://v8.1c.ru/8.3/xcf/readable",

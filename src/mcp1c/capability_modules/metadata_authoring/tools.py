@@ -85,7 +85,9 @@ def load(registry=None) -> tuple[CapabilityTool, ...]:
                 "успех статической проверки не доказывает нативный импорт. "
                 "После compile_metadata_object передайте result.object_ref, "
                 "result.format_version и result.artifacts. Configuration.xml "
-                "не поддерживается; регистрацию объекта применяет caller. "
+                "не поддерживается; принимается только точный безопасный "
+                "owner-relative комплект, без лишних файлов и сегментов . или ..; "
+                "регистрацию объекта применяет caller. "
                 "Старый словарь path → text тоже поддержан."
             ),
         ),

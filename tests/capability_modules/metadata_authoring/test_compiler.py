@@ -202,6 +202,50 @@ def test_checker_отклоняет_configuration_xml_как_внешний_ар
 
 
 @pytest.mark.parametrize(
+    "unsafe_path",
+    [
+        "Catalogs/ТестовыйСправочник/../Чужой.bsl",
+        "Catalogs/ТестовыйСправочник/./notes.txt",
+        "Catalogs//ТестовыйСправочник/notes.txt",
+        r"Catalogs\ТестовыйСправочник\notes.txt",
+        "/Catalogs/ТестовыйСправочник/notes.txt",
+    ],
+)
+def test_checker_отклоняет_небезопасный_путь_артефакта(unsafe_path):
+    compiled = compile_metadata_object(_catalog_specification())
+    artifacts = {
+        item["path"]: item["content"] for item in compiled["artifacts"]
+    }
+    artifacts[unsafe_path] = "Процедура X()"
+
+    checked = check_metadata_artifacts(
+        compiled["object_ref"],
+        compiled["format_version"],
+        artifacts,
+    )
+
+    assert checked["status"] == "failed"
+    assert checked["diagnostics"][0]["code"] == "unsafe_artifact_path"
+
+
+def test_checker_отклоняет_лишний_файл_в_owner_каталоге():
+    compiled = compile_metadata_object(_catalog_specification())
+    artifacts = {
+        item["path"]: item["content"] for item in compiled["artifacts"]
+    }
+    artifacts["Catalogs/ТестовыйСправочник/notes.txt"] = "лишний файл"
+
+    checked = check_metadata_artifacts(
+        compiled["object_ref"],
+        compiled["format_version"],
+        artifacts,
+    )
+
+    assert checked["status"] == "failed"
+    assert checked["diagnostics"][0]["code"] == "unexpected_artifact"
+
+
+@pytest.mark.parametrize(
     ("code_length", "description_length", "presentation", "input_fields"),
     [
         (0, 150, "AsDescription", ["Description"]),

@@ -36,6 +36,7 @@ _REGISTER_TYPES = [
 _RULES: dict[RuleTopic, dict[str, object]] = {
     "overview": {
         "status": "supported",
+        "available_topics": list(RULE_TOPICS),
         "supported_metadata_kinds": ["Справочник", "РегистрСведений"],
         "recommended_call_order": [
             "get_metadata_authoring_rules",
@@ -102,6 +103,11 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
                 "form_xml",
                 "module_bsl",
             ],
+            "form_xml_preparation": (
+                "до первой compile с forms запросите topic=artifacts: там "
+                "опубликованы точный корень, namespace, version и минимальный "
+                "статический пример Form.xml"
+            ),
             "catalog_additional_required": [
                 "code_length",
                 "description_length",
@@ -166,6 +172,39 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
             "оставьте commands пустым и используйте корневую AutoCommandBar, "
             "которую платформа заполняет по главному реквизиту Объект."
         ),
+        "compiler_specification_example": {
+            "schema_version": 1,
+            "object_ref": "Справочник.ПроектыПример",
+            "format_version": "2.20",
+            "identity": "40000000-0000-0000-0000-000000000001",
+            "synonym": "Проекты (пример)",
+            "code_length": 9,
+            "description_length": 100,
+            "attributes": [
+                {
+                    "name": "Активен",
+                    "synonym": "Активен",
+                    "type": {"kind": "boolean"},
+                }
+            ],
+            "forms": [
+                {
+                    "name": "ФормаЭлемента",
+                    "synonym": "Форма элемента",
+                    "default": True,
+                    "form_xml": (
+                        '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" '
+                        'version="2.20"><ChildItems>'
+                        '<InputField name="Наименование" id="1">'
+                        '<DataPath>Объект.Наименование</DataPath></InputField>'
+                        '<InputField name="Код" id="2">'
+                        '<DataPath>Объект.Код</DataPath></InputField>'
+                        '</ChildItems></Form>'
+                    ),
+                    "module_bsl": "",
+                }
+            ],
+        },
     },
     "information_register": {
         "object_ref": "РегистрСведений.<Имя>",
@@ -194,6 +233,52 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
             "оставьте commands пустым и используйте корневую AutoCommandBar, "
             "которую платформа заполняет по главному реквизиту Запись."
         ),
+        "compiler_specification_example": {
+            "schema_version": 1,
+            "object_ref": "РегистрСведений.ОценкиПример",
+            "format_version": "2.20",
+            "identity": "50000000-0000-0000-0000-000000000001",
+            "synonym": "Оценки (пример)",
+            "periodicity": "nonperiodical",
+            "dimensions": [
+                {
+                    "name": "Контрагент",
+                    "synonym": "Контрагент",
+                    "main_filter": True,
+                    "type": {
+                        "kind": "catalog_ref",
+                        "object": "Справочник.Контрагенты",
+                    },
+                }
+            ],
+            "resources": [
+                {
+                    "name": "Оценка",
+                    "synonym": "Оценка",
+                    "type": {
+                        "kind": "number",
+                        "digits": 10,
+                        "fraction_digits": 2,
+                    },
+                }
+            ],
+            "attributes": [],
+            "forms": [
+                {
+                    "name": "ФормаЗаписи",
+                    "synonym": "Форма записи",
+                    "default": True,
+                    "form_xml": (
+                        '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" '
+                        'version="2.20"><ChildItems>'
+                        '<InputField name="Контрагент" id="1">'
+                        '<DataPath>Запись.Контрагент</DataPath></InputField>'
+                        '</ChildItems></Form>'
+                    ),
+                    "module_bsl": "",
+                }
+            ],
+        },
     },
     "artifacts": {
         "paths_are_owner_relative": True,

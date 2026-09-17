@@ -605,6 +605,51 @@ def test_enabled_добавляет_ровно_три_metadata_authoring_инс�
     assert "topic" in tools[-3].input_schema["properties"]
     assert "ничего не пишет" in (tools[-3].description or "")
     assert tools[-2].input_schema["required"] == ["specification"]
+    assert "если forms не пуст, artifacts" in (tools[-2].description or "")
+    specification = tools[-2].input_schema["properties"]["specification"]
+    assert len(specification["oneOf"]) == 2
+    catalog, register = specification["oneOf"]
+    assert catalog["title"] == "Справочник"
+    assert register["title"] == "РегистрСведений"
+    assert {
+        "schema_version", "object_ref", "format_version", "identity",
+        "synonym", "attributes", "forms", "code_length", "description_length",
+    } == set(catalog["required"])
+    assert {
+        "schema_version", "object_ref", "format_version", "identity",
+        "synonym", "attributes", "forms", "periodicity", "dimensions",
+        "resources",
+    } == set(register["required"])
+    assert catalog["additionalProperties"] is False
+    assert register["additionalProperties"] is False
+    form = catalog["properties"]["forms"]["items"]
+    assert set(form["required"]) == {
+        "name", "synonym", "default", "form_xml", "module_bsl",
+    }
+    assert "form" not in form["properties"]
+    assert form["additionalProperties"] is False
+    field_types = catalog["properties"]["attributes"]["items"]["properties"][
+        "type"
+    ]["oneOf"]
+    assert [variant["properties"]["kind"]["const"] for variant in field_types] == [
+        "string", "boolean", "number", "date", "catalog_ref",
+    ]
+    assert field_types[0]["properties"]["length"] == {
+        "type": "integer", "minimum": 1, "maximum": 1024,
+    }
+    assert field_types[2]["properties"]["digits"] == {
+        "type": "integer", "minimum": 1, "maximum": 32,
+    }
+    assert catalog["properties"]["object_ref"]["pattern"].startswith(
+        "^Справочник"
+    )
+    assert register["anyOf"] == [
+        {"properties": {name: {"minItems": 1}}, "required": [name]}
+        for name in ("dimensions", "resources", "attributes")
+    ]
+    encoded_specification = json.dumps(specification, ensure_ascii=False)
+    assert "configuration_xml" not in encoded_specification
+    assert "configuration_registration" not in encoded_specification
     assert set(tools[-1].input_schema["required"]) == {
         "object_ref",
         "format_version",
@@ -636,6 +681,22 @@ async def test_metadata_authoring_rules_работают_через_mcp_сесс
                     rejected = await session.call_tool(
                         "compile_metadata_object", {"specification": {}}
                     )
+                    rejected_unknown = await session.call_tool(
+                        "compile_metadata_object",
+                        {
+                            "specification": {
+                                "schema_version": 1,
+                                "object_ref": "Справочник.Тестовый",
+                                "format_version": "2.20",
+                                "identity": "40000000-0000-0000-0000-000000000001",
+                                "synonym": "Тестовый",
+                                "code_length": 9,
+                                "description_length": 150,
+                                "attributes": [],
+                                "forms": [{"form": {}}],
+                            }
+                        },
+                    )
                     checked = await session.call_tool(
                         "check_metadata_artifacts",
                         {
@@ -655,6 +716,13 @@ async def test_metadata_authoring_rules_работают_через_mcp_сесс
     assert json.loads(result.content[0].text)["status"] == "supported"
     assert rejected.is_error is False
     assert json.loads(rejected.content[0].text)["status"] == "rejected"
+    assert rejected_unknown.is_error is False
+    rejected_unknown_payload = json.loads(rejected_unknown.content[0].text)
+    assert rejected_unknown_payload["status"] == "rejected"
+    assert rejected_unknown_payload["diagnostics"][0]["code"] == "unknown_field"
+    assert rejected_unknown_payload["diagnostics"][0]["path"] == (
+        "$specification.forms[0].form"
+    )
     assert checked.is_error is False
     checked_payload = json.loads(checked.content[0].text)
     assert checked_payload["status"] == "failed"

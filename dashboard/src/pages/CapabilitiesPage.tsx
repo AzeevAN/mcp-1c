@@ -17,7 +17,7 @@ const moduleCopy: Record<string, { title: string; description: string; details?:
   metadata_authoring: {
     title: "Создание метаданных",
     description: "Добавляет 3 pure-инструмента: правила, компиляцию и статическую проверку полного комплекта артефактов справочника или регистра сведений.",
-    details: "≈ 529 токенов стартового контекста · o200k_base · замер 16.09.2026",
+    details: "≈ 2 537 токенов стартового контекста · o200k_base · замер 17.09.2026",
   },
 };
 

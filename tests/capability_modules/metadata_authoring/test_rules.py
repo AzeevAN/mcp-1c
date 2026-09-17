@@ -1,3 +1,11 @@
+import pytest
+
+from mcp1c.capability_modules.metadata_authoring.checker import (
+    check_metadata_artifacts,
+)
+from mcp1c.capability_modules.metadata_authoring.compiler import (
+    compile_metadata_object,
+)
 from mcp1c.capability_modules.metadata_authoring.rules import (
     RULE_TOPICS,
     get_metadata_authoring_rules,
@@ -15,6 +23,10 @@ def test_rules_публикуют_границу_и_два_поддержанн�
     overview = get_metadata_authoring_rules("overview")
 
     assert overview["status"] == "supported"
+    assert overview["available_topics"] == list(RULE_TOPICS)
+    assert "topic=artifacts" in overview["compiler_specification"][
+        "form_xml_preparation"
+    ]
     assert overview["supported_metadata_kinds"] == [
         "Справочник",
         "РегистрСведений",
@@ -98,6 +110,21 @@ def test_rules_фиксируют_полные_generated_types():
     assert register["generated_type_name_pattern"] == (
         "InformationRegister<Category>.<Имя>"
     )
+
+
+@pytest.mark.parametrize("topic", ["catalog", "information_register"])
+def test_тематический_пример_проходит_compile_и_check(topic):
+    specification = get_metadata_authoring_rules(topic)[
+        "compiler_specification_example"
+    ]
+
+    compiled = compile_metadata_object(specification)
+    checked = check_metadata_artifacts(
+        compiled["object_ref"], compiled["format_version"], compiled["artifacts"]
+    )
+
+    assert compiled["status"] == "compiled"
+    assert checked["status"] == "passed"
 
 
 def test_artifact_rules_достаточны_для_сборки_bundle_без_чтения_кода():

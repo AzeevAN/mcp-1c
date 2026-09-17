@@ -8,6 +8,7 @@ from ...capabilities import CapabilityTool
 from .checker import check_metadata_artifacts
 from .compiler import MetadataAuthoringContractError, compile_metadata_object
 from .rules import RuleTopic, get_metadata_authoring_rules
+from .schema import MetadataSpecification
 
 
 def _json(payload: object) -> str:
@@ -32,7 +33,7 @@ def _check_tool(
     )
 
 
-def _compile_tool(specification: dict) -> str:
+def _compile_tool(specification: MetadataSpecification) -> str:
     try:
         return _json(compile_metadata_object(specification))
     except MetadataAuthoringContractError as error:
@@ -69,7 +70,9 @@ def load(registry=None) -> tuple[CapabilityTool, ...]:
                 "артефакты Справочника или РегистраСведений. Ничего не пишет, "
                 "не импортирует в 1С и не читает Configuration.xml. "
                 "format_version обязан передать caller. "
-                "Сначала получите правила через get_metadata_authoring_rules."
+                "До первого вызова получите через get_metadata_authoring_rules "
+                "темы overview, тему выбранного вида объекта и, если forms не "
+                "пуст, artifacts."
             ),
         ),
         CapabilityTool(

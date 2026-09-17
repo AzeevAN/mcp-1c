@@ -68,6 +68,13 @@ Capability `metadata_authoring` по тем же startup-правилам доб
 `get_metadata_authoring_rules(topic="overview")`, затем тематические разделы и
 `compile_metadata_object(specification)`. Compiler schema v1 детерминированно
 выводит внутренние UUID из явного `identity` и возвращает текстовые артефакты.
+Темы `catalog` и `information_register` возвращают точные полные примеры,
+которые проходят `compile → check` и адаптируются caller к найденной структуре.
+До первого вызова `tools/list` показывает обе закрытые ветки specification,
+их обязательные поля, плоский `forms`, варианты типов, диапазоны и patterns.
+Schema-only facade оставляет runtime-вход обычным словарём, поэтому ошибочный
+запрос возвращает предметный `status=rejected` с diagnostics, а не сырой
+MCP/Pydantic exception.
 Обязательный `format_version` агент читает из корневого `version` локального
 `Configuration.xml` и передаёт короткой строкой; сам файл модулю не передаётся.
 Справочник явно задаёт `code_length` (`0..50`) и
@@ -85,8 +92,8 @@ specification, а checker независимо отклоняет такой г�
 каталога владельца не входят в контракт. Локальные файлы, Registry и 1С не
 читаются и не изменяются.
 Write/apply и импорт конфигурации не входят в контракт. Статический GREEN не
-доказывает нативную загрузку. Три схемы занимают 2 870 байт, примерно 529
-токенов `tiktoken 0.11.0 / o200k_base` по замеру 2026-09-16:
+доказывает нативную загрузку. Три схемы занимают 10 429 байт, примерно 2 537
+токенов `tiktoken 0.11.0 / o200k_base` по замеру 2026-09-17:
 
 ```bash
 uv run --no-project --python .venv/bin/python --with tiktoken==0.11.0 \

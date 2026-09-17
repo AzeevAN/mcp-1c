@@ -18,7 +18,7 @@
 
 <p align="center"><sub>Интерфейс дашборда на полностью синтетических данных.</sub></p>
 
-## Состояние — 2026-09-16
+## Состояние — 2026-09-17
 
 | Контур | Состояние |
 |---|---|
@@ -30,13 +30,13 @@
 | Роли | объявленные права из native generation; без готового слоя две role-ручки отсутствуют |
 | Дашборд | современная SPA включена по умолчанию; светлая и тёмная темы; ссылка на GitHub; `on` либо `off` |
 | Авторизация Docker | два разных обязательных токена: `API_TOKEN` на чтение, `ADMIN_TOKEN` на запись |
-| Тесты | `.venv/bin/python -m pytest`, 2902 |
+| Тесты | `.venv/bin/python -m pytest`, 2910 |
 
 Воспроизводимый прогон:
 
 ```bash
 .venv/bin/pip install --require-hashes -r requirements-dev-lock.txt
-.venv/bin/python -m pytest          # 2902 теста (прогон 2026-09-16)
+.venv/bin/python -m pytest          # 2910 тестов; 2909 passed, 1 skipped (прогон 2026-09-17)
 ```
 
 ## Модульная система возможностей
@@ -1889,6 +1889,9 @@ PYTHONPATH=src .venv/bin/python tests/accept_forms_stdio.py
 Metadata Authoring вызывается отдельно от Forms. Сначала
 `get_metadata_authoring_rules(topic="overview")`, затем тематические
 `catalog`, `information_register`, `artifacts` и `diagnostics`.
+Темы `catalog` и `information_register` содержат готовые проходящие
+`compile → check` примеры полной specification; caller адаптирует их к
+найденным объектам и своему `format_version`.
 Перед authoring агент получает фактическую структуру целевой конфигурации
 обычными core-инструментами MCP и уже по ней формирует specification. Compiler
 и checker не выполняют скрытый повторный поиск в Registry: они корректно
@@ -1897,7 +1900,11 @@ Metadata Authoring вызывается отдельно от Forms. Снача�
 `compile_metadata_object(specification)` принимает строгую schema v1,
 детерминированно создаёт descriptor объекта и форм, а также упаковывает
 переданные `Form.xml`/`Module.bsl`. Один явный `identity` UUID становится UUID
-объекта; остальные идентификаторы стабильно выводятся из него. Обязательный
+объекта; остальные идентификаторы стабильно выводятся из него.
+`tools/list` заранее публикует обе закрытые ветки specification, обязательные
+поля, плоский массив `forms`, варианты типов, диапазоны и patterns. Эта
+schema-only подсказка не перехватывает ошибочный вызов: compiler по-прежнему
+возвращает короткий `status=rejected` с предметными diagnostics. Обязательный
 `format_version` агент сам читает из корневого `version` локального
 `Configuration.xml` и передаёт короткой строкой: весь файл серверу не нужен.
 Compiler буквально ставит эту версию в descriptor объекта и каждой формы.
@@ -1931,8 +1938,8 @@ On-demand тема `artifacts` отдельно различает descriptor ф
 `Запись.*`. Этот пример достаточен для статической проверки, но не является
 доказательством нативного импорта в 1С.
 
-Замер 2026-09-16 по канонической дельте `tools/list` дал 2 870 байт и
-приблизительно **529 токенов** для трёх схем Metadata Authoring при
+Замер 2026-09-17 по канонической дельте `tools/list` дал 10 429 байт и
+приблизительно **2 537 токенов** для трёх схем Metadata Authoring при
 `tiktoken 0.11.0 / o200k_base`. Воспроизвести и проверить manifest:
 
 ```bash

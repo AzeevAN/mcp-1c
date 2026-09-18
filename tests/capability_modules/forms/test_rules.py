@@ -365,17 +365,18 @@ def test_specification_возвращает_тот_же_минимальный_�
     assert payload["example"] == fixture
     assert "id" not in json.dumps(payload["example"], ensure_ascii=False)
     by_code = {rule["code"]: rule for rule in payload["rules"]}
-    assert by_code["catalog_object_owner_context"]["value"] == {
-        "owner": "Справочник.<Имя>",
+    assert by_code["object_form_owner_context"]["value"] == {
+        "owners": ["Справочник.<Имя>", "Документ.<Имя>"],
         "role": "object",
         "main_attribute": {
             "name": "Объект",
             "main": True,
             "type": {
                 "kind": "metadata_object",
-                "object": "Справочник.<Имя>",
+                "object": "<тот же owner>",
             },
         },
+        "xml_type": "cfg:CatalogObject.<Имя> или cfg:DocumentObject.<Имя>",
     }
     assert "зарезервированными словами BSL" in by_code["identifier_syntax"][
         "summary"
@@ -655,10 +656,10 @@ def test_events_публикуют_закрытый_owner_aware_каталог_�
         "generated_xml": "Form.Command.<name>",
     }
     assert by_code["owner_aware_event_catalog"]["status"] == "supported"
-    assert by_code["object_form_lifecycle_catalog"]["evidence_level"] == (
+    assert by_code["object_form_lifecycle_metadata_object"]["evidence_level"] == (
         "platform_documentation"
     )
-    assert by_code["object_form_lifecycle_catalog"]["value"][
+    assert by_code["object_form_lifecycle_metadata_object"]["value"][
         "BeforeWriteAtServer"
     ] == {
         "directive": "&НаСервере",

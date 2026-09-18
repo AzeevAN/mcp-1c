@@ -187,7 +187,6 @@ def test_compile_schema_публикует_фактические_минимум
     for definition, property_name, minimum in (
         ("ManagedFormSpec", "attributes", 1),
         ("ManagedFormSpec", "elements", 1),
-        ("ManagedFormSpec", "events", 1),
         ("CompositeTypeSpec", "variants", 2),
         ("ValueTableTypeSpec", "columns", 1),
         ("InputFieldSpec", "choice_list", 1),
@@ -201,9 +200,10 @@ def test_compile_schema_публикует_фактические_минимум
             "minItems"
         ] == minimum
 
-    assert "minItems" not in definitions["ManagedFormSpec"]["properties"][
-        "commands"
-    ]
+    for property_name in ("commands", "events"):
+        assert "minItems" not in definitions["ManagedFormSpec"]["properties"][
+            property_name
+        ]
     for definition in (
         "ButtonGroupSpec",
         "PopupSpec",
@@ -1009,7 +1009,6 @@ async def test_ошибка_контракта_forms_возвращает_стр
         (item["code"], item["path"])
         for item in payload["diagnostics"]
     } >= {
-        ("empty_collection", "$.events"),
         ("empty_collection", "$.elements[0].children"),
     }
     assert payload["instructions"] == [

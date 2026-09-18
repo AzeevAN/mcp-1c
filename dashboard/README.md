@@ -97,8 +97,8 @@ MCP1C_IMAGE=mcp1c:local docker compose up -d
 `metadata_authoring` до включения.
 Карточка Forms явно сообщает о 4 статических MCP-инструментах
 и о том, что модуль не записывает файлы и не импортирует изменения в 1С. Она
-также показывает измеренную цену 4 схем: приблизительно 5 949 токенов по
-`o200k_base`. Канонический замер выполнен 2026-09-15 командой
+также показывает измеренную цену 4 схем: приблизительно 5 953 токена по
+`o200k_base`. Канонический замер выполнен 2026-09-18 командой
 `PYTHONPATH=src .venv/bin/python tools/measure_capability_context.py forms`;
 точные байты и SHA находятся в `src/mcp1c/capability_modules/forms/manifest.json`.
 Карточка Metadata Authoring сообщает о 3 pure-инструментах и границе без

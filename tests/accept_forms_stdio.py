@@ -91,7 +91,6 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
             for definition, property_name, minimum in (
                 ("ManagedFormSpec", "attributes", 1),
                 ("ManagedFormSpec", "elements", 1),
-                ("ManagedFormSpec", "events", 1),
                 ("CompositeTypeSpec", "variants", 2),
                 ("RadioButtonFieldSpec", "choice_list", 2),
             ):
@@ -102,6 +101,10 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                     raise RuntimeError(
                         f"Схема потеряла {definition}.{property_name} minItems."
                     )
+            if "events" not in specification_definition.get("required", []):
+                raise RuntimeError("Forms schema не требует поле events.")
+            if "minItems" in specification_definition["properties"]["events"]:
+                raise RuntimeError("Forms schema запрещает пустой массив events.")
             for definition, property_name, accepted, rejected in (
                 (
                     "MetadataObjectTypeSpec",
@@ -413,12 +416,7 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                     }
                 ],
                 "commands": [],
-                "events": [
-                    {
-                        "event": "OnCreateAtServer",
-                        "handler": "ПриСозданииНаСервере",
-                    }
-                ],
+                "events": [],
             }
             record_rules = await session.call_tool(
                 "get_managed_form_rules", {"topic": "attributes"}
@@ -504,6 +502,109 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                 raise RuntimeError(
                     "Внешняя MCP-последовательность role=record дала неверный результат."
                 )
+            document_context = {
+                "owner": "Документ.ТестовыйДокумент",
+                "role": "object",
+            }
+            document_specification = {
+                "schema_version": 2,
+                "form_name": "ФормаДокумента",
+                "context": document_context,
+                "format_version": "2.20",
+                "title": {"ru": "Форма тестового документа"},
+                "attributes": [
+                    {
+                        "name": "Объект",
+                        "type": {
+                            "kind": "metadata_object",
+                            "object": "Документ.ТестовыйДокумент",
+                        },
+                        "main": True,
+                    }
+                ],
+                "elements": [
+                    {
+                        "kind": "input_field",
+                        "name": "Дата",
+                        "data_path": "Объект.Дата",
+                    }
+                ],
+                "commands": [],
+                "events": [
+                    {
+                        "event": "OnCreateAtServer",
+                        "handler": "ПриСозданииНаСервере",
+                    }
+                ],
+            }
+            document_rules = await session.call_tool(
+                "get_managed_form_rules", {"topic": "specification"}
+            )
+            document_compiled = await session.call_tool(
+                "compile_managed_form",
+                {"specification": document_specification},
+            )
+            if document_compiled.is_error:
+                raise RuntimeError(document_compiled.content[0].text)
+            document_compiled_payload = json.loads(
+                document_compiled.content[0].text
+            )
+            document_artifacts = {
+                item["path"]: item["content"]
+                for item in document_compiled_payload["artifacts"]
+            }
+            document_xml = document_artifacts[
+                "Forms/ФормаДокумента/Ext/Form.xml"
+            ]
+            document_module = document_artifacts[
+                "Forms/ФормаДокумента/Ext/Form/Module.bsl"
+            ]
+            document_checked = await session.call_tool(
+                "check_managed_form",
+                {
+                    "form_xml": document_xml,
+                    "form_name": "ФормаДокумента",
+                    "context": document_context,
+                    "module_bsl": document_module,
+                },
+            )
+            document_decompiled = await session.call_tool(
+                "decompile_managed_form",
+                {
+                    "form_xml": document_xml,
+                    "form_name": "ФормаДокумента",
+                    "context": document_context,
+                    "module_bsl": document_module,
+                },
+            )
+            document_checked_payload = json.loads(
+                document_checked.content[0].text
+            )
+            document_decompiled_payload = json.loads(
+                document_decompiled.content[0].text
+            )
+            document_rule_codes = {
+                item["code"]
+                for item in json.loads(document_rules.content[0].text)["rules"]
+            }
+            if (
+                document_checked.is_error
+                or document_decompiled.is_error
+                or document_compiled_payload["coverage"]["structural"] != "passed"
+                or document_checked_payload["coverage"]["structural"] != "passed"
+                or document_decompiled_payload["coverage"]["structural"]
+                != "passed"
+                or document_decompiled_payload["specification"]
+                != document_compiled_payload["specification"]
+                or "object_form_owner_context" not in document_rule_codes
+                or "cfg:DocumentObject.ТестовыйДокумент" not in document_xml
+                or "<MainAttribute>true</MainAttribute>" not in document_xml
+                or "<DataPath>Объект.Дата</DataPath>" not in document_xml
+                or "PostAndClose" in document_xml
+            ):
+                raise RuntimeError(
+                    "Внешняя MCP-последовательность формы документа дала неверный результат."
+                )
             invalid = dict(specification)
             invalid["unknown"] = True
             rejected = await session.call_tool(
@@ -534,8 +635,7 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                 or empty_rejected.is_error
                 or unverified_result.is_error
                 or empty_payload["status"] != "rejected"
-                or empty_paths
-                != {"$.events", "$.elements[0].children"}
+                or empty_paths != {"$.elements[0].children"}
             ):
                 raise RuntimeError("Внешняя MCP-последовательность дала неверный статус.")
             if (
@@ -609,6 +709,9 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                 "record_roundtrip": True,
                 "record_main_attribute": "InformationRegisterRecordManager",
                 "record_saved_data": True,
+                "document_role": "compile_check_decompile_passed",
+                "document_roundtrip": True,
+                "document_main_attribute": "DocumentObject",
                 "bsl_data_access_rule": True,
                 "client_form_value_conversion_rejected": True,
             }

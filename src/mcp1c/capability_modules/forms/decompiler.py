@@ -1999,7 +1999,6 @@ def decompile_managed_form(
     collections = (
         specification["attributes"],
         specification["elements"],
-        specification["events"],
     )
     if any(not collection for collection in collections):
         inventory.issue(
@@ -2091,12 +2090,22 @@ def decompile_managed_form(
             if isinstance(normalized_context, dict)
             else None
         )
+        context_owner = (
+            normalized_context.get("owner")
+            if isinstance(normalized_context, dict)
+            else None
+        )
         diagnostics.append(
             Diagnostic(
                 "structural",
                 "passed" if context_role in {"object", "record"} else "not_checked",
                 (
-                    "catalog_object_context_verified"
+                    (
+                        "document_object_context_verified"
+                        if isinstance(context_owner, str)
+                        and context_owner.startswith("Документ.")
+                        else "catalog_object_context_verified"
+                    )
                     if context_role == "object"
                     else (
                         "information_register_record_context_verified"
@@ -2106,7 +2115,12 @@ def decompile_managed_form(
                 ),
                 "$.context",
                 (
-                    "Контекст формы объекта справочника согласован с главным реквизитом."
+                    (
+                        "Контекст формы объекта документа согласован с главным реквизитом."
+                        if isinstance(context_owner, str)
+                        and context_owner.startswith("Документ.")
+                        else "Контекст формы объекта справочника согласован с главным реквизитом."
+                    )
                     if context_role == "object"
                     else (
                         "Контекст формы записи регистра сведений согласован с главным реквизитом."

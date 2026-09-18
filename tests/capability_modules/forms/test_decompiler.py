@@ -1384,7 +1384,6 @@ def test_отсутствующие_секции_тип_и_action_дают_inven
     assert "action" not in result.specification["commands"][0]
     assert _diagnostics(result, "attribute_type_not_representable")
     assert _diagnostics(result, "command_action_not_representable")
-    assert _diagnostics(result, "outside_compiler_subset")
 
 
 def test_исходный_payload_не_изменяется():

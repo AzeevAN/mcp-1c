@@ -29,7 +29,8 @@
 
 - Forms перешёл на единую спецификацию `schema_version=2` с обязательным
   контекстом владельца и роли. Owner-aware вертикали проверяют форму объекта
-  `Справочник.* + role=object` и форму записи
+  `Справочник.* + role=object` и `Документ.* + role=object` с совпадающим главным
+  `metadata_object` (`CatalogObject`/`DocumentObject`) и форму записи
   `РегистрСведений.* + role=record`. Для регистра поддержаны главный реквизит
   `Запись`, XML-тип `InformationRegisterRecordManager`, `saved_data=true`,
   пути `Запись.<Реквизит>` и lossless `compile → check → decompile`; Registry
@@ -145,6 +146,12 @@
   требуется.
 
 ### Исправлено
+
+- Forms schema v2 теперь принимает обязательный ключ `events` с пустым
+  массивом: форма без обработчиков компилируется без искусственного события,
+  XML не содержит блока `Events`, а `compile → check → decompile` сохраняет
+  `events: []`. Ранее `tools/list` одновременно требовал поле и публиковал
+  `minItems=1`, поэтому независимый агент не мог завершить минимальную форму.
 
 - Forms checker отклоняет diagnostic
   `query_virtual_table_condition_separator` для дополнительной top-level

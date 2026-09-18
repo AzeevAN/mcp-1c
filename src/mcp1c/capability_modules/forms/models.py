@@ -63,6 +63,7 @@ _FORM_OWNER_KINDS = frozenset(
         "Справочник",
     }
 )
+_OBJECT_FORM_OWNER_KINDS = frozenset({"Справочник", "Документ"})
 FormRole: TypeAlias = Literal[
     "object", "list", "choice", "record", "record_set", "common", "custom"
 ]
@@ -561,7 +562,7 @@ class ManagedFormSpec(TypedDict):
     attributes: Annotated[list[FormAttributeSpec], _AT_LEAST_ONE]
     elements: Annotated[list[ElementSpec], _AT_LEAST_ONE]
     commands: list[FormCommandSpec]
-    events: Annotated[list[FormEventSpec], _AT_LEAST_ONE]
+    events: list[FormEventSpec]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1033,7 +1034,7 @@ def _form_context(reader: _Reader, value: object, path: str) -> FormContext:
     else:
         role = raw_role
     supported_owner_role = (
-        owner_kind == "Справочник" and role == "object"
+        owner_kind in _OBJECT_FORM_OWNER_KINDS and role == "object"
     ) or (
         owner_kind == "РегистрСведений" and role == "record"
     )
@@ -2301,7 +2302,7 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
     events = tuple(
         _event(reader, value, f"$.events[{index}]")
         for index, value in enumerate(
-            reader.array(root.get("events"), "$.events")
+            reader.array(root.get("events"), "$.events", allow_empty=True)
         )
     )
 
@@ -2348,7 +2349,10 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
         ),
         None,
     )
-    if context.role == "object" and context.owner.startswith("Справочник."):
+    if (
+        context.role == "object"
+        and context.owner.split(".", 1)[0] in _OBJECT_FORM_OWNER_KINDS
+    ):
         main_object_indexes = [
             index
             for index, attribute in enumerate(attributes)
@@ -2359,7 +2363,7 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
                 "incompatible_owner_context",
                 "$.attributes",
                 (
-                    "Форма объекта справочника требует реквизит типа "
+                    "Форма объекта требует реквизит типа "
                     "metadata_object с main=true и ссылкой на владельца формы."
                 ),
             )

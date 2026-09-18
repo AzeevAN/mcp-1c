@@ -1246,7 +1246,11 @@ def compile_managed_form(specification: object) -> FormsResult:
             "structural",
             "passed" if form.context.role in {"object", "record"} else "not_checked",
             (
-                "catalog_object_context_verified"
+                (
+                    "document_object_context_verified"
+                    if form.context.owner.startswith("Документ.")
+                    else "catalog_object_context_verified"
+                )
                 if form.context.role == "object"
                 else (
                     "information_register_record_context_verified"
@@ -1256,7 +1260,11 @@ def compile_managed_form(specification: object) -> FormsResult:
             ),
             "$.context",
             (
-                "Контекст формы объекта справочника согласован с главным реквизитом."
+                (
+                    "Контекст формы объекта документа согласован с главным реквизитом."
+                    if form.context.owner.startswith("Документ.")
+                    else "Контекст формы объекта справочника согласован с главным реквизитом."
+                )
                 if form.context.role == "object"
                 else (
                     "Контекст формы записи регистра сведений согласован с главным реквизитом."

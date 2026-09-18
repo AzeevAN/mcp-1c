@@ -120,8 +120,11 @@ uv run --no-project --python .venv/bin/python --with tiktoken==0.11.0 \
 Forms принимает только `schema_version=2`. В `context.owner` передаётся
 каноническая ссылка `ВидМетаданных.Имя`, а `context.role` задаёт роль формы;
 decompile/check требуют тот же context и не угадывают его из XML. Поддержаны
-semantic-вертикали `Справочник.* + object` с совпадающим главным
-`metadata_object` и `РегистрСведений.* + record` с главным реквизитом `Запись`,
+semantic-вертикали `Справочник.* + role=object` и
+`Документ.* + role=object` с совпадающим
+главным `metadata_object`: compiler выводит соответственно `CatalogObject` или
+`DocumentObject`, а поля используют `Объект.*`. Также поддержан
+`РегистрСведений.* + record` с главным реквизитом `Запись`,
 `main=true`, `saved_data=true` и путями `Запись.<Реквизит>`. Для формы записи
 compiler использует `InformationRegisterRecordManager`; пустую корневую
 `AutoCommandBar` стандартными командами заполняет платформа. `custom` оставляет

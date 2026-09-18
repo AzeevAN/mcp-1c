@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from mcp1c.capability_modules.forms.compiler import compile_managed_form
+from mcp1c.capability_modules.forms.decompiler import decompile_managed_form
 from mcp1c.capability_modules.forms.models import (
     FormsContractError,
     parse_managed_form_spec,
@@ -38,6 +39,31 @@ def _catalog_object_payload() -> dict[str, object]:
             "main": True,
         }
     )
+    return payload
+
+
+def _document_object_payload() -> dict[str, object]:
+    payload = _catalog_object_payload()
+    context = payload["context"]
+    assert isinstance(context, dict)
+    context["owner"] = "Документ.ТестовыйДокумент"
+    attributes = payload["attributes"]
+    assert isinstance(attributes, list)
+    main = attributes[-1]
+    assert isinstance(main, dict)
+    value_type = main["type"]
+    assert isinstance(value_type, dict)
+    value_type["object"] = "Документ.ТестовыйДокумент"
+    elements = payload["elements"]
+    assert isinstance(elements, list)
+    group = elements[0]
+    assert isinstance(group, dict)
+    children = group["children"]
+    assert isinstance(children, list)
+    field = children[0]
+    assert isinstance(field, dict)
+    field["data_path"] = "Объект.Дата"
+    payload["events"] = []
     return payload
 
 
@@ -110,6 +136,48 @@ def test_catalog_object_context_сохраняется_в_модели():
     assert form.schema_version == 2
     assert form.context.owner == "Справочник.ТестовыйОбъект"
     assert form.context.role == "object"
+
+
+def test_document_object_context_сохраняется_в_модели():
+    form = parse_managed_form_spec(_document_object_payload())
+
+    assert form.context.owner == "Документ.ТестовыйДокумент"
+    assert form.context.role == "object"
+
+
+def test_document_object_context_требует_главный_metadata_object():
+    payload = _document_object_payload()
+    attributes = payload["attributes"]
+    assert isinstance(attributes, list)
+    main = attributes[-1]
+    assert isinstance(main, dict)
+    main["main"] = False
+
+    with pytest.raises(FormsContractError) as caught:
+        parse_managed_form_spec(payload)
+
+    assert ("incompatible_owner_context", "$.attributes") in _codes(
+        caught.value
+    )
+
+
+def test_document_object_context_сверяется_с_главным_metadata_object():
+    payload = _document_object_payload()
+    attributes = payload["attributes"]
+    assert isinstance(attributes, list)
+    main = attributes[-1]
+    assert isinstance(main, dict)
+    value_type = main["type"]
+    assert isinstance(value_type, dict)
+    value_type["object"] = "Документ.ДругойДокумент"
+
+    with pytest.raises(FormsContractError) as caught:
+        parse_managed_form_spec(payload)
+
+    assert (
+        "incompatible_owner_context",
+        "$.attributes[2].type.object",
+    ) in _codes(caught.value)
 
 
 def test_catalog_object_context_отклоняет_теневой_реквизит_формы():
@@ -222,6 +290,51 @@ def test_catalog_object_context_сохраняется_в_result_без_отде
     )
     assert "Справочник.ТестовыйОбъект" not in form_xml
     assert "cfg:CatalogObject" in form_xml
+    assert any(
+        diagnostic.code == "catalog_object_context_verified"
+        and diagnostic.status == "passed"
+        for diagnostic in result.diagnostics
+    )
+
+
+def test_document_object_context_компилирует_DocumentObject_и_roundtrip():
+    payload = _document_object_payload()
+    compiled = compile_managed_form(payload)
+    form_xml = next(
+        artifact.content
+        for artifact in compiled.artifacts
+        if artifact.path.endswith("/Form.xml")
+    )
+    module_bsl = next(
+        artifact.content
+        for artifact in compiled.artifacts
+        if artifact.path.endswith("/Module.bsl")
+    )
+
+    result = decompile_managed_form(
+        form_xml,
+        form_name=payload["form_name"],
+        context=payload["context"],
+        module_bsl=module_bsl,
+    )
+
+    assert "cfg:DocumentObject.ТестовыйДокумент" in form_xml
+    assert "<MainAttribute>true</MainAttribute>" in form_xml
+    assert "<DataPath>Объект.Дата</DataPath>" in form_xml
+    assert "<Events>" not in form_xml
+    assert "PostAndClose" not in form_xml
+    assert any(
+        diagnostic.code == "document_object_context_verified"
+        and diagnostic.status == "passed"
+        for diagnostic in compiled.diagnostics
+    )
+    assert result.status == "decompiled"
+    assert result.specification == compiled.specification
+    assert any(
+        diagnostic.code == "document_object_context_verified"
+        and diagnostic.status == "passed"
+        for diagnostic in result.diagnostics
+    )
 
 
 def test_information_register_record_context_сохраняется_в_модели():

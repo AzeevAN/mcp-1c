@@ -167,24 +167,26 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
             2,
         ),
         FormRule(
-            "catalog_object_owner_context",
+            "object_form_owner_context",
             "supported",
             (
-                "Первая owner-aware вертикаль поддерживает role=object для "
-                "owner вида Справочник.* при совпадающем главном metadata_object."
+                "Owner-aware вертикаль поддерживает role=object для владельца "
+                "Справочник.* или Документ.* (catalog/document) при совпадающем "
+                "главном metadata_object."
             ),
             "corpus_invariant",
             {
-                "owner": "Справочник.<Имя>",
+                "owners": ["Справочник.<Имя>", "Документ.<Имя>"],
                 "role": "object",
                 "main_attribute": {
                     "name": "Объект",
                     "main": True,
                     "type": {
                         "kind": "metadata_object",
-                        "object": "Справочник.<Имя>",
+                        "object": "<тот же owner>",
                     },
                 },
+                "xml_type": "cfg:CatalogObject.<Имя> или cfg:DocumentObject.<Имя>",
             },
         ),
         FormRule(
@@ -696,7 +698,7 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
             },
         ),
         FormRule(
-            "object_form_lifecycle_catalog",
+            "object_form_lifecycle_metadata_object",
             "supported",
             (
                 "События чтения и записи разрешены только при главном "

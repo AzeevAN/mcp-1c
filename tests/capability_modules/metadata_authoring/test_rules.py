@@ -12,10 +12,11 @@ from mcp1c.capability_modules.metadata_authoring.rules import (
 )
 
 
-def test_rules_публикуют_границу_и_два_поддержанных_вида():
+def test_rules_публикуют_границу_и_три_поддержанных_вида():
     assert RULE_TOPICS == (
         "overview",
         "catalog",
+        "document",
         "information_register",
         "artifacts",
         "diagnostics",
@@ -29,13 +30,14 @@ def test_rules_публикуют_границу_и_два_поддержанн�
     ]
     assert overview["supported_metadata_kinds"] == [
         "Справочник",
+        "Документ",
         "РегистрСведений",
     ]
     assert overview["writes_files"] is False
     assert overview["imports_configuration"] is False
     assert overview["external_reference_resolution"] == "not_checked"
     assert overview["caller_responsibility"] == (
-        "существование объектов и реквизитов из catalog_ref, Объект.* и "
+        "существование объектов и реквизитов из catalog_ref, document_ref, Объект.* и "
         "Запись.* обеспечивает caller; compiler кодирует переданное намерение, "
         "но не подтверждает цель по Registry или конфигурации"
     )
@@ -58,6 +60,7 @@ def test_rules_публикуют_границу_и_два_поддержанн�
         "number",
         "date",
         "catalog_ref",
+        "document_ref",
     }
     assert overview["compiler_specification"]["field_types"]["number"] == {
         "required": ["kind", "digits", "fraction_digits"],
@@ -69,6 +72,7 @@ def test_rules_публикуют_границу_и_два_поддержанн�
 
 def test_rules_фиксируют_полные_generated_types():
     catalog = get_metadata_authoring_rules("catalog")
+    document = get_metadata_authoring_rules("document")
     register = get_metadata_authoring_rules("information_register")
 
     assert catalog["generated_types"] == [
@@ -110,9 +114,38 @@ def test_rules_фиксируют_полные_generated_types():
     assert register["generated_type_name_pattern"] == (
         "InformationRegister<Category>.<Имя>"
     )
+    assert document["generated_types"] == [
+        "Object", "Ref", "Selection", "List", "Manager"
+    ]
+    assert document["descriptor_element"] == "md:Document"
+    assert document["posting"] == "Deny"
+    assert document["real_time_posting"] == "Deny"
+    assert document["document_reference_type"] == "cfg:DocumentRef.<ИмяДокумента>"
+    assert document["forms_profile"]["context"] == {
+        "owner": "Документ.<Имя>",
+        "role": "object",
+    }
+    assert document["forms_profile"]["main_attribute"] == {
+        "name": "Объект",
+        "type": {
+            "kind": "metadata_object",
+            "object": "Документ.<Имя>",
+        },
+        "main": True,
+    }
+    assert "Объект.Дата" in document["forms_profile"]["standard_field_rule"]
+    assert document["forms_profile"]["commands"] == []
+    assert document["forms_profile"]["events"] == []
+    assert document["forms_workflow"] == [
+        "compile_managed_form",
+        "check_managed_form",
+        "передать content Form.xml и Module.bsl в compile_metadata_object.forms[]",
+        "check_metadata_artifacts",
+    ]
+    assert "не собирайте Form.xml вручную" in document["forms_handoff"]
 
 
-@pytest.mark.parametrize("topic", ["catalog", "information_register"])
+@pytest.mark.parametrize("topic", ["catalog", "document", "information_register"])
 def test_тематический_пример_проходит_compile_и_check(topic):
     specification = get_metadata_authoring_rules(topic)[
         "compiler_specification_example"

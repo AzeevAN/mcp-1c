@@ -31,7 +31,7 @@ role-операции появляются, только когда хотя б�
 | `compile_managed_form` | `specification` Forms schema v2 с обязательным `context` | условно: каноническая спецификация и тексты `Form.xml`/`Form/Module.bsl`, без записи |
 | `decompile_managed_form` | `form_xml`, `form_name`, `context`, `module_bsl` (необязательно) | условно: каноническая schema v2 либо честный inventory непокрытых XML-путей |
 | `check_managed_form` | `form_xml`, `form_name`, `context`, `module_bsl` (необязательно) | условно: раздельные статические результаты XML, структуры, ссылок и BSL |
-| `get_metadata_authoring_rules` | `topic` (`overview` по умолчанию) | условно: правила полного комплекта справочника или регистра сведений |
+| `get_metadata_authoring_rules` | `topic` (`overview` по умолчанию) | условно: правила полного комплекта справочника, базового непроводимого документа или регистра сведений |
 | `compile_metadata_object` | `specification` Metadata Authoring schema v1 с обязательным `format_version` | условно: owner-relative descriptor и формы без чтения или записи `Configuration.xml` |
 | `check_metadata_artifacts` | `object_ref`, `format_version`, `artifacts` | условно: read-only проверка owner-relative descriptor, generated types, UUID, QName и объявленных форм |
 
@@ -68,9 +68,9 @@ Capability `metadata_authoring` по тем же startup-правилам доб
 `get_metadata_authoring_rules(topic="overview")`, затем тематические разделы и
 `compile_metadata_object(specification)`. Compiler schema v1 детерминированно
 выводит внутренние UUID из явного `identity` и возвращает текстовые артефакты.
-Темы `catalog` и `information_register` возвращают точные полные примеры,
+Темы `catalog`, `document` и `information_register` возвращают точные полные примеры,
 которые проходят `compile → check` и адаптируются caller к найденной структуре.
-До первого вызова `tools/list` показывает обе закрытые ветки specification,
+До первого вызова `tools/list` показывает 3 закрытые ветки specification,
 их обязательные поля, плоский `forms`, варианты типов, диапазоны и patterns.
 Schema-only facade оставляет runtime-вход обычным словарём, поэтому ошибочный
 запрос возвращает предметный `status=rejected` с diagnostics, а не сырой
@@ -85,7 +85,7 @@ MCP/Pydantic exception.
 specification, а checker независимо отклоняет такой готовый bundle. Тень поля
 объекта или записи также отклоняется. Затем агент вызывает
 `check_metadata_artifacts(object_ref, format_version, artifacts)`. Вертикаль принимает
-только `Справочник.<Имя>` и `РегистрСведений.<Имя>` и проверяет переданный
+только `Справочник.<Имя>`, `Документ.<Имя>` и `РегистрСведений.<Имя>` и проверяет переданный
 текстовый bundle. Корневой `version` каждого объявленного `Ext/Form.xml`
 обязан совпадать с переданным `format_version`; отсутствие версии или
 несовпадение даёт `failed`. `Configuration.xml`, регистрация объекта и пути вне
@@ -94,8 +94,17 @@ specification, а checker независимо отклоняет такой г�
 файл сверх точного комплекта объекта и объявленных форм — как
 `unexpected_artifact`. Локальные файлы, Registry и 1С не читаются и не
 изменяются.
+Документ ограничен базовым непроводимым профилем: строковый номер длиной
+`1..50`, `Variable`/`Fixed`, периодичность `Nonperiodical`/`Year`, явные
+уникальность и автонумерация, `Posting=Deny` и `RealTimePosting=Deny`.
+Compiler создаёт 5 generated types, стандартные реквизиты `Posted`, `Ref`,
+`DeletionMark`, `Date`, `Number` и `InputByString` по номеру. Табличные части,
+движения, события, команды проведения, прикладной BSL и формы списка/выбора
+не входят в эту вертикаль. Основная объектная форма передаётся через прежний
+`forms[]` после отдельного `Forms compile → check`; Metadata Authoring не
+вызывает Forms checker автоматически.
 Write/apply и импорт конфигурации не входят в контракт. Статический GREEN не
-доказывает нативную загрузку. Три схемы занимают 10 600 байт, примерно 2 559
+доказывает нативную загрузку. Три схемы занимают 14 525 байт, примерно 3 627
 токенов `tiktoken 0.11.0 / o200k_base` по замеру 2026-09-18:
 
 ```bash

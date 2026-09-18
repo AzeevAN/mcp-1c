@@ -101,11 +101,12 @@ MCP1C_IMAGE=mcp1c:local docker compose up -d
 `o200k_base`. Канонический замер выполнен 2026-09-18 командой
 `PYTHONPATH=src .venv/bin/python tools/measure_capability_context.py forms`;
 точные байты и SHA находятся в `src/mcp1c/capability_modules/forms/manifest.json`.
-Карточка Metadata Authoring сообщает о 3 pure-инструментах и границе без
-записи файлов или импорта в 1С. Цена трёх схем — приблизительно 2 537
-токенов по `o200k_base`; канонический замер 2026-09-17 воспроизводится командой
+Карточка Metadata Authoring сообщает о 3 pure-инструментах для справочника,
+базового непроводимого документа и регистра сведений и о границе без
+записи файлов или импорта в 1С. Цена трёх схем — приблизительно 3 627
+токенов по `o200k_base`; канонический замер 2026-09-18 воспроизводится командой
 `PYTHONPATH=src .venv/bin/python tools/measure_capability_context.py metadata_authoring`,
-а точные 10 429 байт и SHA находятся в manifest модуля.
+а точные 14 525 байт и SHA находятся в manifest модуля.
 Сохранённый набор применяется только полным перезапуском; текущая MCP-сессия
 должна подключиться заново.
 

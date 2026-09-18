@@ -607,10 +607,11 @@ def test_enabled_добавляет_ровно_три_metadata_authoring_инс�
     assert tools[-2].input_schema["required"] == ["specification"]
     assert "если forms не пуст, artifacts" in (tools[-2].description or "")
     specification = tools[-2].input_schema["properties"]["specification"]
-    assert len(specification["oneOf"]) == 2
-    catalog, register = specification["oneOf"]
+    assert len(specification["oneOf"]) == 3
+    catalog, register, document = specification["oneOf"]
     assert catalog["title"] == "Справочник"
     assert register["title"] == "РегистрСведений"
+    assert document["title"] == "Документ"
     assert {
         "schema_version", "object_ref", "format_version", "identity",
         "synonym", "attributes", "forms", "code_length", "description_length",
@@ -622,6 +623,13 @@ def test_enabled_добавляет_ровно_три_metadata_authoring_инс�
     } == set(register["required"])
     assert catalog["additionalProperties"] is False
     assert register["additionalProperties"] is False
+    assert document["additionalProperties"] is False
+    assert {
+        "schema_version", "object_ref", "format_version", "identity",
+        "synonym", "attributes", "forms", "number_length",
+        "number_allowed_length", "number_periodicity", "check_unique",
+        "autonumbering", "posting", "real_time_posting",
+    } == set(document["required"])
     form = catalog["properties"]["forms"]["items"]
     assert set(form["required"]) == {
         "name", "synonym", "default", "form_xml", "module_bsl",
@@ -632,7 +640,7 @@ def test_enabled_добавляет_ровно_три_metadata_authoring_инс�
         "type"
     ]["oneOf"]
     assert [variant["properties"]["kind"]["const"] for variant in field_types] == [
-        "string", "boolean", "number", "date", "catalog_ref",
+        "string", "boolean", "number", "date", "catalog_ref", "document_ref",
     ]
     assert field_types[0]["properties"]["length"] == {
         "type": "integer", "minimum": 1, "maximum": 1024,

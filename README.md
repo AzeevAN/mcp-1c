@@ -30,13 +30,13 @@
 | Роли | объявленные права из native generation; без готового слоя две role-ручки отсутствуют |
 | Дашборд | современная SPA включена по умолчанию; светлая и тёмная темы; ссылка на GitHub; `on` либо `off` |
 | Авторизация Docker | два разных обязательных токена: `API_TOKEN` на чтение, `ADMIN_TOKEN` на запись |
-| Тесты | `.venv/bin/python -m pytest`, 2928 |
+| Тесты | `.venv/bin/python -m pytest`, 2945 |
 
 Воспроизводимый прогон:
 
 ```bash
 .venv/bin/pip install --require-hashes -r requirements-dev-lock.txt
-.venv/bin/python -m pytest          # 2928 тестов; 2927 passed, 1 skipped (прогон 2026-09-18)
+.venv/bin/python -m pytest          # 2945 тестов; 2944 passed, 1 skipped (прогон 2026-09-18)
 ```
 
 ## Модульная система возможностей
@@ -81,8 +81,8 @@ BSL-контракт различает данные формы и прикла�
 Второй подключаемый модуль — **Metadata Authoring («Создание метаданных»)**.
 Он отделён от Forms и отвечает за внешний комплект объекта конфигурации:
 descriptor, generated types, UUID, QName/namespace и owner-relative descriptor
-формы. Первая вертикаль
-поддерживает только `Справочник.*` и `РегистрСведений.*`; она публикует
+формы. Текущая вертикаль поддерживает `Справочник.*`, базовый непроводимый
+`Документ.*` и `РегистрСведений.*`; она публикует
 `get_metadata_authoring_rules`, `compile_metadata_object` и
 `check_metadata_artifacts`. Все операции pure: чтение и изменение
 `Configuration.xml`, регистрация объекта, запись файлов и импорт в 1С не входят
@@ -1615,6 +1615,10 @@ Registry, не читает его внутренние файлы, `data/` ил
 конфигурацию, не пишет файлы и не импортирует их в 1С. Версию формата агент
 сам читает из локального `Configuration.xml` и передаёт как обязательный
 короткий параметр `format_version`, без отправки файла серверу.
+Schema v1 поддерживает справочник, независимый регистр сведений и базовый
+непроводимый документ. Документ явно задаёт строковый номер, его длину
+`1..50`, `Variable`/`Fixed`, периодичность `Nonperiodical`/`Year`, уникальность
+и автонумерацию; `posting` и `real_time_posting` обязаны быть `Deny`.
 
 `get_managed_form_rules(topic="overview")` вызывается первым; затем агент
 запрашивает только нужные тематические разделы. Тема `terminology` публикует
@@ -1887,9 +1891,11 @@ PYTHONPATH=src .venv/bin/python tests/measure_forms_load.py --runs 10
 ```
 
 Внешняя read-only приёмка запускает два отдельных stdio-процесса через
-официальный MCP SDK: при `off` требует ноль Forms-инструментов, при `forms` —
-ровно четыре и выполняет `rules → compile → check → decompile`, canonical
-roundtrip и отрицательный вызов с неизвестным полем:
+официальный MCP SDK: при `off` требует ноль Forms-инструментов, при совместном
+`forms,metadata_authoring` — ровно 4 + 3 инструмента и выполняет Forms
+`rules → compile → check → decompile`, canonical roundtrip, отрицательный
+вызов с неизвестным полем и композицию непроводимого документа с его
+объектной формой через Metadata `compile → check`:
 
 ```bash
 PYTHONPATH=src .venv/bin/python tests/accept_forms_stdio.py
@@ -1901,20 +1907,20 @@ PYTHONPATH=src .venv/bin/python tests/accept_forms_stdio.py
 
 Metadata Authoring вызывается отдельно от Forms. Сначала
 `get_metadata_authoring_rules(topic="overview")`, затем тематические
-`catalog`, `information_register`, `artifacts` и `diagnostics`.
-Темы `catalog` и `information_register` содержат готовые проходящие
+`catalog`, `document`, `information_register`, `artifacts` и `diagnostics`.
+Темы `catalog`, `document` и `information_register` содержат готовые проходящие
 `compile → check` примеры полной specification; caller адаптирует их к
 найденным объектам и своему `format_version`.
 Перед authoring агент получает фактическую структуру целевой конфигурации
 обычными core-инструментами MCP и уже по ней формирует specification. Compiler
 и checker не выполняют скрытый повторный поиск в Registry: они корректно
 кодируют и проверяют внутреннюю структуру переданного намерения, но не
-подтверждают существование целей `catalog_ref`, `Объект.*` и `Запись.*`.
+подтверждают существование целей `catalog_ref`, `document_ref`, `Объект.*` и `Запись.*`.
 `compile_metadata_object(specification)` принимает строгую schema v1,
 детерминированно создаёт descriptor объекта и форм, а также упаковывает
 переданные `Form.xml`/`Module.bsl`. Один явный `identity` UUID становится UUID
 объекта; остальные идентификаторы стабильно выводятся из него.
-`tools/list` заранее публикует обе закрытые ветки specification, обязательные
+`tools/list` заранее публикует 3 закрытые ветки specification, обязательные
 поля, плоский массив `forms`, варианты типов, диапазоны и patterns. Эта
 schema-only подсказка не перехватывает ошибочный вызов: compiler по-прежнему
 возвращает короткий `status=rejected` с предметными diagnostics. Обязательный
@@ -1930,7 +1936,7 @@ Compiler буквально ставит эту версию в descriptor об�
 specification, а checker — готовый bundle. Одноимённая тень поля `Объект.*`
 или `Запись.*` также отклоняется как ошибка контракта.
 `check_metadata_artifacts` принимает каноническую ссылку
-`Справочник.<Имя>` либо `РегистрСведений.<Имя>`, тот же обязательный
+`Справочник.<Имя>`, `Документ.<Имя>` либо `РегистрСведений.<Имя>`, тот же обязательный
 `format_version` и словарь `owner-relative путь → текст`. Для прямого
 pure-handoff после compiler достаточно передать эти три значения и
 `result.artifacts` без преобразования. Checker отклоняет `Configuration.xml` и
@@ -1942,7 +1948,14 @@ pure-handoff после compiler достаточно передать эти т
 конфигурацией. Checker проверяет descriptor
 объекта, полные generated types, уникальные UUID, QName-prefix, точное свойство
 `InformationRegisterPeriodicity` и комплект каждой объявленной формы. Для
-каждого вложенного `Ext/Form.xml` обязателен корневой `version`, точно
+документа checker требует ровно 5 generated types, канонические стандартные
+реквизиты `Posted`, `Ref`, `DeletionMark`, `Date`, `Number`, `InputByString`
+по номеру и запрещает проводить документ. Полный `Configuration.xml`,
+табличные части, движения, события, команды проведения и прикладной BSL не
+входят в эту вертикаль. Для основной формы Metadata Authoring принимает
+готовый `Form.xml`, созданный Forms для `Документ.* + role=object`, но не
+вызывает Forms checker автоматически и не изобретает форму.
+Для каждого вложенного `Ext/Form.xml` обязателен корневой `version`, точно
 совпадающий с переданным `format_version`; отсутствие или несовпадение
 отклоняется до нативного импорта. Не более
 32 артефактов, 2 МиБ на файл и 8 МиБ суммарно; результат содержит раздельные
@@ -1955,8 +1968,8 @@ On-demand тема `artifacts` отдельно различает descriptor ф
 `Запись.*`. Этот пример достаточен для статической проверки, но не является
 доказательством нативного импорта в 1С.
 
-Замер 2026-09-18 по канонической дельте `tools/list` дал 10 600 байт и
-приблизительно **2 559 токенов** для трёх схем Metadata Authoring при
+Замер 2026-09-18 по канонической дельте `tools/list` дал 14 525 байт и
+приблизительно **3 627 токенов** для трёх схем Metadata Authoring при
 `tiktoken 0.11.0 / o200k_base`. Воспроизвести и проверить manifest:
 
 ```bash

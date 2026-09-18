@@ -9,6 +9,7 @@ from typing import Literal, TypeAlias
 RuleTopic: TypeAlias = Literal[
     "overview",
     "catalog",
+    "document",
     "information_register",
     "artifacts",
     "diagnostics",
@@ -17,12 +18,14 @@ RuleTopic: TypeAlias = Literal[
 RULE_TOPICS: tuple[RuleTopic, ...] = (
     "overview",
     "catalog",
+    "document",
     "information_register",
     "artifacts",
     "diagnostics",
 )
 
 _CATALOG_TYPES = ["Object", "Ref", "Selection", "List", "Manager"]
+_DOCUMENT_TYPES = ["Object", "Ref", "Selection", "List", "Manager"]
 _REGISTER_TYPES = [
     "Record",
     "Manager",
@@ -37,7 +40,7 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
     "overview": {
         "status": "supported",
         "available_topics": list(RULE_TOPICS),
-        "supported_metadata_kinds": ["Справочник", "РегистрСведений"],
+        "supported_metadata_kinds": ["Справочник", "Документ", "РегистрСведений"],
         "recommended_call_order": [
             "get_metadata_authoring_rules",
             "compile_metadata_object",
@@ -73,6 +76,7 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
                 "number",
                 "date",
                 "catalog_ref",
+                "document_ref",
             ],
             "field_types": {
                 "string": {
@@ -94,6 +98,10 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
                 "catalog_ref": {
                     "required": ["kind", "object"],
                     "object": "Справочник.<Имя>",
+                },
+                "document_ref": {
+                    "required": ["kind", "object"],
+                    "object": "Документ.<Имя>",
                 },
             },
             "form": [
@@ -130,6 +138,15 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
                 "dimensions",
                 "resources",
             ],
+            "document_additional_required": [
+                "number_length",
+                "number_allowed_length",
+                "number_periodicity",
+                "check_unique",
+                "autonumbering",
+                "posting",
+                "real_time_posting",
+            ],
         },
         "configuration_boundary": (
             "Configuration.xml и регистрация объекта не входят в контракт: caller "
@@ -142,13 +159,100 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
         ),
         "external_reference_resolution": "not_checked",
         "caller_responsibility": (
-            "существование объектов и реквизитов из catalog_ref, Объект.* и "
+            "существование объектов и реквизитов из catalog_ref, document_ref, Объект.* и "
             "Запись.* обеспечивает caller; compiler кодирует переданное намерение, "
             "но не подтверждает цель по Registry или конфигурации"
         ),
         "writes_files": False,
         "imports_configuration": False,
         "native_import_proven": False,
+    },
+    "document": {
+        "object_ref": "Документ.<Имя>",
+        "descriptor_path": "Documents/<Имя>.xml",
+        "descriptor_element": "md:Document",
+        "required_sections": ["InternalInfo", "Properties", "ChildObjects"],
+        "name_property": "Properties/Name",
+        "form_declaration": "ChildObjects/Form",
+        "form_declaration_value": "<Форма>",
+        "default_form_value": "Document.<Имя>.Form.<Форма>",
+        "attribute_declaration": "ChildObjects/Attribute[@uuid]",
+        "generated_types": _DOCUMENT_TYPES,
+        "generated_type_name_pattern": "Document<Category>.<Имя>",
+        "default_form_property": "DefaultObjectForm",
+        "document_reference_type": "cfg:DocumentRef.<ИмяДокумента>",
+        "number": {
+            "type": "String",
+            "length": "1..50",
+            "allowed_length": ["Variable", "Fixed"],
+            "periodicity": ["Nonperiodical", "Year"],
+        },
+        "posting": "Deny",
+        "real_time_posting": "Deny",
+        "limitations": [
+            "непроводимый документ",
+            "без табличных частей и движений",
+            "без команд проведения, событий и прикладного BSL",
+            "без форм списка и выбора",
+        ],
+        "forms_handoff": (
+            "не собирайте Form.xml вручную: сначала вызовите compile_managed_form "
+            "для Документ.<Имя> + role=object, проверьте результат через "
+            "check_managed_form и передайте content артефактов Form.xml/Module.bsl "
+            "в forms[]; Metadata Authoring только упаковывает проверенный "
+            "owner-relative артефакт"
+        ),
+        "forms_workflow": [
+            "compile_managed_form",
+            "check_managed_form",
+            "передать content Form.xml и Module.bsl в compile_metadata_object.forms[]",
+            "check_metadata_artifacts",
+        ],
+        "forms_profile": {
+            "context": {
+                "owner": "Документ.<Имя>",
+                "role": "object",
+            },
+            "main_attribute": {
+                "name": "Объект",
+                "type": {
+                    "kind": "metadata_object",
+                    "object": "Документ.<Имя>",
+                },
+                "main": True,
+            },
+            "standard_field_rule": (
+                "стандартные реквизиты документа не добавляются отдельными "
+                "attributes формы: поле даты использует data_path `Объект.Дата`"
+            ),
+            "commands": [],
+            "events": [],
+        },
+        "compiler_specification_example": {
+            "schema_version": 1,
+            "object_ref": "Документ.ЗаявкаПример",
+            "format_version": "2.20",
+            "identity": "60000000-0000-0000-0000-000000000001",
+            "synonym": "Заявка (пример)",
+            "number_length": 11,
+            "number_allowed_length": "Variable",
+            "number_periodicity": "Nonperiodical",
+            "check_unique": True,
+            "autonumbering": True,
+            "posting": "Deny",
+            "real_time_posting": "Deny",
+            "attributes": [
+                {
+                    "name": "Основание",
+                    "synonym": "Основание",
+                    "type": {
+                        "kind": "document_ref",
+                        "object": "Документ.ДокументОснование",
+                    },
+                }
+            ],
+            "forms": [],
+        },
     },
     "catalog": {
         "object_ref": "Справочник.<Имя>",

@@ -23,6 +23,11 @@ FORM_TOOLS = (
     "decompile_managed_form",
     "check_managed_form",
 )
+METADATA_TOOLS = (
+    "get_metadata_authoring_rules",
+    "compile_metadata_object",
+    "check_metadata_artifacts",
+)
 
 
 def _context() -> dict[str, str]:
@@ -61,6 +66,13 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
 
             if present != FORM_TOOLS:
                 raise RuntimeError(f"Неверный порядок Forms tools: {present!r}")
+            metadata_present = tuple(
+                name for name in tools if name in METADATA_TOOLS
+            )
+            if metadata_present != METADATA_TOOLS:
+                raise RuntimeError(
+                    f"Неверный порядок Metadata Authoring tools: {metadata_present!r}"
+                )
             compile_schema = tools["compile_managed_form"].input_schema
             schema_text = json.dumps(compile_schema, ensure_ascii=False)
             if "ManagedFormSpec" not in schema_text or "additionalProperties" not in schema_text:
@@ -530,12 +542,7 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                     }
                 ],
                 "commands": [],
-                "events": [
-                    {
-                        "event": "OnCreateAtServer",
-                        "handler": "ПриСозданииНаСервере",
-                    }
-                ],
+                "events": [],
             }
             document_rules = await session.call_tool(
                 "get_managed_form_rules", {"topic": "specification"}
@@ -604,6 +611,84 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
             ):
                 raise RuntimeError(
                     "Внешняя MCP-последовательность формы документа дала неверный результат."
+                )
+            metadata_rules = await session.call_tool(
+                "get_metadata_authoring_rules", {"topic": "document"}
+            )
+            metadata_specification = {
+                "schema_version": 1,
+                "object_ref": "Документ.ТестовыйДокумент",
+                "format_version": "2.20",
+                "identity": "60000000-0000-0000-0000-000000000001",
+                "synonym": "Тестовый документ",
+                "number_length": 11,
+                "number_allowed_length": "Variable",
+                "number_periodicity": "Nonperiodical",
+                "check_unique": True,
+                "autonumbering": True,
+                "posting": "Deny",
+                "real_time_posting": "Deny",
+                "attributes": [],
+                "forms": [
+                    {
+                        "name": "ФормаДокумента",
+                        "synonym": "Форма документа",
+                        "default": True,
+                        "form_xml": document_xml,
+                        "module_bsl": document_module,
+                    }
+                ],
+            }
+            metadata_compiled = await session.call_tool(
+                "compile_metadata_object",
+                {"specification": metadata_specification},
+            )
+            if metadata_compiled.is_error:
+                raise RuntimeError(metadata_compiled.content[0].text)
+            metadata_payload = json.loads(metadata_compiled.content[0].text)
+            metadata_checked = await session.call_tool(
+                "check_metadata_artifacts",
+                {
+                    "object_ref": metadata_payload["object_ref"],
+                    "format_version": metadata_payload["format_version"],
+                    "artifacts": metadata_payload["artifacts"],
+                },
+            )
+            metadata_checked_payload = json.loads(
+                metadata_checked.content[0].text
+            )
+            metadata_rules_payload = json.loads(metadata_rules.content[0].text)
+            metadata_descriptor = next(
+                item["content"]
+                for item in metadata_payload["artifacts"]
+                if item["path"] == "Documents/ТестовыйДокумент.xml"
+            )
+            if (
+                metadata_rules.is_error
+                or metadata_checked.is_error
+                or metadata_payload["status"] != "compiled"
+                or metadata_checked_payload["status"] != "passed"
+                or metadata_rules_payload["posting"] != "Deny"
+                or "<Posting>Deny</Posting>" not in metadata_descriptor
+                or "Document.ТестовыйДокумент.Form.ФормаДокумента"
+                not in metadata_descriptor
+                or "Процедура " in document_module
+            ):
+                raise RuntimeError(
+                    "Совместная MCP-последовательность Metadata + Forms для документа дала неверный результат: "
+                    + json.dumps(
+                        {
+                            "rules_error": metadata_rules.is_error,
+                            "compile_status": metadata_payload.get("status"),
+                            "check_error": metadata_checked.is_error,
+                            "check": metadata_checked_payload,
+                            "posting_rule": metadata_rules_payload.get("posting"),
+                            "has_posting": "<Posting>Deny</Posting>" in metadata_descriptor,
+                            "has_default": "Document.ТестовыйДокумент.Form.ФормаДокумента" in metadata_descriptor,
+                            "has_procedure": "Процедура " in document_module,
+                        },
+                        ensure_ascii=False,
+                    )
                 )
             invalid = dict(specification)
             invalid["unknown"] = True
@@ -712,6 +797,9 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                 "document_role": "compile_check_decompile_passed",
                 "document_roundtrip": True,
                 "document_main_attribute": "DocumentObject",
+                "metadata_document": "compile_check_passed",
+                "metadata_forms_composition": True,
+                "metadata_document_non_posting": True,
                 "bsl_data_access_rule": True,
                 "client_form_value_conversion_rejected": True,
             }
@@ -720,7 +808,7 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
 async def _main() -> None:
     with TemporaryDirectory(prefix="mcp1c-forms-stdio-") as temporary:
         root = Path(temporary)
-        for mode in ("off", "forms"):
+        for mode in ("off", "forms,metadata_authoring"):
             print(
                 json.dumps(
                     await _session(mode, root / mode),

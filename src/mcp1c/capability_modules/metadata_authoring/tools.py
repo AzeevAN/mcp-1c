@@ -58,7 +58,7 @@ def load(registry=None) -> tuple[CapabilityTool, ...]:
             function=_rules_tool,
             description=(
                 "Сначала получите компактные правила создания метаданных. "
-                "Поддержаны только Справочник и РегистрСведений; инструмент "
+                "Поддержаны Справочник, базовый непроводимый Документ и РегистрСведений; инструмент "
                 "ничего не пишет, не импортирует в 1С и не обращается к Registry."
             ),
         ),
@@ -67,7 +67,7 @@ def load(registry=None) -> tuple[CapabilityTool, ...]:
             function=_compile_tool,
             description=(
                 "Pure-компиляция закрытой specification schema v1 в текстовые "
-                "артефакты Справочника или РегистраСведений. Ничего не пишет, "
+                "артефакты Справочника, непроводимого Документа или РегистраСведений. Ничего не пишет, "
                 "не импортирует в 1С и не читает Configuration.xml. "
                 "format_version обязан передать caller. "
                 "До первого вызова получите через get_metadata_authoring_rules "
@@ -79,8 +79,8 @@ def load(registry=None) -> tuple[CapabilityTool, ...]:
             name="check_metadata_artifacts",
             function=_check_tool,
             description=(
-                "Read-only проверка переданных текстовых артефактов Справочника "
-                "или РегистраСведений: descriptor, generated types, "
+                "Read-only проверка переданных текстовых артефактов Справочника, "
+                "непроводимого Документа или РегистраСведений: descriptor, generated types, "
                 "формы и XML namespaces. Ничего не пишет и не импортирует в 1С; "
                 "успех статической проверки не доказывает нативный импорт. "
                 "После compile_metadata_object передайте result.object_ref, "

@@ -21,7 +21,7 @@ XS = "http://www.w3.org/2001/XMLSchema"
 XSI = "http://www.w3.org/2001/XMLSchema-instance"
 LOGFORM = "http://v8.1c.ru/8.3/xcf/logform"
 _NAME = re.compile(r"^[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*$")
-_OBJECT_REF = re.compile(r"^(Справочник|РегистрСведений)\.([A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*)$")
+_OBJECT_REF = re.compile(r"^(Справочник|РегистрСведений|Документ)\.([A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*)$")
 _FORMAT_VERSION = re.compile(r"^\d+\.\d+(?:\.\d+)*$")
 _FORBIDDEN_XML = re.compile(r"<!\s*(?:DOCTYPE|ENTITY)\b", re.I)
 
@@ -67,6 +67,14 @@ _KINDS = {
         (("dimensions", "Dimension"), ("resources", "Resource"), ("attributes", "Attribute")),
         ("Record", "Manager", "Selection", "List", "RecordSet", "RecordKey", "RecordManager"),
         _COMMON | {"periodicity", "dimensions", "resources"},
+    ),
+    "Документ": _Kind(
+        "Документ", "Document", "Documents", (("attributes", "Attribute"),),
+        ("Object", "Ref", "Selection", "List", "Manager"),
+        _COMMON | {
+            "number_length", "number_allowed_length", "number_periodicity",
+            "check_unique", "autonumbering", "posting", "real_time_posting",
+        },
     ),
 }
 
@@ -154,6 +162,11 @@ def _validate_type(raw: object, path: str) -> dict[str, object]:
         object_ref = value.get("object")
         if not isinstance(object_ref, str) or re.fullmatch(r"Справочник\.[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*", object_ref) is None:
             _fail("invalid_value", f"{path}.object", "Ожидается `Справочник.<Имя>`.")
+    elif kind == "document_ref":
+        _strict(value, {"kind", "object"}, path)
+        object_ref = value.get("object")
+        if not isinstance(object_ref, str) or re.fullmatch(r"Документ\.[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*", object_ref) is None:
+            _fail("invalid_value", f"{path}.object", "Ожидается `Документ.<Имя>`.")
     else:
         _fail("unsupported_field_type", f"{path}.kind", "Тип поля не поддержан схемой v1.")
     return value
@@ -258,7 +271,7 @@ def _validate(specification: object) -> tuple[dict[str, object], _Kind, str, uui
     object_ref = _text(value["object_ref"], "$specification.object_ref")
     match = _OBJECT_REF.fullmatch(object_ref)
     if match is None:
-        _fail("unsupported_object_ref", "$specification.object_ref", "Поддержаны Справочник.<Имя> и РегистрСведений.<Имя>.")
+        _fail("unsupported_object_ref", "$specification.object_ref", "Поддержаны Справочник.<Имя>, Документ.<Имя> и РегистрСведений.<Имя>.")
     kind = _KINDS[match.group(1)]
     _strict(value, kind.allowed, "$specification")
     format_version = _text(value["format_version"], "$specification.format_version")
@@ -286,12 +299,31 @@ def _validate(specification: object) -> tuple[dict[str, object], _Kind, str, uui
                     f"$specification.{field}",
                     f"{field} должен быть целым числом от 0 до {maximum}.",
                 )
-    else:
+    elif kind.ru == "РегистрСведений":
         _required(
             value,
             ("periodicity", "dimensions", "resources"),
             "$specification",
         )
+    else:
+        document_required = (
+            "number_length", "number_allowed_length", "number_periodicity",
+            "check_unique", "autonumbering", "posting", "real_time_posting",
+        )
+        _required(value, document_required, "$specification")
+        number_length = value["number_length"]
+        if not isinstance(number_length, int) or isinstance(number_length, bool) or not 1 <= number_length <= 50:
+            _fail("invalid_value", "$specification.number_length", "number_length должен быть целым числом от 1 до 50.")
+        if value["number_allowed_length"] not in {"Variable", "Fixed"}:
+            _fail("invalid_value", "$specification.number_allowed_length", "Допустимы Variable и Fixed.")
+        if value["number_periodicity"] not in {"Nonperiodical", "Year"}:
+            _fail("invalid_value", "$specification.number_periodicity", "Допустимы Nonperiodical и Year.")
+        for field in ("check_unique", "autonumbering"):
+            if not isinstance(value[field], bool):
+                _fail("invalid_type", f"$specification.{field}", f"{field} должен быть boolean.")
+        for field in ("posting", "real_time_posting"):
+            if value[field] != "Deny":
+                _fail("unsupported_document_posting", f"$specification.{field}", f"{field} должен быть `Deny` для базового непроводимого документа.")
     try:
         identity = uuid.UUID(_text(value["identity"], "$specification.identity"))
     except ValueError:
@@ -321,6 +353,28 @@ def _validate(specification: object) -> tuple[dict[str, object], _Kind, str, uui
             _fail("duplicate_name", f"$specification.forms[{index}].name", f"Имя `{name}` уже использовано.")
         names.add(key)
         defaults += int(bool(form["default"]))
+        if kind.ru == "Документ":
+            root = ET.fromstring(str(form["form_xml"]))
+            main_types = []
+            for attribute in root.iter(f"{{{LOGFORM}}}Attribute"):
+                if attribute.findtext(f"{{{LOGFORM}}}MainAttribute") != "true":
+                    continue
+                type_values = [
+                    (node.text or "").strip()
+                    for node in attribute.iter()
+                    if node.tag == f"{{{V8}}}Type" and (node.text or "").strip()
+                ]
+                main_types.extend(type_values)
+            expected_type = f"cfg:DocumentObject.{match.group(2)}"
+            if main_types != [expected_type]:
+                _fail(
+                    "form_owner_mismatch",
+                    f"$specification.forms[{index}].form_xml",
+                    (
+                        "Форма документа должна иметь ровно один главный "
+                        f"реквизит типа `{expected_type}`."
+                    ),
+                )
     if forms and defaults != 1:
         _fail("invalid_default_form", "$specification.forms", "При наличии форм ровно одна должна иметь default=true.")
     if kind.ru == "РегистрСведений" and not any(value.get(collection, []) for collection, _ in kind.fields):
@@ -348,7 +402,8 @@ def _type_xml(value: dict[str, object]) -> str:
         fractions = {"date": "Date", "time": "Time", "date_time": "DateTime"}[str(value["fractions"])]
         return f"<Type><v8:Type>xs:dateTime</v8:Type><v8:DateQualifiers><v8:DateFractions>{fractions}</v8:DateFractions></v8:DateQualifiers></Type>"
     name = str(value["object"]).split(".", 1)[1]
-    return f"<Type><v8:Type>cfg:CatalogRef.{escape(name)}</v8:Type></Type>"
+    reference_kind = "CatalogRef" if kind == "catalog_ref" else "DocumentRef"
+    return f"<Type><v8:Type>cfg:{reference_kind}.{escape(name)}</v8:Type></Type>"
 
 
 def _field_xml(field: dict[str, object], xml_kind: str, identity: uuid.UUID, collection: str) -> str:
@@ -421,6 +476,66 @@ def _register_properties(name: str, synonym: object, default: str) -> str:
     )
 
 
+def _document_standard_attribute(name: str) -> str:
+    fill_checking = "ShowError" if name == "Date" else "DontCheck"
+    return (
+        f'<xr:StandardAttribute name="{name}"><xr:LinkByType/>'
+        f"<xr:FillChecking>{fill_checking}</xr:FillChecking>"
+        "<xr:MultiLine>false</xr:MultiLine><xr:FillFromFillingValue>false</xr:FillFromFillingValue>"
+        "<xr:CreateOnInput>Auto</xr:CreateOnInput><xr:TypeReductionMode>TransformValues</xr:TypeReductionMode>"
+        '<xr:MaxValue xsi:nil="true"/><xr:ToolTip/><xr:ExtendedEdit>false</xr:ExtendedEdit>'
+        "<xr:Format/><xr:ChoiceForm/><xr:QuickChoice>Auto</xr:QuickChoice>"
+        "<xr:ChoiceHistoryOnInput>Auto</xr:ChoiceHistoryOnInput><xr:EditFormat/>"
+        "<xr:PasswordMode>false</xr:PasswordMode><xr:DataHistory>Use</xr:DataHistory>"
+        "<xr:MarkNegatives>false</xr:MarkNegatives>"
+        '<xr:MinValue xsi:nil="true"/><xr:Synonym/><xr:Comment/>'
+        "<xr:FullTextSearch>Use</xr:FullTextSearch><xr:ChoiceParameterLinks/>"
+        '<xr:FillValue xsi:nil="true"/><xr:Mask/><xr:ChoiceParameters/>'
+        "</xr:StandardAttribute>"
+    )
+
+
+def _document_properties(
+    name: str,
+    synonym: object,
+    default: str,
+    value: dict[str, object],
+) -> str:
+    standard_attributes = "".join(
+        _document_standard_attribute(attribute)
+        for attribute in ("Posted", "Ref", "DeletionMark", "Date", "Number")
+    )
+    return (
+        f"<Name>{escape(name)}</Name>{_synonym(synonym)}<Comment/>"
+        "<UseStandardCommands>true</UseStandardCommands><Numerator/><NumberType>String</NumberType>"
+        f"<NumberLength>{value['number_length']}</NumberLength>"
+        f"<NumberAllowedLength>{value['number_allowed_length']}</NumberAllowedLength>"
+        f"<NumberPeriodicity>{value['number_periodicity']}</NumberPeriodicity>"
+        f"<CheckUnique>{str(value['check_unique']).lower()}</CheckUnique>"
+        f"<Autonumbering>{str(value['autonumbering']).lower()}</Autonumbering>"
+        f"<StandardAttributes>{standard_attributes}</StandardAttributes>"
+        "<Characteristics/><BasedOn/><InputByString>"
+        f"<xr:Field>Document.{escape(name)}.StandardAttribute.Number</xr:Field>"
+        "</InputByString><CreateOnInput>Use</CreateOnInput>"
+        "<SearchStringModeOnInputByString>Begin</SearchStringModeOnInputByString>"
+        "<FullTextSearchOnInputByString>DontUse</FullTextSearchOnInputByString>"
+        "<ChoiceDataGetModeOnInputByString>Directly</ChoiceDataGetModeOnInputByString>"
+        f"<DefaultObjectForm>{escape(default)}</DefaultObjectForm>"
+        "<DefaultListForm/><DefaultChoiceForm/><AuxiliaryObjectForm/><AuxiliaryListForm/><AuxiliaryChoiceForm/>"
+        "<Posting>Deny</Posting><RealTimePosting>Deny</RealTimePosting>"
+        "<RegisterRecordsDeletion>AutoDelete</RegisterRecordsDeletion>"
+        "<RegisterRecordsWritingOnPost>WriteModified</RegisterRecordsWritingOnPost>"
+        "<SequenceFilling>AutoFill</SequenceFilling><RegisterRecords/>"
+        "<PostInPrivilegedMode>false</PostInPrivilegedMode><UnpostInPrivilegedMode>false</UnpostInPrivilegedMode>"
+        "<IncludeHelpInContents>false</IncludeHelpInContents><DataLockFields/>"
+        "<DataLockControlMode>Automatic</DataLockControlMode><FullTextSearch>Use</FullTextSearch>"
+        "<ObjectPresentation/><ExtendedObjectPresentation/><ListPresentation/><ExtendedListPresentation/>"
+        "<Explanation/><ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput><DataHistory>DontUse</DataHistory>"
+        "<UpdateDataHistoryImmediatelyAfterWrite>false</UpdateDataHistoryImmediatelyAfterWrite>"
+        "<ExecuteAfterWriteDataHistoryVersionProcessing>false</ExecuteAfterWriteDataHistoryVersionProcessing>"
+    )
+
+
 def _form_descriptor(
     form: dict[str, object], identity: uuid.UUID, format_version: str
 ) -> str:
@@ -441,17 +556,20 @@ def compile_metadata_object(specification: dict[str, object]) -> dict[str, objec
     forms = value["forms"]
     default_form = next((str(form["name"]) for form in forms if form["default"]), "")
     default_value = f"{kind.xml}.{name}.Form.{default_form}" if default_form else ""
-    properties = (
-        _catalog_properties(
+    if kind.ru == "Справочник":
+        properties = _catalog_properties(
             name,
             value["synonym"],
             default_value,
             int(value["code_length"]),
             int(value["description_length"]),
         )
-        if kind.ru == "Справочник"
-        else _register_properties(name, value["synonym"], default_value)
-    )
+    elif kind.ru == "РегистрСведений":
+        properties = _register_properties(name, value["synonym"], default_value)
+    else:
+        properties = _document_properties(
+            name, value["synonym"], default_value, value
+        )
     children = "".join(f"<Form>{escape(str(form['name']))}</Form>" for form in forms)
     for collection, xml_kind in kind.fields:
         children += "".join(

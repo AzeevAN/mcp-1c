@@ -68,6 +68,16 @@ def _field_type_schema() -> dict[str, object]:
                 },
                 ("kind", "object"),
             ),
+            _closed_object(
+                {
+                    "kind": {"const": "document_ref"},
+                    "object": {
+                        "type": "string",
+                        "pattern": rf"^Документ\.{_NAME_PATTERN[1:-1]}$",
+                    },
+                },
+                ("kind", "object"),
+            ),
         ]
     }
 
@@ -164,8 +174,37 @@ def _information_register_schema() -> dict[str, object]:
     )
 
 
+def _document_schema() -> dict[str, object]:
+    properties = _common_properties("Документ")
+    properties.update(
+        {
+            "number_length": {"type": "integer", "minimum": 1, "maximum": 50},
+            "number_allowed_length": {"enum": ["Variable", "Fixed"]},
+            "number_periodicity": {"enum": ["Nonperiodical", "Year"]},
+            "check_unique": {"type": "boolean"},
+            "autonumbering": {"type": "boolean"},
+            "posting": {"const": "Deny"},
+            "real_time_posting": {"const": "Deny"},
+        }
+    )
+    return _closed_object(
+        properties,
+        (
+            *_COMMON_REQUIRED,
+            "number_length",
+            "number_allowed_length",
+            "number_periodicity",
+            "check_unique",
+            "autonumbering",
+            "posting",
+            "real_time_posting",
+        ),
+        title="Документ",
+    )
+
+
 METADATA_SPECIFICATION_SCHEMA: dict[str, object] = {
-    "oneOf": [_catalog_schema(), _information_register_schema()]
+    "oneOf": [_catalog_schema(), _information_register_schema(), _document_schema()]
 }
 
 

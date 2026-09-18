@@ -121,7 +121,7 @@ def test_public_schema_принимает_каждую_runtime_ветку(factor
         ),
         (lambda value: value.update({"code_length": 51}), "invalid_value"),
         (
-            lambda value: value.update({"object_ref": "Документ.Тестовый"}),
+            lambda value: value.update({"object_ref": "Отчет.Тестовый"}),
             "unsupported_object_ref",
         ),
     ],

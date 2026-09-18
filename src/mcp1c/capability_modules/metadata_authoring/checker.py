@@ -17,7 +17,7 @@ LOGFORM_NAMESPACE = "http://v8.1c.ru/8.3/xcf/logform"
 _FORBIDDEN_XML_DECLARATION = re.compile(r"<!\s*(?:DOCTYPE|ENTITY)\b", re.I)
 _QNAME = re.compile(r"^([A-Za-z_][A-Za-z0-9_.-]*):[^\s:]+$")
 _OBJECT_REF = re.compile(
-    r"^(Справочник|РегистрСведений)\.([A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*)$"
+    r"^(Справочник|РегистрСведений|Документ)\.([A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*)$"
 )
 _FORMAT_VERSION = re.compile(r"^\d+\.\d+(?:\.\d+)*$")
 _METADATA_NAME = re.compile(r"^[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*$")
@@ -61,6 +61,13 @@ _KINDS = {
             "RecordManager",
         ),
         "DefaultRecordForm",
+    ),
+    "Документ": _Kind(
+        "Документ",
+        "Document",
+        "Documents",
+        ("Object", "Ref", "Selection", "List", "Manager"),
+        "DefaultObjectForm",
     ),
 }
 
@@ -236,15 +243,15 @@ def _check_qnames(
                 )
             if match and match.group(1) == "cfg":
                 type_kind = value.split(":", 1)[1].split(".", 1)[0]
-                if type_kind in {"Catalogs", "InformationRegisters"}:
+                if type_kind in {"Catalogs", "Documents", "InformationRegisters"}:
                     report.fail(
                         "namespaces",
                         "unsupported_metadata_type",
                         path,
                         (
                             f"QName `{value}` использует физическое имя каталога. "
-                            "Для ссылки на справочник нужен "
-                            "`cfg:CatalogRef.<ИмяСправочника>`."
+                            "Для ссылки нужен `cfg:CatalogRef.<ИмяСправочника>` "
+                            "или `cfg:DocumentRef.<ИмяДокумента>`."
                         ),
                     )
 
@@ -344,6 +351,13 @@ def _check_generated_types(
                 descriptor_path,
                 f"GeneratedType категории `{category}` объявлен более одного раза.",
             )
+    for category in sorted(set(found) - set(kind.generated_types)):
+        report.fail(
+            "generated_types",
+            "unexpected_generated_type",
+            descriptor_path,
+            f"GeneratedType категории `{category}` не входит в профиль {kind.object_kind}.",
+        )
 
 
 def _check_format_version(
@@ -429,6 +443,36 @@ def _check_forms(
             _check_format_version(
                 internal_form_entry[0], form_xml_path, report, "forms", format_version
             )
+            if kind.object_kind == "Документ":
+                main_types = []
+                for attribute in internal_form_entry[0].iter():
+                    if _local(attribute.tag) != "Attribute":
+                        continue
+                    if _child_text(attribute, "MainAttribute") != "true":
+                        continue
+                    type_node = next(
+                        (
+                            node
+                            for node in attribute.iter()
+                            if _local(node.tag) == "Type"
+                            and node.text
+                            and node.text.strip()
+                        ),
+                        None,
+                    )
+                    if type_node is not None:
+                        main_types.append(type_node.text.strip())
+                expected_type = f"cfg:DocumentObject.{object_name}"
+                if main_types != [expected_type]:
+                    report.fail(
+                        "forms",
+                        "form_owner_mismatch",
+                        form_xml_path,
+                        (
+                            "Основная форма документа должна иметь ровно один "
+                            f"главный реквизит типа `{expected_type}`."
+                        ),
+                    )
         form_entry = parsed.get(descriptor_path)
         if form_entry is None:
             if descriptor_path in artifacts:
@@ -555,7 +599,7 @@ def check_metadata_artifacts(
         report.fail_all(
             "unsupported_object_ref",
             "$object_ref",
-            "Поддержаны только Справочник.<Имя> и РегистрСведений.<Имя>.",
+            "Поддержаны только Справочник.<Имя>, Документ.<Имя> и РегистрСведений.<Имя>.",
         )
         return report.result()
     if (
@@ -738,6 +782,89 @@ def check_metadata_artifacts(
                 "missing_information_register_periodicity",
                 descriptor_path,
                 "Отсутствует InformationRegisterPeriodicity.",
+            )
+    if kind.xml_kind == "Document":
+        number_profile = {
+            "NumberType": {"String"},
+            "NumberAllowedLength": {"Variable", "Fixed"},
+            "NumberPeriodicity": {"Nonperiodical", "Year"},
+            "CheckUnique": {"true", "false"},
+            "Autonumbering": {"true", "false"},
+        }
+        for property_name, allowed in number_profile.items():
+            if _child_text(properties, property_name) not in allowed:
+                report.fail(
+                    "descriptor",
+                    "invalid_document_number_profile",
+                    f"{descriptor_path}:{property_name}",
+                    f"{property_name} должен иметь одно из значений: {', '.join(sorted(allowed))}.",
+                )
+        raw_number_length = _child_text(properties, "NumberLength")
+        try:
+            valid_number_length = (
+                raw_number_length is not None
+                and 1 <= int(raw_number_length) <= 50
+                and str(int(raw_number_length)) == raw_number_length
+            )
+        except ValueError:
+            valid_number_length = False
+        if not valid_number_length:
+            report.fail(
+                "descriptor",
+                "invalid_document_number_profile",
+                f"{descriptor_path}:NumberLength",
+                "NumberLength должен быть целым числом от 1 до 50.",
+            )
+        for property_name in ("Posting", "RealTimePosting"):
+            if _child_text(properties, property_name) != "Deny":
+                report.fail(
+                    "descriptor",
+                    "unsupported_document_posting",
+                    f"{descriptor_path}:{property_name}",
+                    (
+                        f"{property_name} должен быть `Deny`: schema v1 "
+                        "поддерживает только базовый непроводимый документ."
+                    ),
+                )
+        standard_attributes = _find_child(properties, "StandardAttributes")
+        found_standard = [
+            item.attrib.get("name", "")
+            for item in (standard_attributes if standard_attributes is not None else ())
+            if _local(item.tag) == "StandardAttribute"
+        ]
+        expected_standard = ["Posted", "Ref", "DeletionMark", "Date", "Number"]
+        if found_standard != expected_standard:
+            report.fail(
+                "descriptor",
+                "invalid_document_standard_attributes",
+                f"{descriptor_path}:StandardAttributes",
+                "Стандартные реквизиты документа должны быть Posted, Ref, DeletionMark, Date, Number в каноническом порядке.",
+            )
+        input_by_string = _find_child(properties, "InputByString")
+        input_fields = [
+            (item.text or "").strip()
+            for item in (input_by_string if input_by_string is not None else ())
+            if _local(item.tag) == "Field" and (item.text or "").strip()
+        ]
+        if input_fields != [f"Document.{object_name}.StandardAttribute.Number"]:
+            report.fail(
+                "descriptor",
+                "invalid_document_input_by_string",
+                f"{descriptor_path}:InputByString",
+                "InputByString документа должен ссылаться только на стандартный реквизит Number.",
+            )
+        child_objects = _find_child(metadata_object, "ChildObjects")
+        unsupported_children = [
+            _local(item.tag)
+            for item in (child_objects if child_objects is not None else ())
+            if _local(item.tag) not in {"Form", "Attribute"}
+        ]
+        if unsupported_children:
+            report.fail(
+                "descriptor",
+                "unsupported_document_structure",
+                f"{descriptor_path}:ChildObjects",
+                "Базовый документ поддерживает только Attribute и Form; табличные части и другие дочерние объекты не поддержаны.",
             )
     _check_generated_types(
         metadata_object, descriptor_path, kind, object_name, report

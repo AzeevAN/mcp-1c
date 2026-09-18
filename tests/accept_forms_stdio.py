@@ -34,6 +34,37 @@ def _context() -> dict[str, str]:
     return {"owner": "Обработка.ТестоваяОбработка", "role": "custom"}
 
 
+def _list_choice_spec(owner: str, role: str) -> dict[str, object]:
+    return {
+        "schema_version": 2,
+        "form_name": "ФормаСписка" if role == "list" else "ФормаВыбора",
+        "context": {"owner": owner, "role": role},
+        "format_version": "2.20",
+        "title": {"ru": "Список"},
+        "attributes": [{
+            "name": "Список",
+            "type": {
+                "kind": "dynamic_list",
+                "main_table": owner,
+                "dynamic_data_read": True,
+            },
+            "main": True,
+        }],
+        "elements": [{
+            "kind": "table",
+            "name": "Список",
+            "data_path": "Список",
+            "columns": [{
+                "kind": "input_field",
+                "name": "ОсновноеПоле",
+                "data_path": "Список.ОсновноеПоле",
+            }],
+        }],
+        "commands": [],
+        "events": [],
+    }
+
+
 async def _session(mode: str, data_dir: Path) -> dict[str, object]:
     server = StdioServerParameters(
         command=sys.executable,
@@ -612,6 +643,59 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                 raise RuntimeError(
                     "Внешняя MCP-последовательность формы документа дала неверный результат."
                 )
+            for owner, role in (
+                ("Справочник.ТестовыйСправочник", "list"),
+                ("Документ.ТестовыйДокумент", "choice"),
+            ):
+                list_specification = _list_choice_spec(owner, role)
+                list_compiled = await session.call_tool(
+                    "compile_managed_form",
+                    {"specification": list_specification},
+                )
+                if list_compiled.is_error:
+                    raise RuntimeError(list_compiled.content[0].text)
+                list_payload = json.loads(list_compiled.content[0].text)
+                list_artifacts = {
+                    item["path"]: item["content"]
+                    for item in list_payload["artifacts"]
+                }
+                list_xml = list_artifacts[
+                    f"Forms/{list_specification['form_name']}/Ext/Form.xml"
+                ]
+                list_module = list_artifacts[
+                    f"Forms/{list_specification['form_name']}/Ext/Form/Module.bsl"
+                ]
+                common_arguments = {
+                    "form_xml": list_xml,
+                    "form_name": list_specification["form_name"],
+                    "context": list_specification["context"],
+                    "module_bsl": list_module,
+                }
+                list_checked = await session.call_tool(
+                    "check_managed_form", common_arguments
+                )
+                list_decompiled = await session.call_tool(
+                    "decompile_managed_form", common_arguments
+                )
+                list_checked_payload = json.loads(list_checked.content[0].text)
+                list_decompiled_payload = json.loads(
+                    list_decompiled.content[0].text
+                )
+                choice_markers = (
+                    "<WindowOpeningMode>LockOwnerWindow</WindowOpeningMode>" in list_xml
+                    and "<ChoiceMode>true</ChoiceMode>" in list_xml
+                )
+                if (
+                    list_checked.is_error
+                    or list_decompiled.is_error
+                    or list_checked_payload["coverage"]["structural"] != "passed"
+                    or list_decompiled_payload["specification"]
+                    != list_payload["specification"]
+                    or choice_markers != (role == "choice")
+                ):
+                    raise RuntimeError(
+                        f"Forms {owner} role={role} не прошёл внешний roundtrip."
+                    )
             metadata_rules = await session.call_tool(
                 "get_metadata_authoring_rules", {"topic": "document"}
             )
@@ -797,6 +881,9 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                 "document_role": "compile_check_decompile_passed",
                 "document_roundtrip": True,
                 "document_main_attribute": "DocumentObject",
+                "catalog_list_role": "compile_check_decompile_passed",
+                "document_choice_role": "compile_check_decompile_passed",
+                "choice_markers": "derived_from_role",
                 "metadata_document": "compile_check_passed",
                 "metadata_forms_composition": True,
                 "metadata_document_non_posting": True,

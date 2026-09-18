@@ -11,8 +11,8 @@ import { requestServerRestart, waitForServerRestart } from "../shared/api/source
 const moduleCopy: Record<string, { title: string; description: string; details?: string }> = {
   forms: {
     title: "Управляемые формы",
-    description: "Добавляет 4 инструмента: двуязычный поиск правил, компиляцию, декомпиляцию и статическую проверку. Файлы и конфигурацию 1С не изменяет.",
-    details: "≈ 5 953 токена стартового контекста · o200k_base · замер 18.09.2026",
+    description: "Добавляет 4 инструмента для объектных форм, форм списка и выбора, а также формы записи регистра: правила, компиляцию, декомпиляцию и проверку. Конфигурацию 1С не изменяет.",
+    details: "≈ 5 958 токенов стартового контекста · o200k_base · замер 18.09.2026",
   },
   metadata_authoring: {
     title: "Создание метаданных",

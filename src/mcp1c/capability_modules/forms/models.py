@@ -1034,7 +1034,8 @@ def _form_context(reader: _Reader, value: object, path: str) -> FormContext:
     else:
         role = raw_role
     supported_owner_role = (
-        owner_kind in _OBJECT_FORM_OWNER_KINDS and role == "object"
+        owner_kind in _OBJECT_FORM_OWNER_KINDS
+        and role in {"object", "list", "choice"}
     ) or (
         owner_kind == "РегистрСведений" and role == "record"
     )
@@ -2406,6 +2407,67 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
                     f"$.attributes[{main_index}].saved_data",
                     "Главный реквизит формы записи регистра требует saved_data=true.",
                 )
+    if (
+        context.role in {"list", "choice"}
+        and context.owner.split(".", 1)[0] in _OBJECT_FORM_OWNER_KINDS
+    ):
+        main_list_indexes = [
+            index
+            for index, attribute in enumerate(attributes)
+            if attribute.main and isinstance(attribute.type, DynamicListType)
+        ]
+        if not main_list_indexes:
+            reader.issue(
+                "incompatible_owner_context",
+                "$.attributes",
+                "Форма списка или выбора требует главный dynamic_list Список.",
+            )
+        else:
+            main_index = main_list_indexes[0]
+            main_list = attributes[main_index]
+            if main_list.name != "Список":
+                reader.issue(
+                    "incompatible_owner_context",
+                    f"$.attributes[{main_index}].name",
+                    "Главный dynamic_list формы списка или выбора должен называться Список.",
+                )
+            if main_list.saved_data:
+                reader.issue(
+                    "incompatible_owner_context",
+                    f"$.attributes[{main_index}].saved_data",
+                    "Главный dynamic_list формы списка или выбора не сохраняется.",
+                )
+            if main_list.type.main_table != context.owner:
+                reader.issue(
+                    "incompatible_owner_context",
+                    f"$.attributes[{main_index}].type.main_table",
+                    "Основная таблица dynamic_list должна совпадать с владельцем формы.",
+                )
+        bound_tables = [
+            (element, path)
+            for element, path, _parent_table in walked
+            if isinstance(element, Table)
+            and element.name == "Список"
+            and element.data_path == "Список"
+        ]
+        if len(bound_tables) != 1:
+            reader.issue(
+                "incompatible_owner_context",
+                "$.elements",
+                "Форма списка или выбора требует ровно одну таблицу Список с DataPath=Список.",
+            )
+        if commands:
+            reader.issue(
+                "incompatible_owner_context",
+                "$.commands",
+                "Минимальный профиль формы списка или выбора не содержит команд формы.",
+            )
+        if events:
+            reader.issue(
+                "incompatible_owner_context",
+                "$.events",
+                "Минимальный профиль формы списка или выбора не содержит событий.",
+            )
     document_main_object = (
         main_object is not None
         and main_object.object.split(".", 1)[0] == "Документ"

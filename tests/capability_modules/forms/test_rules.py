@@ -378,6 +378,14 @@ def test_specification_возвращает_тот_же_минимальный_�
         },
         "xml_type": "cfg:CatalogObject.<Имя> или cfg:DocumentObject.<Имя>",
     }
+    list_choice = by_code["list_choice_form_owner_context"]["value"]
+    assert list_choice["roles"] == ["list", "choice"]
+    assert list_choice["main_attribute"]["name"] == "Список"
+    assert list_choice["choice_xml"] == {
+        "WindowOpeningMode": "LockOwnerWindow",
+        "ChoiceMode": True,
+    }
+    assert "ручной запрос" in by_code["minimal_list_choice_boundary"]["summary"]
     assert "зарезервированными словами BSL" in by_code["identifier_syntax"][
         "summary"
     ]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 from dataclasses import dataclass
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape, quoteattr
@@ -71,6 +72,7 @@ _NAMESPACES = (
     ("xs", "http://www.w3.org/2001/XMLSchema"),
     ("xsi", "http://www.w3.org/2001/XMLSchema-instance"),
 )
+_ACTIVE_FORM_ROLE: ContextVar[str] = ContextVar("forms_active_role", default="custom")
 
 
 @dataclass(slots=True)
@@ -770,6 +772,12 @@ def _emit_table(
         f"<Table name={quoteattr(item.name)} id={quoteattr(table_id)}>",
     )
     _append(lines, indent + 1, "<Representation>List</Representation>")
+    if (
+        item.name == "Список"
+        and item.data_path == "Список"
+        and _ACTIVE_FORM_ROLE.get() == "choice"
+    ):
+        _append(lines, indent + 1, "<ChoiceMode>true</ChoiceMode>")
     if item.read_only:
         _append(lines, indent + 1, "<ReadOnly>true</ReadOnly>")
     if item.horizontal_stretch is not None:
@@ -870,9 +878,9 @@ def _emit_table_command_container(
         indent,
         f"<{tag} name={quoteattr(name)} id={quoteattr(container_id)}>",
     )
-    if not value.autofill:
+    if value is not None and not value.autofill:
         _append(lines, indent + 1, "<Autofill>false</Autofill>")
-    if value.children:
+    if value is not None and value.children:
         _append(lines, indent + 1, "<ChildItems>")
         for child in value.children:
             if isinstance(child, Button):
@@ -1119,32 +1127,40 @@ def _emit_dynamic_list_settings(
 
 
 def _compile_xml(form: ManagedForm) -> str:
-    lines = ['<?xml version="1.0" encoding="UTF-8"?>', _root_opening(form)]
-    _localized(lines, "Title", form.title, 1)
-    _append(lines, 1, '<AutoCommandBar name="ФормаКоманднаяПанель" id="-1"/>')
-    _emit_events(lines, _events_by_owner(form).get(None, ()), 1)
-    _emit_elements(lines, form)
-    _append(lines, 1, "<Attributes>")
-    for attribute_id, attribute in enumerate(form.attributes, 1):
-        _emit_attribute(lines, attribute, attribute_id)
-    _append(lines, 1, "</Attributes>")
-    _append(lines, 1, "<Commands>")
-    for command_id, command in enumerate(form.commands, 1):
-        _append(
-            lines,
-            2,
-            f"<Command name={quoteattr(command.name)} id={quoteattr(str(command_id))}>",
-        )
-        _localized(lines, "Title", command.title, 3)
-        _localized(lines, "ToolTip", command.title, 3)
-        _append(lines, 3, f"<Action>{escape(command.action)}</Action>")
-        _append(lines, 2, "</Command>")
-    _append(lines, 1, "</Commands>")
-    _append(lines, 0, "</Form>")
-    result = "\r\n".join(lines) + "\r\n"
-    # Ошибка самого emitter-а не должна превращаться в испорченный artifact.
-    ET.fromstring(result)
-    return result
+    token = _ACTIVE_FORM_ROLE.set(form.context.role)
+    try:
+        lines = ['<?xml version="1.0" encoding="UTF-8"?>', _root_opening(form)]
+        _localized(lines, "Title", form.title, 1)
+        if form.context.role == "choice":
+            _append(lines, 1, "<WindowOpeningMode>LockOwnerWindow</WindowOpeningMode>")
+        if form.context.role in {"list", "choice"}:
+            _append(lines, 1, "<CommandBarLocation>None</CommandBarLocation>")
+        _append(lines, 1, '<AutoCommandBar name="ФормаКоманднаяПанель" id="-1"/>')
+        _emit_events(lines, _events_by_owner(form).get(None, ()), 1)
+        _emit_elements(lines, form)
+        _append(lines, 1, "<Attributes>")
+        for attribute_id, attribute in enumerate(form.attributes, 1):
+            _emit_attribute(lines, attribute, attribute_id)
+        _append(lines, 1, "</Attributes>")
+        _append(lines, 1, "<Commands>")
+        for command_id, command in enumerate(form.commands, 1):
+            _append(
+                lines,
+                2,
+                f"<Command name={quoteattr(command.name)} id={quoteattr(str(command_id))}>",
+            )
+            _localized(lines, "Title", command.title, 3)
+            _localized(lines, "ToolTip", command.title, 3)
+            _append(lines, 3, f"<Action>{escape(command.action)}</Action>")
+            _append(lines, 2, "</Command>")
+        _append(lines, 1, "</Commands>")
+        _append(lines, 0, "</Form>")
+        result = "\r\n".join(lines) + "\r\n"
+        # Ошибка самого emitter-а не должна превращаться в испорченный artifact.
+        ET.fromstring(result)
+        return result
+    finally:
+        _ACTIVE_FORM_ROLE.reset(token)
 
 
 def _compile_module(form: ManagedForm) -> str:
@@ -1219,6 +1235,34 @@ def _compile_module(form: ManagedForm) -> str:
     return "\r\n".join(lines) + "\r\n"
 
 
+def _compiled_specification(form: ManagedForm) -> dict[str, object]:
+    result = managed_form_to_spec(form)
+    if form.context.role not in {"list", "choice"}:
+        return result
+
+    def normalize_computed_toolbar(value: object) -> None:
+        if isinstance(value, dict):
+            if (
+                value.get("kind") == "table"
+                and value.get("name") == "Список"
+                and value.get("data_path") == "Список"
+            ):
+                command_bar = value.get("auto_command_bar")
+                if isinstance(command_bar, dict):
+                    if command_bar.get("children"):
+                        command_bar["autofill"] = False
+                    else:
+                        value.pop("auto_command_bar")
+            for child in value.values():
+                normalize_computed_toolbar(child)
+        elif isinstance(value, list):
+            for child in value:
+                normalize_computed_toolbar(child)
+
+    normalize_computed_toolbar(result.get("elements"))
+    return result
+
+
 def compile_managed_form(specification: object) -> FormsResult:
     """Собрать два текстовых artifact без записи на диск или обращения к Registry."""
 
@@ -1244,7 +1288,9 @@ def compile_managed_form(specification: object) -> FormsResult:
         ),
         Diagnostic(
             "structural",
-            "passed" if form.context.role in {"object", "record"} else "not_checked",
+            "passed"
+            if form.context.role in {"object", "record", "list", "choice"}
+            else "not_checked",
             (
                 (
                     "document_object_context_verified"
@@ -1255,7 +1301,11 @@ def compile_managed_form(specification: object) -> FormsResult:
                 else (
                     "information_register_record_context_verified"
                     if form.context.role == "record"
-                    else "custom_form_role_semantics_not_checked"
+                    else (
+                        f"{form.context.role}_form_context_verified"
+                        if form.context.role in {"list", "choice"}
+                        else "custom_form_role_semantics_not_checked"
+                    )
                 )
             ),
             "$.context",
@@ -1269,7 +1319,11 @@ def compile_managed_form(specification: object) -> FormsResult:
                 else (
                     "Контекст формы записи регистра сведений согласован с главным реквизитом."
                     if form.context.role == "record"
-                    else "Для role=custom проверен общий layout без owner-specific обещаний."
+                    else (
+                        "Контекст формы списка или выбора согласован с главным DynamicList."
+                        if form.context.role in {"list", "choice"}
+                        else "Для role=custom проверен общий layout без owner-specific обещаний."
+                    )
                 )
             ),
         ),
@@ -1345,7 +1399,7 @@ def compile_managed_form(specification: object) -> FormsResult:
                 content=module,
             ),
         ),
-        specification=managed_form_to_spec(form),
+        specification=_compiled_specification(form),
         diagnostics=diagnostics,
         coverage=Coverage(
             xml_parse="passed",

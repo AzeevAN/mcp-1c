@@ -190,6 +190,46 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
             },
         ),
         FormRule(
+            "list_choice_form_owner_context",
+            "supported",
+            (
+                "Для Справочник.* и Документ.* роли list/choice используют "
+                "единственный главный DynamicList Список и связанную таблицу Список."
+            ),
+            "corpus_invariant",
+            {
+                "owners": ["Справочник.<Имя>", "Документ.<Имя>"],
+                "roles": ["list", "choice"],
+                "main_attribute": {
+                    "name": "Список",
+                    "main": True,
+                    "saved_data": False,
+                    "type": {
+                        "kind": "dynamic_list",
+                        "main_table": "<тот же owner>",
+                        "dynamic_data_read": "<явный boolean>",
+                    },
+                },
+                "table": {"name": "Список", "data_path": "Список"},
+                "list_xml": {"WindowOpeningMode": "absent", "ChoiceMode": "absent"},
+                "choice_xml": {
+                    "WindowOpeningMode": "LockOwnerWindow",
+                    "ChoiceMode": True,
+                },
+            },
+        ),
+        FormRule(
+            "minimal_list_choice_boundary",
+            "boundary",
+            (
+                "Минимальный профиль list/choice не поддерживает ручной запрос, "
+                "параметры, виртуальные таблицы, расширенные ListSettings, события "
+                "или команды; одна физическая форма одновременно для списка и выбора "
+                "не заявлена."
+            ),
+            "contract_decision",
+        ),
+        FormRule(
             "custom_role_has_no_semantic_claim",
             "boundary",
             (

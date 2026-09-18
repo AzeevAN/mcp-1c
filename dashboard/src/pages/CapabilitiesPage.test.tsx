@@ -81,8 +81,9 @@ it("объясняет границу Forms до включения", async () =
   const card = forms.closest("label")!;
   expect(within(card).getByText("Управляемые формы")).toBeInTheDocument();
   expect(within(card).getByText(/4 инструмента/)).toBeInTheDocument();
-  expect(within(card).getByText(/конфигурацию 1С не изменяет/)).toBeInTheDocument();
-  expect(within(card).getByText(/5 953.*o200k_base/)).toBeInTheDocument();
+  expect(within(card).getByText(/форм списка и выбора/)).toBeInTheDocument();
+  expect(within(card).getByText(/Конфигурацию 1С не изменяет/)).toBeInTheDocument();
+  expect(within(card).getByText(/5 958.*o200k_base/)).toBeInTheDocument();
   expect(forms).not.toBeChecked();
 });
 

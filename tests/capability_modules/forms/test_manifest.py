@@ -30,15 +30,15 @@ def test_manifest_совпадает_с_фактическим_tools_list_и_д�
         "context_budget": {
             "status": "measured",
             "tool_count": 4,
-            "approx_tokens": 5953,
+                "approx_tokens": 5958,
             "tokenizer": "tiktoken 0.11.0 / o200k_base",
             "method": (
                 "canonical tools/list delta: UTF-8 JSON, sort_keys, "
                 "compact separators"
             ),
-            "canonical_bytes": 24849,
+                "canonical_bytes": 24868,
             "canonical_sha256": (
-                "de7e329d592f54ab3fc8409a3cc64268309c4cf189e2d8ab31b0bd39549b448e"
+                    "1d6ffa1d998374ce2ef493f8e7f111d6be2a0a4fae16a9d71a7b46144dc6b090"
             ),
             "payload": "tools_list_delta",
             "measured_at": "2026-09-18",
@@ -50,7 +50,7 @@ def test_manifest_совпадает_с_фактическим_tools_list_и_д�
         payload["context_budget"]["canonical_sha256"]
     )
     for text in (readme, dashboard):
-        assert "5 953" in text
+        assert "5 958" in text
         assert "o200k_base" in text
 
 
@@ -61,7 +61,7 @@ def test_public_forms_docs_совпадают_с_каталогом_и_заме�
 
     assert "`diagnostics`" not in dashboard
     assert "2 439" not in dashboard
-    assert "5 953" in dashboard
+    assert "5 958" in dashboard
     assert "o200k_base" in dashboard
     assert "2026-09-18" in dashboard
     assert "tools/measure_capability_context.py forms" in dashboard

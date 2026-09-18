@@ -88,6 +88,8 @@ _SINGLETON_TAGS = frozenset(
         "content",
         "MainAttribute",
         "SavedData",
+        "WindowOpeningMode",
+        "ChoiceMode",
     }
 )
 
@@ -1256,6 +1258,159 @@ def _table(inventory: _Inventory, node: ET.Element) -> dict[str, object]:
     return result
 
 
+def _validate_list_choice_markers(
+    inventory: _Inventory,
+    root: ET.Element,
+    context: object,
+    specification: dict[str, object],
+) -> None:
+    """Проверить вычисляемые XML-маркеры list/choice без публичных knobs."""
+
+    if not isinstance(context, dict) or context.get("role") not in {
+        "list",
+        "choice",
+    }:
+        return
+    role = context["role"]
+    location_nodes = [
+        child for child in root if child.tag == _q("CommandBarLocation")
+    ]
+    for node in location_nodes:
+        inventory.mark(node)
+    if len(location_nodes) != 1:
+        inventory.issue(
+            "missing_list_choice_command_bar_location",
+            "/Form/CommandBarLocation",
+            "role=list|choice требует ровно один CommandBarLocation=None.",
+            status="failed",
+        )
+    elif _text(location_nodes[0]) != "None":
+        inventory.issue(
+            "invalid_list_choice_command_bar_location",
+            inventory.paths[id(location_nodes[0])],
+            "CommandBarLocation формы списка или выбора должен быть None.",
+            status="failed",
+        )
+    opening_nodes = [
+        child for child in root if child.tag == _q("WindowOpeningMode")
+    ]
+    for node in opening_nodes:
+        inventory.mark(node)
+
+    bound_tables: list[ET.Element] = []
+    for node in root.iter(_q("Table")):
+        data_paths = [child for child in node if child.tag == _q("DataPath")]
+        if (
+            node.get("name") == "Список"
+            and len(data_paths) == 1
+            and _text(data_paths[0]) == "Список"
+        ):
+            bound_tables.append(node)
+    choice_nodes: list[ET.Element] = []
+    for table in bound_tables:
+        choice_nodes.extend(
+            child for child in table if child.tag == _q("ChoiceMode")
+        )
+    for node in choice_nodes:
+        inventory.mark(node)
+
+    table_command_bars = [
+        child
+        for table in bound_tables
+        for child in table
+        if child.tag == _q("AutoCommandBar")
+    ]
+    if len(table_command_bars) != 1:
+        inventory.issue(
+            "missing_list_choice_table_command_bar",
+            "/Form/ChildItems/Table/AutoCommandBar",
+            "Таблица Список требует ровно одну AutoCommandBar.",
+            status="failed",
+        )
+    else:
+        autofill_nodes = [
+            child
+            for child in table_command_bars[0]
+            if child.tag == _q("Autofill")
+        ]
+        if len(autofill_nodes) > 1:
+            inventory.issue(
+                "invalid_list_choice_table_autofill",
+                inventory.paths[id(table_command_bars[0])] + "/Autofill",
+                "AutoCommandBar таблицы Список допускает не более одного Autofill.",
+                status="failed",
+            )
+        elif autofill_nodes:
+            inventory.mark(autofill_nodes[0])
+            if _text(autofill_nodes[0]) == "false":
+                inventory.issue(
+                    "invalid_list_choice_table_autofill",
+                    inventory.paths[id(autofill_nodes[0])],
+                    "Autofill командной панели таблицы Список должен быть true или не задан.",
+                    status="failed",
+                )
+
+    # Панель таблицы с настройками по умолчанию вычисляется из role и не
+    # становится публичным knob спецификации.
+    def strip_computed_toolbar_marker(value: object) -> None:
+        if isinstance(value, dict):
+            if (
+                value.get("kind") == "table"
+                and value.get("name") == "Список"
+                and value.get("data_path") == "Список"
+                and value.get("auto_command_bar")
+                == {"kind": "auto_command_bar"}
+            ):
+                value.pop("auto_command_bar")
+            for child in value.values():
+                strip_computed_toolbar_marker(child)
+        elif isinstance(value, list):
+            for child in value:
+                strip_computed_toolbar_marker(child)
+
+    strip_computed_toolbar_marker(specification.get("elements"))
+
+    if role == "list":
+        if opening_nodes or choice_nodes:
+            marker = (opening_nodes or choice_nodes)[0]
+            inventory.issue(
+                "unexpected_choice_role_marker",
+                inventory.paths[id(marker)],
+                "role=list запрещает WindowOpeningMode и ChoiceMode формы выбора.",
+                status="failed",
+            )
+        return
+
+    if len(opening_nodes) != 1:
+        inventory.issue(
+            "missing_choice_role_marker",
+            "/Form/WindowOpeningMode",
+            "role=choice требует ровно один WindowOpeningMode=LockOwnerWindow.",
+            status="failed",
+        )
+    elif _text(opening_nodes[0]) != "LockOwnerWindow":
+        inventory.issue(
+            "invalid_choice_role_marker",
+            inventory.paths[id(opening_nodes[0])],
+            "WindowOpeningMode формы выбора должен быть LockOwnerWindow.",
+            status="failed",
+        )
+    if len(choice_nodes) != 1:
+        inventory.issue(
+            "missing_choice_role_marker",
+            "/Form/ChildItems/Table/ChoiceMode",
+            "role=choice требует ChoiceMode=true у таблицы Список.",
+            status="failed",
+        )
+    elif _text(choice_nodes[0]) != "true":
+        inventory.issue(
+            "invalid_choice_role_marker",
+            inventory.paths[id(choice_nodes[0])],
+            "ChoiceMode таблицы Список должен быть true.",
+            status="failed",
+        )
+
+
 def _element(
     inventory: _Inventory, node: ET.Element
 ) -> dict[str, object] | None:
@@ -1994,6 +2149,7 @@ def decompile_managed_form(
             event_profile=profile.event_profile,
         ),
     }
+    _validate_list_choice_markers(inventory, root, context, specification)
     inventory.report_uncovered(root)
 
     collections = (
@@ -2098,7 +2254,9 @@ def decompile_managed_form(
         diagnostics.append(
             Diagnostic(
                 "structural",
-                "passed" if context_role in {"object", "record"} else "not_checked",
+                "passed"
+                if context_role in {"object", "record", "list", "choice"}
+                else "not_checked",
                 (
                     (
                         "document_object_context_verified"
@@ -2110,7 +2268,11 @@ def decompile_managed_form(
                     else (
                         "information_register_record_context_verified"
                         if context_role == "record"
-                        else "custom_form_role_semantics_not_checked"
+                        else (
+                            f"{context_role}_form_context_verified"
+                            if context_role in {"list", "choice"}
+                            else "custom_form_role_semantics_not_checked"
+                        )
                     )
                 ),
                 "$.context",
@@ -2125,7 +2287,11 @@ def decompile_managed_form(
                     else (
                         "Контекст формы записи регистра сведений согласован с главным реквизитом."
                         if context_role == "record"
-                        else "Для role=custom проверен общий layout без owner-specific обещаний."
+                        else (
+                            "Контекст формы списка или выбора согласован с главным DynamicList."
+                            if context_role in {"list", "choice"}
+                            else "Для role=custom проверен общий layout без owner-specific обещаний."
+                        )
                     )
                 ),
             )

@@ -139,3 +139,40 @@ def test_public_schema_и_runtime_совместно_отклоняют_закр
     with pytest.raises(MetadataAuthoringContractError) as caught:
         compile_metadata_object(specification)
     assert caught.value.diagnostics[0]["code"] == runtime_code
+
+
+def test_public_schema_form_role_optional_and_closed_enum():
+    specification = _catalog()
+    base_form = {
+        "name": "ФормаСписка",
+        "synonym": "Форма списка",
+        "default": False,
+        "form_xml": (
+            '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"/>'
+        ),
+        "module_bsl": "",
+    }
+    specification["forms"] = [base_form]
+
+    assert list(
+        Draft202012Validator(METADATA_SPECIFICATION_SCHEMA).iter_errors(specification)
+    ) == []
+    for role in ("object", "list", "choice"):
+        candidate = deepcopy(specification)
+        candidate["forms"][0]["role"] = role
+        assert list(
+            Draft202012Validator(METADATA_SPECIFICATION_SCHEMA).iter_errors(candidate)
+        ) == []
+
+    for role in ("record", "folder"):
+        invalid = deepcopy(specification)
+        invalid["forms"][0]["role"] = role
+        assert list(
+            Draft202012Validator(METADATA_SPECIFICATION_SCHEMA).iter_errors(invalid)
+        )
+
+    register = _register()
+    register["forms"] = [dict(base_form, role="record")]
+    assert list(
+        Draft202012Validator(METADATA_SPECIFICATION_SCHEMA).iter_errors(register)
+    ) == []

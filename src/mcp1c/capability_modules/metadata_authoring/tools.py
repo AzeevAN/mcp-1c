@@ -58,6 +58,8 @@ def load(registry=None) -> tuple[CapabilityTool, ...]:
             function=_rules_tool,
             description=(
                 "Сначала получите компактные правила создания метаданных. "
+                "Если планируются forms[], обязательно запросите topic=forms: "
+                "он публикует обязательную цепочку Forms compile/check перед metadata compile. "
                 "Поддержаны Справочник, базовый непроводимый Документ и РегистрСведений; инструмент "
                 "ничего не пишет, не импортирует в 1С и не обращается к Registry."
             ),
@@ -66,9 +68,22 @@ def load(registry=None) -> tuple[CapabilityTool, ...]:
             name="compile_metadata_object",
             function=_compile_tool,
             description=(
+                "Если forms[] непуст, сначала обязательно запросите правила "
+                "capability Forms и для каждой role выполните "
+                "compile_managed_form, затем вызовите check_managed_form на тех же "
+                "точных возвращённых строках; только после успеха программно "
+                "передайте Form.xml/Module.bsl byte-for-byte и ту же role в forms[]. "
+                "Не перепечатывайте, не пересказывайте, не сокращайте, не обрезайте "
+                "и не реконструируйте XML; не используйте minimal_shape_reference. "
+                "Metadata compile request размером в десятки KB является нормальным. "
+                "Metadata checker не подтверждает provenance или semantic role "
+                "Form.xml, поэтому ручной XML не является доказательством формы. "
                 "Pure-компиляция закрытой specification schema v1 в текстовые "
                 "артефакты Справочника, непроводимого Документа или РегистраСведений. Ничего не пишет, "
                 "не импортирует в 1С и не читает Configuration.xml. "
+                "Для Справочника и Документа доступны role=object/list/choice, "
+                "для РегистраСведений role=record; role можно опустить для "
+                "совместимости с прежним object/record-контрактом. "
                 "format_version обязан передать caller. "
                 "До первого вызова получите через get_metadata_authoring_rules "
                 "темы overview, тему выбранного вида объекта и, если forms не "
@@ -83,6 +98,8 @@ def load(registry=None) -> tuple[CapabilityTool, ...]:
                 "непроводимого Документа или РегистраСведений: descriptor, generated types, "
                 "формы и XML namespaces. Ничего не пишет и не импортирует в 1С; "
                 "успех статической проверки не доказывает нативный импорт. "
+                "Checker проверяет owner-relative Default*Form, но не выводит "
+                "semantic role из Form.xml: это делает check_managed_form. "
                 "После compile_metadata_object передайте result.object_ref, "
                 "result.format_version и result.artifacts. Configuration.xml "
                 "не поддерживается; принимается только точный безопасный "

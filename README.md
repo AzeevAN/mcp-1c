@@ -30,13 +30,13 @@
 | Роли | объявленные права из native generation; без готового слоя две role-ручки отсутствуют |
 | Дашборд | современная SPA включена по умолчанию; светлая и тёмная темы; ссылка на GitHub; `on` либо `off` |
 | Авторизация Docker | два разных обязательных токена: `API_TOKEN` на чтение, `ADMIN_TOKEN` на запись |
-| Тесты | `.venv/bin/python -m pytest`, 2969 |
+| Тесты | `.venv/bin/python -m pytest`, 2997 |
 
 Воспроизводимый прогон:
 
 ```bash
 .venv/bin/pip install --require-hashes -r requirements-dev-lock.txt
-.venv/bin/python -m pytest          # 2969 тестов; 2968 passed, 1 skipped (прогон 2026-09-19)
+.venv/bin/python -m pytest          # 2997 тестов; 2996 passed, 1 skipped (прогон 2026-09-19)
 ```
 
 ## Модульная система возможностей
@@ -1920,7 +1920,10 @@ PYTHONPATH=src .venv/bin/python tests/accept_forms_stdio.py
 
 Metadata Authoring вызывается отдельно от Forms. Сначала
 `get_metadata_authoring_rules(topic="overview")`, затем тематические
-`catalog`, `document`, `information_register`, `artifacts` и `diagnostics`.
+`catalog`, `document`, `information_register`, `forms`, `artifacts` и
+`diagnostics`. При непустом `forms[]` тема `forms` обязательна: справочный XML
+из `artifacts` показывает только форму данных и не заменяет Forms
+`rules → compile → check` для каждой переданной роли.
 Темы `catalog`, `document` и `information_register` содержат готовые проходящие
 `compile → check` примеры полной specification; caller адаптирует их к
 найденным объектам и своему `format_version`.
@@ -1933,6 +1936,13 @@ Metadata Authoring вызывается отдельно от Forms. Снача�
 детерминированно создаёт descriptor объекта и форм, а также упаковывает
 переданные `Form.xml`/`Module.bsl`. Один явный `identity` UUID становится UUID
 объекта; остальные идентификаторы стабильно выводятся из него.
+Каждый элемент `forms[]` может явно задать `role`: для справочника и документа
+доступны `object`, `list` и `choice`, для регистра сведений — `record`.
+Отсутствующая роль сохраняет прежнее поведение (`object` либо `record`).
+Флаг `default=true` назначает форму по умолчанию только для своей роли и
+заполняет соответствующее `DefaultObjectForm`, `DefaultListForm`,
+`DefaultChoiceForm` или `DefaultRecordForm`; роль может не иметь default.
+Одна физическая форма сразу для `list` и `choice` пока не поддерживается.
 `tools/list` заранее публикует 3 закрытые ветки specification, обязательные
 поля, плоский массив `forms`, варианты типов, диапазоны и patterns. Эта
 schema-only подсказка не перехватывает ошибочный вызов: compiler по-прежнему
@@ -1965,9 +1975,14 @@ pure-handoff после compiler достаточно передать эти т
 реквизиты `Posted`, `Ref`, `DeletionMark`, `Date`, `Number`, `InputByString`
 по номеру и запрещает проводить документ. Полный `Configuration.xml`,
 табличные части, движения, события, команды проведения и прикладной BSL не
-входят в эту вертикаль. Для основной формы Metadata Authoring принимает
-готовый `Form.xml`, созданный Forms для `Документ.* + role=object`, но не
-вызывает Forms checker автоматически и не изобретает форму.
+входят в эту вертикаль. Для вложенных форм Metadata Authoring принимает
+готовые `Form.xml`, созданные Forms для соответствующих owner/role, но не
+вызывает Forms checker автоматически и не изобретает форму. Поэтому агент
+сначала выполняет Forms `compile → check`, затем передаёт проверенные артефакты
+и ту же роль в Metadata Authoring `compile → check`. Metadata checker
+независимо сохраняет owner-relative allowlist, default-ссылки и защиту
+`DocumentObject` владельца, но semantic role формы без Forms checker остаётся
+`not_checked`.
 Для каждого вложенного `Ext/Form.xml` обязателен корневой `version`, точно
 совпадающий с переданным `format_version`; отсутствие или несовпадение
 отклоняется до нативного импорта. Не более
@@ -1981,8 +1996,8 @@ On-demand тема `artifacts` отдельно различает descriptor ф
 `Запись.*`. Этот пример достаточен для статической проверки, но не является
 доказательством нативного импорта в 1С.
 
-Замер 2026-09-18 по канонической дельте `tools/list` дал 14 525 байт и
-приблизительно **3 627 токенов** для трёх схем Metadata Authoring при
+Замер 2026-09-19 по канонической дельте `tools/list` дал 16 229 байт и
+приблизительно **3 891 токен** для трёх схем Metadata Authoring при
 `tiktoken 0.11.0 / o200k_base`. Воспроизвести и проверить manifest:
 
 ```bash

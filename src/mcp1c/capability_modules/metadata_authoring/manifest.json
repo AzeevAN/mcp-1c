@@ -6,11 +6,11 @@
   "context_budget": {
     "status": "measured",
     "tool_count": 3,
-    "approx_tokens": 3627,
+    "approx_tokens": 3891,
     "tokenizer": "tiktoken 0.11.0 / o200k_base",
     "method": "canonical tools/list delta: UTF-8 JSON, sort_keys, compact separators",
-    "canonical_bytes": 14525,
-    "canonical_sha256": "d77006b5e6df2d3d17ce1463df1ddea1fd026a65515b46627ee7486cdbbdabb6",
+    "canonical_bytes": 16229,
+    "canonical_sha256": "9cadc41911dfb1cff99f303a8be34882dc9b8c12ae6b0545accadaf1bd375cd1",
     "payload": "tools_list_delta",
     "measured_at": "2026-09-18"
   }

@@ -11,6 +11,7 @@ RuleTopic: TypeAlias = Literal[
     "catalog",
     "document",
     "information_register",
+    "forms",
     "artifacts",
     "diagnostics",
 ]
@@ -20,6 +21,7 @@ RULE_TOPICS: tuple[RuleTopic, ...] = (
     "catalog",
     "document",
     "information_register",
+    "forms",
     "artifacts",
     "diagnostics",
 )
@@ -43,6 +45,8 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
         "supported_metadata_kinds": ["Справочник", "Документ", "РегистрСведений"],
         "recommended_call_order": [
             "get_metadata_authoring_rules",
+            "compile_managed_form (для каждой формы)",
+            "check_managed_form (для каждой формы)",
             "compile_metadata_object",
             "check_metadata_artifacts",
         ],
@@ -107,14 +111,34 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
             "form": [
                 "name",
                 "synonym",
+                "role (optional)",
                 "default",
                 "form_xml",
                 "module_bsl",
             ],
+            "form_roles": {
+                "catalog": ["object", "list", "choice"],
+                "document": ["object", "list", "choice"],
+                "information_register": ["record"],
+                "legacy_default": {
+                    "catalog": "object",
+                    "document": "object",
+                    "information_register": "record",
+                },
+                "one_physical_form_one_role": True,
+                "shared_list_choice_form": "not_supported",
+            },
+            "form_defaults": (
+                "поле default остаётся обязательным boolean, но значение true "
+                "необязательно для каждой представленной роли; допустимо не "
+                "назначать ни одной формы по умолчанию, но не более одной "
+                "default=true на роль"
+            ),
             "form_xml_preparation": (
-                "до первой compile с forms запросите topic=artifacts: там "
-                "опубликованы точный корень, namespace, version и минимальный "
-                "статический пример Form.xml"
+                "если forms[] непуст, до metadata compile обязательно запросите "
+                "topic=forms и выполните опубликованный Forms compile/check workflow; "
+                "topic=artifacts содержит только shape reference корня, namespace "
+                "и version, а не готовый артефакт формы"
             ),
             "catalog_additional_required": [
                 "code_length",
@@ -166,6 +190,19 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
         "writes_files": False,
         "imports_configuration": False,
         "native_import_proven": False,
+        "forms_workflow": (
+            "Если forms[] непуст, обязательно запросите правила capability Forms, "
+            "затем для каждой роли выполните compile_managed_form -> "
+            "check_managed_form на тех же возвращённых строках; только после "
+            "успешной проверки передайте точные строки Form.xml/Module.bsl "
+            "byte-for-byte программно и ту же role в forms[] -> "
+            "compile_metadata_object -> check_metadata_artifacts. Ручной XML не "
+            "считается доказанной формой: Metadata checker не подтверждает "
+            "provenance и semantic role Form.xml. Не перепечатывайте, не "
+            "пересказывайте, не сокращайте, не обрезайте и не реконструируйте "
+            "строки; не используйте minimal_shape_reference. Metadata compile "
+            "request размером в десятки KB является нормальным."
+        ),
     },
     "document": {
         "object_ref": "Документ.<Имя>",
@@ -176,6 +213,11 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
         "form_declaration": "ChildObjects/Form",
         "form_declaration_value": "<Форма>",
         "default_form_value": "Document.<Имя>.Form.<Форма>",
+        "default_form_properties": {
+            "object": "DefaultObjectForm",
+            "list": "DefaultListForm",
+            "choice": "DefaultChoiceForm",
+        },
         "attribute_declaration": "ChildObjects/Attribute[@uuid]",
         "generated_types": _DOCUMENT_TYPES,
         "generated_type_name_pattern": "Document<Category>.<Имя>",
@@ -193,11 +235,11 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
             "непроводимый документ",
             "без табличных частей и движений",
             "без команд проведения, событий и прикладного BSL",
-            "без форм списка и выбора",
+            "одна физическая форма не совмещает роли list и choice",
         ],
         "forms_handoff": (
             "не собирайте Form.xml вручную: сначала вызовите compile_managed_form "
-            "для Документ.<Имя> + role=object, проверьте результат через "
+            "для Документ.<Имя> + role=object, list или choice, проверьте результат через "
             "check_managed_form и передайте content артефактов Form.xml/Module.bsl "
             "в forms[]; Metadata Authoring только упаковывает проверенный "
             "owner-relative артефакт"
@@ -208,6 +250,13 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
             "передать content Form.xml и Module.bsl в compile_metadata_object.forms[]",
             "check_metadata_artifacts",
         ],
+        "metadata_checker_boundary": (
+            "check_metadata_artifacts проверяет descriptor, owner-relative Default*Form "
+            "и комплект артефактов; чужой cfg:DocumentObject отклоняется и "
+            "DefaultObjectForm обязан содержать DocumentObject текущего владельца, "
+            "но checker не выводит semantic role из Form.xml; проверка роли "
+            "остаётся результатом check_managed_form"
+        ),
         "forms_profile": {
             "context": {
                 "owner": "Документ.<Имя>",
@@ -253,6 +302,11 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
             ],
             "forms": [],
         },
+        "compiler_specification_example_note": (
+            "Если forms[] будет непуст, raw form_xml в примере допустим только как "
+            "shape placeholder; в реальной цепочке замените его content, полученным "
+            "после compile_managed_form и check_managed_form."
+        ),
     },
     "catalog": {
         "object_ref": "Справочник.<Имя>",
@@ -263,6 +317,11 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
         "form_declaration": "ChildObjects/Form",
         "form_declaration_value": "<Форма>",
         "default_form_value": "Catalog.<Имя>.Form.<Форма>",
+        "default_form_properties": {
+            "object": "DefaultObjectForm",
+            "list": "DefaultListForm",
+            "choice": "DefaultChoiceForm",
+        },
         "attribute_declaration": "ChildObjects/Attribute[@uuid]",
         "generated_types": _CATALOG_TYPES,
         "generated_type_name_pattern": "Catalog<Category>.<Имя>",
@@ -272,7 +331,7 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
             "Объект.Код": "обязательно при code_length > 0",
         },
         "standard_command_bar": (
-            "Не объявляйте пользовательские команды Записать/ЗаписатьИЗакрыть: "
+            "Для role=object не объявляйте пользовательские команды Записать/ЗаписатьИЗакрыть: "
             "оставьте commands пустым и используйте корневую AutoCommandBar, "
             "которую платформа заполняет по главному реквизиту Объект."
         ),
@@ -295,6 +354,7 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
                 {
                     "name": "ФормаЭлемента",
                     "synonym": "Форма элемента",
+                    "role": "object",
                     "default": True,
                     "form_xml": (
                         '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" '
@@ -309,6 +369,11 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
                 }
             ],
         },
+        "compiler_specification_example_note": (
+            "Встроенный raw form_xml — только shape placeholder payload и не является "
+            "готовым доказанным артефактом. В реальной цепочке замените его content "
+            "результатом compile_managed_form, прошедшим check_managed_form."
+        ),
     },
     "information_register": {
         "object_ref": "РегистрСведений.<Имя>",
@@ -319,6 +384,7 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
         "form_declaration": "ChildObjects/Form",
         "form_declaration_value": "<Форма>",
         "default_form_value": "InformationRegister.<Имя>.Form.<Форма>",
+        "default_form_properties": {"record": "DefaultRecordForm"},
         "field_declarations": [
             "ChildObjects/Dimension[@uuid]",
             "ChildObjects/Resource[@uuid]",
@@ -371,6 +437,7 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
                 {
                     "name": "ФормаЗаписи",
                     "synonym": "Форма записи",
+                    "role": "record",
                     "default": True,
                     "form_xml": (
                         '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" '
@@ -382,6 +449,64 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
                     "module_bsl": "",
                 }
             ],
+        },
+        "compiler_specification_example_note": (
+            "Встроенный raw form_xml — только shape placeholder payload и не является "
+            "готовым доказанным артефактом. В реальной цепочке замените его content "
+            "результатом compile_managed_form, прошедшим check_managed_form."
+        ),
+    },
+    "forms": {
+        "status": "supported_workflow",
+        "when_required": "обязательно перед compile_metadata_object, если forms[] непуст",
+        "role_mapping": {
+            "Справочник": ["object", "list", "choice"],
+            "Документ": ["object", "list", "choice"],
+            "РегистрСведений": ["record"],
+        },
+        "legacy_role_when_omitted": {
+            "Справочник": "object",
+            "Документ": "object",
+            "РегистрСведений": "record",
+        },
+        "default_semantics": {
+            "field_required": True,
+            "true_optional_per_role": True,
+            "maximum_true_per_role": 1,
+            "zero_defaults_allowed": True,
+            "shared_physical_list_choice_form": "not_supported",
+        },
+        "required_call_order": [
+            "запросить правила capability Forms",
+            "compile_managed_form для каждой формы и её role",
+            "check_managed_form на тех же точных возвращённых строках",
+            "программно передать точные Form.xml и Module.bsl byte-for-byte плюс ту же role в forms[]",
+            "compile_metadata_object",
+            "check_metadata_artifacts",
+        ],
+        "exact_handoff": {
+            "source": "строки Form.xml и Module.bsl из compile_managed_form",
+            "forms_check_input": "те же точные возвращённые строки",
+            "metadata_forms_input": "те же точные строки byte-for-byte",
+            "forbidden_transformations": [
+                "retype",
+                "summarize",
+                "truncate",
+                "reconstruct",
+                "minimal_shape_reference",
+            ],
+            "transport": "programmatic",
+            "tens_of_kilobytes": "normal",
+        },
+        "manual_xml": (
+            "raw Form.xml может служить только shape reference; ручной XML не "
+            "считается доказанной формой и не заменяет Forms compile/check"
+        ),
+        "metadata_checker_boundary": {
+            "provenance": "not_checked",
+            "semantic_role": "not_checked",
+            "owner_relative_bundle": "checked",
+            "document_object_owner": "checked",
         },
     },
     "artifacts": {
@@ -428,6 +553,12 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
             "form_type": "Managed",
             "name_value": "точное короткое значение ChildObjects/Form",
         },
+        "default_form_references": {
+            "empty_allowed": True,
+            "must_be_owner_relative": True,
+            "must_reference_declared_form": True,
+            "semantic_role_from_form_xml": "not_checked",
+        },
         "form_xml": {
             "path": "<owner>/Forms/<Форма>/Ext/Form.xml",
             "root": (
@@ -440,7 +571,13 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
                 "mismatch_status": "failed",
             },
             "not_descriptor_root": "md:MetaDataObject",
-            "minimal_static_example": (
+            "shape_reference_only": True,
+            "shape_reference_warning": (
+                "Не копируйте этот raw XML как готовый forms[] artifact: он "
+                "показывает только форму XML и не заменяет compile_managed_form "
+                "плюс check_managed_form."
+            ),
+            "minimal_shape_reference": (
                 '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">'
                 '<ChildItems><InputField name="Поле" id="1">'
                 '<DataPath>Объект.Реквизит</DataPath>'

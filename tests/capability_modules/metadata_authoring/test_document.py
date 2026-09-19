@@ -133,11 +133,6 @@ def test_document_schema_and_runtime_fail_closed(field, value):
             "Document.ЧужойДокумент.Form.ФормаДокумента",
             "unknown_default_form",
         ),
-        (
-            "cfg:DocumentObject.ТестовыйДокумент",
-            "cfg:CatalogObject.ТестовыйДокумент",
-            "form_owner_mismatch",
-        ),
     ],
 )
 def test_document_checker_rejects_structural_drift(
@@ -153,6 +148,44 @@ def test_document_checker_rejects_structural_drift(
     )
 
     assert expected_code in {item["code"] for item in checked["diagnostics"]}
+
+
+def test_document_checker_rejects_foreign_document_object_owner():
+    compiled = compile_metadata_object(_document(with_form=True))
+    artifacts = {item["path"]: item["content"] for item in compiled["artifacts"]}
+    path = "Documents/ТестовыйДокумент/Forms/ФормаДокумента/Ext/Form.xml"
+    artifacts[path] = artifacts[path].replace(
+        "cfg:DocumentObject.ТестовыйДокумент",
+        "cfg:DocumentObject.ЧужойДокумент",
+    )
+
+    checked = check_metadata_artifacts(
+        compiled["object_ref"], compiled["format_version"], artifacts
+    )
+
+    assert checked["status"] == "failed"
+    assert "form_owner_mismatch" in {
+        item["code"] for item in checked["diagnostics"]
+    }
+
+
+def test_document_checker_requires_owner_type_for_default_object_form():
+    compiled = compile_metadata_object(_document(with_form=True))
+    artifacts = {item["path"]: item["content"] for item in compiled["artifacts"]}
+    path = "Documents/ТестовыйДокумент/Forms/ФормаДокумента/Ext/Form.xml"
+    artifacts[path] = artifacts[path].replace(
+        "cfg:DocumentObject.ТестовыйДокумент",
+        "cfg:DynamicList",
+    )
+
+    checked = check_metadata_artifacts(
+        compiled["object_ref"], compiled["format_version"], artifacts
+    )
+
+    assert checked["status"] == "failed"
+    assert "form_owner_mismatch" in {
+        item["code"] for item in checked["diagnostics"]
+    }
 
 
 def test_document_checker_rejects_wrong_form_path():

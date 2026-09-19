@@ -194,7 +194,12 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
             "supported",
             (
                 "Для Справочник.* и Документ.* роли list/choice используют "
-                "единственный главный DynamicList Список и связанную таблицу Список."
+                "единственный главный DynamicList Список и связанную таблицу Список. "
+                "Каждая колонка использует data_path Список.<ИмяПоля>; поля Код и "
+                "Наименование в примере берутся из создаваемого объекта. Если нового "
+                "owner ещё нет в Registry, configuration_links получает warning: не "
+                "нужно придумывать фиктивные типы или ослаблять проверку доказанных "
+                "конфликтов для уже существующего owner."
             ),
             "corpus_invariant",
             {
@@ -210,7 +215,65 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
                         "dynamic_data_read": "<явный boolean>",
                     },
                 },
-                "table": {"name": "Список", "data_path": "Список"},
+                "table": {
+                    "name": "Список",
+                    "data_path": "Список",
+                    "columns": [
+                        {
+                            "kind": "input_field",
+                            "name": "Код",
+                            "data_path": "Список.Код",
+                        },
+                        {
+                            "kind": "input_field",
+                            "name": "Наименование",
+                            "data_path": "Список.Наименование",
+                        },
+                    ],
+                },
+                "minimal_example": {
+                    "schema_version": 2,
+                    "form_name": "ФормаСписка",
+                    "context": {
+                        "owner": "Справочник.Товары",
+                        "role": "list",
+                    },
+                    "format_version": "2.20",
+                    "title": {"ru": "Товары"},
+                    "attributes": [
+                        {
+                            "name": "Список",
+                            "type": {
+                                "kind": "dynamic_list",
+                                "main_table": "Справочник.Товары",
+                                "dynamic_data_read": True,
+                            },
+                            "main": True,
+                            "saved_data": False,
+                        }
+                    ],
+                    "elements": [
+                        {
+                            "kind": "table",
+                            "name": "Список",
+                            "data_path": "Список",
+                            "columns": [
+                                {
+                                    "kind": "input_field",
+                                    "name": "Код",
+                                    "data_path": "Список.Код",
+                                },
+                                {
+                                    "kind": "input_field",
+                                    "name": "Наименование",
+                                    "data_path": "Список.Наименование",
+                                },
+                            ],
+                        }
+                    ],
+                    "commands": [],
+                    "events": [],
+                },
                 "list_xml": {"WindowOpeningMode": "absent", "ChoiceMode": "absent"},
                 "choice_xml": {
                     "WindowOpeningMode": "LockOwnerWindow",

@@ -93,13 +93,14 @@ def _field_schema(*, dimension: bool = False) -> dict[str, object]:
     return _closed_object(properties, ("name", "synonym", "type"))
 
 
-def _forms_schema() -> dict[str, object]:
+def _forms_schema(roles: tuple[str, ...]) -> dict[str, object]:
     return {
         "type": "array",
         "items": _closed_object(
             {
                 "name": {"type": "string", "pattern": _NAME_PATTERN},
                 "synonym": {"type": "string", "minLength": 1},
+                "role": {"enum": list(roles)},
                 "default": {"type": "boolean"},
                 "form_xml": {"type": "string", "minLength": 1},
                 "module_bsl": {"type": "string"},
@@ -109,7 +110,9 @@ def _forms_schema() -> dict[str, object]:
     }
 
 
-def _common_properties(object_kind: str) -> dict[str, object]:
+def _common_properties(
+    object_kind: str, form_roles: tuple[str, ...]
+) -> dict[str, object]:
     return {
         "schema_version": {"const": 1},
         "object_ref": {
@@ -120,7 +123,7 @@ def _common_properties(object_kind: str) -> dict[str, object]:
         "identity": {"type": "string", "format": "uuid"},
         "synonym": {"type": "string", "minLength": 1},
         "attributes": {"type": "array", "items": _field_schema()},
-        "forms": _forms_schema(),
+        "forms": _forms_schema(form_roles),
     }
 
 
@@ -136,7 +139,7 @@ _COMMON_REQUIRED = (
 
 
 def _catalog_schema() -> dict[str, object]:
-    properties = _common_properties("Справочник")
+    properties = _common_properties("Справочник", ("object", "list", "choice"))
     properties.update(
         {
             "code_length": {"type": "integer", "minimum": 0, "maximum": 50},
@@ -155,7 +158,7 @@ def _catalog_schema() -> dict[str, object]:
 
 
 def _information_register_schema() -> dict[str, object]:
-    properties = _common_properties("РегистрСведений")
+    properties = _common_properties("РегистрСведений", ("record",))
     properties.update(
         {
             "periodicity": {"const": "nonperiodical"},
@@ -175,7 +178,7 @@ def _information_register_schema() -> dict[str, object]:
 
 
 def _document_schema() -> dict[str, object]:
-    properties = _common_properties("Документ")
+    properties = _common_properties("Документ", ("object", "list", "choice"))
     properties.update(
         {
             "number_length": {"type": "integer", "minimum": 1, "maximum": 50},

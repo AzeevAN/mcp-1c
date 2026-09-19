@@ -36,7 +36,7 @@ class _Kind:
     xml_kind: str
     directory: str
     generated_types: tuple[str, ...]
-    default_form_property: str
+    default_form_properties: tuple[str, ...]
 
 
 _KINDS = {
@@ -45,7 +45,7 @@ _KINDS = {
         "Catalog",
         "Catalogs",
         ("Object", "Ref", "Selection", "List", "Manager"),
-        "DefaultObjectForm",
+        ("DefaultObjectForm", "DefaultListForm", "DefaultChoiceForm"),
     ),
     "РегистрСведений": _Kind(
         "РегистрСведений",
@@ -60,14 +60,14 @@ _KINDS = {
             "RecordKey",
             "RecordManager",
         ),
-        "DefaultRecordForm",
+        ("DefaultRecordForm",),
     ),
     "Документ": _Kind(
         "Документ",
         "Document",
         "Documents",
         ("Object", "Ref", "Selection", "List", "Manager"),
-        "DefaultObjectForm",
+        ("DefaultObjectForm", "DefaultListForm", "DefaultChoiceForm"),
     ),
 }
 
@@ -108,7 +108,8 @@ class _Report:
                 ["Исправьте diagnostics и повторите check_metadata_artifacts."]
                 if failed
                 else [
-                    "Статическая проверка пройдена; нативный импорт в 1С не проверен."
+                    "Статическая проверка пройдена; нативный импорт в 1С не проверен.",
+                    "Semantic role Form.xml здесь не проверяется: используйте результат check_managed_form.",
                 ]
             ),
         }
@@ -412,6 +413,7 @@ def _check_forms(
             "Имя формы нельзя повторять в ChildObjects/Form.",
         )
     valid_form_names: list[str] = []
+    form_main_types: dict[str, list[str]] = {}
     expected_paths = {f"{owner_path}.xml"}
     for form_name in form_names:
         if _METADATA_NAME.fullmatch(form_name) is None:
@@ -443,34 +445,39 @@ def _check_forms(
             _check_format_version(
                 internal_form_entry[0], form_xml_path, report, "forms", format_version
             )
+            main_types: list[str] = []
+            for attribute in internal_form_entry[0].iter():
+                if _local(attribute.tag) != "Attribute":
+                    continue
+                if _child_text(attribute, "MainAttribute") != "true":
+                    continue
+                main_types.extend(
+                    node.text.strip()
+                    for node in attribute.iter()
+                    if _local(node.tag) == "Type"
+                    and node.text
+                    and node.text.strip()
+                )
+            form_main_types[form_name] = main_types
             if kind.object_kind == "Документ":
-                main_types = []
-                for attribute in internal_form_entry[0].iter():
-                    if _local(attribute.tag) != "Attribute":
-                        continue
-                    if _child_text(attribute, "MainAttribute") != "true":
-                        continue
-                    type_node = next(
-                        (
-                            node
-                            for node in attribute.iter()
-                            if _local(node.tag) == "Type"
-                            and node.text
-                            and node.text.strip()
-                        ),
-                        None,
-                    )
-                    if type_node is not None:
-                        main_types.append(type_node.text.strip())
                 expected_type = f"cfg:DocumentObject.{object_name}"
-                if main_types != [expected_type]:
+                foreign_document_type = next(
+                    (
+                        type_name
+                        for type_name in main_types
+                        if type_name.startswith("cfg:DocumentObject.")
+                        and type_name != expected_type
+                    ),
+                    None,
+                )
+                if foreign_document_type is not None:
                     report.fail(
                         "forms",
                         "form_owner_mismatch",
                         form_xml_path,
                         (
-                            "Основная форма документа должна иметь ровно один "
-                            f"главный реквизит типа `{expected_type}`."
+                            f"Главный реквизит формы имеет тип `{foreign_document_type}`, "
+                            f"ожидается владелец `{expected_type}`."
                         ),
                     )
         form_entry = parsed.get(descriptor_path)
@@ -522,31 +529,29 @@ def _check_forms(
             path,
             "Артефакт не входит в descriptor и закрытый owner-relative комплект.",
         )
-    default_form = _child_text(properties, kind.default_form_property)
-    if form_names and default_form is None:
-        report.fail(
-            "forms",
-            "missing_default_form",
-            f"{owner_path}.xml:{kind.default_form_property}",
-            f"При объявленных формах требуется {kind.default_form_property}.",
-        )
-    if default_form is not None:
-        allowed = {
-            f"{kind.xml_kind}.{object_name}.Form.{form_name}"
-            for form_name in valid_form_names
-        }
+    default_forms = {
+        property_name: _child_text(properties, property_name)
+        for property_name in kind.default_form_properties
+    }
+    allowed = {
+        f"{kind.xml_kind}.{object_name}.Form.{form_name}"
+        for form_name in valid_form_names
+    }
+    for property_name, default_form in default_forms.items():
+        if default_form is None:
+            continue
         if default_form not in allowed:
             report.fail(
                 "forms",
                 "unknown_default_form",
-                f"{owner_path}.xml:{kind.default_form_property}",
+                f"{owner_path}.xml:{property_name}",
                 (
                     f"Форма по умолчанию `{default_form}` должна иметь вид "
                     f"`{kind.xml_kind}.{object_name}.Form.<Форма>`, где "
                     "<Форма> — короткое значение ChildObjects/Form."
                 ),
             )
-        elif kind.object_kind == "Справочник":
+        elif kind.object_kind == "Справочник" and property_name == "DefaultObjectForm":
             required_paths = []
             for property_name, data_path in (
                 ("DescriptionLength", "Объект.Наименование"),
@@ -582,6 +587,19 @@ def _check_forms(
                                 "длина стандартного реквизита больше нуля."
                             ),
                         )
+        elif kind.object_kind == "Документ" and property_name == "DefaultObjectForm":
+            default_form_name = default_form.rsplit(".", 1)[-1]
+            expected_type = f"cfg:DocumentObject.{object_name}"
+            if expected_type not in form_main_types.get(default_form_name, []):
+                report.fail(
+                    "forms",
+                    "form_owner_mismatch",
+                    f"{owner_path}/Forms/{default_form_name}/Ext/Form.xml",
+                    (
+                        "Форма из DefaultObjectForm должна иметь главный реквизит "
+                        f"типа `{expected_type}`."
+                    ),
+                )
 
 
 def check_metadata_artifacts(

@@ -381,6 +381,56 @@ def test_specification_возвращает_тот_же_минимальный_�
     list_choice = by_code["list_choice_form_owner_context"]["value"]
     assert list_choice["roles"] == ["list", "choice"]
     assert list_choice["main_attribute"]["name"] == "Список"
+    assert list_choice["table"] == {
+        "name": "Список",
+        "data_path": "Список",
+        "columns": [
+            {
+                "kind": "input_field",
+                "name": "Код",
+                "data_path": "Список.Код",
+            },
+            {
+                "kind": "input_field",
+                "name": "Наименование",
+                "data_path": "Список.Наименование",
+            },
+        ],
+    }
+    assert list_choice["minimal_example"] == {
+        "schema_version": 2,
+        "form_name": "ФормаСписка",
+        "context": {"owner": "Справочник.Товары", "role": "list"},
+        "format_version": "2.20",
+        "title": {"ru": "Товары"},
+        "attributes": [
+            {
+                "name": "Список",
+                "type": {
+                    "kind": "dynamic_list",
+                    "main_table": "Справочник.Товары",
+                    "dynamic_data_read": True,
+                },
+                "main": True,
+                "saved_data": False,
+            }
+        ],
+        "elements": [{"kind": "table", **list_choice["table"]}],
+        "commands": [],
+        "events": [],
+    }
+    parsed = models.parse_managed_form_spec(list_choice["minimal_example"])
+    assert parsed.elements[0].data_path == "Список"
+    assert [column.data_path for column in parsed.elements[0].columns] == [
+        "Список.Код",
+        "Список.Наименование",
+    ]
+    summary = by_code["list_choice_form_owner_context"]["summary"]
+    assert "Список.<ИмяПоля>" in summary
+    assert "поля Код и Наименование" in summary
+    assert "configuration_links получает warning" in summary
+    assert "фиктивные типы" in summary
+    assert "существующего owner" in summary
     assert list_choice["choice_xml"] == {
         "WindowOpeningMode": "LockOwnerWindow",
         "ChoiceMode": True,

@@ -24,6 +24,18 @@ _NAME = re.compile(r"^[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*$")
 _OBJECT_REF = re.compile(r"^(Справочник|РегистрСведений|Документ)\.([A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*)$")
 _FORMAT_VERSION = re.compile(r"^\d+\.\d+(?:\.\d+)*$")
 _FORBIDDEN_XML = re.compile(r"<!\s*(?:DOCTYPE|ENTITY)\b", re.I)
+_QNAME = re.compile(r"^([A-Za-z_][A-Za-z0-9_.-]*):[^\s:]+$")
+_FORM_ROLES = frozenset({"object", "list", "choice", "record"})
+_OWNER_ROLES = {
+    "Справочник": frozenset({"object", "list", "choice"}),
+    "Документ": frozenset({"object", "list", "choice"}),
+    "РегистрСведений": frozenset({"record"}),
+}
+_LEGACY_FORM_ROLE = {
+    "Справочник": "object",
+    "Документ": "object",
+    "РегистрСведений": "record",
+}
 
 
 def _root_attributes(format_version: str) -> str:
@@ -130,7 +142,7 @@ def _list(value: object, path: str) -> list[object]:
 
 
 def _validate_type(raw: object, path: str) -> dict[str, object]:
-    value = _mapping(raw, path)
+    value = dict(_mapping(raw, path))
     _required(value, ("kind",), path)
     kind = value["kind"]
     if kind == "string":
@@ -188,19 +200,39 @@ def _validate_field(raw: object, path: str, xml_kind: str) -> dict[str, object]:
 
 
 def _validate_form(
-    raw: object, path: str, format_version: str
+    raw: object, path: str, format_version: str, owner_kind: str
 ) -> dict[str, object]:
-    value = _mapping(raw, path)
-    _strict(value, {"name", "synonym", "default", "form_xml", "module_bsl"}, path)
+    value = dict(_mapping(raw, path))
+    _strict(value, {"name", "synonym", "role", "default", "form_xml", "module_bsl"}, path)
     _required(value, ("name", "synonym", "default", "form_xml", "module_bsl"), path)
     _text(value["name"], f"{path}.name", name=True)
     _text(value["synonym"], f"{path}.synonym")
     if not isinstance(value["default"], bool):
         _fail("invalid_type", f"{path}.default", "default должен быть boolean.")
+    role = value.get("role", _LEGACY_FORM_ROLE[owner_kind])
+    if not isinstance(role, str) or role not in _FORM_ROLES:
+        _fail(
+            "unsupported_form_role",
+            f"{path}.role",
+            "Допустимы роли object, list, choice и record.",
+        )
+    if role not in _OWNER_ROLES[owner_kind]:
+        _fail(
+            "unsupported_owner_role",
+            f"{path}.role",
+            f"Роль `{role}` не поддерживается для {owner_kind}.",
+        )
+    value["role"] = role
     form_xml = _text(value["form_xml"], f"{path}.form_xml")
     if _FORBIDDEN_XML.search(form_xml):
         _fail("forbidden_xml_declaration", f"{path}.form_xml", "DTD и ENTITY запрещены.")
     try:
+        namespaces = {
+            prefix or ""
+            for _, (prefix, _) in ET.iterparse(
+                StringIO(form_xml), events=("start-ns",)
+            )
+        }
         root = ET.fromstring(form_xml)
     except (ET.ParseError, ValueError) as error:
         _fail("invalid_form_xml", f"{path}.form_xml", f"Form.xml не разобран: {error}.")
@@ -222,6 +254,17 @@ def _validate_form(
                 f"specification.format_version `{format_version}`."
             ),
         )
+    for node in root.iter():
+        if node.tag.rsplit("}", 1)[-1] != "Type" or not node.text:
+            continue
+        qname = node.text.strip()
+        match = _QNAME.fullmatch(qname)
+        if match is not None and match.group(1) not in namespaces:
+            _fail(
+                "undeclared_qname_prefix",
+                f"{path}.form_xml",
+                f"Префикс `{match.group(1)}` в QName `{qname}` не объявлен в Form.xml.",
+            )
     attributes_node = root.find(f"{{{LOGFORM}}}Attributes")
     form_attributes = [] if attributes_node is None else list(attributes_node)
     main_names = {
@@ -264,7 +307,7 @@ def _validate_form(
 
 
 def _validate(specification: object) -> tuple[dict[str, object], _Kind, str, uuid.UUID]:
-    value = _mapping(specification, "$specification")
+    value = dict(_mapping(specification, "$specification"))
     _required(value, ("schema_version", "object_ref", "format_version", "identity", "synonym", "attributes", "forms"), "$specification")
     if value["schema_version"] != 1 or isinstance(value["schema_version"], bool):
         _fail("unsupported_schema_version", "$specification.schema_version", "Поддерживается только schema_version=1.")
@@ -342,18 +385,28 @@ def _validate(specification: object) -> tuple[dict[str, object], _Kind, str, uui
                 _fail("duplicate_name", f"$specification.{collection}[{index}].name", f"Имя `{name}` уже использовано.")
             names.add(key)
     forms = _list(value["forms"], "$specification.forms")
-    defaults = 0
+    default_roles: set[str] = set()
+    normalized_forms: list[dict[str, object]] = []
     for index, item in enumerate(forms):
         form = _validate_form(
-            item, f"$specification.forms[{index}]", format_version
+            item, f"$specification.forms[{index}]", format_version, kind.ru
         )
+        normalized_forms.append(form)
         name = str(form["name"])
         key = name.casefold()
         if key in names:
             _fail("duplicate_name", f"$specification.forms[{index}].name", f"Имя `{name}` уже использовано.")
         names.add(key)
-        defaults += int(bool(form["default"]))
-        if kind.ru == "Документ":
+        role = str(form["role"])
+        if bool(form["default"]):
+            if role in default_roles:
+                _fail(
+                    "duplicate_default_form_role",
+                    f"$specification.forms[{index}].default",
+                    f"Для роли `{role}` уже объявлена форма по умолчанию.",
+                )
+            default_roles.add(role)
+        if kind.ru == "Документ" and role == "object":
             root = ET.fromstring(str(form["form_xml"]))
             main_types = []
             for attribute in root.iter(f"{{{LOGFORM}}}Attribute"):
@@ -375,8 +428,7 @@ def _validate(specification: object) -> tuple[dict[str, object], _Kind, str, uui
                         f"реквизит типа `{expected_type}`."
                     ),
                 )
-    if forms and defaults != 1:
-        _fail("invalid_default_form", "$specification.forms", "При наличии форм ровно одна должна иметь default=true.")
+    value["forms"] = normalized_forms
     if kind.ru == "РегистрСведений" and not any(value.get(collection, []) for collection, _ in kind.fields):
         _fail("missing_register_field", "$specification", "Регистр должен содержать хотя бы одно поле.")
     return value, kind, match.group(2), identity
@@ -429,7 +481,7 @@ def _generated_types(kind: _Kind, name: str, identity: uuid.UUID) -> str:
 def _catalog_properties(
     name: str,
     synonym: object,
-    default: str,
+    defaults: dict[str, str],
     code_length: int,
     description_length: int,
 ) -> str:
@@ -456,8 +508,11 @@ def _catalog_properties(
         "<SearchStringModeOnInputByString>Begin</SearchStringModeOnInputByString>"
         "<FullTextSearchOnInputByString>DontUse</FullTextSearchOnInputByString>"
         "<ChoiceDataGetModeOnInputByString>Directly</ChoiceDataGetModeOnInputByString>"
-        f"<DefaultObjectForm>{escape(default)}</DefaultObjectForm>"
-        "<DefaultFolderForm/><DefaultListForm/><DefaultChoiceForm/><DefaultFolderChoiceForm/>"
+        f"<DefaultObjectForm>{escape(defaults.get('object', ''))}</DefaultObjectForm>"
+        "<DefaultFolderForm/>"
+        f"<DefaultListForm>{escape(defaults.get('list', ''))}</DefaultListForm>"
+        f"<DefaultChoiceForm>{escape(defaults.get('choice', ''))}</DefaultChoiceForm>"
+        "<DefaultFolderChoiceForm/>"
         "<AuxiliaryObjectForm/><AuxiliaryFolderForm/><AuxiliaryListForm/><AuxiliaryChoiceForm/><AuxiliaryFolderChoiceForm/>"
         "<IncludeHelpInContents>false</IncludeHelpInContents><BasedOn/><DataLockFields/><DataLockControlMode>Managed</DataLockControlMode>"
         "<FullTextSearch>Use</FullTextSearch><ObjectPresentation/><ExtendedObjectPresentation/><ListPresentation/>"
@@ -467,11 +522,11 @@ def _catalog_properties(
     )
 
 
-def _register_properties(name: str, synonym: object, default: str) -> str:
+def _register_properties(name: str, synonym: object, defaults: dict[str, str]) -> str:
     return (
         f"<Name>{escape(name)}</Name>{_synonym(synonym)}<Comment/>"
         "<InformationRegisterPeriodicity>Nonperiodical</InformationRegisterPeriodicity><WriteMode>Independent</WriteMode>"
-        f"<UseStandardCommands>true</UseStandardCommands><DefaultRecordForm>{escape(default)}</DefaultRecordForm>"
+        f"<UseStandardCommands>true</UseStandardCommands><DefaultRecordForm>{escape(defaults.get('record', ''))}</DefaultRecordForm>"
         "<FullTextSearch>DontUse</FullTextSearch><DataLockControlMode>Managed</DataLockControlMode>"
     )
 
@@ -498,7 +553,7 @@ def _document_standard_attribute(name: str) -> str:
 def _document_properties(
     name: str,
     synonym: object,
-    default: str,
+    defaults: dict[str, str],
     value: dict[str, object],
 ) -> str:
     standard_attributes = "".join(
@@ -520,8 +575,10 @@ def _document_properties(
         "<SearchStringModeOnInputByString>Begin</SearchStringModeOnInputByString>"
         "<FullTextSearchOnInputByString>DontUse</FullTextSearchOnInputByString>"
         "<ChoiceDataGetModeOnInputByString>Directly</ChoiceDataGetModeOnInputByString>"
-        f"<DefaultObjectForm>{escape(default)}</DefaultObjectForm>"
-        "<DefaultListForm/><DefaultChoiceForm/><AuxiliaryObjectForm/><AuxiliaryListForm/><AuxiliaryChoiceForm/>"
+        f"<DefaultObjectForm>{escape(defaults.get('object', ''))}</DefaultObjectForm>"
+        f"<DefaultListForm>{escape(defaults.get('list', ''))}</DefaultListForm>"
+        f"<DefaultChoiceForm>{escape(defaults.get('choice', ''))}</DefaultChoiceForm>"
+        "<AuxiliaryObjectForm/><AuxiliaryListForm/><AuxiliaryChoiceForm/>"
         "<Posting>Deny</Posting><RealTimePosting>Deny</RealTimePosting>"
         "<RegisterRecordsDeletion>AutoDelete</RegisterRecordsDeletion>"
         "<RegisterRecordsWritingOnPost>WriteModified</RegisterRecordsWritingOnPost>"
@@ -554,21 +611,24 @@ def compile_metadata_object(specification: dict[str, object]) -> dict[str, objec
 
     value, kind, name, identity = _validate(specification)
     forms = value["forms"]
-    default_form = next((str(form["name"]) for form in forms if form["default"]), "")
-    default_value = f"{kind.xml}.{name}.Form.{default_form}" if default_form else ""
+    defaults = {
+        str(form["role"]): f"{kind.xml}.{name}.Form.{form['name']}"
+        for form in forms
+        if form["default"]
+    }
     if kind.ru == "Справочник":
         properties = _catalog_properties(
             name,
             value["synonym"],
-            default_value,
+            defaults,
             int(value["code_length"]),
             int(value["description_length"]),
         )
     elif kind.ru == "РегистрСведений":
-        properties = _register_properties(name, value["synonym"], default_value)
+        properties = _register_properties(name, value["synonym"], defaults)
     else:
         properties = _document_properties(
-            name, value["synonym"], default_value, value
+            name, value["synonym"], defaults, value
         )
     children = "".join(f"<Form>{escape(str(form['name']))}</Form>" for form in forms)
     for collection, xml_kind in kind.fields:
@@ -623,7 +683,11 @@ def compile_metadata_object(specification: dict[str, object]) -> dict[str, objec
         if int(value["code_length"]) > 0:
             required_paths.append("Объект.Код")
         default_form_spec = next(
-            (form for form in forms if bool(form["default"])),
+            (
+                form
+                for form in forms
+                if bool(form["default"]) and form["role"] == "object"
+            ),
             None,
         )
         if default_form_spec is not None:

@@ -48,8 +48,16 @@ def _payload(owner: str, role: str) -> dict[str, object]:
     }
 
 
-@pytest.mark.parametrize("owner", ["Справочник.Товары", "Документ.Заказ"])
-@pytest.mark.parametrize("role", ["list", "choice"])
+@pytest.mark.parametrize(
+    ("owner", "role"),
+    [
+        ("Справочник.Товары", "list"),
+        ("Справочник.Товары", "choice"),
+        ("Документ.Заказ", "list"),
+        ("Документ.Заказ", "choice"),
+        ("РегистрСведений.Курсы", "list"),
+    ],
+)
 def test_list_choice_compile_check_decompile_roundtrip(owner: str, role: str):
     payload = _payload(owner, role)
     compiled = compile_managed_form(payload)
@@ -78,6 +86,176 @@ def test_list_choice_compile_check_decompile_roundtrip(owner: str, role: str):
     assert result.status == "decompiled"
     assert result.coverage.structural == "passed"
     assert result.specification == compiled.specification
+
+
+def _record_set_payload() -> dict[str, object]:
+    return {
+        "schema_version": 2,
+        "form_name": "ФормаНабораЗаписей",
+        "context": {
+            "owner": "РегистрСведений.Курсы",
+            "role": "record_set",
+        },
+        "format_version": "2.20",
+        "title": {"ru": "Набор записей"},
+        "attributes": [
+            {
+                "name": "Курсы",
+                "type": {
+                    "kind": "metadata_object",
+                    "object": "РегистрСведений.Курсы",
+                },
+                "main": True,
+                "saved_data": True,
+            }
+        ],
+        "elements": [
+            {
+                "kind": "table",
+                "name": "НаборЗаписей",
+                "data_path": "Курсы",
+                "columns": [
+                    {
+                        "kind": "input_field",
+                        "name": "Валюта",
+                        "data_path": "Курсы.Валюта",
+                    },
+                    {
+                        "kind": "input_field",
+                        "name": "Курс",
+                        "data_path": "Курсы.Курс",
+                    },
+                ],
+            }
+        ],
+        "commands": [],
+        "events": [],
+    }
+
+
+def test_information_register_record_set_roundtrip():
+    payload = _record_set_payload()
+    payload["attributes"].append(
+        {
+            "name": "ДругойРегистр",
+            "type": {
+                "kind": "metadata_object",
+                "object": "РегистрСведений.Другой",
+            },
+        }
+    )
+    compiled = compile_managed_form(payload)
+    xml = compiled.artifacts[0].content
+
+    assert "cfg:InformationRegisterRecordSet.Курсы" in xml
+    assert "cfg:InformationRegisterRecordManager.Другой" in xml
+    assert "cfg:InformationRegisterRecordSet.Другой" not in xml
+    assert "<SavedData>true</SavedData>" in xml
+    assert "<DataPath>Курсы</DataPath>" in xml
+    assert "Данные набора записей: Курсы.<Реквизит>." in compiled.artifacts[1].content
+
+    result = decompile_managed_form(
+        xml,
+        form_name=payload["form_name"],
+        context=payload["context"],
+        module_bsl=compiled.artifacts[1].content,
+    )
+
+    assert result.status == "decompiled"
+    assert result.coverage.structural == "passed"
+    assert result.specification == compiled.specification
+    assert any(
+        item.status == "passed"
+        and item.code == "information_register_record_set_context_verified"
+        for item in result.diagnostics
+    )
+
+
+def test_information_register_record_set_rejects_record_manager_xml_type():
+    payload = _record_set_payload()
+    compiled = compile_managed_form(payload)
+    xml = compiled.artifacts[0].content.replace(
+        "cfg:InformationRegisterRecordSet.Курсы",
+        "cfg:InformationRegisterRecordManager.Курсы",
+    )
+
+    result = decompile_managed_form(
+        xml,
+        form_name=payload["form_name"],
+        context=payload["context"],
+        module_bsl=compiled.artifacts[1].content,
+    )
+
+    assert result.status == "rejected"
+    assert any(
+        item.code == "information_register_role_type_mismatch"
+        for item in result.diagnostics
+    )
+
+
+def test_record_set_xml_type_is_forbidden_on_secondary_attribute():
+    payload = _record_set_payload()
+    payload["attributes"].append(
+        {
+            "name": "ДругойРегистр",
+            "type": {
+                "kind": "metadata_object",
+                "object": "РегистрСведений.Другой",
+            },
+        }
+    )
+    compiled = compile_managed_form(payload)
+    xml = compiled.artifacts[0].content.replace(
+        "cfg:InformationRegisterRecordManager.Другой",
+        "cfg:InformationRegisterRecordSet.Другой",
+    )
+
+    result = decompile_managed_form(
+        xml,
+        form_name=payload["form_name"],
+        context=payload["context"],
+        module_bsl=compiled.artifacts[1].content,
+    )
+
+    assert result.status == "rejected"
+    assert any(
+        item.code == "unsupported_record_set_attribute_type"
+        for item in result.diagnostics
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "path"),
+    [
+        (
+            lambda value: value["attributes"][0].update(name="Набор"),
+            "$.attributes[0].name",
+        ),
+        (
+            lambda value: value["attributes"][0].update(saved_data=False),
+            "$.attributes[0].saved_data",
+        ),
+        (
+            lambda value: value["elements"][0].update(name="Таблица"),
+            "$.elements",
+        ),
+        (
+            lambda value: value["elements"][0].update(data_path="Набор"),
+            "$.elements",
+        ),
+    ],
+)
+def test_information_register_record_set_fails_closed(mutation, path: str):
+    payload = _record_set_payload()
+    mutation(payload)
+
+    with pytest.raises(FormsContractError) as caught:
+        parse_managed_form_spec(payload)
+
+    assert any(
+        item.code == "incompatible_owner_context" and item.path == path
+        for item in caught.value.diagnostics
+    )
 
 
 @pytest.mark.parametrize(

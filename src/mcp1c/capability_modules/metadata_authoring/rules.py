@@ -119,7 +119,7 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
             "form_roles": {
                 "catalog": ["object", "list", "choice"],
                 "document": ["object", "list", "choice"],
-                "information_register": ["record"],
+                "information_register": ["record", "list", "record_set"],
                 "legacy_default": {
                     "catalog": "object",
                     "document": "object",
@@ -136,7 +136,9 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
             ),
             "form_xml_preparation": (
                 "если forms[] непуст, до metadata compile обязательно запросите "
-                "topic=forms и выполните опубликованный Forms compile/check workflow; "
+                "topic=forms, затем get_managed_form_rules(topic=overview) и "
+                "перечисленные там предметные темы, после чего выполните "
+                "Forms compile/check workflow; "
                 "topic=artifacts содержит только shape reference корня, namespace "
                 "и version, а не готовый артефакт формы"
             ),
@@ -191,8 +193,9 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
         "imports_configuration": False,
         "native_import_proven": False,
         "forms_workflow": (
-            "Если forms[] непуст, обязательно запросите правила capability Forms, "
-            "затем для каждой роли выполните compile_managed_form -> "
+            "Если forms[] непуст, обязательно вызовите "
+            "get_managed_form_rules(topic=overview), запросите перечисленные там "
+            "предметные темы, затем для каждой роли выполните compile_managed_form -> "
             "check_managed_form на тех же возвращённых строках; только после "
             "успешной проверки передайте точные строки Form.xml/Module.bsl "
             "byte-for-byte программно и ту же role в forms[] -> "
@@ -384,7 +387,11 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
         "form_declaration": "ChildObjects/Form",
         "form_declaration_value": "<Форма>",
         "default_form_value": "InformationRegister.<Имя>.Form.<Форма>",
-        "default_form_properties": {"record": "DefaultRecordForm"},
+        "default_form_properties": {
+            "record": "DefaultRecordForm",
+            "list": "DefaultListForm",
+            "record_set": None,
+        },
         "field_declarations": [
             "ChildObjects/Dimension[@uuid]",
             "ChildObjects/Resource[@uuid]",
@@ -398,6 +405,14 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
         "generated_periodicity": "Nonperiodical",
         "unsupported_periodicity_alias": "Periodicity",
         "default_form_property": "DefaultRecordForm",
+        "record_set_default_property": None,
+        "record_set_default_rule": (
+            "Обычная форма создания и редактирования одной записи задаётся "
+            "role=record с default=true и становится DefaultRecordForm. "
+            "role=record_set допускается только с default=false: "
+            "она не подменяет форму записи, а DefaultRecordSetForm не "
+            "подтверждён реальными descriptor"
+        ),
         "standard_command_bar": (
             "Не объявляйте пользовательские команды Записать/ЗаписатьИЗакрыть: "
             "оставьте commands пустым и используйте корневую AutoCommandBar, "
@@ -462,7 +477,7 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
         "role_mapping": {
             "Справочник": ["object", "list", "choice"],
             "Документ": ["object", "list", "choice"],
-            "РегистрСведений": ["record"],
+            "РегистрСведений": ["record", "list", "record_set"],
         },
         "legacy_role_when_omitted": {
             "Справочник": "object",
@@ -477,7 +492,8 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
             "shared_physical_list_choice_form": "not_supported",
         },
         "required_call_order": [
-            "запросить правила capability Forms",
+            "get_managed_form_rules(topic=overview)",
+            "запросить перечисленные в overview предметные темы Forms",
             "compile_managed_form для каждой формы и её role",
             "check_managed_form на тех же точных возвращённых строках",
             "программно передать точные Form.xml и Module.bsl byte-for-byte плюс ту же role в forms[]",

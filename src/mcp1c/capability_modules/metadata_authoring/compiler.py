@@ -25,11 +25,13 @@ _OBJECT_REF = re.compile(r"^(Справочник|РегистрСведений
 _FORMAT_VERSION = re.compile(r"^\d+\.\d+(?:\.\d+)*$")
 _FORBIDDEN_XML = re.compile(r"<!\s*(?:DOCTYPE|ENTITY)\b", re.I)
 _QNAME = re.compile(r"^([A-Za-z_][A-Za-z0-9_.-]*):[^\s:]+$")
-_FORM_ROLES = frozenset({"object", "list", "choice", "record"})
+_FORM_ROLES = frozenset(
+    {"object", "list", "choice", "record", "record_set"}
+)
 _OWNER_ROLES = {
     "Справочник": frozenset({"object", "list", "choice"}),
     "Документ": frozenset({"object", "list", "choice"}),
-    "РегистрСведений": frozenset({"record"}),
+    "РегистрСведений": frozenset({"record", "list", "record_set"}),
 }
 _LEGACY_FORM_ROLE = {
     "Справочник": "object",
@@ -214,13 +216,22 @@ def _validate_form(
         _fail(
             "unsupported_form_role",
             f"{path}.role",
-            "Допустимы роли object, list, choice и record.",
+            "Допустимы роли object, list, choice, record и record_set.",
         )
     if role not in _OWNER_ROLES[owner_kind]:
         _fail(
             "unsupported_owner_role",
             f"{path}.role",
             f"Роль `{role}` не поддерживается для {owner_kind}.",
+        )
+    if role == "record_set" and value["default"]:
+        _fail(
+            "unsupported_default_form_role",
+            f"{path}.default",
+            (
+                "У регистра сведений нет подтверждённого "
+                "DefaultRecordSetForm; record_set требует default=false."
+            ),
         )
     value["role"] = role
     form_xml = _text(value["form_xml"], f"{path}.form_xml")
@@ -527,6 +538,7 @@ def _register_properties(name: str, synonym: object, defaults: dict[str, str]) -
         f"<Name>{escape(name)}</Name>{_synonym(synonym)}<Comment/>"
         "<InformationRegisterPeriodicity>Nonperiodical</InformationRegisterPeriodicity><WriteMode>Independent</WriteMode>"
         f"<UseStandardCommands>true</UseStandardCommands><DefaultRecordForm>{escape(defaults.get('record', ''))}</DefaultRecordForm>"
+        f"<DefaultListForm>{escape(defaults.get('list', ''))}</DefaultListForm>"
         "<FullTextSearch>DontUse</FullTextSearch><DataLockControlMode>Managed</DataLockControlMode>"
     )
 

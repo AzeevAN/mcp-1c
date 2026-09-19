@@ -166,6 +166,89 @@ def test_legacy_register_form_without_role_remains_record():
     )["status"] == "passed"
 
 
+def test_information_register_list_default_and_record_set_compile_and_check():
+    specification = _register()
+    specification["forms"] = [
+        _form("ФормаЗаписи", "record", default=True),
+        _form("ФормаСписка", "list", default=True),
+        _form("ФормаНабораЗаписей", "record_set", default=False),
+    ]
+
+    assert list(
+        Draft202012Validator(METADATA_SPECIFICATION_SCHEMA).iter_errors(
+            specification
+        )
+    ) == []
+    compiled = compile_metadata_object(specification)
+    descriptor = compiled["artifacts"][0]["content"]
+
+    assert (
+        "<DefaultRecordForm>InformationRegister.Ролевой.Form.ФормаЗаписи"
+        "</DefaultRecordForm>"
+    ) in descriptor
+    assert (
+        "<DefaultListForm>InformationRegister.Ролевой.Form.ФормаСписка"
+        "</DefaultListForm>"
+    ) in descriptor
+    assert "DefaultRecordSetForm" not in descriptor
+    assert len(compiled["artifacts"]) == 10
+    assert check_metadata_artifacts(
+        compiled["object_ref"], compiled["format_version"], compiled["artifacts"]
+    )["status"] == "passed"
+
+
+def test_information_register_record_set_cannot_be_default():
+    specification = _register()
+    specification["forms"] = [
+        _form("ФормаНабораЗаписей", "record_set", default=True)
+    ]
+
+    schema_errors = list(
+        Draft202012Validator(METADATA_SPECIFICATION_SCHEMA).iter_errors(
+            specification
+        )
+    )
+    assert len(schema_errors) == 1
+    assert any(
+        error.validator == "const"
+        and list(error.absolute_path)[-1:] == ["default"]
+        for error in schema_errors[0].context
+    )
+
+    with pytest.raises(MetadataAuthoringContractError) as caught:
+        compile_metadata_object(specification)
+
+    assert caught.value.diagnostics[0]["code"] == "unsupported_default_form_role"
+
+
+def test_checker_rejects_unproven_default_record_set_property():
+    specification = _register()
+    specification["forms"] = [
+        _form("ФормаНабораЗаписей", "record_set", default=False)
+    ]
+    compiled = compile_metadata_object(specification)
+    artifacts = deepcopy(compiled["artifacts"])
+    artifacts[0]["content"] = artifacts[0]["content"].replace(
+        "</DefaultRecordForm>",
+        (
+            "</DefaultRecordForm>"
+            "<DefaultRecordSetForm>"
+            "InformationRegister.Ролевой.Form.ФормаНабораЗаписей"
+            "</DefaultRecordSetForm>"
+        ),
+    )
+
+    report = check_metadata_artifacts(
+        compiled["object_ref"], compiled["format_version"], artifacts
+    )
+
+    assert report["status"] == "failed"
+    assert any(
+        item["code"] == "unsupported_default_form_property"
+        for item in report["diagnostics"]
+    )
+
+
 def test_document_object_list_choice_defaults_compile_and_check():
     specification = _document()
     specification["forms"] = [
@@ -250,7 +333,6 @@ def test_duplicate_default_for_same_role_is_rejected():
         (_catalog, "record", "unsupported_owner_role"),
         (_document, "record", "unsupported_owner_role"),
         (_register, "object", "unsupported_owner_role"),
-        (_register, "list", "unsupported_owner_role"),
         (_register, "choice", "unsupported_owner_role"),
         (_catalog, "folder", "unsupported_form_role"),
     ],

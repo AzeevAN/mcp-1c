@@ -969,7 +969,13 @@ def _walk_form_elements(form: ManagedForm):
     yield from walk(form.elements)
 
 
-def _emit_type(lines: list[str], value: object, indent: int) -> None:
+def _emit_type(
+    lines: list[str],
+    value: object,
+    indent: int,
+    *,
+    record_set_main: bool = False,
+) -> None:
     _append(lines, indent, "<Type>")
     if isinstance(value, CompositeType):
         for variant in value.variants:
@@ -979,7 +985,16 @@ def _emit_type(lines: list[str], value: object, indent: int) -> None:
     elif isinstance(value, ValueTableType):
         _append(lines, indent + 1, "<v8:Type>v8:ValueTable</v8:Type>")
     elif isinstance(value, MetadataObjectType):
-        xml_type = metadata_object_xml_type(value.object)
+        if (
+            record_set_main
+            and value.object.startswith("РегистрСведений.")
+        ):
+            xml_type = (
+                "cfg:InformationRegisterRecordSet."
+                + value.object.split(".", 1)[1]
+            )
+        else:
+            xml_type = metadata_object_xml_type(value.object)
         if xml_type is None:  # pragma: no cover - checked by the contract
             raise TypeError(f"Неподдержанный объектный тип: {value.object!r}")
         _append(lines, indent + 1, f"<v8:Type>{escape(xml_type)}</v8:Type>")
@@ -1064,7 +1079,14 @@ def _emit_attribute(
     )
     if attribute.title is not None:
         _localized(lines, "Title", attribute.title, 3)
-    _emit_type(lines, attribute.type, 3)
+    _emit_type(
+        lines,
+        attribute.type,
+        3,
+        record_set_main=(
+            _ACTIVE_FORM_ROLE.get() == "record_set" and attribute.main
+        ),
+    )
     if isinstance(attribute.type, ValueTableType):
         _append(lines, 3, "<Columns>")
         for column_id, column in enumerate(attribute.type.columns, 1):
@@ -1180,7 +1202,17 @@ def _compile_module(form: ManagedForm) -> str:
             ),
         ],
     }
-    lines: list[str] = [*access_hints.get(form.context.role, [])]
+    hints = [*access_hints.get(form.context.role, [])]
+    if form.context.role == "record_set":
+        attribute_name = form.context.owner.split(".", 1)[1]
+        hints = [
+            f"// Данные набора записей: {attribute_name}.<Реквизит>.",
+            (
+                "// Набор записей только на сервере: "
+                f'РеквизитФормыВЗначение("{attribute_name}").'
+            ),
+        ]
+    lines: list[str] = hints
     if lines:
         lines.append("")
     lines.extend(["#Область ОбработчикиСобытийФормы", ""])
@@ -1289,7 +1321,8 @@ def compile_managed_form(specification: object) -> FormsResult:
         Diagnostic(
             "structural",
             "passed"
-            if form.context.role in {"object", "record", "list", "choice"}
+            if form.context.role
+            in {"object", "record", "record_set", "list", "choice"}
             else "not_checked",
             (
                 (
@@ -1302,9 +1335,13 @@ def compile_managed_form(specification: object) -> FormsResult:
                     "information_register_record_context_verified"
                     if form.context.role == "record"
                     else (
-                        f"{form.context.role}_form_context_verified"
-                        if form.context.role in {"list", "choice"}
-                        else "custom_form_role_semantics_not_checked"
+                        "information_register_record_set_context_verified"
+                        if form.context.role == "record_set"
+                        else (
+                            f"{form.context.role}_form_context_verified"
+                            if form.context.role in {"list", "choice"}
+                            else "custom_form_role_semantics_not_checked"
+                        )
                     )
                 )
             ),
@@ -1320,9 +1357,13 @@ def compile_managed_form(specification: object) -> FormsResult:
                     "Контекст формы записи регистра сведений согласован с главным реквизитом."
                     if form.context.role == "record"
                     else (
-                        "Контекст формы списка или выбора согласован с главным DynamicList."
-                        if form.context.role in {"list", "choice"}
-                        else "Для role=custom проверен общий layout без owner-specific обещаний."
+                        "Контекст формы набора записей согласован с главным реквизитом."
+                        if form.context.role == "record_set"
+                        else (
+                            "Контекст формы списка или выбора согласован с главным DynamicList."
+                            if form.context.role in {"list", "choice"}
+                            else "Для role=custom проверен общий layout без owner-specific обещаний."
+                        )
                     )
                 )
             ),

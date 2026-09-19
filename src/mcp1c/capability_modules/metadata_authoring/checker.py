@@ -60,7 +60,7 @@ _KINDS = {
             "RecordKey",
             "RecordManager",
         ),
-        ("DefaultRecordForm",),
+        ("DefaultRecordForm", "DefaultListForm"),
     ),
     "Документ": _Kind(
         "Документ",
@@ -399,6 +399,16 @@ def _check_forms(
     report: _Report,
 ) -> None:
     properties = _find_child(metadata_object, "Properties")
+    if (
+        kind.object_kind == "РегистрСведений"
+        and _find_child(properties, "DefaultRecordSetForm") is not None
+    ):
+        report.fail(
+            "forms",
+            "unsupported_default_form_property",
+            f"{owner_path}.xml:DefaultRecordSetForm",
+            "DefaultRecordSetForm не входит в подтверждённый контракт регистра сведений.",
+        )
     child_objects = _find_child(metadata_object, "ChildObjects")
     form_names = [
         (child.text or "").strip()

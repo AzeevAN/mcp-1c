@@ -1037,7 +1037,8 @@ def _form_context(reader: _Reader, value: object, path: str) -> FormContext:
         owner_kind in _OBJECT_FORM_OWNER_KINDS
         and role in {"object", "list", "choice"}
     ) or (
-        owner_kind == "РегистрСведений" and role == "record"
+        owner_kind == "РегистрСведений"
+        and role in {"record", "list", "record_set"}
     )
     if role != "custom" and not supported_owner_role:
         reader.issue(
@@ -2407,9 +2408,12 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
                     f"$.attributes[{main_index}].saved_data",
                     "Главный реквизит формы записи регистра требует saved_data=true.",
                 )
-    if (
-        context.role in {"list", "choice"}
-        and context.owner.split(".", 1)[0] in _OBJECT_FORM_OWNER_KINDS
+    if context.role in {"list", "choice"} and (
+        context.owner.split(".", 1)[0] in _OBJECT_FORM_OWNER_KINDS
+        or (
+            context.owner.startswith("РегистрСведений.")
+            and context.role == "list"
+        )
     ):
         main_list_indexes = [
             index
@@ -2420,7 +2424,10 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
             reader.issue(
                 "incompatible_owner_context",
                 "$.attributes",
-                "Форма списка или выбора требует главный dynamic_list Список.",
+                (
+                    "Форма списка или выбора требует реквизит Список типа "
+                    "dynamic_list с main=true."
+                ),
             )
         else:
             main_index = main_list_indexes[0]
@@ -2467,6 +2474,59 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
                 "incompatible_owner_context",
                 "$.events",
                 "Минимальный профиль формы списка или выбора не содержит событий.",
+            )
+    if (
+        context.role == "record_set"
+        and context.owner.startswith("РегистрСведений.")
+    ):
+        owner_name = context.owner.split(".", 1)[1]
+        main_record_set_indexes = [
+            index
+            for index, attribute in enumerate(attributes)
+            if attribute.main and isinstance(attribute.type, MetadataObjectType)
+        ]
+        if not main_record_set_indexes:
+            reader.issue(
+                "incompatible_owner_context",
+                "$.attributes",
+                "Форма набора записей требует главный metadata_object.",
+            )
+        else:
+            main_index = main_record_set_indexes[0]
+            main_record_set = attributes[main_index]
+            if main_record_set.name != owner_name:
+                reader.issue(
+                    "incompatible_owner_context",
+                    f"$.attributes[{main_index}].name",
+                    "Главный реквизит набора записей должен называться как регистр.",
+                )
+            if main_record_set.type.object != context.owner:
+                reader.issue(
+                    "incompatible_owner_context",
+                    f"$.attributes[{main_index}].type.object",
+                    "Главный metadata_object должен совпадать с владельцем формы.",
+                )
+            if not main_record_set.saved_data:
+                reader.issue(
+                    "incompatible_owner_context",
+                    f"$.attributes[{main_index}].saved_data",
+                    "Главный реквизит набора записей требует saved_data=true.",
+                )
+        record_set_tables = [
+            (element, path)
+            for element, path, _parent_table in walked
+            if isinstance(element, Table)
+            and element.name == "НаборЗаписей"
+            and element.data_path == owner_name
+        ]
+        if len(record_set_tables) != 1:
+            reader.issue(
+                "incompatible_owner_context",
+                "$.elements",
+                (
+                    "Форма набора записей требует ровно одну таблицу "
+                    "НаборЗаписей с DataPath, равным имени регистра."
+                ),
             )
     document_main_object = (
         main_object is not None
@@ -2597,9 +2657,20 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
                     table_attribute is not None
                     and isinstance(table_attribute.type, DynamicListType)
                 )
+                record_set = (
+                    context.role == "record_set"
+                    and table_attribute is not None
+                    and table_attribute.main
+                    and isinstance(table_attribute.type, MetadataObjectType)
+                    and table_attribute.type.object == context.owner
+                )
                 if (
                     not element.data_path.startswith(prefix)
-                    or (not dynamic_list and column_name not in declared)
+                    or (
+                        not dynamic_list
+                        and not record_set
+                        and column_name not in declared
+                    )
                 ):
                     reader.issue(
                         "unresolved_table_column",
@@ -2608,8 +2679,19 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
                     )
         elif isinstance(element, Table):
             attribute = attribute_by_name.get(element.data_path)
-            if attribute is None or not isinstance(
-                attribute.type, (ValueTableType, DynamicListType)
+            record_set = (
+                context.role == "record_set"
+                and attribute is not None
+                and attribute.main
+                and isinstance(attribute.type, MetadataObjectType)
+                and attribute.type.object == context.owner
+            )
+            if (
+                attribute is None
+                or (
+                    not isinstance(attribute.type, (ValueTableType, DynamicListType))
+                    and not record_set
+                )
             ):
                 reader.issue(
                     "table_requires_value_table",

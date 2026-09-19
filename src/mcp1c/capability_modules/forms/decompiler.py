@@ -1411,6 +1411,67 @@ def _validate_list_choice_markers(
         )
 
 
+def _validate_information_register_main_type(
+    inventory: _Inventory,
+    root: ET.Element,
+    context: object,
+) -> None:
+    """Не позволить record и record_set молча подменять XML-тип друг друга."""
+
+    if not isinstance(context, dict):
+        return
+    role = context.get("role")
+    owner = context.get("owner")
+    register_role = role in {"record", "record_set"}
+    register_owner = (
+        isinstance(owner, str) and owner.startswith("РегистрСведений.")
+    )
+    expected: str | None = None
+    if register_role and register_owner:
+        owner_name = owner.split(".", 1)[1]
+        xml_kind = (
+            "InformationRegisterRecordManager"
+            if role == "record"
+            else "InformationRegisterRecordSet"
+        )
+        expected = f"cfg:{xml_kind}.{owner_name}"
+    for attribute in root.iter(_q("Attribute")):
+        is_main = _text(attribute.find(_q("MainAttribute"))) == "true"
+        type_names = [
+            node
+            for node in attribute.iter(_q("Type", _V8))
+            if _text(node).startswith("cfg:InformationRegister")
+        ]
+        record_set_types = [
+            node
+            for node in type_names
+            if _text(node).startswith("cfg:InformationRegisterRecordSet.")
+        ]
+        for node in record_set_types:
+            if role != "record_set" or not is_main or _text(node) != expected:
+                inventory.issue(
+                    "unsupported_record_set_attribute_type",
+                    inventory.paths[id(node)],
+                    (
+                        "InformationRegisterRecordSet допустим только у главного "
+                        "реквизита role=record_set текущего владельца."
+                    ),
+                    status="failed",
+                )
+        if (
+            expected is not None
+            and is_main
+            and len(type_names) == 1
+            and _text(type_names[0]) != expected
+        ):
+            inventory.issue(
+                "information_register_role_type_mismatch",
+                inventory.paths[id(type_names[0])],
+                f"role={role} требует главный XML-тип `{expected}`.",
+                status="failed",
+            )
+
+
 def _element(
     inventory: _Inventory, node: ET.Element
 ) -> dict[str, object] | None:
@@ -2150,6 +2211,7 @@ def decompile_managed_form(
         ),
     }
     _validate_list_choice_markers(inventory, root, context, specification)
+    _validate_information_register_main_type(inventory, root, context)
     inventory.report_uncovered(root)
 
     collections = (
@@ -2255,7 +2317,8 @@ def decompile_managed_form(
             Diagnostic(
                 "structural",
                 "passed"
-                if context_role in {"object", "record", "list", "choice"}
+                if context_role
+                in {"object", "record", "record_set", "list", "choice"}
                 else "not_checked",
                 (
                     (
@@ -2269,9 +2332,13 @@ def decompile_managed_form(
                         "information_register_record_context_verified"
                         if context_role == "record"
                         else (
-                            f"{context_role}_form_context_verified"
-                            if context_role in {"list", "choice"}
-                            else "custom_form_role_semantics_not_checked"
+                            "information_register_record_set_context_verified"
+                            if context_role == "record_set"
+                            else (
+                                f"{context_role}_form_context_verified"
+                                if context_role in {"list", "choice"}
+                                else "custom_form_role_semantics_not_checked"
+                            )
                         )
                     )
                 ),
@@ -2288,9 +2355,13 @@ def decompile_managed_form(
                         "Контекст формы записи регистра сведений согласован с главным реквизитом."
                         if context_role == "record"
                         else (
-                            "Контекст формы списка или выбора согласован с главным DynamicList."
-                            if context_role in {"list", "choice"}
-                            else "Для role=custom проверен общий layout без owner-specific обещаний."
+                            "Контекст формы набора записей согласован с главным реквизитом."
+                            if context_role == "record_set"
+                            else (
+                                "Контекст формы списка или выбора согласован с главным DynamicList."
+                                if context_role in {"list", "choice"}
+                                else "Для role=custom проверен общий layout без owner-specific обещаний."
+                            )
                         )
                     )
                 ),

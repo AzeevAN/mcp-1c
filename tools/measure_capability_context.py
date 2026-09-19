@@ -25,8 +25,8 @@ TOKENIZER_VERSION = "0.11.0"
 ENCODING = "o200k_base"
 METHOD = "canonical tools/list delta: UTF-8 JSON, sort_keys, compact separators"
 MEASURED_AT = {
-    "forms": "2026-09-18",
-    "metadata_authoring": "2026-09-18",
+    "forms": "2026-09-19",
+    "metadata_authoring": "2026-09-19",
 }
 
 

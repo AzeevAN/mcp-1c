@@ -79,7 +79,11 @@ Schema-only facade оставляет runtime-вход обычным слова
 запрос возвращает предметный `status=rejected` с diagnostics, а не сырой
 MCP/Pydantic exception.
 Элемент `forms[]` принимает необязательную semantic `role`: `object`, `list`
-или `choice` для справочника/документа и `record` для регистра сведений.
+или `choice` для справочника/документа и `record`, `list` либо `record_set`
+для регистра сведений. Обычная default-форма создания и редактирования одной
+записи — `role=record` с `default=true`, которая заполняет
+`DefaultRecordForm`. `record_set` требует `default=false`, не подменяет форму
+записи, а `DefaultRecordSetForm` не подтверждён и не генерируется.
 Отсутствующая роль совместимо означает прежнюю основную роль владельца.
 `default=true` действует внутри роли; default может отсутствовать. Отдельные
 роли `list` и `choice` требуют отдельных физических форм в текущей версии.
@@ -114,8 +118,8 @@ Compiler создаёт 5 generated types, стандартные реквизи
 комплект, default-ссылки и владельца `DocumentObject`, но не угадывает semantic
 role формы из XML.
 Write/apply и импорт конфигурации не входят в контракт. Статический GREEN не
-доказывает нативную загрузку. Три схемы занимают 16 229 байт, примерно 3 891
-токен `tiktoken 0.11.0 / o200k_base` по замеру 2026-09-19:
+доказывает нативную загрузку. Три схемы занимают 16 610 байт, примерно 3 970
+токенов `tiktoken 0.11.0 / o200k_base` по замеру 2026-09-19:
 
 ```bash
 uv run --no-project --python .venv/bin/python --with tiktoken==0.11.0 \
@@ -153,7 +157,10 @@ semantic-вертикали `Справочник.* + role=object` и
 `РегистрСведений.* + record` с главным реквизитом `Запись`,
 `main=true`, `saved_data=true` и путями `Запись.<Реквизит>`. Для формы записи
 compiler использует `InformationRegisterRecordManager`; пустую корневую
-`AutoCommandBar` стандартными командами заполняет платформа. `custom` оставляет
+`AutoCommandBar` стандартными командами заполняет платформа. Отдельный
+register-list использует главный `DynamicList` и таблицу `Список`; отдельный
+`record_set` — главный `InformationRegisterRecordSet`, `SavedData=true`,
+таблицу `НаборЗаписей` и owner-relative пути. `custom` оставляет
 semantic-проверку `not_checked` и не означает поддержку конкретного вида
 объекта. Основная выгрузка конфигурации `schema v1` этим изменением не
 затрагивается.

@@ -293,6 +293,70 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
             "contract_decision",
         ),
         FormRule(
+            "information_register_list_form_owner_context",
+            "supported",
+            (
+                "Форма списка РегистрСведений.* использует общий минимальный "
+                "DynamicList layout, но отдельный owner-profile: главный Список, "
+                "main_table того же регистра и пути Список.<ИмяПоля>. Роль choice "
+                "для регистра не заявлена."
+            ),
+            "corpus_invariant",
+            {
+                "owner": "РегистрСведений.<Имя>",
+                "role": "list",
+                "main_attribute": {
+                    "name": "Список",
+                    "type": {
+                        "kind": "dynamic_list",
+                        "main_table": "РегистрСведений.<Имя>",
+                    },
+                    "main": True,
+                    "saved_data": False,
+                },
+                "table": {
+                    "name": "Список",
+                    "data_path": "Список",
+                    "column_data_path": "Список.<ИмяПоля>",
+                },
+                "default_property": "DefaultListForm",
+            },
+        ),
+        FormRule(
+            "information_register_record_set_form_owner_context",
+            "supported",
+            (
+                "Форма набора записей РегистрСведений.* имеет отдельную роль "
+                "record_set: главный реквизит называется как регистр, имеет тип "
+                "InformationRegisterRecordSet, MainAttribute и SavedData; таблица "
+                "НаборЗаписей и её колонки используют owner-relative пути. "
+                "Это не форма создания одной записи: для неё используйте "
+                "отдельную role=record. DefaultRecordSetForm не подтверждён "
+                "и не генерируется."
+            ),
+            "corpus_invariant",
+            {
+                "owner": "РегистрСведений.<Имя>",
+                "role": "record_set",
+                "main_attribute": {
+                    "name": "<Имя>",
+                    "type": {
+                        "kind": "metadata_object",
+                        "object": "РегистрСведений.<Имя>",
+                    },
+                    "xml_type": "cfg:InformationRegisterRecordSet.<Имя>",
+                    "main": True,
+                    "saved_data": True,
+                },
+                "table": {
+                    "name": "НаборЗаписей",
+                    "data_path": "<Имя>",
+                    "column_data_path": "<Имя>.<ИмяПоля>",
+                },
+                "default_property": None,
+            },
+        ),
+        FormRule(
             "custom_role_has_no_semantic_claim",
             "boundary",
             (

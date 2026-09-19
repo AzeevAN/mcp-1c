@@ -94,19 +94,30 @@ def _field_schema(*, dimension: bool = False) -> dict[str, object]:
 
 
 def _forms_schema(roles: tuple[str, ...]) -> dict[str, object]:
+    item = _closed_object(
+        {
+            "name": {"type": "string", "pattern": _NAME_PATTERN},
+            "synonym": {"type": "string", "minLength": 1},
+            "role": {"enum": list(roles)},
+            "default": {"type": "boolean"},
+            "form_xml": {"type": "string", "minLength": 1},
+            "module_bsl": {"type": "string"},
+        },
+        ("name", "synonym", "default", "form_xml", "module_bsl"),
+    )
+    if "record_set" in roles:
+        item["allOf"] = [
+            {
+                "if": {
+                    "properties": {"role": {"const": "record_set"}},
+                    "required": ["role"],
+                },
+                "then": {"properties": {"default": {"const": False}}},
+            }
+        ]
     return {
         "type": "array",
-        "items": _closed_object(
-            {
-                "name": {"type": "string", "pattern": _NAME_PATTERN},
-                "synonym": {"type": "string", "minLength": 1},
-                "role": {"enum": list(roles)},
-                "default": {"type": "boolean"},
-                "form_xml": {"type": "string", "minLength": 1},
-                "module_bsl": {"type": "string"},
-            },
-            ("name", "synonym", "default", "form_xml", "module_bsl"),
-        ),
+        "items": item,
     }
 
 
@@ -158,7 +169,9 @@ def _catalog_schema() -> dict[str, object]:
 
 
 def _information_register_schema() -> dict[str, object]:
-    properties = _common_properties("РегистрСведений", ("record",))
+    properties = _common_properties(
+        "РегистрСведений", ("record", "list", "record_set")
+    )
     properties.update(
         {
             "periodicity": {"const": "nonperiodical"},

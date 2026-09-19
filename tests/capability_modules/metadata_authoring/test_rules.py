@@ -77,7 +77,7 @@ def test_rules_публикуют_границу_и_три_поддержанн�
     assert overview["compiler_specification"]["form_roles"] == {
         "catalog": ["object", "list", "choice"],
         "document": ["object", "list", "choice"],
-        "information_register": ["record"],
+        "information_register": ["record", "list", "record_set"],
         "legacy_default": {
             "catalog": "object",
             "document": "object",
@@ -89,7 +89,7 @@ def test_rules_публикуют_границу_и_три_поддержанн�
     assert "не более одной" in overview["compiler_specification"]["form_defaults"]
     assert "check_managed_form" in overview["forms_workflow"]
     assert "Если forms[] непуст" in overview["forms_workflow"]
-    assert "обязательно запросите правила capability Forms" in overview[
+    assert "get_managed_form_rules(topic=overview)" in overview[
         "forms_workflow"
     ]
     assert "provenance" in overview["forms_workflow"]
@@ -108,10 +108,11 @@ def test_forms_topic_публикует_обязательную_цепочку_
     assert rules["role_mapping"] == {
         "Справочник": ["object", "list", "choice"],
         "Документ": ["object", "list", "choice"],
-        "РегистрСведений": ["record"],
+        "РегистрСведений": ["record", "list", "record_set"],
     }
     assert rules["required_call_order"] == [
-        "запросить правила capability Forms",
+        "get_managed_form_rules(topic=overview)",
+        "запросить перечисленные в overview предметные темы Forms",
         "compile_managed_form для каждой формы и её role",
         "check_managed_form на тех же точных возвращённых строках",
         "программно передать точные Form.xml и Module.bsl byte-for-byte плюс ту же role в forms[]",
@@ -204,8 +205,14 @@ def test_rules_фиксируют_полные_generated_types():
         "InformationRegister.<Имя>.Form.<Форма>"
     )
     assert register["default_form_properties"] == {
-        "record": "DefaultRecordForm"
+        "record": "DefaultRecordForm",
+        "list": "DefaultListForm",
+        "record_set": None,
     }
+    assert register["record_set_default_property"] is None
+    assert "default=false" in register["record_set_default_rule"]
+    assert "role=record с default=true" in register["record_set_default_rule"]
+    assert "DefaultRecordForm" in register["record_set_default_rule"]
     assert register["catalog_reference_type"] == "cfg:CatalogRef.<ИмяСправочника>"
     assert "commands пустым" in register["standard_command_bar"]
     assert register["generated_type_name_pattern"] == (

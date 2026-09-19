@@ -59,7 +59,9 @@ def load(registry=None) -> tuple[CapabilityTool, ...]:
             description=(
                 "Сначала получите компактные правила создания метаданных. "
                 "Если планируются forms[], обязательно запросите topic=forms: "
-                "он публикует обязательную цепочку Forms compile/check перед metadata compile. "
+                "он публикует точный переход к "
+                "get_managed_form_rules(topic=overview), предметным темам Forms "
+                "и цепочке compile/check перед metadata compile. "
                 "Поддержаны Справочник, базовый непроводимый Документ и РегистрСведений; инструмент "
                 "ничего не пишет, не импортирует в 1С и не обращается к Registry."
             ),
@@ -68,8 +70,9 @@ def load(registry=None) -> tuple[CapabilityTool, ...]:
             name="compile_metadata_object",
             function=_compile_tool,
             description=(
-                "Если forms[] непуст, сначала обязательно запросите правила "
-                "capability Forms и для каждой role выполните "
+                "Если forms[] непуст, сначала обязательно вызовите "
+                "get_managed_form_rules(topic=overview), запросите перечисленные "
+                "там предметные темы и для каждой role выполните "
                 "compile_managed_form, затем вызовите check_managed_form на тех же "
                 "точных возвращённых строках; только после успеха программно "
                 "передайте Form.xml/Module.bsl byte-for-byte и ту же role в forms[]. "
@@ -82,7 +85,8 @@ def load(registry=None) -> tuple[CapabilityTool, ...]:
                 "артефакты Справочника, непроводимого Документа или РегистраСведений. Ничего не пишет, "
                 "не импортирует в 1С и не читает Configuration.xml. "
                 "Для Справочника и Документа доступны role=object/list/choice, "
-                "для РегистраСведений role=record; role можно опустить для "
+                "для РегистраСведений role=record/list/record_set; record_set "
+                "требует default=false. Role можно опустить для "
                 "совместимости с прежним object/record-контрактом. "
                 "format_version обязан передать caller. "
                 "До первого вызова получите через get_metadata_authoring_rules "

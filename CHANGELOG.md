@@ -11,6 +11,14 @@
 
 ### Добавлено
 
+- Forms и Metadata Authoring поддерживают отдельные вертикали списка и набора
+  записей независимого `РегистрСведений.*`. `role=list` использует явный
+  owner-profile поверх общего `DynamicList`/`Список.*`; `role=record_set` —
+  главный `InformationRegisterRecordSet`, `SavedData=true`, таблицу
+  `НаборЗаписей` и owner-relative пути. Metadata descriptor назначает
+  `DefaultListForm`, но требует `default=false` для `record_set`: несуществующее
+  в проверенном корпусе свойство `DefaultRecordSetForm` не изобретается.
+
 - Metadata Authoring связывает отдельные объектные формы, формы списка и
   выбора справочника/документа с `DefaultObjectForm`, `DefaultListForm` и
   `DefaultChoiceForm`. Необязательная `forms[].role` сохраняет прежний payload
@@ -65,6 +73,12 @@
   сохранён, а `role=custom` не выдаёт owner-specific или нативную поддержку.
 
 ### Изменено
+
+- Публичный register-collection контракт увеличил каноническую дельту Forms с
+  24 868 байт / примерно 5 958 токенов до 24 896 байт / примерно 5 963
+  токенов, а Metadata Authoring — с 16 229 байт / примерно 3 891 токена до
+  16 610 байт / примерно 3 970 токенов `o200k_base` по замеру 2026-09-19;
+  число и имена MCP-инструментов не изменились.
 
 - Role-aware связка форм и обязательный discoverable workflow увеличили
   каноническую дельту 3 инструментов Metadata Authoring с 14 525 байт /
@@ -121,6 +135,33 @@
   существование переданных внешних ссылок или реквизитов.
 
 ### Найдено
+
+- Нативная приёмка нового независимого регистра подтвердила descriptor и
+  default-форму списка. Обычное создание строки открывает форму отдельной
+  записи (`DefaultRecordForm`), а не форму набора записей. Поэтому
+  `role=record + default=true` является единственным default-контрактом
+  создания/редактирования одной записи; `role=record_set` остаётся отдельной
+  не-default вертикалью и не подменяет форму записи. Адресный runtime-запуск
+  формы набора записей не подтверждён и сохранён как `not_checked`.
+
+- Blind A/B для register-collection сохранил два candidate-промаха как ошибки
+  discoverability: без явной навигации агент не запросил Forms rules, затем
+  пропустил `main=true`. После уточнения публичного overview свежий агент без
+  подсказанного порядка выполнил 17 MCP-вызовов, с первой попытки собрал и
+  проверил list/record-set формы и Metadata bundle с `DefaultListForm` без
+  вымышленного `DefaultRecordSetForm`. Нативный импорт и визуальный runtime
+  остаются `not_checked` до отдельной приёмки владельцем.
+
+- Differential 2 рабочих конфигураций подтвердил общий минимальный профиль
+  обычных list-форм справочника, документа и регистра: главный `DynamicList`,
+  таблица `Список`, пути `Список.*` и owner-relative `MainTable`. Полного
+  owner-контракта у них нет: у регистров встречаются ручные запросы и
+  нестандартные структуры, оставленные вне первого slice. В ЗУП 6 явных форм
+  набора записей используют главный `InformationRegisterRecordSet`,
+  `MainAttribute=true`, `SavedData=true` и owner-relative пути; во второй
+  конфигурации таких форм не найдено, поэтому межконфигурационное подтверждение
+  `record_set` остаётся `unmeasured`. `DefaultRecordSetForm` не найден ни в
+  одном исследованном descriptor.
 
 - Нативная приёмка role-aware связки Forms → Metadata Authoring подтвердила
   descriptor нового справочника с `DefaultObjectForm`, `DefaultListForm` и

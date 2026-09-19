@@ -27,6 +27,9 @@ _XML_OBJECT_TO_REGISTRY_KIND = {
     xml_kind: registry_kind
     for registry_kind, xml_kind in _REGISTRY_KIND_TO_XML_OBJECT.items()
 }
+# Набор записей использует тот же owner-relative public type, что и форма
+# записи, но отличается ролью формы и XML-типом главного реквизита.
+_XML_OBJECT_TO_REGISTRY_KIND["InformationRegisterRecordSet"] = "РегистрСведений"
 
 _REGISTRY_KIND_TO_XML_REFERENCE = {
     "Справочник": "CatalogRef",

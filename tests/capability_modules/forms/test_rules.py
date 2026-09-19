@@ -436,6 +436,26 @@ def test_specification_возвращает_тот_же_минимальный_�
         "ChoiceMode": True,
     }
     assert "ручной запрос" in by_code["minimal_list_choice_boundary"]["summary"]
+    register_list = by_code[
+        "information_register_list_form_owner_context"
+    ]["value"]
+    assert register_list["owner"] == "РегистрСведений.<Имя>"
+    assert register_list["role"] == "list"
+    assert register_list["main_attribute"]["type"]["kind"] == "dynamic_list"
+    assert register_list["default_property"] == "DefaultListForm"
+    record_set_rule = by_code[
+        "information_register_record_set_form_owner_context"
+    ]
+    record_set = record_set_rule["value"]
+    assert record_set["role"] == "record_set"
+    assert (
+        record_set["main_attribute"]["xml_type"]
+        == "cfg:InformationRegisterRecordSet.<Имя>"
+    )
+    assert record_set["main_attribute"]["saved_data"] is True
+    assert record_set["default_property"] is None
+    assert "role=record" in record_set_rule["summary"]
+    assert "DefaultRecordSetForm" in record_set_rule["summary"]
     assert "зарезервированными словами BSL" in by_code["identifier_syntax"][
         "summary"
     ]

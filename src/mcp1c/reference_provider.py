@@ -36,6 +36,7 @@ MAX_PAGE_CHARS = 20_000
 DEFAULT_PAGE_CHARS = 8_000
 REFERENCE_PATH_ENV = "MCP1C_REFERENCE_ARTIFACT"
 REFERENCE_ARTIFACT_NAME = "reference.mcp1cref"
+EMBEDDED_REFERENCE_ARTIFACT = Path("/app/reference/reference.mcp1cref")
 REFERENCE_ARTIFACT_SUFFIX = ".mcp1cref"
 REFERENCE_DATABASE_MEMBER = "reference.sqlite3"
 REFERENCE_MANIFEST_MEMBER = "manifest.json"
@@ -1339,6 +1340,7 @@ class ReferenceService:
         provider: ReferenceProvider | None,
         data_dir: Path,
         verifier: ArtifactVerifier,
+        artifact_source: str,
     ):
         self.data_dir = data_dir
         self.artifact_path = artifact_path
@@ -1347,6 +1349,7 @@ class ReferenceService:
         self.status = status
         self.provider = provider
         self.verifier = verifier
+        self.artifact_source = artifact_source
         self.pending_status: ReferenceStatus | None = None
         self._mutation_lock = threading.Lock()
 
@@ -1357,9 +1360,11 @@ class ReferenceService:
         *,
         database_path: str | Path | None = None,
         verifier: ArtifactVerifier | None = None,
+        embedded_path: str | Path = EMBEDDED_REFERENCE_ARTIFACT,
     ) -> "ReferenceService":
         root = Path(data_dir).resolve()
         managed = root / "reference" / REFERENCE_ARTIFACT_NAME
+        embedded = Path(embedded_path).resolve()
         configured = database_path
         if configured is None:
             configured = os.environ.get(REFERENCE_PATH_ENV, "").strip()
@@ -1375,8 +1380,20 @@ class ReferenceService:
                 provider=None,
                 data_dir=root,
                 verifier=selected_verifier,
+                artifact_source="disabled",
             )
-        path = Path(configured).resolve() if configured else managed
+        if configured:
+            path = Path(configured).resolve()
+            artifact_source = "explicit"
+        elif managed.is_file():
+            path = managed
+            artifact_source = "managed"
+        elif embedded.is_file():
+            path = embedded
+            artifact_source = "embedded"
+        else:
+            path = managed
+            artifact_source = "managed"
         if not path.is_file():
             if path == managed:
                 _cleanup_reference_derivatives(root)
@@ -1390,6 +1407,7 @@ class ReferenceService:
                 provider=None,
                 data_dir=root,
                 verifier=selected_verifier,
+                artifact_source=artifact_source,
             )
         verified: VerifiedArtifact | None = None
         try:
@@ -1411,6 +1429,7 @@ class ReferenceService:
                     provider=None,
                     data_dir=root,
                     verifier=selected_verifier,
+                    artifact_source=artifact_source,
                 )
             connection = _connect(verified.database)
             try:
@@ -1444,6 +1463,7 @@ class ReferenceService:
                 provider=provider,
                 data_dir=root,
                 verifier=selected_verifier,
+                artifact_source=artifact_source,
             )
         except ReferenceValidationError as error:
             return cls(
@@ -1458,6 +1478,7 @@ class ReferenceService:
                 provider=None,
                 data_dir=root,
                 verifier=selected_verifier,
+                artifact_source=artifact_source,
             )
         except (OSError, sqlite3.Error) as error:
             del error
@@ -1475,6 +1496,7 @@ class ReferenceService:
                 provider=None,
                 data_dir=root,
                 verifier=selected_verifier,
+                artifact_source=artifact_source,
             )
         except Exception:
             return cls(
@@ -1492,11 +1514,12 @@ class ReferenceService:
                 provider=None,
                 data_dir=root,
                 verifier=selected_verifier,
+                artifact_source=artifact_source,
             )
 
     @property
     def managed_upload_available(self) -> bool:
-        return self.artifact_path == self.managed_path
+        return self.artifact_source in {"managed", "embedded"}
 
     def payload(self, *, detailed: bool = False) -> dict[str, Any]:
         return {
@@ -1604,16 +1627,26 @@ class ReferenceService:
         self.managed_path.unlink()
         _cleanup_reference_derivatives(self.data_dir)
 
+        if self.artifact_source == "embedded":
+            # Удалён только ожидающий пользовательский override; встроенный
+            # read-only снимок текущего процесса уже остаётся активным.
+            self.pending_status = None
+            return None
+
         if self.provider is None:
             # Удаление ещё не активированной загрузки отменяет pending: в
             # текущем процессе справочных инструментов и так не было.
             self.pending_status = None
             return None
 
+        fallback_to_embedded = EMBEDDED_REFERENCE_ARTIFACT.is_file()
         self.pending_status = ReferenceStatus(
             state="pending_restart",
             message=(
-                "База удалена и будет отключена после перезапуска сервера."
+                "Пользовательская база удалена; после перезапуска будет "
+                "подключена встроенная база."
+                if fallback_to_embedded
+                else "База удалена и будет отключена после перезапуска сервера."
             ),
             signature=self.status.signature,
             schema_version=self.status.schema_version,
@@ -1622,7 +1655,7 @@ class ReferenceService:
             items=self.status.items,
             index_cache=None,
             key_id=self.status.key_id,
-            action="remove",
+            action="activate" if fallback_to_embedded else "remove",
         )
         return self.pending_status
 

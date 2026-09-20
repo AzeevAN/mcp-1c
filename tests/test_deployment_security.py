@@ -5,6 +5,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
 COMPOSE = ROOT / "compose.yaml"
+DOCKERFILE = ROOT / "Dockerfile"
+DOCKERIGNORE = ROOT / ".dockerignore"
 
 
 def _compose() -> str:
@@ -98,6 +100,19 @@ def test_compose_передаёт_настройки_необязательно�
         "MCP1C_REFERENCE_ARTIFACT: ${MCP1C_REFERENCE_ARTIFACT:-}" in compose
     )
     assert "MCP1C_REFERENCE_TRUST_UNSIGNED" not in compose
+
+
+def test_образ_получает_встроенную_справку_вне_перекрываемого_data():
+    dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+    dockerignore = DOCKERIGNORE.read_text(encoding="utf-8")
+
+    expected = (
+        "COPY release-assets/reference/reference.mcp1cref "
+        "/app/reference/reference.mcp1cref"
+    )
+    assert expected in dockerfile
+    assert "!release-assets/reference/reference.mcp1cref" in dockerignore
+    assert "/app/reference/reference.mcp1cref" not in _compose()
 
 
 def test_compose_объясняет_корни_без_singleton():

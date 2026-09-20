@@ -4,6 +4,12 @@
 
 !requirements-lock.txt
 
+!release-assets/
+release-assets/*
+!release-assets/reference/
+release-assets/reference/*
+!release-assets/reference/reference.mcp1cref
+
 !src/
 src/*
 !src/mcp1c/

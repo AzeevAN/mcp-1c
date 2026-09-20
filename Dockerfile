@@ -25,9 +25,11 @@ COPY requirements-lock.txt .
 RUN pip install --no-cache-dir --require-hashes -r requirements-lock.txt
 
 COPY src/ ./src/
+COPY release-assets/reference/reference.mcp1cref /app/reference/reference.mcp1cref
 
-# Данные монтируются томом: выгрузки конфигураций и справка платформы —
-# проприетарный контент, в образ он не попадает.
+# Пользовательские данные монтируются в /data, а подписанная общая справка
+# лежит отдельно в /app/reference и потому не перекрывается bind mount.
+# Выгрузки конфигураций и справка платформы остаются только в /data.
 RUN mkdir -p /data/bootstrap /data/index /data/sources \
     && groupadd --gid 10001 mcp1c \
     && useradd --uid 10001 --gid 10001 --no-create-home \

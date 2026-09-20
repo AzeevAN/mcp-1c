@@ -18,6 +18,13 @@ def test_dockerignore_закрыт_по_умолчанию() -> None:
     assert rules[0] == "**"
     assert {"!requirements-lock.txt", "!src/mcp1c/*.py"} <= set(rules)
     assert {
+        "!release-assets/",
+        "release-assets/*",
+        "!release-assets/reference/",
+        "release-assets/reference/*",
+        "!release-assets/reference/reference.mcp1cref",
+    } <= set(rules)
+    assert {
         "!src/mcp1c/readers/",
         "src/mcp1c/readers/*",
         "!src/mcp1c/readers/*.py",
@@ -70,6 +77,7 @@ def test_dockerfile_копирует_только_разрешённые_дер�
         "COPY dashboard/ ./",
         "COPY requirements-lock.txt .",
         "COPY src/ ./src/",
+        "COPY release-assets/reference/reference.mcp1cref /app/reference/reference.mcp1cref",
         "COPY --from=dashboard-build --chown=10001:10001 /dashboard/dist /app/src/mcp1c/dashboard_dist",
     ]
     assert "COPY ." not in dockerfile

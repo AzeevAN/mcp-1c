@@ -53,6 +53,85 @@ def test_явное_off_отключает_адаптер_без_поиска_ф
     assert service.status.message == "Локальная общая справка выключена."
 
 
+def test_явный_артефакт_имеет_приоритет_над_управляемым_и_встроенным(
+    tmp_path, monkeypatch
+):
+    signer = SyntheticReferenceSigner.generate()
+    managed = signer.build(
+        tmp_path / "data" / "reference" / "reference.mcp1cref",
+        build_reference_database(tmp_path / "managed.sqlite3"),
+    )
+    embedded = signer.build(
+        tmp_path / "embedded" / "reference.mcp1cref",
+        build_reference_database(tmp_path / "embedded.sqlite3"),
+    )
+    explicit = signer.build(
+        tmp_path / "explicit" / "reference.mcp1cref",
+        build_reference_database(tmp_path / "explicit.sqlite3"),
+    )
+    monkeypatch.setenv("MCP1C_REFERENCE_ARTIFACT", str(explicit))
+
+    service = ReferenceService.discover(
+        tmp_path / "data",
+        verifier=signer.verifier(),
+        embedded_path=embedded,
+    )
+
+    assert service.status.state == "ready"
+    assert service.artifact_path == explicit.resolve()
+    assert service.artifact_source == "explicit"
+    assert service.managed_upload_available is False
+    assert managed.is_file()
+
+
+def test_управляемый_артефакт_имеет_приоритет_над_встроенным(
+    tmp_path, monkeypatch
+):
+    monkeypatch.delenv("MCP1C_REFERENCE_ARTIFACT", raising=False)
+    signer = SyntheticReferenceSigner.generate()
+    managed = signer.build(
+        tmp_path / "data" / "reference" / "reference.mcp1cref",
+        build_reference_database(tmp_path / "managed.sqlite3"),
+    )
+    embedded = signer.build(
+        tmp_path / "embedded" / "reference.mcp1cref",
+        build_reference_database(tmp_path / "embedded.sqlite3"),
+    )
+
+    service = ReferenceService.discover(
+        tmp_path / "data",
+        verifier=signer.verifier(),
+        embedded_path=embedded,
+    )
+
+    assert service.status.state == "ready"
+    assert service.artifact_path == managed.resolve()
+    assert service.artifact_source == "managed"
+    assert service.managed_upload_available is True
+
+
+def test_встроенный_артефакт_используется_без_управляемого(
+    tmp_path, monkeypatch
+):
+    monkeypatch.delenv("MCP1C_REFERENCE_ARTIFACT", raising=False)
+    signer = SyntheticReferenceSigner.generate()
+    embedded = signer.build(
+        tmp_path / "embedded" / "reference.mcp1cref",
+        build_reference_database(tmp_path / "embedded.sqlite3"),
+    )
+
+    service = ReferenceService.discover(
+        tmp_path / "data",
+        verifier=signer.verifier(),
+        embedded_path=embedded,
+    )
+
+    assert service.status.state == "ready"
+    assert service.artifact_path == embedded.resolve()
+    assert service.artifact_source == "embedded"
+    assert service.managed_upload_available is True
+
+
 def test_неподписанная_база_по_умолчанию_не_подключается(tmp_path):
     database = tmp_path / "reference" / "reference.mcp1cref"
     database.parent.mkdir()

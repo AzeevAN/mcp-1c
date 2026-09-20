@@ -171,12 +171,16 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
             "supported",
             (
                 "Owner-aware вертикаль поддерживает role=object для владельца "
-                "Справочник.* или Документ.* (catalog/document) при совпадающем "
+                "Справочник.*, Документ.* или встроенной Обработка.* при совпадающем "
                 "главном metadata_object."
             ),
             "corpus_invariant",
             {
-                "owners": ["Справочник.<Имя>", "Документ.<Имя>"],
+                "owners": [
+                    "Справочник.<Имя>",
+                    "Документ.<Имя>",
+                    "Обработка.<Имя>",
+                ],
                 "role": "object",
                 "main_attribute": {
                     "name": "Объект",
@@ -186,7 +190,10 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
                         "object": "<тот же owner>",
                     },
                 },
-                "xml_type": "cfg:CatalogObject.<Имя> или cfg:DocumentObject.<Имя>",
+                "xml_type": (
+                    "cfg:CatalogObject.<Имя>, cfg:DocumentObject.<Имя> или "
+                    "cfg:DataProcessorObject.<Имя>"
+                ),
             },
         ),
         FormRule(

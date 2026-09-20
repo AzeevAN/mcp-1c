@@ -607,11 +607,12 @@ def test_enabled_добавляет_ровно_три_metadata_authoring_инс�
     assert tools[-2].input_schema["required"] == ["specification"]
     assert "если forms не пуст, artifacts" in (tools[-2].description or "")
     specification = tools[-2].input_schema["properties"]["specification"]
-    assert len(specification["oneOf"]) == 3
-    catalog, register, document = specification["oneOf"]
+    assert len(specification["oneOf"]) == 4
+    catalog, register, document, data_processor = specification["oneOf"]
     assert catalog["title"] == "Справочник"
     assert register["title"] == "РегистрСведений"
     assert document["title"] == "Документ"
+    assert data_processor["title"] == "Обработка"
     assert {
         "schema_version", "object_ref", "format_version", "identity",
         "synonym", "attributes", "forms", "code_length", "description_length",
@@ -624,12 +625,23 @@ def test_enabled_добавляет_ровно_три_metadata_authoring_инс�
     assert catalog["additionalProperties"] is False
     assert register["additionalProperties"] is False
     assert document["additionalProperties"] is False
+    assert data_processor["additionalProperties"] is False
     assert {
         "schema_version", "object_ref", "format_version", "identity",
         "synonym", "attributes", "forms", "number_length",
         "number_allowed_length", "number_periodicity", "check_unique",
         "autonumbering", "posting", "real_time_posting",
     } == set(document["required"])
+    assert {
+        "schema_version", "object_ref", "format_version", "identity",
+        "synonym", "attributes", "forms",
+    } == set(data_processor["required"])
+    assert data_processor["properties"]["attributes"]["maxItems"] == 0
+    assert data_processor["properties"]["forms"]["minItems"] == 1
+    assert data_processor["properties"]["forms"]["maxItems"] == 1
+    assert data_processor["properties"]["forms"]["items"]["properties"][
+        "default"
+    ] == {"const": True}
     form = catalog["properties"]["forms"]["items"]
     assert set(form["required"]) == {
         "name", "synonym", "default", "form_xml", "module_bsl",

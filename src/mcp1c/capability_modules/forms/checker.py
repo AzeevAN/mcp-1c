@@ -673,6 +673,17 @@ def _check_bsl(
     )
 
 
+def _scaffold_only_module(module_bsl: str) -> bool:
+    for line in module_bsl.lstrip("\ufeff").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("//"):
+            continue
+        if stripped.casefold().startswith(("#область", "#конецобласти")):
+            continue
+        return False
+    return True
+
+
 def check_managed_form(
     form_xml: object,
     *,
@@ -737,6 +748,28 @@ def check_managed_form(
         safe_module,
         event_profile=profile.event_profile,
     )
+    specification = decompiled.specification
+    specification_context = (
+        specification.get("context") if isinstance(specification, dict) else None
+    )
+    if (
+        isinstance(specification_context, dict)
+        and specification_context.get("owner", "").startswith("Обработка.")
+        and specification_context.get("role") == "object"
+        and safe_module is not None
+        and not _scaffold_only_module(safe_module)
+    ):
+        bsl_status = "failed"
+        bsl_diagnostics = [
+            *bsl_diagnostics,
+            _diagnostic(
+                "failed",
+                "unsupported_data_processor_module_bsl",
+                "$module_bsl",
+                "Прикладной BSL основной формы обработки не входит в базовый контракт.",
+                level="bsl_static",
+            ),
+        ]
     diagnostics.extend(bsl_diagnostics)
     diagnostics.append(
         _diagnostic(

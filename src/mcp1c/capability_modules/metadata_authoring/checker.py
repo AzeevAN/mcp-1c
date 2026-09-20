@@ -17,7 +17,7 @@ LOGFORM_NAMESPACE = "http://v8.1c.ru/8.3/xcf/logform"
 _FORBIDDEN_XML_DECLARATION = re.compile(r"<!\s*(?:DOCTYPE|ENTITY)\b", re.I)
 _QNAME = re.compile(r"^([A-Za-z_][A-Za-z0-9_.-]*):[^\s:]+$")
 _OBJECT_REF = re.compile(
-    r"^(Справочник|РегистрСведений|Документ)\.([A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*)$"
+    r"^(Справочник|РегистрСведений|Документ|Обработка)\.([A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*)$"
 )
 _FORMAT_VERSION = re.compile(r"^\d+\.\d+(?:\.\d+)*$")
 _METADATA_NAME = re.compile(r"^[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*$")
@@ -69,11 +69,29 @@ _KINDS = {
         ("Object", "Ref", "Selection", "List", "Manager"),
         ("DefaultObjectForm", "DefaultListForm", "DefaultChoiceForm"),
     ),
+    "Обработка": _Kind(
+        "Обработка",
+        "DataProcessor",
+        "DataProcessors",
+        ("Object", "Manager"),
+        ("DefaultForm",),
+    ),
 }
 
 
 def _local(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
+
+
+def _scaffold_only_module(module_bsl: str) -> bool:
+    for line in module_bsl.lstrip("\ufeff").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("//"):
+            continue
+        if stripped.casefold().startswith(("#область", "#конецобласти")):
+            continue
+        return False
+    return True
 
 
 def _diagnostic(code: str, path: str, message: str) -> dict[str, str]:
@@ -415,6 +433,20 @@ def _check_forms(
         for child in (child_objects if child_objects is not None else ())
         if _local(child.tag) == "Form" and (child.text or "").strip()
     ]
+    if kind.object_kind == "Обработка" and not form_names:
+        report.fail(
+            "forms",
+            "missing_data_processor_form",
+            f"{owner_path}.xml:ChildObjects",
+            "Базовая встроенная обработка требует одну объявленную форму.",
+        )
+    elif kind.object_kind == "Обработка" and len(form_names) != 1:
+        report.fail(
+            "forms",
+            "invalid_data_processor_form_count",
+            f"{owner_path}.xml:ChildObjects",
+            "Базовая встроенная обработка поддерживает ровно одну объявленную форму.",
+        )
     if len(set(form_names)) != len(form_names):
         report.fail(
             "forms",
@@ -424,6 +456,7 @@ def _check_forms(
         )
     valid_form_names: list[str] = []
     form_main_types: dict[str, list[str]] = {}
+    form_main_names: dict[str, list[str]] = {}
     expected_paths = {f"{owner_path}.xml"}
     for form_name in form_names:
         if _METADATA_NAME.fullmatch(form_name) is None:
@@ -456,11 +489,13 @@ def _check_forms(
                 internal_form_entry[0], form_xml_path, report, "forms", format_version
             )
             main_types: list[str] = []
+            main_names: list[str] = []
             for attribute in internal_form_entry[0].iter():
                 if _local(attribute.tag) != "Attribute":
                     continue
                 if _child_text(attribute, "MainAttribute") != "true":
                     continue
+                main_names.append(attribute.get("name", ""))
                 main_types.extend(
                     node.text.strip()
                     for node in attribute.iter()
@@ -469,26 +504,73 @@ def _check_forms(
                     and node.text.strip()
                 )
             form_main_types[form_name] = main_types
-            if kind.object_kind == "Документ":
-                expected_type = f"cfg:DocumentObject.{object_name}"
-                foreign_document_type = next(
+            form_main_names[form_name] = main_names
+            if kind.object_kind in {"Документ", "Обработка"}:
+                object_type = (
+                    "DocumentObject"
+                    if kind.object_kind == "Документ"
+                    else "DataProcessorObject"
+                )
+                expected_type = f"cfg:{object_type}.{object_name}"
+                foreign_object_type = next(
                     (
                         type_name
                         for type_name in main_types
-                        if type_name.startswith("cfg:DocumentObject.")
+                        if type_name.startswith(f"cfg:{object_type}.")
                         and type_name != expected_type
                     ),
                     None,
                 )
-                if foreign_document_type is not None:
+                if foreign_object_type is not None:
                     report.fail(
                         "forms",
                         "form_owner_mismatch",
                         form_xml_path,
                         (
-                            f"Главный реквизит формы имеет тип `{foreign_document_type}`, "
+                            f"Главный реквизит формы имеет тип `{foreign_object_type}`, "
                             f"ожидается владелец `{expected_type}`."
                         ),
+                    )
+            if kind.object_kind == "Обработка":
+                if main_names != ["Объект"]:
+                    report.fail(
+                        "forms",
+                        "invalid_data_processor_main_attribute",
+                        form_xml_path,
+                        "Основная форма обработки требует единственный главный реквизит `Объект`.",
+                    )
+                structural_behavior = {
+                    _local(node.tag) for node in internal_form_entry[0].iter()
+                } & {
+                    "Button",
+                    "ButtonGroup",
+                    "Command",
+                    "CommandBar",
+                    "CommandName",
+                    "CommandSource",
+                    "Event",
+                    "Popup",
+                }
+                if any(
+                    _local(node.tag) in {"AutoCommandBar", "ContextMenu"}
+                    and len(node) > 0
+                    for node in internal_form_entry[0].iter()
+                ):
+                    structural_behavior.add("CommandContainer")
+                if structural_behavior:
+                    report.fail(
+                        "forms",
+                        "unsupported_data_processor_form_behavior",
+                        form_xml_path,
+                        "Команды и события формы обработки не входят в базовый контракт.",
+                    )
+                module_bsl = artifacts.get(module_path)
+                if module_bsl is not None and not _scaffold_only_module(module_bsl):
+                    report.fail(
+                        "forms",
+                        "unsupported_data_processor_module_bsl",
+                        module_path,
+                        "Прикладной BSL формы обработки не входит в базовый контракт.",
                     )
         form_entry = parsed.get(descriptor_path)
         if form_entry is None:
@@ -543,6 +625,47 @@ def _check_forms(
         property_name: _child_text(properties, property_name)
         for property_name in kind.default_form_properties
     }
+    if kind.object_kind == "Обработка":
+        default_form_nodes = [
+            child
+            for child in (properties if properties is not None else ())
+            if _local(child.tag) == "DefaultForm"
+        ]
+        if len(default_form_nodes) != 1:
+            report.fail(
+                "forms",
+                "invalid_default_data_processor_form_count",
+                f"{owner_path}.xml:DefaultForm",
+                "Descriptor обработки должен содержать ровно один DefaultForm.",
+            )
+        for unsupported_property in (
+            "DefaultObjectForm",
+            "DefaultListForm",
+            "DefaultChoiceForm",
+            "DefaultRecordForm",
+            "DefaultRecordSetForm",
+        ):
+            if _find_child(properties, unsupported_property) is not None:
+                report.fail(
+                    "forms",
+                    "unsupported_default_form_property",
+                    f"{owner_path}.xml:{unsupported_property}",
+                    "Встроенная обработка поддерживает только DefaultForm.",
+                )
+        if _child_text(properties, "AuxiliaryForm") is not None:
+            report.fail(
+                "forms",
+                "unsupported_auxiliary_form",
+                f"{owner_path}.xml:AuxiliaryForm",
+                "Дополнительная форма обработки не входит в базовый контракт.",
+            )
+        if not _child_text(properties, "DefaultForm"):
+            report.fail(
+                "forms",
+                "missing_default_data_processor_form",
+                f"{owner_path}.xml:DefaultForm",
+                "Единственная основная форма обработки должна быть DefaultForm.",
+            )
     allowed = {
         f"{kind.xml_kind}.{object_name}.Form.{form_name}"
         for form_name in valid_form_names
@@ -610,6 +733,19 @@ def _check_forms(
                         f"типа `{expected_type}`."
                     ),
                 )
+        elif kind.object_kind == "Обработка" and property_name == "DefaultForm":
+            default_form_name = default_form.rsplit(".", 1)[-1]
+            expected_type = f"cfg:DataProcessorObject.{object_name}"
+            if expected_type not in form_main_types.get(default_form_name, []):
+                report.fail(
+                    "forms",
+                    "form_owner_mismatch",
+                    f"{owner_path}/Forms/{default_form_name}/Ext/Form.xml",
+                    (
+                        "Форма из DefaultForm должна иметь главный реквизит "
+                        f"типа `{expected_type}`."
+                    ),
+                )
 
 
 def check_metadata_artifacts(
@@ -627,7 +763,7 @@ def check_metadata_artifacts(
         report.fail_all(
             "unsupported_object_ref",
             "$object_ref",
-            "Поддержаны только Справочник.<Имя>, Документ.<Имя> и РегистрСведений.<Имя>.",
+            "Поддержаны только Справочник.<Имя>, Документ.<Имя>, РегистрСведений.<Имя> и встроенная Обработка.<Имя>.",
         )
         return report.result()
     if (
@@ -893,6 +1029,20 @@ def check_metadata_artifacts(
                 "unsupported_document_structure",
                 f"{descriptor_path}:ChildObjects",
                 "Базовый документ поддерживает только Attribute и Form; табличные части и другие дочерние объекты не поддержаны.",
+            )
+    if kind.xml_kind == "DataProcessor":
+        child_objects = _find_child(metadata_object, "ChildObjects")
+        unsupported_children = [
+            _local(item.tag)
+            for item in (child_objects if child_objects is not None else ())
+            if _local(item.tag) != "Form"
+        ]
+        if unsupported_children:
+            report.fail(
+                "descriptor",
+                "unsupported_data_processor_structure",
+                f"{descriptor_path}:ChildObjects",
+                "Базовая обработка поддерживает только Form; команды и шаблоны не поддержаны.",
             )
     _check_generated_types(
         metadata_object, descriptor_path, kind, object_name, report

@@ -2322,10 +2322,15 @@ def decompile_managed_form(
                 else "not_checked",
                 (
                     (
-                        "document_object_context_verified"
-                        if isinstance(context_owner, str)
-                        and context_owner.startswith("Документ.")
-                        else "catalog_object_context_verified"
+                        {
+                            "Документ": "document_object_context_verified",
+                            "Обработка": "data_processor_object_context_verified",
+                        }.get(
+                            context_owner.split(".", 1)[0]
+                            if isinstance(context_owner, str)
+                            else "",
+                            "catalog_object_context_verified",
+                        )
                     )
                     if context_role == "object"
                     else (
@@ -2345,10 +2350,15 @@ def decompile_managed_form(
                 "$.context",
                 (
                     (
-                        "Контекст формы объекта документа согласован с главным реквизитом."
-                        if isinstance(context_owner, str)
-                        and context_owner.startswith("Документ.")
-                        else "Контекст формы объекта справочника согласован с главным реквизитом."
+                        {
+                            "Документ": "Контекст формы объекта документа согласован с главным реквизитом.",
+                            "Обработка": "Контекст основной формы обработки согласован с главным реквизитом Объект.",
+                        }.get(
+                            context_owner.split(".", 1)[0]
+                            if isinstance(context_owner, str)
+                            else "",
+                            "Контекст формы объекта справочника согласован с главным реквизитом.",
+                        )
                     )
                     if context_role == "object"
                     else (

@@ -62,7 +62,8 @@ def load(registry=None) -> tuple[CapabilityTool, ...]:
                 "он публикует точный переход к "
                 "get_managed_form_rules(topic=overview), предметным темам Forms "
                 "и цепочке compile/check перед metadata compile. "
-                "Поддержаны Справочник, базовый непроводимый Документ и РегистрСведений; инструмент "
+                "Поддержаны Справочник, базовый непроводимый Документ, РегистрСведений "
+                "и встроенная Обработка (не внешняя .epf); инструмент "
                 "ничего не пишет, не импортирует в 1С и не обращается к Registry."
             ),
         ),
@@ -82,12 +83,16 @@ def load(registry=None) -> tuple[CapabilityTool, ...]:
                 "Metadata checker не подтверждает provenance или semantic role "
                 "Form.xml, поэтому ручной XML не является доказательством формы. "
                 "Pure-компиляция закрытой specification schema v1 в текстовые "
-                "артефакты Справочника, непроводимого Документа или РегистраСведений. Ничего не пишет, "
+                "артефакты Справочника, непроводимого Документа, РегистраСведений "
+                "или встроенной Обработки. Ничего не пишет, "
                 "не импортирует в 1С и не читает Configuration.xml. "
                 "Для Справочника и Документа доступны role=object/list/choice, "
                 "для РегистраСведений role=record/list/record_set; record_set "
-                "требует default=false. Role можно опустить для "
-                "совместимости с прежним object/record-контрактом. "
+                "требует default=false. "
+                "Обработка требует ровно одну role=object форму с default=true; "
+                "она заполняет DefaultForm. "
+                "Role можно опустить для совместимости с прежним "
+                "object/record-контрактом. "
                 "format_version обязан передать caller. "
                 "До первого вызова получите через get_metadata_authoring_rules "
                 "темы overview, тему выбранного вида объекта и, если forms не "
@@ -99,7 +104,7 @@ def load(registry=None) -> tuple[CapabilityTool, ...]:
             function=_check_tool,
             description=(
                 "Read-only проверка переданных текстовых артефактов Справочника, "
-                "непроводимого Документа или РегистраСведений: descriptor, generated types, "
+                "непроводимого Документа, РегистраСведений или встроенной Обработки: descriptor, generated types, "
                 "формы и XML namespaces. Ничего не пишет и не импортирует в 1С; "
                 "успех статической проверки не доказывает нативный импорт. "
                 "Checker проверяет owner-relative Default*Form, но не выводит "

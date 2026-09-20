@@ -10,6 +10,7 @@ RuleTopic: TypeAlias = Literal[
     "overview",
     "catalog",
     "document",
+    "data_processor",
     "information_register",
     "forms",
     "artifacts",
@@ -20,6 +21,7 @@ RULE_TOPICS: tuple[RuleTopic, ...] = (
     "overview",
     "catalog",
     "document",
+    "data_processor",
     "information_register",
     "forms",
     "artifacts",
@@ -37,12 +39,18 @@ _REGISTER_TYPES = [
     "RecordKey",
     "RecordManager",
 ]
+_DATA_PROCESSOR_TYPES = ["Object", "Manager"]
 
 _RULES: dict[RuleTopic, dict[str, object]] = {
     "overview": {
         "status": "supported",
         "available_topics": list(RULE_TOPICS),
-        "supported_metadata_kinds": ["Справочник", "Документ", "РегистрСведений"],
+        "supported_metadata_kinds": [
+            "Справочник",
+            "Документ",
+            "РегистрСведений",
+            "Обработка",
+        ],
         "recommended_call_order": [
             "get_metadata_authoring_rules",
             "compile_managed_form (для каждой формы)",
@@ -120,10 +128,12 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
                 "catalog": ["object", "list", "choice"],
                 "document": ["object", "list", "choice"],
                 "information_register": ["record", "list", "record_set"],
+                "data_processor": ["object"],
                 "legacy_default": {
                     "catalog": "object",
                     "document": "object",
                     "information_register": "record",
+                    "data_processor": "object",
                 },
                 "one_physical_form_one_role": True,
                 "shared_list_choice_form": "not_supported",
@@ -311,6 +321,60 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
             "после compile_managed_form и check_managed_form."
         ),
     },
+    "data_processor": {
+        "object_ref": "Обработка.<Имя>",
+        "scope": "только встроенный объект метаданных; внешняя .epf не поддержана",
+        "descriptor_path": "DataProcessors/<Имя>.xml",
+        "descriptor_element": "md:DataProcessor",
+        "required_sections": ["InternalInfo", "Properties", "ChildObjects"],
+        "generated_types": _DATA_PROCESSOR_TYPES,
+        "generated_type_name_pattern": "DataProcessor<Category>.<Имя>",
+        "form_roles": ["object"],
+        "default_form_property": "DefaultForm",
+        "default_form_value": "DataProcessor.<Имя>.Form.<Форма>",
+        "forms_required": True,
+        "forms_count": 1,
+        "default_required": True,
+        "forms_profile": {
+            "context": {"owner": "Обработка.<Имя>", "role": "object"},
+            "main_attribute": {
+                "name": "Объект",
+                "type": {
+                    "kind": "metadata_object",
+                    "object": "Обработка.<Имя>",
+                },
+                "main": True,
+                "saved_data": "не требуется",
+            },
+        },
+        "compiler_specification_example": {
+            "schema_version": 1,
+            "object_ref": "Обработка.ИмпортПример",
+            "format_version": "2.20",
+            "identity": "80000000-0000-0000-0000-000000000001",
+            "synonym": "Импорт (пример)",
+            "attributes": [],
+            "forms": [
+                {
+                    "name": "Форма",
+                    "synonym": "Форма",
+                    "role": "object",
+                    "default": True,
+                    "form_xml": "<точный content Forms compiler>",
+                    "module_bsl": "<точный content Forms compiler>",
+                }
+            ],
+        },
+        "compiler_specification_example_note": (
+            "Сначала соберите role=object форму через Forms rules → compile → check, "
+            "затем программно передайте точные Form.xml и Module.bsl byte-for-byte."
+        ),
+        "limitations": [
+            "без внешней .epf",
+            "без команд, событий, макетов и прикладного BSL объекта метаданных",
+            "без дополнительных и вспомогательных форм",
+        ],
+    },
     "catalog": {
         "object_ref": "Справочник.<Имя>",
         "descriptor_path": "Catalogs/<Имя>.xml",
@@ -478,17 +542,22 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
             "Справочник": ["object", "list", "choice"],
             "Документ": ["object", "list", "choice"],
             "РегистрСведений": ["record", "list", "record_set"],
+            "Обработка": ["object"],
         },
         "legacy_role_when_omitted": {
             "Справочник": "object",
             "Документ": "object",
             "РегистрСведений": "record",
+            "Обработка": "object",
         },
         "default_semantics": {
             "field_required": True,
             "true_optional_per_role": True,
             "maximum_true_per_role": 1,
             "zero_defaults_allowed": True,
+            "data_processor_override": (
+                "ровно одна role=object форма с default=true; она становится DefaultForm"
+            ),
             "shared_physical_list_choice_form": "not_supported",
         },
         "required_call_order": [

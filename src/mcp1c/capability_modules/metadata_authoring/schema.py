@@ -219,8 +219,34 @@ def _document_schema() -> dict[str, object]:
     )
 
 
+def _data_processor_schema() -> dict[str, object]:
+    properties = _common_properties("Обработка", ("object",))
+    attributes = properties["attributes"]
+    assert isinstance(attributes, dict)
+    attributes["maxItems"] = 0
+    forms = properties["forms"]
+    assert isinstance(forms, dict)
+    forms["minItems"] = 1
+    forms["maxItems"] = 1
+    item = forms["items"]
+    assert isinstance(item, dict)
+    item_properties = item["properties"]
+    assert isinstance(item_properties, dict)
+    item_properties["default"] = {"const": True}
+    return _closed_object(
+        properties,
+        _COMMON_REQUIRED,
+        title="Обработка",
+    )
+
+
 METADATA_SPECIFICATION_SCHEMA: dict[str, object] = {
-    "oneOf": [_catalog_schema(), _information_register_schema(), _document_schema()]
+    "oneOf": [
+        _catalog_schema(),
+        _information_register_schema(),
+        _document_schema(),
+        _data_processor_schema(),
+    ]
 }
 
 

@@ -366,7 +366,11 @@ def test_specification_возвращает_тот_же_минимальный_�
     assert "id" not in json.dumps(payload["example"], ensure_ascii=False)
     by_code = {rule["code"]: rule for rule in payload["rules"]}
     assert by_code["object_form_owner_context"]["value"] == {
-        "owners": ["Справочник.<Имя>", "Документ.<Имя>"],
+        "owners": [
+            "Справочник.<Имя>",
+            "Документ.<Имя>",
+            "Обработка.<Имя>",
+        ],
         "role": "object",
         "main_attribute": {
             "name": "Объект",
@@ -376,7 +380,10 @@ def test_specification_возвращает_тот_же_минимальный_�
                 "object": "<тот же owner>",
             },
         },
-        "xml_type": "cfg:CatalogObject.<Имя> или cfg:DocumentObject.<Имя>",
+        "xml_type": (
+            "cfg:CatalogObject.<Имя>, cfg:DocumentObject.<Имя> или "
+            "cfg:DataProcessorObject.<Имя>"
+        ),
     }
     list_choice = by_code["list_choice_form_owner_context"]["value"]
     assert list_choice["roles"] == ["list", "choice"]

@@ -63,7 +63,8 @@ _FORM_OWNER_KINDS = frozenset(
         "Справочник",
     }
 )
-_OBJECT_FORM_OWNER_KINDS = frozenset({"Справочник", "Документ"})
+_OBJECT_FORM_OWNER_KINDS = frozenset({"Справочник", "Документ", "Обработка"})
+_LIST_CHOICE_FORM_OWNER_KINDS = frozenset({"Справочник", "Документ"})
 FormRole: TypeAlias = Literal[
     "object", "list", "choice", "record", "record_set", "common", "custom"
 ]
@@ -1035,7 +1036,10 @@ def _form_context(reader: _Reader, value: object, path: str) -> FormContext:
         role = raw_role
     supported_owner_role = (
         owner_kind in _OBJECT_FORM_OWNER_KINDS
-        and role in {"object", "list", "choice"}
+        and role == "object"
+    ) or (
+        owner_kind in _LIST_CHOICE_FORM_OWNER_KINDS
+        and role in {"list", "choice"}
     ) or (
         owner_kind == "РегистрСведений"
         and role in {"record", "list", "record_set"}
@@ -2375,6 +2379,48 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
                 f"$.attributes[{main_object_indexes[0]}].type.object",
                 "Главный metadata_object должен совпадать с владельцем формы.",
             )
+        elif (
+            context.owner.startswith("Обработка.")
+            and attributes[main_object_indexes[0]].name != "Объект"
+        ):
+            reader.issue(
+                "incompatible_owner_context",
+                f"$.attributes[{main_object_indexes[0]}].name",
+                "Главный реквизит основной формы обработки должен называться Объект.",
+            )
+        if context.owner.startswith("Обработка.") and commands:
+            reader.issue(
+                "unsupported_owner_role_feature",
+                "$.commands",
+                "Команды основной формы обработки не входят в базовый контракт.",
+            )
+        if context.owner.startswith("Обработка.") and events:
+            reader.issue(
+                "unsupported_owner_role_feature",
+                "$.events",
+                "События основной формы обработки не входят в базовый контракт.",
+            )
+        if context.owner.startswith("Обработка."):
+            for element, path, _parent_table in walked:
+                if isinstance(
+                    element,
+                    (Button, CommandBar, Popup, ButtonGroup),
+                ) or (
+                    isinstance(element, Table)
+                    and (
+                        element.auto_command_bar is not None
+                        or element.context_menu is not None
+                    )
+                ):
+                    reader.issue(
+                        "unsupported_owner_role_feature",
+                        path,
+                        (
+                            "Командные элементы и явно настроенные командные "
+                            "контейнеры основной формы обработки не входят в "
+                            "базовый контракт."
+                        ),
+                    )
     if context.role == "record" and context.owner.startswith("РегистрСведений."):
         main_record_indexes = [
             index
@@ -2409,7 +2455,7 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
                     "Главный реквизит формы записи регистра требует saved_data=true.",
                 )
     if context.role in {"list", "choice"} and (
-        context.owner.split(".", 1)[0] in _OBJECT_FORM_OWNER_KINDS
+        context.owner.split(".", 1)[0] in _LIST_CHOICE_FORM_OWNER_KINDS
         or (
             context.owner.startswith("РегистрСведений.")
             and context.role == "list"

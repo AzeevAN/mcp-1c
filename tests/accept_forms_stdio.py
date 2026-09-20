@@ -774,6 +774,183 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                         ensure_ascii=False,
                     )
                 )
+            data_processor_owner = "Обработка.ТестоваяОбработка"
+            data_processor_context = {
+                "owner": data_processor_owner,
+                "role": "object",
+            }
+            data_processor_form_specification = {
+                "schema_version": 2,
+                "form_name": "Форма",
+                "context": data_processor_context,
+                "format_version": "2.20",
+                "title": {"ru": "Тестовая обработка"},
+                "attributes": [
+                    {
+                        "name": "Объект",
+                        "type": {
+                            "kind": "metadata_object",
+                            "object": data_processor_owner,
+                        },
+                        "main": True,
+                    },
+                    {
+                        "name": "Параметр",
+                        "type": {"kind": "string", "length": 100},
+                    },
+                ],
+                "elements": [
+                    {
+                        "kind": "input_field",
+                        "name": "Параметр",
+                        "data_path": "Параметр",
+                    }
+                ],
+                "commands": [],
+                "events": [],
+            }
+            data_processor_rules = await session.call_tool(
+                "get_metadata_authoring_rules", {"topic": "data_processor"}
+            )
+            data_processor_form_compiled = await session.call_tool(
+                "compile_managed_form",
+                {"specification": data_processor_form_specification},
+            )
+            if data_processor_form_compiled.is_error:
+                raise RuntimeError(data_processor_form_compiled.content[0].text)
+            data_processor_form_payload = json.loads(
+                data_processor_form_compiled.content[0].text
+            )
+            data_processor_form_artifacts = {
+                item["path"]: item["content"]
+                for item in data_processor_form_payload["artifacts"]
+            }
+            data_processor_form_xml = data_processor_form_artifacts[
+                "Forms/Форма/Ext/Form.xml"
+            ]
+            data_processor_module = data_processor_form_artifacts[
+                "Forms/Форма/Ext/Form/Module.bsl"
+            ]
+            data_processor_form_checked = await session.call_tool(
+                "check_managed_form",
+                {
+                    "form_xml": data_processor_form_xml,
+                    "form_name": "Форма",
+                    "context": data_processor_context,
+                    "module_bsl": data_processor_module,
+                },
+            )
+            data_processor_metadata_specification = {
+                "schema_version": 1,
+                "object_ref": data_processor_owner,
+                "format_version": "2.20",
+                "identity": "74000000-0000-0000-0000-000000000002",
+                "synonym": "Тестовая обработка",
+                "attributes": [],
+                "forms": [
+                    {
+                        "name": "Форма",
+                        "synonym": "Форма",
+                        "role": "object",
+                        "default": True,
+                        "form_xml": data_processor_form_xml,
+                        "module_bsl": data_processor_module,
+                    }
+                ],
+            }
+            data_processor_metadata_compiled = await session.call_tool(
+                "compile_metadata_object",
+                {"specification": data_processor_metadata_specification},
+            )
+            if data_processor_metadata_compiled.is_error:
+                raise RuntimeError(
+                    data_processor_metadata_compiled.content[0].text
+                )
+            data_processor_metadata_payload = json.loads(
+                data_processor_metadata_compiled.content[0].text
+            )
+            data_processor_metadata_checked = await session.call_tool(
+                "check_metadata_artifacts",
+                {
+                    "object_ref": data_processor_metadata_payload["object_ref"],
+                    "format_version": data_processor_metadata_payload[
+                        "format_version"
+                    ],
+                    "artifacts": data_processor_metadata_payload["artifacts"],
+                },
+            )
+            data_processor_with_command = copy.deepcopy(
+                data_processor_form_specification
+            )
+            data_processor_with_command["elements"].append(
+                {
+                    "kind": "button",
+                    "name": "Записать",
+                    "command": "Write",
+                    "command_kind": "form_standard",
+                }
+            )
+            data_processor_command_rejected = await session.call_tool(
+                "compile_managed_form",
+                {"specification": data_processor_with_command},
+            )
+            data_processor_command_payload = json.loads(
+                data_processor_command_rejected.content[0].text
+            )
+            data_processor_form_check_payload = json.loads(
+                data_processor_form_checked.content[0].text
+            )
+            data_processor_metadata_check_payload = json.loads(
+                data_processor_metadata_checked.content[0].text
+            )
+            data_processor_rules_payload = json.loads(
+                data_processor_rules.content[0].text
+            )
+            data_processor_artifacts = {
+                item["path"]: item["content"]
+                for item in data_processor_metadata_payload["artifacts"]
+            }
+            data_processor_descriptor = data_processor_artifacts[
+                "DataProcessors/ТестоваяОбработка.xml"
+            ]
+            if (
+                data_processor_rules.is_error
+                or data_processor_form_checked.is_error
+                or data_processor_metadata_checked.is_error
+                or data_processor_command_payload.get("status") != "rejected"
+                or "unsupported_owner_role_feature"
+                not in {
+                    item["code"]
+                    for item in data_processor_command_payload.get(
+                        "diagnostics", []
+                    )
+                }
+                or data_processor_form_check_payload["coverage"]["structural"]
+                != "passed"
+                or data_processor_metadata_payload["status"] != "compiled"
+                or data_processor_metadata_check_payload["status"] != "passed"
+                or len(data_processor_artifacts) != 4
+                or data_processor_rules_payload.get("object_ref")
+                != "Обработка.<Имя>"
+                or "cfg:DataProcessorObject.ТестоваяОбработка"
+                not in data_processor_form_xml
+                or "<DataPath>Параметр</DataPath>"
+                not in data_processor_form_xml
+                or "DataProcessorObject.ТестоваяОбработка"
+                not in data_processor_descriptor
+                or "DataProcessorManager.ТестоваяОбработка"
+                not in data_processor_descriptor
+                or (
+                    "<DefaultForm>DataProcessor.ТестоваяОбработка.Form.Форма"
+                    "</DefaultForm>"
+                )
+                not in data_processor_descriptor
+                or "Процедура " in data_processor_module
+            ):
+                raise RuntimeError(
+                    "Совместная MCP-последовательность встроенной обработки "
+                    "дала неверный результат."
+                )
             invalid = dict(specification)
             invalid["unknown"] = True
             rejected = await session.call_tool(
@@ -887,6 +1064,12 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                 "metadata_document": "compile_check_passed",
                 "metadata_forms_composition": True,
                 "metadata_document_non_posting": True,
+                "metadata_data_processor": "compile_check_passed",
+                "data_processor_form": "compile_check_passed",
+                "data_processor_artifact_count": len(data_processor_artifacts),
+                "data_processor_default_form": True,
+                "data_processor_business_bsl": False,
+                "data_processor_command_rejected": True,
                 "bsl_data_access_rule": True,
                 "client_form_value_conversion_rejected": True,
             }

@@ -1326,9 +1326,13 @@ def compile_managed_form(specification: object) -> FormsResult:
             else "not_checked",
             (
                 (
-                    "document_object_context_verified"
-                    if form.context.owner.startswith("Документ.")
-                    else "catalog_object_context_verified"
+                    {
+                        "Документ": "document_object_context_verified",
+                        "Обработка": "data_processor_object_context_verified",
+                    }.get(
+                        form.context.owner.split(".", 1)[0],
+                        "catalog_object_context_verified",
+                    )
                 )
                 if form.context.role == "object"
                 else (
@@ -1348,9 +1352,13 @@ def compile_managed_form(specification: object) -> FormsResult:
             "$.context",
             (
                 (
-                    "Контекст формы объекта документа согласован с главным реквизитом."
-                    if form.context.owner.startswith("Документ.")
-                    else "Контекст формы объекта справочника согласован с главным реквизитом."
+                    {
+                        "Документ": "Контекст формы объекта документа согласован с главным реквизитом.",
+                        "Обработка": "Контекст основной формы обработки согласован с главным реквизитом Объект.",
+                    }.get(
+                        form.context.owner.split(".", 1)[0],
+                        "Контекст формы объекта справочника согласован с главным реквизитом.",
+                    )
                 )
                 if form.context.role == "object"
                 else (

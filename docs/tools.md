@@ -68,19 +68,21 @@ Capability `metadata_authoring` по тем же startup-правилам доб
 `get_metadata_authoring_rules(topic="overview")`, затем тематические разделы и
 `compile_metadata_object(specification)`. Compiler schema v1 детерминированно
 выводит внутренние UUID из явного `identity` и возвращает текстовые артефакты.
-Темы `catalog`, `document` и `information_register` возвращают точные полные примеры,
+Темы `catalog`, `document`, `information_register` и `data_processor` возвращают точные полные примеры,
 которые проходят `compile → check` и адаптируются caller к найденной структуре.
 При непустом `forms[]` агент обязан запросить тему `forms` и выполнить Forms
 `rules → compile → check` для каждой роли до Metadata compile. Справочный XML
 из `artifacts` — только shape reference, а не готовый артефакт формы.
-До первого вызова `tools/list` показывает 3 закрытые ветки specification,
+До первого вызова `tools/list` показывает 4 закрытые ветки specification,
 их обязательные поля, плоский `forms`, варианты типов, диапазоны и patterns.
 Schema-only facade оставляет runtime-вход обычным словарём, поэтому ошибочный
 запрос возвращает предметный `status=rejected` с diagnostics, а не сырой
 MCP/Pydantic exception.
 Элемент `forms[]` принимает необязательную semantic `role`: `object`, `list`
 или `choice` для справочника/документа и `record`, `list` либо `record_set`
-для регистра сведений. Обычная default-форма создания и редактирования одной
+для регистра сведений. Встроенная обработка поддерживает ровно одну
+`role=object` форму с `default=true`, которая заполняет `DefaultForm`;
+`ВнешняяОбработка.*` и `.epf` не поддерживаются. Обычная default-форма создания и редактирования одной
 записи — `role=record` с `default=true`, которая заполняет
 `DefaultRecordForm`. `record_set` требует `default=false`, не подменяет форму
 записи, а `DefaultRecordSetForm` не подтверждён и не генерируется.
@@ -97,7 +99,8 @@ MCP/Pydantic exception.
 specification, а checker независимо отклоняет такой готовый bundle. Тень поля
 объекта или записи также отклоняется. Затем агент вызывает
 `check_metadata_artifacts(object_ref, format_version, artifacts)`. Вертикаль принимает
-только `Справочник.<Имя>`, `Документ.<Имя>` и `РегистрСведений.<Имя>` и проверяет переданный
+только `Справочник.<Имя>`, `Документ.<Имя>`, `РегистрСведений.<Имя>` и
+встроенную `Обработка.<Имя>`, и проверяет переданный
 текстовый bundle. Корневой `version` каждого объявленного `Ext/Form.xml`
 обязан совпадать с переданным `format_version`; отсутствие версии или
 несовпадение даёт `failed`. `Configuration.xml`, регистрация объекта и пути вне
@@ -118,7 +121,7 @@ Compiler создаёт 5 generated types, стандартные реквизи
 комплект, default-ссылки и владельца `DocumentObject`, но не угадывает semantic
 role формы из XML.
 Write/apply и импорт конфигурации не входят в контракт. Статический GREEN не
-доказывает нативную загрузку. Три схемы занимают 16 610 байт, примерно 3 970
+доказывает нативную загрузку. Три схемы занимают 19 391 байт, примерно 4 705
 токенов `tiktoken 0.11.0 / o200k_base` по замеру 2026-09-19:
 
 ```bash

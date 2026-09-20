@@ -16,11 +16,12 @@ from mcp1c.capability_modules.metadata_authoring.rules import (
 from mcp1c.capability_modules.metadata_authoring.tools import load
 
 
-def test_rules_публикуют_границу_и_три_поддержанных_вида():
+def test_rules_публикуют_границу_и_четыре_поддержанных_вида():
     assert RULE_TOPICS == (
         "overview",
         "catalog",
         "document",
+        "data_processor",
         "information_register",
         "forms",
         "artifacts",
@@ -38,6 +39,7 @@ def test_rules_публикуют_границу_и_три_поддержанн�
         "Справочник",
         "Документ",
         "РегистрСведений",
+        "Обработка",
     ]
     assert overview["writes_files"] is False
     assert overview["imports_configuration"] is False
@@ -78,10 +80,12 @@ def test_rules_публикуют_границу_и_три_поддержанн�
         "catalog": ["object", "list", "choice"],
         "document": ["object", "list", "choice"],
         "information_register": ["record", "list", "record_set"],
+        "data_processor": ["object"],
         "legacy_default": {
             "catalog": "object",
             "document": "object",
             "information_register": "record",
+            "data_processor": "object",
         },
         "one_physical_form_one_role": True,
         "shared_list_choice_form": "not_supported",
@@ -109,7 +113,10 @@ def test_forms_topic_публикует_обязательную_цепочку_
         "Справочник": ["object", "list", "choice"],
         "Документ": ["object", "list", "choice"],
         "РегистрСведений": ["record", "list", "record_set"],
+        "Обработка": ["object"],
     }
+    assert "ровно одна" in rules["default_semantics"]["data_processor_override"]
+    assert "default=true" in rules["default_semantics"]["data_processor_override"]
     assert rules["required_call_order"] == [
         "get_managed_form_rules(topic=overview)",
         "запросить перечисленные в overview предметные темы Forms",
@@ -163,6 +170,7 @@ def test_tool_descriptions_ставят_forms_workflow_до_metadata_compile():
 def test_rules_фиксируют_полные_generated_types():
     catalog = get_metadata_authoring_rules("catalog")
     document = get_metadata_authoring_rules("document")
+    data_processor = get_metadata_authoring_rules("data_processor")
     register = get_metadata_authoring_rules("information_register")
 
     assert catalog["generated_types"] == [
@@ -187,6 +195,29 @@ def test_rules_фиксируют_полные_generated_types():
         "Объект.Код": "обязательно при code_length > 0",
     }
     assert "commands пустым" in catalog["standard_command_bar"]
+    assert data_processor["generated_types"] == ["Object", "Manager"]
+    assert data_processor["descriptor_path"] == "DataProcessors/<Имя>.xml"
+    assert data_processor["default_form_property"] == "DefaultForm"
+    assert data_processor["forms_count"] == 1
+    assert data_processor["default_required"] is True
+    assert data_processor["compiler_specification_example"]["object_ref"] == (
+        "Обработка.ИмпортПример"
+    )
+    assert data_processor["compiler_specification_example"]["attributes"] == []
+    assert data_processor["compiler_specification_example"]["forms"][0][
+        "default"
+    ] is True
+    assert "byte-for-byte" in data_processor["compiler_specification_example_note"]
+    assert data_processor["forms_profile"]["main_attribute"] == {
+        "name": "Объект",
+        "type": {
+            "kind": "metadata_object",
+            "object": "Обработка.<Имя>",
+        },
+        "main": True,
+        "saved_data": "не требуется",
+    }
+    assert ".epf" in data_processor["scope"]
     assert register["generated_types"] == [
         "Record",
         "Manager",

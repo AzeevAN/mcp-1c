@@ -11,6 +11,14 @@
 
 ### Добавлено
 
+- OCI-образ включает проверенную подписанную общую справку из
+  `release-assets/reference/reference.mcp1cref`. Явный
+  `MCP1C_REFERENCE_ARTIFACT` имеет приоритет над пользовательским файлом в
+  `/data/reference/`, а тот — над встроенным `/app/reference/`; все варианты
+  проходят прежнюю fail-soft проверку подписи, manifest и schema v1. Отдельная
+  команда синхронизации повторно проверяет готовый пакет и атомарно обновляет
+  tracked release-копию, не читая приватный ключ, HBK или `data/`.
+
 - Forms и Metadata Authoring поддерживают базовую встроенную `Обработка.*` с
   одной основной `role=object` формой. Главный реквизит `Объект` компилируется
   как `DataProcessorObject.<Имя>`, Metadata descriptor содержит 2 generated

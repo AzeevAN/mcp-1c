@@ -300,7 +300,7 @@ def test_env_служит_fallback_только_пока_server_settings_не_с
     store.save(())
 
     assert runtime.payload() == {
-        "available": ["forms", "metadata_authoring"],
+            "available": ["forms", "metadata_authoring", "role_access"],
         "active": ["forms"],
         "desired": [],
         "pending_restart": True,

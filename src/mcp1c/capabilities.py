@@ -71,6 +71,10 @@ CAPABILITY_DEFINITIONS: Mapping[str, CapabilityDefinition] = {
         "metadata_authoring",
         "mcp1c.capability_modules.metadata_authoring:load",
     ),
+    "role_access": CapabilityDefinition(
+        "role_access",
+        "mcp1c.capability_modules.role_access:load",
+    ),
 }
 
 

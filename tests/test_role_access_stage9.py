@@ -228,7 +228,11 @@ def _add_error_configuration(registry: Registry, root, name: str) -> None:
 
 def _server(registry: Registry, root):
     reference = ReferenceService.discover(root / "reference-missing")
-    return build_server(registry, reference=reference)
+    return build_server(
+        registry,
+        reference=reference,
+        enabled_capabilities=("role_access",),
+    )
 
 
 def _tool_json(result) -> dict:
@@ -279,10 +283,10 @@ async def test_role_tools_отсутствуют_без_ready_и_появляю�
     ready_tools = await _server(ready, tmp_path / "ready").list_tools()
     ready_names = [tool.name for tool in ready_tools]
 
-    assert "find_roles_for_access" not in missing_names
-    assert "get_role_access" not in missing_names
-    assert "find_roles_for_access" not in failed_names
-    assert "get_role_access" not in failed_names
+    assert "find_roles_for_access" in missing_names
+    assert "get_role_access" in missing_names
+    assert "find_roles_for_access" in failed_names
+    assert "get_role_access" in failed_names
     assert ready_names[-2:] == ["find_roles_for_access", "get_role_access"]
 
     find = next(tool for tool in ready_tools if tool.name == "find_roles_for_access")
@@ -346,7 +350,7 @@ async def test_role_catalog_обновляется_без_restart_и_посыл�
     unsubscribe = server._role_subscriptions.subscribe(events.append)
     try:
         before = {tool.name for tool in await server.list_tools()}
-        assert not before & {"find_roles_for_access", "get_role_access"}
+        assert before & {"find_roles_for_access", "get_role_access"}
 
         _publish(
             registry,
@@ -354,25 +358,25 @@ async def test_role_catalog_обновляется_без_restart_и_посыл�
             configuration="DemoConfiguration",
             generation_id="generation-1",
         )
-        assert await server.refresh_role_tools() is True
+        assert await server.refresh_role_tools() is False
         ready = {tool.name for tool in await server.list_tools()}
         assert ready & {"find_roles_for_access", "get_role_access"} == {
             "find_roles_for_access",
             "get_role_access",
         }
-        assert events == [ToolsListChanged()]
+        assert events == []
 
         _add_error_configuration(
             registry,
             tmp_path / "error-generation-source",
             "DemoConfiguration",
         )
-        assert await server.refresh_role_tools() is True
-        after = {tool.name for tool in await server.list_tools()}
-        assert not after & {"find_roles_for_access", "get_role_access"}
-        assert events == [ToolsListChanged(), ToolsListChanged()]
         assert await server.refresh_role_tools() is False
-        assert events == [ToolsListChanged(), ToolsListChanged()]
+        after = {tool.name for tool in await server.list_tools()}
+        assert after & {"find_roles_for_access", "get_role_access"}
+        assert events == []
+        assert await server.refresh_role_tools() is False
+        assert events == []
     finally:
         unsubscribe()
 
@@ -381,6 +385,33 @@ async def test_role_catalog_обновляется_без_restart_и_посыл�
     )
     assert capabilities.tools is not None
     assert capabilities.tools.list_changed is True
+
+
+async def test_role_access_default_off_и_не_зависит_от_ready_roles(tmp_path):
+    registry = Registry(tmp_path / "data")
+    _publish(
+        registry,
+        tmp_path / "source",
+        configuration="DemoConfiguration",
+        generation_id="generation-1",
+    )
+    reference = ReferenceService.discover(tmp_path / "reference-missing")
+
+    disabled = build_server(registry, reference=reference)
+    disabled_names = {tool.name for tool in await disabled.list_tools()}
+    assert not disabled_names & {"find_roles_for_access", "get_role_access"}
+
+    enabled = build_server(
+        registry,
+        reference=reference,
+        enabled_capabilities=("role_access",),
+    )
+    enabled_names = {tool.name for tool in await enabled.list_tools()}
+    assert enabled_names & {"find_roles_for_access", "get_role_access"} == {
+        "find_roles_for_access",
+        "get_role_access",
+    }
+    assert await enabled.refresh_role_tools() is False
 
 
 async def test_find_mcp_и_api_дают_один_resolver_и_страницу_кандидатов(

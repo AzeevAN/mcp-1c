@@ -4,6 +4,11 @@
 
 ### Добавлено
 
+- SMV1-10: `role_access` добавлен в закрытый startup capability catalog.
+  По умолчанию capability выключен; при включении после полного restart ровно
+  две role-tools регистрируются независимо от готовности конкретного role
+  index, а intake/delete/A-B switch не меняют `tools/list`.
+
 - SMV1-05: resolved runtime сохраняет исходные ссылки `DefinedType`,
   классифицирует их как `exact`/`generic`/`unknown`, публикует members отдельной
   карточки и не подменяет исходный тип раскрытым составом.

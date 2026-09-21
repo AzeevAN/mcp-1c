@@ -28,16 +28,16 @@
 | Код и расширения | процедуры, тела, формы, места вызовов, происхождение объектов и полей; отдельный сеансовый снимок активности |
 | Синтаксис | объединённые справки нескольких версий платформы |
 | Общая справка | встроенный подписанный `.mcp1cref` с пользовательским override; без доверенного артефакта две дополнительные ручки не регистрируются |
-| Роли | объявленные права из native generation; без готового слоя две role-ручки отсутствуют |
+| Роли | слой ролей строится из native generation независимо от MCP capability; `role_access` по умолчанию выключен, после включения и restart публикует две role-ручки |
 | Дашборд | современная SPA включена по умолчанию; светлая и тёмная темы; ссылка на GitHub; `on` либо `off` |
 | Авторизация Docker | два разных обязательных токена: `API_TOKEN` на чтение, `ADMIN_TOKEN` на запись |
-| Тесты | `.venv/bin/python -m pytest`, 3170 |
+| Тесты | `.venv/bin/python -m pytest`, 3171 |
 
 Воспроизводимый прогон:
 
 ```bash
 .venv/bin/pip install --require-hashes -r requirements-dev-lock.txt
-.venv/bin/python -m pytest          # 3170 тестов; 3169 passed, 1 skipped (прогон 2026-09-21)
+.venv/bin/python -m pytest          # 3171 тест; 3170 passed, 1 skipped (прогон 2026-09-21)
 ```
 
 ## Модульная система возможностей
@@ -1505,7 +1505,7 @@ PYTHONPATH=src .venv/bin/python -m mcp1c.server \
 
 Bare-запуск также принимает `MCP1C_DASHBOARD=on|off` (по умолчанию `on`),
 `MCP1C_ACCESS=local|http|https-proxy` (по умолчанию `local`) и
-`MCP1C_CAPABILITIES=off|forms` как bootstrap при отсутствии
+`MCP1C_CAPABILITIES=off|forms|metadata_authoring|role_access` как bootstrap при отсутствии
 `data/server-settings.json` (по умолчанию `off`). Для прямого
 сетевого HTTP передайте `--host 0.0.0.0` либо конкретный IP; переменная
 `MCP1C_BIND_ADDRESS` относится только к Compose. Флаг
@@ -1676,6 +1676,14 @@ mcp-1c, а не загрузчик сторонних плагинов. Пост
 bootstrap/fallback. Как только файл существует, он всегда важнее env; поэтому
 будущая настройка из дашборда не потребует постоянной правки Compose. Пустой
 массив сохраняет прежний каталог `tools/list` и не импортирует реализации.
+Capability `role_access` по умолчанию выключен: это только видимость
+`find_roles_for_access` и `get_role_access` в MCP-каталоге. Role layer и его
+индексы при этом всё равно строятся и сохраняются. Включение или выключение
+меняет только desired-настройку и применяется после полного перезапуска;
+загрузка, удаление или смена A/B не посылают `tools/list_changed`. При
+включённом `role_access` обе ручки остаются зарегистрированы и для A-only,
+где возвращают `unsupported_by_source`, и для B с состояниями
+`available`/`present_empty`/`load_error`.
 Имя `forms` добавляет ровно четыре инструмента в
 стабильном порядке: `get_managed_form_rules`, `compile_managed_form`,
 `decompile_managed_form`, `check_managed_form`. Forms получает только read-only

@@ -490,6 +490,8 @@ class MCP1CServer(MCPServer):
         self._role_registry: Registry | None = None
         self._role_tool_specs: tuple[tuple[Callable, str, str], ...] = ()
         self._role_tools_registered = False
+        self._role_startup_controlled = False
+        self._role_startup_enabled = False
         super().__init__(*args, **kwargs)
 
     async def list_tools(self):
@@ -502,16 +504,25 @@ class MCP1CServer(MCPServer):
         self,
         registry: Registry,
         specs: tuple[tuple[Callable, str, str], ...],
+        *,
+        startup_controlled: bool = False,
+        enabled: bool = False,
     ) -> None:
         self._role_registry = registry
         self._role_tool_specs = specs
+        self._role_startup_controlled = startup_controlled
+        self._role_startup_enabled = enabled
         self._sync_role_tools()
 
     def _sync_role_tools(self) -> bool:
         registry = self._role_registry
         if registry is None:
             return False
-        required = registry.has_ready_roles()
+        required = (
+            self._role_startup_enabled
+            if self._role_startup_controlled
+            else registry.has_ready_roles()
+        )
         with self._role_catalog_lock:
             if required == self._role_tools_registered:
                 return False
@@ -1138,6 +1149,8 @@ def build_server(
                 "эффективный доступ пользователя.",
             ),
         ),
+        startup_controlled=True,
+        enabled="role_access" in enabled_capabilities,
     )
 
     if reference.provider is not None:

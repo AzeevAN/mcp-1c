@@ -25,11 +25,18 @@
 - **У расширения нет собственной configuration version.** При B_FULL extension
   activation теперь получает версию из active parent base layer; без parent
   generation публикация по-прежнему fail-closed.
-- **Live SMV1-13 принят после owner-gate.** Реальные main и 3 extensions прошли
-  полный B_FULL reload, restart восстановил 4 ACTIVE/B_FULL pointers, MCP и
-  dashboard подтвердили capability/role contract, а удаление extension и
-  configuration убрало их roots и оставило все входные ZIP. Source A↔B в этом
-  live corpus не представлен и остаётся `not_checked`.
+- **Live SMV1-11/13 закрыты 2026-09-22 после owner-gate.** Для одной logical
+  configuration подтверждены `A → B → A → B`, B_FULL с E1/E2, удаление E1,
+  полное удаление отдельной Y-конфигурации и отсутствие удалённых roots,
+  indexes и bindings после restart. Platform set/clear проверен с baseline и
+  post-state hashes/timestamps; structural/code/forms/roles indexes не
+  перестроились. Dashboard пройден обычной навигацией без console
+  warnings/errors. Независимый blind MCP-агент сам прошёл публичный контракт
+  и решил предметную задачу; ограничения `unknown/not_checked` сохранены.
+- **Ограничение покрытия Source B.** В основной конфигурации
+  `ОбщийМодуль.ЭлектронноеВзаимодействиеССервисами` выгружен без исходного
+  текста: coverage сообщает `compiled_without_source=1`. Это не ошибка
+  разбора; MCP не выдаёт выдуманный исходник и оставляет модуль недоступным.
 
 ## 2026-09-21
 
@@ -92,7 +99,7 @@
   tests/test_intake_v2_runtime.py tests/test_intake_v2_transport.py
   tests/test_tool_descriptions.py tests/test_capabilities.py -q` выполняет
   официальный SDK-путь `initialize → tools/list → tools/call`; live A/B/delete
-  и platform-dependent cache invalidation остаются `not_checked`.
+  и platform-dependent cache invalidation дополнительно приняты 2026-09-22.
 - SMV1-12: свежий blind synthetic MCP-тест через официальный `ClientSession`
   сам выбирает `tools/list`-инструменты по описанию и schema, выполняет
   `initialize → tools/list → tools/call`; A_ONLY role access возвращает

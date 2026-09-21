@@ -299,11 +299,13 @@ def test_env_служит_fallback_только_пока_server_settings_не_с
 
     store.save(())
 
-    assert runtime.payload() == {
-            "available": ["forms", "metadata_authoring", "role_access"],
-        "active": ["forms"],
-        "desired": [],
-        "pending_restart": True,
+    payload = runtime.payload()
+    assert payload["available"] == ["forms", "metadata_authoring", "role_access"]
+    assert payload["active"] == ["forms"]
+    assert payload["desired"] == []
+    assert payload["pending_restart"] is True
+    assert {module["id"] for module in payload["modules"]} == {
+        "forms", "metadata_authoring", "role_access"
     }
 
 

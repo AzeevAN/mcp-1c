@@ -63,13 +63,12 @@ def test_status_различает_active_desired_и_pending_restart(tmp_path, m
     status = client.get("/api/v1/capabilities")
 
     assert status.status_code == 200
-    assert status.json() == {
-            "available": ["forms", "metadata_authoring", "role_access"],
-        "active": [],
-        "desired": ["forms"],
-        "pending_restart": True,
-        "runtime": {"self_restart": True},
-    }
+    payload = status.json()
+    assert payload["available"] == ["forms", "metadata_authoring", "role_access"]
+    assert payload["active"] == []
+    assert payload["desired"] == ["forms"]
+    assert payload["pending_restart"] is True
+    assert payload["runtime"] == {"self_restart": True}
     assert store.load() == ("forms",)
 
 
@@ -125,13 +124,12 @@ def test_mutation_сохраняет_desired_и_возвращает_status(
     )
 
     assert response.status_code == 200
-    assert response.json() == {
-            "available": ["forms", "metadata_authoring", "role_access"],
-        "active": [],
-        "desired": ["forms"],
-        "pending_restart": True,
-        "runtime": {"self_restart": True},
-    }
+    payload = response.json()
+    assert payload["available"] == ["forms", "metadata_authoring", "role_access"]
+    assert payload["active"] == []
+    assert payload["desired"] == ["forms"]
+    assert payload["pending_restart"] is True
+    assert payload["runtime"] == {"self_restart": True}
     assert json.loads(store.path.read_text(encoding="utf-8")) == {
         "version": 1,
         "capabilities": {"enabled": ["forms"]},

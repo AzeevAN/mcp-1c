@@ -109,8 +109,9 @@
   миграции; неизвестные режимы, пустая версия и расширения в `A_ONLY`
   отклоняются. Generation pointer сохраняет этот manifest, а Registry
   предоставляет fail-closed guard
-  для consumers старого pointer. Полный pytest после добавления 5 тестов:
-  3146 passed, 1 skipped.
+  для consumers старого pointer. Полный pytest после добавления 6 тестов:
+  3147 passed, 1 skipped. Staging/publish/restore сохраняют activation
+  manifest целиком одним pointer.
 
 - Metadata Authoring теперь fail-closed требует ровно одну `default=true`
   форму для каждой роли, представленной в закрытом комплекте справочника,

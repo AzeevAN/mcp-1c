@@ -195,7 +195,12 @@ class GenerationPointer:
             raise BundleStoreError("manifest_sha256 pointer должен быть sha256")
 
     @classmethod
-    def for_manifest(cls, manifest: GenerationManifest) -> GenerationPointer:
+    def for_manifest(
+        cls,
+        manifest: GenerationManifest,
+        *,
+        activation: ActivationManifest | None = None,
+    ) -> GenerationPointer:
         digest = _identity_digest(manifest.identity)
         root = f"generations/{digest}/{manifest.generation_id}"
         return cls(
@@ -204,6 +209,7 @@ class GenerationPointer:
             root_path=root,
             manifest_path=f"{root}/manifest.json",
             manifest_sha256=manifest.sha256,
+            activation=activation,
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -761,6 +767,8 @@ class GenerationBundleStore:
         self,
         manifest: GenerationManifest,
         payloads: Mapping[LayerKind, str | Path | LayerPayloadSource],
+        *,
+        activation: ActivationManifest | None = None,
     ) -> StagedGeneration:
         if not isinstance(manifest, GenerationManifest):
             raise TypeError("manifest должен быть GenerationManifest")
@@ -786,7 +794,7 @@ class GenerationBundleStore:
             raise BundleStoreError(
                 "payloads должны точно совпадать с ready-слоями без лишних"
             )
-        pointer = GenerationPointer.for_manifest(manifest)
+        pointer = GenerationPointer.for_manifest(manifest, activation=activation)
         final_root = self._absolute(pointer.root_path)
         if final_root.exists():
             raise BundleStoreError("generation_id уже существует для identity")

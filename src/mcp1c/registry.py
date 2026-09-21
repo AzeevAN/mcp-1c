@@ -4396,9 +4396,13 @@ class Registry:
         self,
         manifest: GenerationManifest,
         payloads: Mapping[LayerKind, str | Path | LayerPayloadSource],
+        *,
+        activation=None,
     ) -> StagedGeneration:
         """Подготовить проверяемый bundle, не меняя active pointer."""
-        return self._generation_store.stage(manifest, payloads)
+        return self._generation_store.stage(
+            manifest, payloads, activation=activation
+        )
 
     def discard_staged_generation(self, staged: StagedGeneration) -> None:
         """Убрать только незапубликованный staging неудачной операции."""

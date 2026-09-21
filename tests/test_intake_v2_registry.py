@@ -15,6 +15,7 @@ import pytest
 
 from conftest import build_configuration, write_export
 from mcp1c.registry import Registry
+from mcp1c.source_modes import ActivationComponent, ActivationManifest, ActivationMode
 
 
 SUBJECT = "mcp1c.intake_v2_registry"
@@ -204,6 +205,32 @@ def test_publish_переключает_pointer_и_оставляет_тольк
     restarted = Registry(registry.data_dir)
     assert restarted.restore() == []
     assert restarted.active_generation(second.identity) == second
+
+
+def test_publish_atomic_root_persists_activation_manifest(tmp_path):
+    registry = Registry(tmp_path / "data")
+    manifest, payloads = _manifest(tmp_path, "generation-activation")
+    activation = ActivationManifest(
+        mode=ActivationMode.B_FULL,
+        identity_incarnation="inc-1",
+        physical_generation_root_id="root-1",
+        configuration_version="1.0",
+        main=ActivationComponent(
+            source="source-b",
+            origin="demo.zip",
+            raw_sha256="a" * 64,
+            payload_sha256="b" * 64,
+        ),
+        extensions=(),
+        expected_previous_activation=None,
+        transaction_id="tx-1",
+        recovery_id="recovery-1",
+    )
+    staged = registry.stage_generation(manifest, payloads, activation=activation)
+    registry.publish_generation(staged)
+    restarted = Registry(tmp_path / "data")
+    assert restarted.restore() == []
+    assert restarted.active_generation_pointer(manifest.identity).activation == activation
 
 
 def test_registry_snapshot_фиксирует_одну_пару_pointer_manifest(tmp_path):

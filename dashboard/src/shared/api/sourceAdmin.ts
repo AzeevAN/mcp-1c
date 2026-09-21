@@ -108,6 +108,20 @@ async function adminRequest<T>(path: string, body?: Record<string, string>): Pro
   return payload;
 }
 
+export function setPlatformVersion(configuration: string, platform_version: string) {
+  return adminRequest<{ configuration: string; version: string; source: "user"; status: "declared" }>(
+    "/api/v1/sources/platform/set",
+    { configuration, platform_version },
+  );
+}
+
+export function clearPlatformVersion(configuration: string) {
+  return adminRequest<{ configuration: string; status: "unknown" }>(
+    "/api/v1/sources/platform/clear",
+    { configuration },
+  );
+}
+
 export function useAdminSources(enabled: boolean) {
   const client = useQueryClient();
   const result = useQuery({

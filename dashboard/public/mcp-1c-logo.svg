@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 96" role="img" aria-label="MCP 1C">
+  <rect width="360" height="96" fill="#262521"/>
+  <g transform="translate(12 12)">
+    <path d="M36 0 72 21v42L36 84 0 63V21z" fill="none" stroke="#f7eedb" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M36 12 55 23v14l-10-5v36l-9 5-9-5V32l-10 5V23z" fill="#e5a83b"/>
+  </g>
+  <text x="102" y="49" fill="#f7eedb" font-family="Arial, sans-serif" font-size="32" font-weight="800">MCP 1C</text>
+  <text x="103" y="72" fill="#cfc4b0" font-family="Arial, sans-serif" font-size="14">центр конфигураций</text>
+</svg>

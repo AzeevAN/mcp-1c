@@ -75,7 +75,7 @@ export function AppShell() {
       <aside className="sidebar">
         <div className="brand">
           <span className="brand-mark" aria-hidden="true">
-            M1
+            <img src="/favicon.svg" alt="" />
           </span>
           <span className="brand-copy">
             <strong>mcp-1c</strong>

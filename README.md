@@ -31,13 +31,13 @@
 | Роли | слой ролей строится из native generation независимо от MCP capability; `role_access` по умолчанию выключен, после включения и restart публикует две role-ручки |
 | Дашборд | современная SPA включена по умолчанию; светлая и тёмная темы; ссылка на GitHub; `on` либо `off` |
 | Авторизация Docker | два разных обязательных токена: `API_TOKEN` на чтение, `ADMIN_TOKEN` на запись |
-| Тесты | `.venv/bin/python -m pytest`, 3176 |
+| Тесты | `.venv/bin/python -m pytest`, 3177 |
 
 Воспроизводимый прогон:
 
 ```bash
 .venv/bin/pip install --require-hashes -r requirements-dev-lock.txt
-.venv/bin/python -m pytest          # 3176 тестов; 3175 passed, 1 skipped (прогон 2026-09-21)
+.venv/bin/python -m pytest          # 3177 тестов; 3176 passed, 1 skipped (прогон 2026-09-21)
 ```
 
 Свежий synthetic blind MCP-путь без заранее названных ручек запускается так:
@@ -434,6 +434,13 @@ legacy/reload-required отклоняются. Без declaration значени
 а не являются ошибкой визуализации. Длинные имена ролей переносятся в боковой
 панели, а действия выбранной конфигурации разделены на статус и управляющие
 кнопки.
+На странице источников фактическая версия показывается как `unknown`, если она
+не объявлена. Для активного `B_FULL` администратор может задать или очистить её
+прямо в dashboard; для legacy и `RELOAD_REQUIRED` поле заблокировано до полной
+активации. Архивы из browser/incoming и read-only каталоги используют одну и ту
+же Source B/B_FULL семантику; транспорт не меняет activation-контракт.
+Dashboard также использует утверждённый знак MCP 1C из
+`docs/branding/mcp-1c`: SVG favicon и Paper-совместимый знак в навигации.
 
 Для Source Modes кэш-инвалидация проверяется синтетическим gate:
 

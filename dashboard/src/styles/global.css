@@ -1445,6 +1445,12 @@ a:focus-visible {
   letter-spacing: -0.04em;
 }
 
+.brand-mark img {
+  width: 28px;
+  height: 28px;
+  display: block;
+}
+
 .brand-copy,
 .server-mini-card span {
   min-width: 0;
@@ -2738,6 +2744,38 @@ h2 {
   color: var(--ink-900);
   font-size: 13px;
 }
+
+.platform-declaration {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 1.2fr);
+  gap: 18px;
+  align-items: center;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface-subtle);
+}
+
+.platform-declaration > div,
+.platform-declaration form {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.platform-declaration span {
+  color: var(--subtle);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.platform-declaration strong { color: var(--ink-900); font-size: 18px; }
+.platform-declaration small { color: var(--muted); line-height: 1.45; }
+.platform-declaration form { grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; }
+.platform-declaration input { min-width: 0; width: 100%; }
+.platform-declaration-feedback { grid-column: 1 / -1; }
 
 .icon-danger-button,
 .button-danger-quiet,
@@ -6302,6 +6340,14 @@ h2 {
   }
 
   .relationship-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .platform-declaration {
+    grid-template-columns: 1fr;
+  }
+
+  .platform-declaration form {
     grid-template-columns: 1fr;
   }
 

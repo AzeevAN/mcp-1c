@@ -61,6 +61,7 @@ export type ConfigurationSource = {
   native_generation: boolean;
   activation_mode: "A_ONLY" | "B_FULL" | "unknown";
   activation_status: "ACTIVE" | "RELOAD_REQUIRED" | "unknown";
+  platform_declaration?: { version: string; source: "user"; status: "declared" } | null;
   source: SourceItem | null;
   extension_runtime?: SourceItem | null;
   corpora: CodeCorpus[];

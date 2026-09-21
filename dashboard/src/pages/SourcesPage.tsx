@@ -13,10 +13,16 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 
-import { useForgetSource, useRemoveSource } from "../shared/api/sourceAdmin";
+import {
+  clearPlatformVersion,
+  setPlatformVersion,
+  useForgetSource,
+  useRemoveSource,
+} from "../shared/api/sourceAdmin";
 import {
   type CodeCorpus,
   type ConfigurationSource,
@@ -100,6 +106,67 @@ function CoverageTable({ title, rows }: { title: string; rows: CoverageRow[] }) 
           <span>{percent(row.value, row.total)}</span>
         </div>
       ))}
+    </section>
+  );
+}
+
+function PlatformDeclaration({ configuration }: { configuration: ConfigurationSource }) {
+  const client = useQueryClient();
+  const [version, setVersion] = useState(configuration.platform_declaration?.version ?? "");
+  const [feedback, setFeedback] = useState("");
+  const setMutation = useMutation({
+    mutationFn: () => setPlatformVersion(configuration.id, version.trim()),
+    onSuccess: async () => {
+      setFeedback("Версия платформы сохранена.");
+      await client.invalidateQueries({ queryKey: ["sources"], exact: true });
+    },
+    onError: (error) => setFeedback(error instanceof Error ? error.message : "Не удалось сохранить версию платформы."),
+  });
+  const clearMutation = useMutation({
+    mutationFn: () => clearPlatformVersion(configuration.id),
+    onSuccess: async () => {
+      setVersion("");
+      setFeedback("Версия платформы снова имеет состояние unknown.");
+      await client.invalidateQueries({ queryKey: ["sources"], exact: true });
+    },
+    onError: (error) => setFeedback(error instanceof Error ? error.message : "Не удалось очистить версию платформы."),
+  });
+
+  useEffect(() => {
+    setVersion(configuration.platform_declaration?.version ?? "");
+  }, [configuration.id, configuration.platform_declaration?.version]);
+
+  const ready = configuration.activation_mode === "B_FULL" && configuration.activation_status === "ACTIVE";
+  const busy = setMutation.isPending || clearMutation.isPending;
+  return (
+    <section className="platform-declaration" aria-label="Версия платформы">
+      <div>
+        <span>Фактическая версия платформы</span>
+        <strong>{configuration.platform || "unknown"}</strong>
+        <small>
+          {ready
+            ? "Для B_FULL её можно объявить вручную, если Source A недоступен."
+            : "Указать версию можно после публикации активного B_FULL."}
+        </small>
+      </div>
+      <form onSubmit={(event) => { event.preventDefault(); setFeedback(""); if (version.trim()) setMutation.mutate(); }}>
+        <input
+          aria-label="Версия платформы"
+          value={version}
+          onChange={(event) => setVersion(event.target.value)}
+          placeholder="unknown · например 8.3.27.2130"
+          disabled={!ready || busy}
+        />
+        <button className="button-primary" type="submit" disabled={!ready || busy || !version.trim()}>
+          Сохранить
+        </button>
+        {configuration.platform_declaration && (
+          <button className="button-secondary" type="button" disabled={!ready || busy} onClick={() => clearMutation.mutate()}>
+            Очистить
+          </button>
+        )}
+      </form>
+      {feedback && <small className="platform-declaration-feedback" role="status">{feedback}</small>}
     </section>
   );
 }
@@ -417,7 +484,7 @@ function ConfigurationDetail({
 
       <section className="configuration-facts" aria-label="Сводка конфигурации">
         <div><span>Версия</span><strong>{configuration.version || "—"}</strong></div>
-        <div><span>Платформа</span><strong>{configuration.platform || "—"}</strong></div>
+        <div><span>Платформа</span><strong>{configuration.platform || "unknown"}</strong></div>
         <div><span>Объекты</span><strong>{formatNumber(configuration.objects)}</strong></div>
         <div><span>Связи</span><strong>{formatNumber(configuration.edges)}</strong></div>
       </section>
@@ -444,6 +511,8 @@ function ConfigurationDetail({
           <div><FileJson size={20} aria-hidden="true" /><span><strong>Снимок активности расширений</strong><small>{configuration.extension_runtime ? "загружен" : "не загружен"}</small></span></div>
         )}
       </section>
+
+      {onRemove && <PlatformDeclaration configuration={configuration} />}
 
       <div className="corpus-stack">
         {configuration.extension_runtime && (

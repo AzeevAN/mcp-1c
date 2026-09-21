@@ -279,6 +279,58 @@ def test_recovery_after_switch_keeps_activation_and_removes_previous_root(
     assert not (registry.data_dir / f"generations/{_symbol('_identity_digest')(first.identity)}/{first.generation_id}").exists()
 
 
+def test_delete_recreate_rejects_stale_activation_preview(tmp_path):
+    registry = Registry(tmp_path / "data")
+    first, first_payloads = _manifest(tmp_path, "generation-aba-001")
+    stale, stale_payloads = _manifest(
+        tmp_path, "generation-aba-stale", suffix="-stale"
+    )
+    recreated, recreated_payloads = _manifest(
+        tmp_path, "generation-aba-recreated", suffix="-recreated"
+    )
+    def activation(incarnation, root, version, raw, payload):
+        return ActivationManifest(
+            mode=ActivationMode.B_FULL,
+            identity_incarnation=incarnation,
+            physical_generation_root_id=root,
+            configuration_version=version,
+            main=ActivationComponent(
+                source="source-b",
+                origin=f"{incarnation}.zip",
+                raw_sha256=raw * 64,
+                payload_sha256=payload * 64,
+            ),
+            extensions=(),
+            expected_previous_activation=None,
+            transaction_id=f"tx-{incarnation}",
+            recovery_id=f"recovery-{incarnation}",
+        )
+
+    registry.publish_generation(
+        registry.stage_generation(
+            first,
+            first_payloads,
+            activation=activation("inc-old", "root-old", "1", "a", "b"),
+        )
+    )
+    old_pointer = registry.active_generation_pointer(first.identity)
+    stale_staged = registry.stage_generation(
+        stale,
+        stale_payloads,
+        activation=activation("inc-stale", "root-stale", "2", "c", "d"),
+    )
+    registry.remove("DemoConfiguration")
+    registry.publish_generation(
+        registry.stage_generation(
+            recreated,
+            recreated_payloads,
+            activation=activation("inc-new", "root-new", "3", "e", "f"),
+        )
+    )
+    with pytest.raises(Exception, match="ожидаем|изменил|stale|устар"):
+        registry.publish_generation(stale_staged, expected_previous=old_pointer)
+
+
 def test_registry_snapshot_фиксирует_одну_пару_pointer_manifest(tmp_path):
     manifest, payloads = _manifest(tmp_path, "generation-001")
     registry = Registry(tmp_path / "data")

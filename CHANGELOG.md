@@ -102,6 +102,13 @@
 
 ### Изменено
 
+- Введён синтетический контракт `ActivationManifest` для единого active
+  поколения Source A/B: режим `A_ONLY` или `B_FULL`, incarnation, provenance
+  main/extensions, expected-previous activation и transaction/recovery IDs.
+  Старое состояние классифицируется как `RELOAD_REQUIRED` без автоматической
+  миграции; неизвестные режимы, пустая версия и расширения в `A_ONLY`
+  отклоняются. Полный pytest после добавления 4 тестов: 3145 passed, 1 skipped.
+
 - Metadata Authoring теперь fail-closed требует ровно одну `default=true`
   форму для каждой роли, представленной в закрытом комплекте справочника,
   документа или регистра сведений. Дополнительные формы той же роли остаются

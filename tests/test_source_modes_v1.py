@@ -1,0 +1,60 @@
+"""Synthetic RED/GREEN contracts for SOURCE-MODES-V1 activation state."""
+
+import json
+
+import pytest
+
+from mcp1c.source_modes import (
+    ActivationComponent,
+    ActivationManifest,
+    ActivationMode,
+    ActivationStatus,
+    classify_activation,
+)
+
+
+def _manifest(**overrides):
+    values = {
+        "mode": ActivationMode.B_FULL,
+        "identity_incarnation": "inc-1",
+        "physical_generation_root_id": "root-1",
+        "configuration_version": "cfg-1",
+        "main": ActivationComponent(
+            source="source-b",
+            origin="candidate-b.zip",
+            raw_sha256="a" * 64,
+            payload_sha256="b" * 64,
+        ),
+        "extensions": (),
+        "expected_previous_activation": None,
+        "transaction_id": "tx-1",
+        "recovery_id": "recovery-1",
+    }
+    values.update(overrides)
+    return ActivationManifest(**values)
+
+
+def test_activation_manifest_roundtrip_is_strict():
+    manifest = _manifest()
+    restored = ActivationManifest.from_dict(json.loads(manifest.to_json()))
+    assert restored == manifest
+    with pytest.raises(ValueError, match="mode"):
+        ActivationManifest.from_dict({**manifest.to_dict(), "mode": "mixed"})
+
+
+def test_blank_configuration_version_is_rejected():
+    with pytest.raises(ValueError, match="configuration_version"):
+        _manifest(configuration_version="")
+
+
+def test_legacy_activation_is_reload_required_without_rewrite():
+    legacy = {"generation_id": "old", "layers": [{"profile": "schema-v1"}, {"profile": "source-b"}]}
+    result = classify_activation(legacy)
+    assert result.status is ActivationStatus.RELOAD_REQUIRED
+    assert result.mode is None
+    assert result.raw == legacy
+
+
+def test_a_only_cannot_have_extensions():
+    with pytest.raises(ValueError, match="A_ONLY"):
+        _manifest(mode=ActivationMode.A_ONLY, extensions=(_manifest().main,))

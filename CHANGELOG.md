@@ -26,6 +26,9 @@
   только Source A, а `B_FULL` — только Source B для main и extensions.
 - SMV1-10: list/dashboard source payload публикуют `activation_mode` и
   `activation_status`, включая `RELOAD_REQUIRED` для legacy pointer.
+- SMV1-11: зафиксирована воспроизводимая матрица cache/invalidation gates;
+  synthetic extension measurement запускается для 0/1/4 extensions, без
+  обращения к рабочему `data/`.
 
 Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версии — [SemVer](https://semver.org/lang/ru/).

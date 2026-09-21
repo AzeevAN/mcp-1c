@@ -407,6 +407,18 @@ API списка конфигураций и dashboard sources дополнит�
 `activation_mode` и `activation_status`; старый pointer возвращает
 `RELOAD_REQUIRED`, а не делает вид, что resolved-view доступен.
 
+Для Source Modes кэш-инвалидация проверяется синтетическим gate:
+
+```bash
+.venv/bin/python -m pytest tests/test_intake_v2_registry.py tests/test_intake_v2_operations.py tests/test_intake_v2_extensions.py tests/test_registry_cache.py tests/test_role_access_index.py
+PYTHONPATH=src .venv/bin/python tools/lab/measure_object_snapshot.py --data /путь/к/изолированной-копии/data
+.venv/bin/python tools/lab/measure_extension_recheck.py --base-identities 57892 --edges-per-extension 458 --extensions 0,1,4 --repeat 20
+```
+
+Первый запуск проверяет удаление старых generation/cache и warm restart; два
+последних дают воспроизводимые latency/RSS и cold/warm сравнения. Живой
+`data/` для этих команд не используется.
+
 Прежняя команда `POST /api/v1/sources/incoming/parse` сохранена только для
 совместимости code-only клиентов и больше не показывается в SPA. Она не создаёт
 конфигурацию в Registry: сначала ей по-прежнему нужна отдельно загруженная

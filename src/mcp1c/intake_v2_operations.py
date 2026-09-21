@@ -351,6 +351,8 @@ def _active_to_dict(active: GenerationView | None) -> object:
         }
         if active.activation is not None:
             payload["activation"] = active.activation.to_dict()
+        if active.legacy_barrier:
+            payload["legacy_barrier"] = True
         return payload
     if active.manifest is not None:
         raise OperationError("legacy active не должен содержать manifest")
@@ -378,6 +380,7 @@ def _active_from_dict(raw: object) -> GenerationView | None:
                 ActivationManifest.from_dict(activation)
                 if activation is not None
                 else None,
+                legacy_barrier=bool(raw.get("legacy_barrier", False)),
             )
         layers_raw = raw["layers"]
         if not isinstance(layers_raw, dict):
@@ -586,7 +589,8 @@ def _reuse_active(
     if (
         active.manifest.source_transport.value == "incoming"
         and (
-            active.activation is None
+            active.legacy_barrier
+            or active.activation is None
             or active.activation.mode is not ActivationMode.B_FULL
         )
     ):

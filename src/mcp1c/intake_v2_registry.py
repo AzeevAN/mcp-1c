@@ -433,6 +433,7 @@ class GenerationView:
     manifest: GenerationManifest | None
     layers: Mapping[LayerKind, GenerationLayerView]
     activation: ActivationManifest | None = None
+    legacy_barrier: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.origin, GenerationOrigin):
@@ -488,6 +489,8 @@ class GenerationRecovery:
 def native_generation_view(
     manifest: GenerationManifest,
     activation: ActivationManifest | None = None,
+    *,
+    legacy_barrier: bool = False,
 ) -> GenerationView:
     layers = {
         layer.kind: GenerationLayerView(
@@ -505,6 +508,7 @@ def native_generation_view(
         manifest=manifest,
         layers=layers,
         activation=activation,
+        legacy_barrier=legacy_barrier,
     )
 
 

@@ -18,6 +18,10 @@
   content-identical вход за no-op. Generation view теперь переносит activation
   metadata в durable preview, а incoming legacy принудительно проходит полный
   reparse; directory/browser synthetic fast-path сохранён.
+- **Barrier нельзя кодировать сменой origin у native view.** Такой обход ломал
+  durable request schema и synthetic legacy-preview. Добавлен отдельный
+  `legacy_barrier` в generation view; он переносится в preview, а pointer/CAS
+  остаётся прежним.
 
 ## 2026-09-21
 

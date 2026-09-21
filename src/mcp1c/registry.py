@@ -761,7 +761,14 @@ class RegistryGenerationSnapshot:
 
     @property
     def view(self) -> GenerationView:
-        return native_generation_view(self.manifest, self.pointer.activation)
+        return native_generation_view(
+            self.manifest,
+            self.pointer.activation,
+            legacy_barrier=(
+                self.pointer.activation is None
+                and self.manifest.source_transport.value == "incoming"
+            ),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -4501,6 +4508,11 @@ class Registry:
             return native_generation_view(
                 manifest,
                 pointer.activation if pointer is not None else None,
+                legacy_barrier=(
+                    pointer is not None
+                    and pointer.activation is None
+                    and manifest.source_transport.value == "incoming"
+                ),
             )
         if identity.source_kind is not SourceKind.CONFIGURATION:
             return None
@@ -5311,6 +5323,11 @@ class Registry:
                 return native_generation_view(
                     manifest,
                     pointer.activation if pointer is not None else None,
+                    legacy_barrier=(
+                        pointer is not None
+                        and pointer.activation is None
+                        and manifest.source_transport.value == "incoming"
+                    ),
                 )
             loaded = self.configurations.get(configuration)
             if loaded is None:

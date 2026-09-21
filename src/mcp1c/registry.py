@@ -880,6 +880,7 @@ class ResolvedContext:
     roles: LoadedRoleAccess | None = None
     extension_roles: LoadedRoleAccess | None = None
     extension_resolution: ExtensionResolution | None = None
+    platform_override: str = ""
 
     @property
     def name(self) -> str:
@@ -887,7 +888,9 @@ class ResolvedContext:
 
     @property
     def platform(self) -> str:
-        return self.configuration.config.platform if self.configuration else ""
+        if self.configuration is None:
+            return ""
+        return self.platform_override or self.configuration.config.platform
 
     @property
     def syntax_platform(self) -> str:
@@ -968,7 +971,7 @@ class ResolvedContext:
 
         config = self.configuration.config
 
-        if not parse_version(config.platform):
+        if not parse_version(self.platform):
             notes.append(
                 "Фактическая версия платформы неизвестна: фильтрация синтаксиса "
                 "по версии выключена, доступность методов в вашей базе не подтверждена. "
@@ -1135,7 +1138,7 @@ class Registry:
         # 16 мс на каждый вызов любого инструмента.
         self._relation_cache: dict[
             str,
-            tuple[LoadedConfiguration, LoadedSyntax | None, str, int],
+            tuple[LoadedConfiguration, LoadedSyntax | None, str, str, int],
         ] = {}
 
     def _snapshot_fingerprint_locked(self) -> tuple:
@@ -4154,6 +4157,8 @@ class Registry:
                         f"Конфигурация не загружена: {selected_name}. "
                         f"Доступны: {', '.join(names)}"
                     )
+                declaration = self._platform_declarations.get(selected_name)
+                platform_override = declaration.version if declaration else ""
                 modules_key = f"{selected_name}:modules"
                 modules = self.modules.get(modules_key)
                 roles = self.roles.get(selected_name)
@@ -4175,13 +4180,19 @@ class Registry:
                     and cached[0] is loaded
                     and cached[1] is syntax
                 ):
-                    relation, hidden = cached[2], cached[3]
+                    if cached[2] == platform_override:
+                        relation, hidden = cached[3], cached[4]
+                    else:
+                        relation = None
+                        hidden = 0
                 else:
                     relation = None
                     hidden = 0
 
             if relation is None:
-                relation, hidden = self._compute_relation(loaded, syntax)
+                relation, hidden = self._compute_relation(
+                    loaded, syntax, platform_override
+                )
             extension_resolution = None
             if extension_structure is not None:
                 try:
@@ -4196,6 +4207,14 @@ class Registry:
                 unchanged = (
                     self.configurations.get(selected_name) is loaded
                     and self.syntax is syntax
+                    and (
+                        (
+                            self._platform_declarations.get(selected_name).version
+                            if self._platform_declarations.get(selected_name)
+                            else ""
+                        )
+                        == platform_override
+                    )
                     and self.modules.get(modules_key) is modules
                     and self.roles.get(selected_name) is roles
                     and self.extension_runtime.get(selected_name) is runtime
@@ -4219,6 +4238,7 @@ class Registry:
                 self._relation_cache[selected_name] = (
                     loaded,
                     syntax,
+                    platform_override,
                     relation,
                     hidden,
                 )
@@ -4233,6 +4253,7 @@ class Registry:
                     roles=roles,
                     extension_roles=extension_roles,
                     extension_resolution=extension_resolution,
+                    platform_override=platform_override,
                 )
 
         raise RegistryError(
@@ -4244,17 +4265,19 @@ class Registry:
         self,
         loaded: LoadedConfiguration,
         syntax: LoadedSyntax | None,
+        platform_override: str = "",
     ) -> tuple[str, int]:
         if syntax is None:
             return RELATION_NONE, 0
 
-        config_platform = parse_version(loaded.config.platform)[:3]
+        effective_platform = platform_override or loaded.config.platform
+        config_platform = parse_version(effective_platform)[:3]
         syntax_platform = parse_version(syntax.source.platform)[:3]
 
         # Справок может быть несколько: если среди них есть справка релиза
         # конфигурации, ответ по ней точный — независимо от того, какая из
         # загруженных самая свежая.
-        if config_platform and syntax.syntax.has_help_for(loaded.config.platform):
+        if config_platform and syntax.syntax.has_help_for(effective_platform):
             return RELATION_EXACT, 0
 
         if not syntax_platform:
@@ -4266,7 +4289,7 @@ class Registry:
         if syntax_platform == config_platform:
             return RELATION_EXACT, 0
         if syntax_platform > config_platform:
-            hidden = syntax.syntax.hidden_for(loaded.config.platform)
+            hidden = syntax.syntax.hidden_for(effective_platform)
             return RELATION_NEWER, hidden
         return RELATION_OLDER, 0
 
@@ -4289,7 +4312,12 @@ class Registry:
             нужные: dict[tuple[int, ...], tuple[str, list[str]]] = {}
             unknown_platform = False
             for name in sorted(self.configurations):
-                platform = self.configurations[name].config.platform
+                declaration = self._platform_declarations.get(name)
+                platform = (
+                    declaration.version
+                    if declaration
+                    else self.configurations[name].config.platform
+                )
                 key = release(parse_version(platform))
                 if not key:
                     unknown_platform = True
@@ -4323,7 +4351,7 @@ class Registry:
                     "name": config.name,
                     "synonym": config.synonym,
                     "version": config.version,
-                    "platform": config.platform,
+                    "platform": context.platform,
                     "compatibility_mode": config.compatibility_mode,
                     "predefined_available": config.predefined_available,
                     "objects": len(config),
@@ -4388,17 +4416,25 @@ class Registry:
     def set_platform_version(self, configuration: str, version: str) -> PlatformDeclaration:
         declaration = PlatformDeclaration(version)
         identity = ExportIdentity.configuration(configuration)
-        self.require_active_activation(identity)
         with self._lock:
-            if identity.grouping_key not in self._generation_pointers:
+            if (
+                identity.grouping_key not in self._generation_pointers
+                and configuration not in self.configurations
+            ):
                 raise RegistryError("configuration_not_loaded")
+        with self._lock:
             self._platform_declarations[configuration] = declaration
             self._write_registry_payload(self._registry_payload())
         return declaration
 
     def clear_platform_version(self, configuration: str) -> None:
         identity = ExportIdentity.configuration(configuration)
-        self.require_active_activation(identity)
+        with self._lock:
+            if (
+                identity.grouping_key not in self._generation_pointers
+                and configuration not in self.configurations
+            ):
+                raise RegistryError("configuration_not_loaded")
         with self._lock:
             self._platform_declarations.pop(configuration, None)
             self._write_registry_payload(self._registry_payload())

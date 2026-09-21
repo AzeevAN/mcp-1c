@@ -108,9 +108,10 @@ def resolve_registry_snapshot(
             ),
             "not_checked",
         )
+    effective_platform = getattr(resolved, "platform", "")
     platform_version = (
-        config.platform
-        if normalized_platform_version(config.platform) is not None
+        effective_platform
+        if normalized_platform_version(effective_platform) is not None
         else None
     )
     return RegistryResolution(

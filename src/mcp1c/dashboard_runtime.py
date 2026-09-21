@@ -1866,6 +1866,16 @@ def _spa_routes(
             return PlainTextResponse("Файл не найден.", status_code=404)
         return FileResponse(candidate)
 
+    async def public_asset(request: Request):
+        """Отдать небольшой public-asset, скопированный Vite в корень dist."""
+        relative = request.path_params.get("path", "") or Path(request.url.path).name
+        if relative not in {"favicon.svg", "mcp-1c-logo.svg"}:
+            return PlainTextResponse("Файл не найден.", status_code=404)
+        candidate = (static_dir / relative).resolve()
+        if static_dir.resolve() not in candidate.parents or not candidate.is_file():
+            return PlainTextResponse("Файл не найден.", status_code=404)
+        return FileResponse(candidate)
+
     result = [
         Route(
             "/api/v1/dashboard/bootstrap",
@@ -2085,6 +2095,8 @@ def _spa_routes(
             methods=["GET"],
             name="dashboard_asset",
         ),
+        Route("/favicon.svg", public_asset, methods=["GET"], name="dashboard_favicon"),
+        Route("/mcp-1c-logo.svg", public_asset, methods=["GET"], name="dashboard_logo"),
     ]
     result.extend(
         Route(path, spa_page, methods=["GET"], name=f"dashboard_spa_{index}")

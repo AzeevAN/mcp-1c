@@ -1,5 +1,6 @@
 import pytest
 import json
+from dataclasses import replace
 from starlette.applications import Starlette
 
 from conftest import живой_клиент
@@ -9,6 +10,10 @@ from mcp1c.intake_v2 import ExportIdentity
 from mcp1c.intake_v2_registry import GenerationPointer
 from mcp1c.reference_provider import ReferenceService
 from mcp1c.registry import Registry, RegistryError
+from mcp1c.store import save_syntax
+from mcp1c.syntax_model import SyntaxIndex, SyntaxItem
+from mcp1c.tools import list_configurations, search_syntax
+from conftest import build_configuration, write_export
 
 from mcp1c.source_modes import (
     ActivationComponent,
@@ -80,6 +85,34 @@ def test_registry_persists_and_clears_b_full_platform_declaration(tmp_path):
 def test_registry_declares_platform_for_a_only(tmp_path):
     registry = _registry(tmp_path, ActivationMode.A_ONLY)
     assert registry.set_platform_version("Demo", "8.3.24").version == "8.3.24"
+
+
+def test_manual_platform_is_used_by_notes_and_syntax_tools(tmp_path):
+    registry = Registry(tmp_path / "data")
+    source = tmp_path / "source"
+    source.mkdir()
+    config = replace(build_configuration(name="Demo"), platform="")
+    registry.add_configuration(write_export(source, config), keep_source=False)
+    syntax = SyntaxIndex(platforms=["8.3.27.2130"], source="test")
+    syntax.add(SyntaxItem(
+        id="global/СтрРазделить",
+        kind="method",
+        name_ru="СтрРазделить",
+        parent_ru="Глобальный контекст",
+        since="8.3.6",
+        description="Разделяет строку.",
+    ))
+    registry.add_syntax(save_syntax(syntax, tmp_path / "syntax.json.gz"))
+
+    registry.set_platform_version("Demo", "8.3.5.1570")
+
+    context = registry.resolve("Demo")
+    assert context.platform == "8.3.5.1570"
+    assert context.syntax_relation == "newer"
+    assert "Фактическая версия платформы неизвестна" not in list_configurations(registry)
+    answer = search_syntax(registry, "СтрРазделить", config="Demo")
+    assert "Фактическая версия платформы неизвестна" not in answer
+    assert "8.3.5.1570" in answer
 
 
 def test_configuration_delete_clears_platform_declaration_durably(tmp_path):

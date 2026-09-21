@@ -1382,7 +1382,7 @@ def _render_configurations_list(capture: _ListConfigurationsCapture) -> str:
             out.append(f"*{config.synonym}*")
         out.append("")
         out.append(
-            f"- Версия: {config.version} · платформа **{config.platform or 'неизвестна'}**\n"
+            f"- Версия: {config.version} · платформа **{context.platform or 'неизвестна'}**\n"
             f"- Объектов: {len(config)}, связей: "
             f"{len(context.configuration.graph.edges)}"
         )
@@ -1501,7 +1501,7 @@ def _coverage_section(capture: _ListConfigurationsCapture) -> list[str]:
     нужные: dict[tuple[int, ...], tuple[str, list[str]]] = {}
     unknown_platform = False
     for row in capture.rows:
-        platform = row.context.configuration.config.platform
+        platform = row.context.platform
         key = release(parse_version(platform))
         if key:
             нужные.setdefault(key, (platform, []))[1].append(row.context.name)

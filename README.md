@@ -31,13 +31,13 @@
 | Роли | слой ролей строится из native generation независимо от MCP capability; `role_access` по умолчанию выключен, после включения и restart публикует две role-ручки |
 | Дашборд | современная SPA включена по умолчанию; светлая и тёмная темы; ссылка на GitHub; `on` либо `off` |
 | Авторизация Docker | два разных обязательных токена: `API_TOKEN` на чтение, `ADMIN_TOKEN` на запись |
-| Тесты | `.venv/bin/python -m pytest`, 3181 |
+| Тесты | `.venv/bin/python -m pytest`, 3184 |
 
 Воспроизводимый прогон:
 
 ```bash
 .venv/bin/pip install --require-hashes -r requirements-dev-lock.txt
-.venv/bin/python -m pytest          # 3181 тестов; 3180 passed, 1 skipped (прогон 2026-09-21)
+.venv/bin/python -m pytest          # 3184 теста; 3183 passed, 1 skipped (прогон 2026-09-21)
 ```
 
 Свежий synthetic blind MCP-путь без заранее названных ручек запускается так:
@@ -422,10 +422,12 @@ Live-приёмка этого контура является отдельны�
 `POST /api/v1/sources/platform/set` с `{ "configuration": "...",
 "platform_version": "8.3.24[.1234]" }` и `POST
 /api/v1/sources/platform/clear` с `{ "configuration": "..." }`. Оба маршрута
-требуют `ADMIN_TOKEN` и CSRF-заголовок для cookie-сессии; A_ONLY и
-legacy/reload-required отклоняются. Ручное значение является рабочей настройкой
-поверх источника: после очистки снова используется версия Source A, если она
-есть, иначе значение остаётся `unknown`; compatibility mode его не заменяет.
+требуют `ADMIN_TOKEN` и CSRF-заголовок для cookie-сессии; конфигурация должна
+быть загружена. Ручное значение является рабочей настройкой
+поверх источника: оно используется не только dashboard, но и resolved-контекстом
+MCP, фильтрацией синтаксиса и ответами агенту. После очистки снова используется
+версия Source A, если она есть, иначе значение остаётся `unknown`; compatibility
+mode его не заменяет.
 
 В dashboard конфигурация с `activation_status=RELOAD_REQUIRED` явно помечается
 как «Требуется повторная активация» и получает пояснение, что обычный restart не

@@ -35,6 +35,11 @@ def test_spa_применяет_сохранённую_тему_до_перво�
         )
 
 
+def test_package_data_включает_корневые_branding_assets() -> None:
+    for name in ("favicon.svg", "mcp-1c-logo.svg"):
+        assert (DEFAULT_DASHBOARD_DIST / name).is_file()
+
+
 def test_package_data_включает_dashboard_и_manifests_capabilities() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     patterns = project["tool"]["setuptools"]["package-data"]["mcp1c"]

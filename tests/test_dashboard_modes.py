@@ -103,6 +103,25 @@ def test_spa_раздаёт_index_и_маршруты_клиента(tmp_path):
     assert capabilities.text == root.text
 
 
+def test_spa_раздаёт_public_branding_assets(tmp_path):
+    registry = Registry(tmp_path / "data")
+    static_dir = tmp_path / "dashboard-dist"
+    static_dir.mkdir()
+    (static_dir / "index.html").write_text("<div id=root></div>", encoding="utf-8")
+    (static_dir / "favicon.svg").write_text("<svg />", encoding="utf-8")
+    (static_dir / "mcp-1c-logo.svg").write_text("<svg />", encoding="utf-8")
+    app = Starlette(routes=routes(registry, mode=DASHBOARD_ON, static_dir=static_dir))
+
+    with TestClient(app) as client:
+        favicon = client.get("/favicon.svg")
+        logo = client.get("/mcp-1c-logo.svg")
+
+    assert favicon.status_code == 200
+    assert favicon.text == "<svg />"
+    assert logo.status_code == 200
+    assert logo.text == "<svg />"
+
+
 def test_spa_оставляет_единую_серверную_проверку_токена(
     tmp_path, monkeypatch
 ):

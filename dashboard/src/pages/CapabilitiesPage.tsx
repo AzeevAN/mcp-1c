@@ -18,6 +18,10 @@ function errorMessage(error: unknown): string {
   return "Неизвестная ошибка управления модулями.";
 }
 
+function formatTokens(value: number | null): string {
+  return value == null ? "Стоимость не измерена" : `≈ ${value.toLocaleString("ru-RU")} токенов`;
+}
+
 export function CapabilitiesPage() {
   const query = useCapabilities();
   const save = useSaveCapabilities();
@@ -122,9 +126,9 @@ export function CapabilitiesPage() {
     <section className="capabilities-page">
       <header className="capabilities-heading">
         <div>
-          <span>Настройки сервера</span>
+          <span className="eyebrow">Настройки сервера</span>
           <h1>Дополнительные модули</h1>
-          <p>Выберите внутренние модули, сохраните полный набор и примените его отдельным перезапуском.</p>
+          <p>Управляйте составом MCP-инструментов и заранее видьте, сколько контекста займёт каждый модуль.</p>
         </div>
         <Puzzle size={30} aria-hidden="true" />
       </header>
@@ -132,44 +136,55 @@ export function CapabilitiesPage() {
       <div className="capabilities-status-grid" aria-label="Состояние модулей">
         <article>
           <span>Активно сейчас</span>
-          <strong>{status.active.length ? status.active.join(", ") : "Модули выключены"}</strong>
-          <small>Каталог MCP tools текущего процесса не меняется после сохранения.</small>
+          <strong>{status.active.length ? `${status.active.length} модул${status.active.length === 1 ? "ь" : "я"}` : "Модули выключены"}</strong>
+          <small>Загружено текущим процессом MCP.</small>
         </article>
         <article className={status.pending_restart ? "is-pending" : "is-ready"}>
           <span>Сохранённый выбор</span>
-          <strong>{status.desired.length ? status.desired.join(", ") : "Модули выключены"}</strong>
+          <strong>{status.desired.length ? `${status.desired.length} модул${status.desired.length === 1 ? "ь" : "я"}` : "Модули выключены"}</strong>
           <small>{status.pending_restart ? "Ожидает полного перезапуска" : "Совпадает с текущим процессом"}</small>
         </article>
       </div>
 
       <section className="capabilities-picker" aria-labelledby="capability-picker-title">
         <div className="capabilities-picker-copy">
-          <span>Закрытый каталог</span>
+          <span className="eyebrow">Закрытый каталог</span>
           <h2 id="capability-picker-title">Доступные модули</h2>
-          <p>Интерфейс принимает только модули, заранее объявленные сервером.</p>
+          <p>Встроенные возможности сервера. Каждый модуль показывает собственную стоимость контекста.</p>
         </div>
         <div className="capabilities-list">
           {status.modules.map((module) => {
             const name = module.id;
+            const checked = draft.includes(name);
+            const changed = checked !== module.active;
+            const stateLabel = changed ? "Изменён" : checked ? "Включен" : "Выключен";
             return (
-              <label className="switch-field capability-switch" key={module.id}>
+              <label className={`switch-field capability-switch ${checked ? "is-enabled" : "is-disabled"} ${changed ? "is-dirty" : ""}`} key={module.id}>
                 <input
                   type="checkbox"
-                  checked={draft.includes(name)}
+                  checked={checked}
                   onChange={() => toggle(name)}
                   disabled={save.isPending || restarting}
                   aria-label={`${module.display_name} (${name})`}
                 />
                 <span className="switch-control" aria-hidden="true"><i /></span>
-                <span>
-                  <strong>{module.display_name}</strong>
-                  <small>{module.description}</small>
-                  <small>
+                <span className="capability-copy">
+                  <span className="capability-card-head">
+                    <strong>{module.display_name}</strong>
+                    <b className={`capability-state is-${changed ? "pending" : checked ? "enabled" : "disabled"}`}>{stateLabel}</b>
+                  </span>
+                  <code>{name}</code>
+                  <small className="capability-description">{module.description}</small>
+                  <span className="capability-metrics">
+                    <span><strong>{module.tool_count ?? "—"}</strong><small>инструментов</small></span>
+                    <span><strong>{formatTokens(module.approx_tokens)}</strong><small>стоимость контекста</small></span>
+                    <span><strong>{module.tokenizer ?? "—"}</strong><small>tokenizer</small></span>
+                  </span>
+                  <small className="capability-technical">
                     {module.approx_tokens == null ? "Стоимость не измерена" : `≈ ${module.approx_tokens.toLocaleString("ru-RU")} токенов · ${module.tool_count ?? "?"} инструментов · ${module.tokenizer ?? "unmeasured"} · ${module.measured_at ?? "дата не указана"}`}
                   </small>
-                  {module.measurement_command && <small><code>{module.measurement_command}</code></small>}
-                  <code>{name}</code>
-                  <em>В текущем процессе: {status.active.includes(name) ? "включён" : "выключен"}</em>
+                  <small className="capability-runtime">{`В текущем процессе: ${status.active.includes(name) ? "включён" : "выключен"}`}</small>
+                  {module.measurement_command && <small className="capability-command"><code>{module.measurement_command}</code></small>}
                 </span>
               </label>
             );

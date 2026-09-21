@@ -62,6 +62,20 @@ def test_a_only_cannot_have_extensions():
         _manifest(mode=ActivationMode.A_ONLY, extensions=(_manifest().main,))
 
 
+def test_activation_mode_rejects_mixed_main_provenance():
+    with pytest.raises(ValueError, match="source-a"):
+        _manifest(mode=ActivationMode.A_ONLY)
+    with pytest.raises(ValueError, match="source-b"):
+        _manifest(
+            main=ActivationComponent(
+                source="source-a",
+                origin="candidate-a.zip",
+                raw_sha256="a" * 64,
+                payload_sha256="b" * 64,
+            )
+        )
+
+
 def test_generation_pointer_persists_activation_manifest():
     identity = ExportIdentity.configuration("Demo")
     generation_id = "g1"

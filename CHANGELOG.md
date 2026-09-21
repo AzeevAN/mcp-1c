@@ -22,6 +22,8 @@
   не являются частью записи.
 - Полный gate после SMV1-08: 3159 passed, 1 skipped из 3160 собранных тестов;
   команда — `.venv/bin/python -m pytest`.
+- SMV1-09: activation manifest fail-closed проверяет, что `A_ONLY` использует
+  только Source A, а `B_FULL` — только Source B для main и extensions.
 
 Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версии — [SemVer](https://semver.org/lang/ru/).

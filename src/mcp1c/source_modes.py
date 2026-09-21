@@ -118,6 +118,12 @@ class ActivationManifest:
             raise ValueError("extensions должны быть tuple[ActivationComponent, ...]")
         if self.mode is ActivationMode.A_ONLY and self.extensions:
             raise ValueError("A_ONLY не может содержать extensions")
+        if self.mode is ActivationMode.A_ONLY and self.main.source != "source-a":
+            raise ValueError("A_ONLY должен иметь source-a main component")
+        if self.mode is ActivationMode.B_FULL and self.main.source != "source-b":
+            raise ValueError("B_FULL должен иметь source-b main component")
+        if any(item.source != "source-b" for item in self.extensions):
+            raise ValueError("B_FULL extensions должны иметь source-b provenance")
 
     def to_dict(self) -> dict[str, object]:
         return {

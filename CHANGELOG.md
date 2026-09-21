@@ -17,6 +17,11 @@
 - SMV1-06: planner различает только `A_ONLY` и `B_FULL`; schema-v1 может быть
   без ролей, полный Source B требует `roles=ready`, а legacy content-only
   получает `reload_required` без переписывания active Registry.
+- SMV1-08: добавлен изолированный контракт лёгкой source history и exact
+  reconnect по identity+parent+raw SHA; parsed payload и generation намеренно
+  не являются частью записи.
+- Полный gate после SMV1-08: 3159 passed, 1 skipped из 3160 собранных тестов;
+  команда — `.venv/bin/python -m pytest`.
 
 Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версии — [SemVer](https://semver.org/lang/ru/).

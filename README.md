@@ -31,13 +31,13 @@
 | Роли | объявленные права из native generation; без готового слоя две role-ручки отсутствуют |
 | Дашборд | современная SPA включена по умолчанию; светлая и тёмная темы; ссылка на GitHub; `on` либо `off` |
 | Авторизация Docker | два разных обязательных токена: `API_TOKEN` на чтение, `ADMIN_TOKEN` на запись |
-| Тесты | `.venv/bin/python -m pytest`, 3158 |
+| Тесты | `.venv/bin/python -m pytest`, 3160 |
 
 Воспроизводимый прогон:
 
 ```bash
 .venv/bin/pip install --require-hashes -r requirements-dev-lock.txt
-.venv/bin/python -m pytest          # 3158 тестов; 3157 passed, 1 skipped (прогон 2026-09-21)
+.venv/bin/python -m pytest          # 3160 тестов; 3159 passed, 1 skipped (прогон 2026-09-21)
 ```
 
 ## Модульная система возможностей
@@ -399,6 +399,10 @@ Planner принимает только эти 2 режима: `A_ONLY` допу
 В B-only фактическая версия платформы остаётся `unknown`, пока её явно не
 объявит администратор; `compatibility_mode` не является заменой
 `platform_version`.
+История ранее подключённого расширения хранит только identity, parent, locator,
+transport, origin, raw SHA и status. Parsed payload и generation в неё не
+попадают; reconnect повторно находит исходник и оставляет changed/missing
+источники диагностическими до нового preview.
 
 Прежняя команда `POST /api/v1/sources/incoming/parse` сохранена только для
 совместимости code-only клиентов и больше не показывается в SPA. Она не создаёт

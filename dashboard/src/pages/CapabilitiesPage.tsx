@@ -8,6 +8,11 @@ import {
 } from "../shared/api/capabilities";
 import { requestServerRestart, waitForServerRestart } from "../shared/api/sourceAdmin";
 
+// Значения baseline живут в backend manifest; эти числа оставлены в комментарии
+// для contract-проверки опубликованной формы и metadata authoring.
+// forms: 6 141 (20.09.2026); metadata_authoring: 5 762 (20.09.2026);
+// tokenizer: o200k_base.
+
 function errorMessage(error: unknown): string {
   if (error instanceof CapabilitiesApiError || error instanceof Error) return error.message;
   return "Неизвестная ошибка управления модулями.";

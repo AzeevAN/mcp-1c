@@ -56,6 +56,10 @@
 
 ### Добавлено
 
+- Добавлен регрессионный MCP-gate для ручной версии платформы: официальный
+  `ClientSession` проходит `initialize → tools/list → tools/call`, а агентский
+  ответ `search_syntax` получает объявленную версию без ложного `unknown`.
+
 - SMV1-10: `role_access` добавлен в закрытый startup capability catalog.
   По умолчанию capability выключен; при включении после полного restart ровно
   две role-tools регистрируются независимо от готовности конкретного role

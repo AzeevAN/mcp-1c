@@ -1,6 +1,9 @@
 import pytest
 import json
+import anyio
 from dataclasses import replace
+from mcp import ClientSession
+from mcp.shared.memory import create_client_server_memory_streams
 from starlette.applications import Starlette
 
 from conftest import живой_клиент
@@ -10,6 +13,7 @@ from mcp1c.intake_v2 import ExportIdentity
 from mcp1c.intake_v2_registry import GenerationPointer
 from mcp1c.reference_provider import ReferenceService
 from mcp1c.registry import Registry, RegistryError
+from mcp1c.server import build_server
 from mcp1c.store import save_syntax
 from mcp1c.syntax_model import SyntaxIndex, SyntaxItem
 from mcp1c.tools import list_configurations, search_syntax
@@ -113,6 +117,54 @@ def test_manual_platform_is_used_by_notes_and_syntax_tools(tmp_path):
     answer = search_syntax(registry, "СтрРазделить", config="Demo")
     assert "Фактическая версия платформы неизвестна" not in answer
     assert "8.3.5.1570" in answer
+
+
+@pytest.mark.anyio
+async def test_manual_platform_is_visible_through_mcp_tools_call(tmp_path):
+    registry = Registry(tmp_path / "data")
+    source = tmp_path / "source"
+    source.mkdir()
+    config = replace(build_configuration(name="Demo"), platform="")
+    registry.add_configuration(write_export(source, config), keep_source=False)
+    syntax = SyntaxIndex(platforms=["8.3.27.2130"], source="test")
+    syntax.add(SyntaxItem(
+        id="global/СтрРазделить",
+        kind="method",
+        name_ru="СтрРазделить",
+        parent_ru="Глобальный контекст",
+        since="8.3.6",
+        description="Разделяет строку.",
+    ))
+    registry.add_syntax(save_syntax(syntax, tmp_path / "syntax.json.gz"))
+    registry.set_platform_version("Demo", "8.3.5.1570")
+    server = build_server(registry)
+
+    async with create_client_server_memory_streams() as (
+        client_streams,
+        server_streams,
+    ):
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(
+                server._lowlevel_server.run,
+                *server_streams,
+                server._lowlevel_server.create_initialization_options(),
+            )
+            try:
+                async with ClientSession(*client_streams) as session:
+                    await session.initialize()
+                    catalog = await session.list_tools()
+                    assert any(tool.name == "search_syntax" for tool in catalog.tools)
+                    result = await session.call_tool(
+                        "search_syntax",
+                        {"query": "СтрРазделить", "config": "Demo"},
+                    )
+            finally:
+                tasks.cancel_scope.cancel()
+
+    text = result.content[0].text
+    assert result.is_error is not True
+    assert "8.3.5.1570" in text
+    assert "Фактическая версия платформы неизвестна" not in text
 
 
 def test_configuration_delete_clears_platform_declaration_durably(tmp_path):

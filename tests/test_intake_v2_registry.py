@@ -233,6 +233,52 @@ def test_publish_atomic_root_persists_activation_manifest(tmp_path):
     assert restarted.active_generation_pointer(manifest.identity).activation == activation
 
 
+def test_recovery_after_switch_keeps_activation_and_removes_previous_root(
+    tmp_path, monkeypatch
+):
+    first, first_payloads = _manifest(tmp_path, "generation-crash-001")
+    second, second_payloads = _manifest(
+        tmp_path, "generation-crash-002", suffix="-changed"
+    )
+    registry = Registry(tmp_path / "data")
+    registry.publish_generation(registry.stage_generation(first, first_payloads))
+    activation = ActivationManifest(
+        mode=ActivationMode.B_FULL,
+        identity_incarnation="inc-crash",
+        physical_generation_root_id="root-crash-2",
+        configuration_version="2.0",
+        main=ActivationComponent(
+            source="source-b",
+            origin="changed.zip",
+            raw_sha256="b" * 64,
+            payload_sha256="c" * 64,
+        ),
+        extensions=(),
+        expected_previous_activation=None,
+        transaction_id="tx-crash",
+        recovery_id="recovery-crash",
+    )
+    staged = registry.stage_generation(
+        second, second_payloads, activation=activation
+    )
+
+    def crash_after_switch(_checkpoint):
+        raise SystemExit("synthetic crash after switch")
+
+    monkeypatch.setattr(registry, "_after_generation_pointer_switch", crash_after_switch)
+    with pytest.raises(SystemExit, match="synthetic crash after switch"):
+        registry.publish_generation(staged)
+
+    restarted = Registry(registry.data_dir)
+    assert restarted.recover_generation_publish() == [
+        "generation generation-crash-002: публикация завершена"
+    ]
+    assert restarted.restore() == []
+    pointer = restarted.active_generation_pointer(second.identity)
+    assert pointer is not None and pointer.activation == activation
+    assert not (registry.data_dir / f"generations/{_symbol('_identity_digest')(first.identity)}/{first.generation_id}").exists()
+
+
 def test_registry_snapshot_фиксирует_одну_пару_pointer_manifest(tmp_path):
     manifest, payloads = _manifest(tmp_path, "generation-001")
     registry = Registry(tmp_path / "data")

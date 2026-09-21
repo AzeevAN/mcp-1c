@@ -110,8 +110,9 @@
   отклоняются. Generation pointer сохраняет этот manifest, а Registry
   предоставляет fail-closed guard
   для consumers старого pointer. Полный pytest после добавления 6 тестов:
-  3147 passed, 1 skipped. Staging/publish/restore сохраняют activation
-  manifest целиком одним pointer.
+  3148 passed, 1 skipped. Staging/publish/restore сохраняют activation
+  manifest целиком одним pointer; crash-after-switch recovery удаляет старый
+  root и сохраняет новый activation.
 
 - Metadata Authoring теперь fail-closed требует ровно одну `default=true`
   форму для каждой роли, представленной в закрытом комплекте справочника,

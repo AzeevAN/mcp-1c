@@ -30,18 +30,18 @@ def test_manifest_совпадает_с_фактическим_tools_list_и_д�
         "context_budget": {
             "status": "measured",
             "tool_count": 4,
-            "approx_tokens": 5963,
+            "approx_tokens": 6141,
             "tokenizer": "tiktoken 0.11.0 / o200k_base",
             "method": (
                 "canonical tools/list delta: UTF-8 JSON, sort_keys, "
                 "compact separators"
             ),
-            "canonical_bytes": 24896,
+            "canonical_bytes": 26224,
             "canonical_sha256": (
-                "83fa55c64cf788ae41b19342e363ca358a1c8fd3b3281baa3d761a05193ee614"
+                "288dd8c3761bcdd328ddea2f861b0f8f4ab95ebe3eca5bd7aaf9faaaf48a136d"
             ),
             "payload": "tools_list_delta",
-            "measured_at": "2026-09-19",
+            "measured_at": "2026-09-20",
         },
     }
     assert len(tools) == payload["context_budget"]["tool_count"]
@@ -50,10 +50,10 @@ def test_manifest_совпадает_с_фактическим_tools_list_и_д�
         payload["context_budget"]["canonical_sha256"]
     )
     for text in (readme, dashboard):
-        assert "5 963" in text
+        assert "6 141" in text
         assert "o200k_base" in text
-    assert "2026-09-19" in readme
-    assert "19.09.2026" in dashboard
+    assert "2026-09-20" in readme
+    assert "20.09.2026" in dashboard
 
 
 def test_public_forms_docs_совпадают_с_каталогом_и_замером():
@@ -63,9 +63,9 @@ def test_public_forms_docs_совпадают_с_каталогом_и_заме�
 
     assert "`diagnostics`" not in dashboard
     assert "2 439" not in dashboard
-    assert "5 963" in dashboard
+    assert "6 141" in dashboard
     assert "o200k_base" in dashboard
-    assert "2026-09-19" in dashboard
+    assert "2026-09-20" in dashboard
     assert "tools/measure_capability_context.py forms" in dashboard
     assert CONFIRMED_FORM_FORMATS == ("2.16", "2.20")
     assert "форматы `2.19`/`2.20` читает только как inventory" not in readme

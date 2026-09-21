@@ -754,7 +754,7 @@ def check_managed_form(
     )
     if (
         isinstance(specification_context, dict)
-        and specification_context.get("owner", "").startswith("Обработка.")
+        and specification_context.get("owner", "").startswith(("Обработка.", "Отчет."))
         and specification_context.get("role") == "object"
         and safe_module is not None
         and not _scaffold_only_module(safe_module)
@@ -764,9 +764,13 @@ def check_managed_form(
             *bsl_diagnostics,
             _diagnostic(
                 "failed",
-                "unsupported_data_processor_module_bsl",
+                (
+                    "unsupported_report_module_bsl"
+                    if specification_context.get("owner", "").startswith("Отчет.")
+                    else "unsupported_data_processor_module_bsl"
+                ),
                 "$module_bsl",
-                "Прикладной BSL основной формы обработки не входит в базовый контракт.",
+                "Прикладной BSL основной формы не входит в базовый контракт.",
                 level="bsl_static",
             ),
         ]

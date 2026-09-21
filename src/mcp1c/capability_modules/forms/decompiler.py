@@ -90,6 +90,22 @@ _SINGLETON_TAGS = frozenset(
         "SavedData",
         "WindowOpeningMode",
         "ChoiceMode",
+        "ReportResult",
+        "DetailsData",
+        "ReportFormType",
+        "AutoShowState",
+        "CustomSettingsFolder",
+        "ReportResultViewMode",
+        "ViewModeApplicationOnSetReportResult",
+        "DefaultItem",
+        "TitleLocation",
+        "Width",
+        "AutoTime",
+        "UsePostingMode",
+        "RepostOnWrite",
+        "UseForFoldersAndItems",
+        "CommandBarLocation",
+        "UserSettingsGroup",
     }
 )
 
@@ -331,6 +347,187 @@ def _service_node(
             status="unsupported",
         )
     return node
+
+
+def _mark_tree(inventory: _Inventory, node: ET.Element) -> None:
+    for child in node.iter():
+        inventory.mark(child, *child.attrib)
+
+
+def _same_tree(actual: ET.Element, expected: ET.Element) -> bool:
+    return (
+        actual.tag == expected.tag
+        and actual.attrib == expected.attrib
+        and (actual.text or "").strip() == (expected.text or "").strip()
+        and len(actual) == len(expected)
+        and all(
+            _same_tree(actual_child, expected_child)
+            for actual_child, expected_child in zip(actual, expected, strict=True)
+        )
+    )
+
+
+def _expected_report_node(xml: str) -> ET.Element:
+    return ET.fromstring(
+        '<Root xmlns="http://v8.1c.ru/8.3/xcf/logform" '
+        'xmlns:v8="http://v8.1c.ru/8.1/data/core">'
+        f"{xml}</Root>"
+    )[0]
+
+
+def _validate_report_default_profile(
+    inventory: _Inventory, root: ET.Element
+) -> None:
+    for local, expected_text in (
+        ("ReportResult", "Результат"),
+        ("DetailsData", "ДанныеРасшифровки"),
+        ("ReportFormType", "Main"),
+        ("AutoShowState", "Auto"),
+        (
+            "CustomSettingsFolder",
+            "КомпоновщикНастроекПользовательскиеНастройки",
+        ),
+        ("ReportResultViewMode", "Auto"),
+        ("ViewModeApplicationOnSetReportResult", "Auto"),
+    ):
+        matches = [child for child in root if child.tag == _q(local)]
+        if len(matches) != 1:
+            inventory.issue(
+                "invalid_report_form_profile",
+                f"/Form/{local}",
+                f"Системный профиль отчета требует ровно один {local}.",
+                status="failed",
+            )
+        for node in matches:
+            _mark_tree(inventory, node)
+            if node.attrib or len(node) or (node.text or "") != expected_text:
+                inventory.issue(
+                    "invalid_report_form_profile",
+                    inventory.paths[id(node)],
+                    f"Системный узел {local} изменен.",
+                    status="failed",
+                )
+
+    expected_elements = {
+        "КомпоновщикНастроекПользовательскиеНастройки": _expected_report_node(
+            """<UsualGroup name="КомпоновщикНастроекПользовательскиеНастройки" id="1">
+                <Title><v8:item><v8:lang>ru</v8:lang><v8:content>Настройки</v8:content></v8:item></Title>
+                <VerticalStretch>false</VerticalStretch><Group>Vertical</Group>
+                <ShowTitle>false</ShowTitle>
+                <ExtendedTooltip name="КомпоновщикНастроекПользовательскиеНастройкиРасширеннаяПодсказка" id="2"/>
+            </UsualGroup>"""
+        ),
+        "Результат": _expected_report_node(
+            """<SpreadSheetDocumentField name="Результат" id="3">
+                <DataPath>Результат</DataPath><DefaultItem>true</DefaultItem>
+                <TitleLocation>None</TitleLocation><Width>100</Width>
+                <ContextMenu name="РезультатКонтекстноеМеню" id="4"/>
+                <ExtendedTooltip name="РезультатРасширеннаяПодсказка" id="5"/>
+            </SpreadSheetDocumentField>"""
+        ),
+    }
+    child_items = inventory.optional_container(root, "ChildItems")
+    if child_items is None:
+        inventory.issue(
+            "invalid_report_form_profile",
+            "/Form/ChildItems",
+            "Системный профиль отчета требует секцию ChildItems.",
+            status="failed",
+        )
+    else:
+        for name, expected in expected_elements.items():
+            matches = [node for node in child_items if node.get("name") == name]
+            if len(matches) != 1:
+                inventory.issue(
+                    "invalid_report_form_profile",
+                    f"/Form/ChildItems/*[@name='{name}']",
+                    "Системный элемент основной формы отчета отсутствует или повторяется.",
+                    status="failed",
+                )
+            for node in matches:
+                _mark_tree(inventory, node)
+                if not _same_tree(node, expected):
+                    inventory.issue(
+                        "invalid_report_form_profile",
+                        inventory.paths[id(node)],
+                        "Системный элемент основной формы отчета изменен.",
+                        status="failed",
+                    )
+        for node in child_items:
+            if node.get("name") not in expected_elements:
+                try:
+                    element_id = int(node.get("id", ""))
+                except ValueError:
+                    continue
+                if element_id <= 5:
+                    inventory.issue(
+                        "invalid_report_form_profile",
+                        inventory.paths[id(node)],
+                        "Пользовательские элементы отчета должны следовать после системных ID.",
+                        status="failed",
+                    )
+
+    expected_attributes = {
+        "Результат": _expected_report_node(
+            """<Attribute name="Результат" id="2">
+                <Title><v8:item><v8:lang>ru</v8:lang><v8:content>Результат</v8:content></v8:item></Title>
+                <Type><v8:Type>mxl:SpreadsheetDocument</v8:Type></Type>
+            </Attribute>"""
+        ),
+        "ДанныеРасшифровки": _expected_report_node(
+            """<Attribute name="ДанныеРасшифровки" id="3"><Type>
+                <v8:Type>xs:string</v8:Type><v8:StringQualifiers>
+                    <v8:Length>0</v8:Length><v8:AllowedLength>Variable</v8:AllowedLength>
+                </v8:StringQualifiers></Type></Attribute>"""
+        ),
+    }
+    attributes = inventory.optional_container(root, "Attributes")
+    if attributes is None:
+        inventory.issue(
+            "invalid_report_form_profile",
+            "/Form/Attributes",
+            "Системный профиль отчета требует секцию Attributes.",
+            status="failed",
+        )
+    else:
+        for name, expected in expected_attributes.items():
+            matches = [node for node in attributes if node.get("name") == name]
+            if len(matches) != 1:
+                inventory.issue(
+                    "invalid_report_form_profile",
+                    f"/Form/Attributes/Attribute[@name='{name}']",
+                    "Системный реквизит основной формы отчета отсутствует или повторяется.",
+                    status="failed",
+                )
+            for node in matches:
+                _mark_tree(inventory, node)
+                if not _same_tree(node, expected):
+                    inventory.issue(
+                        "invalid_report_form_profile",
+                        inventory.paths[id(node)],
+                        "Системный реквизит основной формы отчета изменен.",
+                        status="failed",
+                    )
+        for node in attributes:
+            name = node.get("name")
+            try:
+                attribute_id = int(node.get("id", ""))
+            except ValueError:
+                continue
+            if name == "Отчет" and attribute_id != 1:
+                inventory.issue(
+                    "invalid_report_form_profile",
+                    inventory.paths[id(node)],
+                    "Главный реквизит Отчет должен иметь ID 1.",
+                    status="failed",
+                )
+            elif name not in {*expected_attributes, "Отчет"} and attribute_id <= 3:
+                inventory.issue(
+                    "invalid_report_form_profile",
+                    inventory.paths[id(node)],
+                    "Локальные реквизиты отчета должны следовать после системных ID.",
+                    status="failed",
+                )
 
 
 def _companion(
@@ -1277,18 +1474,11 @@ def _validate_list_choice_markers(
     ]
     for node in location_nodes:
         inventory.mark(node)
-    if len(location_nodes) != 1:
+    if location_nodes:
         inventory.issue(
-            "missing_list_choice_command_bar_location",
+            "legacy_list_choice_root_command_bar_location",
             "/Form/CommandBarLocation",
-            "role=list|choice требует ровно один CommandBarLocation=None.",
-            status="failed",
-        )
-    elif _text(location_nodes[0]) != "None":
-        inventory.issue(
-            "invalid_list_choice_command_bar_location",
-            inventory.paths[id(location_nodes[0])],
-            "CommandBarLocation формы списка или выбора должен быть None.",
+            "CommandBarLocation формы списка или выбора задаётся у таблицы, а не у Form.",
             status="failed",
         )
     opening_nodes = [
@@ -1306,6 +1496,78 @@ def _validate_list_choice_markers(
             and _text(data_paths[0]) == "Список"
         ):
             bound_tables.append(node)
+    if len(bound_tables) != 1:
+        inventory.issue(
+            "invalid_list_choice_default_profile",
+            "/Form/ChildItems/Table[@name='Список']",
+            "Системный профиль требует ровно одну связанную таблицу Список.",
+            status="failed",
+        )
+
+    system_group_name = "СписокКомпоновщикНастроекПользовательскиеНастройки"
+    child_items = inventory.optional_container(root, "ChildItems")
+    groups = (
+        []
+        if child_items is None
+        else [node for node in child_items if node.get("name") == system_group_name]
+    )
+    expected_group = _expected_report_node(
+        """<UsualGroup name="СписокКомпоновщикНастроекПользовательскиеНастройки" id="1">
+            <Title><v8:item><v8:lang>ru</v8:lang><v8:content>Группа пользовательских настроек</v8:content></v8:item></Title>
+            <VerticalStretch>false</VerticalStretch><Group>Vertical</Group>
+            <ShowTitle>false</ShowTitle>
+            <ExtendedTooltip name="СписокКомпоновщикНастроекПользовательскиеНастройкиРасширеннаяПодсказка" id="2"/>
+        </UsualGroup>"""
+    )
+    if len(groups) != 1:
+        inventory.issue(
+            "invalid_list_choice_default_profile",
+            f"/Form/ChildItems/*[@name='{system_group_name}']",
+            "Системная группа пользовательских настроек отсутствует или повторяется.",
+            status="failed",
+        )
+    for group in groups:
+        _mark_tree(inventory, group)
+        if not _same_tree(group, expected_group):
+            inventory.issue(
+                "invalid_list_choice_default_profile",
+                inventory.paths[id(group)],
+                "Системная группа пользовательских настроек изменена.",
+                status="failed",
+            )
+
+    for table in bound_tables:
+        if table.get("id") != "3":
+            inventory.issue(
+                "invalid_list_choice_default_profile",
+                inventory.paths[id(table)] + "/@id",
+                "Таблица Список системного профиля должна иметь ID 3.",
+                status="failed",
+            )
+        for local, expected in (
+            ("Representation", "List"),
+            ("CommandBarLocation", "None"),
+            ("DefaultItem", "true"),
+            ("DataPath", "Список"),
+            ("UserSettingsGroup", system_group_name),
+        ):
+            matches = [child for child in table if child.tag == _q(local)]
+            if len(matches) != 1:
+                inventory.issue(
+                    "invalid_list_choice_default_profile",
+                    f"{inventory.paths[id(table)]}/{local}",
+                    f"Системный профиль требует ровно один {local}.",
+                    status="failed",
+                )
+            for node in matches:
+                inventory.mark(node)
+                if node.attrib or len(node) or _text(node) != expected:
+                    inventory.issue(
+                        "invalid_list_choice_default_profile",
+                        inventory.paths[id(node)],
+                        f"Системное свойство таблицы {local} изменено.",
+                        status="failed",
+                    )
     choice_nodes: list[ET.Element] = []
     for table in bound_tables:
         choice_nodes.extend(
@@ -1369,7 +1631,16 @@ def _validate_list_choice_markers(
                 strip_computed_toolbar_marker(child)
 
     strip_computed_toolbar_marker(specification.get("elements"))
-
+    elements = specification.get("elements")
+    if isinstance(elements, list):
+        specification["elements"] = [
+            item
+            for item in elements
+            if not (
+                isinstance(item, dict)
+                and item.get("name") == system_group_name
+            )
+        ]
     if role == "list":
         if opening_nodes or choice_nodes:
             marker = (opening_nodes or choice_nodes)[0]
@@ -1411,6 +1682,81 @@ def _validate_list_choice_markers(
         )
 
 
+def _validate_owner_default_root_profile(
+    inventory: _Inventory,
+    root: ET.Element,
+    context: object,
+) -> None:
+    if not isinstance(context, dict):
+        return
+    owner = context.get("owner")
+    role = context.get("role")
+    if not isinstance(owner, str):
+        return
+    expected: tuple[tuple[str, str], ...] = ()
+    if role == "object" and owner.startswith("Справочник."):
+        expected = (
+            ("WindowOpeningMode", "LockOwnerWindow"),
+            ("UseForFoldersAndItems", "Items"),
+        )
+    elif role == "object" and owner.startswith("Документ."):
+        expected = (
+            ("AutoTime", "CurrentOrLast"),
+            ("UsePostingMode", "Auto"),
+            ("RepostOnWrite", "true"),
+        )
+    elif role == "record" and owner.startswith("РегистрСведений."):
+        expected = (("WindowOpeningMode", "LockOwnerWindow"),)
+    if not expected:
+        return
+
+    profile_names = {
+        "WindowOpeningMode",
+        "UseForFoldersAndItems",
+        "AutoTime",
+        "UsePostingMode",
+        "RepostOnWrite",
+    }
+    expected_names = {name for name, _value in expected}
+    invalid_profile = False
+    for local, value in expected:
+        matches = [child for child in root if child.tag == _q(local)]
+        if len(matches) != 1:
+            invalid_profile = True
+            inventory.issue(
+                "invalid_owner_default_profile",
+                f"/Form/{local}",
+                f"Дефолтный профиль владельца требует ровно один {local}.",
+                status="failed",
+            )
+        for node in matches:
+            inventory.mark(node)
+            if node.attrib or len(node) or _text(node) != value:
+                invalid_profile = True
+                inventory.issue(
+                    "invalid_owner_default_profile",
+                    inventory.paths[id(node)],
+                    f"Системное свойство {local} изменено.",
+                    status="failed",
+                )
+    for node in root:
+        local = _local(node.tag)
+        if local in profile_names and local not in expected_names:
+            invalid_profile = True
+            inventory.mark(node)
+            inventory.issue(
+                "invalid_owner_default_profile",
+                inventory.paths[id(node)],
+                f"Системное свойство {local} не входит в профиль этого владельца.",
+                status="failed",
+            )
+    if invalid_profile:
+        inventory.issue(
+            "incompatible_owner_context",
+            "$.context",
+            "Form.xml не соответствует дефолтному профилю указанных owner и role.",
+            status="failed",
+        )
 def _validate_information_register_main_type(
     inventory: _Inventory,
     root: ET.Element,
@@ -1498,12 +1844,29 @@ def _element(
     return None
 
 
-def _elements(inventory: _Inventory, root: ET.Element) -> list[dict[str, object]]:
+def _elements(
+    inventory: _Inventory,
+    root: ET.Element,
+    *,
+    report_profile: bool = False,
+    list_choice_profile: bool = False,
+) -> list[dict[str, object]]:
     container = inventory.optional_container(root, "ChildItems")
     if container is None:
         return []
     result: list[dict[str, object]] = []
     for node in container:
+        if report_profile and node.get("name") in {
+            "КомпоновщикНастроекПользовательскиеНастройки",
+            "Результат",
+        }:
+            continue
+        if (
+            list_choice_profile
+            and node.get("name")
+            == "СписокКомпоновщикНастроекПользовательскиеНастройки"
+        ):
+            continue
         item = _element(inventory, node)
         if item is not None:
             result.append(item)
@@ -1819,13 +2182,23 @@ def _atomic_type(
     return None
 
 
-def _attributes(inventory: _Inventory, root: ET.Element) -> list[dict[str, object]]:
+def _attributes(
+    inventory: _Inventory,
+    root: ET.Element,
+    *,
+    report_profile: bool = False,
+) -> list[dict[str, object]]:
     container = inventory.optional_container(root, "Attributes")
     if container is None:
         return []
     result: list[dict[str, object]] = []
     for node in container:
         if node.tag != _q("Attribute"):
+            continue
+        if report_profile and node.get("name") in {
+            "Результат",
+            "ДанныеРасшифровки",
+        }:
             continue
         inventory.mark(node, "name", "id")
         item: dict[str, object] = {
@@ -2177,6 +2550,26 @@ def decompile_managed_form(
         )
 
     title = _localized(inventory, root, "Title")
+    report_profile = (
+        isinstance(context, dict)
+        and isinstance(context.get("owner"), str)
+        and context["owner"].startswith("Отчет.")
+        and context.get("role") == "object"
+    )
+    list_choice_profile = (
+        isinstance(context, dict)
+        and context.get("role") in {"list", "choice"}
+    )
+    if report_profile:
+        _validate_report_default_profile(inventory, root)
+        command_bars = [child for child in root if child.tag == _q("AutoCommandBar")]
+        if len(command_bars) != 1:
+            inventory.issue(
+                "invalid_report_form_profile",
+                "/Form/AutoCommandBar",
+                "Системный профиль отчета требует ровно одну AutoCommandBar.",
+                status="failed",
+            )
     command_bar = inventory.required_child(root, "AutoCommandBar")
     if command_bar is not None:
         inventory.mark(command_bar, "name", "id")
@@ -2184,10 +2577,21 @@ def decompile_managed_form(
         command_id = _subset_attribute(inventory, command_bar, "id")
         if name != "ФормаКоманднаяПанель" or command_id != "-1":
             inventory.issue(
-                "unsupported_auto_command_bar",
+                (
+                    "invalid_report_form_profile"
+                    if report_profile
+                    else "unsupported_auto_command_bar"
+                ),
                 inventory.paths[id(command_bar)],
                 "Поддерживается стандартная AutoCommandBar с ID -1.",
-                status="unsupported",
+                status="failed" if report_profile else "unsupported",
+            )
+        if report_profile and (len(command_bar) or (command_bar.text or "").strip()):
+            inventory.issue(
+                "invalid_report_form_profile",
+                inventory.paths[id(command_bar)],
+                "Системная AutoCommandBar основной формы отчета должна быть пустой.",
+                status="failed",
             )
 
     specification: dict[str, object] = {
@@ -2201,8 +2605,15 @@ def decompile_managed_form(
             else {}
         ),
         "title": title,
-        "attributes": _attributes(inventory, root),
-        "elements": _elements(inventory, root),
+        "attributes": _attributes(
+            inventory, root, report_profile=report_profile
+        ),
+        "elements": _elements(
+            inventory,
+            root,
+            report_profile=report_profile,
+            list_choice_profile=list_choice_profile,
+        ),
         "commands": _commands(inventory, root),
         "events": _events(
             inventory,
@@ -2211,14 +2622,11 @@ def decompile_managed_form(
         ),
     }
     _validate_list_choice_markers(inventory, root, context, specification)
+    _validate_owner_default_root_profile(inventory, root, context)
     _validate_information_register_main_type(inventory, root, context)
     inventory.report_uncovered(root)
 
-    collections = (
-        specification["attributes"],
-        specification["elements"],
-    )
-    if any(not collection for collection in collections):
+    if not specification["attributes"]:
         inventory.issue(
             "outside_compiler_subset",
             "/Form",
@@ -2325,6 +2733,7 @@ def decompile_managed_form(
                         {
                             "Документ": "document_object_context_verified",
                             "Обработка": "data_processor_object_context_verified",
+                            "Отчет": "report_object_context_verified",
                         }.get(
                             context_owner.split(".", 1)[0]
                             if isinstance(context_owner, str)
@@ -2353,6 +2762,7 @@ def decompile_managed_form(
                         {
                             "Документ": "Контекст формы объекта документа согласован с главным реквизитом.",
                             "Обработка": "Контекст основной формы обработки согласован с главным реквизитом Объект.",
+                            "Отчет": "Контекст основной формы отчета согласован с главным реквизитом Отчет.",
                         }.get(
                             context_owner.split(".", 1)[0]
                             if isinstance(context_owner, str)

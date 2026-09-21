@@ -21,7 +21,7 @@ XS = "http://www.w3.org/2001/XMLSchema"
 XSI = "http://www.w3.org/2001/XMLSchema-instance"
 LOGFORM = "http://v8.1c.ru/8.3/xcf/logform"
 _NAME = re.compile(r"^[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*$")
-_OBJECT_REF = re.compile(r"^(Справочник|РегистрСведений|Документ|Обработка)\.([A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*)$")
+_OBJECT_REF = re.compile(r"^(Справочник|РегистрСведений|Документ|Обработка|Отчет)\.([A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*)$")
 _FORMAT_VERSION = re.compile(r"^\d+\.\d+(?:\.\d+)*$")
 _FORBIDDEN_XML = re.compile(r"<!\s*(?:DOCTYPE|ENTITY)\b", re.I)
 _QNAME = re.compile(r"^([A-Za-z_][A-Za-z0-9_.-]*):[^\s:]+$")
@@ -44,12 +44,14 @@ _OWNER_ROLES = {
     "Документ": frozenset({"object", "list", "choice"}),
     "РегистрСведений": frozenset({"record", "list", "record_set"}),
     "Обработка": frozenset({"object"}),
+    "Отчет": frozenset({"object"}),
 }
 _LEGACY_FORM_ROLE = {
     "Справочник": "object",
     "Документ": "object",
     "РегистрСведений": "record",
     "Обработка": "object",
+    "Отчет": "object",
 }
 
 
@@ -105,6 +107,10 @@ _KINDS = {
     ),
     "Обработка": _Kind(
         "Обработка", "DataProcessor", "DataProcessors", (),
+        ("Object", "Manager"), _COMMON,
+    ),
+    "Отчет": _Kind(
+        "Отчет", "Report", "Reports", (),
         ("Object", "Manager"), _COMMON,
     ),
 }
@@ -367,6 +373,43 @@ def _validate_form(
                 f"{path}.module_bsl",
                 "Прикладной BSL формы обработки не входит в базовый контракт.",
             )
+    if owner_kind == "Отчет":
+        if (
+            sum(
+                attribute.findtext(f"{{{LOGFORM}}}MainAttribute") == "true"
+                for attribute in form_attributes
+            ) != 1
+            or main_names != {"Отчет"}
+        ):
+            _fail(
+                "invalid_report_main_attribute",
+                f"{path}.form_xml",
+                "Основная форма отчета требует единственный главный реквизит `Отчет`.",
+            )
+        structural_behavior = {
+            node.tag.rsplit("}", 1)[-1] for node in root.iter()
+        } & {
+            "Button", "ButtonGroup", "Command", "CommandBar",
+            "CommandName", "CommandSource", "Event", "Popup", "SavedData",
+        }
+        if any(
+            node.tag.rsplit("}", 1)[-1] in {"AutoCommandBar", "ContextMenu"}
+            and len(node) > 0
+            for node in root.iter()
+        ):
+            structural_behavior.add("CommandContainer")
+        if structural_behavior:
+            _fail(
+                "unsupported_report_form_behavior",
+                f"{path}.form_xml",
+                "Команды, события и SavedData формы отчета не входят в базовый контракт.",
+            )
+        if not _scaffold_only_module(value["module_bsl"]):
+            _fail(
+                "unsupported_report_module_bsl",
+                f"{path}.module_bsl",
+                "Прикладной BSL формы отчета не входит в базовый контракт.",
+            )
     _artifact_size(form_xml, f"{path}.form_xml")
     _artifact_size(value["module_bsl"], f"{path}.module_bsl")
     return value
@@ -380,7 +423,7 @@ def _validate(specification: object) -> tuple[dict[str, object], _Kind, str, uui
     object_ref = _text(value["object_ref"], "$specification.object_ref")
     match = _OBJECT_REF.fullmatch(object_ref)
     if match is None:
-        _fail("unsupported_object_ref", "$specification.object_ref", "Поддержаны Справочник.<Имя>, Документ.<Имя>, РегистрСведений.<Имя> и встроенная Обработка.<Имя>.")
+        _fail("unsupported_object_ref", "$specification.object_ref", "Поддержаны Справочник.<Имя>, Документ.<Имя>, РегистрСведений.<Имя>, встроенная Обработка.<Имя> и Отчет.<Имя>.")
     kind = _KINDS[match.group(1)]
     _strict(value, kind.allowed, "$specification")
     format_version = _text(value["format_version"], "$specification.format_version")
@@ -452,7 +495,8 @@ def _validate(specification: object) -> tuple[dict[str, object], _Kind, str, uui
             names.add(key)
     forms = _list(value["forms"], "$specification.forms")
     if kind.ru == "Обработка":
-        if value["attributes"]:
+        object_attributes = _list(value["attributes"], "$specification.attributes")
+        if object_attributes:
             _fail(
                 "unsupported_data_processor_attributes",
                 "$specification.attributes",
@@ -470,7 +514,22 @@ def _validate(specification: object) -> tuple[dict[str, object], _Kind, str, uui
                 "$specification.forms",
                 "Базовая встроенная обработка поддерживает ровно одну основную форму.",
             )
+    if kind.ru == "Отчет":
+        report_attributes = _list(value["attributes"], "$specification.attributes")
+        if report_attributes:
+            _fail(
+                "unsupported_report_attributes",
+                "$specification.attributes",
+                "Реквизиты отчета не входят в базовый контракт.",
+            )
+        if len(forms) != 1:
+            _fail(
+                "invalid_report_form_count",
+                "$specification.forms",
+                "Базовый отчет требует ровно одну основную форму.",
+            )
     default_roles: set[str] = set()
+    represented_role_indexes: dict[str, int] = {}
     normalized_forms: list[dict[str, object]] = []
     for index, item in enumerate(forms):
         form = _validate_form(
@@ -483,6 +542,7 @@ def _validate(specification: object) -> tuple[dict[str, object], _Kind, str, uui
             _fail("duplicate_name", f"$specification.forms[{index}].name", f"Имя `{name}` уже использовано.")
         names.add(key)
         role = str(form["role"])
+        represented_role_indexes.setdefault(role, index)
         if bool(form["default"]):
             if role in default_roles:
                 _fail(
@@ -491,7 +551,7 @@ def _validate(specification: object) -> tuple[dict[str, object], _Kind, str, uui
                     f"Для роли `{role}` уже объявлена форма по умолчанию.",
                 )
             default_roles.add(role)
-        if kind.ru in {"Документ", "Обработка"} and role == "object":
+        if kind.ru in {"Документ", "Обработка", "Отчет"} and role == "object":
             root = ET.fromstring(str(form["form_xml"]))
             main_types = []
             for attribute in root.iter(f"{{{LOGFORM}}}Attribute"):
@@ -503,11 +563,11 @@ def _validate(specification: object) -> tuple[dict[str, object], _Kind, str, uui
                     if node.tag == f"{{{V8}}}Type" and (node.text or "").strip()
                 ]
                 main_types.extend(type_values)
-            object_type = (
-                "DocumentObject"
-                if kind.ru == "Документ"
-                else "DataProcessorObject"
-            )
+            object_type = {
+                "Документ": "DocumentObject",
+                "Обработка": "DataProcessorObject",
+                "Отчет": "ReportObject",
+            }[kind.ru]
             expected_type = f"cfg:{object_type}.{match.group(2)}"
             if main_types != [expected_type]:
                 _fail(
@@ -518,6 +578,18 @@ def _validate(specification: object) -> tuple[dict[str, object], _Kind, str, uui
                         f"реквизит типа `{expected_type}`."
                     ),
                 )
+    if kind.ru in {"Справочник", "Документ", "РегистрСведений"}:
+        for role, index in represented_role_indexes.items():
+            if role == "record_set" or role in default_roles:
+                continue
+            _fail(
+                "missing_default_form_role",
+                f"$specification.forms[{index}].default",
+                (
+                    f"Для представленной роли `{role}` требуется ровно одна "
+                    "форма с default=true."
+                ),
+            )
     value["forms"] = normalized_forms
     if kind.ru == "Обработка":
         if not bool(normalized_forms[0]["default"]):
@@ -526,6 +598,12 @@ def _validate(specification: object) -> tuple[dict[str, object], _Kind, str, uui
                 "$specification.forms[0].default",
                 "Единственная основная форма обработки требует default=true.",
             )
+    if kind.ru == "Отчет" and not bool(normalized_forms[0]["default"]):
+        _fail(
+            "missing_default_report_form",
+            "$specification.forms[0].default",
+            "Единственная основная форма отчета требует default=true.",
+        )
     if kind.ru == "РегистрСведений" and not any(value.get(collection, []) for collection, _ in kind.fields):
         _fail("missing_register_field", "$specification", "Регистр должен содержать хотя бы одно поле.")
     return value, kind, match.group(2), identity
@@ -640,6 +718,21 @@ def _data_processor_properties(
     )
 
 
+def _report_properties(
+    name: str, synonym: object, defaults: dict[str, str]
+) -> str:
+    return (
+        f"<Name>{escape(name)}</Name>{_synonym(synonym)}<Comment/>"
+        "<UseStandardCommands>true</UseStandardCommands>"
+        f"<DefaultForm>{escape(defaults.get('object', ''))}</DefaultForm>"
+        f"<AuxiliaryForm/><MainDataCompositionSchema>Report.{escape(name)}.Template."
+        "ОсновнаяСхемаКомпоновкиДанных</MainDataCompositionSchema>"
+        "<DefaultSettingsForm/><AuxiliarySettingsForm/><DefaultVariantForm/><VariantsStorage/>"
+        "<SettingsStorage/><IncludeHelpInContents>false</IncludeHelpInContents>"
+        "<ExtendedPresentation/><Explanation/>"
+    )
+
+
 def _document_standard_attribute(name: str) -> str:
     fill_checking = "ShowError" if name == "Date" else "DontCheck"
     return (
@@ -715,6 +808,44 @@ def _form_descriptor(
     ).replace("\n", "\r\n")
 
 
+def _report_dcs_descriptor(identity: uuid.UUID, format_version: str) -> str:
+    name = "ОсновнаяСхемаКомпоновкиДанных"
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        f'<MetaDataObject {_root_attributes(format_version)}><Template '
+        f'uuid="{_uuid(identity, f"template:{name}")}"><Properties>'
+        f"<Name>{name}</Name>"
+        "<Synonym><v8:item><v8:lang>ru</v8:lang>"
+        "<v8:content>Основная схема компоновки данных</v8:content>"
+        "</v8:item></Synonym><Comment/>"
+        "<TemplateType>DataCompositionSchema</TemplateType>"
+        "</Properties></Template></MetaDataObject>"
+    ).replace("\n", "\r\n")
+
+
+def _report_dcs_template() -> str:
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\r\n'
+        '<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" '
+        'xmlns:dcscom="http://v8.1c.ru/8.1/data-composition-system/common" '
+        'xmlns:dcscor="http://v8.1c.ru/8.1/data-composition-system/core" '
+        'xmlns:dcsset="http://v8.1c.ru/8.1/data-composition-system/settings" '
+        'xmlns:v8="http://v8.1c.ru/8.1/data/core" '
+        'xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" '
+        'xmlns:xs="http://www.w3.org/2001/XMLSchema" '
+        'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">\r\n'
+        "\t<settingsVariant>\r\n"
+        "\t\t<dcsset:name>Основной</dcsset:name>\r\n"
+        '\t\t<dcsset:presentation xsi:type="xs:string">Основной</dcsset:presentation>\r\n'
+        '\t\t<dcsset:settings xmlns:style="http://v8.1c.ru/8.1/data/ui/style" '
+        'xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" '
+        'xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" '
+        'xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows"/>\r\n'
+        "\t</settingsVariant>\r\n"
+        "</DataCompositionSchema>\r\n"
+    )
+
+
 def compile_metadata_object(specification: dict[str, object]) -> dict[str, object]:
     """Скомпилировать schema v1 в памяти, не читая и не записывая файлы."""
 
@@ -739,11 +870,15 @@ def compile_metadata_object(specification: dict[str, object]) -> dict[str, objec
         properties = _document_properties(
             name, value["synonym"], defaults, value
         )
-    else:
+    elif kind.ru == "Обработка":
         properties = _data_processor_properties(
             name, value["synonym"], defaults
         )
+    else:
+        properties = _report_properties(name, value["synonym"], defaults)
     children = "".join(f"<Form>{escape(str(form['name']))}</Form>" for form in forms)
+    if kind.ru == "Отчет":
+        children += "<Template>ОсновнаяСхемаКомпоновкиДанных</Template>"
     for collection, xml_kind in kind.fields:
         children += "".join(
             _field_xml(field, xml_kind, identity, collection)
@@ -758,6 +893,23 @@ def compile_metadata_object(specification: dict[str, object]) -> dict[str, objec
     ).replace("\n", "\r\n")
     owner = f"{kind.directory}/{name}"
     artifacts: list[dict[str, str]] = [{"path": f"{owner}.xml", "content": descriptor}]
+    if kind.ru == "Отчет":
+        template_name = "ОсновнаяСхемаКомпоновкиДанных"
+        template_base = f"{owner}/Templates/{template_name}"
+        artifacts.extend(
+            [
+                {
+                    "path": f"{template_base}.xml",
+                    "content": _report_dcs_descriptor(
+                        identity, str(value["format_version"])
+                    ),
+                },
+                {
+                    "path": f"{template_base}/Ext/Template.xml",
+                    "content": _report_dcs_template(),
+                },
+            ]
+        )
     for form in forms:
         form_name = str(form["name"])
         base = f"{owner}/Forms/{form_name}"
@@ -770,9 +922,15 @@ def compile_metadata_object(specification: dict[str, object]) -> dict[str, objec
                     ),
                 },
                 {"path": f"{base}/Ext/Form.xml", "content": str(form["form_xml"])},
-                {"path": f"{base}/Ext/Form/Module.bsl", "content": str(form["module_bsl"])},
             ]
         )
+        if not _scaffold_only_module(str(form["module_bsl"])):
+            artifacts.append(
+                {
+                    "path": f"{base}/Ext/Form/Module.bsl",
+                    "content": str(form["module_bsl"]),
+                }
+            )
     if len(artifacts) > MAX_ARTIFACTS:
         _fail(
             "too_many_artifacts",
@@ -789,44 +947,60 @@ def compile_metadata_object(specification: dict[str, object]) -> dict[str, objec
             f"Суммарный размер артефактов превышает {MAX_TOTAL_BYTES} байт.",
         )
     diagnostics: list[dict[str, str]] = []
-    if kind.ru == "Справочник":
-        required_paths = []
-        if int(value["description_length"]) > 0:
-            required_paths.append("Объект.Наименование")
-        if int(value["code_length"]) > 0:
-            required_paths.append("Объект.Код")
-        default_form_spec = next(
-            (
-                form
-                for form in forms
-                if bool(form["default"]) and form["role"] == "object"
-            ),
-            None,
-        )
-        if default_form_spec is not None:
-            root = ET.fromstring(str(default_form_spec["form_xml"]))
-            actual_paths = {
-                node.text
-                for node in root.iter(f"{{{LOGFORM}}}DataPath")
-                if node.text
+    field_names = [
+        str(field["name"])
+        for collection, _xml_kind in kind.fields
+        for field in value.get(collection, [])
+    ]
+    for form in forms:
+        if not bool(form["default"]):
+            continue
+        role = str(form["role"])
+        required_paths: list[str] = []
+        if kind.ru == "Справочник":
+            if role == "object":
+                if int(value["description_length"]) > 0:
+                    required_paths.append("Объект.Description")
+                if int(value["code_length"]) > 0:
+                    required_paths.append("Объект.Code")
+                required_paths.extend(f"Объект.{name}" for name in field_names)
+            elif role in {"list", "choice"}:
+                if int(value["description_length"]) > 0:
+                    required_paths.append("Список.Description")
+                if int(value["code_length"]) > 0:
+                    required_paths.append("Список.Code")
+        elif kind.ru == "Документ":
+            if role == "object":
+                required_paths = ["Объект.Number", "Объект.Date"]
+                required_paths.extend(f"Объект.{name}" for name in field_names)
+            elif role in {"list", "choice"}:
+                required_paths = ["Список.Date", "Список.Number"]
+        elif kind.ru == "РегистрСведений" and role in {"record", "list"}:
+            prefix = "Запись" if role == "record" else "Список"
+            required_paths = [f"{prefix}.{name}" for name in field_names]
+        if not required_paths:
+            continue
+        root = ET.fromstring(str(form["form_xml"]))
+        actual_paths = {
+            node.text
+            for node in root.iter(f"{{{LOGFORM}}}DataPath")
+            if node.text
+        }
+        missing_diagnostics = [
+            {
+                "status": "failed",
+                "code": "required_standard_field_missing",
+                "path": "$specification.forms",
+                "message": (
+                    f"Форма по умолчанию роли `{role}` обязана выводить "
+                    f"`{required_path}` по профилю Конфигуратора."
+                ),
             }
-            missing_diagnostics = []
-            for required_path in required_paths:
-                if required_path not in actual_paths:
-                    missing_diagnostics.append(
-                        {
-                            "status": "failed",
-                            "code": "required_standard_field_missing",
-                            "path": "$specification.forms",
-                            "message": (
-                                f"Основная форма справочника обязана выводить "
-                                f"`{required_path}`, потому что соответствующая "
-                                "длина стандартного реквизита больше нуля."
-                            ),
-                        }
-                    )
-            if missing_diagnostics:
-                raise MetadataAuthoringContractError(missing_diagnostics)
+            for required_path in required_paths
+            if required_path not in actual_paths
+        ]
+        if missing_diagnostics:
+            raise MetadataAuthoringContractError(missing_diagnostics)
     return {
         "status": "compiled",
         "schema_version": 1,

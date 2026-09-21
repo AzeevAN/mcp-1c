@@ -14,10 +14,11 @@ MAX_ARTIFACT_BYTES = 2 * 1024 * 1024
 MAX_TOTAL_BYTES = 8 * 1024 * 1024
 MD_NAMESPACE = "http://v8.1c.ru/8.3/MDClasses"
 LOGFORM_NAMESPACE = "http://v8.1c.ru/8.3/xcf/logform"
+DCS_SCHEMA_NAMESPACE = "http://v8.1c.ru/8.1/data-composition-system/schema"
 _FORBIDDEN_XML_DECLARATION = re.compile(r"<!\s*(?:DOCTYPE|ENTITY)\b", re.I)
 _QNAME = re.compile(r"^([A-Za-z_][A-Za-z0-9_.-]*):[^\s:]+$")
 _OBJECT_REF = re.compile(
-    r"^(Справочник|РегистрСведений|Документ|Обработка)\.([A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*)$"
+    r"^(Справочник|РегистрСведений|Документ|Обработка|Отчет)\.([A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*)$"
 )
 _FORMAT_VERSION = re.compile(r"^\d+\.\d+(?:\.\d+)*$")
 _METADATA_NAME = re.compile(r"^[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*$")
@@ -73,6 +74,13 @@ _KINDS = {
         "Обработка",
         "DataProcessor",
         "DataProcessors",
+        ("Object", "Manager"),
+        ("DefaultForm",),
+    ),
+    "Отчет": _Kind(
+        "Отчет",
+        "Report",
+        "Reports",
         ("Object", "Manager"),
         ("DefaultForm",),
     ),
@@ -406,6 +414,70 @@ def _check_format_version(
         )
 
 
+def _infer_supported_form_role(
+    form_root: ET.Element,
+    object_kind: str,
+    object_name: str,
+) -> str | None:
+    """Вывести роль только из подтверждённого закрытого XML-профиля Forms."""
+
+    main_attributes = [
+        attribute
+        for attribute in form_root.iter()
+        if _local(attribute.tag) == "Attribute"
+        and _child_text(attribute, "MainAttribute") == "true"
+    ]
+    if len(main_attributes) != 1:
+        return None
+    main = main_attributes[0]
+    main_name = main.get("name", "")
+    main_types = [
+        node.text.strip()
+        for node in main.iter()
+        if _local(node.tag) == "Type" and node.text and node.text.strip()
+    ]
+    if object_kind == "Справочник" and (
+        main_name == "Объект"
+        and main_types == [f"cfg:CatalogObject.{object_name}"]
+    ):
+        return "object"
+    if object_kind == "Документ" and (
+        main_name == "Объект"
+        and main_types == [f"cfg:DocumentObject.{object_name}"]
+    ):
+        return "object"
+    if object_kind == "РегистрСведений":
+        if (
+            main_name == "Запись"
+            and main_types
+            == [f"cfg:InformationRegisterRecordManager.{object_name}"]
+            and _child_text(main, "SavedData") == "true"
+        ):
+            return "record"
+        if (
+            main_name == object_name
+            and main_types == [f"cfg:InformationRegisterRecordSet.{object_name}"]
+            and _child_text(main, "SavedData") == "true"
+        ):
+            return "record_set"
+    if (
+        object_kind in {"Справочник", "Документ", "РегистрСведений"}
+        and main_name == "Список"
+        and main_types == ["cfg:DynamicList"]
+    ):
+        choice_mode = _find_child(form_root, "ChoiceMode")
+        opening_mode = _find_child(form_root, "WindowOpeningMode")
+        if choice_mode is None and opening_mode is None:
+            return "list"
+        if (
+            object_kind in {"Справочник", "Документ"}
+            and _child_text(form_root, "ChoiceMode") == "true"
+            and _child_text(form_root, "WindowOpeningMode") == "LockOwnerWindow"
+        ):
+            return "choice"
+    return None
+
+
 def _check_forms(
     owner_path: str,
     metadata_object: ET.Element,
@@ -433,6 +505,11 @@ def _check_forms(
         for child in (child_objects if child_objects is not None else ())
         if _local(child.tag) == "Form" and (child.text or "").strip()
     ]
+    template_names = [
+        (child.text or "").strip()
+        for child in (child_objects if child_objects is not None else ())
+        if _local(child.tag) == "Template" and (child.text or "").strip()
+    ]
     if kind.object_kind == "Обработка" and not form_names:
         report.fail(
             "forms",
@@ -447,6 +524,27 @@ def _check_forms(
             f"{owner_path}.xml:ChildObjects",
             "Базовая встроенная обработка поддерживает ровно одну объявленную форму.",
         )
+    if kind.object_kind == "Отчет" and len(form_names) != 1:
+        report.fail(
+            "forms",
+            "invalid_report_form_count",
+            f"{owner_path}.xml:ChildObjects",
+            "Базовый отчет требует ровно одну объявленную форму.",
+        )
+    if kind.object_kind == "Отчет" and child_objects is not None:
+        expected_template = "ОсновнаяСхемаКомпоновкиДанных"
+        unsupported_children = [
+            _local(child.tag)
+            for child in child_objects
+            if _local(child.tag) not in {"Form", "Template"}
+        ]
+        if unsupported_children or template_names != [expected_template]:
+            report.fail(
+                "forms",
+                "invalid_report_dcs_child",
+                f"{owner_path}.xml:ChildObjects",
+                "Отчет требует ровно один DCS-шаблон `ОсновнаяСхемаКомпоновкиДанных`.",
+            )
     if len(set(form_names)) != len(form_names):
         report.fail(
             "forms",
@@ -457,6 +555,7 @@ def _check_forms(
     valid_form_names: list[str] = []
     form_main_types: dict[str, list[str]] = {}
     form_main_names: dict[str, list[str]] = {}
+    inferred_form_roles: dict[str, str] = {}
     expected_paths = {f"{owner_path}.xml"}
     for form_name in form_names:
         if _METADATA_NAME.fullmatch(form_name) is None:
@@ -471,7 +570,9 @@ def _check_forms(
         descriptor_path = f"{owner_path}/Forms/{form_name}.xml"
         form_xml_path = f"{owner_path}/Forms/{form_name}/Ext/Form.xml"
         module_path = f"{owner_path}/Forms/{form_name}/Ext/Form/Module.bsl"
-        expected_paths.update({descriptor_path, form_xml_path, module_path})
+        expected_paths.update({descriptor_path, form_xml_path})
+        if kind.object_kind != "Отчет" and module_path in artifacts:
+            expected_paths.add(module_path)
         for path, code, message in (
             (
                 descriptor_path,
@@ -479,12 +580,16 @@ def _check_forms(
                 f"Отсутствует descriptor формы `{form_name}`.",
             ),
             (form_xml_path, "missing_form_xml", f"Отсутствует Form.xml формы `{form_name}`."),
-            (module_path, "missing_form_module", f"Отсутствует Module.bsl формы `{form_name}`."),
         ):
             if path not in artifacts:
                 report.fail("forms", code, path, message)
         internal_form_entry = parsed.get(form_xml_path)
         if internal_form_entry is not None:
+            inferred_role = _infer_supported_form_role(
+                internal_form_entry[0], kind.object_kind, object_name
+            )
+            if inferred_role is not None:
+                inferred_form_roles[form_name] = inferred_role
             _check_format_version(
                 internal_form_entry[0], form_xml_path, report, "forms", format_version
             )
@@ -505,12 +610,12 @@ def _check_forms(
                 )
             form_main_types[form_name] = main_types
             form_main_names[form_name] = main_names
-            if kind.object_kind in {"Документ", "Обработка"}:
-                object_type = (
-                    "DocumentObject"
-                    if kind.object_kind == "Документ"
-                    else "DataProcessorObject"
-                )
+            if kind.object_kind in {"Документ", "Обработка", "Отчет"}:
+                object_type = {
+                    "Документ": "DocumentObject",
+                    "Обработка": "DataProcessorObject",
+                    "Отчет": "ReportObject",
+                }[kind.object_kind]
                 expected_type = f"cfg:{object_type}.{object_name}"
                 foreign_object_type = next(
                     (
@@ -572,6 +677,50 @@ def _check_forms(
                         module_path,
                         "Прикладной BSL формы обработки не входит в базовый контракт.",
                     )
+            if kind.object_kind == "Отчет":
+                if main_names != ["Отчет"]:
+                    report.fail(
+                        "forms",
+                        "invalid_report_main_attribute",
+                        form_xml_path,
+                        "Основная форма отчета требует единственный главный реквизит `Отчет`.",
+                    )
+                expected_report_type = f"cfg:ReportObject.{object_name}"
+                if main_types != [expected_report_type]:
+                    report.fail(
+                        "forms",
+                        "form_owner_mismatch",
+                        form_xml_path,
+                        "Главный реквизит Отчет должен иметь ровно один тип "
+                        f"`{expected_report_type}`.",
+                    )
+                structural_behavior = {
+                    _local(node.tag) for node in internal_form_entry[0].iter()
+                } & {
+                    "Button", "ButtonGroup", "Command", "CommandBar",
+                    "CommandName", "CommandSource", "Event", "Popup", "SavedData",
+                }
+                if any(
+                    _local(node.tag) in {"AutoCommandBar", "ContextMenu"}
+                    and len(node) > 0
+                    for node in internal_form_entry[0].iter()
+                ):
+                    structural_behavior.add("CommandContainer")
+                if structural_behavior:
+                    report.fail(
+                        "forms",
+                        "unsupported_report_form_behavior",
+                        form_xml_path,
+                        "Команды, события и SavedData формы отчета не поддерживаются.",
+                    )
+                module_bsl = artifacts.get(module_path)
+                if module_bsl is not None and not _scaffold_only_module(module_bsl):
+                    report.fail(
+                        "forms",
+                        "unsupported_report_module_bsl",
+                        module_path,
+                        "Прикладной BSL формы отчета не входит в базовый контракт.",
+                    )
         form_entry = parsed.get(descriptor_path)
         if form_entry is None:
             if descriptor_path in artifacts:
@@ -614,6 +763,94 @@ def _check_forms(
                 descriptor_path,
                 "Поддерживается только FormType `Managed`.",
             )
+    if kind.object_kind == "Отчет":
+        template_name = "ОсновнаяСхемаКомпоновкиДанных"
+        template_descriptor_path = (
+            f"{owner_path}/Templates/{template_name}.xml"
+        )
+        template_xml_path = (
+            f"{owner_path}/Templates/{template_name}/Ext/Template.xml"
+        )
+        expected_paths.update({template_descriptor_path, template_xml_path})
+        if template_descriptor_path not in artifacts:
+            report.fail(
+                "forms", "missing_report_dcs_descriptor",
+                template_descriptor_path,
+                "Отсутствует descriptor основной СКД.",
+            )
+        if template_xml_path not in artifacts:
+            report.fail(
+                "forms", "missing_report_dcs_xml", template_xml_path,
+                "Отсутствует Template.xml основной СКД.",
+            )
+        template_entry = parsed.get(template_descriptor_path)
+        if template_entry is not None:
+            template_root = template_entry[0]
+            _check_format_version(
+                template_root, template_descriptor_path, report, "forms",
+                format_version,
+            )
+            if _require_metadata_root(
+                template_root, template_descriptor_path, report, "forms"
+            ):
+                templates = [
+                    child for child in template_root
+                    if _local(child.tag) == "Template"
+                ]
+                if len(templates) != 1:
+                    report.fail(
+                        "forms", "invalid_report_dcs_descriptor",
+                        template_descriptor_path,
+                        "Descriptor СКД должен содержать ровно один Template.",
+                    )
+                else:
+                    template = templates[0]
+                    template_properties = _find_child(template, "Properties")
+                    if (
+                        not template.attrib.get("uuid", "").strip()
+                        or _child_text(template_properties, "Name") != template_name
+                        or _child_text(template_properties, "TemplateType")
+                        != "DataCompositionSchema"
+                    ):
+                        report.fail(
+                            "forms", "invalid_report_dcs_descriptor",
+                            template_descriptor_path,
+                            "Template должен описывать DataCompositionSchema с каноническим именем.",
+                        )
+        dcs_entry = parsed.get(template_xml_path)
+        if dcs_entry is not None:
+            dcs_root = dcs_entry[0]
+            variants = [
+                child for child in dcs_root
+                if _local(child.tag) == "settingsVariant"
+            ]
+            if len(dcs_root) != 1 or len(variants) != 1:
+                report.fail(
+                    "forms", "invalid_report_dcs_default_variant",
+                    template_xml_path,
+                    "Минимальная СКД требует ровно один вариант `Основной`.",
+                )
+            else:
+                variant = variants[0]
+                settings_nodes = [
+                    child for child in variant
+                    if _local(child.tag) == "settings"
+                ]
+                if (
+                    [_local(child.tag) for child in variant]
+                    != ["name", "presentation", "settings"]
+                    or _child_text(variant, "name") != "Основной"
+                    or _child_text(variant, "presentation") != "Основной"
+                    or len(settings_nodes) != 1
+                    or len(settings_nodes[0]) != 0
+                    or (settings_nodes[0].text or "").strip()
+                    or settings_nodes[0].attrib
+                ):
+                    report.fail(
+                        "forms", "invalid_report_dcs_default_variant",
+                        template_xml_path,
+                        "Вариант СКД должен иметь имя и представление `Основной`, а также settings.",
+                    )
     for path in sorted(set(artifacts) - expected_paths):
         report.fail(
             "forms",
@@ -625,6 +862,35 @@ def _check_forms(
         property_name: _child_text(properties, property_name)
         for property_name in kind.default_form_properties
     }
+    default_property_by_role = {
+        "Справочник": {
+            "object": "DefaultObjectForm",
+            "list": "DefaultListForm",
+            "choice": "DefaultChoiceForm",
+        },
+        "Документ": {
+            "object": "DefaultObjectForm",
+            "list": "DefaultListForm",
+            "choice": "DefaultChoiceForm",
+        },
+        "РегистрСведений": {
+            "record": "DefaultRecordForm",
+            "list": "DefaultListForm",
+        },
+    }.get(kind.object_kind, {})
+    for role in sorted(set(inferred_form_roles.values())):
+        property_name = default_property_by_role.get(role)
+        if property_name is None or default_forms.get(property_name) is not None:
+            continue
+        report.fail(
+            "forms",
+            "missing_default_form_role",
+            f"{owner_path}.xml:{property_name}",
+            (
+                f"Для представленной роли `{role}` требуется непустой "
+                f"{property_name}."
+            ),
+        )
     if kind.object_kind == "Обработка":
         default_form_nodes = [
             child
@@ -666,10 +932,81 @@ def _check_forms(
                 f"{owner_path}.xml:DefaultForm",
                 "Единственная основная форма обработки должна быть DefaultForm.",
             )
+    if kind.object_kind == "Отчет":
+        default_form_nodes = [
+            child for child in (properties if properties is not None else ())
+            if _local(child.tag) == "DefaultForm"
+        ]
+        if len(default_form_nodes) != 1:
+            report.fail(
+                "forms", "invalid_default_report_form_count",
+                f"{owner_path}.xml:DefaultForm",
+                "Descriptor отчета должен содержать ровно один DefaultForm.",
+            )
+        for unsupported_property in (
+            "DefaultObjectForm", "DefaultListForm", "DefaultChoiceForm",
+            "DefaultRecordForm", "DefaultRecordSetForm",
+        ):
+            if _find_child(properties, unsupported_property) is not None:
+                report.fail(
+                    "forms", "unsupported_default_form_property",
+                    f"{owner_path}.xml:{unsupported_property}",
+                    "Отчет поддерживает только DefaultForm.",
+                )
+        auxiliary = _find_child(properties, "AuxiliaryForm")
+        if auxiliary is not None and (
+            (auxiliary.text or "").strip() or len(auxiliary) or auxiliary.attrib
+        ):
+            report.fail(
+                "forms", "unsupported_auxiliary_form",
+                f"{owner_path}.xml:AuxiliaryForm",
+                "Дополнительные формы отчета не входят в базовый контракт.",
+            )
+        expected_dcs = (
+            f"Report.{object_name}.Template."
+            "ОсновнаяСхемаКомпоновкиДанных"
+        )
+        if _child_text(properties, "MainDataCompositionSchema") != expected_dcs:
+            report.fail(
+                "forms", "invalid_report_data_composition_schema",
+                f"{owner_path}.xml:MainDataCompositionSchema",
+                "Отчет должен ссылаться на owner-relative основную СКД.",
+            )
+        for property_name in (
+            "DefaultSettingsForm", "AuxiliarySettingsForm", "DefaultVariantForm",
+            "VariantsStorage", "SettingsStorage",
+        ):
+            node = _find_child(properties, property_name)
+            if node is not None and (
+                (node.text or "").strip() or len(node) or node.attrib
+            ):
+                report.fail(
+                    "forms", "unsupported_report_settings",
+                    f"{owner_path}.xml:{property_name}",
+                    "Настройки и варианты отчета не входят в базовый контракт.",
+                )
+        if not _child_text(properties, "DefaultForm"):
+            report.fail(
+                "forms", "missing_default_report_form",
+                f"{owner_path}.xml:DefaultForm",
+                "Единственная основная форма отчета должна быть DefaultForm.",
+            )
+        if _child_text(properties, "UseStandardCommands") != "true":
+            report.fail(
+                "forms", "invalid_report_standard_commands",
+                f"{owner_path}.xml:UseStandardCommands",
+                "Дефолтная форма отчета требует UseStandardCommands=true.",
+            )
     allowed = {
         f"{kind.xml_kind}.{object_name}.Form.{form_name}"
         for form_name in valid_form_names
     }
+    field_names = [
+        _child_text(_find_child(child, "Properties"), "Name")
+        for child in (child_objects if child_objects is not None else ())
+        if _local(child.tag) in {"Attribute", "Dimension", "Resource"}
+    ]
+    field_names = [name for name in field_names if name is not None]
     for property_name, default_form in default_forms.items():
         if default_form is None:
             continue
@@ -684,25 +1021,38 @@ def _check_forms(
                     "<Форма> — короткое значение ChildObjects/Form."
                 ),
             )
-        elif kind.object_kind == "Справочник" and property_name == "DefaultObjectForm":
-            required_paths = []
-            for property_name, data_path in (
-                ("DescriptionLength", "Объект.Наименование"),
-                ("CodeLength", "Объект.Код"),
-            ):
-                raw_length = _child_text(properties, property_name)
-                try:
-                    exists = raw_length is not None and int(raw_length) > 0
-                except ValueError:
-                    exists = False
-                if exists:
-                    required_paths.append(data_path)
+        else:
             default_form_name = default_form.rsplit(".", 1)[-1]
-            form_xml_path = (
-                f"{owner_path}/Forms/{default_form_name}/Ext/Form.xml"
-            )
+            form_xml_path = f"{owner_path}/Forms/{default_form_name}/Ext/Form.xml"
             form_entry = parsed.get(form_xml_path)
-            if form_entry is not None:
+            required_paths: list[str] = []
+            if kind.object_kind == "Справочник":
+                prefix = "Объект" if property_name == "DefaultObjectForm" else "Список"
+                for length_property, standard_name in (
+                    ("DescriptionLength", "Description"),
+                    ("CodeLength", "Code"),
+                ):
+                    raw_length = _child_text(properties, length_property)
+                    try:
+                        exists = raw_length is not None and int(raw_length) > 0
+                    except ValueError:
+                        exists = False
+                    if exists:
+                        required_paths.append(f"{prefix}.{standard_name}")
+                if property_name == "DefaultObjectForm":
+                    required_paths.extend(f"Объект.{name}" for name in field_names)
+            elif kind.object_kind == "Документ":
+                if property_name == "DefaultObjectForm":
+                    required_paths = ["Объект.Number", "Объект.Date"]
+                    required_paths.extend(f"Объект.{name}" for name in field_names)
+                elif property_name in {"DefaultListForm", "DefaultChoiceForm"}:
+                    required_paths = ["Список.Date", "Список.Number"]
+            elif kind.object_kind == "РегистрСведений":
+                prefix = (
+                    "Запись" if property_name == "DefaultRecordForm" else "Список"
+                )
+                required_paths = [f"{prefix}.{name}" for name in field_names]
+            if form_entry is not None and required_paths:
                 actual_paths = {
                     (node.text or "").strip()
                     for node in form_entry[0].iter()
@@ -714,37 +1064,27 @@ def _check_forms(
                             "forms",
                             "required_standard_field_missing",
                             form_xml_path,
-                            (
-                                f"Основная форма справочника обязана выводить "
-                                f"`{required_path}`, потому что соответствующая "
-                                "длина стандартного реквизита больше нуля."
-                            ),
+                            "Форма по умолчанию обязана выводить "
+                            f"`{required_path}` по профилю Конфигуратора.",
                         )
-        elif kind.object_kind == "Документ" and property_name == "DefaultObjectForm":
-            default_form_name = default_form.rsplit(".", 1)[-1]
-            expected_type = f"cfg:DocumentObject.{object_name}"
-            if expected_type not in form_main_types.get(default_form_name, []):
+
+            expected_type = None
+            if kind.object_kind == "Документ" and property_name == "DefaultObjectForm":
+                expected_type = f"cfg:DocumentObject.{object_name}"
+            elif kind.object_kind == "Обработка" and property_name == "DefaultForm":
+                expected_type = f"cfg:DataProcessorObject.{object_name}"
+            elif kind.object_kind == "Отчет" and property_name == "DefaultForm":
+                expected_type = f"cfg:ReportObject.{object_name}"
+            if (
+                expected_type is not None
+                and expected_type not in form_main_types.get(default_form_name, [])
+            ):
                 report.fail(
                     "forms",
                     "form_owner_mismatch",
-                    f"{owner_path}/Forms/{default_form_name}/Ext/Form.xml",
-                    (
-                        "Форма из DefaultObjectForm должна иметь главный реквизит "
-                        f"типа `{expected_type}`."
-                    ),
-                )
-        elif kind.object_kind == "Обработка" and property_name == "DefaultForm":
-            default_form_name = default_form.rsplit(".", 1)[-1]
-            expected_type = f"cfg:DataProcessorObject.{object_name}"
-            if expected_type not in form_main_types.get(default_form_name, []):
-                report.fail(
-                    "forms",
-                    "form_owner_mismatch",
-                    f"{owner_path}/Forms/{default_form_name}/Ext/Form.xml",
-                    (
-                        "Форма из DefaultForm должна иметь главный реквизит "
-                        f"типа `{expected_type}`."
-                    ),
+                    form_xml_path,
+                    f"Форма из {property_name} должна иметь главный реквизит "
+                    f"типа `{expected_type}`.",
                 )
 
 
@@ -763,7 +1103,7 @@ def check_metadata_artifacts(
         report.fail_all(
             "unsupported_object_ref",
             "$object_ref",
-            "Поддержаны только Справочник.<Имя>, Документ.<Имя>, РегистрСведений.<Имя> и встроенная Обработка.<Имя>.",
+            "Поддержаны только Справочник.<Имя>, Документ.<Имя>, РегистрСведений.<Имя>, встроенная Обработка.<Имя> и Отчет.<Имя>.",
         )
         return report.result()
     if (
@@ -872,6 +1212,14 @@ def check_metadata_artifacts(
                         "invalid_form_xml_root",
                         path,
                         "Корень внутреннего Form.xml должен быть Form.",
+                    )
+            elif path.endswith("/Ext/Template.xml"):
+                if root.tag != f"{{{DCS_SCHEMA_NAMESPACE}}}DataCompositionSchema":
+                    report.fail(
+                        "xml",
+                        "invalid_dcs_xml_root",
+                        path,
+                        "Корень DCS Template.xml должен быть DataCompositionSchema.",
                     )
             elif root.tag != f"{{{MD_NAMESPACE}}}MetaDataObject":
                 report.fail(

@@ -27,12 +27,16 @@ def _document(*, with_form: bool = False) -> dict[str, object]:
                     '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" '
                     'xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" '
                     'version="2.20">'
-                    '<ChildItems><InputField name="Дата" id="1">'
-                    '<DataPath>Объект.Дата</DataPath></InputField></ChildItems>'
+                    '<ChildItems><InputField name="Номер" id="1">'
+                    '<DataPath>Объект.Number</DataPath></InputField>'
+                    '<InputField name="Дата" id="4">'
+                    '<DataPath>Объект.Date</DataPath></InputField>'
+                    '<InputField name="Основание" id="7">'
+                    '<DataPath>Объект.Основание</DataPath></InputField></ChildItems>'
                     '<Attributes><Attribute name="Объект" id="1">'
                     '<Type><v8:Type xmlns:v8="http://v8.1c.ru/8.1/data/core">'
                     'cfg:DocumentObject.ТестовыйДокумент</v8:Type></Type>'
-                    '<MainAttribute>true</MainAttribute><SavedData>true</SavedData>'
+                    '<MainAttribute>true</MainAttribute>'
                     '</Attribute></Attributes></Form>'
                 ),
                 "module_bsl": "",
@@ -94,10 +98,32 @@ def test_document_schema_compiler_checker_green(with_form):
         else "<DefaultObjectForm></DefaultObjectForm>"
     )
     assert expected_default in descriptor
+    if with_form:
+        assert (
+            "Documents/ТестовыйДокумент/Forms/ФормаДокумента/Ext/Form/Module.bsl"
+            not in artifacts
+        )
     checked = check_metadata_artifacts(
         first["object_ref"], first["format_version"], first["artifacts"]
     )
     assert checked["status"] == "passed", checked["diagnostics"]
+
+
+@pytest.mark.parametrize(
+    "data_path",
+    ["Объект.Number", "Объект.Date", "Объект.Основание"],
+)
+def test_document_default_object_form_requires_configurator_fields(data_path):
+    specification = _document(with_form=True)
+    specification["forms"][0]["form_xml"] = specification["forms"][0][
+        "form_xml"
+    ].replace(data_path, "Объект.Пропущено")
+
+    with pytest.raises(MetadataAuthoringContractError) as caught:
+        compile_metadata_object(specification)
+
+    assert caught.value.diagnostics[0]["code"] == "required_standard_field_missing"
+    assert data_path in caught.value.diagnostics[0]["message"]
 
 
 @pytest.mark.parametrize(

@@ -80,7 +80,11 @@ def _register_specification() -> dict[str, object]:
                 "default": True,
                 "form_xml": (
                     '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" '
-                    'version="2.20"/>'
+                    'version="2.20"><ChildItems>'
+                    '<InputField><DataPath>Запись.Справочник</DataPath></InputField>'
+                    '<InputField><DataPath>Запись.Значение</DataPath></InputField>'
+                    '<InputField><DataPath>Запись.ДатаАктуальности</DataPath></InputField>'
+                    '</ChildItems></Form>'
                 ),
                 "module_bsl": "",
             }
@@ -317,6 +321,7 @@ def test_catalog_compiler_требует_явную_длину_стандарт�
 
 def test_catalog_compiler_отклоняет_основную_форму_без_стандартных_полей():
     specification = _catalog_specification()
+    specification["attributes"] = []
     specification["forms"] = [
         {
             "name": "ФормаЭлемента",
@@ -334,12 +339,13 @@ def test_catalog_compiler_отклоняет_основную_форму_без_
         "required_standard_field_missing",
         "required_standard_field_missing",
     ]
-    assert "Объект.Наименование" in caught.value.diagnostics[0]["message"]
-    assert "Объект.Код" in caught.value.diagnostics[1]["message"]
+    assert "Объект.Description" in caught.value.diagnostics[0]["message"]
+    assert "Объект.Code" in caught.value.diagnostics[1]["message"]
 
 
 def test_catalog_compiler_принимает_стандартные_поля_основной_формы():
     specification = _catalog_specification()
+    specification["attributes"] = []
     specification["forms"] = [
         {
             "name": "ФормаЭлемента",
@@ -348,8 +354,8 @@ def test_catalog_compiler_принимает_стандартные_поля_о�
             "form_xml": (
                 '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">'
                 "<ChildItems>"
-                "<InputField><DataPath>Объект.Наименование</DataPath></InputField>"
-                "<InputField><DataPath>Объект.Код</DataPath></InputField>"
+                "<InputField><DataPath>Объект.Description</DataPath></InputField>"
+                "<InputField><DataPath>Объект.Code</DataPath></InputField>"
                 "</ChildItems></Form>"
             ),
             "module_bsl": "",
@@ -360,6 +366,41 @@ def test_catalog_compiler_принимает_стандартные_поля_о�
 
     assert result["status"] == "compiled"
     assert result["diagnostics"] == []
+
+
+@pytest.mark.parametrize(
+    "missing_path",
+    ["Объект.Description", "Объект.Code", "Объект.Артикул", "Объект.Активен"],
+)
+def test_catalog_default_object_requires_all_configurator_fields(missing_path):
+    specification = _catalog_specification()
+    paths = [
+        "Объект.Description",
+        "Объект.Code",
+        "Объект.Артикул",
+        "Объект.Активен",
+    ]
+    fields = "".join(
+        f"<InputField><DataPath>{path}</DataPath></InputField>"
+        for path in paths
+        if path != missing_path
+    )
+    specification["forms"] = [{
+        "name": "ФормаЭлемента",
+        "synonym": "Форма элемента",
+        "default": True,
+        "form_xml": (
+            '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">'
+            f"<ChildItems>{fields}</ChildItems></Form>"
+        ),
+        "module_bsl": "",
+    }]
+
+    with pytest.raises(MetadataAuthoringContractError) as caught:
+        compile_metadata_object(specification)
+
+    assert caught.value.diagnostics[0]["code"] == "required_standard_field_missing"
+    assert missing_path in caught.value.diagnostics[0]["message"]
 
 
 def test_catalog_compiler_отклоняет_тени_реквизитов_объекта_в_form_xml():
@@ -399,7 +440,6 @@ def test_register_compiler_упаковывает_forms_и_проходит_chec
         "InformationRegisters/ТестовыйРегистр.xml",
         "InformationRegisters/ТестовыйРегистр/Forms/ФормаЗаписи.xml",
         "InformationRegisters/ТестовыйРегистр/Forms/ФормаЗаписи/Ext/Form.xml",
-        "InformationRegisters/ТестовыйРегистр/Forms/ФормаЗаписи/Ext/Form/Module.bsl",
     }
     descriptor = artifacts["InformationRegisters/ТестовыйРегистр.xml"]
     assert "cfg:CatalogRef.ТестовыйСправочник" in descriptor
@@ -411,6 +451,26 @@ def test_register_compiler_упаковывает_forms_и_проходит_chec
         result["artifacts"],
     )
     assert checked["status"] == "passed"
+
+
+@pytest.mark.parametrize(
+    "missing_path",
+    ["Запись.Справочник", "Запись.Значение", "Запись.ДатаАктуальности"],
+)
+def test_register_default_record_requires_all_configurator_fields(missing_path):
+    specification = _register_specification()
+    specification["forms"][0]["form_xml"] = str(
+        specification["forms"][0]["form_xml"]
+    ).replace(
+        f"<InputField><DataPath>{missing_path}</DataPath></InputField>",
+        "",
+    )
+
+    with pytest.raises(MetadataAuthoringContractError) as caught:
+        compile_metadata_object(specification)
+
+    assert caught.value.diagnostics[0]["code"] == "required_standard_field_missing"
+    assert missing_path in caught.value.diagnostics[0]["message"]
 
 
 def test_compiler_не_создаёт_bundle_за_пределами_checker():

@@ -118,6 +118,10 @@ def _forms_schema(roles: tuple[str, ...]) -> dict[str, object]:
     return {
         "type": "array",
         "items": item,
+        "$comment": (
+            "Cross-item contract: compiler requires exactly one default=true "
+            "for every represented default-capable role; record_set is excluded."
+        ),
     }
 
 
@@ -240,12 +244,31 @@ def _data_processor_schema() -> dict[str, object]:
     )
 
 
+def _report_schema() -> dict[str, object]:
+    properties = _common_properties("Отчет", ("object",))
+    attributes = properties["attributes"]
+    assert isinstance(attributes, dict)
+    attributes["maxItems"] = 0
+    forms = properties["forms"]
+    assert isinstance(forms, dict)
+    forms["minItems"] = 1
+    forms["maxItems"] = 1
+    item = forms["items"]
+    assert isinstance(item, dict)
+    item_properties = item["properties"]
+    assert isinstance(item_properties, dict)
+    item_properties["role"] = {"const": "object"}
+    item_properties["default"] = {"const": True}
+    return _closed_object(properties, _COMMON_REQUIRED, title="Отчет")
+
+
 METADATA_SPECIFICATION_SCHEMA: dict[str, object] = {
     "oneOf": [
         _catalog_schema(),
         _information_register_schema(),
         _document_schema(),
         _data_processor_schema(),
+        _report_schema(),
     ]
 }
 

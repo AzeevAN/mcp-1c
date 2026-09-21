@@ -772,6 +772,11 @@ def _emit_table(
         f"<Table name={quoteattr(item.name)} id={quoteattr(table_id)}>",
     )
     _append(lines, indent + 1, "<Representation>List</Representation>")
+    if item.name == "Список" and item.data_path == "Список" and (
+        _ACTIVE_FORM_ROLE.get() in {"list", "choice"}
+    ):
+        _append(lines, indent + 1, "<CommandBarLocation>None</CommandBarLocation>")
+        _append(lines, indent + 1, "<DefaultItem>true</DefaultItem>")
     if (
         item.name == "Список"
         and item.data_path == "Список"
@@ -793,6 +798,16 @@ def _emit_table(
             f"<VerticalStretch>{str(item.vertical_stretch).lower()}</VerticalStretch>",
         )
     _append(lines, indent + 1, f"<DataPath>{escape(item.data_path)}</DataPath>")
+    if item.name == "Список" and item.data_path == "Список" and (
+        _ACTIVE_FORM_ROLE.get() in {"list", "choice"}
+    ):
+        _append(
+            lines,
+            indent + 1,
+            "<UserSettingsGroup>"
+            "СписокКомпоновщикНастроекПользовательскиеНастройки"
+            "</UserSettingsGroup>",
+        )
     if item.title is not None:
         _localized(lines, "Title", item.title, indent + 1)
     _emit_table_command_container(
@@ -926,10 +941,97 @@ def _emit_element(
         raise TypeError(f"Неподдержанный элемент: {type(item)!r}")
 
 
+def _emit_report_system_elements(
+    lines: list[str], allocator: _IdAllocator
+) -> None:
+    group_id = allocator.next()
+    _append(
+        lines,
+        2,
+        '<UsualGroup name="КомпоновщикНастроекПользовательскиеНастройки" '
+        f'id={quoteattr(group_id)}>',
+    )
+    _localized(lines, "Title", LocalizedText(ru="Настройки"), 3)
+    _append(lines, 3, "<VerticalStretch>false</VerticalStretch>")
+    _append(lines, 3, "<Group>Vertical</Group>")
+    _append(lines, 3, "<ShowTitle>false</ShowTitle>")
+    tooltip_id = allocator.next()
+    _append(
+        lines,
+        3,
+        '<ExtendedTooltip '
+        'name="КомпоновщикНастроекПользовательскиеНастройкиРасширеннаяПодсказка" '
+        f'id={quoteattr(tooltip_id)}/>',
+    )
+    _append(lines, 2, "</UsualGroup>")
+
+    result_id = allocator.next()
+    _append(
+        lines,
+        2,
+        f'<SpreadSheetDocumentField name="Результат" id={quoteattr(result_id)}>',
+    )
+    _append(lines, 3, "<DataPath>Результат</DataPath>")
+    _append(lines, 3, "<DefaultItem>true</DefaultItem>")
+    _append(lines, 3, "<TitleLocation>None</TitleLocation>")
+    _append(lines, 3, "<Width>100</Width>")
+    context_id = allocator.next()
+    _append(
+        lines,
+        3,
+        f'<ContextMenu name="РезультатКонтекстноеМеню" id={quoteattr(context_id)}/>',
+    )
+    tooltip_id = allocator.next()
+    _append(
+        lines,
+        3,
+        f'<ExtendedTooltip name="РезультатРасширеннаяПодсказка" id={quoteattr(tooltip_id)}/>',
+    )
+    _append(lines, 2, "</SpreadSheetDocumentField>")
+
+
+def _emit_list_choice_system_group(
+    lines: list[str], allocator: _IdAllocator
+) -> None:
+    group_id = allocator.next()
+    _append(
+        lines,
+        2,
+        '<UsualGroup name="СписокКомпоновщикНастроекПользовательскиеНастройки" '
+        f'id={quoteattr(group_id)}>',
+    )
+    _localized(
+        lines,
+        "Title",
+        LocalizedText(ru="Группа пользовательских настроек"),
+        3,
+    )
+    _append(lines, 3, "<VerticalStretch>false</VerticalStretch>")
+    _append(lines, 3, "<Group>Vertical</Group>")
+    _append(lines, 3, "<ShowTitle>false</ShowTitle>")
+    tooltip_id = allocator.next()
+    _append(
+        lines,
+        3,
+        '<ExtendedTooltip '
+        'name="СписокКомпоновщикНастроекПользовательскиеНастройкиРасширеннаяПодсказка" '
+        f'id={quoteattr(tooltip_id)}/>',
+    )
+    _append(lines, 2, "</UsualGroup>")
+
+
+def _is_report_form(form: ManagedForm) -> bool:
+    return form.context.role == "object" and form.context.owner.startswith("Отчет.")
+
+
 def _emit_elements(lines: list[str], form: ManagedForm) -> None:
     allocator = _IdAllocator()
     events_by_owner = _events_by_owner(form)
     _append(lines, 1, "<ChildItems>")
+    if _is_report_form(form):
+        _emit_report_system_elements(lines, allocator)
+    elif form.context.role in {"list", "choice"}:
+        _emit_list_choice_system_group(lines, allocator)
     for item in form.elements:
         _emit_element(lines, item, allocator, events_by_owner, 2)
     _append(lines, 1, "</ChildItems>")
@@ -1153,16 +1255,76 @@ def _compile_xml(form: ManagedForm) -> str:
     try:
         lines = ['<?xml version="1.0" encoding="UTF-8"?>', _root_opening(form)]
         _localized(lines, "Title", form.title, 1)
+        if _is_report_form(form):
+            for tag, value in (
+                ("ReportResult", "Результат"),
+                ("DetailsData", "ДанныеРасшифровки"),
+                ("ReportFormType", "Main"),
+                ("AutoShowState", "Auto"),
+                (
+                    "CustomSettingsFolder",
+                    "КомпоновщикНастроекПользовательскиеНастройки",
+                ),
+                ("ReportResultViewMode", "Auto"),
+                ("ViewModeApplicationOnSetReportResult", "Auto"),
+            ):
+                _append(lines, 1, f"<{tag}>{value}</{tag}>")
+        elif form.context.role == "object" and form.context.owner.startswith(
+            "Справочник."
+        ):
+            _append(lines, 1, "<WindowOpeningMode>LockOwnerWindow</WindowOpeningMode>")
+            _append(lines, 1, "<UseForFoldersAndItems>Items</UseForFoldersAndItems>")
+        elif form.context.role == "object" and form.context.owner.startswith(
+            "Документ."
+        ):
+            _append(lines, 1, "<AutoTime>CurrentOrLast</AutoTime>")
+            _append(lines, 1, "<UsePostingMode>Auto</UsePostingMode>")
+            _append(lines, 1, "<RepostOnWrite>true</RepostOnWrite>")
+        elif form.context.role == "record" and form.context.owner.startswith(
+            "РегистрСведений."
+        ):
+            _append(lines, 1, "<WindowOpeningMode>LockOwnerWindow</WindowOpeningMode>")
         if form.context.role == "choice":
             _append(lines, 1, "<WindowOpeningMode>LockOwnerWindow</WindowOpeningMode>")
-        if form.context.role in {"list", "choice"}:
-            _append(lines, 1, "<CommandBarLocation>None</CommandBarLocation>")
         _append(lines, 1, '<AutoCommandBar name="ФормаКоманднаяПанель" id="-1"/>')
         _emit_events(lines, _events_by_owner(form).get(None, ()), 1)
-        _emit_elements(lines, form)
+        if form.elements or _is_report_form(form) or form.context.role in {
+            "list",
+            "choice",
+        }:
+            _emit_elements(lines, form)
         _append(lines, 1, "<Attributes>")
-        for attribute_id, attribute in enumerate(form.attributes, 1):
-            _emit_attribute(lines, attribute, attribute_id)
+        if _is_report_form(form):
+            main_attribute = next(attribute for attribute in form.attributes if attribute.main)
+            _emit_attribute(lines, main_attribute, 1)
+            _append(lines, 2, '<Attribute name="Результат" id="2">')
+            _localized(lines, "Title", LocalizedText(ru="Результат"), 3)
+            _append(lines, 3, "<Type>")
+            _append(
+                lines,
+                4,
+                '<v8:Type xmlns:mxl="http://v8.1c.ru/8.2/data/spreadsheet">'
+                "mxl:SpreadsheetDocument</v8:Type>",
+            )
+            _append(lines, 3, "</Type>")
+            _append(lines, 2, "</Attribute>")
+            _append(lines, 2, '<Attribute name="ДанныеРасшифровки" id="3">')
+            _append(lines, 3, "<Type>")
+            _append(lines, 4, "<v8:Type>xs:string</v8:Type>")
+            _append(lines, 4, "<v8:StringQualifiers>")
+            _append(lines, 5, "<v8:Length>0</v8:Length>")
+            _append(lines, 5, "<v8:AllowedLength>Variable</v8:AllowedLength>")
+            _append(lines, 4, "</v8:StringQualifiers>")
+            _append(lines, 3, "</Type>")
+            _append(lines, 2, "</Attribute>")
+            local_attributes = (
+                attribute for attribute in form.attributes if not attribute.main
+            )
+            for attribute_id, attribute in enumerate(local_attributes, 4):
+                _emit_attribute(lines, attribute, attribute_id)
+        else:
+            for attribute_id, attribute in enumerate(form.attributes, 1):
+                _emit_attribute(lines, attribute, attribute_id)
         _append(lines, 1, "</Attributes>")
         _append(lines, 1, "<Commands>")
         for command_id, command in enumerate(form.commands, 1):
@@ -1203,6 +1365,14 @@ def _compile_module(form: ManagedForm) -> str:
         ],
     }
     hints = [*access_hints.get(form.context.role, [])]
+    if form.context.role == "object" and form.context.owner.startswith("Отчет."):
+        hints = [
+            "// Данные формы: Отчет.<Реквизит>.",
+            (
+                "// Прикладной объект отчета только на сервере: "
+                'РеквизитФормыВЗначение("Отчет").'
+            ),
+        ]
     if form.context.role == "record_set":
         attribute_name = form.context.owner.split(".", 1)[1]
         hints = [
@@ -1329,6 +1499,7 @@ def compile_managed_form(specification: object) -> FormsResult:
                     {
                         "Документ": "document_object_context_verified",
                         "Обработка": "data_processor_object_context_verified",
+                        "Отчет": "report_object_context_verified",
                     }.get(
                         form.context.owner.split(".", 1)[0],
                         "catalog_object_context_verified",
@@ -1355,6 +1526,7 @@ def compile_managed_form(specification: object) -> FormsResult:
                     {
                         "Документ": "Контекст формы объекта документа согласован с главным реквизитом.",
                         "Обработка": "Контекст основной формы обработки согласован с главным реквизитом Объект.",
+                        "Отчет": "Контекст основной формы отчета согласован с главным реквизитом Отчет.",
                     }.get(
                         form.context.owner.split(".", 1)[0],
                         "Контекст формы объекта справочника согласован с главным реквизитом.",

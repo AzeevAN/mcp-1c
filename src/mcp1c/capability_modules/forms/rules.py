@@ -171,7 +171,7 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
             "supported",
             (
                 "Owner-aware вертикаль поддерживает role=object для владельца "
-                "Справочник.*, Документ.* или встроенной Обработка.* при совпадающем "
+                "Справочник.*, Документ.*, встроенной Обработка.* или Отчет.* при совпадающем "
                 "главном metadata_object."
             ),
             "corpus_invariant",
@@ -180,6 +180,7 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
                     "Справочник.<Имя>",
                     "Документ.<Имя>",
                     "Обработка.<Имя>",
+                    "Отчет.<Имя>",
                 ],
                 "role": "object",
                 "main_attribute": {
@@ -192,8 +193,53 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
                 },
                 "xml_type": (
                     "cfg:CatalogObject.<Имя>, cfg:DocumentObject.<Имя> или "
-                    "cfg:DataProcessorObject.<Имя>"
+                    "cfg:DataProcessorObject.<Имя>; для отчета отдельный профиль "
+                    "требует реквизит Отчет типа cfg:ReportObject.<Имя>"
                 ),
+                "derived_owner_profiles": {
+                    "Справочник.*": {
+                        "WindowOpeningMode": "LockOwnerWindow",
+                        "UseForFoldersAndItems": "Items",
+                    },
+                    "Документ.*": {
+                        "AutoTime": "CurrentOrLast",
+                        "UsePostingMode": "Auto",
+                        "RepostOnWrite": True,
+                    },
+                },
+                "empty_user_elements": (
+                    "допустимо; чистая форма обработки остаётся без ChildItems, "
+                    "а у отчёта остаются только вычисляемые системные элементы"
+                ),
+                "report_profile": {
+                    "owner": "Отчет.<Имя>",
+                    "role": "object",
+                    "main_attribute": "Отчет",
+                    "saved_data": False,
+                    "derived_root_properties": {
+                        "ReportResult": "Результат",
+                        "DetailsData": "ДанныеРасшифровки",
+                        "ReportFormType": "Main",
+                        "AutoShowState": "Auto",
+                        "CustomSettingsFolder": (
+                            "КомпоновщикНастроекПользовательскиеНастройки"
+                        ),
+                        "ReportResultViewMode": "Auto",
+                        "ViewModeApplicationOnSetReportResult": "Auto",
+                    },
+                    "derived_attributes": {
+                        "Результат": "mxl:SpreadsheetDocument",
+                        "ДанныеРасшифровки": "xs:string",
+                    },
+                    "derived_elements": [
+                        "КомпоновщикНастроекПользовательскиеНастройки",
+                        "Результат",
+                    ],
+                    "auto_command_bar": "standard_platform_filled",
+                    "commands": [],
+                    "events": [],
+                    "application_bsl": "unsupported",
+                },
             },
         ),
         FormRule(
@@ -202,8 +248,8 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
             (
                 "Для Справочник.* и Документ.* роли list/choice используют "
                 "единственный главный DynamicList Список и связанную таблицу Список. "
-                "Каждая колонка использует data_path Список.<ИмяПоля>; поля Код и "
-                "Наименование в примере берутся из создаваемого объекта. Если нового "
+                "Каждая колонка использует data_path Список.<ИмяПоля>; стандартные "
+                "поля справочника в XML называются Code и Description. Если нового "
                 "owner ещё нет в Registry, configuration_links получает warning: не "
                 "нужно придумывать фиктивные типы или ослаблять проверку доказанных "
                 "конфликтов для уже существующего owner."
@@ -229,14 +275,32 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
                         {
                             "kind": "input_field",
                             "name": "Код",
-                            "data_path": "Список.Код",
+                            "data_path": "Список.Code",
                         },
                         {
                             "kind": "input_field",
                             "name": "Наименование",
-                            "data_path": "Список.Наименование",
+                            "data_path": "Список.Description",
                         },
                     ],
+                },
+                "derived_default_profile": {
+                    "root_command_bar_location": "absent",
+                    "system_group": (
+                        "СписокКомпоновщикНастроекПользовательскиеНастройки"
+                    ),
+                    "system_group_ids": [1, 2],
+                    "table_id": 3,
+                    "table_properties": {
+                        "Representation": "List",
+                        "CommandBarLocation": "None",
+                        "DefaultItem": True,
+                        "DataPath": "Список",
+                        "UserSettingsGroup": (
+                            "СписокКомпоновщикНастроекПользовательскиеНастройки"
+                        ),
+                    },
+                    "columns": "caller_defined_order",
                 },
                 "minimal_example": {
                     "schema_version": 2,
@@ -268,12 +332,12 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
                                 {
                                     "kind": "input_field",
                                     "name": "Код",
-                                    "data_path": "Список.Код",
+                                    "data_path": "Список.Code",
                                 },
                                 {
                                     "kind": "input_field",
                                     "name": "Наименование",
-                                    "data_path": "Список.Наименование",
+                                    "data_path": "Список.Description",
                                 },
                             ],
                         }
@@ -631,6 +695,9 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
                 "saved_data": True,
                 "data_path": "Запись.<Реквизит>",
                 "auto_command_bar": "empty_platform_autofill",
+                "derived_root_properties": {
+                    "WindowOpeningMode": "LockOwnerWindow"
+                },
             },
         ),
         FormRule(

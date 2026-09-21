@@ -11,6 +11,7 @@ RuleTopic: TypeAlias = Literal[
     "catalog",
     "document",
     "data_processor",
+    "report",
     "information_register",
     "forms",
     "artifacts",
@@ -22,6 +23,7 @@ RULE_TOPICS: tuple[RuleTopic, ...] = (
     "catalog",
     "document",
     "data_processor",
+    "report",
     "information_register",
     "forms",
     "artifacts",
@@ -40,6 +42,7 @@ _REGISTER_TYPES = [
     "RecordManager",
 ]
 _DATA_PROCESSOR_TYPES = ["Object", "Manager"]
+_REPORT_TYPES = ["Object", "Manager"]
 
 _RULES: dict[RuleTopic, dict[str, object]] = {
     "overview": {
@@ -50,6 +53,7 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
             "Документ",
             "РегистрСведений",
             "Обработка",
+            "Отчет",
         ],
         "recommended_call_order": [
             "get_metadata_authoring_rules",
@@ -129,20 +133,26 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
                 "document": ["object", "list", "choice"],
                 "information_register": ["record", "list", "record_set"],
                 "data_processor": ["object"],
+                "report": ["object"],
                 "legacy_default": {
                     "catalog": "object",
                     "document": "object",
                     "information_register": "record",
                     "data_processor": "object",
+                    "report": "object",
                 },
                 "one_physical_form_one_role": True,
                 "shared_list_choice_form": "not_supported",
             },
             "form_defaults": (
-                "поле default остаётся обязательным boolean, но значение true "
-                "необязательно для каждой представленной роли; допустимо не "
-                "назначать ни одной формы по умолчанию, но не более одной "
-                "default=true на роль"
+                "поле default обязательно; для каждой представленной роли "
+                "object/list/choice Справочника и Документа и record/list "
+                "РегистраСведений требуется ровно одна default=true. "
+                "Дополнительные формы той же роли имеют default=false. "
+                "Непредставленная роль сохраняет пустой Default*Form; record_set "
+                "всегда требует default=false и не имеет DefaultRecordSetForm. "
+                "Cross-item правило проверяет compiler, поскольку публичная "
+                "JSON Schema описывает только форму элементов массива"
             ),
             "form_xml_preparation": (
                 "если forms[] непуст, до metadata compile обязательно запросите "
@@ -163,10 +173,15 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
                 ),
                 "default_object_form": (
                     "Основная форма обязана выводить "
-                    "Объект.Наименование при description_length > 0 и Объект.Код "
-                    "при code_length > 0. Это DataPath главного реквизита Объект, "
+                    "Объект.Description при description_length > 0, Объект.Code "
+                    "при code_length > 0 и Объект.<Имя> для каждого реквизита. "
+                    "Это DataPath главного реквизита Объект, "
                     "а не отдельные реквизиты формы. Отсутствие обязательного "
                     "DataPath отклоняет specification."
+                ),
+                "default_list_choice_forms": (
+                    "Формы list/choice по умолчанию выводят Список.Description "
+                    "и Список.Code при положительных длинах."
                 ),
             },
             "information_register_additional_required": [
@@ -211,7 +226,8 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
             "byte-for-byte программно и ту же role в forms[] -> "
             "compile_metadata_object -> check_metadata_artifacts. Ручной XML не "
             "считается доказанной формой: Metadata checker не подтверждает "
-            "provenance и semantic role Form.xml. Не перепечатывайте, не "
+            "provenance, а роль выводит только для закрытых XML-профилей. "
+            "Не перепечатывайте, не "
             "пересказывайте, не сокращайте, не обрезайте и не реконструируйте "
             "строки; не используйте minimal_shape_reference. Metadata compile "
             "request размером в десятки KB является нормальным."
@@ -266,9 +282,9 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
         "metadata_checker_boundary": (
             "check_metadata_artifacts проверяет descriptor, owner-relative Default*Form "
             "и комплект артефактов; чужой cfg:DocumentObject отклоняется и "
-            "DefaultObjectForm обязан содержать DocumentObject текущего владельца, "
-            "но checker не выводит semantic role из Form.xml; проверка роли "
-            "остаётся результатом check_managed_form"
+            "DefaultObjectForm обязан содержать DocumentObject текущего владельца. "
+            "Checker выводит semantic role только из поддержанных закрытых XML-профилей; "
+            "полная проверка роли остаётся результатом check_managed_form"
         ),
         "forms_profile": {
             "context": {
@@ -285,7 +301,9 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
             },
             "standard_field_rule": (
                 "стандартные реквизиты документа не добавляются отдельными "
-                "attributes формы: поле даты использует data_path `Объект.Дата`"
+                "attributes формы: default role=object выводит `Объект.Number`, "
+                "`Объект.Date` и все пользовательские реквизиты `Объект.<Имя>`; "
+                "default role=list/choice выводит `Список.Date` и `Список.Number`"
             ),
             "commands": [],
             "events": [],
@@ -375,6 +393,89 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
             "без дополнительных и вспомогательных форм",
         ],
     },
+    "report": {
+        "object_ref": "Отчет.<Имя>",
+        "scope": (
+            "только встроенный базовый отчет с минимальной системной СКД; "
+            "внешняя .erf не поддержана"
+        ),
+        "descriptor_path": "Reports/<Имя>.xml",
+        "descriptor_element": "md:Report",
+        "required_sections": ["InternalInfo", "Properties", "ChildObjects"],
+        "generated_types": _REPORT_TYPES,
+        "generated_type_name_pattern": "Report<Category>.<Имя>",
+        "form_roles": ["object"],
+        "default_form_property": "DefaultForm",
+        "default_form_value": "Report.<Имя>.Form.<Форма>",
+        "use_standard_commands": True,
+        "main_data_composition_schema": (
+            "Report.<Имя>.Template.ОсновнаяСхемаКомпоновкиДанных"
+        ),
+        "data_composition_schema_profile": {
+            "template": "ОсновнаяСхемаКомпоновкиДанных",
+            "template_type": "DataCompositionSchema",
+            "settings_variant": "Основной",
+            "datasets": [],
+            "fields": [],
+            "parameters": [],
+            "groupings": [],
+        },
+        "forms_required": True,
+        "forms_count": 1,
+        "default_required": True,
+        "forms_profile": {
+            "context": {"owner": "Отчет.<Имя>", "role": "object"},
+            "main_attribute": {
+                "name": "Отчет",
+                "type": {"kind": "metadata_object", "object": "Отчет.<Имя>"},
+                "main": True,
+                "saved_data": "не передавать",
+            },
+            "derived_by_forms_compiler": {
+                "root": [
+                    "ReportResult=Результат",
+                    "DetailsData=ДанныеРасшифровки",
+                    "ReportFormType=Main",
+                    "CustomSettingsFolder=КомпоновщикНастроекПользовательскиеНастройки",
+                ],
+                "attributes": [
+                    "Результат: mxl:SpreadsheetDocument",
+                    "ДанныеРасшифровки: xs:string",
+                ],
+                "elements": [
+                    "КомпоновщикНастроекПользовательскиеНастройки",
+                    "SpreadSheetDocumentField Результат",
+                ],
+                "auto_command_bar": "standard_platform_filled",
+            },
+        },
+        "compiler_specification_example": {
+            "schema_version": 1,
+            "object_ref": "Отчет.ПродажиПример",
+            "format_version": "2.20",
+            "identity": "90000000-0000-0000-0000-000000000001",
+            "synonym": "Продажи (пример)",
+            "attributes": [],
+            "forms": [{
+                "name": "ФормаОтчета",
+                "synonym": "Форма отчета",
+                "role": "object",
+                "default": True,
+                "form_xml": "<точный content Forms compiler>",
+                "module_bsl": "<точный content Forms compiler>",
+            }],
+        },
+        "limitations": [
+            "без внешней .erf",
+            (
+                "только минимальная системная СКД и пустой вариант Основной; "
+                "без наборов данных, полей, параметров, группировок и прикладных вариантов"
+            ),
+            "без макетов",
+            "без дополнительных форм",
+            "без команд, событий и прикладного BSL",
+        ],
+    },
     "catalog": {
         "object_ref": "Справочник.<Имя>",
         "descriptor_path": "Catalogs/<Имя>.xml",
@@ -394,8 +495,11 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
         "generated_type_name_pattern": "Catalog<Category>.<Имя>",
         "default_form_property": "DefaultObjectForm",
         "standard_form_fields": {
-            "Объект.Наименование": "обязательно при description_length > 0",
-            "Объект.Код": "обязательно при code_length > 0",
+            "Объект.Description": "обязательно при description_length > 0",
+            "Объект.Code": "обязательно при code_length > 0",
+            "Объект.<ИмяРеквизита>": "обязательно для каждого пользовательского реквизита",
+            "Список.Description": "обязательно для default list/choice при description_length > 0",
+            "Список.Code": "обязательно для default list/choice при code_length > 0",
         },
         "standard_command_bar": (
             "Для role=object не объявляйте пользовательские команды Записать/ЗаписатьИЗакрыть: "
@@ -427,9 +531,11 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
                         '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" '
                         'version="2.20"><ChildItems>'
                         '<InputField name="Наименование" id="1">'
-                        '<DataPath>Объект.Наименование</DataPath></InputField>'
+                        '<DataPath>Объект.Description</DataPath></InputField>'
                         '<InputField name="Код" id="2">'
-                        '<DataPath>Объект.Код</DataPath></InputField>'
+                        '<DataPath>Объект.Code</DataPath></InputField>'
+                        '<CheckBoxField name="Активен" id="3">'
+                        '<DataPath>Объект.Активен</DataPath></CheckBoxField>'
                         '</ChildItems></Form>'
                     ),
                     "module_bsl": "",
@@ -482,6 +588,10 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
             "оставьте commands пустым и используйте корневую AutoCommandBar, "
             "которую платформа заполняет по главному реквизиту Запись."
         ),
+        "default_form_fields": {
+            "record": "все измерения, ресурсы и реквизиты как Запись.<Имя>",
+            "list": "все измерения, ресурсы и реквизиты как Список.<Имя>",
+        },
         "compiler_specification_example": {
             "schema_version": 1,
             "object_ref": "РегистрСведений.ОценкиПример",
@@ -523,6 +633,8 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
                         'version="2.20"><ChildItems>'
                         '<InputField name="Контрагент" id="1">'
                         '<DataPath>Запись.Контрагент</DataPath></InputField>'
+                        '<InputField name="Оценка" id="2">'
+                        '<DataPath>Запись.Оценка</DataPath></InputField>'
                         '</ChildItems></Form>'
                     ),
                     "module_bsl": "",
@@ -543,20 +655,28 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
             "Документ": ["object", "list", "choice"],
             "РегистрСведений": ["record", "list", "record_set"],
             "Обработка": ["object"],
+            "Отчет": ["object"],
         },
         "legacy_role_when_omitted": {
             "Справочник": "object",
             "Документ": "object",
             "РегистрСведений": "record",
             "Обработка": "object",
+            "Отчет": "object",
         },
         "default_semantics": {
             "field_required": True,
-            "true_optional_per_role": True,
-            "maximum_true_per_role": 1,
-            "zero_defaults_allowed": True,
+            "exactly_one_true_per_represented_default_capable_role": True,
+            "additional_same_role_forms": "default=false",
+            "absent_role_default_property": "empty_allowed",
+            "record_set": "default=false; DefaultRecordSetForm отсутствует",
+            "enforcement": "compiler cross-item validation",
             "data_processor_override": (
                 "ровно одна role=object форма с default=true; она становится DefaultForm"
+            ),
+            "report_override": (
+                "ровно одна role=object форма с default=true; она становится DefaultForm, "
+                "а owner получает UseStandardCommands=true и минимальную основную СКД"
             ),
             "shared_physical_list_choice_form": "not_supported",
         },
@@ -589,7 +709,7 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
         ),
         "metadata_checker_boundary": {
             "provenance": "not_checked",
-            "semantic_role": "not_checked",
+            "semantic_role": "closed_xml_profiles_only",
             "owner_relative_bundle": "checked",
             "document_object_owner": "checked",
         },
@@ -630,8 +750,12 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
         "required_for_each_declared_form": [
             "<owner>/Forms/<Форма>.xml",
             "<owner>/Forms/<Форма>/Ext/Form.xml",
-            "<owner>/Forms/<Форма>/Ext/Form/Module.bsl",
         ],
+        "optional_form_module": (
+            "<owner>/Forms/<Форма>/Ext/Form/Module.bsl включается только при "
+            "непустом прикладном содержимом; scaffold из комментариев/областей "
+            "не входит в канонический bundle"
+        ),
         "form_descriptor": {
             "root": "md:MetaDataObject/md:Form",
             "required": ["uuid", "Properties/Name", "Properties/FormType"],
@@ -639,10 +763,10 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
             "name_value": "точное короткое значение ChildObjects/Form",
         },
         "default_form_references": {
-            "empty_allowed": True,
+            "empty_allowed_only_for_absent_role": True,
             "must_be_owner_relative": True,
             "must_reference_declared_form": True,
-            "semantic_role_from_form_xml": "not_checked",
+            "semantic_role_from_form_xml": "closed_xml_profiles_only",
         },
         "form_xml": {
             "path": "<owner>/Forms/<Форма>/Ext/Form.xml",

@@ -16,12 +16,13 @@ from mcp1c.capability_modules.metadata_authoring.rules import (
 from mcp1c.capability_modules.metadata_authoring.tools import load
 
 
-def test_rules_публикуют_границу_и_четыре_поддержанных_вида():
+def test_rules_публикуют_границу_и_пять_поддержанных_видов():
     assert RULE_TOPICS == (
         "overview",
         "catalog",
         "document",
         "data_processor",
+        "report",
         "information_register",
         "forms",
         "artifacts",
@@ -40,6 +41,7 @@ def test_rules_публикуют_границу_и_четыре_поддерж�
         "Документ",
         "РегистрСведений",
         "Обработка",
+        "Отчет",
     ]
     assert overview["writes_files"] is False
     assert overview["imports_configuration"] is False
@@ -81,16 +83,21 @@ def test_rules_публикуют_границу_и_четыре_поддерж�
         "document": ["object", "list", "choice"],
         "information_register": ["record", "list", "record_set"],
         "data_processor": ["object"],
+        "report": ["object"],
         "legacy_default": {
             "catalog": "object",
             "document": "object",
             "information_register": "record",
             "data_processor": "object",
+            "report": "object",
         },
         "one_physical_form_one_role": True,
         "shared_list_choice_form": "not_supported",
     }
-    assert "не более одной" in overview["compiler_specification"]["form_defaults"]
+    assert "ровно одна default=true" in overview["compiler_specification"]["form_defaults"]
+    assert "Cross-item правило проверяет compiler" in overview[
+        "compiler_specification"
+    ]["form_defaults"]
     assert "check_managed_form" in overview["forms_workflow"]
     assert "Если forms[] непуст" in overview["forms_workflow"]
     assert "get_managed_form_rules(topic=overview)" in overview[
@@ -114,9 +121,16 @@ def test_forms_topic_публикует_обязательную_цепочку_
         "Документ": ["object", "list", "choice"],
         "РегистрСведений": ["record", "list", "record_set"],
         "Обработка": ["object"],
+        "Отчет": ["object"],
     }
     assert "ровно одна" in rules["default_semantics"]["data_processor_override"]
     assert "default=true" in rules["default_semantics"]["data_processor_override"]
+    assert rules["default_semantics"][
+        "exactly_one_true_per_represented_default_capable_role"
+    ] is True
+    assert rules["default_semantics"]["additional_same_role_forms"] == "default=false"
+    assert rules["default_semantics"]["absent_role_default_property"] == "empty_allowed"
+    assert rules["default_semantics"]["enforcement"] == "compiler cross-item validation"
     assert rules["required_call_order"] == [
         "get_managed_form_rules(topic=overview)",
         "запросить перечисленные в overview предметные темы Forms",
@@ -142,7 +156,7 @@ def test_forms_topic_публикует_обязательную_цепочку_
     }
     assert rules["metadata_checker_boundary"] == {
         "provenance": "not_checked",
-        "semantic_role": "not_checked",
+        "semantic_role": "closed_xml_profiles_only",
         "owner_relative_bundle": "checked",
         "document_object_owner": "checked",
     }
@@ -153,6 +167,7 @@ def test_tool_descriptions_ставят_forms_workflow_до_metadata_compile():
     tools = {tool.name: tool for tool in load()}
     rules_description = tools["get_metadata_authoring_rules"].description
     compile_description = tools["compile_metadata_object"].description
+    checker_description = tools["check_metadata_artifacts"].description
 
     assert "topic=forms" in rules_description
     assert compile_description.startswith("Если forms[] непуст")
@@ -165,6 +180,8 @@ def test_tool_descriptions_ставят_forms_workflow_до_metadata_compile():
     assert "не сокращайте" in compile_description
     assert "не используйте minimal_shape_reference" in compile_description
     assert "десятки KB является нормальным" in compile_description
+    assert "ровно одну форму с default=true" in compile_description
+    assert "поддержанного закрытого XML-профиля" in checker_description
 
 
 def test_rules_фиксируют_полные_generated_types():
@@ -191,8 +208,11 @@ def test_rules_фиксируют_полные_generated_types():
         "choice": "DefaultChoiceForm",
     }
     assert catalog["standard_form_fields"] == {
-        "Объект.Наименование": "обязательно при description_length > 0",
-        "Объект.Код": "обязательно при code_length > 0",
+        "Объект.Description": "обязательно при description_length > 0",
+        "Объект.Code": "обязательно при code_length > 0",
+        "Объект.<ИмяРеквизита>": "обязательно для каждого пользовательского реквизита",
+        "Список.Description": "обязательно для default list/choice при description_length > 0",
+        "Список.Code": "обязательно для default list/choice при code_length > 0",
     }
     assert "commands пустым" in catalog["standard_command_bar"]
     assert data_processor["generated_types"] == ["Object", "Manager"]
@@ -273,7 +293,7 @@ def test_rules_фиксируют_полные_generated_types():
         },
         "main": True,
     }
-    assert "Объект.Дата" in document["forms_profile"]["standard_field_rule"]
+    assert "Объект.Date" in document["forms_profile"]["standard_field_rule"]
     assert document["forms_profile"]["commands"] == []
     assert document["forms_profile"]["events"] == []
     assert document["forms_workflow"] == [
@@ -336,10 +356,10 @@ def test_artifact_rules_достаточны_для_сборки_bundle_без_�
         "точное короткое значение ChildObjects/Form"
     )
     assert rules["default_form_references"] == {
-        "empty_allowed": True,
+        "empty_allowed_only_for_absent_role": True,
         "must_be_owner_relative": True,
         "must_reference_declared_form": True,
-        "semantic_role_from_form_xml": "not_checked",
+        "semantic_role_from_form_xml": "closed_xml_profiles_only",
     }
     assert rules["form_xml"] == {
         "path": "<owner>/Forms/<Форма>/Ext/Form.xml",

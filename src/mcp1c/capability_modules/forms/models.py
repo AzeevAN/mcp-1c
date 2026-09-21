@@ -63,8 +63,26 @@ _FORM_OWNER_KINDS = frozenset(
         "Справочник",
     }
 )
-_OBJECT_FORM_OWNER_KINDS = frozenset({"Справочник", "Документ", "Обработка"})
+_OBJECT_FORM_OWNER_KINDS = frozenset(
+    {"Справочник", "Документ", "Обработка", "Отчет"}
+)
 _LIST_CHOICE_FORM_OWNER_KINDS = frozenset({"Справочник", "Документ"})
+_REPORT_FORM_RESERVED_NAMES = frozenset(
+    {
+        "Результат",
+        "ДанныеРасшифровки",
+        "КомпоновщикНастроекПользовательскиеНастройки",
+        "КомпоновщикНастроекПользовательскиеНастройкиРасширеннаяПодсказка",
+        "РезультатКонтекстноеМеню",
+        "РезультатРасширеннаяПодсказка",
+    }
+)
+_LIST_CHOICE_RESERVED_NAMES = frozenset(
+    {
+        "СписокКомпоновщикНастроекПользовательскиеНастройки",
+        "СписокКомпоновщикНастроекПользовательскиеНастройкиРасширеннаяПодсказка",
+    }
+)
 FormRole: TypeAlias = Literal[
     "object", "list", "choice", "record", "record_set", "common", "custom"
 ]
@@ -561,7 +579,7 @@ class ManagedFormSpec(TypedDict):
     platform_version: NotRequired[str]
     title: LocalizedTextSpec
     attributes: Annotated[list[FormAttributeSpec], _AT_LEAST_ONE]
-    elements: Annotated[list[ElementSpec], _AT_LEAST_ONE]
+    elements: list[ElementSpec]
     commands: list[FormCommandSpec]
     events: list[FormEventSpec]
 
@@ -2296,7 +2314,7 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
     elements = tuple(
         _element(reader, value, f"$.elements[{index}]")
         for index, value in enumerate(
-            reader.array(root.get("elements"), "$.elements")
+            reader.array(root.get("elements"), "$.elements", allow_empty=True)
         )
     )
     commands = tuple(
@@ -2337,6 +2355,50 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
         code="duplicate_element_name",
         message="Имя элемента повторяется.",
     )
+    if context.owner.startswith("Отчет.") and context.role == "object":
+        for index, attribute in enumerate(attributes):
+            if attribute.name in _REPORT_FORM_RESERVED_NAMES:
+                reader.issue(
+                    "reserved_report_form_name",
+                    f"$.attributes[{index}].name",
+                    "Имя зарезервировано системным профилем основной формы отчета.",
+                )
+        for element, path, _parent_table in walked:
+            if element.name in _REPORT_FORM_RESERVED_NAMES:
+                reader.issue(
+                    "reserved_report_form_name",
+                    f"{path}.name",
+                    "Имя зарезервировано системным профилем основной формы отчета.",
+                )
+        for index, command in enumerate(commands):
+            if command.name in _REPORT_FORM_RESERVED_NAMES:
+                reader.issue(
+                    "reserved_report_form_name",
+                    f"$.commands[{index}].name",
+                    "Имя зарезервировано системным профилем основной формы отчета.",
+                )
+    if context.role in {"list", "choice"}:
+        for index, attribute in enumerate(attributes):
+            if attribute.name in _LIST_CHOICE_RESERVED_NAMES:
+                reader.issue(
+                    "reserved_list_choice_form_name",
+                    f"$.attributes[{index}].name",
+                    "Имя зарезервировано системным профилем формы списка или выбора.",
+                )
+        for element, path, _parent_table in walked:
+            if element.name in _LIST_CHOICE_RESERVED_NAMES:
+                reader.issue(
+                    "reserved_list_choice_form_name",
+                    f"{path}.name",
+                    "Имя зарезервировано системным профилем формы списка или выбора.",
+                )
+        for index, command in enumerate(commands):
+            if command.name in _LIST_CHOICE_RESERVED_NAMES:
+                reader.issue(
+                    "reserved_list_choice_form_name",
+                    f"$.commands[{index}].name",
+                    "Имя зарезервировано системным профилем формы списка или выбора.",
+                )
     if sum(item.main for item in attributes) > 1:
         reader.issue(
             "multiple_main_attributes",
@@ -2388,19 +2450,36 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
                 f"$.attributes[{main_object_indexes[0]}].name",
                 "Главный реквизит основной формы обработки должен называться Объект.",
             )
-        if context.owner.startswith("Обработка.") and commands:
+        elif (
+            context.owner.startswith("Отчет.")
+            and attributes[main_object_indexes[0]].name != "Отчет"
+        ):
+            reader.issue(
+                "incompatible_owner_context",
+                f"$.attributes[{main_object_indexes[0]}].name",
+                "Главный реквизит основной формы отчета должен называться Отчет.",
+            )
+        if context.owner.startswith("Отчет.") and main_object_indexes:
+            main_report = attributes[main_object_indexes[0]]
+            if main_report.saved_data:
+                reader.issue(
+                    "unsupported_owner_role_feature",
+                    f"$.attributes[{main_object_indexes[0]}].saved_data",
+                    "SavedData не входит в базовый контракт основной формы отчета.",
+                )
+        if context.owner.startswith(("Обработка.", "Отчет.")) and commands:
             reader.issue(
                 "unsupported_owner_role_feature",
                 "$.commands",
-                "Команды основной формы обработки не входят в базовый контракт.",
+                "Команды основной формы не входят в базовый контракт.",
             )
-        if context.owner.startswith("Обработка.") and events:
+        if context.owner.startswith(("Обработка.", "Отчет.")) and events:
             reader.issue(
                 "unsupported_owner_role_feature",
                 "$.events",
-                "События основной формы обработки не входят в базовый контракт.",
+                "События основной формы не входят в базовый контракт.",
             )
-        if context.owner.startswith("Обработка."):
+        if context.owner.startswith(("Обработка.", "Отчет.")):
             for element, path, _parent_table in walked:
                 if isinstance(
                     element,
@@ -2417,7 +2496,7 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
                         path,
                         (
                             "Командные элементы и явно настроенные командные "
-                            "контейнеры основной формы обработки не входят в "
+                            "контейнеры основной формы не входят в "
                             "базовый контракт."
                         ),
                     )

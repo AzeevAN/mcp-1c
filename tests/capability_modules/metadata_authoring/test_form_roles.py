@@ -95,9 +95,89 @@ def _document_object_form(*, default: bool = True) -> dict[str, object]:
         '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" '
         'xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" '
         'xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">'
+        '<ChildItems><InputField><DataPath>Объект.Number</DataPath></InputField>'
+        '<InputField><DataPath>Объект.Date</DataPath></InputField></ChildItems>'
         '<Attributes><Attribute name="Объект" id="1"><Type>'
         '<v8:Type>cfg:DocumentObject.Ролевой</v8:Type></Type>'
         '<MainAttribute>true</MainAttribute></Attribute></Attributes></Form>'
+    )
+    return form
+
+
+def _document_collection_form(role: str) -> dict[str, object]:
+    form = _form("ФормаСписка" if role == "list" else "ФормаВыбора", role, default=True)
+    form["form_xml"] = str(form["form_xml"]).replace(
+        "/>\n" if str(form["form_xml"]).endswith("/>\n") else "/>",
+        "><ChildItems><InputField><DataPath>Список.Date</DataPath></InputField>"
+        "<InputField><DataPath>Список.Number</DataPath></InputField></ChildItems></Form>",
+    )
+    return form
+
+
+def _register_form(name: str, role: str | None, *, default: bool) -> dict[str, object]:
+    form = _form(name, role, default=default)
+    if role in {None, "record"}:
+        data_path = "Запись.Значение"
+    elif role == "list":
+        data_path = "Список.Значение"
+    else:
+        return form
+    form["form_xml"] = str(form["form_xml"]).replace(
+        "/>",
+        f"><ChildItems><InputField><DataPath>{data_path}</DataPath>"
+        "</InputField></ChildItems></Form>",
+    )
+    return form
+
+
+def _closed_profile_form(
+    owner_kind: str, role: str, *, name: str, default: bool = True
+) -> dict[str, object]:
+    form = _form(name, role, default=default)
+    if role in {"list", "choice"}:
+        choice_properties = (
+            "<WindowOpeningMode>LockOwnerWindow</WindowOpeningMode>"
+            "<ChoiceMode>true</ChoiceMode>"
+            if role == "choice"
+            else ""
+        )
+        main_name = "Список"
+        main_type = "cfg:DynamicList"
+        saved_data = ""
+    elif owner_kind == "РегистрСведений" and role == "record":
+        choice_properties = ""
+        main_name = "Запись"
+        main_type = "cfg:InformationRegisterRecordManager.Ролевой"
+        saved_data = "<SavedData>true</SavedData>"
+    elif role == "object" and owner_kind in {"Справочник", "Документ"}:
+        choice_properties = ""
+        main_name = "Объект"
+        xml_kind = "CatalogObject" if owner_kind == "Справочник" else "DocumentObject"
+        main_type = f"cfg:{xml_kind}.Ролевой"
+        saved_data = ""
+    else:
+        raise AssertionError((owner_kind, role))
+    if owner_kind == "Документ" and role in {"object", "list", "choice"}:
+        prefix = "Объект" if role == "object" else "Список"
+        data_paths = [f"{prefix}.Date", f"{prefix}.Number"]
+    elif role == "object":
+        data_paths = []
+    elif role == "record":
+        data_paths = ["Запись.Значение"]
+    else:
+        data_paths = ["Список.Значение"]
+    child_items = "".join(
+        f"<InputField><DataPath>{data_path}</DataPath></InputField>"
+        for data_path in data_paths
+    )
+    form["form_xml"] = (
+        '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" '
+        'xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" '
+        'xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">'
+        f"{choice_properties}<ChildItems>{child_items}</ChildItems><Attributes>"
+        f'<Attribute name="{main_name}" id="1"><Type><v8:Type>{main_type}</v8:Type>'
+        f"</Type><MainAttribute>true</MainAttribute>{saved_data}</Attribute>"
+        "</Attributes></Form>"
     )
     return form
 
@@ -144,7 +224,7 @@ def test_catalog_object_list_choice_defaults_compile_and_check():
             f"<{property_name}>Catalog.Ролевой.Form.{form_name}</{property_name}>"
             in descriptor
         )
-    assert len(compiled["artifacts"]) == 10
+    assert len(compiled["artifacts"]) == 7
     assert check_metadata_artifacts(
         compiled["object_ref"], compiled["format_version"], compiled["artifacts"]
     )["status"] == "passed"
@@ -152,7 +232,7 @@ def test_catalog_object_list_choice_defaults_compile_and_check():
 
 def test_legacy_register_form_without_role_remains_record():
     specification = _register()
-    specification["forms"] = [_form("ФормаЗаписи", None, default=True)]
+    specification["forms"] = [_register_form("ФормаЗаписи", None, default=True)]
 
     compiled = compile_metadata_object(specification)
     descriptor = compiled["artifacts"][0]["content"]
@@ -169,8 +249,8 @@ def test_legacy_register_form_without_role_remains_record():
 def test_information_register_list_default_and_record_set_compile_and_check():
     specification = _register()
     specification["forms"] = [
-        _form("ФормаЗаписи", "record", default=True),
-        _form("ФормаСписка", "list", default=True),
+        _register_form("ФормаЗаписи", "record", default=True),
+        _register_form("ФормаСписка", "list", default=True),
         _form("ФормаНабораЗаписей", "record_set", default=False),
     ]
 
@@ -191,7 +271,7 @@ def test_information_register_list_default_and_record_set_compile_and_check():
         "</DefaultListForm>"
     ) in descriptor
     assert "DefaultRecordSetForm" not in descriptor
-    assert len(compiled["artifacts"]) == 10
+    assert len(compiled["artifacts"]) == 7
     assert check_metadata_artifacts(
         compiled["object_ref"], compiled["format_version"], compiled["artifacts"]
     )["status"] == "passed"
@@ -253,8 +333,8 @@ def test_document_object_list_choice_defaults_compile_and_check():
     specification = _document()
     specification["forms"] = [
         _document_object_form(),
-        _form("ФормаСписка", "list", default=True),
-        _form("ФормаВыбора", "choice", default=True),
+        _document_collection_form("list"),
+        _document_collection_form("choice"),
     ]
 
     compiled = compile_metadata_object(specification)
@@ -271,10 +351,16 @@ def test_document_object_list_choice_defaults_compile_and_check():
 @pytest.mark.parametrize("factory", [_catalog, _document])
 def test_list_and_choice_without_object_are_allowed(factory):
     specification = factory()
-    specification["forms"] = [
-        _form("ФормаСписка", "list", default=True),
-        _form("ФормаВыбора", "choice", default=True),
-    ]
+    if specification["object_ref"].startswith("Документ."):
+        specification["forms"] = [
+            _document_collection_form("list"),
+            _document_collection_form("choice"),
+        ]
+    else:
+        specification["forms"] = [
+            _form("ФормаСписка", "list", default=True),
+            _form("ФормаВыбора", "choice", default=True),
+        ]
 
     compiled = compile_metadata_object(specification)
     descriptor = compiled["artifacts"][0]["content"]
@@ -285,30 +371,64 @@ def test_list_and_choice_without_object_are_allowed(factory):
     )["status"] == "passed"
 
 
-def test_object_default_does_not_assign_nondefault_list_and_choice():
+@pytest.mark.parametrize("role", ["object", "list", "choice"])
+def test_represented_catalog_role_requires_default(role):
+    specification = _catalog()
+    specification["forms"] = [_form("Форма", role, default=False)]
+
+    with pytest.raises(MetadataAuthoringContractError) as caught:
+        compile_metadata_object(specification)
+
+    assert caught.value.diagnostics == [{
+        "status": "failed",
+        "code": "missing_default_form_role",
+        "path": "$specification.forms[0].default",
+        "message": f"Для представленной роли `{role}` требуется ровно одна форма с default=true.",
+    }]
+
+
+@pytest.mark.parametrize(
+    ("factory", "role"),
+    [(_document, "list"), (_register, "record"), (_register, "list")],
+)
+def test_represented_document_or_register_role_requires_default(factory, role):
+    specification = factory()
+    specification["forms"] = [_form("Форма", role, default=False)]
+
+    with pytest.raises(MetadataAuthoringContractError) as caught:
+        compile_metadata_object(specification)
+
+    assert caught.value.diagnostics[0]["code"] == "missing_default_form_role"
+    assert caught.value.diagnostics[0]["path"] == "$specification.forms[0].default"
+
+
+def test_additional_nondefault_form_of_same_role_is_allowed():
     specification = _catalog()
     specification["forms"] = [
-        _form("ФормаОбъекта", "object", default=True),
-        _form("ФормаСписка", "list", default=False),
-        _form("ФормаВыбора", "choice", default=False),
-    ]
-
-    descriptor = compile_metadata_object(specification)["artifacts"][0]["content"]
-
-    assert "<DefaultListForm></DefaultListForm>" in descriptor
-    assert "<DefaultChoiceForm></DefaultChoiceForm>" in descriptor
-
-
-def test_zero_defaults_are_allowed():
-    specification = _catalog()
-    specification["forms"] = [
-        _form("ФормаОбъекта", "object", default=False),
-        _form("ФормаСписка", "list", default=False),
-        _form("ФормаВыбора", "choice", default=False),
+        _form("ФормаСписка", "list", default=True),
+        _form("ФормаСпискаДополнительная", "list", default=False),
     ]
 
     compiled = compile_metadata_object(specification)
+    descriptor = compiled["artifacts"][0]["content"]
 
+    assert descriptor.count("<DefaultListForm>") == 1
+    assert "Catalog.Ролевой.Form.ФормаСписка</DefaultListForm>" in descriptor
+    assert "ФормаСпискаДополнительная</DefaultListForm>" not in descriptor
+    assert check_metadata_artifacts(
+        compiled["object_ref"], compiled["format_version"], compiled["artifacts"]
+    )["status"] == "passed"
+
+
+def test_absent_role_default_property_may_remain_empty():
+    specification = _catalog()
+    specification["forms"] = [_form("ФормаСписка", "list", default=True)]
+
+    compiled = compile_metadata_object(specification)
+    descriptor = compiled["artifacts"][0]["content"]
+
+    assert "<DefaultObjectForm></DefaultObjectForm>" in descriptor
+    assert "<DefaultChoiceForm></DefaultChoiceForm>" in descriptor
     assert check_metadata_artifacts(
         compiled["object_ref"], compiled["format_version"], compiled["artifacts"]
     )["status"] == "passed"
@@ -351,13 +471,23 @@ def test_invalid_or_unsupported_roles_are_rejected(factory, role, code):
 def test_document_nonobject_roles_do_not_require_document_object(role):
     specification = _document()
     form = _form("Форма", role, default=True)
+    choice_properties = (
+        "<WindowOpeningMode>LockOwnerWindow</WindowOpeningMode>"
+        "<ChoiceMode>true</ChoiceMode>"
+        if role == "choice"
+        else ""
+    )
     form["form_xml"] = (
         '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" '
         'xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" '
         'xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">'
+        f"{choice_properties}"
         '<Attributes><Attribute name="Список" id="1"><Type>'
         '<v8:Type>cfg:DynamicList</v8:Type></Type>'
-        '<MainAttribute>true</MainAttribute></Attribute></Attributes></Form>'
+        '<MainAttribute>true</MainAttribute></Attribute></Attributes>'
+        '<ChildItems><InputField><DataPath>Список.Date</DataPath></InputField>'
+        '<InputField><DataPath>Список.Number</DataPath></InputField>'
+        '</ChildItems></Form>'
     )
     specification["forms"] = [form]
 
@@ -424,6 +554,45 @@ def test_checker_rejects_broken_or_nonowner_default_reference(replacement):
     assert "unknown_default_form" in {
         item["code"] for item in checked["diagnostics"]
     }
+
+
+@pytest.mark.parametrize(
+    ("factory", "owner_kind", "role", "property_name", "form_name"),
+    [
+        (_catalog, "Справочник", "object", "DefaultObjectForm", "ФормаОбъекта"),
+        (_catalog, "Справочник", "list", "DefaultListForm", "ФормаСписка"),
+        (_catalog, "Справочник", "choice", "DefaultChoiceForm", "ФормаВыбора"),
+        (_document, "Документ", "object", "DefaultObjectForm", "ФормаОбъекта"),
+        (_document, "Документ", "list", "DefaultListForm", "ФормаСписка"),
+        (_document, "Документ", "choice", "DefaultChoiceForm", "ФормаВыбора"),
+        (_register, "РегистрСведений", "record", "DefaultRecordForm", "ФормаЗаписи"),
+        (_register, "РегистрСведений", "list", "DefaultListForm", "ФормаСписка"),
+    ],
+)
+def test_checker_rejects_empty_default_for_structurally_supported_role(
+    factory, owner_kind, role, property_name, form_name
+):
+    specification = factory()
+    specification["forms"] = [
+        _closed_profile_form(owner_kind, role, name=form_name)
+    ]
+    compiled = compile_metadata_object(specification)
+    artifacts = deepcopy(compiled["artifacts"])
+    descriptor = artifacts[0]["content"]
+    start = descriptor.index(f"<{property_name}>") + len(property_name) + 2
+    end = descriptor.index(f"</{property_name}>", start)
+    artifacts[0]["content"] = descriptor[:start] + descriptor[end:]
+
+    checked = check_metadata_artifacts(
+        compiled["object_ref"], compiled["format_version"], artifacts
+    )
+
+    assert checked["status"] == "failed"
+    assert any(
+        item["code"] == "missing_default_form_role"
+        and item["path"].endswith(f":{property_name}")
+        for item in checked["diagnostics"]
+    )
 
 
 def test_metadata_authoring_has_no_direct_forms_dependency():

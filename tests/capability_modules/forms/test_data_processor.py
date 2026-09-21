@@ -79,6 +79,32 @@ def test_data_processor_object_form_compile_check_decompile_roundtrip():
     assert decompiled.specification == compiled.specification
 
 
+def test_data_processor_default_form_can_be_empty_like_configurator():
+    specification = _specification()
+    specification["attributes"] = [specification["attributes"][0]]
+    specification["elements"] = []
+
+    compiled = compile_managed_form(specification)
+    form_xml = compiled.artifacts[0].content
+    module_bsl = compiled.artifacts[1].content
+
+    assert "<ChildItems>" not in form_xml
+    checked = check_managed_form(
+        form_xml,
+        form_name="Форма",
+        context=specification["context"],
+        module_bsl=module_bsl,
+    )
+    decompiled = decompile_managed_form(
+        form_xml,
+        form_name="Форма",
+        context=specification["context"],
+        module_bsl=module_bsl,
+    )
+    assert checked.coverage.structural == "passed"
+    assert decompiled.specification == compiled.specification
+
+
 def test_data_processor_checker_rejects_application_bsl():
     specification = _specification()
     compiled = compile_managed_form(specification)

@@ -121,7 +121,7 @@ def test_public_schema_принимает_каждую_runtime_ветку(factor
         ),
         (lambda value: value.update({"code_length": 51}), "invalid_value"),
         (
-            lambda value: value.update({"object_ref": "Отчет.Тестовый"}),
+            lambda value: value.update({"object_ref": "ВнешнийОтчет.Тестовый"}),
             "unsupported_object_ref",
         ),
     ],
@@ -176,3 +176,6 @@ def test_public_schema_form_role_optional_and_closed_enum():
     assert list(
         Draft202012Validator(METADATA_SPECIFICATION_SCHEMA).iter_errors(register)
     ) == []
+
+    encoded = repr(METADATA_SPECIFICATION_SCHEMA)
+    assert "compiler requires exactly one default=true" in encoded

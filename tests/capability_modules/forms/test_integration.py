@@ -186,7 +186,6 @@ def test_compile_schema_публикует_фактические_минимум
 
     for definition, property_name, minimum in (
         ("ManagedFormSpec", "attributes", 1),
-        ("ManagedFormSpec", "elements", 1),
         ("CompositeTypeSpec", "variants", 2),
         ("ValueTableTypeSpec", "columns", 1),
         ("InputFieldSpec", "choice_list", 1),
@@ -200,7 +199,7 @@ def test_compile_schema_публикует_фактические_минимум
             "minItems"
         ] == minimum
 
-    for property_name in ("commands", "events"):
+    for property_name in ("elements", "commands", "events"):
         assert "minItems" not in definitions["ManagedFormSpec"]["properties"][
             property_name
         ]

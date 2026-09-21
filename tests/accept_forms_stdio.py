@@ -133,7 +133,6 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                 raise RuntimeError("Схема потеряла безопасный формат версии Form.xml.")
             for definition, property_name, minimum in (
                 ("ManagedFormSpec", "attributes", 1),
-                ("ManagedFormSpec", "elements", 1),
                 ("CompositeTypeSpec", "variants", 2),
                 ("RadioButtonFieldSpec", "choice_list", 2),
             ):
@@ -144,6 +143,10 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                     raise RuntimeError(
                         f"Схема потеряла {definition}.{property_name} minItems."
                     )
+            if "minItems" in specification_definition["properties"]["elements"]:
+                raise RuntimeError(
+                    "Forms schema запрещает пустой elements для wizard-default форм."
+                )
             if "events" not in specification_definition.get("required", []):
                 raise RuntimeError("Forms schema не требует поле events.")
             if "minItems" in specification_definition["properties"]["events"]:
@@ -568,8 +571,13 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                 "elements": [
                     {
                         "kind": "input_field",
+                        "name": "Номер",
+                        "data_path": "Объект.Number",
+                    },
+                    {
+                        "kind": "input_field",
                         "name": "Дата",
-                        "data_path": "Объект.Дата",
+                        "data_path": "Объект.Date",
                     }
                 ],
                 "commands": [],
@@ -637,7 +645,8 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                 or "object_form_owner_context" not in document_rule_codes
                 or "cfg:DocumentObject.ТестовыйДокумент" not in document_xml
                 or "<MainAttribute>true</MainAttribute>" not in document_xml
-                or "<DataPath>Объект.Дата</DataPath>" not in document_xml
+                or "<DataPath>Объект.Number</DataPath>" not in document_xml
+                or "<DataPath>Объект.Date</DataPath>" not in document_xml
                 or "PostAndClose" in document_xml
             ):
                 raise RuntimeError(
@@ -929,7 +938,7 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                 != "passed"
                 or data_processor_metadata_payload["status"] != "compiled"
                 or data_processor_metadata_check_payload["status"] != "passed"
-                or len(data_processor_artifacts) != 4
+                or len(data_processor_artifacts) != 3
                 or data_processor_rules_payload.get("object_ref")
                 != "Обработка.<Имя>"
                 or "cfg:DataProcessorObject.ТестоваяОбработка"
@@ -949,6 +958,194 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
             ):
                 raise RuntimeError(
                     "Совместная MCP-последовательность встроенной обработки "
+                    "дала неверный результат."
+                )
+            report_owner = "Отчет.ПроверкаАвторингаОтчетаMCP"
+            report_context = {"owner": report_owner, "role": "object"}
+            report_form_specification = {
+                "schema_version": 2,
+                "form_name": "ФормаОтчета",
+                "context": report_context,
+                "format_version": "2.20",
+                "title": {"ru": "Проверка авторинга отчета MCP"},
+                "attributes": [
+                    {
+                        "name": "Отчет",
+                        "type": {
+                            "kind": "metadata_object",
+                            "object": report_owner,
+                        },
+                        "main": True,
+                    },
+                    {
+                        "name": "Параметр",
+                        "type": {"kind": "string", "length": 100},
+                    },
+                ],
+                "elements": [
+                    {
+                        "kind": "input_field",
+                        "name": "Параметр",
+                        "data_path": "Параметр",
+                    }
+                ],
+                "commands": [],
+                "events": [],
+            }
+            report_rules = await session.call_tool(
+                "get_metadata_authoring_rules", {"topic": "report"}
+            )
+            report_form_compiled = await session.call_tool(
+                "compile_managed_form",
+                {"specification": report_form_specification},
+            )
+            if report_form_compiled.is_error:
+                raise RuntimeError(report_form_compiled.content[0].text)
+            report_form_payload = json.loads(
+                report_form_compiled.content[0].text
+            )
+            report_form_artifacts = {
+                item["path"]: item["content"]
+                for item in report_form_payload["artifacts"]
+            }
+            report_form_xml = report_form_artifacts[
+                "Forms/ФормаОтчета/Ext/Form.xml"
+            ]
+            report_module = report_form_artifacts[
+                "Forms/ФормаОтчета/Ext/Form/Module.bsl"
+            ]
+            report_form_checked = await session.call_tool(
+                "check_managed_form",
+                {
+                    "form_xml": report_form_xml,
+                    "form_name": "ФормаОтчета",
+                    "context": report_context,
+                    "module_bsl": report_module,
+                },
+            )
+            report_form_decompiled = await session.call_tool(
+                "decompile_managed_form",
+                {
+                    "form_xml": report_form_xml,
+                    "form_name": "ФормаОтчета",
+                    "context": report_context,
+                    "module_bsl": report_module,
+                },
+            )
+            report_metadata_specification = {
+                "schema_version": 1,
+                "object_ref": report_owner,
+                "format_version": "2.20",
+                "identity": "75000000-0000-0000-0000-000000000001",
+                "synonym": "Проверка авторинга отчета MCP",
+                "attributes": [],
+                "forms": [
+                    {
+                        "name": "ФормаОтчета",
+                        "synonym": "Форма отчета",
+                        "role": "object",
+                        "default": True,
+                        "form_xml": report_form_xml,
+                        "module_bsl": report_module,
+                    }
+                ],
+            }
+            report_metadata_compiled = await session.call_tool(
+                "compile_metadata_object",
+                {"specification": report_metadata_specification},
+            )
+            if report_metadata_compiled.is_error:
+                raise RuntimeError(report_metadata_compiled.content[0].text)
+            report_metadata_payload = json.loads(
+                report_metadata_compiled.content[0].text
+            )
+            report_metadata_checked = await session.call_tool(
+                "check_metadata_artifacts",
+                {
+                    "object_ref": report_metadata_payload["object_ref"],
+                    "format_version": report_metadata_payload["format_version"],
+                    "artifacts": report_metadata_payload["artifacts"],
+                },
+            )
+            report_form_check_payload = json.loads(
+                report_form_checked.content[0].text
+            )
+            report_form_decompile_payload = json.loads(
+                report_form_decompiled.content[0].text
+            )
+            report_metadata_check_payload = json.loads(
+                report_metadata_checked.content[0].text
+            )
+            report_rules_payload = json.loads(report_rules.content[0].text)
+            report_artifacts = {
+                item["path"]: item["content"]
+                for item in report_metadata_payload["artifacts"]
+            }
+            report_descriptor = report_artifacts[
+                "Reports/ПроверкаАвторингаОтчетаMCP.xml"
+            ]
+            if (
+                report_rules.is_error
+                or report_form_checked.is_error
+                or report_form_decompiled.is_error
+                or report_metadata_checked.is_error
+                or report_form_check_payload["coverage"]["structural"]
+                != "passed"
+                or report_form_decompile_payload["specification"]
+                != report_form_payload["specification"]
+                or report_metadata_payload["status"] != "compiled"
+                or report_metadata_check_payload["status"] != "passed"
+                or len(report_artifacts) != 5
+                or report_rules_payload.get("object_ref") != "Отчет.<Имя>"
+                or "cfg:ReportObject.ПроверкаАвторингаОтчетаMCP"
+                not in report_form_xml
+                or '<Attribute name="Отчет"' not in report_form_xml
+                or "<SavedData>" in report_form_xml
+                or "ReportObject.ПроверкаАвторингаОтчетаMCP"
+                not in report_descriptor
+                or "ReportManager.ПроверкаАвторингаОтчетаMCP"
+                not in report_descriptor
+                or (
+                    "<DefaultForm>Report.ПроверкаАвторингаОтчетаMCP."
+                    "Form.ФормаОтчета</DefaultForm>"
+                )
+                not in report_descriptor
+                or "<UseStandardCommands>true</UseStandardCommands>"
+                not in report_descriptor
+                or (
+                    "<MainDataCompositionSchema>Report."
+                    "ПроверкаАвторингаОтчетаMCP.Template."
+                    "ОсновнаяСхемаКомпоновкиДанных"
+                    "</MainDataCompositionSchema>"
+                )
+                not in report_descriptor
+                or "<Template>ОсновнаяСхемаКомпоновкиДанных</Template>"
+                not in report_descriptor
+                or "<ReportResult>Результат</ReportResult>" not in report_form_xml
+                or "<DetailsData>ДанныеРасшифровки</DetailsData>"
+                not in report_form_xml
+                or '<SpreadSheetDocumentField name="Результат"'
+                not in report_form_xml
+                or (
+                    "Reports/ПроверкаАвторингаОтчетаMCP/Templates/"
+                    "ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml"
+                )
+                not in report_artifacts
+                or "<dcsset:name>Основной</dcsset:name>"
+                not in report_artifacts[
+                    "Reports/ПроверкаАвторингаОтчетаMCP/Templates/"
+                    "ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml"
+                ]
+                or (
+                    "Reports/ПроверкаАвторингаОтчетаMCP/Forms/"
+                    "ФормаОтчета/Ext/Form/Module.bsl"
+                )
+                in report_artifacts
+                or "Процедура " in report_module
+                or "Отчет.<Реквизит>" not in report_module
+            ):
+                raise RuntimeError(
+                    "Совместная MCP-последовательность встроенного отчета "
                     "дала неверный результат."
                 )
             invalid = dict(specification)
@@ -1070,6 +1267,15 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
                 "data_processor_default_form": True,
                 "data_processor_business_bsl": False,
                 "data_processor_command_rejected": True,
+                "metadata_report": "compile_check_passed",
+                "report_form": "compile_check_decompile_passed",
+                "report_roundtrip": True,
+                "report_main_attribute": "ReportObject",
+                "report_artifact_count": len(report_artifacts),
+                "report_default_form": True,
+                "report_saved_data": False,
+                "report_dcs": "minimal_default_variant",
+                "report_business_bsl": False,
                 "bsl_data_access_rule": True,
                 "client_form_value_conversion_rejected": True,
             }

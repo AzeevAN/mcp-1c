@@ -114,7 +114,6 @@ def test_data_processor_compile_and_exact_bundle_check():
         "DataProcessors/Импорт.xml",
         "DataProcessors/Импорт/Forms/Форма.xml",
         "DataProcessors/Импорт/Forms/Форма/Ext/Form.xml",
-        "DataProcessors/Импорт/Forms/Форма/Ext/Form/Module.bsl",
     }
 
     checked = check_metadata_artifacts(
@@ -286,7 +285,7 @@ def test_data_processor_compiler_rejects_out_of_scope_form_behavior(mutate, code
 def test_data_processor_checker_rejects_out_of_scope_form_behavior(path, mutate, code):
     compiled = compile_metadata_object(_specification())
     artifacts = {item["path"]: item["content"] for item in compiled["artifacts"]}
-    artifacts[path] = mutate(artifacts[path])
+    artifacts[path] = mutate(artifacts.get(path, ""))
 
     checked = check_metadata_artifacts(
         compiled["object_ref"], compiled["format_version"], artifacts

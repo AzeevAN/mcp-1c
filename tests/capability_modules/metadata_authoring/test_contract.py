@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from mcp1c.capability_modules.metadata_authoring.checker import (
     check_metadata_artifacts,
 )
@@ -36,7 +38,7 @@ def _catalog_artifacts(*, include_xs: bool = True) -> dict[str, str]:
     return {
         "Catalogs/ТестовыйСправочник.xml": descriptor,
         "Catalogs/ТестовыйСправочник/Forms/ФормаЭлемента.xml": f'''<MetaDataObject xmlns="{MD}" xmlns:v8="{V8}" version="2.20"><Form uuid="20000000-0000-0000-0000-000000000003"><Properties><Name>ФормаЭлемента</Name><FormType>Managed</FormType></Properties></Form></MetaDataObject>''',
-        "Catalogs/ТестовыйСправочник/Forms/ФормаЭлемента/Ext/Form.xml": '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><ChildItems><InputField><DataPath>Объект.Наименование</DataPath></InputField><InputField><DataPath>Объект.Код</DataPath></InputField></ChildItems></Form>',
+        "Catalogs/ТестовыйСправочник/Forms/ФормаЭлемента/Ext/Form.xml": '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><ChildItems><InputField><DataPath>Объект.Description</DataPath></InputField><InputField><DataPath>Объект.Code</DataPath></InputField><InputField><DataPath>Объект.Артикул</DataPath></InputField></ChildItems></Form>',
         "Catalogs/ТестовыйСправочник/Forms/ФормаЭлемента/Ext/Form/Module.bsl": "",
     }
 
@@ -60,7 +62,7 @@ def _information_register_artifacts() -> dict[str, str]:
     return {
         "InformationRegisters/ТестовыйРегистр.xml": descriptor,
         "InformationRegisters/ТестовыйРегистр/Forms/ФормаЗаписи.xml": f'''<MetaDataObject xmlns="{MD}" version="2.20"><Form uuid="30000000-0000-0000-0000-000000000003"><Properties><Name>ФормаЗаписи</Name><FormType>Managed</FormType></Properties></Form></MetaDataObject>''',
-        "InformationRegisters/ТестовыйРегистр/Forms/ФормаЗаписи/Ext/Form.xml": '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"/>',
+        "InformationRegisters/ТестовыйРегистр/Forms/ФормаЗаписи/Ext/Form.xml": '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><ChildItems><InputField><DataPath>Запись.Справочник</DataPath></InputField></ChildItems></Form>',
         "InformationRegisters/ТестовыйРегистр/Forms/ФормаЗаписи/Ext/Form/Module.bsl": "",
     }
 
@@ -78,16 +80,33 @@ def test_catalog_bundle_проходит_полную_проверку():
     assert set(result["coverage"].values()) == {"passed"}
 
 
-def test_catalog_bundle_без_обязательного_стандартного_поля_отклоняется():
+@pytest.mark.parametrize("data_path", ["Объект.Description", "Объект.Code", "Объект.Артикул"])
+def test_catalog_bundle_без_обязательного_поля_отклоняется(data_path):
     artifacts = _catalog_artifacts()
     path = "Catalogs/ТестовыйСправочник/Forms/ФормаЭлемента/Ext/Form.xml"
     artifacts[path] = artifacts[path].replace(
-        "<InputField><DataPath>Объект.Наименование</DataPath></InputField>",
+        f"<InputField><DataPath>{data_path}</DataPath></InputField>",
         "",
     )
 
     result = check_metadata_artifacts(
         "Справочник.ТестовыйСправочник", "2.20", artifacts
+    )
+
+    assert result["status"] == "failed"
+    assert "required_standard_field_missing" in _codes(result)
+
+
+def test_information_register_bundle_без_обязательного_поля_отклоняется():
+    artifacts = _information_register_artifacts()
+    path = "InformationRegisters/ТестовыйРегистр/Forms/ФормаЗаписи/Ext/Form.xml"
+    artifacts[path] = artifacts[path].replace(
+        "<InputField><DataPath>Запись.Справочник</DataPath></InputField>",
+        "",
+    )
+
+    result = check_metadata_artifacts(
+        "РегистрСведений.ТестовыйРегистр", "2.20", artifacts
     )
 
     assert result["status"] == "failed"

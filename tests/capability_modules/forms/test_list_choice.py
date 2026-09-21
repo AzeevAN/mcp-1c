@@ -48,6 +48,17 @@ def _payload(owner: str, role: str) -> dict[str, object]:
     }
 
 
+def _mutate_system_group_count(xml: str, *, duplicate: bool) -> str:
+    pattern = (
+        r'(\s*<UsualGroup name="СписокКомпоновщикНастроекПользовательскиеНастройки"'
+        r'.*?</UsualGroup>)'
+    )
+    match = re.search(pattern, xml, flags=re.DOTALL)
+    assert match is not None
+    replacement = match.group(1) * 2 if duplicate else ""
+    return xml[: match.start()] + replacement + xml[match.end() :]
+
+
 @pytest.mark.parametrize(
     ("owner", "role"),
     [
@@ -63,7 +74,17 @@ def test_list_choice_compile_check_decompile_roundtrip(owner: str, role: str):
     compiled = compile_managed_form(payload)
     xml = compiled.artifacts[0].content
 
+    root_prefix = xml.split("<ChildItems>", 1)[0]
+    assert "<CommandBarLocation>" not in root_prefix
+    assert '<UsualGroup name="СписокКомпоновщикНастроекПользовательскиеНастройки" id="1">' in xml
+    assert '<Table name="Список" id="3">' in xml
     assert "<CommandBarLocation>None</CommandBarLocation>" in xml
+    assert "<DefaultItem>true</DefaultItem>" in xml
+    assert (
+        "<UserSettingsGroup>"
+        "СписокКомпоновщикНастроекПользовательскиеНастройки"
+        "</UserSettingsGroup>"
+    ) in xml
     assert (
         '<AutoCommandBar name="ФормаКоманднаяПанель" id="-1"/>'
         in xml
@@ -333,7 +354,7 @@ def test_choice_rejects_missing_or_wrong_xml_markers(replace: tuple[str, str]):
 
 @pytest.mark.parametrize("location", [None, "Top"])
 @pytest.mark.parametrize("role", ["list", "choice"])
-def test_list_choice_rejects_missing_or_wrong_command_bar_location(
+def test_list_choice_rejects_missing_or_wrong_table_command_bar_location(
     role: str,
     location: str | None,
 ):
@@ -354,12 +375,90 @@ def test_list_choice_rejects_missing_or_wrong_command_bar_location(
     )
 
     assert result.status == "rejected"
-    expected_code = (
-        "missing_list_choice_command_bar_location"
-        if location is None
-        else "invalid_list_choice_command_bar_location"
+    assert any(
+        item.code == "invalid_list_choice_default_profile"
+        for item in result.diagnostics
     )
-    assert any(item.code == expected_code for item in result.diagnostics)
+
+
+@pytest.mark.parametrize("role", ["list", "choice"])
+def test_list_choice_rejects_legacy_root_command_bar_location(role: str):
+    payload = _payload("Справочник.Товары", role)
+    compiled = compile_managed_form(payload)
+    xml = compiled.artifacts[0].content.replace(
+        '<AutoCommandBar name="ФормаКоманднаяПанель" id="-1"/>',
+        "<CommandBarLocation>None</CommandBarLocation>\r\n"
+        '\t<AutoCommandBar name="ФормаКоманднаяПанель" id="-1"/>',
+        1,
+    )
+
+    result = decompile_managed_form(
+        xml,
+        form_name=payload["form_name"],
+        context=payload["context"],
+    )
+
+    assert result.status == "rejected"
+    assert any(
+        item.code == "legacy_list_choice_root_command_bar_location"
+        for item in result.diagnostics
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda xml: _mutate_system_group_count(xml, duplicate=False),
+        lambda xml: _mutate_system_group_count(xml, duplicate=True),
+        lambda xml: xml.replace(
+            '<UsualGroup name="СписокКомпоновщикНастроекПользовательскиеНастройки" id="1">',
+            '<UsualGroup name="СписокКомпоновщикНастроекПользовательскиеНастройки" id="9">',
+            1,
+        ),
+        lambda xml: xml.replace(
+            "<UserSettingsGroup>СписокКомпоновщикНастроекПользовательскиеНастройки</UserSettingsGroup>",
+            "<UserSettingsGroup>ДругаяГруппа</UserSettingsGroup>",
+            1,
+        ),
+        lambda xml: xml.replace('<Table name="Список" id="3">', '<Table name="Список" id="4">', 1),
+        lambda xml: xml.replace("<DefaultItem>true</DefaultItem>", "<DefaultItem>false</DefaultItem>", 1),
+    ],
+)
+def test_list_choice_rejects_mutated_default_profile(mutation):
+    payload = _payload("Документ.Заказ", "list")
+    xml = mutation(compile_managed_form(payload).artifacts[0].content)
+
+    result = decompile_managed_form(
+        xml,
+        form_name=payload["form_name"],
+        context=payload["context"],
+    )
+
+    assert result.status == "rejected"
+    assert any(
+        item.code == "invalid_list_choice_default_profile"
+        for item in result.diagnostics
+    )
+
+
+def test_list_choice_rejects_reserved_system_name():
+    payload = _payload("Справочник.Товары", "list")
+    payload["elements"].append(
+        {
+            "kind": "usual_group",
+            "name": "СписокКомпоновщикНастроекПользовательскиеНастройки",
+            "title": {"ru": "Конфликт"},
+            "children": [],
+        }
+    )
+
+    with pytest.raises(FormsContractError) as caught:
+        parse_managed_form_spec(payload)
+
+    assert any(
+        item.code == "reserved_list_choice_form_name"
+        for item in caught.value.diagnostics
+    )
 
 
 @pytest.mark.parametrize("role", ["list", "choice"])

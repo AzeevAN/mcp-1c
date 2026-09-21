@@ -145,6 +145,116 @@ def test_document_object_context_сохраняется_в_модели():
     assert form.context.role == "object"
 
 
+@pytest.mark.parametrize(
+    ("factory", "expected"),
+    [
+        (
+            _catalog_object_payload,
+            (
+                "<WindowOpeningMode>LockOwnerWindow</WindowOpeningMode>",
+                "<UseForFoldersAndItems>Items</UseForFoldersAndItems>",
+            ),
+        ),
+        (
+            _document_object_payload,
+            (
+                "<AutoTime>CurrentOrLast</AutoTime>",
+                "<UsePostingMode>Auto</UsePostingMode>",
+                "<RepostOnWrite>true</RepostOnWrite>",
+            ),
+        ),
+        (
+            _information_register_record_payload,
+            ("<WindowOpeningMode>LockOwnerWindow</WindowOpeningMode>",),
+        ),
+    ],
+)
+def test_owner_default_root_profile_roundtrip(factory, expected):
+    payload = factory()
+    compiled = compile_managed_form(payload)
+    xml = compiled.artifacts[0].content
+    for marker in expected:
+        assert marker in xml
+
+    result = decompile_managed_form(
+        xml,
+        form_name=payload["form_name"],
+        context=payload["context"],
+        module_bsl=compiled.artifacts[1].content,
+    )
+
+    assert result.status == "decompiled"
+    assert result.specification == compiled.specification
+
+
+@pytest.mark.parametrize(
+    ("factory", "old", "new"),
+    [
+        (
+            _catalog_object_payload,
+            "<UseForFoldersAndItems>Items</UseForFoldersAndItems>",
+            "",
+        ),
+        (
+            _catalog_object_payload,
+            "<UseForFoldersAndItems>Items</UseForFoldersAndItems>",
+            "<UseForFoldersAndItems>FoldersAndItems</UseForFoldersAndItems>",
+        ),
+        (
+            _document_object_payload,
+            "<UsePostingMode>Auto</UsePostingMode>",
+            "<UsePostingMode>Ask</UsePostingMode>",
+        ),
+        (
+            _information_register_record_payload,
+            "<WindowOpeningMode>LockOwnerWindow</WindowOpeningMode>",
+            "",
+        ),
+    ],
+)
+def test_owner_default_root_profile_rejects_missing_or_wrong(factory, old, new):
+    payload = factory()
+    compiled = compile_managed_form(payload)
+    xml = compiled.artifacts[0].content.replace(old, new, 1)
+
+    result = decompile_managed_form(
+        xml,
+        form_name=payload["form_name"],
+        context=payload["context"],
+        module_bsl=compiled.artifacts[1].content,
+    )
+
+    assert result.status == "rejected"
+    assert any(
+        item.code == "invalid_owner_default_profile"
+        for item in result.diagnostics
+    )
+
+
+def test_catalog_default_root_profile_rejects_document_property():
+    payload = _catalog_object_payload()
+    compiled = compile_managed_form(payload)
+    xml = compiled.artifacts[0].content.replace(
+        '<AutoCommandBar name="ФормаКоманднаяПанель" id="-1"/>',
+        "<AutoTime>CurrentOrLast</AutoTime>\r\n"
+        '\t<AutoCommandBar name="ФормаКоманднаяПанель" id="-1"/>',
+        1,
+    )
+
+    result = decompile_managed_form(
+        xml,
+        form_name=payload["form_name"],
+        context=payload["context"],
+        module_bsl=compiled.artifacts[1].content,
+    )
+
+    assert result.status == "rejected"
+    assert any(
+        item.code == "invalid_owner_default_profile"
+        for item in result.diagnostics
+    )
+
+
 def test_document_object_context_требует_главный_metadata_object():
     payload = _document_object_payload()
     attributes = payload["attributes"]

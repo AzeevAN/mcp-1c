@@ -84,8 +84,9 @@ it("объясняет границу Forms до включения", async () =
   expect(within(card).getByText(/форм списка и выбора/)).toBeInTheDocument();
   expect(within(card).getByText(/набора записей регистра/)).toBeInTheDocument();
   expect(within(card).getByText(/встроенной обработки/)).toBeInTheDocument();
+  expect(within(card).getByText(/отчёта/)).toBeInTheDocument();
   expect(within(card).getByText(/Конфигурацию 1С не изменяет/)).toBeInTheDocument();
-  expect(within(card).getByText(/5 963.*o200k_base/)).toBeInTheDocument();
+  expect(within(card).getByText(/6 141.*o200k_base/)).toBeInTheDocument();
   expect(forms).not.toBeChecked();
 });
 
@@ -99,8 +100,11 @@ it("объясняет границу Metadata Authoring до включения
   expect(within(card).getByText(/3 pure-инструмента/)).toBeInTheDocument();
   expect(within(card).getByText(/непроводимого документа/)).toBeInTheDocument();
   expect(within(card).getByText(/встроенной обработки/)).toBeInTheDocument();
-  expect(within(card).getByText(/Внешние \.epf не поддерживаются/)).toBeInTheDocument();
-  expect(within(card).getByText(/4 705.*o200k_base/)).toBeInTheDocument();
+  expect(within(card).getByText(/отчёта с основной управляемой формой/)).toBeInTheDocument();
+  expect(within(card).getByText(/минимальной системной СКД/)).toBeInTheDocument();
+  expect(within(card).getByText(/Содержательная СКД, макеты/)).toBeInTheDocument();
+  expect(within(card).getByText(/внешние \.epf и \.erf/)).toBeInTheDocument();
+  expect(within(card).getByText(/5 762.*o200k_base/)).toBeInTheDocument();
   expect(capability).not.toBeChecked();
 });
 

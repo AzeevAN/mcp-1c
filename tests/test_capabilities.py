@@ -607,12 +607,13 @@ def test_enabled_добавляет_ровно_три_metadata_authoring_инс�
     assert tools[-2].input_schema["required"] == ["specification"]
     assert "если forms не пуст, artifacts" in (tools[-2].description or "")
     specification = tools[-2].input_schema["properties"]["specification"]
-    assert len(specification["oneOf"]) == 4
-    catalog, register, document, data_processor = specification["oneOf"]
+    assert len(specification["oneOf"]) == 5
+    catalog, register, document, data_processor, report = specification["oneOf"]
     assert catalog["title"] == "Справочник"
     assert register["title"] == "РегистрСведений"
     assert document["title"] == "Документ"
     assert data_processor["title"] == "Обработка"
+    assert report["title"] == "Отчет"
     assert {
         "schema_version", "object_ref", "format_version", "identity",
         "synonym", "attributes", "forms", "code_length", "description_length",
@@ -626,6 +627,7 @@ def test_enabled_добавляет_ровно_три_metadata_authoring_инс�
     assert register["additionalProperties"] is False
     assert document["additionalProperties"] is False
     assert data_processor["additionalProperties"] is False
+    assert report["additionalProperties"] is False
     assert {
         "schema_version", "object_ref", "format_version", "identity",
         "synonym", "attributes", "forms", "number_length",
@@ -640,6 +642,19 @@ def test_enabled_добавляет_ровно_три_metadata_authoring_инс�
     assert data_processor["properties"]["forms"]["minItems"] == 1
     assert data_processor["properties"]["forms"]["maxItems"] == 1
     assert data_processor["properties"]["forms"]["items"]["properties"][
+        "default"
+    ] == {"const": True}
+    assert {
+        "schema_version", "object_ref", "format_version", "identity",
+        "synonym", "attributes", "forms",
+    } == set(report["required"])
+    assert report["properties"]["attributes"]["maxItems"] == 0
+    assert report["properties"]["forms"]["minItems"] == 1
+    assert report["properties"]["forms"]["maxItems"] == 1
+    assert report["properties"]["forms"]["items"]["properties"][
+        "role"
+    ] == {"const": "object"}
+    assert report["properties"]["forms"]["items"]["properties"][
         "default"
     ] == {"const": True}
     form = catalog["properties"]["forms"]["items"]

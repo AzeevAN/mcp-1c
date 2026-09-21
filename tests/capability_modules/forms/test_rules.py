@@ -190,6 +190,9 @@ def test_правила_описывают_native_форму_записи_рег
         "saved_data": True,
         "data_path": "Запись.<Реквизит>",
         "auto_command_bar": "empty_platform_autofill",
+        "derived_root_properties": {
+            "WindowOpeningMode": "LockOwnerWindow"
+        },
     }
 
 
@@ -370,6 +373,7 @@ def test_specification_возвращает_тот_же_минимальный_�
             "Справочник.<Имя>",
             "Документ.<Имя>",
             "Обработка.<Имя>",
+            "Отчет.<Имя>",
         ],
         "role": "object",
         "main_attribute": {
@@ -382,8 +386,53 @@ def test_specification_возвращает_тот_же_минимальный_�
         },
         "xml_type": (
             "cfg:CatalogObject.<Имя>, cfg:DocumentObject.<Имя> или "
-            "cfg:DataProcessorObject.<Имя>"
+            "cfg:DataProcessorObject.<Имя>; для отчета отдельный профиль "
+            "требует реквизит Отчет типа cfg:ReportObject.<Имя>"
         ),
+        "derived_owner_profiles": {
+            "Справочник.*": {
+                "WindowOpeningMode": "LockOwnerWindow",
+                "UseForFoldersAndItems": "Items",
+            },
+            "Документ.*": {
+                "AutoTime": "CurrentOrLast",
+                "UsePostingMode": "Auto",
+                "RepostOnWrite": True,
+            },
+        },
+        "empty_user_elements": (
+            "допустимо; чистая форма обработки остаётся без ChildItems, "
+            "а у отчёта остаются только вычисляемые системные элементы"
+        ),
+        "report_profile": {
+            "owner": "Отчет.<Имя>",
+            "role": "object",
+            "main_attribute": "Отчет",
+            "saved_data": False,
+            "derived_root_properties": {
+                "ReportResult": "Результат",
+                "DetailsData": "ДанныеРасшифровки",
+                "ReportFormType": "Main",
+                "AutoShowState": "Auto",
+                "CustomSettingsFolder": (
+                    "КомпоновщикНастроекПользовательскиеНастройки"
+                ),
+                "ReportResultViewMode": "Auto",
+                "ViewModeApplicationOnSetReportResult": "Auto",
+            },
+            "derived_attributes": {
+                "Результат": "mxl:SpreadsheetDocument",
+                "ДанныеРасшифровки": "xs:string",
+            },
+            "derived_elements": [
+                "КомпоновщикНастроекПользовательскиеНастройки",
+                "Результат",
+            ],
+            "auto_command_bar": "standard_platform_filled",
+            "commands": [],
+            "events": [],
+            "application_bsl": "unsupported",
+        },
     }
     list_choice = by_code["list_choice_form_owner_context"]["value"]
     assert list_choice["roles"] == ["list", "choice"]
@@ -395,14 +444,30 @@ def test_specification_возвращает_тот_же_минимальный_�
             {
                 "kind": "input_field",
                 "name": "Код",
-                "data_path": "Список.Код",
+                "data_path": "Список.Code",
             },
             {
                 "kind": "input_field",
                 "name": "Наименование",
-                "data_path": "Список.Наименование",
+                "data_path": "Список.Description",
             },
         ],
+    }
+    assert list_choice["derived_default_profile"] == {
+        "root_command_bar_location": "absent",
+        "system_group": "СписокКомпоновщикНастроекПользовательскиеНастройки",
+        "system_group_ids": [1, 2],
+        "table_id": 3,
+        "table_properties": {
+            "Representation": "List",
+            "CommandBarLocation": "None",
+            "DefaultItem": True,
+            "DataPath": "Список",
+            "UserSettingsGroup": (
+                "СписокКомпоновщикНастроекПользовательскиеНастройки"
+            ),
+        },
+        "columns": "caller_defined_order",
     }
     assert list_choice["minimal_example"] == {
         "schema_version": 2,
@@ -429,12 +494,13 @@ def test_specification_возвращает_тот_же_минимальный_�
     parsed = models.parse_managed_form_spec(list_choice["minimal_example"])
     assert parsed.elements[0].data_path == "Список"
     assert [column.data_path for column in parsed.elements[0].columns] == [
-        "Список.Код",
-        "Список.Наименование",
+        "Список.Code",
+        "Список.Description",
     ]
     summary = by_code["list_choice_form_owner_context"]["summary"]
     assert "Список.<ИмяПоля>" in summary
-    assert "поля Код и Наименование" in summary
+    assert "стандартные поля справочника" in summary
+    assert "Code и Description" in summary
     assert "configuration_links получает warning" in summary
     assert "фиктивные типы" in summary
     assert "существующего owner" in summary

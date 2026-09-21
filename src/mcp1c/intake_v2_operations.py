@@ -73,8 +73,9 @@ def _activation_for_generation(
     job_id: str,
 ) -> ActivationManifest | None:
     """Сформировать activation для опубликованного Source B поколения."""
-    if manifest.source_transport.value != "incoming":
-        return None
+    # Transport only describes how the Source B package arrived.  It must not
+    # change activation semantics: incoming/browser archives and a bound
+    # local-directory export all publish the same B_FULL contract.
     if not all(
         layer.provenance is not None and layer.provenance.profile.value == "source-b"
         for layer in manifest.layers
@@ -1359,7 +1360,12 @@ class IntakeCoordinator:
                 raise OperationConflict(
                     "active generation pointer не совпадает с target manifest"
                 )
-            result = self._result(preview, target)
+            # The CAS target intentionally omits activation metadata.  Return
+            # the durable current pointer so B_FULL activation is not lost on
+            # retry after a crash or a race.
+            if current is None:
+                raise OperationError("target generation отсутствует в Registry")
+            result = self._result(preview, current)
             return finish(result)
         if not _same_generation_pointer(current, expected):
             raise OperationConflict(
@@ -1421,7 +1427,9 @@ class IntakeCoordinator:
                 _same_generation_pointer(current, target)
                 and publisher.active_generation(preview.plan.identity) == target_manifest
             ):
-                pointer = target
+                if current is None:
+                    raise OperationError("target generation отсутствует в Registry") from error
+                pointer = current
             else:
                 discard = getattr(publisher, "discard_staged_generation", None)
                 if staged is not None and callable(discard):

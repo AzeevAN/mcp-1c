@@ -364,8 +364,8 @@ def test_commit_распознаёт_тот_же_target_при_гонке_до_s
     registry = Registry(tmp_path / "data")
     real_stage = registry.stage_generation
 
-    def win_same_target(manifest, payloads):
-        staged = real_stage(manifest, payloads)
+    def win_same_target(manifest, payloads, **kwargs):
+        staged = real_stage(manifest, payloads, **kwargs)
         registry.publish_generation(staged, expected_previous=None)
         raise RuntimeError("синтетически проигранная гонка staging")
 

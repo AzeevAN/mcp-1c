@@ -190,6 +190,22 @@ def test_repack_и_physical_hash_не_создают_ложный_full_update():
     assert plan.no_op
 
 
+def test_legacy_barrier_content_identical_всё_равно_активирует_b_full():
+    IntakeAction = _symbol("IntakeAction")
+    plan_intake = _symbol("plan_intake")
+    active = _manifest("generation-old")
+    candidate = _manifest("generation-new")
+
+    plan = plan_intake(
+        IntakeAction.UPDATE_FULL,
+        candidate,
+        active=native_generation_view(active, activation=None, legacy_barrier=True),
+    )
+
+    assert plan.applied_layers == frozenset(LayerKind)
+    assert not plan.no_op
+
+
 def test_parser_upgrade_требует_reparse_а_downgrade_отклоняется():
     IntakeAction = _symbol("IntakeAction")
     LayerChangeReason = _symbol("LayerChangeReason")

@@ -44,7 +44,7 @@ def _configuration_xml(
         )
     else:
         properties = (
-            f"<Name>{_CONFIG}</Name><NamePrefix/>"
+            f"<Name>{_CONFIG}</Name><Version>1.0</Version><NamePrefix/>"
             "<CompatibilityMode>Version8_3_21</CompatibilityMode>"
         )
     children = "".join(f"<Catalog>{name}</Catalog>" for name in catalogs)

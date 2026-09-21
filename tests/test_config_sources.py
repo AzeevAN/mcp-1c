@@ -99,6 +99,7 @@ def test_update_restart_noop_and_same_stat_change(tmp_path):
     service.prepare(work)
     restarted = IntakeApiService.for_registry(registry, config_sources_root=roots, directory_settle_seconds=0)
     assert restarted.confirm(work.job_id)["commit"] is not None
+    assert registry.active_activation(ExportIdentity.configuration("Demo0")) is not None
     candidate = restarted.refresh_directory("Demo0")
     work = restarted.start(candidate["id"], "update_full")
     restarted.prepare(work)

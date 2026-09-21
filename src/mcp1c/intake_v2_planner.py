@@ -304,8 +304,19 @@ def plan_intake(
         )
 
     native = _active_manifest_layers(active) if active is not None else {}
+    # A native bundle without an activation manifest is the persisted legacy
+    # barrier too.  It must be rebuilt as B_FULL even when all five layer
+    # hashes are identical; treating it as a normal native no-op leaves the
+    # old active generation forever marked RELOAD_REQUIRED.
     legacy = active is not None and (
-        active.origin is GenerationOrigin.LEGACY or active.legacy_barrier
+        active.origin is GenerationOrigin.LEGACY
+        or active.legacy_barrier
+        or (
+            active.origin is GenerationOrigin.NATIVE
+            and active.activation is None
+            and active.manifest is not None
+            and active.manifest.source_transport.value == "local-directory"
+        )
     )
     if legacy and action is IntakeAction.UPDATE_CONTENT:
         # У legacy нет независимых payload сохранённых слоёв: content-only
@@ -324,7 +335,8 @@ def plan_intake(
         reason = _reason(current, layer, legacy=legacy) if active else LayerChangeReason.ADDED
         decision = (
             LayerDecision.APPLY
-            if kind in allowed and reason is not LayerChangeReason.NONE
+            if kind in allowed
+            and (reason is not LayerChangeReason.NONE or legacy)
             else LayerDecision.PRESERVE
         )
         planned.append(PlannedLayer(kind, current, layer, reason, decision))

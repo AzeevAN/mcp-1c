@@ -226,6 +226,18 @@ class IntakeApiService:
         identity = ExportIdentity.configuration(configuration)
         if snapshot.generation(identity) is None:
             return [IntakeAction.UPDATE_FULL.value]
+        active = self.registry.generation_view(configuration)
+        if (
+            active.origin is GenerationOrigin.LEGACY
+            or active.legacy_barrier
+            or (
+                active.origin is GenerationOrigin.NATIVE
+                and active.activation is None
+                and active.manifest is not None
+                and active.manifest.source_transport.value == "local-directory"
+            )
+        ):
+            return [IntakeAction.UPDATE_FULL.value]
         return [IntakeAction.UPDATE_CONTENT.value, IntakeAction.UPDATE_FULL.value]
 
     def candidate_payload(

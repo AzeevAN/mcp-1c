@@ -226,6 +226,14 @@
 
 ### Найдено
 
+- Для `SOURCE-MODES-V1` зафиксирована authority/evidence matrix: active main,
+  версии, compatibility mode, layers, predefined, DefinedType и extension
+  overlay разведены по producer/consumer. Текущий `GenerationManifest` и
+  `GenerationPointer` ещё не содержат единого active mode, incarnation и
+  `RELOAD_REQUIRED` barrier; это оставлено RED для `SMV1-02`. Исторические
+  числа сохранены с явными `not_checked`/`unmeasured` и командами в
+  `docs/source-modes-v1-authority-matrix-2026-09-21.md`.
+
 - Создание дополнительной формы `*1` в Конфигураторе не заменяет ранее
   назначенную default-форму. В проверенных descriptor справочник и документ
   сохраняют заполненные `DefaultObjectForm`, `DefaultListForm` и

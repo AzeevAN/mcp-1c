@@ -1,5 +1,13 @@
 # Changelog
 
+## Найдено
+
+- **Относительный корень Registry ломал live-публикацию.** При `Registry("data")`
+  staging-путь поколения строился абсолютным, а проверка сравнивала его с
+  относительным корнем и отклоняла `confirm` до смены active pointer. Корень
+  теперь нормализуется при создании Registry; regression проверяется
+  `PYTHONPATH=src .venv/bin/python -m pytest tests/test_intake_v2_registry.py -q`.
+
 ## 2026-09-21
 
 ### Добавлено

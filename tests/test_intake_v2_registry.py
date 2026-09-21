@@ -207,6 +207,15 @@ def test_publish_переключает_pointer_и_оставляет_тольк
     assert restarted.active_generation(second.identity) == second
 
 
+def test_relative_data_root_нормализуется_до_staging(tmp_path, monkeypatch):
+    registry_root = tmp_path / "data"
+    monkeypatch.chdir(tmp_path)
+
+    registry = Registry("data")
+
+    assert registry.data_dir == registry_root.resolve()
+
+
 def test_publish_atomic_root_persists_activation_manifest(tmp_path):
     registry = Registry(tmp_path / "data")
     manifest, payloads = _manifest(tmp_path, "generation-activation")

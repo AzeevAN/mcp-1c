@@ -1016,7 +1016,10 @@ class Registry:
     """Всё загруженное и правила сопоставления версий."""
 
     def __init__(self, data_dir: str | Path = "data"):
-        self.data_dir = Path(data_dir)
+        # Внутренние staging-пути строятся абсолютными методами Path. Нормализуем
+        # корень сразу, чтобы проверка границы bundle не сравнивала абсолютный
+        # путь с относительным ``data`` и не отклоняла штатную публикацию.
+        self.data_dir = Path(data_dir).resolve()
         self.sources_dir = self.data_dir / "sources"
         self.index_dir = self.data_dir / "index"
         self.cache_dir = self.index_dir / "cache"

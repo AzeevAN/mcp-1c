@@ -2241,6 +2241,31 @@ h2 {
   font-size: 16px;
 }
 
+.platform-value-link {
+  width: fit-content;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  color: var(--blue-deep);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.platform-value-link strong {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.platform-value-link small {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+
 .configuration-note,
 .inline-warning {
   display: flex;
@@ -2745,22 +2770,38 @@ h2 {
   font-size: 13px;
 }
 
-.platform-declaration {
+.platform-declaration-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(320px, 1.2fr);
-  gap: 18px;
-  align-items: center;
-  padding: 16px 18px;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  background: var(--surface-subtle);
+  place-items: center;
+  padding: 20px;
+  background: rgb(14 16 18 / 56%);
 }
 
-.platform-declaration > div,
-.platform-declaration form {
+.platform-declaration {
+  width: min(560px, 100%);
+  display: grid;
+  gap: 16px;
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface-subtle);
+  box-shadow: 0 18px 60px rgb(0 0 0 / 24%);
+}
+
+.platform-declaration header,
+.platform-declaration form,
+.platform-declaration footer {
   min-width: 0;
   display: grid;
   gap: 6px;
+}
+
+.platform-declaration header {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
 }
 
 .platform-declaration span {
@@ -2771,10 +2812,14 @@ h2 {
   text-transform: uppercase;
 }
 
-.platform-declaration strong { color: var(--ink-900); font-size: 18px; }
+.platform-declaration h2 { margin: 4px 0 0; color: var(--ink-900); font-size: 22px; }
 .platform-declaration small { color: var(--muted); line-height: 1.45; }
-.platform-declaration form { grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; }
+.platform-declaration p { margin: 0; color: var(--muted); line-height: 1.5; }
+.platform-declaration form { gap: 16px; }
+.platform-declaration label { display: grid; gap: 7px; }
+.platform-declaration label span { text-transform: none; letter-spacing: 0; }
 .platform-declaration input { min-width: 0; width: 100%; }
+.platform-declaration footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .platform-declaration-feedback { grid-column: 1 / -1; }
 
 .icon-danger-button,

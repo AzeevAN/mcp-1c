@@ -325,13 +325,16 @@ def configuration_from_base_layer(
         or (source_profile is None and source_format == "source-b")
     )
     if is_source_b:
-        # До parser v4 B записывал CompatibilityMode в platform и наследовал
-        # True для недоступных предопределённых. Исправляем только проекцию:
-        # защищённые хешами payload/manifest на диске остаются неизменными.
+        # Старый B-payload до появления отдельного compatibility_mode не мог
+        # доказать ни режим, ни предопределённые элементы. Современный
+        # Source B уже содержит собственные предопределённые элементы, и их
+        # флаг нельзя сбрасывать только из-за происхождения B.
         if "compatibility_mode" not in raw:
             compatibility = platform
-        platform = ""
-        predefined = False
+            platform = ""
+            predefined = False
+        else:
+            platform = ""
     configuration = Configuration(
         name=_text(raw["name"], "base_structure.name", required=True),
         synonym=_text(raw["synonym"], "base_structure.synonym"),

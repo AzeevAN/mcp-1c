@@ -180,7 +180,7 @@ def test_selected_input_change_boundary(world,stage):
         # Для ZIP подтверждается уже подготовленный снимок, не новая версия ZIP.
         assert s.confirm(w.job_id)['commit']['no_op']
 
-@pytest.mark.parametrize('kind',['identity','transport','origin','parser','selection','action','overlay'])
+@pytest.mark.parametrize('kind',['identity','transport','origin','parser','selection','action','overlay','legacy-local'])
 def test_fast_path_requires_complete_matching_provenance(world,kind):
     from mcp1c.intake_v2 import CandidateTransport
     from mcp1c.intake_v2_planner import IntakeAction
@@ -193,6 +193,7 @@ def test_fast_path_requires_complete_matching_provenance(world,kind):
     elif kind=='origin': candidate=replace(candidate,origin_name='other.zip')
     elif kind=='parser': active=native_generation_view(replace(active.manifest,parser_version=active.manifest.parser_version-1))
     elif kind=='selection': active=native_generation_view(replace(active.manifest,selection_version=active.manifest.selection_version-1))
+    elif kind=='legacy-local': active=replace(active, activation=None, legacy_barrier=False)
     elif kind=='action': action=IntakeAction.UPDATE_CONTENT
     else:
         d['registry'].add_configuration(write_export(d['tmp_path']/'seed',build_configuration(name='Demo0',version='2.0')),keep_source=False)

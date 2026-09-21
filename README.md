@@ -31,13 +31,13 @@
 | Роли | слой ролей строится из native generation независимо от MCP capability; `role_access` по умолчанию выключен, после включения и restart публикует две role-ручки |
 | Дашборд | современная SPA включена по умолчанию; светлая и тёмная темы; ссылка на GitHub; `on` либо `off` |
 | Авторизация Docker | два разных обязательных токена: `API_TOKEN` на чтение, `ADMIN_TOKEN` на запись |
-| Тесты | `.venv/bin/python -m pytest`, 3177 |
+| Тесты | `.venv/bin/python -m pytest`, 3181 |
 
 Воспроизводимый прогон:
 
 ```bash
 .venv/bin/pip install --require-hashes -r requirements-dev-lock.txt
-.venv/bin/python -m pytest          # 3177 тестов; 3176 passed, 1 skipped (прогон 2026-09-21)
+.venv/bin/python -m pytest          # 3181 тестов; 3180 passed, 1 skipped (прогон 2026-09-21)
 ```
 
 Свежий synthetic blind MCP-путь без заранее названных ручек запускается так:
@@ -417,27 +417,32 @@ Live-приёмка этого контура является отдельны�
 `initialize → tools/list → tools/call`, dashboard и каскадное удаление.
 Отсутствующий Source A не подменяется успешным A/B результатом и остаётся
 `unknown`/`not_checked`.
-Для B_FULL администратор может задать или очистить declared platform version:
+Для активной конфигурации `A_ONLY` или `B_FULL` администратор может задать или
+очистить declared platform version:
 `POST /api/v1/sources/platform/set` с `{ "configuration": "...",
 "platform_version": "8.3.24[.1234]" }` и `POST
 /api/v1/sources/platform/clear` с `{ "configuration": "..." }`. Оба маршрута
 требуют `ADMIN_TOKEN` и CSRF-заголовок для cookie-сессии; A_ONLY и
-legacy/reload-required отклоняются. Без declaration значение остаётся
-`unknown`, compatibility mode его не заменяет.
+legacy/reload-required отклоняются. Ручное значение является рабочей настройкой
+поверх источника: после очистки снова используется версия Source A, если она
+есть, иначе значение остаётся `unknown`; compatibility mode его не заменяет.
 
 В dashboard конфигурация с `activation_status=RELOAD_REQUIRED` явно помечается
 как «Требуется повторная активация» и получает пояснение, что обычный restart не
 исправляет старый active generation: для неё нужна полная активация `B_FULL`.
 Предупреждения о неизвестной runtime-версии платформы и недоступных
 предопределённых именах в dashboard собраны под заголовком «Ограничения
-текущего опубликованного источника»: они относятся к данным active generation,
-а не являются ошибкой визуализации. Длинные имена ролей переносятся в боковой
+текущего опубликованного источника» только когда active generation действительно
+не содержит доказанных имён. Современный Source B передаёт и сохраняет
+собственные `Predefined.xml`; Source A остаётся отдельным источником runtime-фактов.
+Длинные имена ролей переносятся в боковой
 панели, а действия выбранной конфигурации разделены на статус и управляющие
 кнопки.
 На странице источников фактическая версия показывается как `unknown`, если она
-не объявлена. Для активного `B_FULL` администратор может задать или очистить её
-прямо в dashboard; для legacy и `RELOAD_REQUIRED` поле заблокировано до полной
-активации. Архивы из browser/incoming и read-only каталоги используют одну и ту
+не объявлена. Значение является ссылкой: администратор может задать или
+очистить его прямо в dashboard для активного `A_ONLY` или `B_FULL`; рядом
+показывается метка ручного значения. Для legacy и `RELOAD_REQUIRED` поле
+заблокировано до активации. Архивы из browser/incoming и read-only каталоги используют одну и ту
 же Source B/B_FULL семантику; транспорт не меняет activation-контракт.
 Dashboard также использует утверждённый знак MCP 1C из
 `docs/branding/mcp-1c`: SVG favicon и Paper-совместимый знак в навигации.

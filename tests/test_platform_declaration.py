@@ -77,10 +77,9 @@ def test_registry_persists_and_clears_b_full_platform_declaration(tmp_path):
     assert restored.platform_declaration("Demo") is None
 
 
-def test_registry_does_not_declare_platform_for_a_only(tmp_path):
+def test_registry_declares_platform_for_a_only(tmp_path):
     registry = _registry(tmp_path, ActivationMode.A_ONLY)
-    with pytest.raises(RegistryError, match="только для B_FULL"):
-        registry.set_platform_version("Demo", "8.3.24")
+    assert registry.set_platform_version("Demo", "8.3.24").version == "8.3.24"
 
 
 def test_configuration_delete_clears_platform_declaration_durably(tmp_path):

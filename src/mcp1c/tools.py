@@ -1241,18 +1241,23 @@ def _configurations_result(
             if registry is not None
             else None
         )
+        declaration = (
+            registry.platform_declaration(config.name)
+            if registry is not None
+            else None
+        )
         rows.append(
             ConfigurationStateRow(
                 name=config.name,
                 version=config.version,
-                platform=config.platform,
+                platform=declaration.version if declaration else config.platform,
                 compatibility_mode=config.compatibility_mode,
                 predefined_available=config.predefined_available,
                 activation_mode=(activation.mode.value if activation and activation.mode else "unknown"),
                 activation_status=(activation.status.value if activation else "unknown"),
                 platform_declaration=(
-                    registry.platform_declaration(config.name).to_dict()
-                    if registry is not None and registry.platform_declaration(config.name)
+                    declaration.to_dict()
+                    if declaration
                     else None
                 ),
                 objects=len(config),

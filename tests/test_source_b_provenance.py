@@ -86,6 +86,22 @@ def test_старый_b_snapshot_читается_без_перезаписи_и
     assert semantic == before
 
 
+def test_современный_source_b_сохраняет_доказанные_предопределённые(tmp_path):
+    collection, _ = _materialized(tmp_path, "b-predefined")
+    base = convert_collection(collection).base
+    base.predefined_available = True
+    base.get("Справочник.Items").predefined = ["Основной"]
+    raw = base_layer_data(base)
+
+    restored = configuration_from_base_layer(
+        raw,
+        source_profile=LayerSourceProfile.SOURCE_B,
+    )
+
+    assert restored.predefined_available is True
+    assert restored.get("Справочник.Items").predefined
+
+
 def test_старое_поколение_v3_восстанавливается_без_перезаписи_bundle(tmp_path, monkeypatch):
     from hashlib import sha256
     import mcp1c.intake_v2_converter as converter

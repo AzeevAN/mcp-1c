@@ -235,6 +235,51 @@ it("показывает необходимость повторной акти�
   expect(screen.getByText(/Старый active generation/)).toBeInTheDocument();
 });
 
+it("редактирует ручную версию платформы поверх активного Source A", async () => {
+  const fetchMock = vi.mocked(fetch);
+  const regularFetch = fetchMock.getMockImplementation()!;
+  fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input) === "/api/v1/sources/platform/set") {
+      return new Response(JSON.stringify({ configuration: "Отраслевая конфигурация А", version: "8.3.23.1997", source: "user", status: "declared" }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (String(input) === "/api/v1/sources/platform/clear") {
+      return new Response(JSON.stringify({ configuration: "Отраслевая конфигурация А", status: "unknown" }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    const response = await regularFetch(input, init);
+    if (String(input) !== "/api/v1/sources") return response;
+    const payload = await response.json();
+    payload.configurations[0] = {
+      ...payload.configurations[0],
+      platform: "8.3.15.1570",
+      activation_mode: "A_ONLY",
+      activation_status: "ACTIVE",
+      platform_declaration: null,
+    };
+    return { ...response, json: async () => payload };
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  render(
+    <MemoryRouter initialEntries={["/sources"]}>
+      <QueryClientProvider client={client}>
+        <SourcesPage />
+      </QueryClientProvider>
+    </MemoryRouter>,
+  );
+
+  const platform = await screen.findByRole("button", { name: /Изменить версию платформы/ });
+  expect(platform).toHaveTextContent("8.3.15.1570");
+  fireEvent.click(platform);
+  const dialog = screen.getByRole("dialog", { name: "Версия платформы" });
+  fireEvent.change(within(dialog).getByRole("textbox", { name: "Версия платформы" }), { target: { value: "8.3.23.1997" } });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Сохранить" }));
+
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+    "/api/v1/sources/platform/set",
+    expect.objectContaining({ method: "POST" }),
+  ));
+});
+
 it("объясняет ограничение через категории покрытия, а не через нулевой счётчик", async () => {
   const fetchMock = vi.mocked(fetch);
   const regularFetch = fetchMock.getMockImplementation()!;

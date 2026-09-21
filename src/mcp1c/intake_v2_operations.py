@@ -600,13 +600,13 @@ def _reuse_active(
 
     if action is not IntakeAction.UPDATE_FULL or active is None or active.manifest is None:
         return False
+    # Переиспользование допустимо только для уже активного B_FULL. Старое
+    # поколение без activation (в том числе из каталога) должно пройти
+    # полный rebuild, даже если входной hash совпал.
     if (
-        active.manifest.source_transport.value == "incoming"
-        and (
-            active.legacy_barrier
-            or active.activation is None
-            or active.activation.mode is not ActivationMode.B_FULL
-        )
+        active.legacy_barrier
+        or active.activation is None
+        or active.activation.mode is not ActivationMode.B_FULL
     ):
         return False
     manifest = active.manifest

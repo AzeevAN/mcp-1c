@@ -112,6 +112,7 @@ function CoverageTable({ title, rows }: { title: string; rows: CoverageRow[] }) 
 
 function PlatformDeclaration({ configuration }: { configuration: ConfigurationSource }) {
   const client = useQueryClient();
+  const [open, setOpen] = useState(false);
   const [version, setVersion] = useState(configuration.platform_declaration?.version ?? "");
   const [feedback, setFeedback] = useState("");
   const setMutation = useMutation({
@@ -136,38 +137,65 @@ function PlatformDeclaration({ configuration }: { configuration: ConfigurationSo
     setVersion(configuration.platform_declaration?.version ?? "");
   }, [configuration.id, configuration.platform_declaration?.version]);
 
-  const ready = configuration.activation_mode === "B_FULL" && configuration.activation_status === "ACTIVE";
+  const editable = (configuration.activation_mode === "A_ONLY" || configuration.activation_mode === "B_FULL")
+    && configuration.activation_status === "ACTIVE";
   const busy = setMutation.isPending || clearMutation.isPending;
   return (
-    <section className="platform-declaration" aria-label="Версия платформы">
-      <div>
-        <span>Фактическая версия платформы</span>
+    <>
+      <button
+        className="platform-value-link"
+        type="button"
+        onClick={() => setOpen(true)}
+        aria-label={`Изменить версию платформы: ${configuration.platform || "unknown"}`}
+      >
         <strong>{configuration.platform || "unknown"}</strong>
-        <small>
-          {ready
-            ? "Для B_FULL её можно объявить вручную, если Source A недоступен."
-            : "Указать версию можно после публикации активного B_FULL."}
-        </small>
-      </div>
-      <form onSubmit={(event) => { event.preventDefault(); setFeedback(""); if (version.trim()) setMutation.mutate(); }}>
-        <input
-          aria-label="Версия платформы"
-          value={version}
-          onChange={(event) => setVersion(event.target.value)}
-          placeholder="unknown · например 8.3.27.2130"
-          disabled={!ready || busy}
-        />
-        <button className="button-primary" type="submit" disabled={!ready || busy || !version.trim()}>
-          Сохранить
-        </button>
-        {configuration.platform_declaration && (
-          <button className="button-secondary" type="button" disabled={!ready || busy} onClick={() => clearMutation.mutate()}>
-            Очистить
-          </button>
-        )}
-      </form>
-      {feedback && <small className="platform-declaration-feedback" role="status">{feedback}</small>}
-    </section>
+        {configuration.platform_declaration && <small>задано вручную</small>}
+      </button>
+      {open && (
+        <div className="platform-declaration-backdrop" role="presentation">
+          <section className="platform-declaration" role="dialog" aria-modal="true" aria-label="Версия платформы">
+            <header>
+              <div>
+                <span>Версия платформы</span>
+                <h2>{configuration.platform || "unknown"}</h2>
+              </div>
+              <button className="icon-button" type="button" onClick={() => setOpen(false)} aria-label="Закрыть">
+                <X size={18} aria-hidden="true" />
+              </button>
+            </header>
+            <p>
+              Это отдельная рабочая настройка версии платформы. Она не меняет Source A или Source B.
+              Если ручное значение очистить, снова будет показана версия из Source A, либо <code>unknown</code>.
+            </p>
+            <form onSubmit={(event) => { event.preventDefault(); setFeedback(""); if (version.trim()) setMutation.mutate(); }}>
+              <label>
+                <span>Использовать версию</span>
+                <input
+                  aria-label="Версия платформы"
+                  value={version}
+                  onChange={(event) => setVersion(event.target.value)}
+                  placeholder="например 8.3.27.2130"
+                  disabled={!editable || busy}
+                />
+              </label>
+              <footer>
+                <button className="button-secondary" type="button" onClick={() => setOpen(false)} disabled={busy}>Отмена</button>
+                {configuration.platform_declaration && (
+                  <button className="button-secondary" type="button" disabled={!editable || busy} onClick={() => clearMutation.mutate()}>
+                    Очистить ручное значение
+                  </button>
+                )}
+                <button className="button-primary" type="submit" disabled={!editable || busy || !version.trim()}>
+                  Сохранить
+                </button>
+              </footer>
+            </form>
+            {!editable && <small className="platform-declaration-feedback">Редактирование доступно после загрузки активного источника.</small>}
+            {feedback && <small className="platform-declaration-feedback" role="status">{feedback}</small>}
+          </section>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -484,7 +512,9 @@ function ConfigurationDetail({
 
       <section className="configuration-facts" aria-label="Сводка конфигурации">
         <div><span>Версия</span><strong>{configuration.version || "—"}</strong></div>
-        <div><span>Платформа</span><strong>{configuration.platform || "unknown"}</strong></div>
+        <div><span>Платформа</span>{onRemove
+          ? <PlatformDeclaration configuration={configuration} />
+          : <strong>{configuration.platform || "unknown"}</strong>}</div>
         <div><span>Объекты</span><strong>{formatNumber(configuration.objects)}</strong></div>
         <div><span>Связи</span><strong>{formatNumber(configuration.edges)}</strong></div>
       </section>
@@ -511,8 +541,6 @@ function ConfigurationDetail({
           <div><FileJson size={20} aria-hidden="true" /><span><strong>Снимок активности расширений</strong><small>{configuration.extension_runtime ? "загружен" : "не загружен"}</small></span></div>
         )}
       </section>
-
-      {onRemove && <PlatformDeclaration configuration={configuration} />}
 
       <div className="corpus-stack">
         {configuration.extension_runtime && (

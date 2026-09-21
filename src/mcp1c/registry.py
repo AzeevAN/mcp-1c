@@ -4388,9 +4388,7 @@ class Registry:
     def set_platform_version(self, configuration: str, version: str) -> PlatformDeclaration:
         declaration = PlatformDeclaration(version)
         identity = ExportIdentity.configuration(configuration)
-        activation = self.require_active_activation(identity)
-        if activation.mode is not ActivationMode.B_FULL:
-            raise RegistryError("platform_version разрешён только для B_FULL")
+        self.require_active_activation(identity)
         with self._lock:
             if identity.grouping_key not in self._generation_pointers:
                 raise RegistryError("configuration_not_loaded")
@@ -4400,9 +4398,7 @@ class Registry:
 
     def clear_platform_version(self, configuration: str) -> None:
         identity = ExportIdentity.configuration(configuration)
-        activation = self.require_active_activation(identity)
-        if activation.mode is not ActivationMode.B_FULL:
-            raise RegistryError("platform_version разрешён только для B_FULL")
+        self.require_active_activation(identity)
         with self._lock:
             self._platform_declarations.pop(configuration, None)
             self._write_registry_payload(self._registry_payload())

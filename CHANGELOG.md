@@ -23,6 +23,10 @@
   tests/test_tool_descriptions.py tests/test_capabilities.py -q` выполняет
   официальный SDK-путь `initialize → tools/list → tools/call`; live A/B/delete
   и platform-dependent cache invalidation остаются `not_checked`.
+- SMV1-12: свежий blind synthetic MCP-тест через официальный `ClientSession`
+  сам выбирает `tools/list`-инструменты по описанию и schema, выполняет
+  `initialize → tools/list → tools/call`; A_ONLY role access возвращает
+  `unsupported_by_source`.
 
 - Полный синтетический gate после SMV1-05: 3155 passed, 1 skipped из 3156
   собранных тестов; команда — `.venv/bin/python -m pytest`.

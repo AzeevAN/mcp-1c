@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 from .registry import Registry
+from .intake_v2 import ExportIdentity
+from .source_modes import ActivationMode
 from .role_access import (
     OPERATION_PRESENTATION,
     OPERATION_RIGHTS,
@@ -168,6 +170,7 @@ class RoleAccessQueryError(ValueError):
 class _Selection:
     configuration: str
     roles: LoadedRoleAccess | None
+    source_state: str | None = None
 
 
 def _bounded(value: str, limit: int) -> tuple[str, bool]:
@@ -289,10 +292,24 @@ def _decode_reference(
 
 def _selection(registry: Registry, config: str | None) -> _Selection:
     context = registry.resolve(config)
+    activation = registry.active_activation(ExportIdentity.configuration(context.name))
+    if activation is not None and activation.mode is ActivationMode.A_ONLY:
+        return _Selection(context.name, None, "unsupported_by_source")
     return _Selection(context.name, context.roles)
 
 
 def _state_payload(selection: _Selection) -> dict[str, Any]:
+    if selection.source_state == "unsupported_by_source":
+        return {
+            "api_version": API_VERSION,
+            "state": "unsupported_by_source",
+            "configuration": selection.configuration,
+            "generation": None,
+            "source_sha256": None,
+            "declaration_scope": DECLARATION_SCOPE,
+            "disclaimer": DISCLAIMER,
+            "message": "Role access доступен только для активного B_FULL.",
+        }
     roles = selection.roles
     if roles is None:
         return {

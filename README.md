@@ -31,13 +31,19 @@
 | Роли | слой ролей строится из native generation независимо от MCP capability; `role_access` по умолчанию выключен, после включения и restart публикует две role-ручки |
 | Дашборд | современная SPA включена по умолчанию; светлая и тёмная темы; ссылка на GitHub; `on` либо `off` |
 | Авторизация Docker | два разных обязательных токена: `API_TOKEN` на чтение, `ADMIN_TOKEN` на запись |
-| Тесты | `.venv/bin/python -m pytest`, 3171 |
+| Тесты | `.venv/bin/python -m pytest`, 3173 |
 
 Воспроизводимый прогон:
 
 ```bash
 .venv/bin/pip install --require-hashes -r requirements-dev-lock.txt
-.venv/bin/python -m pytest          # 3171 тест; 3170 passed, 1 skipped (прогон 2026-09-21)
+.venv/bin/python -m pytest          # 3173 теста; 3172 passed, 1 skipped (прогон 2026-09-21)
+```
+
+Свежий synthetic blind MCP-путь без заранее названных ручек запускается так:
+
+```bash
+.venv/bin/python -m pytest tests/test_role_access_stage9.py::test_fresh_blind_mcp_discovers_tools_and_calls_them_from_schema -q
 ```
 
 ## Модульная система возможностей

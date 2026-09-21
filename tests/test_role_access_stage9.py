@@ -9,7 +9,10 @@ from __future__ import annotations
 import asyncio
 import json
 
+import anyio
 import pytest
+from mcp import ClientSession
+from mcp.shared.memory import create_client_server_memory_streams
 from mcp.server.subscriptions import ToolsListChanged
 from mcp.types import LATEST_PROTOCOL_VERSION
 from starlette.applications import Starlette
@@ -20,6 +23,7 @@ from mcp1c.reference_provider import ReferenceService
 from mcp1c.registry import Registry
 from mcp1c.role_access import RoleAccessIndex
 from mcp1c.server import build_server
+from mcp1c.source_modes import ActivationMode
 from test_role_access_index import (
     RIGHTS_NS,
     _descriptor,
@@ -412,6 +416,88 @@ async def test_role_access_default_off_и_не_зависит_от_ready_roles(t
         "get_role_access",
     }
     assert await enabled.refresh_role_tools() is False
+
+
+async def test_enabled_role_access_reports_unsupported_for_a_only(
+    tmp_path, monkeypatch
+):
+    registry = Registry(tmp_path / "data")
+    _publish(
+        registry,
+        tmp_path / "source",
+        configuration="DemoConfiguration",
+        generation_id="generation-1",
+    )
+    activation = type("Activation", (), {"mode": ActivationMode.A_ONLY})()
+    monkeypatch.setattr(
+        registry,
+        "active_activation",
+        lambda _identity: activation,
+    )
+
+    payload = _tool_json(
+        await _server(registry, tmp_path).call_tool(
+            "get_role_access",
+            {"config": "DemoConfiguration", "role": "Reader"},
+        )
+    )
+    assert payload["state"] == "unsupported_by_source"
+
+
+async def test_fresh_blind_mcp_discovers_tools_and_calls_them_from_schema(tmp_path):
+    registry = Registry(tmp_path / "data")
+    _publish(
+        registry,
+        tmp_path / "source",
+        configuration="DemoConfiguration",
+        generation_id="generation-blind",
+    )
+    server = _server(registry, tmp_path)
+
+    async def run_session():
+        async with create_client_server_memory_streams() as (
+            client_streams,
+            server_streams,
+        ):
+            async with anyio.create_task_group() as tasks:
+                tasks.start_soon(
+                    server._lowlevel_server.run,
+                    *server_streams,
+                    server._lowlevel_server.create_initialization_options(),
+                )
+                try:
+                    async with ClientSession(*client_streams) as session:
+                        initialized = await session.initialize()
+                        catalog = await session.list_tools()
+                        list_tool = next(
+                            tool for tool in catalog.tools
+                            if "конфигурац" in (tool.description or "").lower()
+                            and not tool.input_schema.get("required")
+                        )
+                        listed = await session.call_tool(list_tool.name, {})
+                        role_tool = next(
+                            tool for tool in catalog.tools
+                            if "role" in tool.input_schema.get("required", [])
+                        )
+                        arguments = {
+                            key: (
+                                "Reader" if key == "role" else "DemoConfiguration"
+                                if key == "config" else "summary"
+                            )
+                            for key in role_tool.input_schema.get("required", [])
+                        }
+                        role_result = await session.call_tool(
+                            role_tool.name, arguments
+                        )
+                finally:
+                    tasks.cancel_scope.cancel()
+        return initialized, catalog, listed, role_result
+
+    initialized, catalog, listed, role_result = await run_session()
+    assert initialized.server_info.name == "mcp1c"
+    assert any("конфигурац" in (tool.description or "").lower() for tool in catalog.tools)
+    assert listed.is_error is not True
+    assert role_result.is_error is not True
 
 
 async def test_find_mcp_и_api_дают_один_resolver_и_страницу_кандидатов(

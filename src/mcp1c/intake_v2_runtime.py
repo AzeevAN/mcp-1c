@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Mapping
 
 from . import index_cache, structure_origin
+from .defined_type_contract import resolve_defined_type
 from .module_address import разобрать_плоскую_xml_форму
 from .intake_v2 import (
     GenerationManifest,
@@ -331,7 +332,7 @@ def configuration_from_base_layer(
             compatibility = platform
         platform = ""
         predefined = False
-    return Configuration(
+    configuration = Configuration(
         name=_text(raw["name"], "base_structure.name", required=True),
         synonym=_text(raw["synonym"], "base_structure.synonym"),
         version=_text(raw["version"], "base_structure.version"),
@@ -357,6 +358,27 @@ def configuration_from_base_layer(
         ),
         objects=objects,
     )
+    _classify_defined_type_references(configuration)
+    return configuration
+
+
+def _classify_defined_type_references(configuration: Configuration) -> None:
+    """Аннотировать ссылки на DefinedType после загрузки всего набора объектов."""
+    definitions = {
+        obj.name: tuple(obj.value_type.types)
+        for obj in configuration.objects.values()
+        if obj.kind == "ОпределяемыйТип" and obj.value_type is not None
+    }
+    for obj in configuration.objects.values():
+        for _, field in obj.all_fields():
+            for reference in field.types:
+                if not (reference.startswith("cfg:") or reference.startswith("ОпределяемыйТип.")):
+                    continue
+                resolution = resolve_defined_type(reference, definitions)
+                field.defined_type_state = resolution.state.value
+                field.defined_type_reference = reference
+                field.defined_type_members = resolution.members
+                break
 
 
 _EXTENDED_OBJECT_KEYS = {
@@ -1205,6 +1227,9 @@ def build_generation_runtime(
             raise GenerationRuntimeError(
                 f"extended_structure: {error}"
             ) from error
+    # Расширения и стандартные реквизиты уже видны ниже, но исходные ссылки
+    # по-прежнему остаются в `Field.types`; аннотация не меняет source-layer.
+    _classify_defined_type_references(configuration)
     if (
         base_layer.provenance is not None
         and base_layer.provenance.profile is LayerSourceProfile.SCHEMA_V1

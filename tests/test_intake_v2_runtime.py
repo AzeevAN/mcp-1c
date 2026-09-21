@@ -21,6 +21,7 @@ from mcp1c.intake_v2_runtime import configuration_from_base_layer
 from mcp1c.model import Configuration, Field, MetadataObject
 from mcp1c.registry import Registry, RegistryError
 from mcp1c.render import render_http_service, render_subsystem
+from mcp1c.render import render_object
 from mcp1c.server import build_server
 from mcp1c.tools import (
     get_callers,
@@ -1410,6 +1411,131 @@ def test_source_b_missing_register_properties_остаются_unknown_посл�
     assert "длина уточнения периода равна нулю" not in card
     assert "ВидДвижения — ВидДвиженияБухгалтерии" not in card
     assert "Счет —" not in card
+
+
+def test_runtime_сохраняет_ссылку_defined_type_и_публикует_exact_members():
+    semantic = {
+        "name": "DefinedTypes",
+        "synonym": "",
+        "version": "1",
+        "vendor": "",
+        "schema_version": "1",
+        "objects": [
+            {
+                "full_name": "ОпределяемыйТип.Price",
+                "kind": "ОпределяемыйТип",
+                "name": "Price",
+                "synonym": "",
+                "comment": "",
+                "props": {},
+                "attributes": [],
+                "dimensions": [],
+                "resources": [],
+                "tabular_parts": [],
+                "movements": [],
+                "based_on": [],
+                "owners": [],
+                "predefined": [],
+                "enum_values": [],
+                "value_type": {
+                    "name": "ТипЗначения",
+                    "synonym": "",
+                    "comment": "",
+                    "indexing": "",
+                    "types": ["Число", "Строка"],
+                    "string_length": None,
+                    "string_allowed_length": "",
+                    "digits": None,
+                    "fraction_digits": None,
+                    "date_parts": "",
+                },
+            },
+            {
+                "full_name": "Справочник.Items",
+                "kind": "Справочник",
+                "name": "Items",
+                "synonym": "",
+                "comment": "",
+                "props": {},
+                "attributes": [
+                    {
+                        "name": "Price",
+                        "synonym": "",
+                        "comment": "",
+                        "indexing": "",
+                        "types": ["ОпределяемыйТип.Price"],
+                        "string_length": None,
+                        "string_allowed_length": "",
+                        "digits": None,
+                        "fraction_digits": None,
+                        "date_parts": "",
+                    }
+                ],
+                "dimensions": [],
+                "resources": [],
+                "tabular_parts": [],
+                "movements": [],
+                "based_on": [],
+                "owners": [],
+                "predefined": [],
+                "enum_values": [],
+                "value_type": None,
+            },
+        ],
+    }
+    config = configuration_from_base_layer(semantic)
+    field = config.get("Справочник.Items").attributes[0]
+    assert field.types == ["ОпределяемыйТип.Price"]
+    assert field.defined_type_state == "exact"
+    assert field.defined_type_reference == "ОпределяемыйТип.Price"
+    assert field.defined_type_members == ("Число", "Строка")
+    assert "DefinedType: exact" in render_object(config.get("Справочник.Items"))
+
+
+def test_runtime_помечает_неизвестную_ссылку_defined_type_unknown():
+    semantic = {
+        "name": "UnknownDefinedType",
+        "synonym": "",
+        "version": "1",
+        "vendor": "",
+        "schema_version": "1",
+        "objects": [
+            {
+                "full_name": "Справочник.Items",
+                "kind": "Справочник",
+                "name": "Items",
+                "synonym": "",
+                "comment": "",
+                "props": {},
+                "attributes": [
+                    {
+                        "name": "Price",
+                        "synonym": "",
+                        "comment": "",
+                        "indexing": "",
+                        "types": ["cfg:DefinedTypeRef.Missing"],
+                        "string_length": None,
+                        "string_allowed_length": "",
+                        "digits": None,
+                        "fraction_digits": None,
+                        "date_parts": "",
+                    }
+                ],
+                "dimensions": [],
+                "resources": [],
+                "tabular_parts": [],
+                "movements": [],
+                "based_on": [],
+                "owners": [],
+                "predefined": [],
+                "enum_values": [],
+                "value_type": None,
+            }
+        ],
+    }
+    field = configuration_from_base_layer(semantic).get("Справочник.Items").attributes[0]
+    assert field.defined_type_state == "unknown"
+    assert field.defined_type_members == ()
 
 
 def test_legacy_schema_v1_получает_ту_же_проекцию_после_restart(tmp_path):

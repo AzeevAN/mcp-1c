@@ -85,6 +85,10 @@ class Field:
     # предметные owner/registers_document-рёбра вычисляемыми ссылками.
     string_length_known: bool = True
     standard: bool = False
+    # Только resolved runtime; исходная ссылка остаётся в `types`.
+    defined_type_state: str = ""
+    defined_type_reference: str = ""
+    defined_type_members: tuple[str, ...] = ()
 
     @property
     def is_composite(self) -> bool:

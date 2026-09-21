@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-09-21
+
+### Добавлено
+
+- SMV1-05: resolved runtime сохраняет исходные ссылки `DefinedType`,
+  классифицирует их как `exact`/`generic`/`unknown`, публикует members отдельной
+  карточки и не подменяет исходный тип раскрытым составом.
+
+### Найдено
+
+- Полный синтетический gate после SMV1-05: 3155 passed, 1 skipped из 3156
+  собранных тестов; команда — `.venv/bin/python -m pytest`.
+
 Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версии — [SemVer](https://semver.org/lang/ru/).
 
@@ -115,7 +128,9 @@
   root и сохраняет новый activation. Delete/recreate с новым incarnation
   отклоняет stale preview старой identity. Source B collector и converter
   сохраняют owner-relative `Predefined.xml`, имена предопределённых элементов
-  и fail-closed completeness для tree/flat layout.
+  и fail-closed completeness для tree/flat layout. Добавлена классификация
+  DefinedType-ссылок `exact/generic/unknown` без разворачивания generic-ref в
+  один выбранный тип.
 
 - Metadata Authoring теперь fail-closed требует ровно одну `default=true`
   форму для каждой роли, представленной в закрытом комплекте справочника,

@@ -1058,6 +1058,13 @@ def _field_line(
         line += f" // {item.synonym}"
     if item.comment:
         line += f" — {item.comment}"
+    if item.defined_type_state:
+        line += f" [DefinedType: {item.defined_type_state}"
+        if item.defined_type_members:
+            line += f", типов: {', '.join(item.defined_type_members)}"
+        if item.defined_type_state == "unknown":
+            line += ", раскрытие недоступно"
+        line += "]"
     if item.indexing:
         line += f" [{item.indexing}]"
     # Ссылочные поля и табличные части ждут отдельного доказанного корпуса.

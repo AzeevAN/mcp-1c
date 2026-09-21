@@ -24,6 +24,8 @@
   команда — `.venv/bin/python -m pytest`.
 - SMV1-09: activation manifest fail-closed проверяет, что `A_ONLY` использует
   только Source A, а `B_FULL` — только Source B для main и extensions.
+- SMV1-10: list/dashboard source payload публикуют `activation_mode` и
+  `activation_status`, включая `RELOAD_REQUIRED` для legacy pointer.
 
 Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версии — [SemVer](https://semver.org/lang/ru/).

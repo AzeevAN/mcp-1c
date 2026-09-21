@@ -29,6 +29,7 @@ from .bsl_lex import Процедура, прочитать_модуль, раз
 from .intake_v2 import ExportIdentity
 from .module_content import ModuleLocator, read_bsl
 from .module_address import путь_модуля
+from .source_modes import ActivationStatus
 from .registry import (
     KIND_EXTENSION,
     KIND_MODULES,
@@ -302,6 +303,8 @@ class ConfigurationStateRow:
     native_generation: bool = False
     compatibility_mode: str = ""
     predefined_available: bool = True
+    activation_mode: str = "unknown"
+    activation_status: str = "unknown"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1232,6 +1235,11 @@ def _configurations_result(
         configuration = context.configuration
         config = configuration.config
         runtime = capture.registry.extension_runtime.get(config.name)
+        activation = (
+            registry.active_activation(ExportIdentity.configuration(config.name))
+            if registry is not None
+            else None
+        )
         rows.append(
             ConfigurationStateRow(
                 name=config.name,
@@ -1239,6 +1247,8 @@ def _configurations_result(
                 platform=config.platform,
                 compatibility_mode=config.compatibility_mode,
                 predefined_available=config.predefined_available,
+                activation_mode=(activation.mode.value if activation and activation.mode else "unknown"),
+                activation_status=(activation.status.value if activation else "unknown"),
                 objects=len(config),
                 edges=len(configuration.graph.edges),
                 loaded_at=configuration.source.loaded_at,

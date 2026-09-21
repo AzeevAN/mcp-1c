@@ -403,6 +403,9 @@ Planner принимает только эти 2 режима: `A_ONLY` допу
 transport, origin, raw SHA и status. Parsed payload и generation в неё не
 попадают; reconnect повторно находит исходник и оставляет changed/missing
 источники диагностическими до нового preview.
+API списка конфигураций и dashboard sources дополнительно показывают
+`activation_mode` и `activation_status`; старый pointer возвращает
+`RELOAD_REQUIRED`, а не делает вид, что resolved-view доступен.
 
 Прежняя команда `POST /api/v1/sources/incoming/parse` сохранена только для
 совместимости code-only клиентов и больше не показывается в SPA. Она не создаёт

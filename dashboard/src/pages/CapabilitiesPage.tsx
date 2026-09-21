@@ -8,19 +8,6 @@ import {
 } from "../shared/api/capabilities";
 import { requestServerRestart, waitForServerRestart } from "../shared/api/sourceAdmin";
 
-const moduleCopy: Record<string, { title: string; description: string; details?: string }> = {
-  forms: {
-    title: "Управляемые формы",
-    description: "Добавляет 4 инструмента для объектных форм справочника, документа, встроенной обработки и отчёта, форм списка и выбора, а также форм записи и набора записей регистра: правила, компиляцию, декомпиляцию и проверку. Конфигурацию 1С не изменяет.",
-    details: "≈ 6 141 токен стартового контекста · o200k_base · замер 20.09.2026",
-  },
-  metadata_authoring: {
-    title: "Создание метаданных",
-    description: "Добавляет 3 pure-инструмента: правила, компиляцию и статическую проверку артефактов справочника, непроводимого документа, регистра сведений, встроенной обработки или отчёта с основной управляемой формой и минимальной системной СКД. Содержательная СКД, макеты, внешние .epf и .erf не поддерживаются.",
-    details: "≈ 5 762 токена стартового контекста · o200k_base · замер 20.09.2026",
-  },
-};
-
 function errorMessage(error: unknown): string {
   if (error instanceof CapabilitiesApiError || error instanceof Error) return error.message;
   return "Неизвестная ошибка управления модулями.";
@@ -157,22 +144,25 @@ export function CapabilitiesPage() {
           <p>Интерфейс принимает только модули, заранее объявленные сервером.</p>
         </div>
         <div className="capabilities-list">
-          {status.available.map((name) => {
-            const copy = moduleCopy[name] ?? { title: name, description: "Внутренний capability-модуль." };
+          {status.modules.map((module) => {
+            const name = module.id;
             return (
-              <label className="switch-field capability-switch" key={name}>
+              <label className="switch-field capability-switch" key={module.id}>
                 <input
                   type="checkbox"
                   checked={draft.includes(name)}
                   onChange={() => toggle(name)}
                   disabled={save.isPending || restarting}
-                  aria-label={`${copy.title} (${name})`}
+                  aria-label={`${module.display_name} (${name})`}
                 />
                 <span className="switch-control" aria-hidden="true"><i /></span>
                 <span>
-                  <strong>{copy.title}</strong>
-                  <small>{copy.description}</small>
-                  {copy.details && <small>{copy.details}</small>}
+                  <strong>{module.display_name}</strong>
+                  <small>{module.description}</small>
+                  <small>
+                    {module.approx_tokens == null ? "Стоимость не измерена" : `≈ ${module.approx_tokens.toLocaleString("ru-RU")} токенов · ${module.tool_count ?? "?"} инструментов · ${module.tokenizer ?? "unmeasured"} · ${module.measured_at ?? "дата не указана"}`}
+                  </small>
+                  {module.measurement_command && <small><code>{module.measurement_command}</code></small>}
                   <code>{name}</code>
                   <em>В текущем процессе: {status.active.includes(name) ? "включён" : "выключен"}</em>
                 </span>

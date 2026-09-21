@@ -43,6 +43,13 @@ class CapabilityDefinition:
 
     name: str
     loader: str
+    display_name: str = ""
+    description: str = ""
+    tool_count: int | None = None
+    approx_tokens: int | None = None
+    tokenizer: str | None = None
+    measured_at: str | None = None
+    measurement_command: str | None = None
 
 
 @dataclass(frozen=True)
@@ -66,14 +73,26 @@ CAPABILITY_DEFINITIONS: Mapping[str, CapabilityDefinition] = {
     "forms": CapabilityDefinition(
         "forms",
         "mcp1c.capability_modules.forms:load",
+        "Управляемые формы",
+        "Добавляет 4 инструмента для объектных форм справочника, документа, встроенной обработки и отчёта, форм списка и выбора, а также форм записи и набора записей регистра: правила, компиляцию, декомпиляцию и проверку. Конфигурацию 1С не изменяет.",
+        4, 6141, "o200k_base", "2026-09-20",
+        "tools/measure_capability_context.py forms --check",
     ),
     "metadata_authoring": CapabilityDefinition(
         "metadata_authoring",
         "mcp1c.capability_modules.metadata_authoring:load",
+        "Создание метаданных",
+        "Добавляет 3 pure-инструмента: правила, компиляцию и статическую проверку артефактов справочника, непроводимого документа, регистра сведений, встроенной обработки или отчёта с основной управляемой формой и минимальной системной СКД. Содержательная СКД, макеты, внешние .epf и .erf не поддерживаются.",
+        3, 5762, "o200k_base", "2026-09-20",
+        "tools/measure_capability_context.py metadata_authoring --check",
     ),
     "role_access": CapabilityDefinition(
         "role_access",
         "mcp1c.capability_modules.role_access:load",
+        "Доступ ролей",
+        "Поиск ролей и чтение объявленных прав с ограниченной детализацией.",
+        2, 1245, "o200k_base", "2026-09-19",
+        "tools/measure_capability_context.py role_access --check",
     ),
 }
 
@@ -322,6 +341,25 @@ class CapabilityRuntime:
     def _payload(self, desired: tuple[str, ...]) -> dict[str, object]:
         return {
             "available": list(self.store.definitions),
+            "modules": [
+                {
+                    "id": definition.name,
+                    "display_name": definition.display_name or definition.name,
+                    "description": definition.description,
+                    "tool_count": definition.tool_count,
+                    "approx_tokens": definition.approx_tokens,
+                    "tokenizer": definition.tokenizer,
+                    "measured_at": definition.measured_at,
+                    "measurement_command": definition.measurement_command,
+                    "active": definition.name in self.active,
+                    "desired": definition.name in desired,
+                    "pending_restart": (
+                        (definition.name in self.active)
+                        != (definition.name in desired)
+                    ),
+                }
+                for definition in self.store.definitions.values()
+            ],
             "active": list(self.active),
             "desired": list(desired),
             "pending_restart": desired != self.active,

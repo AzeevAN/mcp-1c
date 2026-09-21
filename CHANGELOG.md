@@ -8,6 +8,9 @@
   По умолчанию capability выключен; при включении после полного restart ровно
   две role-tools регистрируются независимо от готовности конкретного role
   index, а intake/delete/A-B switch не меняют `tools/list`.
+- SMV1-10: capability API публикует единый backend manifest с названием,
+  описанием, числом tools, measured token cost, tokenizer, датой и командой
+  замера; dashboard строит карточки, включая `role_access`, из этого manifest.
 
 - SMV1-05: resolved runtime сохраняет исходные ссылки `DefinedType`,
   классифицирует их как `exact`/`generic`/`unknown`, публикует members отдельной

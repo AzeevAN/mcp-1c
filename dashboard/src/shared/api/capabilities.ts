@@ -2,10 +2,25 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 export type CapabilitiesStatus = {
   available: string[];
+  modules: CapabilityModule[];
   active: string[];
   desired: string[];
   pending_restart: boolean;
   runtime: { self_restart: boolean };
+};
+
+export type CapabilityModule = {
+  id: string;
+  display_name: string;
+  description: string;
+  tool_count: number | null;
+  approx_tokens: number | null;
+  tokenizer: string | null;
+  measured_at: string | null;
+  measurement_command: string | null;
+  active: boolean;
+  desired: boolean;
+  pending_restart: boolean;
 };
 
 type ErrorPayload = { error?: string };

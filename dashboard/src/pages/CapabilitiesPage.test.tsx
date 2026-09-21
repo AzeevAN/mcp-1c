@@ -13,6 +13,10 @@ vi.mock("../shared/api/sourceAdmin", async (importOriginal) => ({
 
 const ready = {
   available: ["forms", "metadata_authoring"],
+  modules: [
+    { id: "forms", display_name: "Управляемые формы", description: "Добавляет 4 инструмента для объектных форм справочника, документа, встроенной обработки и отчёта, форм списка и выбора, а также форм записи и набора записей регистра: правила, компиляцию, декомпиляцию и проверку. Конфигурацию 1С не изменяет.", tool_count: 4, approx_tokens: 6141, tokenizer: "o200k_base", measured_at: "2026-09-20", measurement_command: "measure forms", active: false, desired: false, pending_restart: false },
+    { id: "metadata_authoring", display_name: "Создание метаданных", description: "Добавляет 3 pure-инструмента: правила, компиляцию и статическую проверку артефактов справочника, непроводимого документа, регистра сведений, встроенной обработки или отчёта с основной управляемой формой и минимальной системной СКД. Содержательная СКД, макеты, внешние .epf и .erf не поддерживаются.", tool_count: 3, approx_tokens: 5762, tokenizer: "o200k_base", measured_at: "2026-09-20", measurement_command: "measure metadata", active: false, desired: false, pending_restart: false },
+  ],
   active: [],
   desired: [],
   pending_restart: false,

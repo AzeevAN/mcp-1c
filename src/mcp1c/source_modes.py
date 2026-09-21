@@ -16,6 +16,7 @@ from typing import Mapping
 
 
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+_PLATFORM_VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?$")
 
 
 def _text(value: object, label: str) -> str:
@@ -40,6 +41,22 @@ class ActivationMode(str, Enum):
 class ActivationStatus(str, Enum):
     ACTIVE = "ACTIVE"
     RELOAD_REQUIRED = "RELOAD_REQUIRED"
+
+
+@dataclass(frozen=True, slots=True)
+class PlatformDeclaration:
+    version: str
+    source: str = "user"
+    status: str = "declared"
+
+    def __post_init__(self) -> None:
+        if not _PLATFORM_VERSION.fullmatch(self.version):
+            raise ValueError("platform_version должен содержать 3 или 4 числовых компонента")
+        if self.source != "user" or self.status != "declared":
+            raise ValueError("platform declaration допускает только source=user/status=declared")
+
+    def to_dict(self) -> dict[str, str]:
+        return {"version": self.version, "source": self.source, "status": self.status}
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,5 +233,6 @@ __all__ = [
     "ActivationManifest",
     "ActivationMode",
     "ActivationStatus",
+    "PlatformDeclaration",
     "classify_activation",
 ]

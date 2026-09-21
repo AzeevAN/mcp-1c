@@ -31,13 +31,13 @@
 | Роли | объявленные права из native generation; без готового слоя две role-ручки отсутствуют |
 | Дашборд | современная SPA включена по умолчанию; светлая и тёмная темы; ссылка на GitHub; `on` либо `off` |
 | Авторизация Docker | два разных обязательных токена: `API_TOKEN` на чтение, `ADMIN_TOKEN` на запись |
-| Тесты | `.venv/bin/python -m pytest`, 3161 |
+| Тесты | `.venv/bin/python -m pytest`, 3170 |
 
 Воспроизводимый прогон:
 
 ```bash
 .venv/bin/pip install --require-hashes -r requirements-dev-lock.txt
-.venv/bin/python -m pytest          # 3161 тестов; 3160 passed, 1 skipped (прогон 2026-09-21)
+.venv/bin/python -m pytest          # 3170 тестов; 3169 passed, 1 skipped (прогон 2026-09-21)
 ```
 
 ## Модульная система возможностей
@@ -406,6 +406,13 @@ transport, origin, raw SHA и status. Parsed payload и generation в неё н�
 API списка конфигураций и dashboard sources дополнительно показывают
 `activation_mode` и `activation_status`; старый pointer возвращает
 `RELOAD_REQUIRED`, а не делает вид, что resolved-view доступен.
+Для B_FULL администратор может задать или очистить declared platform version:
+`POST /api/v1/sources/platform/set` с `{ "configuration": "...",
+"platform_version": "8.3.24[.1234]" }` и `POST
+/api/v1/sources/platform/clear` с `{ "configuration": "..." }`. Оба маршрута
+требуют `ADMIN_TOKEN` и CSRF-заголовок для cookie-сессии; A_ONLY и
+legacy/reload-required отклоняются. Без declaration значение остаётся
+`unknown`, compatibility mode его не заменяет.
 
 Для Source Modes кэш-инвалидация проверяется синтетическим gate:
 

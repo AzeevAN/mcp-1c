@@ -305,6 +305,7 @@ class ConfigurationStateRow:
     predefined_available: bool = True
     activation_mode: str = "unknown"
     activation_status: str = "unknown"
+    platform_declaration: dict[str, str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1249,6 +1250,11 @@ def _configurations_result(
                 predefined_available=config.predefined_available,
                 activation_mode=(activation.mode.value if activation and activation.mode else "unknown"),
                 activation_status=(activation.status.value if activation else "unknown"),
+                platform_declaration=(
+                    registry.platform_declaration(config.name).to_dict()
+                    if registry is not None and registry.platform_declaration(config.name)
+                    else None
+                ),
                 objects=len(config),
                 edges=len(configuration.graph.edges),
                 loaded_at=configuration.source.loaded_at,

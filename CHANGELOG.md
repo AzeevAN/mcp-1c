@@ -29,6 +29,11 @@
 - SMV1-11: зафиксирована воспроизводимая матрица cache/invalidation gates;
   synthetic extension measurement запускается для 0/1/4 extensions, без
   обращения к рабочему `data/`.
+- SMV1-07: B_FULL получил admin-auth/CSRF set/clear declared platform version;
+  принимаются только 3 или 4 числовых компонента, A_ONLY не наследует и не
+  принимает platform declaration.
+- Полный gate после SMV1-07: 3169 passed, 1 skipped из 3170 собранных тестов;
+  команда — `.venv/bin/python -m pytest`.
 
 Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версии — [SemVer](https://semver.org/lang/ru/).

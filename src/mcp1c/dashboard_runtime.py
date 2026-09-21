@@ -225,6 +225,7 @@ def _sources_payload(
                 "compatibility_mode": configuration.compatibility_mode,
                 "activation_mode": configuration.activation_mode,
                 "activation_status": configuration.activation_status,
+                "platform_declaration": configuration.platform_declaration,
                 "predefined_available": configuration.predefined_available,
                 "syntax_relation": configuration.syntax_relation,
                 "objects": configuration.objects,
@@ -801,6 +802,43 @@ def _spa_routes(
         return JSONResponse(
             _sources_payload(snapshot, admin=_authorized(request))
         )
+
+    async def platform_set_api(request: Request) -> JSONResponse:
+        if not _authorized(request):
+            return _json_error("Нужен административный токен.", 401)
+        denied = _csrf_denied(request)
+        if denied is not None:
+            return denied
+        body = await _json_body(request)
+        configuration = body.get("configuration")
+        version = body.get("platform_version")
+        if not isinstance(configuration, str) or not configuration:
+            return _json_error("configuration должен быть непустым.", 422)
+        if not isinstance(version, str):
+            return _json_error("platform_version должен быть строкой.", 422)
+        try:
+            declaration = await run_in_threadpool(
+                registry.set_platform_version, configuration, version
+            )
+        except (RegistryError, ValueError) as error:
+            return _json_error(str(error), 422)
+        return JSONResponse({"configuration": configuration, **declaration.to_dict()})
+
+    async def platform_clear_api(request: Request) -> JSONResponse:
+        if not _authorized(request):
+            return _json_error("Нужен административный токен.", 401)
+        denied = _csrf_denied(request)
+        if denied is not None:
+            return denied
+        body = await _json_body(request)
+        configuration = body.get("configuration")
+        if not isinstance(configuration, str) or not configuration:
+            return _json_error("configuration должен быть непустым.", 422)
+        try:
+            await run_in_threadpool(registry.clear_platform_version, configuration)
+        except RegistryError as error:
+            return _json_error(str(error), 422)
+        return JSONResponse({"configuration": configuration, "status": "unknown"})
 
     async def queries_setup_api(request: Request) -> JSONResponse:
         if not can_read(request):
@@ -1840,6 +1878,18 @@ def _spa_routes(
             sources_api,
             methods=["GET"],
             name="dashboard_sources",
+        ),
+        Route(
+            "/api/v1/sources/platform/set",
+            platform_set_api,
+            methods=["POST"],
+            name="dashboard_platform_set",
+        ),
+        Route(
+            "/api/v1/sources/platform/clear",
+            platform_clear_api,
+            methods=["POST"],
+            name="dashboard_platform_clear",
         ),
         Route(
             "/api/v1/sources/coverage",

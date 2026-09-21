@@ -64,6 +64,7 @@ from .intake_v2 import (
     SourceKind,
     decide_recovery,
 )
+from .source_modes import ActivationMode, PlatformDeclaration
 from .intake_v2_converter import base_layer_data
 from .intake_v2_registry import (
     BundleStoreError,
@@ -1052,6 +1053,7 @@ class Registry:
             tuple[str, ...], GenerationManifest
         ] = {}
         self._generation_recovery_blocked = False
+        self._platform_declarations: dict[str, PlatformDeclaration] = {}
         # Правка словаря — одна операция от изменения объекта до публикации
         # перечитанных таблиц. Обычный `_lock` на дисковой записи держать нельзя,
         # поэтому writers сериализуются отдельным реентерабельным замком.
@@ -4351,7 +4353,38 @@ class Registry:
                 pointer.to_dict()
                 for _key, pointer in sorted(pointers.items())
             ]
+        if self._platform_declarations:
+            payload["platform_declarations"] = {
+                name: declaration.to_dict()
+                for name, declaration in sorted(self._platform_declarations.items())
+            }
         return payload
+
+    def platform_declaration(self, configuration: str) -> PlatformDeclaration | None:
+        with self._lock:
+            return self._platform_declarations.get(configuration)
+
+    def set_platform_version(self, configuration: str, version: str) -> PlatformDeclaration:
+        declaration = PlatformDeclaration(version)
+        identity = ExportIdentity.configuration(configuration)
+        activation = self.require_active_activation(identity)
+        if activation.mode is not ActivationMode.B_FULL:
+            raise RegistryError("platform_version разрешён только для B_FULL")
+        with self._lock:
+            if identity.grouping_key not in self._generation_pointers:
+                raise RegistryError("configuration_not_loaded")
+            self._platform_declarations[configuration] = declaration
+            self._write_registry_payload(self._registry_payload())
+        return declaration
+
+    def clear_platform_version(self, configuration: str) -> None:
+        identity = ExportIdentity.configuration(configuration)
+        activation = self.require_active_activation(identity)
+        if activation.mode is not ActivationMode.B_FULL:
+            raise RegistryError("platform_version разрешён только для B_FULL")
+        with self._lock:
+            self._platform_declarations.pop(configuration, None)
+            self._write_registry_payload(self._registry_payload())
 
     def _write_registry_payload(self, payload: Mapping[str, object]) -> None:
         """Durable atomic replace общего Registry pointer."""
@@ -5321,6 +5354,16 @@ class Registry:
             ]
 
         pointers = self._generation_pointers_from_payload(payload)
+        raw_declarations = payload.get("platform_declarations", {})
+        if not isinstance(raw_declarations, dict):
+            return ["registry.json platform_declarations должен быть объектом"]
+        declarations = {
+            name: PlatformDeclaration(
+                raw["version"], raw.get("source", "user"), raw.get("status", "declared")
+            )
+            for name, raw in raw_declarations.items()
+            if isinstance(name, str) and isinstance(raw, dict)
+        }
         manifests: dict[tuple[str, ...], GenerationManifest] = {}
         for key, pointer in pointers.items():
             manifest = self._generation_store.verify(pointer)
@@ -5356,6 +5399,7 @@ class Registry:
         with self._lock:
             self._generation_pointers = pointers
             self._generation_manifests = manifests
+            self._platform_declarations = declarations
             for _key, (
                 _prepared,
                 loaded_configuration,

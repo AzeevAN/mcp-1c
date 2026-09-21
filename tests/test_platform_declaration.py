@@ -1,7 +1,13 @@
 import pytest
 import json
+from starlette.applications import Starlette
+
+from conftest import живой_клиент
+from mcp1c.capabilities import CapabilityRuntime, CapabilitySettingsStore
+from mcp1c.dashboard_runtime import DASHBOARD_ON, routes
 from mcp1c.intake_v2 import ExportIdentity
 from mcp1c.intake_v2_registry import GenerationPointer
+from mcp1c.reference_provider import ReferenceService
 from mcp1c.registry import Registry, RegistryError
 
 from mcp1c.source_modes import (
@@ -75,3 +81,47 @@ def test_registry_does_not_declare_platform_for_a_only(tmp_path):
     registry = _registry(tmp_path, ActivationMode.A_ONLY)
     with pytest.raises(RegistryError, match="только для B_FULL"):
         registry.set_platform_version("Demo", "8.3.24")
+
+
+def test_dashboard_platform_set_clear_require_admin_and_csrf(tmp_path, monkeypatch):
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    registry = _registry(tmp_path)
+    capabilities = CapabilityRuntime(
+        CapabilitySettingsStore(registry.data_dir),
+        active=(),
+    )
+    client = живой_клиент(
+        Starlette(
+            routes=routes(
+                registry,
+                mode=DASHBOARD_ON,
+                reference=ReferenceService.discover(registry.data_dir),
+                capabilities=capabilities,
+            )
+        )
+    )
+    assert client.post(
+        "/login", data={"token": "admin-token"}, follow_redirects=False
+    ).status_code == 303
+
+    csrf_denied = client.post(
+        "/api/v1/sources/platform/set",
+        json={"configuration": "Demo", "platform_version": "8.3.24"},
+        headers={"origin": "https://evil.invalid"},
+    )
+    assert csrf_denied.status_code == 403
+
+    set_response = client.post(
+        "/api/v1/sources/platform/set",
+        json={"configuration": "Demo", "platform_version": "8.3.24"},
+    )
+    assert set_response.status_code == 200
+    assert set_response.json()["status"] == "declared"
+
+    clear_response = client.post(
+        "/api/v1/sources/platform/clear",
+        json={"configuration": "Demo"},
+    )
+    assert clear_response.status_code == 200
+    assert clear_response.json()["status"] == "unknown"

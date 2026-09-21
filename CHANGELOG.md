@@ -50,6 +50,9 @@
 - SMV1-07: B_FULL получил admin-auth/CSRF set/clear declared platform version;
   принимаются только 3 или 4 числовых компонента, A_ONLY не наследует и не
   принимает platform declaration.
+- SMV1-07: dashboard set/clear дополнительно проверены synthetic HTTP-сценарием:
+  административная cookie-сессия с чужим Origin получает `403`, same-origin
+  set/clear проходят и возвращают `declared`/`unknown`.
 - Полный gate после SMV1-07: 3169 passed, 1 skipped из 3170 собранных тестов;
   команда — `.venv/bin/python -m pytest`.
 

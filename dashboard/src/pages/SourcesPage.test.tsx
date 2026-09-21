@@ -103,10 +103,6 @@ beforeEach(() => {
       items: null,
       index_cache: null,
     },
-    pending: null,
-    managed_upload: true,
-    managed_file_present: false,
-    limits: { upload_bytes: 32 * 1024 * 1024 },
   };
   runtimeAdminState = { self_restart: true };
   Object.defineProperty(navigator, "clipboard", {
@@ -522,12 +518,9 @@ it("показывает администратору действия без д
 
   fireEvent.click(screen.getByRole("button", { name: /Общая справка/ }));
   const referenceDialog = screen.getByRole("dialog", { name: "Общая справка" });
-  const reference = new File(["synthetic"], "reference.mcp1cref", { type: "application/octet-stream" });
-  fireEvent.change(within(referenceDialog).getByLabelText("Файл общей справки"), { target: { files: [reference] } });
-  expect(within(referenceDialog).getByRole("button", { name: "Проверить и сохранить" })).toBeEnabled();
-  expect(within(referenceDialog).queryByRole("checkbox")).not.toBeInTheDocument();
+  expect(within(referenceDialog).getByText(/изменяется только вместе с релизом/)).toBeInTheDocument();
+  expect(within(referenceDialog).queryByRole("button", { name: /Загрузить|Удалить/ })).not.toBeInTheDocument();
   fireEvent.click(within(referenceDialog).getByRole("button", { name: "Закрыть" }));
-  expect(screen.getByRole("button", { name: /Общая справка/ })).toHaveFocus();
 
   fireEvent.click(screen.getByRole("button", { name: "Удалить конфигурацию целиком Отраслевая конфигурация А" }));
   expect(screen.getByRole("dialog", { name: "Удалить «Отраслевая конфигурация А»?" })).toBeInTheDocument();
@@ -538,86 +531,27 @@ it("показывает администратору действия без д
   expect(screen.getByRole("button", { name: "Точное имя скопировано" })).toBeInTheDocument();
 });
 
-it("требует точное подтверждение перед удалением общей базы", async () => {
+it("не показывает административных операций общей справки", async () => {
   referenceAdminState = {
     ...referenceAdminState,
     active: {
       state: "ready",
       ready: true,
       message: "Каноническая база подключена.",
-      signature: "unsigned-experimental",
+      signature: "ed25519",
       items: 445,
       index_cache: "hit",
     },
-    managed_file_present: true,
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <MemoryRouter initialEntries={["/sources"]}>
-      <QueryClientProvider client={client}>
-        <SourcesPage />
-      </QueryClientProvider>
+      <QueryClientProvider client={client}><SourcesPage /></QueryClientProvider>
     </MemoryRouter>,
   );
-
   fireEvent.click(await screen.findByRole("button", { name: "Общая справка: подключена" }));
-  fireEvent.click(screen.getByText("Дополнительные действия"));
-  expect(screen.getByRole("button", { name: "Удалить базу" })).toBeEnabled();
-  fireEvent.click(screen.getByRole("button", { name: "Удалить базу" }));
-  const dialog = screen.getByRole("dialog", { name: "Удалить локальную общую базу?" });
-  expect(dialog).toBeInTheDocument();
-  const confirm = within(dialog).getByRole("button", { name: "Удалить базу" });
-  expect(confirm).toBeDisabled();
-  fireEvent.click(within(dialog).getByRole("button", { name: "Скопировать точное имя" }));
-  await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith("reference.mcp1cref"));
-  expect(within(dialog).getByRole("button", { name: "Точное имя скопировано" })).toBeInTheDocument();
-  fireEvent.change(screen.getByLabelText("Для подтверждения введите точное имя:"), {
-    target: { value: "reference.mcp1cref" },
-  });
-  expect(confirm).toBeEnabled();
-  fireEvent.click(confirm);
-  await waitFor(() => {
-    expect(fetch).toHaveBeenCalledWith(
-      "/api/v1/reference/remove",
-      expect.objectContaining({
-        body: JSON.stringify({ confirmation: "reference.mcp1cref" }),
-      }),
-    );
-  });
-  const success = await screen.findByRole("status");
-  expect(success).toHaveClass("admin-feedback", "is-success");
-  expect(screen.getByRole("dialog", { name: "Общая справка" })).toContainElement(success);
-});
-
-it("показывает подтверждение рестарта только для pending общей базы", async () => {
-  referenceAdminState = {
-    ...referenceAdminState,
-    pending: {
-      state: "pending_restart",
-      ready: false,
-      message: "База проверена и будет активна после перезапуска сервера.",
-      signature: "unsigned-experimental",
-      items: 445,
-      action: "activate",
-    },
-    managed_file_present: true,
-  };
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(
-    <MemoryRouter initialEntries={["/sources"]}>
-      <QueryClientProvider client={client}>
-        <SourcesPage />
-      </QueryClientProvider>
-    </MemoryRouter>,
-  );
-
-  const referenceButton = await screen.findByRole("button", { name: "Общая справка: ожидает перезапуска" });
-  expect(referenceButton).toHaveTextContent("ожидает перезапуска");
-  fireEvent.click(referenceButton);
-  expect(screen.getByRole("button", { name: "Перезапустить и применить" })).toBeEnabled();
-  fireEvent.click(screen.getByRole("button", { name: "Перезапустить и применить" }));
-  expect(screen.getByRole("dialog", { name: "Перезапустить сервер?" })).toBeInTheDocument();
-  expect(screen.getByText(/Текущие MCP-сеансы будут разорваны/)).toBeInTheDocument();
+  const dialog = screen.getByRole("dialog", { name: "Общая справка" });
+  expect(within(dialog).queryByRole("button", { name: /Загрузить|Удалить|Перезапустить/ })).not.toBeInTheDocument();
 });
 
 it("удаляет файл вне реестра через простое подтверждение без ввода пути", async () => {

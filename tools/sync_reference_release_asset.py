@@ -64,7 +64,7 @@ def _verify(path: Path) -> dict[str, Any]:
     ) as directory:
         service = ReferenceService.discover(
             Path(directory),
-            database_path=resolved,
+            embedded_path=resolved,
             verifier=SignedArtifactVerifier(),
         )
         try:

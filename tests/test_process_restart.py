@@ -7,6 +7,17 @@ from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
 
+def test_завершение_процесса_не_оставляет_uvicorn_в_shutdown(monkeypatch):
+    exited: list[int] = []
+    monkeypatch.setattr("mcp1c.process_restart.os._exit", exited.append)
+
+    from mcp1c.process_restart import _terminate_current_process
+
+    _terminate_current_process()
+
+    assert exited == [0]
+
+
 def test_restart_по_умолчанию_выключен(monkeypatch):
     monkeypatch.delenv("MCP1C_ALLOW_SELF_RESTART", raising=False)
 

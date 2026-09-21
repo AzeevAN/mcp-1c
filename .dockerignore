@@ -2,6 +2,10 @@
 # забытый в .gitignore, не попадёт в BuildKit без явного разрешения здесь.
 **
 
+# Экспериментальная локальная лаборатория форматтера BSL не входит в production
+# image даже при изменении общих правил контекста.
+/bslfmt-lab/
+
 !requirements-lock.txt
 
 !release-assets/
@@ -46,6 +50,8 @@ dashboard/*
 !dashboard/tsconfig.app.json
 !dashboard/tsconfig.node.json
 !dashboard/vite.config.ts
+!dashboard/public/
+!dashboard/public/*.svg
 !dashboard/src/
 dashboard/src/**
 !dashboard/src/**/

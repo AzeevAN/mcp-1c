@@ -22,6 +22,13 @@ function formatTokens(value: number | null): string {
   return value == null ? "Стоимость не измерена" : `≈ ${value.toLocaleString("ru-RU")} токенов`;
 }
 
+function activeContextCost(status: { active: string[]; modules: { id: string; approx_tokens: number | null }[] }) {
+  const active = status.modules.filter((module) => status.active.includes(module.id));
+  const measured = active.reduce((total, module) => total + (module.approx_tokens ?? 0), 0);
+  const unmeasured = active.filter((module) => module.approx_tokens == null).length;
+  return { measured, unmeasured };
+}
+
 export function CapabilitiesPage() {
   const query = useCapabilities();
   const save = useSaveCapabilities();
@@ -75,6 +82,7 @@ export function CapabilitiesPage() {
   }
 
   const status = query.data;
+  const contextCost = activeContextCost(status);
   const normalizedDraft = status.available.filter((name) => draft.includes(name));
   const dirty = JSON.stringify(normalizedDraft) !== JSON.stringify(status.desired);
 
@@ -138,6 +146,11 @@ export function CapabilitiesPage() {
           <span>Активно сейчас</span>
           <strong>{status.active.length ? `${status.active.length} модул${status.active.length === 1 ? "ь" : "я"}` : "Модули выключены"}</strong>
           <small>Загружено текущим процессом MCP.</small>
+        </article>
+        <article>
+          <span>Контекст старта</span>
+          <strong>{formatTokens(contextCost.measured)}</strong>
+          <small>{contextCost.unmeasured ? `${contextCost.unmeasured} модул${contextCost.unmeasured === 1 ? "ь" : "я"} без замера` : "Сумма активных модулей"}</small>
         </article>
         <article className={status.pending_restart ? "is-pending" : "is-ready"}>
           <span>Сохранённый выбор</span>

@@ -53,7 +53,6 @@ from .dashboard_runtime import routes as dashboard_routes
 from .process_restart import RestartController
 from .reference_provider import (
     MAX_PAGE_CHARS,
-    MAX_REFERENCE_ARTIFACT_BYTES,
     MIN_PAGE_CHARS,
     ReferenceQueryError,
     ReferenceService,
@@ -85,7 +84,6 @@ from .runtime_config import (
 HTTP_BODY_LIMIT_LOGIN = 16 * 1024
 HTTP_BODY_LIMIT_QUERIES = 1024 * 1024
 HTTP_BODY_LIMIT_UPLOAD = MAX_UPLOAD + 1024 * 1024
-HTTP_BODY_LIMIT_REFERENCE = MAX_REFERENCE_ARTIFACT_BYTES + 1024 * 1024
 HTTP_BODY_LIMIT_DEFAULT = 2 * 1024 * 1024
 
 WRITABLE_DATA_DIRECTORIES = (
@@ -190,8 +188,6 @@ def _http_body_limit(scope) -> int:
             "/api/v1/sources/intake/upload",
         ):
             return HTTP_BODY_LIMIT_UPLOAD
-        if path == "/api/v1/reference/upload":
-            return HTTP_BODY_LIMIT_REFERENCE
     return HTTP_BODY_LIMIT_DEFAULT
 
 
@@ -1153,7 +1149,11 @@ def build_server(
         enabled="role_access" in enabled_capabilities,
     )
 
-    if reference.provider is not None:
+    if "reference" in enabled_capabilities:
+        if reference.provider is None:
+            raise CapabilityContractError(
+                "Встроенный подписанный пакет общей справки не прошёл проверку."
+            )
         provider = reference.provider
 
         @server.tool(

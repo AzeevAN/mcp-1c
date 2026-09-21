@@ -1,11 +1,8 @@
-"""Dashboard устанавливает общую справку отдельно от источников Registry."""
+"""Dashboard общей справки остаётся только read-only."""
 
 from __future__ import annotations
 
 from starlette.applications import Starlette
-
-from mcp1c.capabilities import CapabilityRuntime, CapabilitySettingsStore
-from mcp1c.process_restart import RestartController
 
 from conftest import живой_клиент
 from mcp1c.dashboard_runtime import DASHBOARD_ON, routes
@@ -15,407 +12,38 @@ from mcp1c.registry import Registry
 from reference_fixture import SyntheticReferenceSigner, build_reference_database
 
 
-def _trusted_signer(monkeypatch) -> SyntheticReferenceSigner:
+def _reference(tmp_path):
     signer = SyntheticReferenceSigner.generate()
-    monkeypatch.setattr(
-        "mcp1c.reference_provider.TRUSTED_REFERENCE_PUBLIC_KEYS",
-        signer.verifier().public_keys,
+    artifact = signer.build(
+        tmp_path / "release" / "reference.mcp1cref",
+        build_reference_database(tmp_path / "source.sqlite3"),
     )
-    return signer
-
-
-def _artifact(tmp_path, source, signer, name="candidate.mcp1cref"):
-    return signer.build(tmp_path / name, source)
-
-
-def _installed_reference(registry, tmp_path, monkeypatch):
-    signer = _trusted_signer(monkeypatch)
-    source = build_reference_database(tmp_path / "source.sqlite3")
-    signer.build(registry.data_dir / "reference" / "reference.mcp1cref", source)
-    return ReferenceService.discover(registry.data_dir), signer, source
-
-
-def _client(
-    registry: Registry,
-    reference: ReferenceService,
-    restart: RestartController | None = None,
-    capabilities: CapabilityRuntime | None = None,
-):
-    return живой_клиент(
-        Starlette(
-            routes=routes(
-                registry,
-                mode=DASHBOARD_ON,
-                reference=reference,
-                restart=restart,
-                capabilities=capabilities,
-            )
-        )
+    return ReferenceService.discover(
+        tmp_path / "data",
+        embedded_path=artifact,
+        verifier=signer.verifier(),
     )
 
 
-def _login(client, token: str = "admin-token") -> None:
-    response = client.post(
-        "/login", data={"token": token}, follow_redirects=False
-    )
-    assert response.status_code == 303
-
-
-def test_reference_status_скрывает_хеши_от_read_only(tmp_path, monkeypatch):
-    monkeypatch.setenv("API_TOKEN", "read-token")
-    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
-    registry = Registry(tmp_path / "data")
-    reference = ReferenceService.discover(registry.data_dir)
-    client = _client(registry, reference)
-
-    _login(client, "read-token")
-    read_only = client.get("/api/v1/reference")
-    client.cookies.clear()
-    _login(client)
-    admin = client.get("/api/v1/reference")
-
-    assert read_only.status_code == 200
-    assert read_only.json()["active"] == {
-        "state": "missing",
-        "ready": False,
-        "message": "Каноническая база не загружена.",
-    }
-    assert admin.json()["active"]["signature"] == "not-checked"
-
-
-def test_reference_upload_требует_admin(tmp_path, monkeypatch):
-    monkeypatch.setenv("API_TOKEN", "read-token")
-    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
-    registry = Registry(tmp_path / "data")
-    reference = ReferenceService.discover(registry.data_dir)
-    client = _client(registry, reference)
-    _login(client, "read-token")
-
-    response = client.post(
-        "/api/v1/reference/upload",
-        files={"file": ("reference.mcp1cref", b"synthetic")},
-    )
-
-    assert response.status_code == 403
-    assert not reference.managed_path.exists()
-
-
-def test_unsigned_upload_без_явного_экспериментального_режима_отклонён(
-    tmp_path, monkeypatch
-):
-    monkeypatch.delenv("API_TOKEN", raising=False)
-    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
-    source = build_reference_database(tmp_path / "source.sqlite3")
-    registry = Registry(tmp_path / "data")
-    reference = ReferenceService.discover(registry.data_dir)
-    client = _client(registry, reference)
-    _login(client)
-
-    response = client.post(
-        "/api/v1/reference/upload",
-        files={"file": ("reference.mcp1cref", source.read_bytes())},
-    )
-
-    assert response.status_code == 422
-    assert "подпис" in response.json()["error"].lower()
-    assert not reference.managed_path.exists()
-
-
-def test_valid_upload_остаётся_на_диске_и_активируется_после_restart(
-    tmp_path, monkeypatch
-):
-    monkeypatch.delenv("API_TOKEN", raising=False)
-    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
-    source = build_reference_database(tmp_path / "source.sqlite3")
-    signer = _trusted_signer(monkeypatch)
-    artifact = _artifact(tmp_path, source, signer)
-    registry = Registry(tmp_path / "data")
-    reference = ReferenceService.discover(registry.data_dir)
-    client = _client(registry, reference)
-    _login(client)
-
-    response = client.post(
-        "/api/v1/reference/upload",
-        files={"file": ("reference.mcp1cref", artifact.read_bytes())},
-    )
-
-    assert response.status_code == 201
-    payload = response.json()["reference"]
-    assert payload["active"]["state"] == "missing"
-    assert payload["pending"]["state"] == "pending_restart"
-    assert reference.managed_path.is_file()
-    assert reference.managed_path.stat().st_mode & 0o777 == 0o600
-
-    restarted = ReferenceService.discover(registry.data_dir)
-    assert restarted.status.state == "ready"
-    assert restarted.status.index_cache == "hit"
-    assert restarted.provider.search("образец")["results"][0]["id"] == "bsl/Example"
-
-
-def test_invalid_upload_не_заменяет_прежнюю_базу(tmp_path, monkeypatch):
-    monkeypatch.delenv("API_TOKEN", raising=False)
-    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
-    signer = _trusted_signer(monkeypatch)
-    registry = Registry(tmp_path / "data")
-    source = build_reference_database(tmp_path / "source.sqlite3")
-    managed = signer.build(
-        registry.data_dir / "reference" / "reference.mcp1cref", source
-    )
-    original = managed.read_bytes()
-    reference = ReferenceService.discover(registry.data_dir)
-    client = _client(registry, reference)
-    _login(client)
-
-    response = client.post(
-        "/api/v1/reference/upload",
-        files={"file": ("reference.mcp1cref", b"not signed bundle")},
-    )
-
-    assert response.status_code == 422
-    assert reference.managed_path.read_bytes() == original
-    assert reference.provider.search("образец")["results"][0]["id"] == "bsl/Example"
-
-
-def test_external_path_делает_dashboard_upload_недоступным(tmp_path, monkeypatch):
-    monkeypatch.delenv("API_TOKEN", raising=False)
-    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
-    signer = _trusted_signer(monkeypatch)
-    database = build_reference_database(tmp_path / "external.sqlite3")
-    external = signer.build(tmp_path / "external.mcp1cref", database)
-    registry = Registry(tmp_path / "data")
-    reference = ReferenceService.discover(
-        registry.data_dir,
-        database_path=external,
-    )
-    client = _client(registry, reference)
-    _login(client)
-
-    response = client.post(
-        "/api/v1/reference/upload",
-        files={"file": ("reference.mcp1cref", external.read_bytes())},
-    )
-
-    assert response.status_code == 409
-
-
-def test_delete_управляемой_базы_требует_admin(tmp_path, monkeypatch):
-    monkeypatch.setenv("API_TOKEN", "read-token")
-    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
-    registry = Registry(tmp_path / "data")
-    reference, _, _ = _installed_reference(registry, tmp_path, monkeypatch)
-    client = _client(registry, reference)
-    _login(client, "read-token")
-
-    response = client.post(
-        "/api/v1/reference/remove",
-        json={"confirmation": "reference.mcp1cref"},
-    )
-
-    assert response.status_code == 403
-    assert reference.managed_path.is_file()
-
-
-def test_delete_оставляет_активные_ручки_до_restart(tmp_path, monkeypatch):
-    monkeypatch.delenv("API_TOKEN", raising=False)
-    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
-    registry = Registry(tmp_path / "data")
-    reference, _, _ = _installed_reference(registry, tmp_path, monkeypatch)
-    client = _client(registry, reference)
-    _login(client)
-
-    response = client.post(
-        "/api/v1/reference/remove",
-        json={"confirmation": "reference.mcp1cref"},
-    )
-
-    assert response.status_code == 200
-    payload = response.json()["reference"]
-    assert payload["active"]["state"] == "ready"
-    assert payload["pending"]["state"] == "pending_restart"
-    assert payload["pending"]["action"] == "remove"
-    assert payload["managed_file_present"] is False
-    assert reference.provider.search("образец")["results"][0]["id"] == "bsl/Example"
-
-    restarted = ReferenceService.discover(registry.data_dir)
-    assert restarted.status.state == "missing"
-
-
-def test_delete_требует_точное_подтверждение(tmp_path, monkeypatch):
-    monkeypatch.delenv("API_TOKEN", raising=False)
-    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
-    registry = Registry(tmp_path / "data")
-    reference, _, _ = _installed_reference(registry, tmp_path, monkeypatch)
-    client = _client(registry, reference)
-    _login(client)
-
-    response = client.post(
-        "/api/v1/reference/remove",
-        json={"confirmation": "delete"},
-    )
-
-    assert response.status_code == 400
-    assert reference.managed_path.is_file()
-
-
-def test_delete_внешней_базы_из_dashboard_запрещён(tmp_path, monkeypatch):
-    monkeypatch.delenv("API_TOKEN", raising=False)
-    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
-    signer = _trusted_signer(monkeypatch)
-    database = build_reference_database(tmp_path / "external.sqlite3")
-    external = signer.build(tmp_path / "external.mcp1cref", database)
-    registry = Registry(tmp_path / "data")
-    reference = ReferenceService.discover(
-        registry.data_dir,
-        database_path=external,
-    )
-    client = _client(registry, reference)
-    _login(client)
-
-    response = client.post(
-        "/api/v1/reference/remove",
-        json={"confirmation": "reference.mcp1cref"},
-    )
-
-    assert response.status_code == 409
-    assert external.is_file()
-
-
-def test_restart_выключен_без_явной_возможности(tmp_path, monkeypatch):
-    monkeypatch.delenv("API_TOKEN", raising=False)
-    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
-    source = build_reference_database(tmp_path / "source.sqlite3")
-    signer = _trusted_signer(monkeypatch)
-    artifact = _artifact(tmp_path, source, signer)
-    registry = Registry(tmp_path / "data")
-    reference = ReferenceService.discover(registry.data_dir)
-    client = _client(registry, reference)
-    _login(client)
-    client.post(
-        "/api/v1/reference/upload",
-        files={"file": ("reference.mcp1cref", artifact.read_bytes())},
-    )
-
-    response = client.post("/api/v1/server/restart", json={})
-
-    assert response.status_code == 404
-
-
-def test_restart_разрешён_только_для_pending_reference(tmp_path, monkeypatch):
-    monkeypatch.delenv("API_TOKEN", raising=False)
-    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
-    registry = Registry(tmp_path / "data")
-    reference = ReferenceService.discover(registry.data_dir)
-    restart = RestartController(enabled=True, terminate=lambda: None, delay=0)
-    client = _client(registry, reference, restart)
-    _login(client)
-
-    response = client.post("/api/v1/server/restart", json={})
-
-    assert response.status_code == 409
-    assert restart.requested is False
-
-
-def test_restart_отвечает_до_завершения_процесса(tmp_path, monkeypatch):
-    from threading import Event
-
-    monkeypatch.delenv("API_TOKEN", raising=False)
-    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
-    source = build_reference_database(tmp_path / "source.sqlite3")
-    signer = _trusted_signer(monkeypatch)
-    artifact = _artifact(tmp_path, source, signer)
-    registry = Registry(tmp_path / "data")
-    reference = ReferenceService.discover(registry.data_dir)
-    terminated = Event()
-    restart = RestartController(enabled=True, terminate=terminated.set, delay=0)
-    client = _client(registry, reference, restart)
-    _login(client)
-    uploaded = client.post(
-        "/api/v1/reference/upload",
-        files={"file": ("reference.mcp1cref", artifact.read_bytes())},
-    )
-    assert uploaded.status_code == 201
-
-    response = client.post("/api/v1/server/restart", json={})
-
-    assert response.status_code == 202
-    assert response.json() == {
-        "state": "restarting",
-        "runtime_id": restart.runtime_id,
-        "reasons": ["reference"],
-    }
-    assert terminated.wait(1)
-    assert restart.requested is True
-
-
-def test_restart_перечисляет_reference_и_capability_pending(tmp_path, monkeypatch):
-    monkeypatch.delenv("API_TOKEN", raising=False)
-    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
-    source = build_reference_database(tmp_path / "source.sqlite3")
-    signer = _trusted_signer(monkeypatch)
-    artifact = _artifact(tmp_path, source, signer)
-    registry = Registry(tmp_path / "data")
-    reference = ReferenceService.discover(registry.data_dir)
-    restart = RestartController(enabled=True, terminate=lambda: None, delay=0)
-    store = CapabilitySettingsStore(registry.data_dir)
-    capabilities = CapabilityRuntime(store, active=())
-    client = _client(registry, reference, restart, capabilities)
-    _login(client)
-    uploaded = client.post(
-        "/api/v1/reference/upload",
-        files={"file": ("reference.mcp1cref", artifact.read_bytes())},
-    )
-    assert uploaded.status_code == 201
-    store.save(("forms",))
-
-    response = client.post("/api/v1/server/restart", json={})
-
-    assert response.status_code == 202
-    assert response.json()["reasons"] == ["reference", "capabilities"]
-    assert restart.requested is True
-
-
-def test_restart_требует_admin_и_same_origin(tmp_path, monkeypatch):
-    monkeypatch.setenv("API_TOKEN", "read-token")
-    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
-    source = build_reference_database(tmp_path / "source.sqlite3")
-    signer = _trusted_signer(monkeypatch)
-    artifact = _artifact(tmp_path, source, signer)
-    registry = Registry(tmp_path / "data")
-    reference = ReferenceService.discover(registry.data_dir)
-    restart = RestartController(enabled=True, terminate=lambda: None, delay=0)
-    client = _client(registry, reference, restart)
-    _login(client, "read-token")
-    reference.install_candidate(artifact)
-
-    read_only = client.post("/api/v1/server/restart", json={})
-    client.cookies.clear()
-    _login(client)
-    foreign_origin = client.post(
-        "/api/v1/server/restart",
-        json={},
-        headers={"origin": "http://sibling.test"},
-    )
-
-    assert read_only.status_code == 403
-    assert foreign_origin.status_code == 403
-    assert restart.requested is False
-
-
-def test_повторный_restart_не_планируется_дважды(tmp_path, monkeypatch):
-    monkeypatch.delenv("API_TOKEN", raising=False)
-    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
-    source = build_reference_database(tmp_path / "source.sqlite3")
-    signer = _trusted_signer(monkeypatch)
-    artifact = _artifact(tmp_path, source, signer)
-    registry = Registry(tmp_path / "data")
-    reference = ReferenceService.discover(registry.data_dir)
-    restart = RestartController(enabled=True, terminate=lambda: None, delay=60)
-    client = _client(registry, reference, restart)
-    _login(client)
-    reference.install_candidate(artifact)
-
-    first = client.post("/api/v1/server/restart", json={})
-    second = client.post("/api/v1/server/restart", json={})
-
-    assert first.status_code == 202
-    assert second.status_code == 409
+def _client(tmp_path, reference):
+    return живой_клиент(Starlette(routes=routes(
+        Registry(tmp_path / "registry"),
+        mode=DASHBOARD_ON,
+        reference=reference,
+    )))
+
+
+def test_справка_доступна_для_чтения(tmp_path):
+    client = _client(tmp_path, _reference(tmp_path))
+    status = client.get("/api/v1/reference")
+    search = client.get("/api/v1/reference/search", params={"query": "образец"})
+    item = client.get("/api/v1/reference/item", params={"item_id": "bsl/Example"})
+    assert status.status_code == 200
+    assert search.status_code == 200
+    assert item.status_code == 200
+
+
+def test_загрузка_и_удаление_справки_отсутствуют(tmp_path):
+    client = _client(tmp_path, _reference(tmp_path))
+    assert client.post("/api/v1/reference/upload").status_code == 404
+    assert client.post("/api/v1/reference/remove").status_code == 404

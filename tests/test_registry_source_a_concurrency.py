@@ -96,16 +96,19 @@ def test_source_a_отклоняет_конкурентное_изменение
                 assert context.roles is not None and context.roles.ready
 
     if change == "native":
-        # Явный повтор после конфликта идёт уже по native-пути и сохраняет B.
+        # Явный повтор после конфликта публикует самостоятельный A_ONLY.
         registry.add_configuration(pending_path)
         retried = Registry(registry.data_dir)
         assert retried.restore() == []
         context = retried.resolve(base.name)
         assert context.configuration.config.version == "99.0"
-        assert context.modules is not None and context.modules.готов
-        assert context.roles is not None and context.roles.ready
+        assert context.modules is None
+        assert context.roles is None
         current = registry.active_generation(generation.manifest.identity)
-        assert current.layers[1:] == manifest.layers[1:]
+        assert current.layers == (current.layers[0],)
+        assert registry.active_generation_pointer(
+            generation.manifest.identity
+        ).activation.mode.value == "A_ONLY"
 
 
 def test_source_a_не_конфликтует_с_другой_конфигурацией(tmp_path, monkeypatch):

@@ -167,7 +167,7 @@ def test_без_базового_каталога_происхождение_н�
     assert "объявлен расширением" not in answer
 
 
-def test_source_a_не_подменяет_доказательство_b_через_legacy_http(
+def test_source_a_не_создаёт_смешанный_overlay_через_legacy_http(
     tmp_path, monkeypatch
 ):
     monkeypatch.setenv("ADMIN_TOKEN", "synthetic-admin-token")
@@ -205,10 +205,7 @@ def test_source_a_не_подменяет_доказательство_b_чер�
     source_a_root.mkdir()
     registry.add_configuration(write_export(source_a_root, source_a))
 
-    effective_catalog = registry.resolve(_CONFIG).modules.структура
-    assert effective_catalog is not None
-    assert not effective_catalog.complete
-    assert f"{_OBJECT}.{_FIELD}" not in effective_catalog.fields
+    assert registry.resolve(_CONFIG).modules is None
 
     registry.incoming_dir.mkdir(exist_ok=True)
     extension = состарить(
@@ -241,22 +238,16 @@ def test_source_a_не_подменяет_доказательство_b_чер�
             if dashboard._JOBS[-1]["state"] in (dashboard.JOB_DONE, dashboard.JOB_FAILED):
                 break
             time.sleep(0.02)
-        assert dashboard._JOBS[-1]["state"] == dashboard.JOB_DONE
-        assert target_registry.wait_for_module_builds()
-        answer = get_object(target_registry, _OBJECT, config=_CONFIG, detail="fields")
-        assert "Происхождение структуры: **неизвестно**" in answer
-        assert "объявлен расширением «Дополнение»" not in answer
+        assert dashboard._JOBS[-1]["state"] == dashboard.JOB_FAILED
+        assert target_registry.resolve(_CONFIG).modules is None
+        assert "Дополнение" not in target_registry.snapshot().extension_names(_CONFIG)
 
     parse_with_legacy_http(registry)
 
     restarted = Registry(registry.data_dir)
     assert restarted.restore() == []
-    assert restarted.wait_for_module_builds()
-    restarted_answer = get_object(
-        restarted, _OBJECT, config=_CONFIG, detail="fields"
-    )
-    assert "Происхождение структуры: **неизвестно**" in restarted_answer
-    assert "объявлен расширением «Дополнение»" not in restarted_answer
+    assert restarted.resolve(_CONFIG).modules is None
+    assert "Дополнение" not in restarted.snapshot().extension_names(_CONFIG)
 
     monkeypatch.setattr(dashboard, "_JOBS", [])
     parse_with_legacy_http(restarted)

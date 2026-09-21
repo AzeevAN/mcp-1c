@@ -1,8 +1,8 @@
-"""Опциональный read-only провайдер канонической общей справки schema v1.
+"""Read-only провайдер встроенной подписанной общей справки schema v1.
 
-Готовая SQLite является входом продукта, а не частью ``Registry``.  Отсутствие
-или отказ этого входа отключает только две справочные операции; основной MCP
-продолжает запускаться. Поисковый индекс полностью производный и потому
+Подписанный bundle является частью поставляемого образа, а не частью
+``Registry``. Его источник фиксирован в образе; отсутствие или отказ проверки
+останавливает запуск процесса. Поисковый индекс полностью производный и потому
 подчиняется тем же правилам расходного кэша, что остальные индексы проекта.
 """
 
@@ -34,10 +34,7 @@ MAX_REFERENCE_ARTIFACT_BYTES = MAX_REFERENCE_DB_BYTES + 1024 * 1024
 MIN_PAGE_CHARS = 256
 MAX_PAGE_CHARS = 20_000
 DEFAULT_PAGE_CHARS = 8_000
-REFERENCE_PATH_ENV = "MCP1C_REFERENCE_ARTIFACT"
-REFERENCE_ARTIFACT_NAME = "reference.mcp1cref"
 EMBEDDED_REFERENCE_ARTIFACT = Path("/app/reference/reference.mcp1cref")
-REFERENCE_ARTIFACT_SUFFIX = ".mcp1cref"
 REFERENCE_DATABASE_MEMBER = "reference.sqlite3"
 REFERENCE_MANIFEST_MEMBER = "manifest.json"
 REFERENCE_SIGNATURE_MEMBER = "manifest.sig"
@@ -1328,7 +1325,7 @@ class ReferenceProvider:
 
 
 class ReferenceService:
-    """Fail-soft состояние необязательного провайдера на один запуск."""
+    """Проверенное состояние встроенного провайдера на один запуск."""
 
     def __init__(
         self,
@@ -1358,48 +1355,19 @@ class ReferenceService:
         cls,
         data_dir: str | Path,
         *,
-        database_path: str | Path | None = None,
         verifier: ArtifactVerifier | None = None,
         embedded_path: str | Path = EMBEDDED_REFERENCE_ARTIFACT,
     ) -> "ReferenceService":
         root = Path(data_dir).resolve()
-        managed = root / "reference" / REFERENCE_ARTIFACT_NAME
         embedded = Path(embedded_path).resolve()
-        configured = database_path
-        if configured is None:
-            configured = os.environ.get(REFERENCE_PATH_ENV, "").strip()
         selected_verifier = verifier or SignedArtifactVerifier()
-        if isinstance(configured, str) and configured.casefold() == "off":
-            return cls(
-                artifact_path=managed,
-                database_path=managed, managed_path=managed,
-                status=ReferenceStatus(
-                    state="disabled", message="Локальная общая справка выключена.",
-                    signature="not-checked",
-                ),
-                provider=None,
-                data_dir=root,
-                verifier=selected_verifier,
-                artifact_source="disabled",
-            )
-        if configured:
-            path = Path(configured).resolve()
-            artifact_source = "explicit"
-        elif managed.is_file():
-            path = managed
-            artifact_source = "managed"
-        elif embedded.is_file():
-            path = embedded
-            artifact_source = "embedded"
-        else:
-            path = managed
-            artifact_source = "managed"
+        path = embedded
+        managed = path
+        artifact_source = "embedded"
         if not path.is_file():
-            if path == managed:
-                _cleanup_reference_derivatives(root)
             return cls(
                 artifact_path=path,
-                database_path=path, managed_path=managed,
+                database_path=path, managed_path=path,
                 status=ReferenceStatus(
                     state="missing", message="Каноническая база не загружена.",
                     signature="not-checked",
@@ -1517,147 +1485,12 @@ class ReferenceService:
                 artifact_source=artifact_source,
             )
 
-    @property
-    def managed_upload_available(self) -> bool:
-        return self.artifact_source in {"managed", "embedded"}
-
     def payload(self, *, detailed: bool = False) -> dict[str, Any]:
         return {
             "api_version": "v1",
             "active": self.status.payload(detailed=detailed),
             "catalog": self.provider.catalog() if self.provider is not None else None,
-            "pending": (
-                self.pending_status.payload(detailed=detailed)
-                if self.pending_status is not None else None
-            ),
-            "managed_upload": self.managed_upload_available,
-            "managed_file_present": (
-                self.managed_upload_available and self.managed_path.is_file()
-            ),
-            "limits": {"upload_bytes": MAX_REFERENCE_ARTIFACT_BYTES},
         }
-
-    def install_candidate(self, candidate: Path) -> ReferenceStatus:
-        """Скопировать candidate, проверить и атомарно установить bundle."""
-        with self._mutation_lock:
-            return self._install_candidate(candidate)
-
-    def _install_candidate(self, candidate: Path) -> ReferenceStatus:
-        if not self.managed_upload_available:
-            raise ReferenceValidationError(
-                "incompatible",
-                "Dashboard upload недоступен при внешнем MCP1C_REFERENCE_ARTIFACT.",
-            )
-        self.managed_path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, raw_stage = tempfile.mkstemp(
-            dir=self.managed_path.parent,
-            prefix=".reference-install-",
-            suffix=REFERENCE_ARTIFACT_SUFFIX,
-        )
-        os.close(descriptor)
-        stage = Path(raw_stage)
-        inspected: ReferenceService | None = None
-        closed = False
-        try:
-            with candidate.open("rb") as source, stage.open("wb") as target:
-                size = 0
-                while chunk := source.read(1024 * 1024):
-                    size += len(chunk)
-                    if size > MAX_REFERENCE_ARTIFACT_BYTES:
-                        raise ReferenceValidationError(
-                            "corrupt", "Размер подписанного артефакта недопустим."
-                        )
-                    target.write(chunk)
-                target.flush()
-                os.fsync(target.fileno())
-            stage.chmod(0o600)
-            inspected = self.discover(
-                self.data_dir,
-                database_path=stage,
-                verifier=self.verifier,
-            )
-            if inspected.provider is None:
-                raise ReferenceValidationError(
-                    inspected.status.state,
-                    inspected.status.message,
-                    key_id=inspected.status.key_id,
-                    signature=inspected.status.signature,
-                )
-            # Подписанный bundle — единственная точка commit: после полной
-            # проверки меняется один inode, неполного комплекта не бывает.
-            status = inspected.status
-            inspected.close()
-            closed = True
-            stage.replace(self.managed_path)
-            candidate.unlink(missing_ok=True)
-            self.pending_status = ReferenceStatus(
-                state="pending_restart",
-                message="База проверена и будет активна после перезапуска сервера.",
-                signature=status.signature,
-                schema_version=status.schema_version,
-                content_sha256=status.content_sha256,
-                file_sha256=status.file_sha256,
-                items=status.items,
-                index_cache=status.index_cache,
-                key_id=status.key_id,
-                action="activate",
-            )
-            return self.pending_status
-        finally:
-            stage.unlink(missing_ok=True)
-            if inspected is not None and not closed:
-                inspected.close()
-
-    def remove_managed(self) -> ReferenceStatus | None:
-        """Снять управляемый файл, сохранив открытый снимок до рестарта."""
-        with self._mutation_lock:
-            return self._remove_managed()
-
-    def _remove_managed(self) -> ReferenceStatus | None:
-        if not self.managed_upload_available:
-            raise ReferenceValidationError(
-                "incompatible",
-                "Dashboard delete недоступен при внешнем MCP1C_REFERENCE_ARTIFACT.",
-            )
-        if not self.managed_path.is_file():
-            raise ReferenceValidationError(
-                "missing", "Каноническая база уже отсутствует."
-            )
-
-        self.managed_path.unlink()
-        _cleanup_reference_derivatives(self.data_dir)
-
-        if self.artifact_source == "embedded":
-            # Удалён только ожидающий пользовательский override; встроенный
-            # read-only снимок текущего процесса уже остаётся активным.
-            self.pending_status = None
-            return None
-
-        if self.provider is None:
-            # Удаление ещё не активированной загрузки отменяет pending: в
-            # текущем процессе справочных инструментов и так не было.
-            self.pending_status = None
-            return None
-
-        fallback_to_embedded = EMBEDDED_REFERENCE_ARTIFACT.is_file()
-        self.pending_status = ReferenceStatus(
-            state="pending_restart",
-            message=(
-                "Пользовательская база удалена; после перезапуска будет "
-                "подключена встроенная база."
-                if fallback_to_embedded
-                else "База удалена и будет отключена после перезапуска сервера."
-            ),
-            signature=self.status.signature,
-            schema_version=self.status.schema_version,
-            content_sha256=self.status.content_sha256,
-            file_sha256=self.status.file_sha256,
-            items=self.status.items,
-            index_cache=None,
-            key_id=self.status.key_id,
-            action="activate" if fallback_to_embedded else "remove",
-        )
-        return self.pending_status
 
     def close(self) -> None:
         if self.provider is not None:

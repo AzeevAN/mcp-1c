@@ -115,6 +115,7 @@ it("открывается из меню без параметров и даёт
   expect(screen.getAllByText("Реквизит Контрагент").length).toBeGreaterThan(0);
   expect(screen.getByText("Показано 1 из 4")).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Открыть карточку объекта" })).toHaveAttribute("href", expect.stringContaining("/object?"));
+  expect(screen.getByRole("link", { name: "Открыть карточку объекта" })).toHaveAttribute("href", expect.stringContaining("from=%2Fgraph%3F"));
 });
 
 it("клик по соседу перестраивает тот же прямой адрес", async () => {

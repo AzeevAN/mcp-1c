@@ -29,6 +29,11 @@ export function CardPage({ kind }: { kind: CardKind }) {
   const name = searchParams.get("name") || "";
   const config = searchParams.get("config") || "";
   const requestedDetail = searchParams.get("detail");
+  const requestedBack = searchParams.get("from");
+  const backUrl = requestedBack && requestedBack.startsWith("/") && !requestedBack.startsWith("//")
+    ? requestedBack
+    : "/queries";
+  const backLabel = backUrl.startsWith("/graph") ? "Вернуться к связям" : "К результатам запросов";
   const detail: CardDetail = requestedDetail === "brief" || requestedDetail === "full"
     ? requestedDetail
     : "fields";
@@ -85,7 +90,7 @@ export function CardPage({ kind }: { kind: CardKind }) {
         <span className="eyebrow">Карточка недоступна</span>
         <h1>Не удалось открыть {name}</h1>
         <p>{message}</p>
-        <Link to="/queries">Вернуться к запросам</Link>
+        <Link to={backUrl}>{backLabel}</Link>
       </section>
     );
   }
@@ -96,7 +101,7 @@ export function CardPage({ kind }: { kind: CardKind }) {
     <div className="card-page">
       <header className="card-page-heading">
         <div className="card-page-heading-copy">
-          <Link className="card-back-link" to="/queries"><ArrowLeft size={16} />К результатам запросов</Link>
+          <Link className="card-back-link" to={backUrl}><ArrowLeft size={16} />{backLabel}</Link>
           <span className="eyebrow">Диагностическая карточка {noun}</span>
           <h1>{name}</h1>
           <p>Данные не пересобираются во frontend: ниже буквально тот ответ, который MCP отдаёт агенту.</p>

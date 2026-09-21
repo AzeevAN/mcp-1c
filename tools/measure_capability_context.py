@@ -27,6 +27,7 @@ METHOD = "canonical tools/list delta: UTF-8 JSON, sort_keys, compact separators"
 MEASURED_AT = {
     "forms": "2026-09-20",
     "metadata_authoring": "2026-09-20",
+    "reference": "2026-09-21",
 }
 
 
@@ -35,7 +36,10 @@ def _tools(enabled: tuple[str, ...]) -> list[dict[str, object]]:
         root = Path(temporary)
         server = build_server(
             Registry(root),
-            reference=ReferenceService.discover(root, database_path="off"),
+            reference=ReferenceService.discover(
+                root,
+                embedded_path=ROOT / "release-assets" / "reference" / "reference.mcp1cref",
+            ),
             enabled_capabilities=enabled,
         )
         return [

@@ -480,7 +480,7 @@ def test_registry_сохраняет_extension_generation_при_строгой_
     ) is not None
 
 
-def test_schema_v1_поверх_native_сохраняет_проекцию_собственного_объекта(
+def test_schema_v1_поверх_native_отключает_расширение_и_не_воскрешает_его_после_restart(
     tmp_path,
 ):
     _base_collection, base = _materialized(tmp_path, "base-source-a")
@@ -497,6 +497,8 @@ def test_schema_v1_поверх_native_сохраняет_проекцию_со�
     registry.publish_generation(
         registry.stage_generation(extension.manifest, extension.payloads)
     )
+    extension_pointer = registry.active_generation_pointer(extension.manifest.identity)
+    assert extension_pointer is not None
     source = tmp_path / "source-a"
     source.mkdir()
     projected = _object("Own", "OwnField")
@@ -513,25 +515,19 @@ def test_schema_v1_поверх_native_сохраняет_проекцию_со�
         )
     )
 
-    resolved = registry.resolve(
-        "DemoConfiguration",
-        extension="DemoExtension",
+    assert registry.active_generation_pointer(extension.manifest.identity) is None
+    assert "DemoExtension" not in registry.snapshot().extension_names(
+        "DemoConfiguration"
     )
-    assert resolved.configuration.config.source_format == "schema-v1"
-    assert resolved.extension_resolution is not None
-    assert resolved.extension_resolution.configuration.objects[
-        "Справочник.Own"
-    ].props != projected.props
+    assert registry.resolve("DemoConfiguration", extension="DemoExtension").extension is None
+    assert not (registry.data_dir / extension_pointer.root_path).exists()
 
     restarted = Registry(registry.data_dir)
     assert restarted.restore() == []
-    restored = restarted.resolve(
-        "DemoConfiguration",
-        extension="DemoExtension",
-    )
+    restored = restarted.resolve("DemoConfiguration", extension="DemoExtension")
     assert restored.configuration.config.source_format == "schema-v1"
-    assert restored.extension_resolution is not None
-    assert "Справочник.Own" in restored.extension_resolution.configuration.objects
+    assert restored.extension is None
+    assert restarted.active_generation_pointer(extension.manifest.identity) is None
 
 
 def test_extension_publish_требует_существующего_родителя(tmp_path):
@@ -550,7 +546,7 @@ def test_extension_publish_требует_существующего_родит�
     assert registry.active_generation_pointer(extension.manifest.identity) is None
 
 
-def test_restore_поднимает_native_расширение_после_legacy_родителя(tmp_path):
+def test_native_расширение_поднимается_после_legacy_родителя(tmp_path):
     incoming = tmp_path / "legacy-parent"
     incoming.mkdir()
     registry = Registry(tmp_path / "data")
@@ -579,14 +575,7 @@ def test_restore_поднимает_native_расширение_после_legac
         "DemoConfiguration",
         extension="DemoExtension",
     )
-
     assert restored.extension is not None and restored.extension.готов
-    assert restored.extension_roles is not None and restored.extension_roles.ready
-    assert restored.extension_resolution is not None
-    assert all(
-        relation.state.value == "resolved"
-        for relation in restored.extension_resolution.relations
-    )
 
 
 def test_remove_снимает_native_generation_расширения_без_legacy_source(

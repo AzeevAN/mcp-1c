@@ -32,7 +32,6 @@ export type ReferenceState = {
   items?: number | null;
   index_cache?: string | null;
   key_id?: string | null;
-  action?: "activate" | "remove" | null;
 };
 
 export type ReferenceCatalog = {
@@ -57,10 +56,6 @@ export type ReferenceAdminState = {
   api_version: "v1";
   active: ReferenceState;
   catalog: ReferenceCatalog | null;
-  pending: ReferenceState | null;
-  managed_upload: boolean;
-  managed_file_present: boolean;
-  limits: { upload_bytes: number };
 };
 
 export type AdminSourcesResponse = {
@@ -190,70 +185,10 @@ export function uploadSource(
   });
 }
 
-export function uploadReference(
-  file: File,
-  onProgress: (percent: number) => void,
-): Promise<{ reference: ReferenceAdminState; pending: ReferenceState }> {
-  return new Promise((resolve, reject) => {
-    const request = new XMLHttpRequest();
-    request.open("POST", "/api/v1/reference/upload");
-    request.responseType = "json";
-    request.setRequestHeader("accept", "application/json");
-    request.upload.addEventListener("progress", (event) => {
-      if (event.lengthComputable && event.total > 0) {
-        onProgress(Math.round((event.loaded * 100) / event.total));
-      }
-    });
-    request.addEventListener("load", () => {
-      const payload = (request.response || {}) as {
-        reference?: ReferenceAdminState;
-        pending?: ReferenceState;
-        error?: string;
-      };
-      if (
-        request.status >= 200
-        && request.status < 300
-        && payload.reference
-        && payload.pending
-      ) {
-        onProgress(100);
-        resolve({ reference: payload.reference, pending: payload.pending });
-      } else {
-        reject(
-          new SourceAdminApiError(
-            payload.error || `Загрузка завершилась ответом ${request.status}.`,
-            request.status,
-          ),
-        );
-      }
-    });
-    request.addEventListener("error", () => {
-      reject(new SourceAdminApiError("Соединение оборвалось во время загрузки.", 0));
-    });
-    const form = new FormData();
-    form.append("file", file);
-    request.send(form);
-  });
-}
-
-export function useRemoveReference() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (confirmation: string) => adminRequest<{
-      removed: string;
-      reference: ReferenceAdminState;
-      pending: ReferenceState | null;
-    }>("/api/v1/reference/remove", { confirmation }),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["sources", "admin"] });
-    },
-  });
-}
-
 export async function requestServerRestart(): Promise<{
   state: "restarting";
   runtime_id: string;
-  reasons: Array<"reference" | "capabilities">;
+  reasons: Array<"capabilities">;
 }> {
   return adminRequest("/api/v1/server/restart", {});
 }

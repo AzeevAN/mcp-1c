@@ -77,6 +77,18 @@ it("показывает active отдельно от несохранённог
   expect(screen.getByRole("button", { name: "Сохранить выбор" })).toBeEnabled();
 });
 
+it("суммирует стоимость контекста активных модулей", async () => {
+  const active = {
+    ...ready,
+    active: ["forms", "metadata_authoring"],
+  };
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => active }));
+  mount();
+
+  expect(await screen.findByText("≈ 11 903 токенов")).toBeInTheDocument();
+  expect(screen.getByText("Сумма активных модулей")).toBeInTheDocument();
+});
+
 it("объясняет границу Forms до включения", async () => {
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ready }));
   mount();

@@ -70,6 +70,14 @@ class CapabilityModule:
 
 
 CAPABILITY_DEFINITIONS: Mapping[str, CapabilityDefinition] = {
+    "reference": CapabilityDefinition(
+        "reference",
+        "mcp1c.capability_modules.reference:load",
+        "Общая справка",
+        "Добавляет 2 инструмента для поиска и чтения встроенного подписанного пакета общей справки по BSL, языку запросов, СКД и Конфигуратору.",
+        2, 1070, "o200k_base", "2026-09-21",
+        "tools/measure_capability_context.py reference --check",
+    ),
     "forms": CapabilityDefinition(
         "forms",
         "mcp1c.capability_modules.forms:load",

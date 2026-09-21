@@ -1,92 +1,259 @@
-import { ArrowRight, Braces, MonitorCog, ServerCog } from "lucide-react";
+import {
+  ArrowRight,
+  Database,
+  Network,
+  Search,
+  SlidersHorizontal,
+} from "lucide-react";
+import { Link } from "react-router-dom";
 
 import { useBootstrap } from "../shared/api/bootstrap";
+import { useCapabilities } from "../shared/api/capabilities";
+import { useSources } from "../shared/api/sources";
 import { MetricCard } from "../shared/ui/MetricCard";
-import { StatusBadge } from "../shared/ui/StatusBadge";
+import { StatusBadge, type StatusTone } from "../shared/ui/StatusBadge";
+
+type AttentionItem = {
+  id: string;
+  title: string;
+  detail: string;
+  to: string;
+};
+
+function formatTokens(value: number): string {
+  return `≈ ${new Intl.NumberFormat("ru-RU").format(value)}`;
+}
 
 export function OverviewPage() {
   const bootstrap = useBootstrap();
+  const sources = useSources();
+  const capabilities = useCapabilities();
   const summary = bootstrap.data?.summary;
+  const configurations = sources.data?.configurations ?? [];
+  const codeCorpora = sources.data
+    ? configurations.reduce(
+      (total, configuration) => total + configuration.corpora.filter((corpus) => corpus.phase !== "missing").length,
+      0,
+    )
+    : summary?.code_corpora;
+  const modules = capabilities.data?.modules ?? [];
+  const activeModules = modules.filter((module) => module.active);
+  const toolCount = activeModules.reduce((total, module) => total + (module.tool_count ?? 0), 0);
+  const contextTokens = activeModules.reduce((total, module) => total + (module.approx_tokens ?? 0), 0);
+  const allToolCountsMeasured = activeModules.every((module) => module.tool_count !== null);
+  const allContextMeasured = activeModules.every((module) => module.approx_tokens !== null);
+  const toolCountLabel = capabilities.data
+    ? allToolCountsMeasured ? String(toolCount) : toolCount ? `≥ ${toolCount}` : "не измерено"
+    : "—";
+  const contextLabel = capabilities.data
+    ? allContextMeasured ? formatTokens(contextTokens) : contextTokens ? `≥ ${new Intl.NumberFormat("ru-RU").format(contextTokens)}` : "не измерено"
+    : "—";
+
+  const attention: AttentionItem[] = [];
+  if (capabilities.data?.pending_restart) {
+    attention.push({
+      id: "capabilities-restart",
+      title: "Настройки модулей ждут перезапуска",
+      detail: "Сохранённый набор инструментов пока не совпадает с текущим процессом MCP.",
+      to: "/capabilities",
+    });
+  }
+  for (const configuration of configurations) {
+    if (configuration.activation_status === "RELOAD_REQUIRED") {
+      attention.push({
+        id: `${configuration.id}:reload`,
+        title: `${configuration.id}: требуется повторная активация`,
+        detail: "Текущий источник нельзя считать полностью опубликованным.",
+        to: "/sources",
+      });
+    }
+    if (!configuration.platform || configuration.platform === "unknown") {
+      attention.push({
+        id: `${configuration.id}:platform`,
+        title: `${configuration.id}: версия платформы неизвестна`,
+        detail: "Фильтрация справки по доступности версий может быть неполной.",
+        to: "/sources",
+      });
+    }
+    const problemCorpora = configuration.corpora.filter((corpus) =>
+      ["limited", "error"].includes(corpus.phase),
+    );
+    if (problemCorpora.length) {
+      attention.push({
+        id: `${configuration.id}:corpora`,
+        title: `${configuration.id}: есть ограничения корпусов кода`,
+        detail: `${problemCorpora.length} ${problemCorpora.length === 1 ? "корпус требует" : "корпуса требуют"} проверки покрытия или ошибки разбора.`,
+        to: "/sources",
+      });
+    }
+    const warnings = [
+      ...configuration.notes,
+      ...(configuration.source?.warnings ?? []),
+      ...configuration.corpora.flatMap((corpus) => corpus.source?.warnings ?? []),
+    ];
+    if (configuration.source?.incomplete || warnings.length) {
+      attention.push({
+        id: `${configuration.id}:warnings`,
+        title: `${configuration.id}: источник загружен с ограничениями`,
+        detail: warnings.length
+          ? `Зафиксировано предупреждений: ${warnings.length}.`
+          : "Источник помечен как неполный.",
+        to: "/sources",
+      });
+    }
+  }
+  const referenceWarnings = (sources.data?.references ?? []).flatMap((reference) => reference.warnings);
+  if ((sources.data?.references ?? []).some((reference) => reference.incomplete) || referenceWarnings.length) {
+    attention.push({
+      id: "reference-sources",
+      title: "Справка платформы загружена с ограничениями",
+      detail: referenceWarnings.length
+        ? `Зафиксировано предупреждений: ${referenceWarnings.length}.`
+        : "Один из источников справки помечен как неполный.",
+      to: "/sources",
+    });
+  }
+
+  const hasApiError = bootstrap.isError || sources.isError || capabilities.isError;
+  const isChecking = bootstrap.isLoading || sources.isLoading || capabilities.isLoading;
+  let readinessTone: StatusTone = "success";
+  let readinessLabel = "Система готова";
+  let readinessText = "Источники опубликованы, отложенных перезапусков и подтверждённых ошибок нет.";
+  if (hasApiError) {
+    readinessTone = "danger";
+    readinessLabel = "Часть данных недоступна";
+    readinessText = "Не удалось получить полное состояние сервера. Проверьте доступность API.";
+  } else if (capabilities.data?.pending_restart) {
+    readinessTone = "warning";
+    readinessLabel = "Требуется перезапуск";
+    readinessText = "Настройки модулей сохранены, но ещё не применены текущим процессом MCP.";
+  } else if (attention.length) {
+    readinessTone = "warning";
+    readinessLabel = "Требует внимания";
+    readinessText = `Найдено состояний, которые могут ограничивать ответы агентам: ${attention.length}.`;
+  } else if (isChecking) {
+    readinessTone = "info";
+    readinessLabel = "Проверяем состояние";
+    readinessText = "Получаем актуальные сведения об источниках и доступных инструментах.";
+  }
 
   return (
-    <div className="page-stack">
-      <section className="hero-panel" aria-labelledby="overview-title">
+    <div className="page-stack overview-page">
+      <section className="hero-panel overview-hero" aria-labelledby="overview-title">
         <div>
           <span className="eyebrow">Обзор системы</span>
           <h1 id="overview-title">Центр конфигураций</h1>
-          <p>
-            Один интерфейс для источников, поисковых индексов и диагностики.
-            MCP остаётся владельцем данных, дашборд показывает его живое состояние.
-          </p>
+          <p>{readinessText}</p>
         </div>
-        <StatusBadge tone={bootstrap.isError ? "danger" : "success"}>
-          {bootstrap.isError ? "Нет связи с API" : "Контур доступен"}
-        </StatusBadge>
+        <StatusBadge tone={readinessTone}>{readinessLabel}</StatusBadge>
       </section>
 
       <section className="metrics-grid" aria-label="Сводка по источникам">
-        <MetricCard label="Конфигурации" value={summary?.configurations ?? "—"} hint="структура и связанные корпуса" />
+        <MetricCard label="Конфигурации" value={summary?.configurations ?? "—"} hint="опубликованные структуры" />
         <MetricCard label="Объекты метаданных" value={summary?.metadata_objects ?? "—"} hint="поиск, карточки и связи" />
-        <MetricCard label="Корпуса кода" value={summary?.code_corpora ?? "—"} hint="основной код и расширения" />
-        <MetricCard label="Справки платформы" value={summary?.reference_sources ?? "—"} hint="загруженные версии" />
+        <MetricCard label="Корпуса кода" value={codeCorpora ?? "—"} hint="основной код и расширения" />
+        <MetricCard label="Версии справки платформы" value={summary?.reference_sources ?? "—"} hint="для поиска по синтаксису" />
       </section>
 
-      <section className="section-card" aria-labelledby="contour-title">
+      <section className="section-card overview-agent-card" aria-labelledby="agent-access-title">
         <div className="section-heading">
           <div>
-            <span className="eyebrow">Архитектурная граница</span>
-            <h2 id="contour-title">Один владелец данных</h2>
+            <span className="eyebrow">Доступ агентов</span>
+            <h2 id="agent-access-title">Текущий MCP-контракт</h2>
           </div>
-          <StatusBadge tone="info">API v1</StatusBadge>
+          <Link className="overview-heading-link" to="/capabilities">
+            Настроить модули <ArrowRight size={16} aria-hidden="true" />
+          </Link>
         </div>
-        <div className="contour-flow">
-          <article>
-            <ServerCog aria-hidden="true" />
-            <span>01</span>
-            <h3>MCP-сервер</h3>
-            <p>Хранит Registry, индексы и выполняет все операции записи.</p>
-          </article>
-          <ArrowRight className="flow-arrow" aria-hidden="true" />
-          <article>
-            <Braces aria-hidden="true" />
-            <span>02</span>
-            <h3>HTTP API</h3>
-            <p>Публикует согласованные снимки и статусы фоновых заданий.</p>
-          </article>
-          <ArrowRight className="flow-arrow" aria-hidden="true" />
-          <article>
-            <MonitorCog aria-hidden="true" />
-            <span>03</span>
-            <h3>React-интерфейс</h3>
-            <p>Запоминает навигацию и визуализирует состояние, не читая data/.</p>
-          </article>
+        <div className="overview-agent-metrics">
+          <div><span>Активные модули</span><strong>{capabilities.data ? activeModules.length : "—"}</strong></div>
+          <div><span>Инструменты модулей</span><strong>{toolCountLabel}</strong></div>
+          <div><span>Контекст модулей</span><strong>{contextLabel}</strong><small>{allContextMeasured ? "токенов при старте сессии" : "не все модули измерены"}</small></div>
+        </div>
+        <div className="overview-module-list" aria-label="Активные дополнительные модули">
+          {activeModules.length ? activeModules.map((module) => (
+            <span key={module.id}>{module.display_name}</span>
+          )) : (
+            <span className="is-muted">Дополнительные модули отключены</span>
+          )}
         </div>
       </section>
 
-      <section className="section-card" aria-labelledby="states-title">
+      <section className="section-card" aria-labelledby="attention-title">
         <div className="section-heading">
           <div>
-            <span className="eyebrow">Визуальный язык</span>
-            <h2 id="states-title">Состояния должны различаться сразу</h2>
+            <span className="eyebrow">Контроль состояния</span>
+            <h2 id="attention-title">Требует внимания</h2>
           </div>
+          <StatusBadge tone={hasApiError ? "danger" : attention.length ? "warning" : "success"}>
+            {hasApiError ? "Нет полной картины" : attention.length ? `${attention.length} замечаний` : "Всё готово"}
+          </StatusBadge>
         </div>
-        <div className="state-samples">
-          <article className="state-sample is-success">
-            <StatusBadge tone="success">Готово</StatusBadge>
-            <strong>Источник прочитан полностью</strong>
-            <p>Спокойный зелёный используется только для подтверждённого результата.</p>
-          </article>
-          <article className="state-sample is-warning">
-            <StatusBadge tone="warning">Внимание</StatusBadge>
-            <strong>Есть ограничения покрытия</strong>
-            <p>Янтарный сообщает, что нулевые значения нельзя трактовать как отсутствие.</p>
-          </article>
-          <article className="state-sample is-danger">
-            <StatusBadge tone="danger">Ошибка</StatusBadge>
-            <strong>Разбор остановлен</strong>
-            <p>Красный закреплён за действием, которое не завершилось и требует решения.</p>
-          </article>
-        </div>
+        {hasApiError ? (
+          <div className="overview-attention-empty is-error">
+            Состояние источников или модулей недоступно. Обновите страницу после восстановления API.
+          </div>
+        ) : isChecking ? (
+          <div className="overview-attention-empty"><span className="loading-dot" />Проверяем источники и модули…</div>
+        ) : attention.length ? (
+          <div className="overview-attention-list">
+            {attention.map((item) => (
+              <Link key={item.id} to={item.to}>
+                <span><strong>{item.title}</strong><small>{item.detail}</small></span>
+                <ArrowRight size={18} aria-hidden="true" />
+              </Link>
+            ))}
+          </div>
+        ) : (
+          <div className="overview-attention-empty is-success">
+            Отложенных перезапусков, ошибок активации и подтверждённых ограничений источников нет.
+          </div>
+        )}
+      </section>
+
+      {configurations.length > 0 && (
+        <section className="section-card" aria-labelledby="configuration-state-title">
+          <div className="section-heading">
+            <div>
+              <span className="eyebrow">Опубликованные данные</span>
+              <h2 id="configuration-state-title">Состояние конфигураций</h2>
+            </div>
+            <Link className="overview-heading-link" to="/sources">
+              Все источники <ArrowRight size={16} aria-hidden="true" />
+            </Link>
+          </div>
+          <div className="overview-configuration-list">
+            {configurations.map((configuration) => {
+              const tone: StatusTone = configuration.activation_status === "ACTIVE" ? "success" : "warning";
+              const status = configuration.activation_status === "ACTIVE"
+                ? "Активна"
+                : configuration.activation_status === "RELOAD_REQUIRED"
+                  ? "Нужна активация"
+                  : "Статус неизвестен";
+              return (
+                <article key={configuration.id}>
+                  <div className="overview-configuration-title">
+                    <strong>{configuration.id}</strong>
+                    <StatusBadge tone={tone}>{status}</StatusBadge>
+                  </div>
+                  <dl>
+                    <div><dt>Режим</dt><dd>{configuration.activation_mode}</dd></div>
+                    <div><dt>Платформа</dt><dd>{configuration.platform || "unknown"}</dd></div>
+                    <div><dt>Объекты</dt><dd>{new Intl.NumberFormat("ru-RU").format(configuration.objects)}</dd></div>
+                    <div><dt>Код</dt><dd>{configuration.corpora.filter((corpus) => corpus.phase !== "missing").length}</dd></div>
+                  </dl>
+                </article>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      <section className="overview-quick-actions" aria-label="Быстрые действия">
+        <Link to="/queries"><Search aria-hidden="true" /><span><strong>Проверить запрос</strong><small>Поиск глазами агента</small></span></Link>
+        <Link to="/graph"><Network aria-hidden="true" /><span><strong>Открыть связи</strong><small>Граф объектов метаданных</small></span></Link>
+        <Link to="/sources"><Database aria-hidden="true" /><span><strong>Управлять источниками</strong><small>Загрузка и диагностика</small></span></Link>
+        <Link to="/capabilities"><SlidersHorizontal aria-hidden="true" /><span><strong>Настроить модули</strong><small>Инструменты и контекст</small></span></Link>
       </section>
     </div>
   );

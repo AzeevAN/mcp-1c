@@ -17,7 +17,9 @@ def _reference(tmp_path, *, body="Синтетическое описание д
     database = build_reference_database(tmp_path / "source.sqlite3", body=body)
     signer.build(tmp_path / "data" / "reference" / "reference.mcp1cref", database)
     return ReferenceService.discover(
-        tmp_path / "data", verifier=signer.verifier()
+        tmp_path / "data",
+        embedded_path=tmp_path / "data" / "reference" / "reference.mcp1cref",
+        verifier=signer.verifier(),
     )
 
 

@@ -28,7 +28,7 @@ with tempfile.TemporaryDirectory() as directory:
     from mcp1c.server import build_server
     registry = Registry(directory)
     registry.startup()
-    reference = ReferenceService.discover(directory, database_path="off")
+    reference = ReferenceService.discover(directory / "missing-reference")
     store, names = resolve_capability_settings(directory, environment="unknown")
     build_server(
         registry,

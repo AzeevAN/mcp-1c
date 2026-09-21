@@ -93,6 +93,20 @@ it("карточка синтаксиса работает без конфигу
   expect(vi.mocked(fetch)).toHaveBeenCalledWith(expect.stringContaining("name=%D0%97%D0%B0%D0%BF%D1%80%D0%BE%D1%81.%D0%A1%D1%82%D1%80%D0%9D%D0%B0%D0%B9%D1%82%D0%B8"));
 });
 
+it("возвращает карточку в сохранённое состояние связей", async () => {
+  render(
+    <MemoryRouter initialEntries={["/object?config=Отраслевая+конфигурация+А&name=Справочник.Контрагенты&from=%2Fgraph%3Fconfig%3DОтраслевая%2Bконфигурация%2BА%26name%3DСправочник.%25D0%259A%25D0%25BE%25D0%25BD%25D1%2582%25D1%2580%25D0%25B0%25D0%25B3%25D0%25B5%25D0%25BD%25D1%2582%25D1%258B%26limit%3D30"]}>
+      <QueryClientProvider client={client()}><CardPage kind="object" /></QueryClientProvider>
+    </MemoryRouter>,
+  );
+
+  expect(await screen.findByRole("heading", { name: "Справочник: Контрагенты" })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Вернуться к связям" })).toHaveAttribute(
+    "href",
+    "/graph?config=Отраслевая+конфигурация+А&name=Справочник.%D0%9A%D0%BE%D0%BD%D1%82%D1%80%D0%B0%D0%B3%D0%B5%D0%BD%D1%82%D1%8B&limit=30",
+  );
+});
+
 it("прямая ссылка без имени объясняет путь и не обращается к API", () => {
   render(
     <MemoryRouter initialEntries={["/object"]}>
@@ -119,5 +133,5 @@ it("показывает предметную ошибку API без потер
   );
 
   expect(await screen.findByRole("alert")).toHaveTextContent("Справка платформы не подключена.");
-  expect(screen.getByRole("link", { name: "Вернуться к запросам" })).toHaveAttribute("href", "/queries");
+  expect(screen.getByRole("link", { name: "К результатам запросов" })).toHaveAttribute("href", "/queries");
 });

@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "name": "reference",
+  "title": "Общая справка",
+  "description": "Поиск и чтение встроенного подписанного пакета общей справки.",
+  "context_budget": {
+    "status": "measured",
+    "tool_count": 2,
+    "approx_tokens": 1070,
+    "tokenizer": "tiktoken 0.11.0 / o200k_base",
+    "method": "canonical tools/list delta: UTF-8 JSON, sort_keys, compact separators",
+    "canonical_bytes": 5939,
+    "canonical_sha256": "361f66125b8f6911edbcf17a325526948a5775b3d6f16c3bc6527880d5d8f008",
+    "payload": "tools_list_delta",
+    "measured_at": "2026-09-21"
+  }
+}

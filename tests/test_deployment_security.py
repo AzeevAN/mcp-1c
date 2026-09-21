@@ -93,12 +93,10 @@ def test_compose_сохраняет_защитные_ограничения_пр
     assert "max-file: \"3\"" in compose
 
 
-def test_compose_передаёт_настройки_необязательной_общей_справки():
+def test_compose_не_передаёт_удалённую_настройку_общей_справки():
     compose = _compose()
 
-    assert (
-        "MCP1C_REFERENCE_ARTIFACT: ${MCP1C_REFERENCE_ARTIFACT:-}" in compose
-    )
+    assert "MCP1C_REFERENCE_" not in compose
     assert "MCP1C_REFERENCE_TRUST_UNSIGNED" not in compose
 
 

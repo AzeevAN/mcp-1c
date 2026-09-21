@@ -25,10 +25,6 @@ const status = {
     }],
     platform_versions: ["8.3.20"],
   },
-  pending: null,
-  managed_upload: true,
-  managed_file_present: true,
-  limits: { upload_bytes: 1 },
 };
 
 const card = {

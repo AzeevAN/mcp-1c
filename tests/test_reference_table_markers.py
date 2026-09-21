@@ -40,7 +40,9 @@ def reference_with_tables(tmp_path):
     signer = SyntheticReferenceSigner.generate()
     artifact = signer.build(tmp_path / "reference" / "reference.mcp1cref", database)
     original_digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
-    service = ReferenceService.discover(tmp_path, verifier=signer.verifier())
+    service = ReferenceService.discover(
+        tmp_path, embedded_path=artifact, verifier=signer.verifier()
+    )
     assert service.status.state == "ready"
     yield service, body
     assert hashlib.sha256(artifact.read_bytes()).hexdigest() == original_digest
@@ -89,7 +91,11 @@ def test_карточка_без_маркеров_не_меняется(tmp_path
     database = build_reference_database(tmp_path / "synthetic.sqlite3", body="Текст таблица-0.")
     signer = SyntheticReferenceSigner.generate()
     signer.build(tmp_path / "reference" / "reference.mcp1cref", database)
-    service = ReferenceService.discover(tmp_path, verifier=signer.verifier())
+    service = ReferenceService.discover(
+        tmp_path,
+        embedded_path=tmp_path / "reference" / "reference.mcp1cref",
+        verifier=signer.verifier(),
+    )
     content = service.provider.get("bsl/Example")["content"]
     assert "## Описание\n\nТекст таблица-0." in content
 
@@ -103,7 +109,11 @@ def anyio_backend():
 @pytest.mark.parametrize("section_id", [None, "bsl/Example#usage"])
 async def test_mcp_выдаёт_чистый_текст(reference_with_tables, tmp_path, section_id):
     service, _ = reference_with_tables
-    server = build_server(Registry(tmp_path / "registry"), reference=service)
+    server = build_server(
+        Registry(tmp_path / "registry"),
+        reference=service,
+        enabled_capabilities={"reference"},
+    )
     async with create_client_server_memory_streams() as (client, remote):
         async with anyio.create_task_group() as tasks:
             tasks.start_soon(

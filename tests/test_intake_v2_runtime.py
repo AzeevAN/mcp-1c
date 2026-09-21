@@ -1836,7 +1836,7 @@ def test_native_opaque_модуль_поднимается_из_warm_кэша(
     assert restored.каталог.entries["ОбщийМодуль.Sealed"].opaque is True
 
 
-def test_schema_v1_после_native_заменяет_только_base_и_переживает_restart(
+def test_schema_v1_после_native_переключает_весь_runtime_в_a_only_и_переживает_restart(
     tmp_path,
 ):
     collection, generation = _materialized(
@@ -1851,9 +1851,6 @@ def test_schema_v1_после_native_заменяет_только_base_и_пе�
     previous_pointer = registry.active_generation_pointer(
         generation.manifest.identity
     )
-    previous_layers = {
-        layer.kind: layer for layer in generation.manifest.layers
-    }
     incoming = tmp_path / "source-a"
     incoming.mkdir()
     source_a = convert_collection(collection).base
@@ -1867,25 +1864,22 @@ def test_schema_v1_после_native_заменяет_только_base_и_пе�
         generation.manifest.identity
     )
     assert current_pointer is not None and current_pointer != previous_pointer
+    assert current_pointer.activation is not None
+    assert current_pointer.activation.mode.value == "A_ONLY"
     current = registry.active_generation(generation.manifest.identity)
     current_layers = {layer.kind: layer for layer in current.layers}
+    assert set(current_layers) == {LayerKind.BASE_STRUCTURE}
     assert current_layers[LayerKind.BASE_STRUCTURE].provenance.profile is (
         LayerSourceProfile.SCHEMA_V1
     )
-    for kind in (
-        LayerKind.EXTENDED_STRUCTURE,
-        LayerKind.CODE,
-        LayerKind.FORMS,
-        LayerKind.ROLES,
-    ):
-        assert current_layers[kind] == previous_layers[kind]
     context = registry.resolve("DemoConfiguration")
     assert context.configuration.config.version == "2.0"
     assert context.configuration.config.platform == "8.3.27.1000"
     assert context.configuration.config.exporter_version == "test"
-    assert context.configuration.config.get("ОбщаяФорма.Workspace") is not None
-    assert context.modules is not None and context.modules.готов
-    assert context.roles is not None and context.roles.ready
+    assert context.configuration.config.get("ОбщаяФорма.Workspace") is None
+    assert context.modules is None
+    assert context.roles is None
+    assert not (registry.data_dir / previous_pointer.root_path).exists()
 
     restarted = Registry(registry.data_dir)
     assert restarted.restore() == []
@@ -1893,9 +1887,9 @@ def test_schema_v1_после_native_заменяет_только_base_и_пе�
     assert restored.configuration.config.version == "2.0"
     assert restored.configuration.config.platform == "8.3.27.1000"
     assert restored.configuration.config.exported_at == "2026-08-15T00:00:00"
-    assert restored.configuration.config.get("ОбщаяФорма.Workspace") is not None
-    assert restored.modules is not None and restored.modules.готов
-    assert restored.roles is not None and restored.roles.ready
+    assert restored.configuration.config.get("ОбщаяФорма.Workspace") is None
+    assert restored.modules is None
+    assert restored.roles is None
 
 
 def test_повторная_идентичная_schema_v1_поверх_native_не_меняет_generation(
@@ -1928,7 +1922,7 @@ def test_повторная_идентичная_schema_v1_поверх_native_�
     assert repeated_source == first_source
 
 
-def test_schema_v1_не_публикуется_поверх_несовместимого_native(tmp_path):
+def test_schema_v1_самостоятельно_публикуется_поверх_несовместимого_native(tmp_path):
     _collection_value, generation = _materialized(
         tmp_path,
         "source-a-mismatch",
@@ -1954,13 +1948,15 @@ def test_schema_v1_не_публикуется_поверх_несовмести
         },
     )
 
-    with pytest.raises(RegistryError, match="несинхронная пара Source A/Source B"):
-        registry.add_configuration(write_export(incoming, incompatible))
+    registry.add_configuration(write_export(incoming, incompatible))
 
-    assert registry.active_generation_pointer(generation.manifest.identity) == previous
+    current = registry.active_generation_pointer(generation.manifest.identity)
+    assert current is not None and current != previous
+    assert current.activation is not None
+    assert current.activation.mode.value == "A_ONLY"
     context = registry.resolve("DemoConfiguration")
-    assert context.configuration.config.get("Справочник.Items") is not None
-    assert context.configuration.config.get("Справочник.Replacement") is None
+    assert context.configuration.config.get("Справочник.Items") is None
+    assert context.configuration.config.get("Справочник.Replacement") is not None
 
 
 def test_runtime_failure_до_commit_сохраняет_прежний_pointer_и_runtime(

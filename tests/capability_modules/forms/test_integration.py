@@ -81,7 +81,7 @@ def _server(tmp_path, *, enabled=(), registry=None):
     registry = registry or Registry(tmp_path)
     return build_server(
         registry,
-        reference=ReferenceService.discover(tmp_path, database_path="off"),
+        reference=ReferenceService.discover(tmp_path / "missing-reference"),
         enabled_capabilities=enabled,
     )
 
@@ -125,7 +125,7 @@ from mcp1c.server import build_server
 data = Path(sys.argv[1])
 server = build_server(
     Registry(data),
-    reference=ReferenceService.discover(data, database_path="off"),
+    reference=ReferenceService.discover(data / "missing-reference"),
     enabled_capabilities=(),
 )
 print(json.dumps({

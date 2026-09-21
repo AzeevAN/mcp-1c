@@ -29,6 +29,11 @@ import { StatusBadge } from "../shared/ui/StatusBadge";
 
 const DEFAULT_LIMIT = 30;
 
+function cardUrlFromGraph(objectUrl: string, returnUrl: string): string {
+  const separator = objectUrl.includes("?") ? "&" : "?";
+  return `${objectUrl}${separator}from=${encodeURIComponent(returnUrl)}`;
+}
+
 function nodeMap(graph: NonNullable<GraphResponse["graph"]>) {
   return new Map(
     [graph.subject, ...graph.nodes].map((node) => [node.name, node]),
@@ -151,7 +156,7 @@ function GraphCanvas({ graph }: { graph: NonNullable<GraphResponse["graph"]> }) 
   );
 }
 
-function GraphResult({ data }: { data: GraphResponse }) {
+function GraphResult({ data, returnUrl }: { data: GraphResponse; returnUrl: string }) {
   const graph = data.graph;
   if (data.state === "awaiting_object") {
     return (
@@ -186,7 +191,7 @@ function GraphResult({ data }: { data: GraphResponse }) {
         <h2>Изолированный объект</h2>
         <p>{data.message}</p>
         <small>Связи из форм и схем компоновки текущая выгрузка не собирает.</small>
-        <Link to={graph.subject.object_url}>Открыть карточку объекта</Link>
+        <Link to={cardUrlFromGraph(graph.subject.object_url, returnUrl)}>Открыть карточку объекта</Link>
       </section>
     );
   }
@@ -207,7 +212,7 @@ function GraphResult({ data }: { data: GraphResponse }) {
             <h2>{graph.subject.short}</h2>
             <code>{graph.subject.name}</code>
             <div><span>{graph.subject.kind}</span><strong>{graph.total} связей</strong></div>
-            <Link to={graph.subject.object_url}>Открыть карточку объекта</Link>
+            <Link to={cardUrlFromGraph(graph.subject.object_url, returnUrl)}>Открыть карточку объекта</Link>
           </div>
 
           <div className="graph-neighbour-list" aria-label="Соседи объекта">
@@ -337,7 +342,10 @@ export function GraphPage() {
         <button className="query-run-button" type="submit"><Search size={17} />Показать связи</button>
       </form>
 
-      <GraphResult data={data} />
+      <GraphResult
+        data={data}
+        returnUrl={`/graph${searchParams.toString() ? `?${searchParams.toString()}` : ""}`}
+      />
     </div>
   );
 }

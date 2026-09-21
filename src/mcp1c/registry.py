@@ -64,7 +64,12 @@ from .intake_v2 import (
     SourceKind,
     decide_recovery,
 )
-from .source_modes import ActivationMode, PlatformDeclaration
+from .source_modes import (
+    ActivationComponent,
+    ActivationManifest,
+    ActivationMode,
+    PlatformDeclaration,
+)
 from .intake_v2_converter import base_layer_data
 from .intake_v2_registry import (
     BundleStoreError,
@@ -1835,7 +1840,9 @@ class Registry:
             None,
         )
         if (
-            active_base is not None
+            previous.activation is not None
+            and previous.activation.mode is ActivationMode.A_ONLY
+            and active_base is not None
             and active_base.state is LayerState.READY
             and active_base.content_sha256 == content_sha256
         ):
@@ -1880,28 +1887,49 @@ class Registry:
                     selection_version=1,
                 ),
             )
-            layers = tuple(
-                base if layer.kind is LayerKind.BASE_STRUCTURE else layer
-                for layer in active.layers
-            )
-            if not any(
-                layer.kind is LayerKind.BASE_STRUCTURE for layer in active.layers
-            ):
+            if not any(layer.kind is LayerKind.BASE_STRUCTURE for layer in active.layers):
                 raise RegistryError("active generation не содержит base_structure")
+            generation_id = f"schema-v1-{uuid.uuid4().hex}"
             manifest = GenerationManifest(
                 format_version=active.format_version,
-                generation_id=f"schema-v1-{uuid.uuid4().hex}",
+                generation_id=generation_id,
                 identity=active.identity,
                 parser_version=active.parser_version,
                 selection_version=active.selection_version,
                 source_transport=transport,
                 origin_name=origin,
                 raw_sha256=digest,
-                layers=layers,
+                layers=(base,),
             )
-            sources = dict(self.generation_payload_sources(previous))
-            sources[LayerKind.BASE_STRUCTURE] = LayerPayloadSource(payload_path)
-            staged = self.stage_generation(manifest, sources)
+            activation = ActivationManifest(
+                mode=ActivationMode.A_ONLY,
+                identity_incarnation=generation_id,
+                physical_generation_root_id=generation_id,
+                configuration_version=config.version,
+                main=ActivationComponent(
+                    source="source-a",
+                    origin=origin,
+                    raw_sha256=digest,
+                    payload_sha256=hash_layer_payload(
+                        LayerKind.BASE_STRUCTURE,
+                        payload_path,
+                    ),
+                ),
+                extensions=(),
+                expected_previous_activation=(
+                    previous.activation.sha256
+                    if previous.activation is not None
+                    else None
+                ),
+                transaction_id=f"schema-v1-{uuid.uuid4().hex}",
+                recovery_id=uuid.uuid4().hex,
+            )
+            sources = {LayerKind.BASE_STRUCTURE: LayerPayloadSource(payload_path)}
+            staged = self.stage_generation(
+                manifest,
+                sources,
+                activation=activation,
+            )
             pointer = self.publish_generation(
                 staged,
                 expected_previous=previous,
@@ -3465,6 +3493,18 @@ class Registry:
                     f"{архив.name}: похоже на выгрузку расширения, но тег "
                     "Name в Configuration.xml пуст — имя расширения взять "
                     "неоткуда."
+                )
+            with self._lock:
+                active = self._generation_pointers.get(
+                    ExportIdentity.configuration(configuration).grouping_key
+                )
+            if (
+                active is not None
+                and active.activation is not None
+                and active.activation.mode is not ActivationMode.B_FULL
+            ):
+                raise RegistryError(
+                    "расширение можно опубликовать только поверх active B_FULL"
                 )
             return self._add_extension(
                 архив,
@@ -5160,6 +5200,20 @@ class Registry:
             try:
                 # WAL появляется до тяжёлой сборки runtime: SIGKILL не
                 # оставит бесхозный staging без доказуемого recovery-path.
+                if manifest.identity.source_kind is SourceKind.EXTENSION:
+                    parent_key = ExportIdentity.configuration(
+                        manifest.identity.parent_configuration
+                    ).grouping_key
+                    with self._lock:
+                        parent = self._generation_pointers.get(parent_key)
+                    if (
+                        parent is not None
+                        and parent.activation is not None
+                        and parent.activation.mode is not ActivationMode.B_FULL
+                    ):
+                        raise RegistryError(
+                            "расширение можно опубликовать только поверх active B_FULL"
+                        )
                 prepared_runtime = self._build_native_generation_runtime(
                     staged.root,
                     manifest,
@@ -5205,7 +5259,24 @@ class Registry:
                         raise GenerationPublishConflict(
                             "родитель расширения изменился во время публикации"
                         )
+                    detached_extensions: list[GenerationPointer] = []
+                    if (
+                        manifest.identity.source_kind is SourceKind.CONFIGURATION
+                        and pointer.activation is not None
+                        and pointer.activation.mode is ActivationMode.A_ONLY
+                    ):
+                        detached_extensions = [
+                            child
+                            for child in self._generation_pointers.values()
+                            if (
+                                child.identity.source_kind is SourceKind.EXTENSION
+                                and child.identity.parent_configuration
+                                == manifest.identity.configuration_name
+                            )
+                        ]
                     next_pointers = dict(self._generation_pointers)
+                    for child in detached_extensions:
+                        next_pointers.pop(child.identity.grouping_key, None)
                     next_pointers[key] = pointer
                     self._write_registry_payload(
                         self._registry_payload(next_pointers)
@@ -5225,7 +5296,32 @@ class Registry:
                             self.roles.pop(name, None)
                         else:
                             self.roles[name] = prepared_runtime.runtime.roles
-                        self.extension_relations.update(replacement_relations)
+                        if pointer.activation is not None and pointer.activation.mode is ActivationMode.A_ONLY:
+                            for child in detached_extensions:
+                                self._generation_manifests.pop(
+                                    child.identity.grouping_key, None
+                                )
+                                extension_key = (
+                                    f"{child.identity.parent_configuration}:ext:"
+                                    f"{index_cache.safe_name(child.identity.extension_name)}"
+                                )
+                                self.modules.pop(extension_key, None)
+                                self.extension_structures.pop(extension_key, None)
+                                self.extension_relations.pop(extension_key, None)
+                                self.extension_roles.pop(extension_key, None)
+                                self._drop_cache(extension_key, KIND_EXTENSION)
+                                try:
+                                    self._cache_path(extension_key, "roles.sqlite").unlink(
+                                        missing_ok=True
+                                    )
+                                except OSError:
+                                    pass
+                                try:
+                                    coverage_log.remove(self.data_dir, extension_key)
+                                except OSError:
+                                    pass
+                        else:
+                            self.extension_relations.update(replacement_relations)
                         self._relation_cache.pop(name, None)
                     else:
                         identity = manifest.identity
@@ -5254,6 +5350,13 @@ class Registry:
                     replace(prepared, phase=RecoveryPhase.POINTER_SWITCHED)
                 )
                 self._generation_store.remove_pointer_root(previous)
+                for child in detached_extensions:
+                    try:
+                        self._generation_store.remove_pointer_root(child)
+                    except (OSError, BundleStoreError) as error:
+                        logger.warning(
+                            "Очистка detached extension root отложена: %s", error
+                        )
                 self._generation_store.remove_staging(prepared.staging_path)
                 self._generation_store.clear_recovery()
                 try:

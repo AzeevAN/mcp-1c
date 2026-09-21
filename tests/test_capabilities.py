@@ -66,7 +66,7 @@ def anyio_backend():
 
 
 def _server(tmp_path, *, enabled_capabilities=()):
-    reference = ReferenceService.discover(tmp_path, database_path="off")
+    reference = ReferenceService.discover(tmp_path / "missing-reference")
     return build_server(
         Registry(tmp_path),
         reference=reference,
@@ -244,7 +244,7 @@ registry = Registry(data)
 registry.startup()
 server = build_server(
     registry,
-    reference=ReferenceService.discover(data, database_path="off"),
+        reference=ReferenceService.discover(data / "missing-reference"),
     enabled_capabilities=enabled,
     capability_runtime=CapabilityRuntime(store, active=enabled),
 )
@@ -300,12 +300,12 @@ def test_env_служит_fallback_только_пока_server_settings_не_с
     store.save(())
 
     payload = runtime.payload()
-    assert payload["available"] == ["forms", "metadata_authoring", "role_access"]
+    assert payload["available"] == ["reference", "forms", "metadata_authoring", "role_access"]
     assert payload["active"] == ["forms"]
     assert payload["desired"] == []
     assert payload["pending_restart"] is True
     assert {module["id"] for module in payload["modules"]} == {
-        "forms", "metadata_authoring", "role_access"
+        "reference", "forms", "metadata_authoring", "role_access"
     }
 
 
@@ -775,7 +775,7 @@ def _noop() -> str:
 
 @pytest.mark.parametrize(
     "name",
-    ("list_configurations", "search_reference", "find_roles_for_access"),
+        ("list_configurations", "search_reference", "find_roles_for_access"),
 )
 def test_имя_модуля_не_может_конфликтовать_с_ядром(tmp_path, name):
     server = _server(tmp_path)

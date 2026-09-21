@@ -81,13 +81,9 @@ from .process_restart import RestartController
 from .reference_provider import (
     DEFAULT_PAGE_CHARS,
     MAX_PAGE_CHARS,
-    MAX_REFERENCE_ARTIFACT_BYTES,
     MIN_PAGE_CHARS,
-    REFERENCE_ARTIFACT_NAME,
-    REFERENCE_ARTIFACT_SUFFIX,
     ReferenceQueryError,
     ReferenceService,
-    ReferenceValidationError,
 )
 from .role_access_service import (
     MAX_ACCESS_LIMIT as MAX_ROLE_ACCESS_LIMIT,
@@ -2160,7 +2156,7 @@ def _spa_routes(
 def _reference_routes(
     reference: ReferenceService,
 ) -> list[Route]:
-    """API статуса, чтения и управляемого файла общей справки."""
+    """API статуса и чтения встроенной общей справки."""
 
     def unique_param(request: Request, name: str, *, maximum: int) -> str | None:
         values = request.query_params.getlist(name)
@@ -2278,127 +2274,6 @@ def _reference_routes(
             return _json_error("Нужен токен чтения.", 401)
         return JSONResponse(reference.payload(detailed=_authorized(request)))
 
-    async def reference_upload_api(request: Request) -> JSONResponse:
-        def denied_response(message: str, status_code: int):
-            return _json_error(message, status_code)
-
-        denied = _mutation_denied(request, action="Загрузка общей справки")
-        if denied is not None:
-            return denied
-        if not reference.managed_upload_available:
-            return denied_response(
-                "Загрузка выключена: база подключена по внешнему пути.", 409
-            )
-        try:
-            form = await dashboard_backend._limited_upload_form(
-                request,
-                MAX_REFERENCE_ARTIFACT_BYTES,
-                allowed_fields=frozenset(),
-            )
-        except dashboard_backend._UploadTooLarge:
-            return denied_response(
-                f"Файл больше {MAX_REFERENCE_ARTIFACT_BYTES // 1024 // 1024} МБ.",
-                413,
-            )
-        except MultiPartException:
-            return denied_response(
-                "Некорректная multipart-форма: разрешён один файл `file`.",
-                400,
-            )
-        uploaded = form.get("file")
-        if not isinstance(uploaded, UploadFile) or not uploaded.filename:
-            await form.close()
-            return denied_response("Файл не выбран.", 400)
-        name = Path(uploaded.filename).name
-        if Path(name).suffix.lower() != REFERENCE_ARTIFACT_SUFFIX:
-            await form.close()
-            return denied_response(
-                "Принимается только подписанный файл .mcp1cref.", 400
-            )
-
-        directory = reference.managed_path.parent
-        temporary: Path | None = None
-        try:
-            directory.mkdir(parents=True, exist_ok=True)
-            descriptor, raw_path = tempfile.mkstemp(
-                dir=directory,
-                prefix=".reference-upload-",
-                suffix=REFERENCE_ARTIFACT_SUFFIX,
-            )
-            os.close(descriptor)
-            temporary = Path(raw_path)
-            size = 0
-            with temporary.open("wb") as output:
-                while True:
-                    chunk = await uploaded.read(dashboard_backend.CHUNK)
-                    if not chunk:
-                        break
-                    size += len(chunk)
-                    if size > MAX_REFERENCE_ARTIFACT_BYTES:
-                        raise dashboard_backend._UploadTooLarge
-                    output.write(chunk)
-                output.flush()
-                os.fsync(output.fileno())
-            await form.close()
-            pending = await run_in_threadpool(
-                reference.install_candidate, temporary
-            )
-            temporary = None
-            return JSONResponse(
-                {
-                    "reference": reference.payload(detailed=True),
-                    "pending": pending.payload(detailed=True),
-                },
-                status_code=201,
-            )
-        except dashboard_backend._UploadTooLarge:
-            return denied_response(
-                f"Файл больше {MAX_REFERENCE_ARTIFACT_BYTES // 1024 // 1024} МБ.",
-                413,
-            )
-        except ReferenceValidationError as error:
-            return denied_response(str(error), 422)
-        except OSError:
-            return denied_response("Не удалось сохранить каноническую базу.", 500)
-        finally:
-            await form.close()
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
-
-    async def reference_remove_api(request: Request):
-        def denied_response(message: str, status_code: int):
-            return _json_error(message, status_code)
-
-        denied = _mutation_denied(request, action="Удаление общей справки")
-        if denied is not None:
-            return denied
-        if not reference.managed_upload_available:
-            return denied_response(
-                "Удаление выключено: база подключена по внешнему пути.", 409
-            )
-        payload = await _json_body(request)
-        confirmation = str(payload.get("confirmation", ""))
-        if confirmation != REFERENCE_ARTIFACT_NAME:
-            return denied_response(
-                f"Для удаления подтвердите точное имя {REFERENCE_ARTIFACT_NAME}.", 400
-            )
-        try:
-            pending = await run_in_threadpool(reference.remove_managed)
-        except ReferenceValidationError as error:
-            status_code = 404 if error.state == "missing" else 409
-            return denied_response(str(error), status_code)
-        except OSError:
-            return denied_response("Не удалось удалить каноническую базу.", 500)
-        return JSONResponse(
-            {
-                "removed": REFERENCE_ARTIFACT_NAME,
-                "reference": reference.payload(detailed=True),
-                "pending": (
-                    pending.payload(detailed=True) if pending is not None else None
-                ),
-            }
-        )
-
     return [
         Route(
             "/api/v1/reference",
@@ -2417,18 +2292,6 @@ def _reference_routes(
             reference_item_api,
             methods=["GET"],
             name="dashboard_reference_item",
-        ),
-        Route(
-            "/api/v1/reference/upload",
-            reference_upload_api,
-            methods=["POST"],
-            name="dashboard_reference_upload",
-        ),
-        Route(
-            "/api/v1/reference/remove",
-            reference_remove_api,
-            methods=["POST"],
-            name="dashboard_reference_remove",
         ),
     ]
 
@@ -2450,8 +2313,6 @@ def _server_routes(
                 "Перезапуск из дашборда выключен оператором.", 404
             )
         reasons = []
-        if reference.pending_status is not None:
-            reasons.append("reference")
         try:
             if await run_in_threadpool(capabilities.pending_restart):
                 reasons.append("capabilities")

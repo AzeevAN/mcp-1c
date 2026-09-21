@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import secrets
-import signal
 import threading
 from collections.abc import Callable
 
@@ -14,7 +13,14 @@ DEFAULT_RESTART_DELAY = 0.5
 
 
 def _terminate_current_process() -> None:
-    os.kill(os.getpid(), signal.SIGTERM)
+    """Завершить процесс так, чтобы внешний supervisor увидел его exit.
+
+    SIGTERM перехватывается Uvicorn для graceful shutdown: listener закрывается,
+    но SDK может оставить процесс жить. Тогда `tini` и Docker-контейнер остаются
+    running, а Compose не получает события, на котором срабатывает restart
+    policy. Этот вызов выполняется только после отправки HTTP-ответа.
+    """
+    os._exit(0)
 
 
 class RestartController:

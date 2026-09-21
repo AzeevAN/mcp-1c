@@ -43,6 +43,8 @@ def test_dockerignore_закрыт_по_умолчанию() -> None:
         } <= set(rules)
     assert {
         "!dashboard/package-lock.json",
+        "!dashboard/public/",
+        "!dashboard/public/*.svg",
         "!dashboard/src/**/*.tsx",
     } <= set(rules)
     assert {

@@ -47,10 +47,6 @@ const status = {
     ],
     platform_versions: ["8.3.20"],
   },
-  pending: null,
-  managed_upload: true,
-  managed_file_present: true,
-  limits: { upload_bytes: 33 * 1024 * 1024 },
 };
 
 const searchResult = {
@@ -223,7 +219,6 @@ it("объясняет неактивное состояние и ведёт н�
       ...status,
       active: { state: "untrusted", ready: false, message: "Артефакт подписан неизвестным ключом." },
       catalog: null,
-      managed_file_present: false,
     }),
   } as Response);
 

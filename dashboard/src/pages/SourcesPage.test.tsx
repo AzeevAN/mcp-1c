@@ -212,6 +212,9 @@ it("переключает конфигурацию без ухода со ст�
   expect(within(composition).getByText("Снимок активности расширений")).toBeInTheDocument();
   expect(within(composition).getByText("не загружен")).toBeInTheDocument();
   expect(screen.getByText("Расширение Доп")).toBeInTheDocument();
+  expect(screen.getByRole("region", { name: "Ограничения текущего источника" })).toHaveTextContent(
+    "Ограничения текущего опубликованного источника",
+  );
   expect(screen.getAllByText("Структуры форм")).toHaveLength(1);
   fireEvent.click(screen.getByRole("button", { name: "Показать подробности Расширение Доп" }));
   expect(screen.getAllByText("Структуры форм")).toHaveLength(2);

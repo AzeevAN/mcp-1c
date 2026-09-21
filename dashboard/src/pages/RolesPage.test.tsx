@@ -731,5 +731,6 @@ it("удерживает поиск и модальное окно в грани
   expect(rolesCss).toMatch(
     /\.role-picker-card input\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*100%;/s,
   );
+  expect(rolesCss).toMatch(/\.role-descriptor-name\s*\{[^}]*overflow-wrap:\s*anywhere;[^}]*word-break:\s*break-word;/s);
   expect(rolesCss).toMatch(/\.role-detail-dialog\s*\{[^}]*max-height:\s*min\(86vh,\s*900px\);/s);
 });

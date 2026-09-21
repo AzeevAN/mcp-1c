@@ -574,6 +574,12 @@
   font-size: 13px;
 }
 
+.role-descriptor-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .role-access-panel {
   min-width: 0;
   display: grid;
@@ -2687,6 +2693,50 @@ h2 {
   flex: 0 0 auto;
   align-items: center;
   gap: 10px;
+}
+
+.configuration-hero-actions,
+.configuration-hero-controls,
+.configuration-hero-controls > .configuration-directory-actions {
+  min-width: 0;
+}
+
+.configuration-hero-actions {
+  display: grid;
+  justify-items: end;
+  align-content: start;
+  gap: 12px;
+}
+
+.configuration-hero-controls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+}
+
+.configuration-hero-controls > .configuration-directory-actions {
+  display: contents;
+}
+
+.configuration-notes {
+  display: grid;
+  gap: 8px;
+}
+
+.configuration-notes-heading {
+  display: grid;
+  gap: 3px;
+  padding: 2px 2px 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.configuration-notes-heading strong {
+  color: var(--ink-900);
+  font-size: 13px;
 }
 
 .icon-danger-button,

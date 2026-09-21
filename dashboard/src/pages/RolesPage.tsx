@@ -473,7 +473,7 @@ export function RolesPage() {
                 )}
                 {activeDescriptor && (
                   <div className="role-descriptor">
-                    <strong>{roleLabel(activeDescriptor)}</strong>
+                    <strong className="role-descriptor-name">{roleLabel(activeDescriptor)}</strong>
                     <code>{activeDescriptor.name}</code>
                     <p>{activeDescriptor.comment || "Без комментария."}</p>
                     <span>UUID {activeDescriptor.uuid}</span>

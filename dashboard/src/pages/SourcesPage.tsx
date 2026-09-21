@@ -384,23 +384,27 @@ function ConfigurationDetail({
           <p>Структура, основной код и расширения собраны в один связанный контур.</p>
         </div>
         <div className="configuration-hero-actions">
-          <StatusBadge tone={activation.tone}>{activation.label}</StatusBadge>
-          {onRemove && <ConfigIntakePanel key={configuration.id} configuration={configuration.id} />}
-          {onRemove && (configuration.source || configuration.native_generation) && (
-            <button
-              className="button-danger-quiet"
-              type="button"
-              onClick={() => onRemove({
-                operation: "source",
-                id: configuration.source?.id ?? configuration.id,
-                title: configuration.id,
-                impact: "Будут каскадно удалены структура конфигурации, основной код, все привязанные расширения и их журналы покрытия.",
-              })}
-              aria-label={`Удалить конфигурацию целиком ${configuration.id}`}
-            >
-              <Trash2 size={15} aria-hidden="true" />Удалить целиком
-            </button>
-          )}
+          <div className="configuration-hero-status">
+            <StatusBadge tone={activation.tone}>{activation.label}</StatusBadge>
+          </div>
+          <div className="configuration-hero-controls">
+            {onRemove && <ConfigIntakePanel key={configuration.id} configuration={configuration.id} />}
+            {onRemove && (configuration.source || configuration.native_generation) && (
+              <button
+                className="button-danger-quiet"
+                type="button"
+                onClick={() => onRemove({
+                  operation: "source",
+                  id: configuration.source?.id ?? configuration.id,
+                  title: configuration.id,
+                  impact: "Будут каскадно удалены структура конфигурации, основной код, все привязанные расширения и их журналы покрытия.",
+                })}
+                aria-label={`Удалить конфигурацию целиком ${configuration.id}`}
+              >
+                <Trash2 size={15} aria-hidden="true" />Удалить целиком
+              </button>
+            )}
+          </div>
         </div>
       </section>
 
@@ -418,11 +422,19 @@ function ConfigurationDetail({
         <div><span>Связи</span><strong>{formatNumber(configuration.edges)}</strong></div>
       </section>
 
-      {configuration.notes.map((note) => (
-        <div className="configuration-note" key={note}>
-          <AlertTriangle size={18} aria-hidden="true" /><span>{note}</span>
-        </div>
-      ))}
+      {configuration.notes.length > 0 && (
+        <section className="configuration-notes" aria-label="Ограничения текущего источника">
+          <div className="configuration-notes-heading">
+            <strong>Ограничения текущего опубликованного источника</strong>
+            <span>Это факты покрытия активного поколения, а не результат отображения интерфейса.</span>
+          </div>
+          {configuration.notes.map((note) => (
+            <div className="configuration-note" key={note}>
+              <AlertTriangle size={18} aria-hidden="true" /><span>{note}</span>
+            </div>
+          ))}
+        </section>
+      )}
 
       <section className="relationship-strip" aria-label="Состав конфигурации">
         <div><PackageCheck size={20} aria-hidden="true" /><span><strong>Структура</strong><small>{formatNumber(configuration.objects)} объектов</small></span></div>

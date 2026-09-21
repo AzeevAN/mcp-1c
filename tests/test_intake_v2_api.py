@@ -22,6 +22,7 @@ from mcp1c.intake_v2_planner import IntakeAction, plan_intake
 from mcp1c.intake_v2_registry import native_generation_view
 from mcp1c.intake_v2_transport import BrowserStagingStore
 from mcp1c.registry import Registry
+from mcp1c.source_modes import ActivationMode, ActivationStatus
 from test_intake_v2_collector import _configuration
 
 
@@ -116,6 +117,11 @@ def test_extension_full_требует_родителя_и_проходит_prev
         parent_configuration="DemoConfiguration",
     )
     assert registry.active_generation_pointer(identity) is not None
+
+    activation = registry.active_activation(identity)
+    assert activation is not None
+    assert activation.status is ActivationStatus.ACTIVE
+    assert activation.mode is ActivationMode.B_FULL
 
 
 def _service(registry: Registry):

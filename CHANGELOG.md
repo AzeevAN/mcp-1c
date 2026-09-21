@@ -7,6 +7,12 @@
   относительным корнем и отклоняла `confirm` до смены active pointer. Корень
   теперь нормализуется при создании Registry; regression проверяется
   `PYTHONPATH=src .venv/bin/python -m pytest tests/test_intake_v2_registry.py -q`.
+- **Intake не передавал activation в Source B publication.** Реальный `confirm`
+  публиковал пять слоёв, но оставлял pointer без `ActivationManifest`, а
+  служебное metadata ломало сравнение CAS/no-op. Intake теперь публикует
+  `B_FULL`, сравнивает identity/generation/root отдельно от activation и
+  использует полный текущий pointer для payload composition; проверка —
+  `.venv/bin/python -m pytest`.
 
 ## 2026-09-21
 

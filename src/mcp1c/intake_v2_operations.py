@@ -8,11 +8,13 @@ preview остаётся проверяемым кандидатом до отд
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import shutil
 import stat
 import tempfile
+import uuid
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -51,12 +53,76 @@ from .intake_v2_registry import (
     native_generation_view,
 )
 from .member_pack import PACK_NAME, MemberPackError, open_stored_member
+from .source_modes import ActivationComponent, ActivationManifest, ActivationMode
 
 
 _PREVIEW_FORMAT_VERSION = 1
 _MAX_PREVIEW_RECORD_BYTES = 64 << 20
 _MAX_REQUEST_RECORD_BYTES = 4 << 20
 _IDENTIFIER_RE = re.compile(r"[A-Za-z0-9._-]+\Z")
+
+
+def _activation_for_generation(
+    manifest: GenerationManifest,
+    payloads: Mapping[LayerKind, LayerPayloadSource],
+    publisher,
+    job_id: str,
+) -> ActivationManifest | None:
+    """Сформировать activation для опубликованного Source B поколения."""
+    if manifest.source_transport.value != "incoming":
+        return None
+    if not all(
+        layer.provenance is not None and layer.provenance.profile.value == "source-b"
+        for layer in manifest.layers
+        if layer.state is LayerState.READY
+    ):
+        return None
+    base = payloads.get(LayerKind.BASE_STRUCTURE)
+    if base is None:
+        raise OperationError("B_FULL не содержит base_structure payload")
+    base_payload = load_layer_payload(base.manifest_path)
+    version = base_payload.semantic.get("version")
+    if not isinstance(version, str) or not version:
+        raise OperationError("B_FULL не содержит configuration version")
+    payload_digest = hashlib.sha256(
+        "|".join(
+            f"{layer.kind.value}:{layer.payload_sha256}"
+            for layer in manifest.layers
+            if layer.state is LayerState.READY
+        ).encode("utf-8")
+    ).hexdigest()
+    previous = publisher.active_generation_pointer(manifest.identity)
+    previous_activation = previous.activation.sha256 if previous and previous.activation else None
+    return ActivationManifest(
+        mode=ActivationMode.B_FULL,
+        identity_incarnation=manifest.generation_id,
+        physical_generation_root_id=manifest.generation_id,
+        configuration_version=version,
+        main=ActivationComponent(
+            source="source-b",
+            origin=manifest.origin_name,
+            raw_sha256=manifest.raw_sha256,
+            payload_sha256=payload_digest,
+        ),
+        extensions=(),
+        expected_previous_activation=previous_activation,
+        transaction_id=job_id,
+        recovery_id=uuid.uuid4().hex,
+    )
+
+
+def _same_generation_pointer(
+    left: GenerationPointer | None,
+    right: GenerationPointer | None,
+) -> bool:
+    """Сравнить CAS-часть pointer, не теряя новый activation metadata."""
+    if left is None or right is None:
+        return left is right
+    return (
+        left.identity == right.identity
+        and left.generation_id == right.generation_id
+        and left.root_path == right.root_path
+    )
 
 
 class OperationError(RuntimeError):
@@ -506,8 +572,15 @@ def _reuse_active(
         return False
     manifest = active.manifest
     # Сохранённая структура A и composition требуют обычного planner после разбора.
-    if active != native_generation_view(manifest):
+    native = native_generation_view(manifest)
+    if active.origin is not GenerationOrigin.NATIVE or active.identity != native.identity:
         return False
+    if set(active.layers) != set(native.layers):
+        return False
+    for kind, expected_layer in native.layers.items():
+        actual_layer = active.layers[kind]
+        if actual_layer != expected_layer:
+            return False
     if (
         candidate.identity != manifest.identity
         or candidate.raw_sha256 != manifest.raw_sha256
@@ -1233,7 +1306,7 @@ class IntakeCoordinator:
         current = publisher.active_generation_pointer(preview.plan.identity)
 
         if target_manifest is None:
-            if current != expected:
+            if not _same_generation_pointer(current, expected):
                 raise OperationConflict(
                     "active generation изменился после построения preview"
                 )
@@ -1243,14 +1316,14 @@ class IntakeCoordinator:
             return finish(result)
 
         target = GenerationPointer.for_manifest(target_manifest)
-        if current == target:
+        if _same_generation_pointer(current, target):
             if publisher.active_generation(preview.plan.identity) != target_manifest:
                 raise OperationConflict(
                     "active generation pointer не совпадает с target manifest"
                 )
             result = self._result(preview, target)
             return finish(result)
-        if current != expected:
+        if not _same_generation_pointer(current, expected):
             raise OperationConflict(
                 "active generation изменился после построения preview"
             )
@@ -1259,7 +1332,18 @@ class IntakeCoordinator:
         if active_manifest is not None:
             if expected is None:
                 raise OperationError("native preview не содержит expected pointer")
-            active_payloads = publisher.generation_payload_sources(expected)
+            # Preview хранит manifest, а не служебный activation metadata.
+            # Для чтения payload нужен полный текущий pointer.
+            active_pointer = publisher.active_generation_pointer(
+                preview.plan.identity
+            )
+            if active_pointer is None or not _same_generation_pointer(
+                active_pointer, expected
+            ):
+                raise OperationConflict(
+                    "active generation изменился после построения preview"
+                )
+            active_payloads = publisher.generation_payload_sources(active_pointer)
         composed = compose_generation(
             preview.plan,
             preview.materialized,
@@ -1271,16 +1355,32 @@ class IntakeCoordinator:
 
         staged = None
         try:
-            staged = publisher.stage_generation(composed.manifest, composed.payloads)
+            activation = _activation_for_generation(
+                composed.manifest,
+                composed.payloads,
+                publisher,
+                preview.job_id,
+            )
+            if activation is None:
+                staged = publisher.stage_generation(
+                    composed.manifest,
+                    composed.payloads,
+                )
+            else:
+                staged = publisher.stage_generation(
+                    composed.manifest,
+                    composed.payloads,
+                    activation=activation,
+                )
             pointer = publisher.publish_generation(
                 staged,
-                expected_previous=expected,
+                expected_previous=current,
                 expected_active=preview.active,
             )
         except Exception as error:
             current = publisher.active_generation_pointer(preview.plan.identity)
             if (
-                current == target
+                _same_generation_pointer(current, target)
                 and publisher.active_generation(preview.plan.identity) == target_manifest
             ):
                 pointer = target
@@ -1291,7 +1391,7 @@ class IntakeCoordinator:
                         discard(staged)
                     except Exception:
                         pass
-                if current != expected:
+                if not _same_generation_pointer(current, expected):
                     raise OperationConflict(
                         "active generation изменился после построения preview"
                     ) from error
@@ -1299,7 +1399,11 @@ class IntakeCoordinator:
                     raise OperationConflict(str(error)) from error
                 message = self._error_text(error)
                 raise OperationError(message) from error
-        if pointer != target:
+        if (
+            pointer.identity != target.identity
+            or pointer.generation_id != target.generation_id
+            or pointer.root_path != target.root_path
+        ):
             raise OperationError("Registry опубликовал неожиданный generation pointer")
         self._after_publish(pointer)
         result = self._result(preview, pointer)

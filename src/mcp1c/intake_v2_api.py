@@ -589,8 +589,20 @@ class IntakeApiService:
         }
         if not preview.materialized.payloads:
             try:
+                expected = self.registry.active_generation_pointer(
+                    preview.plan.identity
+                )
+                previous = preview.expected_previous
+                if (
+                    expected is None
+                    or previous is None
+                    or expected.identity != previous.identity
+                    or expected.generation_id != previous.generation_id
+                    or expected.root_path != previous.root_path
+                ):
+                    raise RegistryError("active generation отсутствует")
                 relations = self.registry.preview_active_extension_relations(
-                    preview.expected_previous,
+                    expected,
                 )
             except RegistryError as error:
                 # Устаревший компактный preview не блокирует список других jobs.

@@ -213,6 +213,26 @@ def test_collector_одним_проходом_сохраняет_metadata_code_
     )
 
 
+def test_collector_сохраняет_owner_relative_predefined_tree(tmp_path):
+    result = _collect(
+        _tree(
+            **{
+                "Catalogs/Demo/Ext/Predefined.xml": (
+                    b"<Predefined><Item><Name>First</Name></Item>"
+                    b"<Item><Name>Second</Name></Item></Predefined>"
+                )
+            }
+        ),
+        tmp_path / "predefined",
+    )
+    predefined = [
+        item for item in result.metadata if item.source_name == "Predefined"
+    ]
+    assert result.predefined_available is True
+    assert len(predefined) == 1
+    assert predefined[0].address == "Справочник.Demo"
+
+
 def test_collector_сохраняет_mixed_tree_и_flat_без_глобальной_ветки(tmp_path):
     tree = MemoryTree(
         {
@@ -375,15 +395,14 @@ def test_collector_принимает_доказанные_flat_виды_без_
             ArtifactKind.FORMS,
             "Catalog.Products.Form.List.xml",
         ),
+        ("Predefined", ArtifactKind.METADATA, "Catalog.Products.Predefined.xml"),
     }
     assert not any(
         item.code in {"unsupported_metadata", "unsupported_layout"}
         for item in result.diagnostics
     )
     assert not any(
-        item.source_path.endswith(
-            (".Help.xml", ".Predefined.xml", ".Template.Layout.xml")
-        )
+        item.source_path.endswith((".Help.xml", ".Template.Layout.xml"))
         for item in result.artifacts
     )
 

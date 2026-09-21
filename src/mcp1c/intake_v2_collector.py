@@ -319,6 +319,7 @@ class CollectionResult:
     artifacts: tuple[CollectionArtifact, ...]
     roles: RoleSnapshot
     diagnostics: tuple[CollectionDiagnostic, ...] = ()
+    predefined_available: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "root", Path(self.root))
@@ -375,6 +376,7 @@ class CollectionResult:
             "artifacts": [item.to_dict() for item in self.artifacts],
             "roles": self.roles.to_dict(),
             "diagnostics": [item.to_dict() for item in self.diagnostics],
+            "predefined_available": self.predefined_available,
         }
 
     @classmethod
@@ -396,6 +398,7 @@ class CollectionResult:
                 diagnostics=tuple(
                     CollectionDiagnostic.from_dict(item) for item in diagnostics
                 ),
+                predefined_available=bool(raw.get("predefined_available", False)),
             )
         except (KeyError, TypeError, ValueError, ProbeError) as error:
             if isinstance(error, CollectionError):
@@ -965,6 +968,27 @@ def _is_schedule_payload(path: str) -> bool:
     )
 
 
+def _predefined_owner(
+    path: str,
+    tree_specs: Mapping[str, MetadataKindSpec],
+    flat_specs: Mapping[str, MetadataKindSpec],
+) -> tuple[str, MetadataKindSpec] | None:
+    parts = PurePosixPath(path).parts
+    if len(parts) == 4 and parts[2:] == ("Ext", "Predefined.xml"):
+        spec = tree_specs.get(parts[0])
+        if spec is not None and parts[1]:
+            return f"{spec.canonical_kind}.{parts[1]}", spec
+    if len(parts) == 1:
+        bits = parts[0].split(".")
+        if (
+            len(bits) == 5 and bits[2:] == ["Ext", "Predefined", "xml"]
+        ) or (len(bits) == 4 and bits[2:] == ["Predefined", "xml"]):
+            spec = flat_specs.get(bits[0])
+            if spec is not None and bits[1]:
+                return f"{spec.canonical_kind}.{bits[1]}", spec
+    return None
+
+
 def _canonicalize_role(
     tree: VirtualExportTree,
     raw_path: str,
@@ -1108,6 +1132,7 @@ def collect_source_b(
     role_artifacts: list[RoleArtifact] = []
     role_descriptors: set[str] = set()
     role_rights: set[str] = set()
+    predefined_seen = False
     role_errors: list[tuple[str, str]] = []
     diagnostics = _Diagnostics()
     pack: MemberPackWriter | None = None
@@ -1127,6 +1152,22 @@ def collect_source_b(
                         "Configuration",
                     )
                 )
+                continue
+            predefined = _predefined_owner(source_path, tree_specs, flat_specs)
+            if predefined is not None:
+                owner, _spec = predefined
+                artifacts.append(
+                    _copy_artifact(
+                        tree,
+                        raw_path,
+                        source_path,
+                        pack,
+                        ArtifactKind.METADATA,
+                        "Predefined",
+                        owner,
+                    )
+                )
+                predefined_seen = True
                 continue
             role_path = _role_path_kind(source_path)
             if role_path is not None:
@@ -1348,6 +1389,7 @@ def collect_source_b(
             artifacts=tuple(artifacts),
             roles=roles,
             diagnostics=diagnostics.freeze(),
+            predefined_available=predefined_seen,
         )
         _write_json(temporary / "collection.json", result.to_dict())
         _sync_directory(temporary)

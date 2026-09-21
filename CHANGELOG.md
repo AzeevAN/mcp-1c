@@ -113,7 +113,9 @@
   3149 passed, 1 skipped. Staging/publish/restore сохраняют activation
   manifest целиком одним pointer; crash-after-switch recovery удаляет старый
   root и сохраняет новый activation. Delete/recreate с новым incarnation
-  отклоняет stale preview старой identity.
+  отклоняет stale preview старой identity. Source B collector и converter
+  сохраняют owner-relative `Predefined.xml`, имена предопределённых элементов
+  и fail-closed completeness для tree/flat layout.
 
 - Metadata Authoring теперь fail-closed требует ровно одну `default=true`
   форму для каждой роли, представленной в закрытом комплекте справочника,

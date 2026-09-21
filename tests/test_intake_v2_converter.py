@@ -802,6 +802,7 @@ def _collection(
     subsystems: bool = False,
     flat_subsystems: bool = False,
     duplicate_subsystem_leafs: bool = False,
+    predefined: bool = False,
 ):
     payloads = {
         "Configuration.xml": _configuration(
@@ -1138,6 +1139,11 @@ def _collection(
             payloads[target] = payloads.pop(source)
     if compiled_module:
         payloads["CommonModule.Sealed.Module"] = b"\xffcompiled"
+    if predefined:
+        payloads["Catalogs/Items/Ext/Predefined.xml"] = (
+            b"<Predefined><Item><Name>First</Name></Item>"
+            b"<Item><Name>Second</Name></Item></Predefined>"
+        )
     if malformed:
         payloads[malformed] = b"<MetaDataObject><broken>"
     tree = MemoryTree(payloads)
@@ -1156,6 +1162,7 @@ def test_metadata_kind_spec_выбирает_структурный_adapter():
     assert specs["ExchangePlans"].extended_adapter == "exchange_plan"
     assert specs["EventSubscriptions"].extended_adapter == "event_subscription"
     assert specs["ScheduledJobs"].extended_adapter == "scheduled_job"
+
     assert specs["CommonForms"].extended_adapter == "common_form"
     assert specs["Bots"].extended_adapter == "bot"
     assert specs["Bots"].layouts == frozenset({"tree"})
@@ -1181,6 +1188,15 @@ def test_metadata_kind_spec_выбирает_структурный_adapter():
     assert specs["DocumentNumerators"].extended_adapter == ""
     assert specs["Subsystems"].extended_adapter == "subsystem"
     assert specs["Subsystems"].layers == frozenset({LayerKind.EXTENDED_STRUCTURE})
+
+
+def test_source_b_predefined_owner_relative_names_are_published(tmp_path):
+    converted = _symbol("convert_collection")(
+        _collection(tmp_path, predefined=True)
+    )
+    item = converted.base.objects["Справочник.Items"]
+    assert item.predefined == ["First", "Second"]
+    assert converted.base.predefined_available is True
 
 
 @pytest.mark.parametrize("flat", [False, True])

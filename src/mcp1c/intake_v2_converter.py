@@ -3671,9 +3671,29 @@ def _configuration(
         version=_text(_child(properties, "Version")),
         vendor=_text(_child(properties, "Vendor")),
         compatibility_mode=_text(_child(properties, "CompatibilityMode")),
-        predefined_available=False,
+        predefined_available=collection.predefined_available,
         source_format="source-b",
     )
+
+
+def _predefined_names(root: ET.Element, source: str) -> tuple[str, ...]:
+    names: list[str] = []
+    for item in root.iter():
+        if item.tag.rsplit("}", 1)[-1] != "Item":
+            continue
+        name = next(
+            (
+                child.text or ""
+                for child in item
+                if child.tag.rsplit("}", 1)[-1] == "Name"
+            ),
+        ).strip()
+        if not name:
+            raise ConversionError(f"{source}: Predefined Item без Name")
+        names.append(name)
+    if len(names) != len(set(names)):
+        raise ConversionError(f"{source}: дублируется предопределённый элемент")
+    return tuple(sorted(names, key=str.casefold))
 
 
 def _resolve_relations(
@@ -4219,6 +4239,8 @@ def convert_collection(
     for artifact in collection.metadata:
         if artifact.source_path == "Configuration.xml":
             continue
+        if artifact.source_name == "Predefined":
+            continue
         spec = specs.get(artifact.source_name)
         if spec is None:
             diagnostics.add("unknown_metadata", artifact.source_name, artifact.source_path)
@@ -4265,6 +4287,7 @@ def convert_collection(
                             obj.full_name,
                             artifact.source_path,
                         )
+
                     )
         if spec.extended_adapter == "common_attribute":
             obj = _common_attribute(root, diagnostics, artifact.source_path)
@@ -4417,6 +4440,30 @@ def convert_collection(
                 f"для {spec.source_name} не реализован adapter "
                 f"{spec.extended_adapter}"
             )
+
+    predefined_ok = collection.predefined_available
+    for artifact in collection.metadata:
+        if artifact.source_name != "Predefined":
+            continue
+        try:
+            names = _predefined_names(
+                _parse_xml(collection, artifact), artifact.source_path
+            )
+            target = base.objects.get(artifact.address)
+            if target is None:
+                raise ConversionError(
+                    f"{artifact.source_path}: owner {artifact.address} не найден"
+                )
+            target.predefined.extend(names)
+        except (ConversionError, StopIteration):
+            predefined_ok = False
+            diagnostics.add(
+                "predefined_error",
+                "predefined",
+                artifact.source_path,
+                severity="warning",
+            )
+    base.predefined_available = predefined_ok
 
     if exchange_plan_contents:
         raise ConversionError("Content.xml не соответствует descriptor плана обмена")

@@ -63,6 +63,25 @@ function percent(value: number, total: number) {
   return total === 0 ? "—" : `${((value * 100) / total).toFixed(1).replace(".", ",")}%`;
 }
 
+function activationStatus(configuration: ConfigurationSource): {
+  label: string;
+  tone: StatusTone;
+  detail: string;
+} {
+  if (configuration.activation_status === "RELOAD_REQUIRED") {
+    return {
+      label: "Требуется повторная активация",
+      tone: "warning",
+      detail: "Старый active generation. Нужна полная активация B_FULL; обычный restart это состояние не исправит.",
+    };
+  }
+  return {
+    label: "Источник активен",
+    tone: "success",
+    detail: "",
+  };
+}
+
 type CoverageRow = { label: string; value: number; total: number };
 
 function CoverageTable({ title, rows }: { title: string; rows: CoverageRow[] }) {
@@ -355,6 +374,7 @@ function ConfigurationDetail({
 }) {
   const extensionCount = configuration.corpora.filter((item) => item.kind === "extension").length;
   const showRuntimeStatus = extensionCount > 0 || Boolean(configuration.extension_runtime);
+  const activation = activationStatus(configuration);
   return (
     <div className="configuration-detail">
       <section className="configuration-hero">
@@ -364,7 +384,7 @@ function ConfigurationDetail({
           <p>Структура, основной код и расширения собраны в один связанный контур.</p>
         </div>
         <div className="configuration-hero-actions">
-          <StatusBadge tone="success">Источник активен</StatusBadge>
+          <StatusBadge tone={activation.tone}>{activation.label}</StatusBadge>
           {onRemove && <ConfigIntakePanel key={configuration.id} configuration={configuration.id} />}
           {onRemove && (configuration.source || configuration.native_generation) && (
             <button
@@ -383,6 +403,13 @@ function ConfigurationDetail({
           )}
         </div>
       </section>
+
+      {activation.detail && (
+        <div className="configuration-activation-warning" role="alert">
+          <AlertTriangle size={18} aria-hidden="true" />
+          <span>{activation.detail}</span>
+        </div>
+      )}
 
       <section className="configuration-facts" aria-label="Сводка конфигурации">
         <div><span>Версия</span><strong>{configuration.version || "—"}</strong></div>

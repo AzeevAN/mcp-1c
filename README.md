@@ -425,6 +425,10 @@ Live-приёмка этого контура является отдельны�
 legacy/reload-required отклоняются. Без declaration значение остаётся
 `unknown`, compatibility mode его не заменяет.
 
+В dashboard конфигурация с `activation_status=RELOAD_REQUIRED` явно помечается
+как «Требуется повторная активация» и получает пояснение, что обычный restart не
+исправляет старый active generation: для неё нужна полная активация `B_FULL`.
+
 Для Source Modes кэш-инвалидация проверяется синтетическим gate:
 
 ```bash

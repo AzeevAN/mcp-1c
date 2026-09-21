@@ -125,6 +125,24 @@
   gap: 18px;
 }
 
+.configuration-activation-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--warning-line);
+  border-radius: 10px;
+  color: var(--warning-text);
+  background: var(--warning-surface);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.configuration-activation-warning svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
 .capabilities-heading,
 .capabilities-status-grid article,
 .capabilities-picker,

@@ -59,6 +59,8 @@ export type ConfigurationSource = {
   loaded_at: string;
   notes: string[];
   native_generation: boolean;
+  activation_mode: "A_ONLY" | "B_FULL" | "unknown";
+  activation_status: "ACTIVE" | "RELOAD_REQUIRED" | "unknown";
   source: SourceItem | null;
   extension_runtime?: SourceItem | null;
   corpora: CodeCorpus[];

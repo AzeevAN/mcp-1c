@@ -164,6 +164,8 @@ beforeEach(() => {
             edges: 640,
             loaded_at: "2026-08-28T09:00:00+00:00",
             notes: [],
+            activation_mode: "unknown",
+            activation_status: "RELOAD_REQUIRED",
             source: configurationSource("Отраслевая конфигурация А"),
             corpora: [corpus("a:modules", "Основная конфигурация", "modules")],
           },
@@ -214,6 +216,20 @@ it("переключает конфигурацию без ухода со ст�
   fireEvent.click(screen.getByRole("button", { name: "Показать подробности Расширение Доп" }));
   expect(screen.getAllByText("Структуры форм")).toHaveLength(2);
   expect(screen.getAllByRole("link", { name: "Открыть JSON-журнал" })).toHaveLength(2);
+});
+
+it("показывает необходимость повторной активации старого поколения", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <MemoryRouter initialEntries={["/sources"]}>
+      <QueryClientProvider client={client}>
+        <SourcesPage />
+      </QueryClientProvider>
+    </MemoryRouter>,
+  );
+
+  expect(await screen.findByText("Требуется повторная активация")).toBeInTheDocument();
+  expect(screen.getByText(/Старый active generation/)).toBeInTheDocument();
 });
 
 it("объясняет ограничение через категории покрытия, а не через нулевой счётчик", async () => {

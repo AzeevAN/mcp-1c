@@ -53,6 +53,8 @@
 - SMV1-07: dashboard set/clear дополнительно проверены synthetic HTTP-сценарием:
   административная cookie-сессия с чужим Origin получает `403`, same-origin
   set/clear проходят и возвращают `declared`/`unknown`.
+- SMV1-09/11: whole-configuration delete теперь атомарно очищает durable
+  manual platform declaration; extension delete её не затрагивает.
 - Полный gate после SMV1-07: 3169 passed, 1 skipped из 3170 собранных тестов;
   команда — `.venv/bin/python -m pytest`.
 

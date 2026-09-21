@@ -3927,6 +3927,9 @@ class Registry:
                         for sid, current in self.sources.items()
                         if sid not in цепочка
                     }
+                    next_platform_declarations = dict(self._platform_declarations)
+                    if configuration_removal:
+                        next_platform_declarations.pop(source_id, None)
                     # Pointer и возможная legacy-строка исчезают одной durable
                     # записью ДО удаления generation root. После SIGKILL
                     # restore уже не попытается открыть снятое поколение.
@@ -3934,6 +3937,7 @@ class Registry:
                         self._registry_payload(
                             next_pointers,
                             sources=next_sources,
+                            platform_declarations=next_platform_declarations,
                         )
                     )
             except BaseException as error:
@@ -3972,6 +3976,7 @@ class Registry:
 
             if configuration_removal:
                 self._advance_configuration_revision(source_id)
+                self._platform_declarations.pop(source_id, None)
             for sid in цепочка:
                 текущий = self.sources.pop(sid, None)
                 if текущий is None:
@@ -4336,6 +4341,7 @@ class Registry:
         ] | None = None,
         *,
         sources: Mapping[str, Source] | None = None,
+        platform_declarations: Mapping[str, PlatformDeclaration] | None = None,
     ) -> dict[str, object]:
         pointers = (
             self._generation_pointers
@@ -4343,6 +4349,11 @@ class Registry:
             else generation_pointers
         )
         source_rows = self.sources if sources is None else sources
+        declarations = (
+            self._platform_declarations
+            if platform_declarations is None
+            else platform_declarations
+        )
         payload: dict[str, object] = {
             "registry_version": REGISTRY_VERSION,
             "saved_at": _now(),
@@ -4353,10 +4364,10 @@ class Registry:
                 pointer.to_dict()
                 for _key, pointer in sorted(pointers.items())
             ]
-        if self._platform_declarations:
+        if declarations:
             payload["platform_declarations"] = {
                 name: declaration.to_dict()
-                for name, declaration in sorted(self._platform_declarations.items())
+                for name, declaration in sorted(declarations.items())
             }
         return payload
 

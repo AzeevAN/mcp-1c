@@ -83,6 +83,20 @@ def test_registry_does_not_declare_platform_for_a_only(tmp_path):
         registry.set_platform_version("Demo", "8.3.24")
 
 
+def test_configuration_delete_clears_platform_declaration_durably(tmp_path):
+    registry = _registry(tmp_path)
+    registry.set_platform_version("Demo", "8.3.24")
+
+    registry.remove("Demo")
+
+    assert registry.platform_declaration("Demo") is None
+    payload = json.loads(registry.registry_path.read_text(encoding="utf-8"))
+    assert "platform_declarations" not in payload
+    restored = Registry(registry.data_dir)
+    assert restored.restore() == []
+    assert restored.platform_declaration("Demo") is None
+
+
 def test_dashboard_platform_set_clear_require_admin_and_csrf(tmp_path, monkeypatch):
     monkeypatch.delenv("API_TOKEN", raising=False)
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")

@@ -13,6 +13,11 @@
   `B_FULL`, сравнивает identity/generation/root отдельно от activation и
   использует полный текущий pointer для payload composition; проверка —
   `.venv/bin/python -m pytest`.
+- **Legacy barrier должен сохраняться до первого успешного B_FULL.** После
+  восстановления native bundle без activation intake ошибочно мог принять
+  content-identical вход за no-op. Generation view теперь переносит activation
+  metadata в durable preview, а incoming legacy принудительно проходит полный
+  reparse; directory/browser synthetic fast-path сохранён.
 
 ## 2026-09-21
 

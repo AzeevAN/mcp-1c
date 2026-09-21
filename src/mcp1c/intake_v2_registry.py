@@ -432,6 +432,7 @@ class GenerationView:
     identity: ExportIdentity
     manifest: GenerationManifest | None
     layers: Mapping[LayerKind, GenerationLayerView]
+    activation: ActivationManifest | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.origin, GenerationOrigin):
@@ -484,7 +485,10 @@ class GenerationRecovery:
             raise RecoveryBlocked("generation WAL содержит неверные поля") from error
 
 
-def native_generation_view(manifest: GenerationManifest) -> GenerationView:
+def native_generation_view(
+    manifest: GenerationManifest,
+    activation: ActivationManifest | None = None,
+) -> GenerationView:
     layers = {
         layer.kind: GenerationLayerView(
             state=layer.state,
@@ -500,6 +504,7 @@ def native_generation_view(manifest: GenerationManifest) -> GenerationView:
         identity=manifest.identity,
         manifest=manifest,
         layers=layers,
+        activation=activation,
     )
 
 

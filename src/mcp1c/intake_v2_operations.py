@@ -53,7 +53,11 @@ from .intake_v2_registry import (
     native_generation_view,
 )
 from .member_pack import PACK_NAME, MemberPackError, open_stored_member
-from .source_modes import ActivationComponent, ActivationManifest, ActivationMode
+from .source_modes import (
+    ActivationComponent,
+    ActivationManifest,
+    ActivationMode,
+)
 
 
 _PREVIEW_FORMAT_VERSION = 1
@@ -341,10 +345,13 @@ def _active_to_dict(active: GenerationView | None) -> object:
     if active.origin is GenerationOrigin.NATIVE:
         if active.manifest is None:
             raise OperationError("native active не содержит manifest")
-        return {
+        payload = {
             "origin": active.origin.value,
             "manifest": active.manifest.to_dict(),
         }
+        if active.activation is not None:
+            payload["activation"] = active.activation.to_dict()
+        return payload
     if active.manifest is not None:
         raise OperationError("legacy active не должен содержать manifest")
     return {
@@ -365,7 +372,13 @@ def _active_from_dict(raw: object) -> GenerationView | None:
     try:
         origin = GenerationOrigin(raw["origin"])
         if origin is GenerationOrigin.NATIVE:
-            return native_generation_view(_manifest_from_dict(raw["manifest"]))
+            activation = raw.get("activation")
+            return native_generation_view(
+                _manifest_from_dict(raw["manifest"]),
+                ActivationManifest.from_dict(activation)
+                if activation is not None
+                else None,
+            )
         layers_raw = raw["layers"]
         if not isinstance(layers_raw, dict):
             raise OperationError("legacy active.layers должен быть объектом")
@@ -569,6 +582,14 @@ def _reuse_active(
     from .intake_v2 import LayerSourceProfile
 
     if action is not IntakeAction.UPDATE_FULL or active is None or active.manifest is None:
+        return False
+    if (
+        active.manifest.source_transport.value == "incoming"
+        and (
+            active.activation is None
+            or active.activation.mode is not ActivationMode.B_FULL
+        )
+    ):
         return False
     manifest = active.manifest
     # Сохранённая структура A и composition требуют обычного planner после разбора.

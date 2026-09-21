@@ -761,7 +761,7 @@ class RegistryGenerationSnapshot:
 
     @property
     def view(self) -> GenerationView:
-        return native_generation_view(self.manifest)
+        return native_generation_view(self.manifest, self.pointer.activation)
 
 
 @dataclass(frozen=True, slots=True)
@@ -4497,7 +4497,11 @@ class Registry:
         """Native либо legacy view identity; вызывается только под `_lock`."""
         manifest = self._generation_manifests.get(identity.grouping_key)
         if manifest is not None:
-            return native_generation_view(manifest)
+            pointer = self._generation_pointers.get(identity.grouping_key)
+            return native_generation_view(
+                manifest,
+                pointer.activation if pointer is not None else None,
+            )
         if identity.source_kind is not SourceKind.CONFIGURATION:
             return None
         loaded = self.configurations.get(identity.configuration_name)
@@ -5303,7 +5307,11 @@ class Registry:
         with self._lock:
             manifest = self._generation_manifests.get(identity.grouping_key)
             if manifest is not None:
-                return native_generation_view(manifest)
+                pointer = self._generation_pointers.get(identity.grouping_key)
+                return native_generation_view(
+                    manifest,
+                    pointer.activation if pointer is not None else None,
+                )
             loaded = self.configurations.get(configuration)
             if loaded is None:
                 raise RegistryError(f"Конфигурация не загружена: {configuration}.")

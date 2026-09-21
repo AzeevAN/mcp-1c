@@ -39,6 +39,7 @@ from .member_pack import (
     has_member_pack,
     open_stored_member,
 )
+from .source_modes import ActivationManifest
 
 
 _HASH_BLOCK_SIZE = 1 << 20
@@ -172,6 +173,7 @@ class GenerationPointer:
     root_path: str
     manifest_path: str
     manifest_sha256: str
+    activation: ActivationManifest | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.identity, ExportIdentity):
@@ -205,13 +207,16 @@ class GenerationPointer:
         )
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "identity": self.identity.to_dict(),
             "generation_id": self.generation_id,
             "manifest_path": self.manifest_path,
             "manifest_sha256": self.manifest_sha256,
             "root_path": self.root_path,
         }
+        if self.activation is not None:
+            result["activation"] = self.activation.to_dict()
+        return result
 
     @classmethod
     def from_dict(cls, raw: object) -> GenerationPointer:
@@ -224,6 +229,11 @@ class GenerationPointer:
                 root_path=raw["root_path"],
                 manifest_path=raw["manifest_path"],
                 manifest_sha256=raw["manifest_sha256"],
+                activation=(
+                    ActivationManifest.from_dict(raw["activation"])
+                    if raw.get("activation") is not None
+                    else None
+                ),
             )
         except (KeyError, TypeError, ValueError) as error:
             if isinstance(error, BundleStoreError):

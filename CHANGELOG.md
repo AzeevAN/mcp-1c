@@ -107,7 +107,10 @@
   main/extensions, expected-previous activation и transaction/recovery IDs.
   Старое состояние классифицируется как `RELOAD_REQUIRED` без автоматической
   миграции; неизвестные режимы, пустая версия и расширения в `A_ONLY`
-  отклоняются. Полный pytest после добавления 4 тестов: 3145 passed, 1 skipped.
+  отклоняются. Generation pointer сохраняет этот manifest, а Registry
+  предоставляет fail-closed guard
+  для consumers старого pointer. Полный pytest после добавления 5 тестов:
+  3146 passed, 1 skipped.
 
 - Metadata Authoring теперь fail-closed требует ровно одну `default=true`
   форму для каждой роли, представленной в закрытом комплекте справочника,

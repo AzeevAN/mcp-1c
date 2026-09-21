@@ -81,6 +81,11 @@ from .intake_v2_registry import (
     load_layer_payload,
     native_generation_view,
 )
+from .source_modes import (
+    ActivationClassification,
+    ActivationStatus,
+    classify_activation,
+)
 from .intake_v2_extensions import (
     ExtensionRelation,
     ExtensionResolution,
@@ -4406,6 +4411,26 @@ class Registry:
             raise TypeError("identity должен быть ExportIdentity")
         with self._lock:
             return self._generation_pointers.get(identity.grouping_key)
+
+    def active_activation(
+        self, identity: ExportIdentity
+    ) -> ActivationClassification | None:
+        """Вернуть mode/barrier active pointer без миграции старого state."""
+        pointer = self.active_generation_pointer(identity)
+        if pointer is None:
+            return None
+        if pointer.activation is None:
+            return classify_activation(pointer.to_dict())
+        return classify_activation(pointer.activation.to_dict())
+
+    def require_active_activation(self, identity: ExportIdentity) -> ActivationClassification:
+        """Fail-closed guard для consumers, которым нужен новый active contract."""
+        classification = self.active_activation(identity)
+        if classification is None:
+            raise RegistryError("configuration_not_loaded")
+        if classification.status is ActivationStatus.RELOAD_REQUIRED:
+            raise RegistryError("reload_required")
+        return classification
 
     def active_generation(
         self, identity: ExportIdentity

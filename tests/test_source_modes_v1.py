@@ -11,6 +11,8 @@ from mcp1c.source_modes import (
     ActivationStatus,
     classify_activation,
 )
+from mcp1c.intake_v2 import ExportIdentity
+from mcp1c.intake_v2_registry import GenerationPointer, _identity_digest
 
 
 def _manifest(**overrides):
@@ -58,3 +60,19 @@ def test_legacy_activation_is_reload_required_without_rewrite():
 def test_a_only_cannot_have_extensions():
     with pytest.raises(ValueError, match="A_ONLY"):
         _manifest(mode=ActivationMode.A_ONLY, extensions=(_manifest().main,))
+
+
+def test_generation_pointer_persists_activation_manifest():
+    identity = ExportIdentity.configuration("Demo")
+    generation_id = "g1"
+    root = f"generations/{_identity_digest(identity)}/{generation_id}"
+    pointer = GenerationPointer(
+        identity=identity,
+        generation_id=generation_id,
+        root_path=root,
+        manifest_path=f"{root}/manifest.json",
+        manifest_sha256="c" * 64,
+        activation=_manifest(),
+    )
+    restored = GenerationPointer.from_dict(pointer.to_dict())
+    assert restored.activation == pointer.activation

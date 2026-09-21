@@ -25,6 +25,11 @@
 - **У расширения нет собственной configuration version.** При B_FULL extension
   activation теперь получает версию из active parent base layer; без parent
   generation публикация по-прежнему fail-closed.
+- **Live SMV1-13 принят после owner-gate.** Реальные main и 3 extensions прошли
+  полный B_FULL reload, restart восстановил 4 ACTIVE/B_FULL pointers, MCP и
+  dashboard подтвердили capability/role contract, а удаление extension и
+  configuration убрало их roots и оставило все входные ZIP. Source A↔B в этом
+  live corpus не представлен и остаётся `not_checked`.
 
 ## 2026-09-21
 

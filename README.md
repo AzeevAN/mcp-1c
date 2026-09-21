@@ -412,6 +412,11 @@ transport, origin, raw SHA и status. Parsed payload и generation в неё н�
 API списка конфигураций и dashboard sources дополнительно показывают
 `activation_mode` и `activation_status`; старый pointer возвращает
 `RELOAD_REQUIRED`, а не делает вид, что resolved-view доступен.
+Live-приёмка этого контура является отдельным owner-gate: после разрешения
+проверяются полный `B_FULL` reload, extensions, restart, MCP
+`initialize → tools/list → tools/call`, dashboard и каскадное удаление.
+Отсутствующий Source A не подменяется успешным A/B результатом и остаётся
+`unknown`/`not_checked`.
 Для B_FULL администратор может задать или очистить declared platform version:
 `POST /api/v1/sources/platform/set` с `{ "configuration": "...",
 "platform_version": "8.3.24[.1234]" }` и `POST

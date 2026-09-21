@@ -22,6 +22,9 @@
   durable request schema и synthetic legacy-preview. Добавлен отдельный
   `legacy_barrier` в generation view; он переносится в preview, а pointer/CAS
   остаётся прежним.
+- **У расширения нет собственной configuration version.** При B_FULL extension
+  activation теперь получает версию из active parent base layer; без parent
+  generation публикация по-прежнему fail-closed.
 
 ## 2026-09-21
 

@@ -86,6 +86,19 @@ def _activation_for_generation(
         raise OperationError("B_FULL не содержит base_structure payload")
     base_payload = load_layer_payload(base.manifest_path)
     version = base_payload.semantic.get("version")
+    if (
+        not isinstance(version, str) or not version
+    ) and manifest.identity.source_kind is SourceKind.EXTENSION:
+        parent = publisher.active_generation_pointer(
+            ExportIdentity.configuration(manifest.identity.parent_configuration)
+        )
+        if parent is not None:
+            parent_payloads = publisher.generation_payload_sources(parent)
+            parent_base = parent_payloads.get(LayerKind.BASE_STRUCTURE)
+            if parent_base is not None:
+                version = load_layer_payload(parent_base.manifest_path).semantic.get(
+                    "version"
+                )
     if not isinstance(version, str) or not version:
         raise OperationError("B_FULL не содержит configuration version")
     payload_digest = hashlib.sha256(

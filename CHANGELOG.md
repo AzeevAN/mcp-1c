@@ -15,6 +15,12 @@
 
 ### Найдено
 
+- SMV1-12 synthetic MCP gate: `.venv/bin/python -m pytest
+  tests/test_intake_v2_runtime.py tests/test_intake_v2_transport.py
+  tests/test_tool_descriptions.py tests/test_capabilities.py -q` выполняет
+  официальный SDK-путь `initialize → tools/list → tools/call`; live A/B/delete
+  и platform-dependent cache invalidation остаются `not_checked`.
+
 - Полный синтетический gate после SMV1-05: 3155 passed, 1 skipped из 3156
   собранных тестов; команда — `.venv/bin/python -m pytest`.
 - Полный gate после SMV1-06: 3157 passed, 1 skipped из 3158 собранных тестов;

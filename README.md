@@ -31,13 +31,13 @@
 | Роли | объявленные права из native generation; без готового слоя две role-ручки отсутствуют |
 | Дашборд | современная SPA включена по умолчанию; светлая и тёмная темы; ссылка на GitHub; `on` либо `off` |
 | Авторизация Docker | два разных обязательных токена: `API_TOKEN` на чтение, `ADMIN_TOKEN` на запись |
-| Тесты | `.venv/bin/python -m pytest`, 3156 |
+| Тесты | `.venv/bin/python -m pytest`, 3158 |
 
 Воспроизводимый прогон:
 
 ```bash
 .venv/bin/pip install --require-hashes -r requirements-dev-lock.txt
-.venv/bin/python -m pytest          # 3156 тестов; 3155 passed, 1 skipped (прогон 2026-09-21)
+.venv/bin/python -m pytest          # 3158 тестов; 3157 passed, 1 skipped (прогон 2026-09-21)
 ```
 
 ## Модульная система возможностей
@@ -392,6 +392,10 @@ Bind mount помечен `selinux: Z`: на SELinux-хосте Compose выда
 
 Для Source A и Source B authority разделена на взаимоисключающие режимы
 `A_ONLY` и `B_FULL`: смешанное active-поколение не считается допустимым.
+Planner принимает только эти 2 режима: `A_ONLY` допускает schema-v1 без
+ролевого слоя и не создаёт extension, а `B_FULL` требует готовый слой roles
+для create/full update. Старый legacy-поколонный content-only update
+останавливается как `reload_required` до полной загрузки.
 В B-only фактическая версия платформы остаётся `unknown`, пока её явно не
 объявит администратор; `compatibility_mode` не является заменой
 `platform_version`.

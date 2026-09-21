@@ -21,6 +21,7 @@ from mcp1c.intake_v2_registry import (
     legacy_generation_view,
     native_generation_view,
 )
+from mcp1c.source_modes import ActivationMode
 
 
 SUBJECT = "mcp1c.intake_v2_planner"
@@ -256,3 +257,36 @@ def test_legacy_content_update_fail_closed_требует_первого_пол�
             _manifest("generation-new"),
             active=active,
         )
+
+
+def test_a_only_разрешает_schema_v1_без_ролей_и_не_содержит_extensions():
+    IntakeAction = _symbol("IntakeAction")
+    plan_intake = _symbol("plan_intake")
+    candidate = _manifest("a-only")
+    provenance = candidate.layers[0].provenance
+    assert provenance is not None
+    a_provenance = replace(provenance, profile=LayerSourceProfile.SCHEMA_V1)
+    layers = tuple(
+        replace(
+            layer,
+            provenance=a_provenance,
+            state=(LayerState.UNAVAILABLE if layer.kind is LayerKind.ROLES else layer.state),
+            content_sha256=("" if layer.kind is LayerKind.ROLES else layer.content_sha256),
+            payload_sha256=("" if layer.kind is LayerKind.ROLES else layer.payload_sha256),
+            relative_path=("" if layer.kind is LayerKind.ROLES else layer.relative_path),
+            items_total=(0 if layer.kind is LayerKind.ROLES else layer.items_total),
+        )
+        for layer in candidate.layers
+    )
+    a_candidate = replace(candidate, layers=layers)
+    plan = plan_intake(IntakeAction.CREATE, a_candidate, active=None)
+    assert plan.mode is ActivationMode.A_ONLY
+
+
+def test_b_full_не_разрешает_full_план_с_неготовыми_ролями():
+    IntakeAction = _symbol("IntakeAction")
+    plan_intake = _symbol("plan_intake")
+    PlannerError = _symbol("PlannerError")
+    candidate = _manifest("b-incomplete", role_state=LayerState.ERROR)
+    with pytest.raises(PlannerError, match="roles|ролей"):
+        plan_intake(IntakeAction.CREATE, candidate, active=None)

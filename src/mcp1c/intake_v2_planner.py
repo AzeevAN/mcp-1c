@@ -11,10 +11,12 @@ from .intake_v2 import (
     LayerKind,
     LayerManifest,
     LayerProvenance,
+    LayerSourceProfile,
     LayerState,
     SourceKind,
 )
 from .intake_v2_registry import GenerationOrigin, GenerationView
+from .source_modes import ActivationMode
 
 
 class PlannerError(ValueError):
@@ -83,6 +85,19 @@ class IntakePlan:
     base_generation_id: str | None
     candidate_generation_id: str
     layers: tuple[PlannedLayer, ...]
+
+    @property
+    def mode(self) -> ActivationMode:
+        profiles = {
+            layer.candidate.provenance.profile
+            for layer in self.layers
+            if layer.candidate.provenance is not None
+        }
+        if profiles == {LayerSourceProfile.SCHEMA_V1}:
+            return ActivationMode.A_ONLY
+        if profiles == {LayerSourceProfile.SOURCE_B}:
+            return ActivationMode.B_FULL
+        raise PlannerError("план не относится к A_ONLY или B_FULL")
 
     def __post_init__(self) -> None:
         if not isinstance(self.identity, ExportIdentity):
@@ -160,7 +175,11 @@ def _candidate_layers(
         for kind in _REQUIRED_READY
     ):
         raise PlannerError("структура, код и формы кандидата должны быть ready")
-    if layers[LayerKind.ROLES].state is LayerState.UNAVAILABLE:
+    profile = next(iter(layers.values())).provenance.profile
+    if (
+        profile is LayerSourceProfile.SOURCE_B
+        and layers[LayerKind.ROLES].state is LayerState.UNAVAILABLE
+    ):
         raise PlannerError("source-B кандидат не должен скрывать состояние ролей")
     return layers
 
@@ -250,6 +269,18 @@ def plan_intake(
     if active is not None and not isinstance(active, GenerationView):
         raise TypeError("active должен быть GenerationView или None")
     candidate_layers = _candidate_layers(candidate)
+    profile = next(iter(candidate_layers.values())).provenance.profile
+    if profile is LayerSourceProfile.SCHEMA_V1:
+        if candidate.identity.source_kind is not SourceKind.CONFIGURATION:
+            raise PlannerError("A_ONLY не поддерживает extension")
+    elif profile is not LayerSourceProfile.SOURCE_B:
+        raise PlannerError("planner поддерживает только A_ONLY или B_FULL")
+    if (
+        profile is LayerSourceProfile.SOURCE_B
+        and action in {IntakeAction.CREATE, IntakeAction.UPDATE_FULL}
+        and candidate_layers[LayerKind.ROLES].state is not LayerState.READY
+    ):
+        raise PlannerError("B_FULL требует готовый слой roles")
 
     if action is IntakeAction.CREATE:
         if candidate.identity.source_kind is not SourceKind.CONFIGURATION:
@@ -278,7 +309,7 @@ def plan_intake(
         # У legacy нет независимых payload сохранённых слоёв: content-only
         # нельзя собрать в атомарное поколение, не выдумывая их содержимое.
         raise PlannerError(
-            "Для legacy-конфигурации сначала требуется полное обновление."
+            "reload_required: для legacy-конфигурации сначала требуется полное обновление."
         )
     planned: list[PlannedLayer] = []
     for kind in LayerKind:

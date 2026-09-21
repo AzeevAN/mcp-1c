@@ -12,6 +12,11 @@
 
 - Полный синтетический gate после SMV1-05: 3155 passed, 1 skipped из 3156
   собранных тестов; команда — `.venv/bin/python -m pytest`.
+- Полный gate после SMV1-06: 3157 passed, 1 skipped из 3158 собранных тестов;
+  команда — `.venv/bin/python -m pytest`.
+- SMV1-06: planner различает только `A_ONLY` и `B_FULL`; schema-v1 может быть
+  без ролей, полный Source B требует `roles=ready`, а legacy content-only
+  получает `reload_required` без переписывания active Registry.
 
 Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версии — [SemVer](https://semver.org/lang/ru/).

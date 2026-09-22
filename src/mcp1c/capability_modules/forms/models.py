@@ -67,18 +67,24 @@ _OBJECT_FORM_OWNER_KINDS = frozenset(
     {"Справочник", "Документ", "Обработка", "Отчет"}
 )
 _LIST_CHOICE_FORM_OWNER_KINDS = frozenset({"Справочник", "Документ"})
-_REPORT_FORM_RESERVED_NAMES = frozenset(
-    {
-        "Результат",
-        "ДанныеРасшифровки",
+_REPORT_RESERVED_ATTRIBUTE_NAMES = frozenset(
+    name.casefold() for name in {"Результат", "ДанныеРасшифровки"}
+)
+_REPORT_RESERVED_ELEMENT_NAMES = frozenset(
+    name.casefold()
+    for name in {
+        "ФормаКоманднаяПанель",
         "КомпоновщикНастроекПользовательскиеНастройки",
         "КомпоновщикНастроекПользовательскиеНастройкиРасширеннаяПодсказка",
+        "Результат",
         "РезультатКонтекстноеМеню",
         "РезультатРасширеннаяПодсказка",
     }
 )
-_LIST_CHOICE_RESERVED_NAMES = frozenset(
-    {
+_LIST_CHOICE_RESERVED_ELEMENT_NAMES = frozenset(
+    name.casefold()
+    for name in {
+        "ФормаКоманднаяПанель",
         "СписокКомпоновщикНастроекПользовательскиеНастройки",
         "СписокКомпоновщикНастроекПользовательскиеНастройкиРасширеннаяПодсказка",
     }
@@ -2231,6 +2237,66 @@ def _walk_elements(
             yield from _walk_elements(element.children, f"{path}.children")
 
 
+def _page_names(
+    elements: tuple[Element, ...], base_path: str
+) -> Iterator[tuple[str, str]]:
+    for index, element in enumerate(elements):
+        path = f"{base_path}[{index}]"
+        if isinstance(element, UsualGroup):
+            yield from _page_names(element.children, f"{path}.children")
+        elif isinstance(element, Pages):
+            for page_index, page in enumerate(element.pages):
+                page_path = f"{path}.pages[{page_index}]"
+                yield page.name, f"{page_path}.name"
+                yield from _page_names(page.children, f"{page_path}.children")
+        elif isinstance(element, Table):
+            yield from _page_names(element.columns, f"{path}.columns")
+            if element.auto_command_bar is not None:
+                yield from _page_names(
+                    element.auto_command_bar.children,
+                    f"{path}.auto_command_bar.children",
+                )
+            if element.context_menu is not None:
+                yield from _page_names(
+                    element.context_menu.children,
+                    f"{path}.context_menu.children",
+                )
+        elif isinstance(element, CommandBar):
+            yield from _page_names(element.children, f"{path}.children")
+        elif isinstance(element, Popup):
+            yield from _page_names(element.children, f"{path}.children")
+        elif isinstance(element, ButtonGroup):
+            yield from _page_names(element.children, f"{path}.children")
+
+
+def _computed_companion_names(element: Element) -> tuple[str, ...]:
+    name = element.name
+    companions = [name + "РасширеннаяПодсказка"]
+    if isinstance(
+        element,
+        (InputField, CheckBoxField, LabelDecoration, LabelField, RadioButtonField),
+    ):
+        companions.append(name + "КонтекстноеМеню")
+    if isinstance(element, Table):
+        companions.extend(
+            (name + "КонтекстноеМеню", name + "КоманднаяПанель")
+        )
+        for suffix in (
+            "СтрокаПоиска",
+            "СостояниеПросмотра",
+            "УправлениеПоиском",
+        ):
+            addition = name + suffix
+            companions.extend(
+                (
+                    addition,
+                    addition + "КонтекстноеМеню",
+                    addition + "РасширеннаяПодсказка",
+                )
+            )
+    return tuple(companions)
+
+
 def parse_managed_form_spec(payload: object) -> ManagedForm:
     """Проверить и нормализовать поддержанную спецификацию."""
 
@@ -2333,7 +2399,7 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
     _duplicates(
         reader,
         [
-            (item.name, f"$.attributes[{index}].name")
+            (item.name.casefold(), f"$.attributes[{index}].name")
             for index, item in enumerate(attributes)
         ],
         code="duplicate_attribute_name",
@@ -2342,7 +2408,7 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
     _duplicates(
         reader,
         [
-            (item.name, f"$.commands[{index}].name")
+            (item.name.casefold(), f"$.commands[{index}].name")
             for index, item in enumerate(commands)
         ],
         code="duplicate_command_name",
@@ -2351,53 +2417,60 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
     walked = list(_walk_elements(elements, "$.elements"))
     _duplicates(
         reader,
-        [(item.name, f"{path}.name") for item, path, _table in walked],
+        [
+            (name.casefold(), path)
+            for name, path in (
+                [
+                    (item.name, f"{item_path}.name")
+                    for item, item_path, _table in walked
+                ]
+                + list(_page_names(elements, "$.elements"))
+            )
+        ],
         code="duplicate_element_name",
         message="Имя элемента повторяется.",
     )
+    explicit_element_names = [
+        (item.name, f"{path}.name") for item, path, _table in walked
+    ] + list(_page_names(elements, "$.elements"))
+    computed_companion_names = {
+        name.casefold()
+        for item, _path, _table in walked
+        for name in _computed_companion_names(item)
+    }
+    computed_companion_names.update(
+        (name + "РасширеннаяПодсказка").casefold()
+        for name, _path in _page_names(elements, "$.elements")
+    )
+    for name, path in explicit_element_names:
+        if name.casefold() in computed_companion_names:
+            reader.issue(
+                "generated_element_name_collision",
+                path,
+                "Имя элемента совпадает с вычисляемым именем companion-узла.",
+            )
     if context.owner.startswith("Отчет.") and context.role == "object":
         for index, attribute in enumerate(attributes):
-            if attribute.name in _REPORT_FORM_RESERVED_NAMES:
+            if attribute.name.casefold() in _REPORT_RESERVED_ATTRIBUTE_NAMES:
                 reader.issue(
                     "reserved_report_form_name",
                     f"$.attributes[{index}].name",
-                    "Имя зарезервировано системным профилем основной формы отчета.",
+                    "Имя реквизита зарезервировано системным профилем основной формы отчета.",
                 )
         for element, path, _parent_table in walked:
-            if element.name in _REPORT_FORM_RESERVED_NAMES:
+            if element.name.casefold() in _REPORT_RESERVED_ELEMENT_NAMES:
                 reader.issue(
                     "reserved_report_form_name",
                     f"{path}.name",
-                    "Имя зарезервировано системным профилем основной формы отчета.",
-                )
-        for index, command in enumerate(commands):
-            if command.name in _REPORT_FORM_RESERVED_NAMES:
-                reader.issue(
-                    "reserved_report_form_name",
-                    f"$.commands[{index}].name",
-                    "Имя зарезервировано системным профилем основной формы отчета.",
+                    "Имя элемента зарезервировано системным профилем основной формы отчета.",
                 )
     if context.role in {"list", "choice"}:
-        for index, attribute in enumerate(attributes):
-            if attribute.name in _LIST_CHOICE_RESERVED_NAMES:
-                reader.issue(
-                    "reserved_list_choice_form_name",
-                    f"$.attributes[{index}].name",
-                    "Имя зарезервировано системным профилем формы списка или выбора.",
-                )
         for element, path, _parent_table in walked:
-            if element.name in _LIST_CHOICE_RESERVED_NAMES:
+            if element.name.casefold() in _LIST_CHOICE_RESERVED_ELEMENT_NAMES:
                 reader.issue(
                     "reserved_list_choice_form_name",
                     f"{path}.name",
-                    "Имя зарезервировано системным профилем формы списка или выбора.",
-                )
-        for index, command in enumerate(commands):
-            if command.name in _LIST_CHOICE_RESERVED_NAMES:
-                reader.issue(
-                    "reserved_list_choice_form_name",
-                    f"$.commands[{index}].name",
-                    "Имя зарезервировано системным профилем формы списка или выбора.",
+                    "Имя элемента зарезервировано системным профилем формы списка или выбора.",
                 )
     if sum(item.main for item in attributes) > 1:
         reader.issue(

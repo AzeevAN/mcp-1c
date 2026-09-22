@@ -175,10 +175,13 @@ def test_report_form_allows_local_non_main_attributes():
     assert decompiled.specification == compiled.specification
 
 
-def test_report_default_profile_rejects_reserved_system_names():
+@pytest.mark.parametrize(
+    "name", ["Результат", "результат", "ДанныеРасшифровки", "дАнНыЕрАсШиФрОвКи"]
+)
+def test_report_default_profile_rejects_reserved_system_names(name: str):
     specification = _specification()
     specification["attributes"].append({
-        "name": "Результат",
+        "name": name,
         "type": {"kind": "string", "length": 10},
     })
 
@@ -187,6 +190,7 @@ def test_report_default_profile_rejects_reserved_system_names():
 
     assert any(
         item.code == "reserved_report_form_name"
+        and item.path == "$.attributes[1].name"
         for item in caught.value.diagnostics
     )
 
@@ -255,35 +259,35 @@ def test_report_default_profile_mutations_fail_closed(mutation):
 
 
 @pytest.mark.parametrize(
-    ("collection", "value"),
-    [
-        (
-            "elements",
-            {
-                "kind": "label_decoration",
-                "name": "РезультатРасширеннаяПодсказка",
-                "title": {"ru": "Коллизия"},
-            },
-        ),
-        (
-            "commands",
-            {
-                "name": "РезультатКонтекстноеМеню",
-                "title": {"ru": "Коллизия"},
-                "action": "Коллизия",
-            },
-        ),
-    ],
+    "name", ["РезультатРасширеннаяПодсказка", "рЕзУлЬтАтКоНтЕкСтНоЕмЕнЮ"]
 )
-def test_report_default_profile_rejects_reserved_names_in_public_collections(
-    collection, value
-):
+def test_report_default_profile_rejects_reserved_element_names(name: str):
     specification = _specification()
-    specification[collection].append(value)
+    specification["elements"].append(
+        {
+            "kind": "label_decoration",
+            "name": name,
+            "title": {"ru": "Коллизия"},
+        }
+    )
 
     with pytest.raises(FormsContractError) as caught:
         parse_managed_form_spec(specification)
 
-    assert "reserved_report_form_name" in {
-        item.code for item in caught.value.diagnostics
-    }
+    assert any(
+        item.code == "reserved_report_form_name"
+        and item.path == "$.elements[1].name"
+        for item in caught.value.diagnostics
+    )
+
+
+def test_report_allows_system_element_name_in_attribute_namespace():
+    specification = _specification()
+    specification["attributes"].append(
+        {
+            "name": "РезультатКонтекстноеМеню",
+            "type": {"kind": "string", "length": 10},
+        }
+    )
+
+    assert compile_managed_form(specification).status == "compiled"

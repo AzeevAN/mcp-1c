@@ -646,6 +646,43 @@ def test_list_choice_rejects_reserved_system_name():
 
 
 @pytest.mark.parametrize("role", ["list", "choice"])
+@pytest.mark.parametrize(
+    "name", ["СписокКоманднаяПанель", "сПиСоКкОмАнДнАяПаНеЛь"]
+)
+def test_list_generated_companion_name_cannot_collide(role: str, name: str):
+    payload = _payload("Справочник.Товары", role)
+    payload["elements"].append(
+        {
+            "kind": "label_decoration",
+            "name": name,
+            "title": {"ru": "Коллизия"},
+        }
+    )
+
+    with pytest.raises(FormsContractError) as caught:
+        compile_managed_form(payload)
+
+    assert any(
+        item.code == "generated_element_name_collision"
+        and item.path == "$.elements[1].name"
+        for item in caught.value.diagnostics
+    )
+
+
+@pytest.mark.parametrize("role", ["list", "choice"])
+def test_list_allows_generated_element_name_in_attribute_namespace(role: str):
+    payload = _payload("Справочник.Товары", role)
+    payload["attributes"].append(
+        {
+            "name": "СписокКоманднаяПанель",
+            "type": {"kind": "string", "length": 10},
+        }
+    )
+
+    assert compile_managed_form(payload).status == "compiled"
+
+
+@pytest.mark.parametrize("role", ["list", "choice"])
 @pytest.mark.parametrize("mutation", ["missing", "autofill_false"])
 def test_list_choice_rejects_missing_or_disabled_table_command_bar(
     role: str,

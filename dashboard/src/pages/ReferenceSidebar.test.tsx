@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 
 import { ReferenceSidebar } from "./ReferenceSidebar";
@@ -38,6 +38,27 @@ it("не предлагает запись справки читателю", asy
   const dialog = screen.getByRole("dialog", { name: "Общая справка" });
   expect(within(dialog).getByText("Только чтение. Пакет общей справки проверен подписью.")).toBeInTheDocument();
   expect(within(dialog).queryByRole("button", { name: /Загрузить|Удалить/ })).not.toBeInTheDocument();
+});
+
+it("удерживает клавиатурный фокус в диалоге и возвращает его после Escape", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => reference })));
+  mount(false);
+  const trigger = await screen.findByRole("button", { name: "Общая справка: подключена" });
+  trigger.focus();
+  fireEvent.click(trigger);
+
+  const dialog = screen.getByRole("dialog", { name: "Общая справка" });
+  const close = within(dialog).getByRole("button", { name: "Закрыть" });
+  await waitFor(() => expect(dialog).toHaveFocus());
+
+  fireEvent.keyDown(dialog, { key: "Tab" });
+  expect(close).toHaveFocus();
+  fireEvent.keyDown(dialog, { key: "Tab", shiftKey: true });
+  expect(close).toHaveFocus();
+
+  fireEvent.keyDown(dialog, { key: "Escape" });
+  expect(screen.queryByRole("dialog", { name: "Общая справка" })).not.toBeInTheDocument();
+  expect(trigger).toHaveFocus();
 });
 
 it.each([

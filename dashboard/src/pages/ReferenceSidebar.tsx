@@ -1,5 +1,5 @@
 import { BookOpen, ChevronRight, X } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { useReferenceStatus } from "../shared/api/reference";
@@ -62,6 +62,7 @@ export function ReferenceSidebar({ admin }: { admin: boolean }) {
 function ReferenceDialog({ reference, admin, onClose }: {
   reference: ReferenceAdminState; admin: boolean; onClose: () => void;
 }) {
+  const dialog = useRef<HTMLElement>(null);
   const active = reference.active;
   const verified = isVerified(active);
   const signatureLabel = active.signature === "ed25519"
@@ -69,9 +70,36 @@ function ReferenceDialog({ reference, admin, onClose }: {
     : active.signature === "not-checked"
       ? "Не проверена"
       : active.signature === "verification-error" ? "Ошибка проверки" : active.signature;
+
+  useEffect(() => {
+    dialog.current?.focus();
+  }, []);
+
   return createPortal(
     <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <section className="reference-dialog" role="dialog" aria-modal="true" aria-labelledby="reference-dialog-title" tabIndex={-1}>
+      <section ref={dialog} className="reference-dialog" role="dialog" aria-modal="true"
+        aria-labelledby="reference-dialog-title" tabIndex={-1} onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.stopPropagation();
+            onClose();
+          }
+          if (event.key !== "Tab") return;
+          const elements = [...(dialog.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? [])];
+          const first = elements[0];
+          const last = elements[elements.length - 1];
+          if (!first) {
+            event.preventDefault();
+            dialog.current?.focus();
+            return;
+          }
+          if (event.shiftKey && (document.activeElement === first || document.activeElement === dialog.current)) {
+            event.preventDefault();
+            last.focus();
+          } else if (!event.shiftKey && (document.activeElement === last || document.activeElement === dialog.current)) {
+            event.preventDefault();
+            first.focus();
+          }
+        }}>
         <button className="modal-close" type="button" onClick={onClose} aria-label="Закрыть"><X size={17} aria-hidden="true" /></button>
         <span className="reference-dialog-icon"><BookOpen size={24} aria-hidden="true" /></span>
         <h2 id="reference-dialog-title">Общая справка</h2>

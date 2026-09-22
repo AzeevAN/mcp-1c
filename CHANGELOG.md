@@ -4,6 +4,11 @@
 
 ### Исправлено
 
+- **AUD22-12:** read-only диалог общей справки получает начальный фокус,
+  удерживает `Tab`/`Shift+Tab`, закрывается по `Escape` и возвращает фокус
+  исходной кнопке. Frontend: 134 теста, typecheck и build GREEN
+  (`cd dashboard && npm test -- --run && npm run typecheck && npm run build`,
+  2026-09-22).
 - **AUD22-11:** боковая панель и диалог общей справки утверждают проверенную
   подпись только для готового `ed25519`-пакета. Missing, untrusted, corrupt,
   incompatible и отказ status API показывают фактический статус и причину;

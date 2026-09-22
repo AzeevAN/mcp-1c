@@ -504,6 +504,58 @@ it("кнопки каталога не ждут общий intake и списо�
   expect(screen.getByText("Проверяем кандидатов полной выгрузки…")).toBeInTheDocument();
 });
 
+it("обновление из каталога сразу готовит полный preview без выбора состава и публикации", async () => {
+  const requests: Array<{ path: string; body: unknown }> = [];
+  const directoryCandidate = {
+    ...candidate,
+    id: "directory-candidate",
+    transport: "local-directory",
+    internal_name: "Demo",
+    origin_name: "config-a",
+    actions: ["update", "update_full"],
+  };
+  const readyJob = {
+    job_id: "directory-job",
+    candidate_id: directoryCandidate.id,
+    state: "done",
+    stage: "done",
+    error: "",
+    commit: null,
+    transport: "local-directory",
+    preview: {
+      ...preview,
+      action: "update_full",
+      identity: { ...preview.identity, configuration_name: "Demo" },
+    },
+  };
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input);
+    const body = init?.body ? JSON.parse(String(init.body)) : null;
+    requests.push({ path, body });
+    if (path === "/api/v1/sources/directories") return response({
+      roots: ["config-a"], bindings: { Demo: "config-a" }, configuration_names: ["Demo"],
+    });
+    if (path === "/api/v1/sources/intake/jobs") return response({ jobs: [] });
+    if (path === "/api/v1/sources/directories/refresh") return response({ candidate: directoryCandidate });
+    if (path === "/api/v1/sources/intake/start") return response({ job: readyJob }, 202);
+    if (path === "/api/v1/sources/intake/jobs/directory-job") return response({ job: readyJob });
+    throw new Error(`Неожиданный запрос ${path}`);
+  }));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={client}>
+    <ConfigIntakePanel configuration="Demo" />
+  </QueryClientProvider>);
+
+  fireEvent.click(await screen.findByRole("button", { name: "Обновить из каталога" }));
+  expect(await screen.findByRole("dialog", { name: "Проверка изменений" })).toBeInTheDocument();
+  expect(screen.queryByRole("dialog", { name: "Обновление из каталога" })).not.toBeInTheDocument();
+  expect(requests).toContainEqual({
+    path: "/api/v1/sources/intake/start",
+    body: { candidate_id: directoryCandidate.id, action: "update_full" },
+  });
+  expect(requests.some((item) => item.path === "/api/v1/sources/intake/confirm")).toBe(false);
+});
+
 it("сохранённое preview каталога видно только у своей конфигурации, ZIP — в общем блоке", async () => {
   const jobs = [
     { job_id: "dir-job", candidate_id: "dir-candidate", state: "done", stage: "done", error: "", commit: null,

@@ -1681,6 +1681,9 @@ Capability `role_access` по умолчанию выключен: это тол
 включённом `role_access` обе ручки остаются зарегистрированы и для A-only,
 где возвращают `unsupported_by_source`, и для B с состояниями
 `available`/`present_empty`/`load_error`.
+Цена `role_access` в `tools/list`: 2 инструмента, 7 170 байт и 1 245 токенов
+(`o200k_base`, 2026-09-22); воспроизведение:
+`.venv/bin/python tools/measure_capability_context.py role_access --check`.
 Имя `forms` добавляет ровно четыре инструмента в
 стабильном порядке: `get_managed_form_rules`, `compile_managed_form`,
 `decompile_managed_form`, `check_managed_form`. Forms получает только read-only

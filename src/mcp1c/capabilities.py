@@ -99,7 +99,7 @@ CAPABILITY_DEFINITIONS: Mapping[str, CapabilityDefinition] = {
         "mcp1c.capability_modules.role_access:load",
         "Доступ ролей",
         "Поиск ролей и чтение объявленных прав с ограниченной детализацией.",
-        2, 1245, "o200k_base", "2026-09-19",
+        2, 1245, "o200k_base", "2026-09-22",
         "tools/measure_capability_context.py role_access --check",
     ),
 }

@@ -19,6 +19,7 @@ if str(SRC) not in sys.path:
 from mcp1c.reference_provider import ReferenceService  # noqa: E402
 from mcp1c.registry import Registry  # noqa: E402
 from mcp1c.server import build_server  # noqa: E402
+from mcp1c.capabilities import CAPABILITY_DEFINITIONS  # noqa: E402
 
 
 TOKENIZER_VERSION = "0.11.0"
@@ -28,6 +29,7 @@ MEASURED_AT = {
     "forms": "2026-09-20",
     "metadata_authoring": "2026-09-20",
     "reference": "2026-09-21",
+    "role_access": "2026-09-22",
 }
 
 
@@ -93,9 +95,13 @@ def main() -> int:
     mode.add_argument("--check", action="store_true")
     args = parser.parse_args()
 
+    if args.capability not in CAPABILITY_DEFINITIONS:
+        raise SystemExit(f"Неизвестный capability `{args.capability}`.")
     manifest_path = (
         ROOT / "src" / "mcp1c" / "capability_modules" / args.capability / "manifest.json"
     )
+    if args.capability == "role_access":
+        manifest_path = ROOT / "src" / "mcp1c" / "capability_modules" / "role_access.manifest.json"
     if not manifest_path.is_file():
         raise SystemExit(f"Manifest capability `{args.capability}` не найден.")
     measured = measurement(args.capability)
@@ -104,6 +110,9 @@ def main() -> int:
     if args.check:
         if manifest.get("context_budget") != measured:
             raise SystemExit("Manifest не совпадает с текущим tools/list delta.")
+        definition = CAPABILITY_DEFINITIONS[args.capability]
+        if definition.tool_count != measured["tool_count"] or definition.approx_tokens != measured["approx_tokens"]:
+            raise SystemExit("Capability definition не совпадает с текущим tools/list delta.")
     elif args.write:
         manifest["context_budget"] = measured
         manifest_path.write_text(

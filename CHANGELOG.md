@@ -4,6 +4,12 @@
 
 ### Исправлено
 
+- **AUD22-14:** опубликованная команда `role_access --check` использует
+  измерительный manifest рядом с модулем и сверяет его с текущим `tools/list`
+  и объявлением capability. Подтверждено 2 инструмента, 7 170 байт,
+  1 245 токенов (`.venv/bin/python tools/measure_capability_context.py
+  role_access --check`, 2026-09-22). Полный pytest: 3201 passed, 1 skipped
+  (`.venv/bin/python -m pytest -q`, 2026-09-22).
 - **AUD22-13:** canonical specification отчёта ставит главный реквизит перед
   локальными в том же порядке, что и `Form.xml`; порядок локальных и ID
   системных реквизитов сохраняются при compile → decompile → compile.

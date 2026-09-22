@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "name": "role_access",
+  "title": "Доступ ролей",
+  "description": "Поиск ролей и чтение объявленных прав с ограниченной детализацией.",
+  "context_budget": {
+    "status": "measured",
+    "tool_count": 2,
+    "approx_tokens": 1245,
+    "tokenizer": "tiktoken 0.11.0 / o200k_base",
+    "method": "canonical tools/list delta: UTF-8 JSON, sort_keys, compact separators",
+    "canonical_bytes": 7170,
+    "canonical_sha256": "53f608a765667342941f3163bf76f72f5f2018c041f926f477ffb6010cac8a0b",
+    "payload": "tools_list_delta",
+    "measured_at": "2026-09-22"
+  }
+}

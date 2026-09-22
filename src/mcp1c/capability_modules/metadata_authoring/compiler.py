@@ -9,7 +9,12 @@ import re
 import uuid
 import xml.etree.ElementTree as ET
 
-from .checker import MAX_ARTIFACTS, MAX_ARTIFACT_BYTES, MAX_TOTAL_BYTES
+from .checker import (
+    MAX_ARTIFACTS,
+    MAX_ARTIFACT_BYTES,
+    MAX_TOTAL_BYTES,
+    _infer_supported_form_role,
+)
 
 
 MD = "http://v8.1c.ru/8.3/MDClasses"
@@ -225,7 +230,11 @@ def _validate_field(raw: object, path: str, xml_kind: str) -> dict[str, object]:
 
 
 def _validate_form(
-    raw: object, path: str, format_version: str, owner_kind: str
+    raw: object,
+    path: str,
+    format_version: str,
+    owner_kind: str,
+    owner_name: str,
 ) -> dict[str, object]:
     value = dict(_mapping(raw, path))
     _strict(value, {"name", "synonym", "role", "default", "form_xml", "module_bsl"}, path)
@@ -272,6 +281,16 @@ def _validate_form(
         _fail("invalid_form_xml", f"{path}.form_xml", f"Form.xml не разобран: {error}.")
     if root.tag != f"{{{LOGFORM}}}Form":
         _fail("invalid_form_xml_root", f"{path}.form_xml", "Корень должен быть logform Form.")
+    inferred_role = _infer_supported_form_role(root, owner_kind, owner_name)
+    if inferred_role is not None and inferred_role != role:
+        _fail(
+            "form_role_mismatch",
+            f"{path}.role",
+            (
+                f"Заявлена роль `{role}`, но закрытый XML-профиль "
+                f"соответствует роли `{inferred_role}`."
+            ),
+        )
     actual_version = root.attrib.get("version", "").strip()
     if not actual_version:
         _fail(
@@ -533,7 +552,11 @@ def _validate(specification: object) -> tuple[dict[str, object], _Kind, str, uui
     normalized_forms: list[dict[str, object]] = []
     for index, item in enumerate(forms):
         form = _validate_form(
-            item, f"$specification.forms[{index}]", format_version, kind.ru
+            item,
+            f"$specification.forms[{index}]",
+            format_version,
+            kind.ru,
+            match.group(2),
         )
         normalized_forms.append(form)
         name = str(form["name"])

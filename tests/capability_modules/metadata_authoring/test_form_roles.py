@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from jsonschema import Draft202012Validator
 
+from mcp1c.capability_modules.forms.compiler import compile_managed_form
 from mcp1c.capability_modules.metadata_authoring.checker import (
     check_metadata_artifacts,
 )
@@ -135,22 +136,26 @@ def _closed_profile_form(
 ) -> dict[str, object]:
     form = _form(name, role, default=default)
     if role in {"list", "choice"}:
-        choice_properties = (
+        root_properties = (
             "<WindowOpeningMode>LockOwnerWindow</WindowOpeningMode>"
-            "<ChoiceMode>true</ChoiceMode>"
             if role == "choice"
             else ""
+        )
+        table_properties = (
+            "<ChoiceMode>true</ChoiceMode>" if role == "choice" else ""
         )
         main_name = "Список"
         main_type = "cfg:DynamicList"
         saved_data = ""
     elif owner_kind == "РегистрСведений" and role == "record":
-        choice_properties = ""
+        root_properties = ""
+        table_properties = ""
         main_name = "Запись"
         main_type = "cfg:InformationRegisterRecordManager.Ролевой"
         saved_data = "<SavedData>true</SavedData>"
     elif role == "object" and owner_kind in {"Справочник", "Документ"}:
-        choice_properties = ""
+        root_properties = ""
+        table_properties = ""
         main_name = "Объект"
         xml_kind = "CatalogObject" if owner_kind == "Справочник" else "DocumentObject"
         main_type = f"cfg:{xml_kind}.Ролевой"
@@ -170,16 +175,107 @@ def _closed_profile_form(
         f"<InputField><DataPath>{data_path}</DataPath></InputField>"
         for data_path in data_paths
     )
+    if role in {"list", "choice"}:
+        child_items += (
+            '<Table name="Список" id="100">'
+            f"{table_properties}<DataPath>Список</DataPath></Table>"
+        )
     form["form_xml"] = (
         '<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" '
         'xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" '
         'xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">'
-        f"{choice_properties}<ChildItems>{child_items}</ChildItems><Attributes>"
+        f"{root_properties}<ChildItems>{child_items}</ChildItems><Attributes>"
         f'<Attribute name="{main_name}" id="1"><Type><v8:Type>{main_type}</v8:Type>'
         f"</Type><MainAttribute>true</MainAttribute>{saved_data}</Attribute>"
         "</Attributes></Form>"
     )
     return form
+
+
+def _forms_output(owner: str, role: str, name: str) -> tuple[str, str]:
+    if role in {"list", "choice"}:
+        attributes = [
+            {
+                "name": "Список",
+                "type": {
+                    "kind": "dynamic_list",
+                    "main_table": owner,
+                    "dynamic_data_read": True,
+                },
+                "main": True,
+            }
+        ]
+        elements = [
+            {
+                "kind": "table",
+                "name": "Список",
+                "data_path": "Список",
+                "columns": [
+                    {
+                        "kind": "input_field",
+                        "name": "Значение",
+                        "data_path": (
+                            "Список.Значение"
+                            if owner.startswith("РегистрСведений.")
+                            else "Список.Description"
+                        ),
+                    }
+                ],
+            }
+        ]
+    elif role == "record":
+        attributes = [
+            {
+                "name": "Запись",
+                "type": {"kind": "metadata_object", "object": owner},
+                "main": True,
+                "saved_data": True,
+            }
+        ]
+        elements = [
+            {
+                "kind": "input_field",
+                "name": "Значение",
+                "data_path": "Запись.Значение",
+            }
+        ]
+    else:
+        attributes = [
+            {
+                "name": "Объект",
+                "type": {"kind": "metadata_object", "object": owner},
+                "main": True,
+            }
+        ]
+        elements = []
+    result = compile_managed_form(
+        {
+            "schema_version": 2,
+            "form_name": name,
+            "context": {"owner": owner, "role": role},
+            "format_version": "2.20",
+            "title": {"ru": name},
+            "attributes": attributes,
+            "elements": elements,
+            "commands": [],
+            "events": [],
+        }
+    )
+    return result.artifacts[0].content, result.artifacts[1].content
+
+
+def _form_from_forms_output(
+    owner: str, role: str, name: str, *, default: bool = True
+) -> dict[str, object]:
+    form_xml, module_bsl = _forms_output(owner, role, name)
+    return {
+        "name": name,
+        "synonym": name,
+        "role": role,
+        "default": default,
+        "form_xml": form_xml,
+        "module_bsl": module_bsl,
+    }
 
 
 @pytest.mark.parametrize("factory", [_catalog, _document])
@@ -593,6 +689,101 @@ def test_checker_rejects_empty_default_for_structurally_supported_role(
         and item["path"].endswith(f":{property_name}")
         for item in checked["diagnostics"]
     )
+
+
+def test_checker_rejects_swapped_default_form_targets_from_forms_output():
+    specification = _catalog()
+    specification["forms"] = [
+        _form_from_forms_output(
+            "Справочник.Ролевой", "list", "ФормаСписка"
+        ),
+        _form_from_forms_output(
+            "Справочник.Ролевой", "choice", "ФормаВыбора"
+        ),
+    ]
+    compiled = compile_metadata_object(specification)
+    valid = check_metadata_artifacts(
+        compiled["object_ref"], compiled["format_version"], compiled["artifacts"]
+    )
+    assert valid["status"] == "passed"
+
+    artifacts = deepcopy(compiled["artifacts"])
+    descriptor = artifacts[0]["content"]
+    descriptor = descriptor.replace(
+        "Catalog.Ролевой.Form.ФормаСписка", "__DEFAULT_LIST__", 1
+    )
+    descriptor = descriptor.replace(
+        "Catalog.Ролевой.Form.ФормаВыбора",
+        "Catalog.Ролевой.Form.ФормаСписка",
+        1,
+    )
+    artifacts[0]["content"] = descriptor.replace(
+        "__DEFAULT_LIST__", "Catalog.Ролевой.Form.ФормаВыбора", 1
+    )
+
+    checked = check_metadata_artifacts(
+        compiled["object_ref"], compiled["format_version"], artifacts
+    )
+
+    assert checked["status"] == "failed"
+    assert {
+        (item["code"], item["path"])
+        for item in checked["diagnostics"]
+        if item["code"] == "default_form_role_mismatch"
+    } == {
+        ("default_form_role_mismatch", "Catalogs/Ролевой.xml:DefaultListForm"),
+        ("default_form_role_mismatch", "Catalogs/Ролевой.xml:DefaultChoiceForm"),
+    }
+
+
+def test_compiler_rejects_declared_role_different_from_forms_xml():
+    specification = _catalog()
+    form = _form_from_forms_output(
+        "Справочник.Ролевой", "list", "ФормаСписка"
+    )
+    form["role"] = "choice"
+    specification["forms"] = [form]
+
+    with pytest.raises(MetadataAuthoringContractError) as caught:
+        compile_metadata_object(specification)
+
+    assert caught.value.diagnostics == [
+        {
+            "status": "failed",
+            "code": "form_role_mismatch",
+            "path": "$specification.forms[0].role",
+            "message": (
+                "Заявлена роль `choice`, но закрытый XML-профиль "
+                "соответствует роли `list`."
+            ),
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("factory", "owner", "role", "form_name"),
+    [
+        (_catalog, "Справочник.Ролевой", "object", "ФормаОбъекта"),
+        (_catalog, "Справочник.Ролевой", "list", "ФормаСписка"),
+        (_catalog, "Справочник.Ролевой", "choice", "ФормаВыбора"),
+        (_register, "РегистрСведений.Ролевой", "record", "ФормаЗаписи"),
+        (_register, "РегистрСведений.Ролевой", "list", "ФормаСписка"),
+    ],
+)
+def test_forms_output_role_profiles_compile_and_check(
+    factory, owner, role, form_name
+):
+    specification = factory()
+    specification["forms"] = [
+        _form_from_forms_output(owner, role, form_name)
+    ]
+
+    compiled = compile_metadata_object(specification)
+    checked = check_metadata_artifacts(
+        compiled["object_ref"], compiled["format_version"], compiled["artifacts"]
+    )
+
+    assert checked["status"] == "passed"
 
 
 def test_metadata_authoring_has_no_direct_forms_dependency():

@@ -465,13 +465,22 @@ def _infer_supported_form_role(
         and main_name == "Список"
         and main_types == ["cfg:DynamicList"]
     ):
-        choice_mode = _find_child(form_root, "ChoiceMode")
+        bound_tables = [
+            table
+            for table in form_root.iter()
+            if _local(table.tag) == "Table"
+            and table.get("name") == "Список"
+            and _child_text(table, "DataPath") == "Список"
+        ]
+        if len(bound_tables) != 1:
+            return None
+        choice_mode = _find_child(bound_tables[0], "ChoiceMode")
         opening_mode = _find_child(form_root, "WindowOpeningMode")
         if choice_mode is None and opening_mode is None:
             return "list"
         if (
             object_kind in {"Справочник", "Документ"}
-            and _child_text(form_root, "ChoiceMode") == "true"
+            and _child_text(bound_tables[0], "ChoiceMode") == "true"
             and _child_text(form_root, "WindowOpeningMode") == "LockOwnerWindow"
         ):
             return "choice"
@@ -1023,6 +1032,23 @@ def _check_forms(
             )
         else:
             default_form_name = default_form.rsplit(".", 1)[-1]
+            expected_role = {
+                "DefaultObjectForm": "object",
+                "DefaultListForm": "list",
+                "DefaultChoiceForm": "choice",
+                "DefaultRecordForm": "record",
+            }.get(property_name)
+            inferred_role = inferred_form_roles.get(default_form_name)
+            if inferred_role is not None and inferred_role != expected_role:
+                report.fail(
+                    "forms",
+                    "default_form_role_mismatch",
+                    f"{owner_path}.xml:{property_name}",
+                    (
+                        f"{property_name} ссылается на форму роли "
+                        f"`{inferred_role}`, ожидалась роль `{expected_role}`."
+                    ),
+                )
             form_xml_path = f"{owner_path}/Forms/{default_form_name}/Ext/Form.xml"
             form_entry = parsed.get(form_xml_path)
             required_paths: list[str] = []

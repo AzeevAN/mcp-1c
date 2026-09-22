@@ -518,7 +518,7 @@ it("показывает администратору действия без д
 
   fireEvent.click(screen.getByRole("button", { name: /Общая справка/ }));
   const referenceDialog = screen.getByRole("dialog", { name: "Общая справка" });
-  expect(within(referenceDialog).getByText(/изменяется только вместе с релизом/)).toBeInTheDocument();
+  expect(within(referenceDialog).getByText("Пакет общей справки не готов к использованию.")).toBeInTheDocument();
   expect(within(referenceDialog).queryByRole("button", { name: /Загрузить|Удалить/ })).not.toBeInTheDocument();
   fireEvent.click(within(referenceDialog).getByRole("button", { name: "Закрыть" }));
 

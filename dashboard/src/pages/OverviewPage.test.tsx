@@ -9,11 +9,11 @@ const bootstrap = {
   api_version: "v1",
   dashboard_mode: "spa",
   server: { status: "ok", version: "1.1.0" },
-  permissions: { read: true, admin: false },
+  permissions: { read: true, admin: true },
   authentication: {
     read_required: false,
-    admin_available: false,
-    session_level: null,
+    admin_available: true,
+    session_level: "admin",
   },
   summary: {
     configurations: 1,
@@ -25,7 +25,7 @@ const bootstrap = {
 
 const sources = {
   api_version: "v1",
-  permissions: { read: true, admin: false },
+  permissions: { read: true, admin: true },
   configurations: [{
     id: "Демонстрационная конфигурация",
     version: "1.0",
@@ -91,8 +91,7 @@ function response(payload: unknown) {
   return Promise.resolve({ ok: true, json: async () => payload });
 }
 
-function renderOverview() {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function renderOverview(client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
   return render(
     <MemoryRouter>
       <QueryClientProvider client={client}>
@@ -124,6 +123,90 @@ it("показывает оперативную сводку вместо дем
   expect(screen.getByRole("link", { name: /Проверить запрос/ })).toHaveAttribute("href", "/queries");
   expect(screen.queryByText("Один владелец данных")).not.toBeInTheDocument();
   expect(screen.queryByText("Состояния должны различаться сразу")).not.toBeInTheDocument();
+});
+
+it("не считает admin-only capabilities отказом read API", async () => {
+  vi.mocked(fetch).mockImplementation((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/api/v1/dashboard/bootstrap")) {
+      return response({
+        ...bootstrap,
+        permissions: { read: true, admin: false },
+        authentication: { read_required: false, admin_available: true, session_level: "read" },
+      }) as Promise<Response>;
+    }
+    if (url.endsWith("/api/v1/sources")) {
+      return response({ ...sources, permissions: { read: true, admin: false } }) as Promise<Response>;
+    }
+    if (url.endsWith("/api/v1/capabilities")) {
+      return Promise.resolve({
+        ok: false,
+        status: 403,
+        json: async () => ({ error: "Нужен административный токен." }),
+      }) as Promise<Response>;
+    }
+    throw new Error(`Неожиданный URL: ${url}`);
+  });
+  renderOverview();
+
+  expect(await screen.findByText("Система готова")).toHaveClass("is-success");
+  expect(screen.queryByText("Часть данных недоступна")).not.toBeInTheDocument();
+  expect(screen.getByText("Сведения о модулях доступны администратору")).toBeInTheDocument();
+  expect(fetch).not.toHaveBeenCalledWith(
+    "/api/v1/capabilities",
+    expect.anything(),
+  );
+});
+
+it("не показывает кэшированные admin-сведения после перехода в read-only сеанс", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(["capabilities"], { ...capabilities, pending_restart: true });
+  vi.mocked(fetch).mockImplementation((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/api/v1/dashboard/bootstrap")) {
+      return response({
+        ...bootstrap,
+        permissions: { read: true, admin: false },
+        authentication: { read_required: false, admin_available: true, session_level: "read" },
+      }) as Promise<Response>;
+    }
+    if (url.endsWith("/api/v1/sources")) return response(sources) as Promise<Response>;
+    throw new Error(`Неожиданный URL: ${url}`);
+  });
+  renderOverview(client);
+
+  expect(await screen.findByText("Система готова")).toHaveClass("is-success");
+  expect(screen.queryByText("Общая справка")).not.toBeInTheDocument();
+  expect(screen.queryByText("Требуется перезапуск")).not.toBeInTheDocument();
+  expect(screen.getByText("Сведения о модулях доступны администратору")).toBeInTheDocument();
+});
+
+it("по-прежнему показывает реальный отказ read API", async () => {
+  vi.mocked(fetch).mockImplementation((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/api/v1/dashboard/bootstrap")) {
+      return response({
+        ...bootstrap,
+        permissions: { read: true, admin: false },
+        authentication: { read_required: false, admin_available: true, session_level: "read" },
+      }) as Promise<Response>;
+    }
+    if (url.endsWith("/api/v1/sources")) {
+      return Promise.resolve({
+        ok: false,
+        status: 503,
+        json: async () => ({ error: "Источники временно недоступны." }),
+      }) as Promise<Response>;
+    }
+    if (url.endsWith("/api/v1/capabilities")) {
+      throw new Error("Read-only обзор не должен запрашивать capabilities");
+    }
+    throw new Error(`Неожиданный URL: ${url}`);
+  });
+  renderOverview();
+
+  expect(await screen.findByText("Часть данных недоступна")).toHaveClass("is-danger");
+  expect(screen.getByText(/Состояние источников или модулей недоступно/)).toBeInTheDocument();
 });
 
 it("выносит ожидающий перезапуск в готовность и список внимания", async () => {

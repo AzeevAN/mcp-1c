@@ -5,10 +5,11 @@ import {
   Search,
   SlidersHorizontal,
 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 
 import { useBootstrap } from "../shared/api/bootstrap";
-import { useCapabilities } from "../shared/api/capabilities";
+import { getCapabilities } from "../shared/api/capabilities";
 import { useSources } from "../shared/api/sources";
 import { MetricCard } from "../shared/ui/MetricCard";
 import { StatusBadge, type StatusTone } from "../shared/ui/StatusBadge";
@@ -27,7 +28,13 @@ function formatTokens(value: number): string {
 export function OverviewPage() {
   const bootstrap = useBootstrap();
   const sources = useSources();
-  const capabilities = useCapabilities();
+  const isAdmin = bootstrap.data?.permissions.admin === true;
+  const capabilities = useQuery({
+    queryKey: ["capabilities"],
+    queryFn: getCapabilities,
+    enabled: isAdmin,
+  });
+  const capabilityData = isAdmin ? capabilities.data : undefined;
   const summary = bootstrap.data?.summary;
   const configurations = sources.data?.configurations ?? [];
   const codeCorpora = sources.data
@@ -36,21 +43,21 @@ export function OverviewPage() {
       0,
     )
     : summary?.code_corpora;
-  const modules = capabilities.data?.modules ?? [];
+  const modules = capabilityData?.modules ?? [];
   const activeModules = modules.filter((module) => module.active);
   const toolCount = activeModules.reduce((total, module) => total + (module.tool_count ?? 0), 0);
   const contextTokens = activeModules.reduce((total, module) => total + (module.approx_tokens ?? 0), 0);
   const allToolCountsMeasured = activeModules.every((module) => module.tool_count !== null);
-  const allContextMeasured = activeModules.every((module) => module.approx_tokens !== null);
-  const toolCountLabel = capabilities.data
+  const allContextMeasured = capabilityData !== undefined && activeModules.every((module) => module.approx_tokens !== null);
+  const toolCountLabel = capabilityData
     ? allToolCountsMeasured ? String(toolCount) : toolCount ? `≥ ${toolCount}` : "не измерено"
     : "—";
-  const contextLabel = capabilities.data
+  const contextLabel = capabilityData
     ? allContextMeasured ? formatTokens(contextTokens) : contextTokens ? `≥ ${new Intl.NumberFormat("ru-RU").format(contextTokens)}` : "не измерено"
     : "—";
 
   const attention: AttentionItem[] = [];
-  if (capabilities.data?.pending_restart) {
+  if (capabilityData?.pending_restart) {
     attention.push({
       id: "capabilities-restart",
       title: "Настройки модулей ждут перезапуска",
@@ -114,8 +121,8 @@ export function OverviewPage() {
     });
   }
 
-  const hasApiError = bootstrap.isError || sources.isError || capabilities.isError;
-  const isChecking = bootstrap.isLoading || sources.isLoading || capabilities.isLoading;
+  const hasApiError = bootstrap.isError || sources.isError || (isAdmin && capabilities.isError);
+  const isChecking = bootstrap.isLoading || sources.isLoading || (isAdmin && capabilities.isLoading);
   let readinessTone: StatusTone = "success";
   let readinessLabel = "Система готова";
   let readinessText = "Источники опубликованы, отложенных перезапусков и подтверждённых ошибок нет.";
@@ -123,7 +130,7 @@ export function OverviewPage() {
     readinessTone = "danger";
     readinessLabel = "Часть данных недоступна";
     readinessText = "Не удалось получить полное состояние сервера. Проверьте доступность API.";
-  } else if (capabilities.data?.pending_restart) {
+  } else if (capabilityData?.pending_restart) {
     readinessTone = "warning";
     readinessLabel = "Требуется перезапуск";
     readinessText = "Настройки модулей сохранены, но ещё не применены текущим процессом MCP.";
@@ -161,17 +168,23 @@ export function OverviewPage() {
             <span className="eyebrow">Доступ агентов</span>
             <h2 id="agent-access-title">Текущий MCP-контракт</h2>
           </div>
-          <Link className="overview-heading-link" to="/capabilities">
-            Настроить модули <ArrowRight size={16} aria-hidden="true" />
-          </Link>
+          {isAdmin ? (
+            <Link className="overview-heading-link" to="/capabilities">
+              Настроить модули <ArrowRight size={16} aria-hidden="true" />
+            </Link>
+          ) : (
+            <span className="overview-heading-link">Только для администратора</span>
+          )}
         </div>
         <div className="overview-agent-metrics">
-          <div><span>Активные модули</span><strong>{capabilities.data ? activeModules.length : "—"}</strong></div>
+          <div><span>Активные модули</span><strong>{capabilityData ? activeModules.length : "—"}</strong></div>
           <div><span>Инструменты модулей</span><strong>{toolCountLabel}</strong></div>
           <div><span>Контекст модулей</span><strong>{contextLabel}</strong><small>{allContextMeasured ? "токенов при старте сессии" : "не все модули измерены"}</small></div>
         </div>
         <div className="overview-module-list" aria-label="Активные дополнительные модули">
-          {activeModules.length ? activeModules.map((module) => (
+          {!isAdmin ? (
+            <span className="is-muted">Сведения о модулях доступны администратору</span>
+          ) : activeModules.length ? activeModules.map((module) => (
             <span key={module.id}>{module.display_name}</span>
           )) : (
             <span className="is-muted">Дополнительные модули отключены</span>
@@ -253,7 +266,9 @@ export function OverviewPage() {
         <Link to="/queries"><Search aria-hidden="true" /><span><strong>Проверить запрос</strong><small>Поиск глазами агента</small></span></Link>
         <Link to="/graph"><Network aria-hidden="true" /><span><strong>Открыть связи</strong><small>Граф объектов метаданных</small></span></Link>
         <Link to="/sources"><Database aria-hidden="true" /><span><strong>Управлять источниками</strong><small>Загрузка и диагностика</small></span></Link>
-        <Link to="/capabilities"><SlidersHorizontal aria-hidden="true" /><span><strong>Настроить модули</strong><small>Инструменты и контекст</small></span></Link>
+        {isAdmin && (
+          <Link to="/capabilities"><SlidersHorizontal aria-hidden="true" /><span><strong>Настроить модули</strong><small>Инструменты и контекст</small></span></Link>
+        )}
       </section>
     </div>
   );

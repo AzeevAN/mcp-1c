@@ -373,7 +373,6 @@ def test_specification_возвращает_тот_же_минимальный_�
             "Справочник.<Имя>",
             "Документ.<Имя>",
             "Обработка.<Имя>",
-            "Отчет.<Имя>",
         ],
         "role": "object",
         "main_attribute": {
@@ -386,8 +385,7 @@ def test_specification_возвращает_тот_же_минимальный_�
         },
         "xml_type": (
             "cfg:CatalogObject.<Имя>, cfg:DocumentObject.<Имя> или "
-            "cfg:DataProcessorObject.<Имя>; для отчета отдельный профиль "
-            "требует реквизит Отчет типа cfg:ReportObject.<Имя>"
+            "cfg:DataProcessorObject.<Имя>"
         ),
         "derived_owner_profiles": {
             "Справочник.*": {
@@ -401,38 +399,9 @@ def test_specification_возвращает_тот_же_минимальный_�
             },
         },
         "empty_user_elements": (
-            "допустимо; чистая форма обработки остаётся без ChildItems, "
-            "а у отчёта остаются только вычисляемые системные элементы"
+            "допустимо для встроенной Обработка.*; чистая форма "
+            "обработки остаётся без ChildItems"
         ),
-        "report_profile": {
-            "owner": "Отчет.<Имя>",
-            "role": "object",
-            "main_attribute": "Отчет",
-            "saved_data": False,
-            "derived_root_properties": {
-                "ReportResult": "Результат",
-                "DetailsData": "ДанныеРасшифровки",
-                "ReportFormType": "Main",
-                "AutoShowState": "Auto",
-                "CustomSettingsFolder": (
-                    "КомпоновщикНастроекПользовательскиеНастройки"
-                ),
-                "ReportResultViewMode": "Auto",
-                "ViewModeApplicationOnSetReportResult": "Auto",
-            },
-            "derived_attributes": {
-                "Результат": "mxl:SpreadsheetDocument",
-                "ДанныеРасшифровки": "xs:string",
-            },
-            "derived_elements": [
-                "КомпоновщикНастроекПользовательскиеНастройки",
-                "Результат",
-            ],
-            "auto_command_bar": "standard_platform_filled",
-            "commands": [],
-            "events": [],
-            "application_bsl": "unsupported",
-        },
     }
     list_choice = by_code["list_choice_form_owner_context"]["value"]
     assert list_choice["roles"] == ["list", "choice"]
@@ -533,6 +502,42 @@ def test_specification_возвращает_тот_же_минимальный_�
         "summary"
     ]
     assert "unknown_keys_rejected" in by_code
+
+
+def test_specification_публикует_отдельный_шаблон_основной_формы_отчета():
+    payload = get_managed_form_rules("specification")
+    by_code = {rule["code"]: rule for rule in payload["rules"]}
+
+    generic = by_code["object_form_owner_context"]["value"]
+    assert "Отчет.<Имя>" not in generic["owners"]
+
+    report = by_code["report_form_owner_context"]["value"]
+    assert report["selection"] == {
+        "owner_prefix": "Отчет.",
+        "role": "object",
+    }
+    assert report["owner"] == "Отчет.<Имя>"
+    assert report["main_attribute"] == {
+        "name": "Отчет",
+        "main": True,
+        "type": {
+            "kind": "metadata_object",
+            "object": "<тот же owner>",
+        },
+    }
+    assert "form_name" not in report
+    assert "title" not in report
+
+    owner = "Отчет.ВыбранныйВызывающим"
+    discovered = [
+        rule["code"]
+        for rule in payload["rules"]
+        if isinstance(rule.get("value"), dict)
+        and isinstance(rule["value"].get("selection"), dict)
+        and owner.startswith(rule["value"]["selection"].get("owner_prefix", "\0"))
+        and rule["value"]["selection"].get("role") == "object"
+    ]
+    assert discovered == ["report_form_owner_context"]
 
 
 def test_elements_описывают_только_принятые_kinds_и_companions():

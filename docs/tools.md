@@ -44,12 +44,12 @@ role-операции появляются, только когда хотя б�
 Обе role-операции также условны, но принадлежат выбранной конфигурации и
 используют её generation.
 
-Состав role-инструментов меняется без monkey patch и без автоматического
-restart: после intake confirm, удаления источника или admin reload сервер под
-одним lock добавляет либо снимает сразу обе схемы и отправляет стандартное
-уведомление `tools/list_changed`. Современная сессия обновляет `tools/list` по
-уведомлению; клиент без такой поддержки должен переподключиться. Пока ни
-одного `roles=ready` нет, постоянная цена двух схем в контексте равна нулю.
+В текущей сборке обе role-схемы регистрируются при запуске, если включён
+startup-only capability `role_access`, даже когда готового индекса ролей ещё
+нет. Без capability схем нет в каталоге. Изменение источников не меняет их
+состав: для изменения capability нужен полный restart сервера и новое
+MCP-подключение. Внутренний динамический путь без startup-контроля не
+используется текущей сборкой.
 
 Четыре Forms-инструмента появляются только при startup, если `forms` входит в
 `capabilities.enabled` файла `data/server-settings.json`. Пока файла нет,
@@ -70,12 +70,12 @@ Capability `metadata_authoring` по тем же startup-правилам доб
 `get_metadata_authoring_rules(topic="overview")`, затем тематические разделы и
 `compile_metadata_object(specification)`. Compiler schema v1 детерминированно
 выводит внутренние UUID из явного `identity` и возвращает текстовые артефакты.
-Темы `catalog`, `document`, `information_register` и `data_processor` возвращают точные полные примеры,
+Темы `catalog`, `document`, `information_register`, `data_processor` и `report` возвращают точные полные примеры,
 которые проходят `compile → check` и адаптируются caller к найденной структуре.
 При непустом `forms[]` агент обязан запросить тему `forms` и выполнить Forms
 `rules → compile → check` для каждой роли до Metadata compile. Справочный XML
 из `artifacts` — только shape reference, а не готовый артефакт формы.
-До первого вызова `tools/list` показывает 4 закрытые ветки specification,
+До первого вызова `tools/list` показывает 5 закрытых веток specification,
 их обязательные поля, плоский `forms`, варианты типов, диапазоны и patterns.
 Schema-only facade оставляет runtime-вход обычным словарём, поэтому ошибочный
 запрос возвращает предметный `status=rejected` с diagnostics, а не сырой

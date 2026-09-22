@@ -122,6 +122,27 @@ def test_публичные_документы_описывают_role_tools_api
     assert "237 375" in changelog
 
 
+def test_публичные_контракты_источников_ролей_и_authoring_согласованы():
+    sources = _read("docs/data-sources.md")
+    tools = _read("docs/tools.md")
+    readme = _read("README.md")
+    dashboard = _read("dashboard/README.md")
+
+    assert "**Предопределённые элементы** | **A или B**" in sources
+    assert "`Predefined.xml`" in sources
+    assert "текущий converter не получает имена" not in sources
+    assert "startup-only capability `role_access`" in tools
+    assert "даже когда готового индекса ролей ещё" in tools
+    assert "даже если готового индекса ролей ещё нет" in readme
+    assert "после intake confirm" not in tools.split("Четыре Forms-инструмента", 1)[0]
+    assert "`GET /api/v1/capabilities`" in dashboard
+    assert "`PUT /api/v1/capabilities`" in dashboard
+    assert "Административные ручки требуют `ADMIN_TOKEN`" in dashboard
+    for text in (tools, readme):
+        assert "5 закрытых веток specification" in text
+    assert "`data_processor` и `report`" in tools
+
+
 def test_инструкция_загрузки_разделяет_source_a_source_b_и_публикацию():
     instruction = _read("docs/configuration-loading.md")
     readme = _read("README.md")

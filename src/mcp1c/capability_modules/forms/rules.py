@@ -171,8 +171,8 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
             "supported",
             (
                 "Owner-aware вертикаль поддерживает role=object для владельца "
-                "Справочник.*, Документ.*, встроенной Обработка.* или Отчет.* при совпадающем "
-                "главном metadata_object."
+                "Справочник.*, Документ.* или встроенной Обработка.* при "
+                "совпадающем главном metadata_object."
             ),
             "corpus_invariant",
             {
@@ -180,7 +180,6 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
                     "Справочник.<Имя>",
                     "Документ.<Имя>",
                     "Обработка.<Имя>",
-                    "Отчет.<Имя>",
                 ],
                 "role": "object",
                 "main_attribute": {
@@ -193,8 +192,7 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
                 },
                 "xml_type": (
                     "cfg:CatalogObject.<Имя>, cfg:DocumentObject.<Имя> или "
-                    "cfg:DataProcessorObject.<Имя>; для отчета отдельный профиль "
-                    "требует реквизит Отчет типа cfg:ReportObject.<Имя>"
+                    "cfg:DataProcessorObject.<Имя>"
                 ),
                 "derived_owner_profiles": {
                     "Справочник.*": {
@@ -208,38 +206,61 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
                     },
                 },
                 "empty_user_elements": (
-                    "допустимо; чистая форма обработки остаётся без ChildItems, "
-                    "а у отчёта остаются только вычисляемые системные элементы"
+                    "допустимо для встроенной Обработка.*; чистая форма "
+                    "обработки остаётся без ChildItems"
                 ),
-                "report_profile": {
-                    "owner": "Отчет.<Имя>",
+            },
+        ),
+        FormRule(
+            "report_form_owner_context",
+            "supported",
+            (
+                "Основная форма Отчет.* использует role=object и главный "
+                "реквизит Отчет типа metadata_object с тем же owner. Остальные "
+                "имена и пользовательский состав формы выбирает вызывающий."
+            ),
+            "corpus_invariant",
+            {
+                "selection": {
+                    "owner_prefix": "Отчет.",
                     "role": "object",
-                    "main_attribute": "Отчет",
-                    "saved_data": False,
-                    "derived_root_properties": {
-                        "ReportResult": "Результат",
-                        "DetailsData": "ДанныеРасшифровки",
-                        "ReportFormType": "Main",
-                        "AutoShowState": "Auto",
-                        "CustomSettingsFolder": (
-                            "КомпоновщикНастроекПользовательскиеНастройки"
-                        ),
-                        "ReportResultViewMode": "Auto",
-                        "ViewModeApplicationOnSetReportResult": "Auto",
-                    },
-                    "derived_attributes": {
-                        "Результат": "mxl:SpreadsheetDocument",
-                        "ДанныеРасшифровки": "xs:string",
-                    },
-                    "derived_elements": [
-                        "КомпоновщикНастроекПользовательскиеНастройки",
-                        "Результат",
-                    ],
-                    "auto_command_bar": "standard_platform_filled",
-                    "commands": [],
-                    "events": [],
-                    "application_bsl": "unsupported",
                 },
+                "owner": "Отчет.<Имя>",
+                "role": "object",
+                "main_attribute": {
+                    "name": "Отчет",
+                    "main": True,
+                    "type": {
+                        "kind": "metadata_object",
+                        "object": "<тот же owner>",
+                    },
+                },
+                "saved_data": False,
+                "xml_type": "cfg:ReportObject.<Имя>",
+                "derived_root_properties": {
+                    "ReportResult": "Результат",
+                    "DetailsData": "ДанныеРасшифровки",
+                    "ReportFormType": "Main",
+                    "AutoShowState": "Auto",
+                    "CustomSettingsFolder": (
+                        "КомпоновщикНастроекПользовательскиеНастройки"
+                    ),
+                    "ReportResultViewMode": "Auto",
+                    "ViewModeApplicationOnSetReportResult": "Auto",
+                },
+                "derived_attributes": {
+                    "Результат": "mxl:SpreadsheetDocument",
+                    "ДанныеРасшифровки": "xs:string",
+                },
+                "derived_elements": [
+                    "КомпоновщикНастроекПользовательскиеНастройки",
+                    "Результат",
+                ],
+                "empty_user_elements": "допустимо; остаются системные элементы",
+                "auto_command_bar": "standard_platform_filled",
+                "commands": [],
+                "events": [],
+                "application_bsl": "unsupported",
             },
         ),
         FormRule(

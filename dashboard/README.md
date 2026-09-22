@@ -90,8 +90,11 @@ MCP1C_IMAGE=mcp1c:local docker compose up -d
 - `GET /api/v1/roles/restriction` — ограниченное окно явно выбранного RLS;
 - `GET /api/v1/dictionary` — встроенный и локальный слои словаря;
 - `GET /api/v1/reference*` — статус, поиск и карточки общей справки;
-- `GET|PUT /api/v1/capabilities` — active/desired-статус и атомарная запись
-  полного набора внутренних модулей.
+
+Административные ручки требуют `ADMIN_TOKEN`:
+
+- `GET /api/v1/capabilities` — active/desired-статус внутренних модулей;
+- `PUT /api/v1/capabilities` — атомарная запись полного desired-набора.
 
 Экран «Дополнительные модули» показывает доступные `forms` и
 `metadata_authoring` до включения.

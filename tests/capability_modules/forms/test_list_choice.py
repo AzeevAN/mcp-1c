@@ -6,6 +6,7 @@ import re
 
 import pytest
 
+from mcp1c.capability_modules.forms.checker import check_managed_form
 from mcp1c.capability_modules.forms.compiler import compile_managed_form
 from mcp1c.capability_modules.forms.decompiler import decompile_managed_form
 from mcp1c.capability_modules.forms.models import FormsContractError, parse_managed_form_spec
@@ -507,7 +508,6 @@ def test_list_choice_rejects_legacy_root_command_bar_location(role: str):
             "<UserSettingsGroup>ДругаяГруппа</UserSettingsGroup>",
             1,
         ),
-        lambda xml: xml.replace('<Table name="Список" id="3">', '<Table name="Список" id="4">', 1),
         lambda xml: xml.replace("<DefaultItem>true</DefaultItem>", "<DefaultItem>false</DefaultItem>", 1),
     ],
 )
@@ -526,6 +526,103 @@ def test_list_choice_rejects_mutated_default_profile(mutation):
         item.code == "invalid_list_choice_default_profile"
         for item in result.diagnostics
     )
+
+
+@pytest.mark.parametrize("role", ["list", "choice"])
+@pytest.mark.parametrize("placement", ["label_before", "group_before", "nested"])
+def test_list_table_can_follow_supported_elements_and_roundtrip(
+    role: str, placement: str
+):
+    payload = _payload("Справочник.Товары", role)
+    table = payload["elements"][0]
+    if placement == "label_before":
+        payload["elements"].insert(
+            0,
+            {
+                "kind": "label_decoration",
+                "name": "Пояснение",
+                "title": {"ru": "Пояснение"},
+            },
+        )
+    elif placement == "group_before":
+        payload["elements"].insert(
+            0,
+            {
+                "kind": "usual_group",
+                "name": "ВводнаяГруппа",
+                "title": {"ru": "Вводная группа"},
+                "children": [
+                    {
+                        "kind": "label_decoration",
+                        "name": "ПояснениеВГруппе",
+                        "title": {"ru": "Пояснение"},
+                    }
+                ],
+            },
+        )
+    else:
+        payload["elements"] = [
+            {
+                "kind": "usual_group",
+                "name": "ГруппаСписка",
+                "title": {"ru": "Группа списка"},
+                "children": [table],
+            }
+        ]
+
+    compiled = compile_managed_form(payload)
+    checked = check_managed_form(
+        compiled.artifacts[0].content,
+        form_name=payload["form_name"],
+        context=payload["context"],
+        module_bsl=compiled.artifacts[1].content,
+    )
+    decompiled = decompile_managed_form(
+        compiled.artifacts[0].content,
+        form_name=payload["form_name"],
+        context=payload["context"],
+        module_bsl=compiled.artifacts[1].content,
+    )
+
+    assert checked.coverage.structural == "passed"
+    assert decompiled.status == "decompiled"
+    assert decompiled.specification == compiled.specification
+    assert compile_managed_form(decompiled.specification).artifacts == compiled.artifacts
+
+
+@pytest.mark.parametrize(
+    ("replacement", "diagnostic_code"),
+    [("not-an-id", "invalid_id"), ("1", "duplicate_element_id")],
+)
+def test_shifted_list_table_still_checks_id_integrity(
+    replacement: str, diagnostic_code: str
+):
+    payload = _payload("Справочник.Товары", "list")
+    payload["elements"].insert(
+        0,
+        {
+            "kind": "label_decoration",
+            "name": "Пояснение",
+            "title": {"ru": "Пояснение"},
+        },
+    )
+    compiled = compile_managed_form(payload)
+    xml = re.sub(
+        r'(<Table name="Список" id=")[^"]+(\")',
+        rf"\g<1>{replacement}\g<2>",
+        compiled.artifacts[0].content,
+        count=1,
+    )
+
+    checked = check_managed_form(
+        xml,
+        form_name=payload["form_name"],
+        context=payload["context"],
+        module_bsl=compiled.artifacts[1].content,
+    )
+
+    assert checked.coverage.structural == "failed"
+    assert any(item.code == diagnostic_code for item in checked.diagnostics)
 
 
 def test_list_choice_rejects_reserved_system_name():

@@ -1537,13 +1537,6 @@ def _validate_list_choice_markers(
             )
 
     for table in bound_tables:
-        if table.get("id") != "3":
-            inventory.issue(
-                "invalid_list_choice_default_profile",
-                inventory.paths[id(table)] + "/@id",
-                "Таблица Список системного профиля должна иметь ID 3.",
-                status="failed",
-            )
         for local, expected in (
             ("Representation", "List"),
             ("CommandBarLocation", "None"),

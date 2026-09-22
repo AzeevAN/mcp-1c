@@ -91,6 +91,32 @@ def test_registry_declares_platform_for_a_only(tmp_path):
     assert registry.set_platform_version("Demo", "8.3.24").version == "8.3.24"
 
 
+@pytest.mark.parametrize("operation", ["set", "clear"])
+def test_failed_platform_write_preserves_effective_version(tmp_path, monkeypatch, operation):
+    registry = Registry(tmp_path / "data")
+    source = tmp_path / "source"
+    source.mkdir()
+    registry.add_configuration(
+        write_export(source, build_configuration(name="Demo")), keep_source=False,
+    )
+    registry.set_platform_version("Demo", "8.3.24")
+    before = registry.registry_path.read_bytes()
+
+    def reject_write(_payload):
+        raise OSError("synthetic disk failure")
+
+    monkeypatch.setattr(registry, "_write_registry_payload", reject_write)
+    with pytest.raises(OSError, match="synthetic disk failure"):
+        if operation == "set":
+            registry.set_platform_version("Demo", "8.3.27")
+        else:
+            registry.clear_platform_version("Demo")
+
+    assert registry.registry_path.read_bytes() == before
+    assert registry.platform_declaration("Demo").version == "8.3.24"
+    assert registry.resolve("Demo").platform == "8.3.24"
+
+
 def test_manual_platform_is_used_by_notes_and_syntax_tools(tmp_path):
     registry = Registry(tmp_path / "data")
     source = tmp_path / "source"

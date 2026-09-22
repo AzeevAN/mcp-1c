@@ -4462,9 +4462,12 @@ class Registry:
                 and configuration not in self.configurations
             ):
                 raise RegistryError("configuration_not_loaded")
-        with self._lock:
-            self._platform_declarations[configuration] = declaration
-            self._write_registry_payload(self._registry_payload())
+            next_declarations = dict(self._platform_declarations)
+            next_declarations[configuration] = declaration
+            self._write_registry_payload(
+                self._registry_payload(platform_declarations=next_declarations)
+            )
+            self._platform_declarations = next_declarations
         return declaration
 
     def clear_platform_version(self, configuration: str) -> None:
@@ -4475,9 +4478,12 @@ class Registry:
                 and configuration not in self.configurations
             ):
                 raise RegistryError("configuration_not_loaded")
-        with self._lock:
-            self._platform_declarations.pop(configuration, None)
-            self._write_registry_payload(self._registry_payload())
+            next_declarations = dict(self._platform_declarations)
+            next_declarations.pop(configuration, None)
+            self._write_registry_payload(
+                self._registry_payload(platform_declarations=next_declarations)
+            )
+            self._platform_declarations = next_declarations
 
     def _write_registry_payload(self, payload: Mapping[str, object]) -> None:
         """Durable atomic replace общего Registry pointer."""

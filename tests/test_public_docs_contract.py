@@ -1,6 +1,5 @@
 """Ключевые публичные документы описывают текущее поведение, а не планы."""
 
-from datetime import date
 from pathlib import Path
 import struct
 import zipfile
@@ -36,14 +35,13 @@ def test_readme_показывает_обезличенный_дашборд():
 
 def test_readme_не_выдаёт_локальный_registry_за_состав_установки():
     readme = _read("README.md")
-    state = readme.split("## Состояние", 1)[1].split("## Навигация", 1)[0]
+    introduction = readme.split("## Почему MCP 1C", 1)[0]
 
-    state_date = date.fromisoformat(state.splitlines()[0].strip().removeprefix("— "))
-    assert f"(прогон {state_date.isoformat()})" in state
-    assert "| Тесты |" in state
-    assert "| Конфигурации |" not in state
-    assert "group_by(.kind)" not in state
-    assert "5 конфигураций, 20 522 объекта" not in state
+    assert "полностью синтетических данных" in introduction
+    assert "всё состояние\nконкретной установки находится в каталоге `data/`" in introduction
+    assert "| Конфигурации |" not in readme
+    assert "group_by(.kind)" not in readme
+    assert "5 конфигураций, 20 522 объекта" not in readme
 
 
 def test_schema_описывает_рабочие_предопределённые_на_8_3_5():

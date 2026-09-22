@@ -13,14 +13,14 @@ ROOT = Path(__file__).parents[1]
 def test_счётчики_pytest_в_публичных_документах_совпадают_с_collection():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     contributing = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
-    статус = re.search(r"\| Тесты \|[^\n]*?, (\d+) \|", readme)
-    раздел = re.search(r"python -m pytest\s+# (\d+) тест(?:а|ов)?", readme)
     вклад = re.search(
-        r"python -m pytest\s+# (\d+) тест(?:а|ов)?", contributing
+        r"\.venv/bin/python -m pytest\s+# (\d+) тест(?:а|ов)?;[^\n]*\(прогон \d{4}-\d{2}-\d{2}\)",
+        contributing,
     )
 
-    assert статус is not None and раздел is not None and вклад is not None
-    assert статус.group(1) == раздел.group(1) == вклад.group(1)
+    assert ".venv/bin/python -m pytest\n" in readme
+    assert "| Тесты |" not in readme
+    assert вклад is not None
 
     env = {**os.environ, "PYTEST_ADDOPTS": ""}
     result = subprocess.run(
@@ -34,7 +34,7 @@ def test_счётчики_pytest_в_публичных_документах_со
     collected = re.search(r"(\d+) tests collected", result.stdout)
 
     assert collected is not None
-    assert int(статус.group(1)) == int(collected.group(1))
+    assert int(вклад.group(1)) == int(collected.group(1))
 
 
 def test_readme_выделяет_модульную_систему_и_forms() -> None:
@@ -43,12 +43,18 @@ def test_readme_выделяет_модульную_систему_и_forms() ->
     раздел = раздел.split("\n## ", 1)[0]
 
     assert "постоянного read-only ядра" in раздел
-    assert "Первый подключаемый модуль" in раздел
+    assert "подключаемых capability-модулей" in раздел
+    assert "после перезапуска" in раздел
+    assert "новую MCP-сессию" in раздел
     assert "Forms («Управляемые формы»)" in раздел
-    assert "get_managed_form_rules" in раздел
-    assert "compile_managed_form" in раздел
-    assert "check_managed_form" in раздел
-    assert "decompile_managed_form" in раздел
+    assert "[описании инструментов](docs/tools.md)" in раздел
+    for tool in (
+        "get_managed_form_rules",
+        "compile_managed_form",
+        "check_managed_form",
+        "decompile_managed_form",
+    ):
+        assert tool in текст
     assert "сам не изменяет конфигурацию" in раздел
 
 

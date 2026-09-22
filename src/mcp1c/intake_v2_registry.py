@@ -449,6 +449,7 @@ class GenerationRecovery:
     staged: GenerationPointer
     phase: RecoveryPhase
     staging_path: str = ""
+    detached: tuple[GenerationPointer, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -458,6 +459,8 @@ class GenerationRecovery:
         }
         if self.staging_path:
             payload["staging_path"] = self.staging_path
+        if self.detached:
+            payload["detached"] = [pointer.to_dict() for pointer in self.detached]
         return payload
 
     @classmethod
@@ -478,6 +481,10 @@ class GenerationRecovery:
                     _safe_relative(raw["staging_path"], "staging_path")
                     if raw.get("staging_path")
                     else ""
+                ),
+                detached=tuple(
+                    GenerationPointer.from_dict(pointer)
+                    for pointer in raw.get("detached", ())
                 ),
             )
         except (KeyError, TypeError, ValueError, BundleStoreError) as error:
@@ -1064,12 +1071,15 @@ class GenerationBundleStore:
         previous: GenerationPointer | None,
         staged: StagedGeneration,
         phase: RecoveryPhase,
+        *,
+        detached: tuple[GenerationPointer, ...] = (),
     ) -> GenerationRecovery:
         return GenerationRecovery(
             previous=previous,
             staged=staged.pointer,
             phase=phase,
             staging_path=self._staging_relative(staged.root, self.data_dir),
+            detached=detached,
         )
 
 

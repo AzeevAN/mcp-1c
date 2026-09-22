@@ -5280,6 +5280,13 @@ class Registry:
                                 == manifest.identity.configuration_name
                             )
                         ]
+                    prepared = replace(
+                        prepared,
+                        detached=tuple(detached_extensions),
+                    )
+                    # Точный cleanup-план обязан стать durable до Registry
+                    # switch: после switch child pointers уже исчезнут из Registry.
+                    self._generation_store.write_recovery(prepared)
                     next_pointers = dict(self._generation_pointers)
                     for child in detached_extensions:
                         next_pointers.pop(child.identity.grouping_key, None)
@@ -5357,12 +5364,7 @@ class Registry:
                 )
                 self._generation_store.remove_pointer_root(previous)
                 for child in detached_extensions:
-                    try:
-                        self._generation_store.remove_pointer_root(child)
-                    except (OSError, BundleStoreError) as error:
-                        logger.warning(
-                            "Очистка detached extension root отложена: %s", error
-                        )
+                    self._generation_store.remove_pointer_root(child)
                 self._generation_store.remove_staging(prepared.staging_path)
                 self._generation_store.clear_recovery()
                 try:
@@ -5445,7 +5447,38 @@ class Registry:
             ]
 
         manifest = self._generation_store.verify(recovery.staged)
+        detached_keys: set[tuple[str, ...]] = set()
+        detached_roots: set[str] = set()
+        if recovery.detached:
+            activation = recovery.staged.activation
+            staged_identity = recovery.staged.identity
+            if (
+                staged_identity.source_kind is not SourceKind.CONFIGURATION
+                or activation is None
+                or activation.mode is not ActivationMode.A_ONLY
+            ):
+                raise RecoveryBlocked(
+                    "generation recovery содержит detached roots вне A_ONLY"
+                )
+            for child in recovery.detached:
+                child_key = child.identity.grouping_key
+                if (
+                    child.identity.source_kind is not SourceKind.EXTENSION
+                    or child.identity.parent_configuration
+                    != staged_identity.configuration_name
+                    or child_key in detached_keys
+                    or child.root_path in detached_roots
+                    or child in {recovery.previous, recovery.staged}
+                    or child_key in pointers
+                ):
+                    raise RecoveryBlocked(
+                        "generation recovery содержит неверный detached pointer"
+                    )
+                detached_keys.add(child_key)
+                detached_roots.add(child.root_path)
         self._generation_store.remove_pointer_root(recovery.previous)
+        for child in recovery.detached:
+            self._generation_store.remove_pointer_root(child)
         self._generation_store.remove_staging(recovery.staging_path)
         self._generation_store.clear_recovery()
         with self._lock:

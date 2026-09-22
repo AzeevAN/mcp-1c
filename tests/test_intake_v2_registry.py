@@ -16,6 +16,7 @@ import pytest
 from conftest import build_configuration, write_export
 from mcp1c.registry import Registry
 from mcp1c.source_modes import ActivationComponent, ActivationManifest, ActivationMode
+from test_intake_v2_extensions import _materialized
 
 
 SUBJECT = "mcp1c.intake_v2_registry"
@@ -214,6 +215,190 @@ def test_relative_data_root_нормализуется_до_staging(tmp_path, mo
     registry = Registry("data")
 
     assert registry.data_dir == registry_root.resolve()
+
+
+def test_generation_recovery_reads_legacy_record_without_detached(tmp_path):
+    GenerationRecovery = _symbol("GenerationRecovery")
+    RecoveryPhase = _symbol("RecoveryPhase")
+    manifest, payloads = _manifest(tmp_path, "generation-legacy-recovery")
+    registry = Registry(tmp_path / "data")
+    staged = registry.stage_generation(manifest, payloads)
+
+    recovery = GenerationRecovery.from_dict(
+        {
+            "previous": None,
+            "staged": staged.pointer.to_dict(),
+            "phase": RecoveryPhase.PREPARED.value,
+        }
+    )
+
+    assert recovery.detached == ()
+    assert "detached" not in recovery.to_dict()
+
+
+@pytest.mark.parametrize("extension_count", [0, 1, 2])
+def test_crash_recovery_removes_exact_detached_extension_roots(
+    tmp_path, monkeypatch, extension_count
+):
+    _base_collection, base = _materialized(tmp_path, "recovery-base")
+    registry = Registry(tmp_path / "data")
+    registry.publish_generation(
+        registry.stage_generation(base.manifest, base.payloads)
+    )
+    child_pointers = []
+    for index in range(extension_count):
+        _collection, extension = _materialized(
+            tmp_path,
+            f"recovery-extension-{index}",
+            configuration_name=f"RecoveryExtension{index}",
+            extension=True,
+        )
+        pointer = registry.publish_generation(
+            registry.stage_generation(extension.manifest, extension.payloads)
+        )
+        child_pointers.append(pointer)
+
+    unrelated_root = (
+        registry.data_dir
+        / "generations"
+        / ("f" * 64)
+        / "unrelated-generation"
+    )
+    unrelated_root.mkdir(parents=True)
+    (unrelated_root / "keep.txt").write_text("keep", encoding="utf-8")
+
+    source = tmp_path / "source-a"
+    source.mkdir()
+    exported = write_export(source, build_configuration(name="DemoConfiguration"))
+
+    def crash_after_switch(_checkpoint):
+        raise SystemExit("synthetic crash after durable pointer switch")
+
+    monkeypatch.setattr(
+        registry, "_after_generation_pointer_switch", crash_after_switch
+    )
+    with pytest.raises(SystemExit, match="synthetic crash"):
+        registry.add_configuration(exported, keep_source=False)
+
+    recovery = registry._generation_store.read_recovery()
+    assert recovery is not None
+    assert recovery.detached == tuple(child_pointers)
+
+    restarted = Registry(registry.data_dir)
+    restarted.recover_generation_publish()
+    assert restarted.restore() == []
+    assert unrelated_root.is_dir()
+    for child in child_pointers:
+        assert not (registry.data_dir / child.root_path).exists()
+
+
+def test_detached_root_cleanup_failure_is_retried_idempotently(
+    tmp_path, monkeypatch
+):
+    _base_collection, base = _materialized(tmp_path, "retry-base")
+    registry = Registry(tmp_path / "data")
+    registry.publish_generation(
+        registry.stage_generation(base.manifest, base.payloads)
+    )
+    children = []
+    for index in range(2):
+        _collection, extension = _materialized(
+            tmp_path,
+            f"retry-extension-{index}",
+            configuration_name=f"RetryExtension{index}",
+            extension=True,
+        )
+        children.append(
+            registry.publish_generation(
+                registry.stage_generation(extension.manifest, extension.payloads)
+            )
+        )
+    source = tmp_path / "retry-source-a"
+    source.mkdir()
+
+    def crash_after_switch(_checkpoint):
+        raise SystemExit("synthetic retry crash")
+
+    monkeypatch.setattr(
+        registry, "_after_generation_pointer_switch", crash_after_switch
+    )
+    with pytest.raises(SystemExit, match="synthetic retry crash"):
+        registry.add_configuration(
+            write_export(source, build_configuration(name="DemoConfiguration")),
+            keep_source=False,
+        )
+
+    restarted = Registry(registry.data_dir)
+    original_remove = restarted._generation_store.remove_pointer_root
+    failed = False
+
+    def fail_second_once(pointer):
+        nonlocal failed
+        if pointer == children[1] and not failed:
+            failed = True
+            raise OSError("synthetic detached cleanup failure")
+        original_remove(pointer)
+
+    monkeypatch.setattr(
+        restarted._generation_store, "remove_pointer_root", fail_second_once
+    )
+    with pytest.raises(OSError, match="synthetic detached cleanup failure"):
+        restarted.recover_generation_publish()
+
+    assert restarted.generation_recovery_path.is_file()
+    assert not (registry.data_dir / children[0].root_path).exists()
+    assert (registry.data_dir / children[1].root_path).is_dir()
+
+    monkeypatch.setattr(
+        restarted._generation_store, "remove_pointer_root", original_remove
+    )
+    restarted.recover_generation_publish()
+    assert not restarted.generation_recovery_path.exists()
+    assert all(
+        not (registry.data_dir / child.root_path).exists() for child in children
+    )
+
+
+def test_pre_switch_rollback_preserves_recorded_detached_root(
+    tmp_path, monkeypatch
+):
+    _base_collection, base = _materialized(tmp_path, "rollback-base")
+    _extension_collection, extension = _materialized(
+        tmp_path,
+        "rollback-extension",
+        configuration_name="RollbackExtension",
+        extension=True,
+    )
+    registry = Registry(tmp_path / "data")
+    registry.publish_generation(
+        registry.stage_generation(base.manifest, base.payloads)
+    )
+    child = registry.publish_generation(
+        registry.stage_generation(extension.manifest, extension.payloads)
+    )
+    child_root = registry.data_dir / child.root_path
+    source = tmp_path / "rollback-source-a"
+    source.mkdir()
+
+    def crash_before_switch(*_args, **_kwargs):
+        raise SystemExit("synthetic crash before pointer switch")
+
+    monkeypatch.setattr(registry, "_write_registry_payload", crash_before_switch)
+    with pytest.raises(SystemExit, match="synthetic crash before pointer switch"):
+        registry.add_configuration(
+            write_export(source, build_configuration(name="DemoConfiguration")),
+            keep_source=False,
+        )
+
+    recovery = registry._generation_store.read_recovery()
+    assert recovery is not None
+    assert recovery.detached == (child,)
+
+    restarted = Registry(registry.data_dir)
+    restarted.recover_generation_publish()
+    assert restarted.restore() == []
+    assert child_root.is_dir()
+    assert restarted.active_generation_pointer(extension.manifest.identity) == child
 
 
 def test_publish_atomic_root_persists_activation_manifest(tmp_path):

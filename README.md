@@ -97,14 +97,28 @@ docker compose up -d
 | Источники, CLI, bench и ручной сервер | [docs/operations.md](docs/operations.md) |
 | Архитектура, кэш и проверки | [docs/architecture.md](docs/architecture.md) |
 | Обработка выгрузки для 1С | [exporter-1c/README.md](exporter-1c/README.md) |
+| Skills и сценарии агентов | [skills/README.md](skills/README.md) |
+
+В каталоге skills доступен экспериментальный
+[`bsl-change-review`](skills/bsl-change-review/SKILL.md): компактная переносимая
+инструкция выбирает отдельный [`Review`](skills/bsl-change-review/references/review.md)
+для визуального diff или
+[`Manual Implementation`](skills/bsl-change-review/references/manual-implementation.md)
+для копируемого ручного изменения BSL, форм и метаданных, в том числе при
+бинарных формах. Агент читает только reference выбранного режима; изменения
+автоматически не применяются. Candidate ещё не принят: его польза проверяется
+слепым baseline/candidate-сравнением на одинаковой задаче и обычном MCP.
 
 ## Помочь проекту реальным примером
 
 Если MCP вернул неверный или неполный ответ, заведите
 [issue](https://github.com/AzeevAN/mcp-1c/issues/new) с обезличенным описанием
-задачи и результата. Не прикладывайте выгрузки конфигураций, исходный код,
+того, какую задачу вы решали, что ожидали получить и что получили. Не
+прикладывайте выгрузки конфигураций, исходный код,
 рабочие имена и токены; полный формат публичного примера описан в
 [CONTRIBUTING.md](CONTRIBUTING.md).
+Перед публикацией обезличьте пример.
+Не прикладывайте содержимое каталога `data/`.
 
 ---
 

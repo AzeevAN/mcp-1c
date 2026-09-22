@@ -44,9 +44,15 @@ def test_activation_manifest_roundtrip_is_strict():
         ActivationManifest.from_dict({**manifest.to_dict(), "mode": "mixed"})
 
 
-def test_blank_configuration_version_is_rejected():
+def test_unknown_configuration_version_survives_roundtrip():
+    manifest = _manifest(configuration_version="")
+    assert ActivationManifest.from_json(manifest.to_json()) == manifest
+
+
+@pytest.mark.parametrize("version", [None, " cfg-1", "cfg-1 ", "\x00"])
+def test_invalid_configuration_version_is_rejected(version):
     with pytest.raises(ValueError, match="configuration_version"):
-        _manifest(configuration_version="")
+        _manifest(configuration_version=version)
 
 
 def test_legacy_activation_is_reload_required_without_rewrite():

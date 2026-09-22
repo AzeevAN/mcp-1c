@@ -120,11 +120,12 @@ class ActivationManifest:
         for label, value in (
             ("identity_incarnation", self.identity_incarnation),
             ("physical_generation_root_id", self.physical_generation_root_id),
-            ("configuration_version", self.configuration_version),
             ("transaction_id", self.transaction_id),
             ("recovery_id", self.recovery_id),
         ):
             _text(value, label)
+        if self.configuration_version != "":
+            _text(self.configuration_version, "configuration_version")
         if self.expected_previous_activation is not None:
             _sha(self.expected_previous_activation, "expected_previous_activation")
         if not isinstance(self.main, ActivationComponent):

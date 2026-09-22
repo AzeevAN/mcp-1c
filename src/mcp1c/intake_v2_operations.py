@@ -94,14 +94,17 @@ def _activation_for_generation(
             ExportIdentity.configuration(manifest.identity.parent_configuration)
         )
         if parent is not None:
-            parent_payloads = publisher.generation_payload_sources(parent)
-            parent_base = parent_payloads.get(LayerKind.BASE_STRUCTURE)
-            if parent_base is not None:
-                version = load_layer_payload(parent_base.manifest_path).semantic.get(
-                    "version"
-                )
-    if not isinstance(version, str) or not version:
-        raise OperationError("B_FULL не содержит configuration version")
+            if parent.activation is not None:
+                version = parent.activation.configuration_version
+            else:
+                parent_payloads = publisher.generation_payload_sources(parent)
+                parent_base = parent_payloads.get(LayerKind.BASE_STRUCTURE)
+                if parent_base is not None:
+                    version = load_layer_payload(parent_base.manifest_path).semantic.get(
+                        "version"
+                    )
+    if not isinstance(version, str):
+        raise OperationError("B_FULL содержит некорректную configuration version")
     payload_digest = hashlib.sha256(
         "|".join(
             f"{layer.kind.value}:{layer.payload_sha256}"

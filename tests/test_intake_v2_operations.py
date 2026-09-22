@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import importlib
 import io
+import json
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from threading import Event
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,10 +19,12 @@ from mcp1c.intake_v2 import (
     DurableCandidateStore,
     LayerKind,
 )
+from mcp1c.intake_v2_operations import _activation_for_generation
 from mcp1c.intake_v2_planner import IntakeAction
 from mcp1c.intake_v2_transport import BrowserStagingStore
 from mcp1c.registry import Registry, RegistryError
 from test_intake_v2_collector import _configuration
+from test_intake_v2_extensions import _materialized
 
 
 SUBJECT = "mcp1c.intake_v2_operations"
@@ -50,6 +54,99 @@ def _archive() -> bytes:
     with zipfile.ZipFile(payload, "w") as archive:
         archive.writestr("Configuration.xml", _configuration())
     return payload.getvalue()
+
+
+def _archive_with_version(version: str) -> bytes:
+    xml = _configuration().replace(
+        b"<Version>1.0</Version>",
+        f"<Version>{version}</Version>".encode() if version else b"",
+    )
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w") as archive:
+        archive.writestr("Configuration.xml", xml)
+    return payload.getvalue()
+
+
+@pytest.mark.parametrize("version", ["", "1.0"])
+def test_optional_configuration_version_переживает_b_и_a_activation(tmp_path, version):
+    IntakeCoordinator = _symbol("IntakeCoordinator")
+    root, uploads, records = _stores(tmp_path)
+    coordinator = IntakeCoordinator(root / "operations", records)
+    raw = _archive_with_version(version)
+    uploads.accept("optional-version", "export.zip", io.BytesIO(raw), expected_size=len(raw))
+    coordinator.create_job("optional-version-job", "optional-version")
+    with uploads.open_tree("optional-version") as tree:
+        coordinator.probe("optional-version-job", tree)
+    with uploads.open_tree("optional-version") as tree:
+        preview = coordinator.prepare(
+            "optional-version-job", tree, action=IntakeAction.CREATE,
+            active=None, generation_id="optional-version-generation",
+        )
+    registry = Registry(tmp_path / "registry")
+    coordinator.confirm("optional-version-job", registry)
+    pointer = registry.active_generation_pointer(preview.plan.identity)
+    assert pointer.activation.configuration_version == version
+    assert registry.resolve("DemoConfiguration").configuration.config.version == version
+    restored = Registry(registry.data_dir)
+    assert restored.restore() == []
+    assert restored.active_generation_pointer(preview.plan.identity).activation.configuration_version == version
+
+    next_version = "1.0" if version == "" else ""
+    updated = _archive_with_version(next_version)
+    uploads.accept("updated-version", "update.zip", io.BytesIO(updated), expected_size=len(updated))
+    coordinator.create_job("updated-version-job", "updated-version")
+    with uploads.open_tree("updated-version") as tree:
+        coordinator.probe("updated-version-job", tree)
+    with uploads.open_tree("updated-version") as tree:
+        coordinator.prepare(
+            "updated-version-job", tree, action=IntakeAction.UPDATE_FULL,
+            active=restored.generation_view("DemoConfiguration"),
+            generation_id="updated-version-generation",
+        )
+    coordinator.confirm("updated-version-job", restored)
+    assert restored.active_generation_pointer(preview.plan.identity).activation.configuration_version == next_version
+    assert restored.resolve("DemoConfiguration").configuration.config.version == next_version
+
+    source = tmp_path / "source-a"
+    source.mkdir()
+    config = replace(build_configuration(name="DemoConfiguration"), version=version)
+    restored.add_configuration(write_export(source, config), keep_source=False)
+    a_pointer = restored.active_generation_pointer(preview.plan.identity)
+    assert a_pointer.activation.configuration_version == version
+    assert restored.resolve("DemoConfiguration").configuration.config.version == version
+    again = Registry(registry.data_dir)
+    assert again.restore() == []
+    assert again.active_generation_pointer(preview.plan.identity).activation.configuration_version == version
+
+
+@pytest.mark.parametrize("parent_version", ["", "1.0"])
+def test_extension_наследует_известную_или_пустую_версию_parent(tmp_path, parent_version):
+    _, extension = _materialized(
+        tmp_path, "extension-optional-version",
+        configuration_name="OptionalExtension", extension=True,
+    )
+    base_path = extension.payloads[LayerKind.BASE_STRUCTURE].manifest_path
+    payload = json.loads(base_path.read_text(encoding="utf-8"))
+    payload["semantic"]["version"] = ""
+    base_path.write_text(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+
+    class Publisher:
+        def active_generation_pointer(self, identity):
+            if identity == extension.manifest.identity:
+                return None
+            assert identity.configuration_name == "DemoConfiguration"
+            return SimpleNamespace(
+                activation=SimpleNamespace(configuration_version=parent_version)
+            )
+
+    activation = _activation_for_generation(
+        extension.manifest, extension.payloads, Publisher(), "optional-extension-job",
+    )
+    assert activation is not None
+    assert activation.configuration_version == parent_version
 
 
 def _stores(tmp_path):

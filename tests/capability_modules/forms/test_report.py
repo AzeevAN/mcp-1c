@@ -175,6 +175,57 @@ def test_report_form_allows_local_non_main_attributes():
     assert decompiled.specification == compiled.specification
 
 
+def test_report_returned_specification_matches_emitted_attribute_order():
+    specification = _specification()
+    main_attribute = specification["attributes"][0]
+    specification["attributes"] = [
+        {"name": "ДоОсновного", "type": {"kind": "string", "length": 10}},
+        main_attribute,
+        {"name": "ПослеОсновного", "type": {"kind": "boolean"}},
+        {
+            "name": "ЕщеЛокальный",
+            "type": {
+                "kind": "number",
+                "digits": 8,
+                "fraction_digits": 2,
+                "allowed_sign": "any",
+            },
+        },
+    ]
+
+    compiled = compile_managed_form(specification)
+    form_xml = compiled.artifacts[0].content
+    assert [item["name"] for item in compiled.specification["attributes"]] == [
+        "Отчет",
+        "ДоОсновного",
+        "ПослеОсновного",
+        "ЕщеЛокальный",
+    ]
+    expected_nodes = [
+        '<Attribute name="Отчет" id="1">',
+        '<Attribute name="Результат" id="2">',
+        '<Attribute name="ДанныеРасшифровки" id="3">',
+        '<Attribute name="ДоОсновного" id="4">',
+        '<Attribute name="ПослеОсновного" id="5">',
+        '<Attribute name="ЕщеЛокальный" id="6">',
+    ]
+    assert [form_xml.index(node) for node in expected_nodes] == sorted(
+        form_xml.index(node) for node in expected_nodes
+    )
+
+    decompiled = decompile_managed_form(
+        form_xml,
+        form_name=specification["form_name"],
+        context=specification["context"],
+        module_bsl=compiled.artifacts[1].content,
+    )
+    assert decompiled.specification == compiled.specification
+
+    recompiled = compile_managed_form(decompiled.specification)
+    assert recompiled.specification == compiled.specification
+    assert recompiled.artifacts[0].content == form_xml
+
+
 @pytest.mark.parametrize(
     "name", ["Результат", "результат", "ДанныеРасшифровки", "дАнНыЕрАсШиФрОвКи"]
 )

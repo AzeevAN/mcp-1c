@@ -4,6 +4,11 @@
 
 ### Исправлено
 
+- **AUD22-13:** canonical specification отчёта ставит главный реквизит перед
+  локальными в том же порядке, что и `Form.xml`; порядок локальных и ID
+  системных реквизитов сохраняются при compile → decompile → compile.
+  Полный pytest: 3200 passed, 1 skipped
+  (`.venv/bin/python -m pytest -q`, 2026-09-22).
 - **AUD22-12:** read-only диалог общей справки получает начальный фокус,
   удерживает `Tab`/`Shift+Tab`, закрывается по `Escape` и возвращает фокус
   исходной кнопке. Frontend: 134 теста, typecheck и build GREEN

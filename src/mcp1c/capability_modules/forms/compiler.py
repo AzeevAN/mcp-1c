@@ -1439,6 +1439,18 @@ def _compile_module(form: ManagedForm) -> str:
 
 def _compiled_specification(form: ManagedForm) -> dict[str, object]:
     result = managed_form_to_spec(form)
+    if _is_report_form(form):
+        attributes = result.get("attributes")
+        if isinstance(attributes, list):
+            result["attributes"] = [
+                attribute
+                for attribute in attributes
+                if isinstance(attribute, dict) and attribute.get("main") is True
+            ] + [
+                attribute
+                for attribute in attributes
+                if not (isinstance(attribute, dict) and attribute.get("main") is True)
+            ]
     if form.context.role not in {"list", "choice"}:
         return result
 

@@ -4,6 +4,12 @@
 
 ### Исправлено
 
+- **AUD22-09:** ссылка возврата карточки принимает только нормализованные
+  same-origin маршруты `/graph` и `/queries` с query; обратные слеши,
+  управляющие символы, внешние и кодированные обходы уходят в безопасный
+  `/queries`. Frontend: 124 теста, typecheck и build GREEN
+  (`cd dashboard && npm test -- --run && npm run typecheck && npm run build`,
+  2026-09-22).
 - **AUD22-08:** durable recovery-план записывает точные pointers снимаемых
   расширений до переключения Registry. Crash до switch сохраняет прежние roots;
   после switch восстановление ограниченно и идемпотентно удаляет только

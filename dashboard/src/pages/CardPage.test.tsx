@@ -107,6 +107,36 @@ it("возвращает карточку в сохранённое состоя
   );
 });
 
+it("сохраняет параметры разрешённого возврата к запросам", async () => {
+  const from = "/queries?query=Контрагенты&limit=10";
+  render(
+    <MemoryRouter initialEntries={[`/object?name=Справочник.Контрагенты&from=${encodeURIComponent(from)}`]}>
+      <QueryClientProvider client={client()}><CardPage kind="object" /></QueryClientProvider>
+    </MemoryRouter>,
+  );
+
+  expect(await screen.findByRole("link", { name: "К результатам запросов" })).toHaveAttribute("href", from);
+});
+
+it.each([
+  "/\\evil.invalid",
+  "//evil.invalid/graph",
+  "https://evil.invalid/graph",
+  "%2F%2Fevil.invalid/graph",
+  "/%5Cevil.invalid/graph",
+])("отклоняет небезопасный адрес возврата: %s", async (from) => {
+  render(
+    <MemoryRouter initialEntries={[`/object?name=Справочник.Контрагенты&from=${encodeURIComponent(from)}`]}>
+      <QueryClientProvider client={client()}><CardPage kind="object" /></QueryClientProvider>
+    </MemoryRouter>,
+  );
+
+  const link = await screen.findByRole("link", { name: /Вернуться к связям|К результатам запросов/ }) as HTMLAnchorElement;
+  expect(link).toHaveAccessibleName("К результатам запросов");
+  expect(link).toHaveAttribute("href", "/queries");
+  expect(new URL(link.href).origin).toBe(window.location.origin);
+});
+
 it("прямая ссылка без имени объясняет путь и не обращается к API", () => {
   render(
     <MemoryRouter initialEntries={["/object"]}>

@@ -24,15 +24,35 @@ const detailLabel: Record<CardDetail, string> = {
   full: "Полностью",
 };
 
+const allowedBackPaths = new Set(["/graph", "/queries"]);
+const unsafeBackCharacters = /[\\\u0000-\u001f\u007f]|%(?:5c|0[0-9a-f]|1[0-9a-f]|7f)/i;
+
+function normalizedBackUrl(requested: string | null): string {
+  if (!requested?.startsWith("/") || unsafeBackCharacters.test(requested)) return "/queries";
+
+  try {
+    const normalized = new URL(requested, window.location.origin);
+    if (normalized.origin !== window.location.origin || !allowedBackPaths.has(normalized.pathname)) {
+      return "/queries";
+    }
+    const queryIndex = requested.indexOf("?");
+    const hashIndex = requested.indexOf("#");
+    const suffixIndex = [queryIndex, hashIndex]
+      .filter((index) => index >= 0)
+      .reduce((first, index) => Math.min(first, index), requested.length);
+    return normalized.pathname + requested.slice(suffixIndex);
+  } catch {
+    return "/queries";
+  }
+}
+
 export function CardPage({ kind }: { kind: CardKind }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const name = searchParams.get("name") || "";
   const config = searchParams.get("config") || "";
   const requestedDetail = searchParams.get("detail");
   const requestedBack = searchParams.get("from");
-  const backUrl = requestedBack && requestedBack.startsWith("/") && !requestedBack.startsWith("//")
-    ? requestedBack
-    : "/queries";
+  const backUrl = normalizedBackUrl(requestedBack);
   const backLabel = backUrl.startsWith("/graph") ? "Вернуться к связям" : "К результатам запросов";
   const detail: CardDetail = requestedDetail === "brief" || requestedDetail === "full"
     ? requestedDetail

@@ -102,6 +102,10 @@ docker compose up -d
 | Обработка выгрузки для 1С | [exporter-1c/README.md](exporter-1c/README.md) |
 | Skills и сценарии агентов | [skills/README.md](skills/README.md) |
 
+Карточка объекта или синтаксиса возвращает только к локальным `/graph` и
+`/queries`; параметр `from` сохраняет query разрешённого маршрута, а внешний
+или некорректный адрес заменяется ссылкой на `/queries`.
+
 В каталоге skills доступен экспериментальный
 [`bsl-change-review`](skills/bsl-change-review/SKILL.md): компактная переносимая
 инструкция выбирает отдельный [`Review`](skills/bsl-change-review/references/review.md)

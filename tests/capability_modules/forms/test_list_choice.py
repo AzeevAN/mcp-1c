@@ -109,6 +109,93 @@ def test_list_choice_compile_check_decompile_roundtrip(owner: str, role: str):
     assert result.specification == compiled.specification
 
 
+def _with_explicit_table_button(payload: dict[str, object]) -> None:
+    table = payload["elements"][0]
+    table["auto_command_bar"] = {
+        "kind": "auto_command_bar",
+        "children": [
+            {
+                "kind": "button",
+                "name": "Добавить",
+                "command": "Add",
+                "command_kind": "item_standard",
+                "command_owner": "Список",
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize("role", ["list", "choice"])
+def test_returned_specification_preserves_list_choice_toolbar_children(role: str):
+    payload = _payload("Справочник.Товары", role)
+    _with_explicit_table_button(payload)
+
+    compiled = compile_managed_form(payload)
+    returned_bar = compiled.specification["elements"][0]["auto_command_bar"]
+    assert "autofill" not in returned_bar
+    assert returned_bar["children"] == payload["elements"][0]["auto_command_bar"]["children"]
+
+    decompiled = decompile_managed_form(
+        compiled.artifacts[0].content,
+        form_name=payload["form_name"],
+        context=payload["context"],
+        module_bsl=compiled.artifacts[1].content,
+    )
+    assert decompiled.status == "decompiled"
+    assert decompiled.coverage.structural == "passed"
+    assert decompiled.specification == compiled.specification
+
+
+@pytest.mark.parametrize("role", ["list", "choice"])
+def test_empty_explicit_toolbar_canonicalizes_to_computed_default(role: str):
+    payload = _payload("Справочник.Товары", role)
+    payload["elements"][0]["auto_command_bar"] = {
+        "kind": "auto_command_bar"
+    }
+
+    compiled = compile_managed_form(payload)
+    assert "auto_command_bar" not in compiled.specification["elements"][0]
+
+    decompiled = decompile_managed_form(
+        compiled.artifacts[0].content,
+        form_name=payload["form_name"],
+        context=payload["context"],
+        module_bsl=compiled.artifacts[1].content,
+    )
+    assert decompiled.status == "decompiled"
+    assert decompiled.specification == compiled.specification
+
+
+@pytest.mark.parametrize("role", ["list", "choice"])
+def test_returned_specification_recompiles_stably_with_toolbar_children(role: str):
+    payload = _payload("Справочник.Товары", role)
+    _with_explicit_table_button(payload)
+
+    compiled = compile_managed_form(payload)
+    recompiled = compile_managed_form(compiled.specification)
+
+    assert recompiled.specification == compiled.specification
+    assert recompiled.artifacts == compiled.artifacts
+
+
+@pytest.mark.parametrize("role", ["list", "choice"])
+def test_explicit_toolbar_autofill_false_is_not_a_false_success(role: str):
+    payload = _payload("Справочник.Товары", role)
+    payload["elements"][0]["auto_command_bar"] = {
+        "kind": "auto_command_bar",
+        "autofill": False,
+    }
+
+    with pytest.raises(FormsContractError) as caught:
+        compile_managed_form(payload)
+
+    assert any(
+        item.code == "unsupported_list_choice_table_autofill"
+        and item.path == "$.elements[0].auto_command_bar.autofill"
+        for item in caught.value.diagnostics
+    )
+
+
 def _record_set_payload() -> dict[str, object]:
     return {
         "schema_version": 2,

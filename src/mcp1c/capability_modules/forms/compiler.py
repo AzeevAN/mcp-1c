@@ -1451,9 +1451,7 @@ def _compiled_specification(form: ManagedForm) -> dict[str, object]:
             ):
                 command_bar = value.get("auto_command_bar")
                 if isinstance(command_bar, dict):
-                    if command_bar.get("children"):
-                        command_bar["autofill"] = False
-                    else:
+                    if not command_bar.get("children"):
                         value.pop("auto_command_bar")
             for child in value.values():
                 normalize_computed_toolbar(child)

@@ -2588,6 +2588,20 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
                 "$.elements",
                 "Форма списка или выбора требует ровно одну таблицу Список с DataPath=Список.",
             )
+        else:
+            bound_table, bound_table_path = bound_tables[0]
+            if (
+                bound_table.auto_command_bar is not None
+                and not bound_table.auto_command_bar.autofill
+            ):
+                reader.issue(
+                    "unsupported_list_choice_table_autofill",
+                    f"{bound_table_path}.auto_command_bar.autofill",
+                    (
+                        "Системная AutoCommandBar таблицы Список не поддерживает "
+                        "явный autofill=false. Уберите поле autofill."
+                    ),
+                )
         if commands:
             reader.issue(
                 "incompatible_owner_context",

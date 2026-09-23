@@ -318,6 +318,32 @@ def test_sources_api_отдаёт_журнал_native_generation(tmp_path):
     assert journal.json()["kind"] == "module_coverage"
 
 
+def test_coverage_не_выдаёт_старый_журнал_смешанной_конфигурации(
+    tmp_path, корень_кода, реестр_из_кода
+):
+    registry = реестр_из_кода(корень_кода, name="Blocked")
+    _collection_value, healthy = _materialized(
+        tmp_path, "healthy-coverage", common_forms=True
+    )
+    registry.publish_generation(_stage_active_base(registry, healthy))
+    registry.save()
+    restored = Registry(registry.data_dir)
+    restored.startup()
+    assert restored.active_activation(healthy.manifest.identity).status.value == "ACTIVE"
+    app = Starlette(routes=routes(restored, mode=DASHBOARD_ON))
+
+    with TestClient(app) as client:
+        blocked = client.get("/api/v1/sources/coverage?source_id=Blocked:modules")
+        available = client.get(
+            "/api/v1/sources/coverage?source_id=DemoConfiguration:modules"
+        )
+
+    assert blocked.status_code == 409
+    assert blocked.json() == {"error": "reload_required"}
+    assert available.status_code == 200
+    assert available.json()["kind"] == "module_coverage"
+
+
 def test_sources_api_помечает_native_конфигурацию_без_source(tmp_path):
     _base_collection, base = _materialized(tmp_path, "dashboard-native-base")
     registry = Registry(tmp_path / "data")

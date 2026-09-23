@@ -63,6 +63,7 @@ from .intake_v2_api import (
     IntakeApiService,
     IntakeWork,
 )
+from .intake_v2 import ExportIdentity
 from .intake_v2_lifecycle import LifecycleError
 from .intake_v2_operations import OperationConflict, OperationError
 from .intake_v2_transport import (
@@ -77,6 +78,7 @@ from .registry import (
     RegistryError,
     SourceInUseError,
 )
+from .source_modes import ActivationStatus
 from .process_restart import RestartController
 from .reference_provider import (
     DEFAULT_PAGE_CHARS,
@@ -1051,23 +1053,33 @@ def _spa_routes(
             return JSONResponse(
                 {"error": "Не указан source_id."}, status_code=400
             )
-        snapshot = registry.snapshot()
-        code = snapshot.modules.get(source_id)
-        source = (
-            code.source
-            if code is not None and code.source is not None
-            else snapshot.sources.get(source_id)
-        )
-        if source is None or source.kind not in (KIND_MODULES, KIND_EXTENSION):
-            return JSONResponse({"error": "Журнал не найден."}, status_code=404)
-        payload = await run_in_threadpool(
-            coverage_log.load_current, registry.data_dir, source
-        )
-        if payload is None:
-            return JSONResponse(
-                {"error": "Актуальный журнал недоступен."}, status_code=404
+        for _ in range(2):
+            snapshot = registry.snapshot()
+            code = snapshot.modules.get(source_id)
+            source = (
+                code.source
+                if code is not None and code.source is not None
+                else snapshot.sources.get(source_id)
             )
-        return JSONResponse(payload)
+            if source is None or source.kind not in (KIND_MODULES, KIND_EXTENSION):
+                return JSONResponse({"error": "Журнал не найден."}, status_code=404)
+            owner, _, _ = source_id.partition(":")
+            activation = registry.active_activation(ExportIdentity.configuration(owner))
+            if activation is not None and activation.status is ActivationStatus.RELOAD_REQUIRED:
+                if registry.snapshot_is_current(snapshot):
+                    return JSONResponse({"error": "reload_required"}, status_code=409)
+                continue
+            payload = await run_in_threadpool(
+                coverage_log.load_current, registry.data_dir, source
+            )
+            if not registry.snapshot_is_current(snapshot):
+                continue
+            if payload is None:
+                return JSONResponse(
+                    {"error": "Актуальный журнал недоступен."}, status_code=404
+                )
+            return JSONResponse(payload)
+        return JSONResponse({"error": "Источники изменились; повторите запрос."}, status_code=409)
 
     def role_param(request: Request, name: str, *, maximum: int) -> str | None:
         values = request.query_params.getlist(name)

@@ -9,3 +9,5 @@
 
 -r requirements.txt
 pytest>=8
+# Воспроизводимый замер capability manifest используется тестами и CI.
+tiktoken==0.11.0

@@ -502,7 +502,7 @@ it("показывает администратору действия без д
   expect(screen.queryByRole("heading", { name: "Локальная общая справка" })).not.toBeInTheDocument();
   expect(within(screen.getByRole("complementary", { name: "Выбор источника" })).getByRole("button", { name: /Общая справка/ })).toBeInTheDocument();
   expect(await screen.findByRole("region", { name: "Полная файловая выгрузка" })).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Обновить код, формы и роли" })).toBeEnabled();
+  expect(screen.queryByRole("button", { name: "Обновить код, формы и роли" })).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Обновить полностью" })).toBeEnabled();
   const truncated = screen.getByRole("checkbox", { name: /Разрешить неполную тестовую выгрузку/ });
   fireEvent.click(truncated);

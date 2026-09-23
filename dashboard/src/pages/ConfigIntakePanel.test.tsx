@@ -421,7 +421,6 @@ it("для legacy-конфигурации объясняет обязатель
   expect(await screen.findByText("СинтетическаяКонфигурация")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Обновить код, формы и роли" })).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Обновить полностью" })).toBeInTheDocument();
-  expect(screen.getByText(/Сначала выполните полное обновление/)).toBeInTheDocument();
 });
 
 it("называет владельца preview и не запрашивает job после её удаления", async () => {

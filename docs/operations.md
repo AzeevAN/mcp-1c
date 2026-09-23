@@ -89,8 +89,8 @@ symlink, специальные файлы, шифрование и предел
 ресурсном бюджете.
 
 `GET /api/v1/sources/intake` по запросу обновляет список кандидатов. Затем
-`POST /api/v1/sources/intake/start` строит durable preview для `create`,
-`update` или `update_full`, а `POST /api/v1/sources/intake/confirm` отдельно
+`POST /api/v1/sources/intake/start` строит durable preview для `create`
+или `update_full`, а `POST /api/v1/sources/intake/confirm` отдельно
 публикует проверенное поколение. `POST /api/v1/sources/intake/discard` явно
 отменяет неопубликованный preview и удаляет его job/work. Одновременный
 intake snapshot читает список jobs и их payload согласованно: он видит

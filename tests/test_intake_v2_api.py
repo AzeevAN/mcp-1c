@@ -230,6 +230,67 @@ def test_legacy_цель_не_предлагает_и_не_запускает_ч
     assert service.lifecycle.operations.records.list_jobs() == ()
 
 
+def test_native_source_b_не_предлагает_и_не_запускает_новое_частичное_обновление(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    registry = Registry(tmp_path / "data")
+    _write_archive(registry.incoming_dir / "candidate.zip")
+    service = _service(registry)
+    initial = service.snapshot()["candidates"][0]
+    create = service.start(initial["id"], "create", job_id="job-create-native")
+    service.prepare(create)
+    service.confirm(create.job_id)
+
+    client = _client(registry, service)
+    candidate = client.get(
+        "/api/v1/sources/intake",
+        headers={"x-api-token": "admin-token"},
+    ).json()["candidates"][0]
+    rejected = client.post(
+        "/api/v1/sources/intake/start",
+        headers={"x-api-token": "admin-token"},
+        json={"candidate_id": candidate["id"], "action": "update"},
+    )
+
+    assert candidate["actions"] == ["update_full"]
+    assert rejected.status_code == 409
+    assert "полное обновление" in rejected.json()["error"]
+    assert {job.job_id for job in service.lifecycle.operations.records.list_jobs()} == {
+        "job-create-native"
+    }
+
+
+def test_старый_native_partial_preview_читается_но_не_публикуется(tmp_path):
+    IntakeApiConflict = _symbol("IntakeApiConflict")
+    registry = Registry(tmp_path / "data")
+    _write_archive(registry.incoming_dir / "candidate.zip")
+    service = _service(registry)
+    candidate = service.snapshot()["candidates"][0]
+    create = service.start(candidate["id"], "create", job_id="job-create-native")
+    service.prepare(create)
+    service.confirm(create.job_id)
+    before = registry.active_generation_pointer(
+        registry.generation_view("DemoConfiguration").identity
+    )
+
+    old_job_id = "job-old-partial-preview"
+    service.lifecycle.start(old_job_id, candidate["id"])
+    service.lifecycle.prepare(
+        old_job_id,
+        action=IntakeAction.UPDATE_CONTENT,
+        active=registry.generation_view("DemoConfiguration"),
+        generation_id="generation-old-partial-preview",
+    )
+
+    assert service.job_payload(old_job_id)["preview"]["action"] == "update"
+    with pytest.raises(IntakeApiConflict, match="полное обновление"):
+        service.confirm(old_job_id)
+    assert registry.active_generation_pointer(
+        registry.generation_view("DemoConfiguration").identity
+    ) == before
+
+
 def test_старый_legacy_preview_не_ломает_snapshot_и_возвращает_конфликт(
     tmp_path, monkeypatch
 ):

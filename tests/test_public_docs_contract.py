@@ -151,7 +151,6 @@ def test_инструкция_загрузки_разделяет_source_a_sourc
         "Быстрая базовая загрузка",
         "Полная загрузка",
         "Создать конфигурацию",
-        "Обновить код, формы и роли",
         "Обновить полностью",
         "Предпросмотр",
         "Опубликовать",
@@ -162,4 +161,5 @@ def test_инструкция_загрузки_разделяет_source_a_sourc
         "manifest",
     ):
         assert required in instruction
+    assert "Обновить код, формы и роли" not in instruction
     assert "docs/configuration-loading.md" in readme

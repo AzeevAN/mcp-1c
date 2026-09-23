@@ -33,9 +33,8 @@ import { ConfigDirectories } from "./ConfigDirectories";
 
 const MAX_UPLOAD_BYTES = 500 * 1024 * 1024;
 
-const actionLabels: Record<IntakeAction, string> = {
+const actionLabels: Record<Exclude<IntakeAction, "update">, string> = {
   create: "Создать конфигурацию",
-  update: "Обновить код, формы и роли",
   update_full: "Обновить полностью",
 };
 
@@ -105,9 +104,9 @@ function CandidateRow({
   onStart: (candidate: IntakeCandidate, action: IntakeAction, parent: string) => void;
 }) {
   const [parent, setParent] = useState("");
-  const requiresFirstFullUpdate = candidate.source_kind === "configuration"
-    && candidate.actions.length === 1
-    && candidate.actions[0] === "update_full";
+  const availableActions = candidate.actions.filter(
+    (action): action is Exclude<IntakeAction, "update"> => action !== "update",
+  );
   return (
     <article className="intake-candidate">
       <span className="incoming-file-icon"><FileArchive size={20} aria-hidden="true" /></span>
@@ -136,9 +135,9 @@ function CandidateRow({
             </select>
           </label>
         )}
-        {candidate.actions.map((action) => (
+        {availableActions.map((action) => (
           <button
-            className={action === "update_full" || action === "create" ? "button-primary" : "button-secondary"}
+            className="button-primary"
             type="button"
             key={action}
             disabled={busy || (candidate.requires_parent && !parent)}
@@ -149,11 +148,6 @@ function CandidateRow({
         ))}
         {candidate.requires_parent && configurationNames.length === 0 && (
           <small>Сначала загрузите родительскую конфигурацию.</small>
-        )}
-        {requiresFirstFullUpdate && (
-          <small>
-            Сначала выполните полное обновление: оно создаст единое поколение структуры, кода, форм и ролей.
-          </small>
         )}
       </div>
     </article>

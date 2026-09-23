@@ -223,22 +223,7 @@ class IntakeApiService:
         configuration = candidate.probe.internal_name
         if configuration not in snapshot.configuration_names:
             return [IntakeAction.CREATE.value]
-        identity = ExportIdentity.configuration(configuration)
-        if snapshot.generation(identity) is None:
-            return [IntakeAction.UPDATE_FULL.value]
-        active = self.registry.generation_view(configuration)
-        if (
-            active.origin is GenerationOrigin.LEGACY
-            or active.legacy_barrier
-            or (
-                active.origin is GenerationOrigin.NATIVE
-                and active.activation is None
-                and active.manifest is not None
-                and active.manifest.source_transport.value == "local-directory"
-            )
-        ):
-            return [IntakeAction.UPDATE_FULL.value]
-        return [IntakeAction.UPDATE_CONTENT.value, IntakeAction.UPDATE_FULL.value]
+        return [IntakeAction.UPDATE_FULL.value]
 
     def candidate_payload(
         self,
@@ -430,6 +415,11 @@ class IntakeApiService:
             if preview.plan.action is not selected_action:
                 raise IntakeApiConflict("Action не совпадает с готовым preview.")
             raise IntakeApiConflict("Job уже содержит готовый preview.")
+        if selected_action is IntakeAction.UPDATE_CONTENT:
+            raise IntakeApiConflict(
+                "Частичное обновление Source B больше не запускается; "
+                "выберите полное обновление."
+            )
         active = self._active(
             candidate,
             selected_action,
@@ -480,6 +470,12 @@ class IntakeApiService:
             with self._directory_lock:
                 # Повторный confirm готового commit не зависит от доступности входа.
                 if self.job_payload(job_id).get("commit") is None:
+                    preview = self.lifecycle.operations.load_preview(job_id)
+                    if preview.plan.action is IntakeAction.UPDATE_CONTENT:
+                        raise IntakeApiConflict(
+                            "Частичный preview Source B больше не публикуется; "
+                            "запустите полное обновление."
+                        )
                     job = self.lifecycle.operations.records.load_job(job_id)
                     durable = self.lifecycle.operations.records.load_candidate(
                         job.candidate_id

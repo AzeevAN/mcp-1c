@@ -1,6 +1,7 @@
 """Тяжёлый upload не создаёт очередь и не занимает допуск HTTP-чтения."""
 
 import asyncio
+import errno
 from pathlib import Path
 import shutil
 from threading import Event
@@ -22,6 +23,47 @@ async def _wait(predicate):
             return
         await asyncio.sleep(0.005)
     raise AssertionError("синтетический worker не достиг барьера")
+
+
+@pytest.mark.parametrize("path", [
+    "/api/v1/sources/intake/upload",
+    "/api/v1/sources/upload",
+])
+@pytest.mark.parametrize("disk_errno", [errno.ENOSPC, errno.EDQUOT])
+def test_multipart_нехватка_места_даёт_контролируемый_ответ(
+    tmp_path, monkeypatch, path, disk_errno
+):
+    monkeypatch.setenv("API_TOKEN", "synthetic-read")
+    monkeypatch.setenv("ADMIN_TOKEN", "synthetic-admin")
+    original_parse = dashboard_backend._LimitedUploadParser.parse
+    failed_once = False
+
+    async def parse_with_disk_failure(parser):
+        nonlocal failed_once
+        if not failed_once:
+            failed_once = True
+            raise OSError(disk_errno, "синтетическая нехватка места")
+        return await original_parse(parser)
+
+    monkeypatch.setattr(
+        dashboard_backend._LimitedUploadParser, "parse", parse_with_disk_failure
+    )
+
+    async def scenario():
+        app = mcp_guard(Starlette(routes=routes(Registry(tmp_path / "data"))))
+        headers = {"x-api-token": "synthetic-admin"}
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://testserver",
+            headers=headers,
+        ) as client:
+            failed = await client.post(path, files={"file": ("invalid.txt", b"data")})
+            assert failed.status_code == 507
+            assert "мест" in failed.json()["error"].lower()
+            retry = await client.post(path, files={"file": ("invalid.txt", b"data")})
+            assert retry.status_code == 400
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("check", ["admission", "read", "mixed"])

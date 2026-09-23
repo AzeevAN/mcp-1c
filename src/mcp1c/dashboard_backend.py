@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 import asyncio
+import errno
 import os
 import re
 import shutil
@@ -158,6 +159,9 @@ def _csrf_denied(request: Request) -> PlainTextResponse | None:
 class _UploadTooLarge(MultiPartException):
     """File-part пересёк границу до следующей записи в spool."""
 
+class _UploadStorageFull(RuntimeError):
+    """Во временном хранилище multipart кончилось место или квота."""
+
 class _ProtectedUploadFile(UploadFile):
     """Не закрывать spool, пока его read/write ещё выполняется в потоке."""
 
@@ -226,11 +230,19 @@ async def _limited_upload_form(
     )
     try:
         form = await parser.parse()
-    except BaseException:
+    except BaseException as error:
         # Starlette закрывает spool при ошибке multipart, но отмена запроса
         # тоже должна освободить уже принятые части до возврата допуска.
         for file in parser._files_to_close_on_error:
-            file.close()
+            try:
+                file.close()
+            except OSError:
+                pass
+        if isinstance(error, OSError) and error.errno in (
+            errno.ENOSPC,
+            getattr(errno, "EDQUOT", -1),
+        ):
+            raise _UploadStorageFull("недостаточно места для multipart") from error
         raise
     items = form.multi_items()
     files = [(name, value) for name, value in items if isinstance(value, UploadFile)]

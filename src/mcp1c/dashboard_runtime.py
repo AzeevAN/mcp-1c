@@ -1404,6 +1404,8 @@ def _spa_routes(
         except dashboard_backend._UploadTooLarge:
             limit = service.lifecycle.browser.max_upload_bytes // 1024 // 1024
             return _json_error(f"Файл больше {limit} МБ.", 413)
+        except dashboard_backend._UploadStorageFull:
+            return _json_error("Недостаточно места для временного файла загрузки.", 507)
         except MultiPartException:
             return _json_error(
                 "Некорректная multipart-форма: разрешён один ZIP в поле `file`.",
@@ -1604,6 +1606,8 @@ def _spa_routes(
                 f"Файл больше {dashboard_backend.MAX_UPLOAD // 1024 // 1024} МБ.",
                 413,
             )
+        except dashboard_backend._UploadStorageFull:
+            return _json_error("Недостаточно места для временного файла загрузки.", 507)
         except MultiPartException:
             return _json_error(
                 "Некорректная multipart-форма: разрешены один файл `file` "

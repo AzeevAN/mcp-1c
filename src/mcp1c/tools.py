@@ -2353,16 +2353,38 @@ def compare_configurations(
     """Имена реквизитов одного объекта в явной паре; различия без потерь."""
     if type(limit) is not int or not 1 <= limit <= 100:
         raise RegistryError("limit должен быть целым числом от 1 до 100.")
-    # Оба объекта берутся из одного снимка, а не из двух независимых resolve:
-    # параллельная публикация не должна смешать поколения внутри ответа.
-    snapshot = registry.snapshot()
-    names = list(snapshot.configuration_names) if configs is None else list(configs)
-    if len(names) != 2 or any(not isinstance(name, str) or not name for name in names) or names[0] == names[1]:
-        raise RegistryError(
-            "Укажите ровно две разные конфигурации в configs. "
-            "Без configs автоматический выбор возможен, только если загружены ровно две. "
-            "Список имён доступен через list_configurations."
+    for _ in range(2):
+        # Resolve применяет barrier, а CAS не даёт ответить по поколению,
+        # которое сменилось между проверкой доступа и построением различий.
+        snapshot = registry.snapshot()
+        names = list(snapshot.configuration_names) if configs is None else list(configs)
+        if len(names) != 2 or any(not isinstance(name, str) or not name for name in names) or names[0] == names[1]:
+            raise RegistryError(
+                "Укажите ровно две разные конфигурации в configs. "
+                "Без configs автоматический выбор возможен, только если загружены ровно две. "
+                "Список имён доступен через list_configurations."
+            )
+        if any(name not in snapshot.configurations for name in names):
+            missing = next(name for name in names if name not in snapshot.configurations)
+            raise RegistryError(f"Неизвестная конфигурация: {missing}. Проверьте list_configurations.")
+        contexts = [registry.resolve(name) for name in names]
+        if any(
+            context.configuration is not snapshot.configurations[name]
+            for name, context in zip(names, contexts)
+        ):
+            continue
+        answer = _compare_configurations_snapshot(
+            snapshot, full_name, names, cursor=cursor, limit=limit
         )
+        if registry.snapshot_is_current(snapshot):
+            return answer
+    raise RegistryError("Поколение конфигураций изменилось дважды; повторите сравнение.")
+
+
+def _compare_configurations_snapshot(
+    snapshot, full_name: str, names: list[str], *, cursor: str | None, limit: int
+) -> str:
+    """Построить страницу сравнения из одного проверяемого снимка."""
 
     out = [f"# Сравнение `{full_name}`", "",
            "Сравниваются только имена реквизитов. Типы, квалификаторы и содержимое "

@@ -34,6 +34,7 @@ def registry_for(fields):
     return SimpleNamespace(
         snapshot=lambda: SimpleNamespace(configurations=configs, configuration_names=tuple(configs)),
         resolve=lambda name: SimpleNamespace(configuration=configs[name]),
+        snapshot_is_current=lambda snapshot: True,
     )
 
 
@@ -73,6 +74,45 @@ def test_пара_первая_и_шестая_сравнивается_без_�
 def test_неизвестная_конфигурация_не_подменяется():
     with pytest.raises(RegistryError, match="Неизвестная конфигурация"):
         compare_configurations(registry_for({"А": [], "Б": []}), OBJECT, ["А", "Нет"])
+
+
+def test_заблокированная_сторона_не_выдаёт_структуру_сравнения():
+    registry = registry_for({"А": ["BLOCKED_ONLY"], "Б": ["Поле"]})
+    original = registry.resolve
+    def resolve(name):
+        if name == "А":
+            raise RegistryError("reload_required")
+        return original(name)
+    registry.resolve = resolve
+    with pytest.raises(RegistryError, match="reload_required"):
+        compare_configurations(registry, OBJECT, ["А", "Б"])
+
+
+def test_смена_поколения_при_сравнении_не_публикует_старый_ответ():
+    registry = registry_for({"А": ["Старое"], "Б": ["Поле"]})
+    checks = iter((False, False))
+    registry.snapshot_is_current = lambda snapshot: next(checks)
+    with pytest.raises(RegistryError, match="изменил|изменились|изменилось"):
+        compare_configurations(registry, OBJECT, ["А", "Б"])
+
+
+def test_после_restore_смешанная_сторона_блокирует_сравнение(tmp_path, архив_кода):
+    registry = Registry(tmp_path / "data")
+    for name in ("А", "Б"):
+        folder = tmp_path / name
+        folder.mkdir()
+        registry.add_configuration(write_export(folder, configuration(name, [name])))
+    assert "`А`" in compare_configurations(registry, OBJECT, ["А", "Б"])
+    module_root = tmp_path / "modules"
+    module = module_root / "CommonModules" / "Example" / "Ext" / "Module.bsl"
+    module.parent.mkdir(parents=True)
+    module.write_text("Процедура Тест()\nКонецПроцедуры\n", encoding="utf-8")
+    registry.add_modules(архив_кода(module_root), configuration="А")
+    registry.save()
+    restored = Registry(registry.data_dir)
+    restored.startup()
+    with pytest.raises(RegistryError, match="reload_required"):
+        compare_configurations(restored, OBJECT, ["А", "Б"])
 
 
 def test_отсутствующий_объект_не_означает_совпадение():

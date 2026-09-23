@@ -175,3 +175,4 @@ worktrees/
 !/docs/tools.md
 !/docs/operations.md
 !/docs/architecture.md
+!/docs/configuration-loading.md

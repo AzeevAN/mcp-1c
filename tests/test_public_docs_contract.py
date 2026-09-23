@@ -29,7 +29,7 @@ def test_readme_показывает_обезличенный_дашборд():
         assert relative in readme
         payload = (ROOT / relative).read_bytes()
         assert payload.startswith(b"\x89PNG\r\n\x1a\n")
-        assert struct.unpack(">II", payload[16:24]) == (1440, 1000)
+        assert struct.unpack(">II", payload[16:24]) == (1465, 1616)
         assert len(payload) < 1_000_000
 
 

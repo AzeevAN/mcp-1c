@@ -631,6 +631,38 @@ def test_browser_discard_сохраняет_кандидата_при_отказ
     assert not payload_path.exists()
 
 
+def test_browser_discard_завершается_при_отказе_очистить_временную_запись(
+    tmp_path, monkeypatch
+):
+    BrowserStagingStore = _symbol("BrowserStagingStore")
+
+    root = tmp_path / "managed"
+    store = BrowserStagingStore(root, max_upload_bytes=1024)
+    store.accept(
+        "candidate-cleanup", "demo.zip", io.BytesIO(b"committed"), expected_size=9
+    )
+    pending = store.records_dir / ".candidate-cleanup.discard.part"
+    original_unlink = Path.unlink
+
+    def unlink_with_failure(path, *args, **kwargs):
+        if path == pending:
+            raise OSError("синтетический отказ очистки записи")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", unlink_with_failure)
+    store.discard("candidate-cleanup")
+    assert store.candidate_ids() == ()
+    assert pending.is_file()
+    store.discard("candidate-cleanup")
+    restarted = BrowserStagingStore(root, max_upload_bytes=1024)
+    assert restarted.candidate_ids() == ()
+    assert pending.is_file()
+
+    monkeypatch.setattr(Path, "unlink", original_unlink)
+    BrowserStagingStore(root, max_upload_bytes=1024)
+    assert not pending.exists()
+
+
 def test_unknown_и_traversal_path_не_открываются(tmp_path):
     TransportSecurityError = _symbol("TransportSecurityError")
     open_export_tree = _symbol("open_export_tree")

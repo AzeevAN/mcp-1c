@@ -337,7 +337,14 @@ class BrowserStagingStore:
                         and path.name.startswith(".")
                         and path.name.endswith(".part")
                     ):
-                        path.unlink()
+                        try:
+                            path.unlink()
+                        except OSError:
+                            if path.name.endswith(".discard.part"):
+                                # ZIP уже удалён; временная запись не должна
+                                # блокировать восстановление остальных входов.
+                                continue
+                            raise
                         if is_payload:
                             changed_payloads = True
                         else:
@@ -599,8 +606,28 @@ class BrowserStagingStore:
             raise TransportSecurityError(
                 "browser staging содержит символическую ссылку"
             )
-        if pending_record.exists() or pending_record.is_symlink():
-            raise TransportError("удаление browser candidate уже не завершено")
+        if pending_record.is_symlink():
+            raise TransportSecurityError(
+                "browser staging содержит символическую ссылку"
+            )
+        if pending_record.exists():
+            if record.exists():
+                raise TransportError("удаление browser candidate уже не завершено")
+            if payload.exists():
+                try:
+                    pending_record.rename(record)
+                    _sync_directory(self.records_dir)
+                except OSError as error:
+                    raise TransportError(
+                        "не удалось восстановить запись browser candidate"
+                    ) from error
+            else:
+                try:
+                    pending_record.unlink()
+                    _sync_directory(self.records_dir)
+                except OSError:
+                    pass
+                return
         record_moved = False
         payload_removed = False
         try:
@@ -615,8 +642,13 @@ class BrowserStagingStore:
             payload_removed = True
             _sync_directory(self.payloads_dir)
             if record_moved:
-                pending_record.unlink()
-                _sync_directory(self.records_dir)
+                try:
+                    pending_record.unlink()
+                    _sync_directory(self.records_dir)
+                except OSError:
+                    # ZIP уже удалён: остаточная маленькая запись удалится
+                    # при повторе или старте, операция для пользователя успешна.
+                    pass
         except OSError as error:
             if record_moved and not payload_removed:
                 try:

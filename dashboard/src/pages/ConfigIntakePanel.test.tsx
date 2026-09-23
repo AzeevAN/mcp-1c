@@ -106,6 +106,40 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+it("удаляет только браузерный ZIP после подтверждения", async () => {
+  let candidates = [candidate];
+  const requests: Array<{ path: string; body: unknown }> = [];
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input);
+    if (path === "/api/v1/sources/intake/candidates/delete") {
+      const body = JSON.parse(String(init?.body));
+      requests.push({ path, body });
+      candidates = [];
+      return response({ deleted: candidate.id });
+    }
+    if (path === "/api/v1/sources/intake/jobs") return response({ jobs: [] });
+    return response(snapshot(candidates));
+  }));
+  renderPanel();
+
+  const remove = await screen.findByRole("button", { name: "Удалить ZIP" });
+  fireEvent.click(remove);
+  const dialog = screen.getByRole("dialog", { name: "Удалить загруженный ZIP?" });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Удалить загрузку" }));
+  await waitFor(() => expect(requests).toContainEqual({
+    path: "/api/v1/sources/intake/candidates/delete",
+    body: { candidate_id: candidate.id },
+  }));
+  expect(await screen.findByText("Кандидатов пока нет")).toBeInTheDocument();
+});
+
+it("не предлагает удалять ZIP из incoming", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => response(snapshot([{ ...candidate, transport: "incoming" }]))));
+  renderPanel();
+  expect(await screen.findByText("СинтетическаяКонфигурация")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Удалить ZIP" })).toBeNull();
+});
+
 it("разрешает выбрать ZIP больше 500 МиБ и отклоняет ZIP больше 4 ГиБ", async () => {
   vi.stubGlobal("fetch", vi.fn(async () => response(snapshot([]))));
   renderPanel();

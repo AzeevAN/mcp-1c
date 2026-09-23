@@ -1565,6 +1565,34 @@ def _spa_routes(
         return JSONResponse(result)
 
     @heavy_endpoint
+    async def intake_delete_candidate_api(request: Request) -> JSONResponse:
+        denied = _mutation_denied(request, action="Удаление браузерного ZIP")
+        if denied is not None:
+            return denied
+        payload = await _json_body(request)
+        if set(payload) != {"candidate_id"} or not isinstance(
+            payload.get("candidate_id"), str
+        ):
+            return _json_error("Нужен единственный строковый candidate_id.", 422)
+        async with intake_start_lock:
+            if any(not task.done() for task in intake_tasks):
+                return _json_error(
+                    "Нельзя удалять ZIP во время другой тяжёлой операции.", 409
+                )
+            try:
+                result = await heavy.run(
+                    intake_service().remove_browser_candidate,
+                    payload["candidate_id"],
+                )
+            except IntakeApiNotFound as error:
+                return _json_error(str(error), 404)
+            except IntakeApiConflict as error:
+                return _json_error(str(error), 409)
+            except (IntakeApiError, LifecycleError, OperationError) as error:
+                return _json_error(str(error), 422)
+        return JSONResponse(result)
+
+    @heavy_endpoint
     async def upload_source_api(request: Request) -> JSONResponse:
         denied = _mutation_denied(request, action="Загрузка")
         if denied is not None:
@@ -1958,6 +1986,12 @@ def _spa_routes(
             intake_discard_api,
             methods=["POST"],
             name="dashboard_intake_discard",
+        ),
+        Route(
+            "/api/v1/sources/intake/candidates/delete",
+            intake_delete_candidate_api,
+            methods=["POST"],
+            name="dashboard_intake_delete_candidate",
         ),
         Route(
             "/api/v1/sources/upload",

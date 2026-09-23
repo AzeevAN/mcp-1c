@@ -18,7 +18,7 @@ from starlette.applications import Starlette
 from conftest import build_configuration, write_export, живой_клиент
 from mcp1c.dashboard_runtime import DASHBOARD_ON, routes
 from mcp1c.intake_v2 import DurableCandidateStore, ExportIdentity
-from mcp1c.intake_v2_lifecycle import CandidateCatalog, IntakeLifecycle
+from mcp1c.intake_v2_lifecycle import CandidateCatalog, IntakeLifecycle, LifecycleError
 from mcp1c.intake_v2_operations import IntakeCoordinator
 from mcp1c.intake_v2_transport import BrowserStagingStore
 from mcp1c.registry import Registry
@@ -391,6 +391,80 @@ def test_browser_upload_сохраняет_candidate_но_не_запускае�
     )
     assert invalid.status_code == 422
     assert restarted.lifecycle.browser.candidate_ids() == (candidate["id"],)
+
+
+def test_browser_candidate_удаляется_только_после_завершения_job(tmp_path, monkeypatch):
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    registry = Registry(tmp_path / "data")
+    service = _service(registry)
+    client = _client(registry, service)
+    uploaded = client.post(
+        "/api/v1/sources/intake/upload",
+        headers={"x-api-token": "admin-token"},
+        files={"file": ("configuration.zip", _archive())},
+    )
+    assert uploaded.status_code == 201
+    candidate_id = uploaded.json()["candidate"]["id"]
+    endpoint = "/api/v1/sources/intake/candidates/delete"
+
+    assert client.post(endpoint, json={"candidate_id": candidate_id}).status_code in {401, 403}
+    service.lifecycle.operations.create_job("job-active", candidate_id)
+    active = client.post(
+        endpoint,
+        headers={"x-api-token": "admin-token"},
+        json={"candidate_id": candidate_id},
+    )
+    assert active.status_code == 409
+    assert service.lifecycle.browser.load(candidate_id)
+
+    service.lifecycle.operations.fail("job-active", RuntimeError("синтетическая ошибка"))
+    removed = client.post(
+        endpoint,
+        headers={"x-api-token": "admin-token"},
+        json={"candidate_id": candidate_id},
+    )
+    assert removed.status_code == 200
+    assert removed.json() == {"deleted": candidate_id}
+    assert service.lifecycle.browser.candidate_ids() == ()
+    assert service.lifecycle.operations.records.list_jobs() == ()
+    assert service.snapshot()["candidates"] == []
+
+    _write_archive(registry.incoming_dir / "server.zip")
+    incoming = next(
+        item for item in service.snapshot()["candidates"]
+        if item["transport"] == "incoming"
+    )
+    denied = client.post(
+        endpoint,
+        headers={"x-api-token": "admin-token"},
+        json={"candidate_id": incoming["id"]},
+    )
+    assert denied.status_code == 409
+    assert (registry.incoming_dir / "server.zip").is_file()
+
+    second = client.post(
+        "/api/v1/sources/intake/upload",
+        headers={"x-api-token": "admin-token"},
+        files={"file": ("second.zip", _archive())},
+    )
+    second_id = second.json()["candidate"]["id"]
+    original_remove = service.lifecycle.catalog.remove
+    failed_once = False
+
+    def remove_with_one_failure(candidate: str) -> None:
+        nonlocal failed_once
+        if not failed_once:
+            failed_once = True
+            raise LifecycleError("синтетическая ошибка удаления каталога")
+        original_remove(candidate)
+
+    monkeypatch.setattr(service.lifecycle.catalog, "remove", remove_with_one_failure)
+    payload = {"candidate_id": second_id}
+    headers = {"x-api-token": "admin-token"}
+    assert client.post(endpoint, headers=headers, json=payload).status_code == 422
+    assert service.lifecycle.catalog.load(second_id)
+    assert client.post(endpoint, headers=headers, json=payload).status_code == 200
+    assert service.lifecycle.browser.candidate_ids() == ()
 
 
 def test_production_lifecycle_читает_browser_xml_с_коэффициентом_выше_200(tmp_path):

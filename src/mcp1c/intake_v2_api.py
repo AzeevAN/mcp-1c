@@ -28,6 +28,7 @@ from .intake_v2_lifecycle import (
     CandidateLocator,
     DiscoveredCandidate,
     IntakeLifecycle,
+    LifecycleConflict,
     LifecycleError,
 )
 from .intake_v2_operations import (
@@ -512,6 +513,15 @@ class IntakeApiService:
         except OperationConflict as error:
             raise IntakeApiConflict(str(error)) from error
         return {"discarded": job_id}
+
+    def remove_browser_candidate(self, candidate_id: str) -> dict[str, str]:
+        try:
+            self.lifecycle.remove_browser_candidate(candidate_id)
+        except KeyError:
+            raise IntakeApiNotFound("Кандидат не найден.") from None
+        except LifecycleConflict as error:
+            raise IntakeApiConflict(str(error)) from error
+        return {"deleted": candidate_id}
 
     def ensure_configuration_purgeable(self, configuration: str) -> None:
         try:

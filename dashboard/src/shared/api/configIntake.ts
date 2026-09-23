@@ -180,6 +180,10 @@ export function discardConfigIntake(jobId: string): Promise<{ discarded: string 
   return intakeRequest("/api/v1/sources/intake/discard", { job_id: jobId });
 }
 
+export function deleteConfigCandidate(candidateId: string): Promise<{ deleted: string }> {
+  return intakeRequest("/api/v1/sources/intake/candidates/delete", { candidate_id: candidateId });
+}
+
 export function uploadConfigCandidate(
   file: File,
   onProgress: (percent: number) => void,

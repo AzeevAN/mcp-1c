@@ -19,6 +19,7 @@ import {
   type IntakeLayerVersion,
   confirmConfigIntake,
   discardConfigIntake,
+  deleteConfigCandidate,
   startConfigIntake,
   uploadConfigCandidate,
   useConfigIntake,
@@ -96,12 +97,16 @@ function CandidateRow({
   candidate,
   configurationNames,
   busy,
+  removeBlocked,
   onStart,
+  onDelete,
 }: {
   candidate: IntakeCandidate;
   configurationNames: string[];
   busy: boolean;
+  removeBlocked: boolean;
   onStart: (candidate: IntakeCandidate, action: IntakeAction, parent: string) => void;
+  onDelete: (candidate: IntakeCandidate) => void;
 }) {
   const [parent, setParent] = useState("");
   const availableActions = candidate.actions.filter(
@@ -146,6 +151,17 @@ function CandidateRow({
             {actionLabels[action]}
           </button>
         ))}
+        {candidate.transport === "browser" && (
+          <button
+            className="button-danger-quiet"
+            type="button"
+            disabled={busy || removeBlocked}
+            title={removeBlocked ? "Сначала дождитесь завершения операции или отмените preview." : undefined}
+            onClick={() => onDelete(candidate)}
+          >
+            Удалить ZIP
+          </button>
+        )}
         {candidate.requires_parent && configurationNames.length === 0 && (
           <small>Сначала загрузите родительскую конфигурацию.</small>
         )}
@@ -286,6 +302,9 @@ export function ConfigIntakePanel({ configuration }: { configuration?: string } 
   const [starting, setStarting] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [discarding, setDiscarding] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [removeTarget, setRemoveTarget] = useState<IntakeCandidate | null>(null);
+  const [removeError, setRemoveError] = useState("");
   const [dialogError, setDialogError] = useState("");
   const [feedback, setFeedback] = useState<{ tone: "success" | "danger"; text: string } | null>(null);
   const job = useIntakeJob(activeJobId);
@@ -438,6 +457,25 @@ export function ConfigIntakePanel({ configuration }: { configuration?: string } 
     }
   };
 
+  const removeCandidate = async () => {
+    if (!removeTarget) return;
+    setRemoving(true);
+    setRemoveError("");
+    try {
+      await deleteConfigCandidate(removeTarget.id);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["sources", "intake"], exact: true }),
+        queryClient.invalidateQueries({ queryKey: ["sources", "intake", "jobs"], exact: true }),
+      ]);
+      setRemoveTarget(null);
+      setFeedback({ tone: "success", text: "Браузерный ZIP и ошибочные попытки удалены." });
+    } catch (error) {
+      setRemoveError(message(error));
+    } finally {
+      setRemoving(false);
+    }
+  };
+
   if (!configuration && intake.isPending) {
     return <section className="admin-loading"><span className="loading-dot" />Проверяем кандидатов полной выгрузки…</section>;
   }
@@ -450,7 +488,7 @@ export function ConfigIntakePanel({ configuration }: { configuration?: string } 
   }
 
   const candidates = new Map((intake.data?.candidates ?? []).map((item) => [item.id, item]));
-  const intakeBusy = starting || confirming || discarding;
+  const intakeBusy = starting || confirming || discarding || removing;
 
   const reviewDialog = (activeJobId && (
         <PreviewDialog
@@ -579,9 +617,11 @@ export function ConfigIntakePanel({ configuration }: { configuration?: string } 
                     <CandidateRow
                       candidate={candidate}
                       configurationNames={intake.data.configuration_names}
-                      busy={intakeBusy}
+                      busy={intakeBusy || Boolean(activeJobId)}
+                      removeBlocked={intake.data.jobs.some((item) => item.candidate_id === candidate.id && item.state !== "failed")}
                       key={candidate.id}
                       onStart={(item, action, parent) => void start(item, action, parent)}
+                      onDelete={(item) => { setRemoveError(""); setRemoveTarget(item); }}
                     />
                   ) : null;
                 })}
@@ -615,6 +655,19 @@ export function ConfigIntakePanel({ configuration }: { configuration?: string } 
       )}
 
       {reviewDialog}
+      {removeTarget && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="intake-preview-dialog" role="dialog" aria-modal="true" aria-labelledby="intake-remove-title">
+            <h2 id="intake-remove-title">Удалить загруженный ZIP?</h2>
+            <p>Файл «{removeTarget.origin_name}» и связанные ошибочные попытки будут удалены. Опубликованная конфигурация не изменится.</p>
+            {removeError && <div className="admin-feedback is-danger" role="alert">{removeError}</div>}
+            <footer>
+              <button className="button-secondary" type="button" disabled={removing} onClick={() => setRemoveTarget(null)}>Отмена</button>
+              <button className="button-danger" type="button" disabled={removing} onClick={() => void removeCandidate()}>Удалить загрузку</button>
+            </footer>
+          </section>
+        </div>
+      )}
     </section>
   );
 }

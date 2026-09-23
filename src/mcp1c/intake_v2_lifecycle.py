@@ -918,6 +918,31 @@ class IntakeLifecycle:
         with self._lock:
             self.operations.discard(job_id)
 
+    def remove_browser_candidate(self, candidate_id: str) -> None:
+        """Удалить только managed ZIP без действующей job или готового preview."""
+        with self._lock:
+            candidate = self.catalog.load(candidate_id)
+            if candidate.locator.transport is not CandidateTransport.BROWSER:
+                raise LifecycleConflict("Удалить можно только ZIP, загруженный через браузер.")
+            jobs = tuple(
+                job for job in self.operations.records.list_jobs()
+                if job.candidate_id == candidate_id
+            )
+            if any(job.state is not CandidateJobState.FAILED for job in jobs):
+                raise LifecycleConflict(
+                    "Кандидат используется операцией; дождитесь её завершения или отмените preview."
+                )
+            for job in jobs:
+                self.operations.remove_job(job.job_id)
+            try:
+                self.browser.discard(candidate_id)
+            except TransportError as error:
+                raise LifecycleError(str(error)) from error
+            self.operations.records.remove_candidate(candidate_id)
+            # Каталог удаляем последним: если очистка оборвётся, повторный
+            # вызов по тому же candidate_id сможет завершить операцию.
+            self.catalog.remove(candidate_id)
+
     def release_committed_candidate(self, job_id: str) -> None:
         """Убрать managed ZIP после commit; server-side источники не менять."""
         with self._lock:

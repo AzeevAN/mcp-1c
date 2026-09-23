@@ -10,6 +10,7 @@ from .intake_v2 import GenerationManifest, LayerKind, LayerManifest, LayerState
 from .intake_v2_generation import MaterializedGeneration
 from .intake_v2_planner import IntakeAction, IntakePlan, LayerDecision
 from .intake_v2_registry import LayerPayloadSource
+from .source_modes import ActivationMode
 
 
 class CompositionError(ValueError):
@@ -73,6 +74,11 @@ def compose_manifest(
 
     if plan.no_op:
         return None
+    if (
+        plan.mode is ActivationMode.B_FULL
+        and plan.applied_layers != frozenset(LayerKind)
+    ):
+        raise CompositionError("B_FULL публикует только полный комплект слоёв")
 
     layers: list[LayerManifest] = []
     for planned in plan.layers:

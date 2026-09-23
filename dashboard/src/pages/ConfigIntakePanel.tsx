@@ -33,7 +33,7 @@ import { ConfigDirectories } from "./ConfigDirectories";
 
 const MAX_UPLOAD_BYTES = 500 * 1024 * 1024;
 
-const actionLabels: Record<Exclude<IntakeAction, "update">, string> = {
+const actionLabels: Record<IntakeAction, string> = {
   create: "Создать конфигурацию",
   update_full: "Обновить полностью",
 };
@@ -105,7 +105,7 @@ function CandidateRow({
 }) {
   const [parent, setParent] = useState("");
   const availableActions = candidate.actions.filter(
-    (action): action is Exclude<IntakeAction, "update"> => action !== "update",
+    (action) => action === "create" || action === "update_full",
   );
   return (
     <article className="intake-candidate">
@@ -349,7 +349,7 @@ export function ConfigIntakePanel({ configuration }: { configuration?: string } 
       await queryClient.invalidateQueries({ queryKey: ["sources", "intake"] });
       setFeedback({
         tone: "success",
-        text: "ZIP принят и сохранён. Теперь выберите найденный candidate и действие.",
+        text: "ZIP принят и сохранён. Выберите найденную конфигурацию для предпросмотра.",
       });
     } catch (error) {
       setFeedback({ tone: "danger", text: message(error) });

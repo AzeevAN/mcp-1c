@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import io
+import json
 import threading
 import time
 import zipfile
@@ -13,13 +14,10 @@ import pytest
 from starlette.applications import Starlette
 
 from conftest import build_configuration, write_export, живой_клиент
-import mcp1c.intake_v2_operations as intake_v2_operations
 from mcp1c.dashboard_runtime import DASHBOARD_ON, routes
 from mcp1c.intake_v2 import DurableCandidateStore, ExportIdentity
 from mcp1c.intake_v2_lifecycle import CandidateCatalog, IntakeLifecycle
 from mcp1c.intake_v2_operations import IntakeCoordinator
-from mcp1c.intake_v2_planner import IntakeAction, plan_intake
-from mcp1c.intake_v2_registry import native_generation_view
 from mcp1c.intake_v2_transport import BrowserStagingStore
 from mcp1c.registry import Registry
 from mcp1c.source_modes import ActivationMode, ActivationStatus
@@ -160,6 +158,14 @@ def _wait_job(client, job_id: str, timeout: float = 10.0) -> dict:
     raise AssertionError("intake job не завершилась за отведённое время")
 
 
+def _mark_request_as_old_update(service, job_id: str) -> None:
+    """Смоделировать сохранённый прежней версией durable request."""
+    path = service.lifecycle.operations.requests_dir / f"{job_id}.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["payload"]["action"] = "update"
+    path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+
+
 def test_refresh_требует_admin_и_не_раскрывает_серверный_путь(
     tmp_path, monkeypatch
 ):
@@ -275,15 +281,13 @@ def test_старый_native_partial_preview_читается_но_не_публ
     )
 
     old_job_id = "job-old-partial-preview"
-    service.lifecycle.start(old_job_id, candidate["id"])
-    service.lifecycle.prepare(
-        old_job_id,
-        action=IntakeAction.UPDATE_CONTENT,
-        active=registry.generation_view("DemoConfiguration"),
-        generation_id="generation-old-partial-preview",
-    )
+    old = service.start(candidate["id"], "update_full", job_id=old_job_id)
+    service.prepare(old)
+    _mark_request_as_old_update(service, old_job_id)
 
-    assert service.job_payload(old_job_id)["preview"]["action"] == "update"
+    stale = service.job_payload(old_job_id)
+    assert stale["state"] == "failed"
+    assert stale["preview"] is None
     with pytest.raises(IntakeApiConflict, match="полное обновление"):
         service.confirm(old_job_id)
     assert registry.active_generation_pointer(
@@ -307,27 +311,9 @@ def test_старый_legacy_preview_не_ломает_snapshot_и_возвра�
     client = _client(registry, service)
     candidate = service.snapshot()["candidates"][0]
     job_id = "job-stale-legacy-preview"
-    service.lifecycle.start(job_id, candidate["id"])
-
-    def previous_plan(action, manifest, *, active):
-        return plan_intake(
-            action,
-            manifest,
-            active=native_generation_view(manifest),
-        )
-
-    with monkeypatch.context() as previous_version:
-        previous_version.setattr(
-            intake_v2_operations,
-            "plan_intake",
-            previous_plan,
-        )
-        service.lifecycle.prepare(
-            job_id,
-            action=IntakeAction.UPDATE_CONTENT,
-            active=registry.generation_view("DemoConfiguration"),
-            generation_id="generation-stale-preview",
-        )
+    old = service.start(candidate["id"], "update_full", job_id=job_id)
+    service.prepare(old)
+    _mark_request_as_old_update(service, job_id)
 
     snapshot = client.get(
         "/api/v1/sources/intake",

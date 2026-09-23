@@ -192,6 +192,12 @@ class _OperationRequest:
     def from_dict(cls, raw: object) -> _OperationRequest:
         if not isinstance(raw, dict):
             raise OperationError("request операции должен быть объектом")
+        if raw.get("action") == "update":
+            # Только граница чтения старых записей: старый partial planner удалён.
+            raise OperationStalePreview(
+                "Частичный preview Source B несовместим с текущим контрактом. "
+                "Постройте полное обновление."
+            )
         try:
             return cls(
                 job_id=raw["job_id"],

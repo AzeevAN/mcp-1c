@@ -1,4 +1,4 @@
-"""RED-контракты чистого planner create/content-only/full."""
+"""Контракты чистого planner для создания и полного обновления."""
 
 from __future__ import annotations
 
@@ -18,7 +18,6 @@ from mcp1c.intake_v2 import (
     LayerState,
 )
 from mcp1c.intake_v2_registry import (
-    legacy_generation_view,
     native_generation_view,
 )
 from mcp1c.source_modes import ActivationMode
@@ -141,7 +140,13 @@ def test_create_не_создаёт_расширение_и_не_перезап�
         )
 
 
-def test_content_only_показывает_structural_diff_но_применяет_только_content():
+def test_intake_содержит_только_create_и_полное_обновление():
+    IntakeAction = _symbol("IntakeAction")
+
+    assert {action.value for action in IntakeAction} == {"create", "update_full"}
+
+
+def test_full_update_применяет_изменённые_структуру_и_содержимое_вместе():
     IntakeAction = _symbol("IntakeAction")
     LayerDecision = _symbol("LayerDecision")
     plan_intake = _symbol("plan_intake")
@@ -155,7 +160,7 @@ def test_content_only_показывает_structural_diff_но_применяе
     )
 
     plan = plan_intake(
-        IntakeAction.UPDATE_CONTENT,
+        IntakeAction.UPDATE_FULL,
         candidate,
         active=native_generation_view(active),
     )
@@ -163,13 +168,36 @@ def test_content_only_показывает_structural_diff_но_применяе
     assert plan.changed_layers == frozenset(
         {LayerKind.BASE_STRUCTURE, LayerKind.EXTENDED_STRUCTURE, LayerKind.CODE}
     )
-    assert plan.applied_layers == frozenset({LayerKind.CODE})
-    assert plan.preserved_layers >= {
-        LayerKind.BASE_STRUCTURE,
-        LayerKind.EXTENDED_STRUCTURE,
-    }
-    assert _planned(plan, LayerKind.BASE_STRUCTURE).decision is LayerDecision.PRESERVE
+    assert plan.applied_layers == frozenset(LayerKind)
+    assert _planned(plan, LayerKind.BASE_STRUCTURE).decision is LayerDecision.APPLY
     assert _planned(plan, LayerKind.CODE).decision is LayerDecision.APPLY
+    assert not plan.no_op
+
+
+def test_full_update_пересобирает_ранее_смешанное_b_даже_без_semantic_diff():
+    IntakeAction = _symbol("IntakeAction")
+    plan_intake = _symbol("plan_intake")
+    active = _manifest("generation-old")
+    mixed = replace(
+        active,
+        layers=tuple(
+            replace(
+                layer,
+                provenance=replace(layer.provenance, raw_sha256="b" * 64),
+            ) if layer.kind is LayerKind.BASE_STRUCTURE else layer
+            for layer in active.layers
+        ),
+    )
+    candidate = _manifest("generation-new")
+
+    plan = plan_intake(
+        IntakeAction.UPDATE_FULL,
+        candidate,
+        active=native_generation_view(mixed),
+    )
+
+    assert plan.changed_layers == frozenset()
+    assert plan.applied_layers == frozenset(LayerKind)
     assert not plan.no_op
 
 
@@ -237,41 +265,18 @@ def test_parser_upgrade_требует_reparse_а_downgrade_отклоняетс
         )
 
 
-def test_roles_error_заменяет_ready_без_отката_остальных_слоёв():
+def test_b_full_отклоняет_неготовые_роли_вместо_частичной_публикации():
     IntakeAction = _symbol("IntakeAction")
     plan_intake = _symbol("plan_intake")
+    PlannerError = _symbol("PlannerError")
     active = _manifest("generation-old")
     candidate = _manifest("generation-new", role_state=LayerState.ERROR)
 
-    plan = plan_intake(
-        IntakeAction.UPDATE_CONTENT,
-        candidate,
-        active=native_generation_view(active),
-    )
-
-    assert plan.applied_layers == frozenset({LayerKind.ROLES})
-    assert _planned(plan, LayerKind.ROLES).candidate.state is LayerState.ERROR
-    assert _planned(plan, LayerKind.CODE).candidate.state is LayerState.READY
-
-
-def test_legacy_content_update_fail_closed_требует_первого_полного_обновления():
-    IntakeAction = _symbol("IntakeAction")
-    PlannerError = _symbol("PlannerError")
-    plan_intake = _symbol("plan_intake")
-    identity = ExportIdentity.configuration("DemoConfiguration")
-    active = legacy_generation_view(
-        identity,
-        base_sha256="a" * 64,
-        base_items_total=10,
-        code_sha256="b" * 64,
-        code_items_total=20,
-    )
-
-    with pytest.raises(PlannerError, match="полное обновление"):
+    with pytest.raises(PlannerError, match="roles"):
         plan_intake(
-            IntakeAction.UPDATE_CONTENT,
-            _manifest("generation-new"),
-            active=active,
+            IntakeAction.UPDATE_FULL,
+            candidate,
+            active=native_generation_view(active),
         )
 
 

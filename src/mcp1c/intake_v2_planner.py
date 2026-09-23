@@ -25,7 +25,6 @@ class PlannerError(ValueError):
 
 class IntakeAction(str, Enum):
     CREATE = "create"
-    UPDATE_CONTENT = "update"
     UPDATE_FULL = "update_full"
 
 
@@ -136,9 +135,6 @@ class IntakePlan:
         return not self.applied_layers
 
 
-_CONTENT_LAYERS = frozenset(
-    {LayerKind.CODE, LayerKind.FORMS, LayerKind.ROLES}
-)
 _REQUIRED_READY = frozenset(
     {
         LayerKind.BASE_STRUCTURE,
@@ -255,6 +251,23 @@ def _reason(
     return LayerChangeReason.NONE
 
 
+def _mixed_source_b_snapshot(active: GenerationView) -> bool:
+    """Старое поколение могло сохранить слои из разных полных выгрузок B."""
+    manifest = active.manifest
+    if manifest is None:
+        return False
+    return any(
+        layer.provenance is None
+        or layer.provenance.profile is not LayerSourceProfile.SOURCE_B
+        or layer.provenance.raw_sha256 != manifest.raw_sha256
+        or layer.provenance.transport is not manifest.source_transport
+        or layer.provenance.origin_name != manifest.origin_name
+        or layer.provenance.parser_version != manifest.parser_version
+        or layer.provenance.selection_version != manifest.selection_version
+        for layer in manifest.layers
+    )
+
+
 def plan_intake(
     action: IntakeAction,
     candidate: GenerationManifest,
@@ -277,7 +290,6 @@ def plan_intake(
         raise PlannerError("planner поддерживает только A_ONLY или B_FULL")
     if (
         profile is LayerSourceProfile.SOURCE_B
-        and action in {IntakeAction.CREATE, IntakeAction.UPDATE_FULL}
         and candidate_layers[LayerKind.ROLES].state is not LayerState.READY
     ):
         raise PlannerError("B_FULL требует готовый слой roles")
@@ -287,7 +299,6 @@ def plan_intake(
             raise PlannerError("create не создаёт конфигурацию из расширения")
         if active is not None:
             raise PlannerError("конфигурация уже существует")
-        allowed = frozenset(LayerKind)
     else:
         if active is None:
             if not (
@@ -297,11 +308,6 @@ def plan_intake(
                 raise PlannerError("для обновления нужна существующая конфигурация")
         elif active.identity != candidate.identity:
             raise PlannerError("личность кандидата не совпадает с целью")
-        allowed = (
-            _CONTENT_LAYERS
-            if action is IntakeAction.UPDATE_CONTENT
-            else frozenset(LayerKind)
-        )
 
     native = _active_manifest_layers(active) if active is not None else {}
     # A native bundle without an activation manifest is the persisted legacy
@@ -318,13 +324,7 @@ def plan_intake(
             and active.manifest.source_transport.value == "local-directory"
         )
     )
-    if legacy and action is IntakeAction.UPDATE_CONTENT:
-        # У legacy нет независимых payload сохранённых слоёв: content-only
-        # нельзя собрать в атомарное поколение, не выдумывая их содержимое.
-        raise PlannerError(
-            "reload_required: для legacy-конфигурации сначала требуется полное обновление."
-        )
-    planned: list[PlannedLayer] = []
+    versions: list[tuple[LayerKind, LayerVersion | None, LayerManifest, LayerChangeReason]] = []
     for kind in LayerKind:
         current = (
             _current_version(active, native, kind)
@@ -333,13 +333,22 @@ def plan_intake(
         )
         layer = candidate_layers[kind]
         reason = _reason(current, layer, legacy=legacy) if active else LayerChangeReason.ADDED
-        decision = (
-            LayerDecision.APPLY
-            if kind in allowed
-            and (reason is not LayerChangeReason.NONE or legacy)
-            else LayerDecision.PRESERVE
+        versions.append((kind, current, layer, reason))
+
+    publish_snapshot = (
+        legacy
+        or any(reason is not LayerChangeReason.NONE for _, _, _, reason in versions)
+        or (
+            profile is LayerSourceProfile.SOURCE_B
+            and active is not None
+            and _mixed_source_b_snapshot(active)
         )
-        planned.append(PlannedLayer(kind, current, layer, reason, decision))
+    )
+    decision = LayerDecision.APPLY if publish_snapshot else LayerDecision.PRESERVE
+    planned = [
+        PlannedLayer(kind, current, layer, reason, decision)
+        for kind, current, layer, reason in versions
+    ]
 
     return IntakePlan(
         action=action,

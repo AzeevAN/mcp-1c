@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 
-export type IntakeAction = "create" | "update" | "update_full";
+export type IntakeAction = "create" | "update_full";
 export type IntakeJobState = "accepted" | "probing" | "ready" | "parsing" | "done" | "failed";
 
 export type IntakeCandidate = {

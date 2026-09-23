@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import importlib
 import shutil
+from dataclasses import replace
 
 import pytest
 
 from mcp1c.intake_v2 import LayerKind
 from mcp1c.intake_v2_converter import convert_collection
 from mcp1c.intake_v2_generation import materialize_generation
-from mcp1c.intake_v2_planner import IntakeAction, plan_intake
+from mcp1c.intake_v2_planner import IntakeAction, LayerDecision, plan_intake
 from mcp1c.intake_v2_registry import legacy_generation_view, native_generation_view
 from mcp1c.registry import Registry, RegistryError
 from test_intake_v2_converter import _collection
@@ -49,7 +50,7 @@ def _layers(manifest):
     return {layer.kind: layer for layer in manifest.layers}
 
 
-def test_content_composition_копирует_preserved_слои_в_новое_поколение(tmp_path):
+def test_full_composition_берёт_все_слои_из_одного_candidate(tmp_path):
     compose_generation = _symbol("compose_generation")
     active = _materialized(tmp_path, "active")
     candidate = _materialized(
@@ -63,7 +64,7 @@ def test_content_composition_копирует_preserved_слои_в_новое_�
     )
     old_pointer = registry.active_generation_pointer(active.manifest.identity)
     plan = plan_intake(
-        IntakeAction.UPDATE_CONTENT,
+        IntakeAction.UPDATE_FULL,
         candidate.manifest,
         active=native_generation_view(active.manifest),
     )
@@ -79,12 +80,15 @@ def test_content_composition_копирует_preserved_слои_в_новое_�
     new_pointer = registry.active_generation_pointer(active.manifest.identity)
 
     final = registry.active_generation(active.manifest.identity)
-    assert _layers(final)[LayerKind.BASE_STRUCTURE] == _layers(active.manifest)[
+    assert _layers(final)[LayerKind.BASE_STRUCTURE] == _layers(candidate.manifest)[
         LayerKind.BASE_STRUCTURE
     ]
     assert _layers(final)[LayerKind.CODE] == _layers(candidate.manifest)[
         LayerKind.CODE
     ]
+    assert {layer.provenance.raw_sha256 for layer in final.layers} == {
+        candidate.manifest.raw_sha256
+    }
     assert not (registry.data_dir / old_pointer.root_path).exists()
     shutil.rmtree(active.root)
     shutil.rmtree(candidate.root)
@@ -92,6 +96,37 @@ def test_content_composition_копирует_preserved_слои_в_новое_�
     assert (registry.data_dir / new_pointer.root_path / "members.pack").is_file()
     assert (registry.data_dir / new_pointer.root_path / "members.index.json").is_file()
     assert not (registry.data_dir / new_pointer.root_path / "payload").exists()
+
+
+def test_composition_отклоняет_неполный_b_full_план(tmp_path):
+    compose_manifest = _symbol("compose_manifest")
+    CompositionError = _symbol("CompositionError")
+    active = _materialized(tmp_path, "active")
+    candidate = _materialized(
+        tmp_path,
+        "candidate",
+        module="Процедура Changed()\nКонецПроцедуры\n".encode(),
+    )
+    plan = plan_intake(
+        IntakeAction.UPDATE_FULL,
+        candidate.manifest,
+        active=native_generation_view(active.manifest),
+    )
+    partial = replace(
+        plan,
+        layers=tuple(
+            replace(layer, decision=LayerDecision.PRESERVE)
+            if layer.kind is LayerKind.BASE_STRUCTURE else layer
+            for layer in plan.layers
+        ),
+    )
+
+    with pytest.raises(CompositionError, match="полный комплект"):
+        compose_manifest(
+            partial,
+            candidate.manifest,
+            active_manifest=active.manifest,
+        )
 
 
 def test_noop_plan_не_создаёт_composed_generation(tmp_path):

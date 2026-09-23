@@ -37,7 +37,7 @@ from .intake_v2_operations import (
     OperationStalePreview,
 )
 from .intake_v2_planner import IntakeAction, LayerVersion
-from .intake_v2_registry import GenerationOrigin, GenerationView
+from .intake_v2_registry import GenerationView
 from .intake_v2_transport import BrowserStagingStore, TransportError
 from .intake_v2_probe import CandidateProbe, ProbeError, probe_export
 from .config_sources import CONFIG_SOURCES_ROOT, ConfigSourceBindings, ConfigSourceError
@@ -340,10 +340,6 @@ class IntakeApiService:
             generation = snapshot.generation(identity)
             if generation is not None:
                 return generation.view
-            if action is IntakeAction.UPDATE_CONTENT:
-                raise IntakeApiConflict(
-                    "Для update сначала нужен существующий extension generation."
-                )
             return None
         configuration = candidate.probe.internal_name
         snapshot = self.registry.snapshot()
@@ -358,13 +354,6 @@ class IntakeApiService:
             active = snapshot.generation_view(configuration)
         except RegistryError as error:
             raise IntakeApiConflict(str(error)) from error
-        if (
-            action is IntakeAction.UPDATE_CONTENT
-            and active.origin is GenerationOrigin.LEGACY
-        ):
-            raise IntakeApiConflict(
-                "Для legacy-конфигурации сначала требуется полное обновление."
-            )
         return active
 
     def start(
@@ -375,6 +364,10 @@ class IntakeApiService:
         job_id: str = "",
         parent_configuration: str = "",
     ) -> IntakeWork:
+        if action == "update":
+            raise IntakeApiConflict(
+                "Частичное обновление Source B удалено; выберите полное обновление."
+            )
         try:
             selected_action = IntakeAction(action)
         except (TypeError, ValueError) as error:
@@ -415,11 +408,6 @@ class IntakeApiService:
             if preview.plan.action is not selected_action:
                 raise IntakeApiConflict("Action не совпадает с готовым preview.")
             raise IntakeApiConflict("Job уже содержит готовый preview.")
-        if selected_action is IntakeAction.UPDATE_CONTENT:
-            raise IntakeApiConflict(
-                "Частичное обновление Source B больше не запускается; "
-                "выберите полное обновление."
-            )
         active = self._active(
             candidate,
             selected_action,
@@ -470,12 +458,7 @@ class IntakeApiService:
             with self._directory_lock:
                 # Повторный confirm готового commit не зависит от доступности входа.
                 if self.job_payload(job_id).get("commit") is None:
-                    preview = self.lifecycle.operations.load_preview(job_id)
-                    if preview.plan.action is IntakeAction.UPDATE_CONTENT:
-                        raise IntakeApiConflict(
-                            "Частичный preview Source B больше не публикуется; "
-                            "запустите полное обновление."
-                        )
+                    self.lifecycle.operations.load_preview(job_id)
                     job = self.lifecycle.operations.records.load_job(job_id)
                     durable = self.lifecycle.operations.records.load_candidate(
                         job.candidate_id

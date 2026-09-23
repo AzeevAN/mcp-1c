@@ -310,19 +310,12 @@ def plan_intake(
             raise PlannerError("личность кандидата не совпадает с целью")
 
     native = _active_manifest_layers(active) if active is not None else {}
-    # A native bundle without an activation manifest is the persisted legacy
-    # barrier too.  It must be rebuilt as B_FULL even when all five layer
-    # hashes are identical; treating it as a normal native no-op leaves the
-    # old active generation forever marked RELOAD_REQUIRED.
+    # Любой native pointer без activation требует нового полного поколения:
+    # одинаковые semantic hashes не могут снять RELOAD_REQUIRED через no-op.
     legacy = active is not None and (
         active.origin is GenerationOrigin.LEGACY
         or active.legacy_barrier
-        or (
-            active.origin is GenerationOrigin.NATIVE
-            and active.activation is None
-            and active.manifest is not None
-            and active.manifest.source_transport.value == "local-directory"
-        )
+        or (active.origin is GenerationOrigin.NATIVE and active.activation is None)
     )
     versions: list[tuple[LayerKind, LayerVersion | None, LayerManifest, LayerChangeReason]] = []
     for kind in LayerKind:

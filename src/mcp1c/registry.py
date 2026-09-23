@@ -771,7 +771,6 @@ class RegistryGenerationSnapshot:
             self.pointer.activation,
             legacy_barrier=(
                 self.pointer.activation is None
-                and self.manifest.source_transport.value == "incoming"
             ),
         )
 
@@ -4648,7 +4647,6 @@ class Registry:
                 legacy_barrier=(
                     pointer is not None
                     and pointer.activation is None
-                    and manifest.source_transport.value == "incoming"
                 ),
             )
         if identity.source_kind is not SourceKind.CONFIGURATION:
@@ -5559,7 +5557,6 @@ class Registry:
                     legacy_barrier=(
                         pointer is not None
                         and pointer.activation is None
-                        and manifest.source_transport.value == "incoming"
                     ),
                 )
             loaded = self.configurations.get(configuration)

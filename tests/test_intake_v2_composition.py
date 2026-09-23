@@ -15,6 +15,7 @@ from mcp1c.intake_v2_planner import IntakeAction, LayerDecision, plan_intake
 from mcp1c.intake_v2_registry import legacy_generation_view, native_generation_view
 from mcp1c.registry import Registry, RegistryError
 from test_intake_v2_converter import _collection
+from test_intake_v2_planner import _active_view
 
 
 SUBJECT = "mcp1c.intake_v2_composition"
@@ -136,7 +137,7 @@ def test_noop_plan_не_создаёт_composed_generation(tmp_path):
     plan = plan_intake(
         IntakeAction.UPDATE_FULL,
         candidate.manifest,
-        active=native_generation_view(active.manifest),
+        active=_active_view(active.manifest),
     )
 
     assert plan.no_op

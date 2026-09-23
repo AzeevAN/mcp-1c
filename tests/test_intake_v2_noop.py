@@ -90,6 +90,26 @@ def test_noop_skips_collection_and_survives_restart(world, monkeypatch):
     assert d['registry'].active_generation_pointer(ExportIdentity.configuration('Demo0'))==before
 
 
+def test_полный_b_восстанавливает_pointer_без_activation(world):
+    d = world
+    registry = d['registry']
+    identity = ExportIdentity.configuration('Demo0')
+    pointer = registry.active_generation_pointer(identity)
+    assert pointer is not None and pointer.activation is not None
+    with registry._lock:
+        registry._generation_pointers[identity.grouping_key] = replace(pointer, activation=None)
+    registry.save()
+    assert registry.active_activation(identity).status.value == 'RELOAD_REQUIRED'
+
+    work = d['prepare']()
+    assert not d['service'].job_payload(work.job_id)['preview']['no_op']
+    commit = d['service'].confirm(work.job_id)['commit']
+    assert not commit['no_op']
+    restored = Registry(registry.data_dir)
+    restored.startup()
+    assert restored.active_activation(identity).status.value == 'ACTIVE'
+
+
 def test_two_browser_noop_previews_confirm_after_cleanup_and_restart(tmp_path):
     registry = Registry(tmp_path / 'data')
     service = IntakeApiService.for_registry(registry, directory_settle_seconds=0)

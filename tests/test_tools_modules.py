@@ -408,6 +408,28 @@ def test_скомпилированный_модуль_виден_но_проц�
         восстановленный.resolve("Пример")
 
 
+def test_list_configurations_сохраняет_сведения_здоровой_рядом_с_заблокированной(
+    tmp_path, корень_кода, реестр_из_кода
+):
+    реестр = реестр_из_кода(корень_кода, name="Blocked")
+    здоровая = tmp_path / "healthy"
+    здоровая.mkdir()
+    реестр.add_configuration(
+        write_export(здоровая, build_configuration(name="Healthy", version="2.0"))
+    )
+    реестр.save()
+    восстановленный = Registry(реестр.data_dir)
+    восстановленный.startup()
+
+    список = tools.list_configurations(восстановленный)
+
+    assert "Blocked: RELOAD_REQUIRED" in список
+    assert "## Healthy" in список
+    assert "Версия: 2.0" in список
+    assert "Объектов:" in список
+    assert "## Blocked" not in список
+
+
 def test_скомпилированный_модуль_расширения_остаётся_отдельным_корпусом(
     tmp_path, реестр_из_кода
 ):

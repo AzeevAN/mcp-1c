@@ -764,9 +764,15 @@ def _source_state_row(source) -> SourceStateRow:
 
 def _capture_configurations_list(
     registry: Registry,
+    *,
+    names: tuple[str, ...] | None = None,
 ) -> _ListConfigurationsCapture | None:
     snapshot = registry.snapshot()
-    configurations = tuple(snapshot.configurations.items())
+    configurations = tuple(
+        (name, loaded)
+        for name, loaded in snapshot.configurations.items()
+        if names is None or name in names
+    )
     syntax = snapshot.syntax
     syntax_versions = tuple(snapshot.syntax_versions.items())
     sources = tuple(
@@ -961,37 +967,47 @@ def code_coverage_lines(coverage: CodeCoverage | None) -> tuple[str, ...]:
 
 def list_configurations(registry: Registry) -> str:
     """Какие конфигурации загружены и что по ним доступно."""
-    names = registry.snapshot().configuration_names
-    blocked = [
-        name
-        for name in names
-        if (
-            (activation := registry.active_activation(
-                ExportIdentity.configuration(name)
-            )) is not None
-            and activation.status is ActivationStatus.RELOAD_REQUIRED
-        )
-    ]
-    if blocked:
-        return (
-            "# Состояние конфигураций\n\n"
-            + "\n".join(
-                f"- {name}: {'RELOAD_REQUIRED' if name in blocked else 'доступна'}"
-                for name in names
-            )
-            + "\n\nЗагрузите полный Source A или Source B через intake. "
-            "Конфигурационные данные старого поколения недоступны."
-        )
     for _ in range(2):
-        capture = _capture_configurations_list(registry)
+        state = registry.snapshot()
+        names = state.configuration_names
+        blocked = frozenset(
+            name
+            for name in names
+            if (
+                (activation := registry.active_activation(
+                    ExportIdentity.configuration(name)
+                )) is not None
+                and activation.status is ActivationStatus.RELOAD_REQUIRED
+            )
+        )
+        available = tuple(name for name in names if name not in blocked)
+        if blocked and not available:
+            if registry.snapshot_is_current(state):
+                return _blocked_configurations_text(names, blocked)
+            continue
+        capture = _capture_configurations_list(registry, names=available)
         if capture is None:
             continue
         answer = _render_configurations_list(capture)
-        if _list_capture_is_current(registry, capture):
+        if registry.snapshot_is_current(state) and _list_capture_is_current(registry, capture):
+            if blocked:
+                answer = _blocked_configurations_text(names, blocked) + "\n\n" + answer
             return answer
     raise RegistryError(
         "Источники списка конфигураций изменились дважды; повторите запрос "
         "после завершения загрузки."
+    )
+
+
+def _blocked_configurations_text(
+    names: tuple[str, ...], blocked: frozenset[str]
+) -> str:
+    """Краткая диагностика без структуры заблокированных поколений."""
+    return (
+        "# Состояние конфигураций\n\n"
+        + "\n".join(f"- {name}: RELOAD_REQUIRED" for name in names if name in blocked)
+        + "\n\nЗагрузите полный Source A или Source B через intake. "
+        "Конфигурационные данные старого поколения недоступны."
     )
 
 

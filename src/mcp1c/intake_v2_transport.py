@@ -594,18 +594,38 @@ class BrowserStagingStore:
         candidate_id = _candidate_id(candidate_id)
         record = self._record_path(candidate_id)
         payload = self._payload_path(candidate_id)
+        pending_record = self.records_dir / f".{candidate_id}.discard.part"
         if record.is_symlink() or payload.is_symlink():
             raise TransportSecurityError(
                 "browser staging содержит символическую ссылку"
             )
+        if pending_record.exists() or pending_record.is_symlink():
+            raise TransportError("удаление browser candidate уже не завершено")
+        record_moved = False
+        payload_removed = False
         try:
             if not record.exists() and not payload.exists():
                 return
-            record.unlink(missing_ok=True)
-            _sync_directory(self.records_dir)
+            if record.exists():
+                # Пока ZIP не удалён, запись можно вернуть и повторить операцию.
+                record.rename(pending_record)
+                record_moved = True
+                _sync_directory(self.records_dir)
             payload.unlink(missing_ok=True)
+            payload_removed = True
             _sync_directory(self.payloads_dir)
+            if record_moved:
+                pending_record.unlink()
+                _sync_directory(self.records_dir)
         except OSError as error:
+            if record_moved and not payload_removed:
+                try:
+                    pending_record.rename(record)
+                    _sync_directory(self.records_dir)
+                except OSError as rollback_error:
+                    raise TransportError(
+                        "не удалось восстановить запись browser candidate"
+                    ) from rollback_error
             raise TransportError("не удалось удалить browser candidate") from error
 
 

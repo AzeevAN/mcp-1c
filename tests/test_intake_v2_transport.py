@@ -594,6 +594,43 @@ def test_browser_staging_restart_cleanup_сохраняет_только_committ
         restarted.load("candidate-ok")
 
 
+def test_browser_discard_сохраняет_кандидата_при_отказе_удалить_zip(
+    tmp_path, monkeypatch
+):
+    BrowserStagingStore = _symbol("BrowserStagingStore")
+    TransportError = _symbol("TransportError")
+
+    root = tmp_path / "managed"
+    store = BrowserStagingStore(root, max_upload_bytes=1024)
+    record = store.accept(
+        "candidate-retry", "demo.zip", io.BytesIO(b"committed"), expected_size=9
+    )
+    payload_path = store.payloads_dir / "candidate-retry.upload"
+    original_unlink = Path.unlink
+    failed_once = False
+
+    def unlink_with_failure(path, *args, **kwargs):
+        nonlocal failed_once
+        if path == payload_path and not failed_once:
+            failed_once = True
+            raise OSError("синтетический отказ удаления ZIP")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", unlink_with_failure)
+    with pytest.raises(TransportError, match="не удалось удалить"):
+        store.discard(record.candidate_id)
+
+    assert payload_path.is_file()
+    assert store.candidate_ids() == (record.candidate_id,)
+    assert store.load(record.candidate_id) == record
+    restarted = BrowserStagingStore(root, max_upload_bytes=1024)
+    assert restarted.load(record.candidate_id) == record
+
+    restarted.discard(record.candidate_id)
+    assert restarted.candidate_ids() == ()
+    assert not payload_path.exists()
+
+
 def test_unknown_и_traversal_path_не_открываются(tmp_path):
     TransportSecurityError = _symbol("TransportSecurityError")
     open_export_tree = _symbol("open_export_tree")

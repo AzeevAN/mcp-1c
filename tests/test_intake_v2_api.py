@@ -465,6 +465,43 @@ def test_browser_candidate_удаляется_только_после_завер
     assert service.lifecycle.browser.candidate_ids() == ()
 
 
+def test_browser_candidate_остаётся_в_списке_при_отказе_удалить_zip(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    registry = Registry(tmp_path / "data")
+    service = _service(registry)
+    client = _client(registry, service)
+    headers = {"x-api-token": "admin-token"}
+    uploaded = client.post(
+        "/api/v1/sources/intake/upload",
+        headers=headers,
+        files={"file": ("configuration.zip", _archive())},
+    )
+    assert uploaded.status_code == 201
+    candidate_id = uploaded.json()["candidate"]["id"]
+    payload_path = service.lifecycle.browser.payloads_dir / f"{candidate_id}.upload"
+    original_unlink = Path.unlink
+    failed_once = False
+
+    def unlink_with_failure(path, *args, **kwargs):
+        nonlocal failed_once
+        if path == payload_path and not failed_once:
+            failed_once = True
+            raise OSError("синтетический отказ удаления ZIP")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", unlink_with_failure)
+    endpoint = "/api/v1/sources/intake/candidates/delete"
+    request = {"candidate_id": candidate_id}
+    assert client.post(endpoint, headers=headers, json=request).status_code == 422
+    assert candidate_id in {
+        item["id"] for item in service.snapshot()["candidates"]
+    }
+    assert client.post(endpoint, headers=headers, json=request).status_code == 200
+    assert not payload_path.exists()
+
+
 def test_production_lifecycle_читает_browser_xml_как_incoming(tmp_path):
     IntakeApiService = _symbol("IntakeApiService")
     registry = Registry(tmp_path / "data")

@@ -6,9 +6,11 @@
 
 from __future__ import annotations
 
+import base64
 import importlib
 import io
 import os
+import random
 import stat
 import time
 import warnings
@@ -165,6 +167,47 @@ def test_browser_staging_принимает_ровно_лимит_и_удаля�
     with pytest.raises(KeyError):
         store.load("candidate-large")
     assert not any("candidate-large" in path.name for path in store.root.rglob("*"))
+
+
+def test_browser_source_b_читает_сильно_сжатый_xml_в_абсолютном_бюджете(tmp_path):
+    BrowserStagingStore = _symbol("BrowserStagingStore")
+    TransportLimitError = _symbol("TransportLimitError")
+
+    def archive_with(payload: bytes) -> bytes:
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("Configuration.xml", b"<MetaDataObject/>")
+            archive.writestr("Catalogs/Demo/Templates/Label/Ext/Template.xml", payload)
+        return buffer.getvalue()
+
+    xml = (
+        b"<Template><Data>"
+        + b"A" * (2 * 1024 * 1024)
+        + base64.b64encode(random.Random(1).randbytes(6000))
+        + b"</Data></Template>"
+    )
+    accepted_zip = archive_with(xml)
+    with zipfile.ZipFile(io.BytesIO(accepted_zip)) as archive:
+        info = archive.getinfo("Catalogs/Demo/Templates/Label/Ext/Template.xml")
+        assert 200 * info.compress_size < info.file_size <= 256 * info.compress_size
+
+    store = BrowserStagingStore(tmp_path / "managed")
+    store.accept("candidate-compressed", "demo.zip", io.BytesIO(accepted_zip))
+    tree = store.open_tree("candidate-compressed")
+    try:
+        with tree.open("Catalogs/Demo/Templates/Label/Ext/Template.xml") as stream:
+            assert stream.read() == xml
+    finally:
+        tree.close()
+
+    bomb_zip = archive_with(b"<Template>" + b"A" * (2 * 1024 * 1024) + b"</Template>")
+    store.accept("candidate-bomb", "bomb.zip", io.BytesIO(bomb_zip))
+    tree = store.open_tree("candidate-bomb")
+    try:
+        with pytest.raises(TransportLimitError, match="сжатия"):
+            tree.open("Catalogs/Demo/Templates/Label/Ext/Template.xml")
+    finally:
+        tree.close()
 
 
 def test_browser_staging_отвергает_подмену_payload_того_же_размера(tmp_path):

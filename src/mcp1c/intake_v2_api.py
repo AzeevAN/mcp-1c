@@ -38,7 +38,11 @@ from .intake_v2_operations import (
 )
 from .intake_v2_planner import IntakeAction, LayerVersion
 from .intake_v2_registry import GenerationView
-from .intake_v2_transport import BrowserStagingStore, TransportError
+from .intake_v2_transport import (
+    BROWSER_SOURCE_B_LIMITS,
+    BrowserStagingStore,
+    TransportError,
+)
 from .intake_v2_probe import CandidateProbe, ProbeError, probe_export
 from .config_sources import CONFIG_SOURCES_ROOT, ConfigSourceBindings, ConfigSourceError
 from .registry import Registry, RegistryError, RegistrySnapshot
@@ -125,6 +129,7 @@ class IntakeApiService:
             IntakeCoordinator(root / "operations", records),
             incoming_root=registry.incoming_dir,
             config_sources_root=Path(config_sources_root),
+            browser_limits=BROWSER_SOURCE_B_LIMITS,
             directory_settle_seconds=directory_settle_seconds,
         )
         return cls(registry, lifecycle)

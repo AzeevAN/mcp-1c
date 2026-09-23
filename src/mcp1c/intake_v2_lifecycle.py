@@ -408,6 +408,7 @@ class IntakeLifecycle:
         local_sources: Mapping[str, Path] | None = None,
         config_sources_root: Path | None = None,
         limits: ResourceLimits = ARCHIVE_LIMITS,
+        browser_limits: ResourceLimits | None = None,
         directory_settle_seconds: float = 5.0,
     ):
         if not isinstance(catalog, CandidateCatalog):
@@ -418,6 +419,10 @@ class IntakeLifecycle:
             raise TypeError("operations должен быть IntakeCoordinator")
         if not isinstance(limits, ResourceLimits):
             raise TypeError("limits должен быть ResourceLimits")
+        if browser_limits is not None and not isinstance(
+            browser_limits, ResourceLimits
+        ):
+            raise TypeError("browser_limits должен быть ResourceLimits")
         if (
             isinstance(directory_settle_seconds, bool)
             or not isinstance(directory_settle_seconds, (int, float))
@@ -438,6 +443,7 @@ class IntakeLifecycle:
             dict(sorted(normalized_sources.items()))
         )
         self.limits = limits
+        self.browser_limits = limits if browser_limits is None else browser_limits
         self.directory_settle_seconds = float(directory_settle_seconds)
         self._lock = threading.RLock()
         self._fail_interrupted_jobs()
@@ -691,7 +697,7 @@ class IntakeLifecycle:
     @contextmanager
     def _open(self, locator: CandidateLocator) -> Iterator[object]:
         if locator.transport is CandidateTransport.BROWSER:
-            tree = self.browser.open_tree(locator.entry_name, limits=self.limits)
+            tree = self.browser.open_tree(locator.entry_name, limits=self.browser_limits)
         elif locator.transport is CandidateTransport.INCOMING:
             if self.incoming_root is None:
                 raise LifecycleConflict("incoming больше не настроен")

@@ -19,7 +19,7 @@ import threading
 import time
 import zlib
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Iterable
 
@@ -35,6 +35,9 @@ from .resource_limits import (
 
 
 MAX_BROWSER_UPLOAD_BYTES = 4 * 1024 * MIB
+# XML-шаблоны файловой выгрузки достигают 244:1 при размере около 2 МиБ.
+# Повышаем только ratio для managed browser Source B; абсолютные бюджеты остаются.
+BROWSER_SOURCE_B_LIMITS = replace(ARCHIVE_LIMITS, max_compression_ratio=256)
 DIRECTORY_SETTLE_SECONDS = 5.0
 _READ_CHUNK = 1 << 20
 _STAGING_FORMAT_VERSION = 1
@@ -573,7 +576,7 @@ class BrowserStagingStore:
         self,
         candidate_id: str,
         *,
-        limits: ResourceLimits = ARCHIVE_LIMITS,
+        limits: ResourceLimits = BROWSER_SOURCE_B_LIMITS,
     ) -> ZipExportTree:
         record = self.load(candidate_id)
         tree = ZipExportTree(

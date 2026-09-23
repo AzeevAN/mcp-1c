@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import base64
 import importlib
 import io
 import json
+import random
 import threading
 import time
 import zipfile
@@ -389,6 +391,31 @@ def test_browser_upload_сохраняет_candidate_но_не_запускае�
     )
     assert invalid.status_code == 422
     assert restarted.lifecycle.browser.candidate_ids() == (candidate["id"],)
+
+
+def test_production_lifecycle_читает_browser_xml_с_коэффициентом_выше_200(tmp_path):
+    IntakeApiService = _symbol("IntakeApiService")
+    registry = Registry(tmp_path / "data")
+    service = IntakeApiService.for_registry(
+        registry, config_sources_root=tmp_path / "sources"
+    )
+    xml = (
+        b"<Template><Data>"
+        + b"A" * (2 * 1024 * 1024)
+        + base64.b64encode(random.Random(1).randbytes(6000))
+        + b"</Data></Template>"
+    )
+    path = "Catalogs/Demo/Templates/Label/Ext/Template.xml"
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("Configuration.xml", _configuration("DemoConfiguration"))
+        archive.writestr(path, xml)
+    raw = buffer.getvalue()
+    candidate = service.accept_upload("demo.zip", io.BytesIO(raw), expected_size=len(raw))
+    discovered = service.lifecycle.catalog.load(candidate["id"])
+    with service.lifecycle._open(discovered.locator) as tree:
+        with tree.open(path) as stream:
+            assert stream.read() == xml
 
 
 def test_default_service_игнорирует_удалённый_singleton(

@@ -31,7 +31,7 @@ import { StatusBadge, type StatusTone } from "../shared/ui/StatusBadge";
 
 import { ConfigDirectories } from "./ConfigDirectories";
 
-const MAX_UPLOAD_BYTES = 500 * 1024 * 1024;
+const MAX_UPLOAD_BYTES = 4 * 1024 * 1024 * 1024;
 
 const actionLabels: Record<IntakeAction, string> = {
   create: "Создать конфигурацию",
@@ -320,7 +320,7 @@ export function ConfigIntakePanel({ configuration }: { configuration?: string } 
       setFile(null);
       setFeedback({
         tone: "danger",
-        text: "ZIP больше 500 МиБ: используйте data/incoming или read-only mount.",
+        text: "ZIP больше 4 ГиБ: используйте data/incoming или read-only mount.",
       });
       return;
     }
@@ -533,7 +533,7 @@ export function ConfigIntakePanel({ configuration }: { configuration?: string } 
       >
         <UploadCloud size={23} aria-hidden="true" />
         <span>
-          <strong>{file ? file.name : "ZIP до 500 МиБ"}</strong>
+          <strong>{file ? file.name : "ZIP до 4 ГиБ"}</strong>
           <small>{file ? formatBytes(file.size) : "Большие файлы оставьте в data/incoming/"}</small>
         </span>
         <button className="button-secondary" type="button" onClick={() => input.current?.click()} disabled={uploading || confirming || discarding}>

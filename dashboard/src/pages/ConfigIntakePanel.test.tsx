@@ -106,6 +106,23 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+it("разрешает выбрать ZIP больше 500 МиБ и отклоняет ZIP больше 4 ГиБ", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => response(snapshot([]))));
+  renderPanel();
+  expect(await screen.findByText("ZIP до 4 ГиБ")).toBeInTheDocument();
+  const input = document.querySelector<HTMLInputElement>('input[accept=".zip"]')!;
+  const withinLimit = new File(["x"], "configuration.zip", { type: "application/zip" });
+  Object.defineProperty(withinLimit, "size", { value: 500 * 1024**2 + 1 });
+  fireEvent.change(input, { target: { files: [withinLimit] } });
+  expect(screen.getByRole("button", { name: "Принять ZIP" })).toBeEnabled();
+
+  const overLimit = new File(["x"], "too-large.zip", { type: "application/zip" });
+  Object.defineProperty(overLimit, "size", { value: 4 * 1024**3 + 1 });
+  fireEvent.change(input, { target: { files: [overLimit] } });
+  expect(screen.getByRole("button", { name: "Принять ZIP" })).toBeDisabled();
+  expect(screen.getByText(/ZIP больше 4 ГиБ/)).toBeInTheDocument();
+});
+
 it.each([false, true])("публикует только после confirm и учитывает no_op=%s при обновлении кэша", async (noOp) => {
   const requests: Array<{ path: string; body: unknown }> = [];
   let previewReady = false;

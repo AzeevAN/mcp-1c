@@ -16,6 +16,7 @@ from mcp1c.server import mcp_guard
 LOGIN_BODY_LIMIT = 16 * 1024
 QUERY_BODY_LIMIT = 1024 * 1024
 UPLOAD_FILE_LIMIT = 500 * 1024 * 1024
+INTAKE_UPLOAD_FILE_LIMIT = 4 * 1024 * 1024 * 1024
 UPLOAD_OVERHEAD = 1024 * 1024
 DEFAULT_BODY_LIMIT = 2 * 1024 * 1024
 
@@ -104,7 +105,17 @@ def test_login_query_and_upload_have_different_declared_limits() -> None:
             "/api/v1/sources/intake/upload",
             content=b"x",
             headers={
-                "content-length": str(UPLOAD_FILE_LIMIT + UPLOAD_OVERHEAD + 1)
+                "content-length": str(INTAKE_UPLOAD_FILE_LIMIT + UPLOAD_OVERHEAD)
+            },
+        ).status_code
+        == 200
+    )
+    assert (
+        client.post(
+            "/api/v1/sources/intake/upload",
+            content=b"x",
+            headers={
+                "content-length": str(INTAKE_UPLOAD_FILE_LIMIT + UPLOAD_OVERHEAD + 1)
             },
         ).status_code
         == 413

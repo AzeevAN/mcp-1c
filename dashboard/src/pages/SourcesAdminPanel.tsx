@@ -221,7 +221,7 @@ export function SourcesAdminPanel({
             <p><strong>Активность расширений:</strong> файл <code>СнимокРасширений_*.json</code> из отдельной обработки снимка.</p>
             <p><strong>Справка платформы:</strong> точный файл <code>shcntx_ru.hbk</code>; другие похожие HBK его не заменяют.</p>
             <p><strong>Общая справка:</strong> загрузите подписанный <code>.mcp1cref</code> через блок «Общая справка» в боковом меню.</p>
-            <p><strong>Полная файловая выгрузка:</strong> используйте отдельный двухфазный блок выше; ZIP больше 500 МиБ положите в <code>{data.incoming_dir}</code>.</p>
+            <p><strong>Полная файловая выгрузка:</strong> используйте отдельный двухфазный блок выше; ZIP больше 4 ГиБ положите в <code>{data.incoming_dir}</code>.</p>
           </div>
         </details>
       </section>

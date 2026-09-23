@@ -50,6 +50,7 @@ from .capabilities import (
 )
 from .dashboard_backend import MAX_UPLOAD, can_read
 from .dashboard_runtime import routes as dashboard_routes
+from .intake_v2_transport import MAX_BROWSER_UPLOAD_BYTES
 from .process_restart import RestartController
 from .reference_provider import (
     MAX_PAGE_CHARS,
@@ -84,6 +85,7 @@ from .runtime_config import (
 HTTP_BODY_LIMIT_LOGIN = 16 * 1024
 HTTP_BODY_LIMIT_QUERIES = 1024 * 1024
 HTTP_BODY_LIMIT_UPLOAD = MAX_UPLOAD + 1024 * 1024
+HTTP_BODY_LIMIT_INTAKE_UPLOAD = MAX_BROWSER_UPLOAD_BYTES + 1024 * 1024
 HTTP_BODY_LIMIT_DEFAULT = 2 * 1024 * 1024
 
 WRITABLE_DATA_DIRECTORIES = (
@@ -182,11 +184,9 @@ def _http_body_limit(scope) -> int:
             return HTTP_BODY_LIMIT_LOGIN
         if path == "/queries":
             return HTTP_BODY_LIMIT_QUERIES
-        if path in (
-            "/sources",
-            "/api/v1/sources/upload",
-            "/api/v1/sources/intake/upload",
-        ):
+        if path == "/api/v1/sources/intake/upload":
+            return HTTP_BODY_LIMIT_INTAKE_UPLOAD
+        if path in ("/sources", "/api/v1/sources/upload"):
             return HTTP_BODY_LIMIT_UPLOAD
     return HTTP_BODY_LIMIT_DEFAULT
 

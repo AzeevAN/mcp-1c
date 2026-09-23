@@ -138,6 +138,8 @@ def test_browser_staging_принимает_ровно_лимит_и_удаля�
     TransportError = _symbol("TransportError")
     TransportLimitError = _symbol("TransportLimitError")
 
+    assert BrowserStagingStore(tmp_path / "default-managed").max_upload_bytes == 4 * 1024**3
+
     store = BrowserStagingStore(tmp_path / "managed", max_upload_bytes=8)
     accepted = store.accept(
         "candidate-ok", "demo.zip", io.BytesIO(b"12345678"), expected_size=8

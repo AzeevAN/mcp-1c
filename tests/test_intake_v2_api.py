@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import base64
 import importlib
 import io
 import json
-import random
 import threading
 import time
 import zipfile
@@ -467,7 +465,7 @@ def test_browser_candidate_удаляется_только_после_завер
     assert service.lifecycle.browser.candidate_ids() == ()
 
 
-def test_production_lifecycle_читает_browser_xml_с_коэффициентом_выше_200(tmp_path):
+def test_production_lifecycle_читает_browser_xml_как_incoming(tmp_path):
     IntakeApiService = _symbol("IntakeApiService")
     registry = Registry(tmp_path / "data")
     service = IntakeApiService.for_registry(
@@ -476,7 +474,6 @@ def test_production_lifecycle_читает_browser_xml_с_коэффициент
     xml = (
         b"<Template><Data>"
         + b"A" * (2 * 1024 * 1024)
-        + base64.b64encode(random.Random(1).randbytes(6000))
         + b"</Data></Template>"
     )
     path = "Catalogs/Demo/Templates/Label/Ext/Template.xml"

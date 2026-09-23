@@ -163,7 +163,7 @@ def test_spa_upload_принимает_файл_и_публикует_источ
     assert jobs[0]["state"] == dashboard.JOB_DONE
 
 
-def test_spa_incoming_разбирается_в_выбранную_конфигурацию(
+def test_spa_incoming_не_разбирает_частичный_код(
     tmp_path, monkeypatch
 ):
     monkeypatch.delenv("API_TOKEN", raising=False)
@@ -197,11 +197,9 @@ def test_spa_incoming_разбирается_в_выбранную_конфиг�
         },
     )
 
-    assert snapshot["incoming"][0]["can_parse"] is True
-    assert response.status_code == 202
-    _wait_until(
-        lambda: "Отраслевая конфигурация Б:modules" in registry.snapshot().sources
-    )
+    assert "can_parse" not in snapshot["incoming"][0]
+    assert response.status_code == 410
+    assert "Отраслевая конфигурация Б:modules" not in registry.snapshot().sources
     assert "Отраслевая конфигурация А:modules" not in registry.snapshot().sources
     assert archive.is_file()
 

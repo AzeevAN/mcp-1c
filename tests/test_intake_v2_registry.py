@@ -16,7 +16,7 @@ import pytest
 from conftest import build_configuration, write_export
 from mcp1c.registry import Registry
 from mcp1c.source_modes import ActivationComponent, ActivationManifest, ActivationMode
-from test_intake_v2_extensions import _materialized
+from test_intake_v2_extensions import _materialized, _stage_active_base
 
 
 SUBJECT = "mcp1c.intake_v2_registry"
@@ -243,7 +243,7 @@ def test_crash_recovery_removes_exact_detached_extension_roots(
     _base_collection, base = _materialized(tmp_path, "recovery-base")
     registry = Registry(tmp_path / "data")
     registry.publish_generation(
-        registry.stage_generation(base.manifest, base.payloads)
+        _stage_active_base(registry, base)
     )
     child_pointers = []
     for index in range(extension_count):
@@ -298,7 +298,7 @@ def test_detached_root_cleanup_failure_is_retried_idempotently(
     _base_collection, base = _materialized(tmp_path, "retry-base")
     registry = Registry(tmp_path / "data")
     registry.publish_generation(
-        registry.stage_generation(base.manifest, base.payloads)
+        _stage_active_base(registry, base)
     )
     children = []
     for index in range(2):
@@ -371,7 +371,7 @@ def test_pre_switch_rollback_preserves_recorded_detached_root(
     )
     registry = Registry(tmp_path / "data")
     registry.publish_generation(
-        registry.stage_generation(base.manifest, base.payloads)
+        _stage_active_base(registry, base)
     )
     child = registry.publish_generation(
         registry.stage_generation(extension.manifest, extension.payloads)

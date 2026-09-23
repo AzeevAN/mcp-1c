@@ -314,8 +314,7 @@ def test_отмена_во_время_spool_write_не_закрывает_фай
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("first", ["intake", "incoming"])
-def test_intake_и_incoming_делят_допуск_с_обычным_upload(tmp_path, monkeypatch, first):
+def test_intake_делит_допуск_с_обычным_upload(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     monkeypatch.setenv("API_TOKEN", "synthetic-read")
@@ -332,33 +331,14 @@ def test_intake_и_incoming_делят_допуск_с_обычным_upload(tmp
         assert release.wait(5)
 
     service.prepare = prepare
-    if first == "incoming":
-        registry.incoming_dir.mkdir(parents=True)
-        archive = registry.incoming_dir / "sample.zip"
-        archive.write_bytes(b"synthetic")
-        scanner = dashboard_backend._scanner(registry)
-        monkeypatch.setattr(scanner, "дописывается", lambda path: False)
-        monkeypatch.setattr("mcp1c.intake.planned_size", lambda path: 0)
-
-        def incoming(reg, scanner, job, path, configuration):
-            try:
-                prepare()
-                job["state"] = dashboard_backend.JOB_DONE
-            finally:
-                scanner.finish(path.name)
-
-        monkeypatch.setattr(dashboard_backend, "_run_incoming", incoming)
-
     async def scenario():
         app = mcp_guard(Starlette(routes=routes(registry, intake=service)))
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver", headers={"x-api-token": "synthetic-admin"}) as client:
             try:
-                path, payload = (
-                    ("/api/v1/sources/intake/start", {"candidate_id": "sample", "action": "create"})
-                    if first == "intake" else
-                    ("/api/v1/sources/incoming/parse", {"name": "sample.zip"})
+                response = await client.post(
+                    "/api/v1/sources/intake/start",
+                    json={"candidate_id": "sample", "action": "create"},
                 )
-                response = await client.post(path, json=payload)
                 assert response.status_code == 202, response.text
                 await _wait(entered.is_set)
                 denied = await client.post("/api/v1/sources/upload", files={"file": ("second.hbk", b"synthetic")})
@@ -373,7 +353,5 @@ def test_intake_и_incoming_делят_допуск_с_обычным_upload(tmp
                     break
                 await asyncio.sleep(0.005)
             assert retry.status_code == 400
-            if first == "incoming":
-                assert archive.read_bytes() == b"synthetic"
 
     asyncio.run(scenario())

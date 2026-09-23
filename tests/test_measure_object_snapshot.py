@@ -92,8 +92,12 @@ def test_cli_печатает_только_обезличенные_агрега
         timeout=30,
     )
 
-    assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout)["completed"] is True
+    assert result.returncode == 2
+    assert json.loads(result.stdout) == {
+        "completed": False,
+        "error": "замер не завершён",
+        "schema": "object-snapshot-v1",
+    }
     assert result.stderr == ""
     assert "Пример" not in result.stdout
     assert str(registry.data_dir) not in result.stdout

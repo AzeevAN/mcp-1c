@@ -6,9 +6,11 @@ import json
 import threading
 from pathlib import Path
 
+import pytest
+
 from conftest import build_configuration, write_export
 from mcp1c import coverage_log, tools
-from mcp1c.registry import KIND_EXTENSION, KIND_MODULES, Registry
+from mcp1c.registry import KIND_EXTENSION, KIND_MODULES, Registry, RegistryError
 from module_samples import v8_container_bytes
 
 
@@ -341,11 +343,8 @@ def test_stale_журнал_не_публикуется_если_его_нель
     assert restored.startup() == []
     assert restored.wait_for_module_builds()
     current = _source(restored, KIND_MODULES)
-    row = next(
-        item
-        for item in tools.sources_snapshot(restored).code
-        if item.source_id == current.id
-    )
-
     assert coverage_log.WRITE_WARNING in current.warnings
-    assert row.journal == ""
+    assert tools.sources_snapshot(restored).code == ()
+    with pytest.raises(RegistryError, match="reload_required"):
+        restored.resolve("Пример")
+    assert restored.resolve("Пример", diagnostic=True).modules.source is current

@@ -286,6 +286,12 @@ def test_cli_сначала_проверяет_все_наборы_и_не_пе�
         ],
     )
     save = tmp_path / "report.json"
+    # Ошибка набора проверяется на действующем legacy-снимке; после
+    # восстановления его смешанное происхождение требует полной загрузки.
+    with pytest.raises(ValueError, match="НетТакойПроцедуры.*не найден"):
+        bench.run_procedures(
+            реестр_с_кодом, queries / "procedures.json", config="Пример"
+        )
     реестр_с_кодом.save()
     monkeypatch.setattr(bench, "QUERIES_DIR", queries)
 
@@ -304,7 +310,7 @@ def test_cli_сначала_проверяет_все_наборы_и_не_пе�
 
     output = capsys.readouterr().out
     assert code == 2
-    assert "НетТакойПроцедуры" in output
+    assert "reload_required" in output
     assert "=== metadata ===" not in output
     assert not save.exists()
 
@@ -316,7 +322,6 @@ def test_cli_extension_меряет_выбранный_корпус(
         _корпус(tmp_path / "cli-extension", suffix="Доп"),
         extension="Доп",
     )
-    registry.save()
     queries = tmp_path / "queries"
     queries.mkdir()
     _набор(
@@ -329,6 +334,14 @@ def test_cli_extension_меряет_выбранный_корпус(
         ],
     )
     monkeypatch.setattr(bench, "QUERIES_DIR", queries)
+
+    # Сам замер остаётся предметным на текущем снимке без восстановления.
+    report = bench.run_procedures(
+        registry, queries / "procedures.json", config="Пример", extension="Доп"
+    )
+    assert report.hit1 == 1
+    assert report.results[0].got[0].startswith("ОбщийМодуль.СтендДоп::")
+    registry.save()
 
     code = bench.main(
         [
@@ -344,9 +357,9 @@ def test_cli_extension_меряет_выбранный_корпус(
     )
 
     output = capsys.readouterr().out
-    assert code == 0
-    assert "=== procedures ===" in output
-    assert "P@1" in output
+    assert code == 2
+    assert "reload_required" in output
+    assert "=== procedures ===" not in output
 
 
 def test_cli_без_индекса_кода_завершается_ошибкой_без_нулевого_замера(
@@ -496,7 +509,7 @@ def test_cli_не_подменяет_отсутствующее_расширен
 
     output = capsys.readouterr().out
     assert code == 2
-    assert "расширения НетТакого" in output
+    assert "reload_required" in output
     assert "=== procedures ===" not in output
 
 

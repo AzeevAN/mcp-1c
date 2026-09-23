@@ -5,6 +5,8 @@
 кэш проекта и делают доступными инструментам через `ResolvedContext.modules`/
 `ResolvedContext.extension`. `restore()` после рестарта поднимает их снова —
 из кэша, если штамп сошёлся, иначе строит заново прямо по коду на диске.
+Восстановленная пара старых Source A и отдельно загруженных модулей остаётся
+доступна только диагностике: публичный `resolve()` требует перезагрузки.
 
 Три правила порядка зафиксированы в `docs/modules-provider-design.md`,
 раздел 9:
@@ -121,6 +123,13 @@ def _дождаться(условие, *, timeout: float = 3.0) -> None:
         if time.monotonic() >= конец:
             pytest.fail("фоновая сборка не завершилась вовремя")
         time.sleep(0.01)
+
+
+def _диагностический_контекст(реестр: Registry, *, extension: str | None = None):
+    """Восстановленный legacy-код виден диагностике, но закрыт для MCP."""
+    with pytest.raises(RegistryError, match="reload_required"):
+        реестр.resolve("Пример", extension=extension)
+    return реестр.resolve("Пример", extension=extension, diagnostic=True)
 
 
 def _вызвать_с_ошибкой(ошибки: list[Exception], функция, *args, **kwargs) -> None:
@@ -339,7 +348,7 @@ def test_рестарт_поднимает_индекс_из_кэша(tmp_path_f
 
     Мутация, которая уберёт вызов `поднять_индексы`/сборку из `restore()`
     и оставит только `KIND_MODULES` в `self.sources`, роняет этот тест:
-    `контекст.modules` останется `None`.
+    диагностический `контекст.modules` останется `None`.
     """
     рабочий = tmp_path_factory.mktemp("реестр")
     реестр = _реестр_с_конфигурацией(рабочий)
@@ -351,7 +360,7 @@ def test_рестарт_поднимает_индекс_из_кэша(tmp_path_f
     problems = заново.restore()
 
     assert not problems
-    контекст = заново.resolve("Пример")
+    контекст = _диагностический_контекст(заново)
     assert контекст.modules is not None
     assert контекст.modules.оглавление.по_имени("сложить")
     assert контекст.modules.версия_кода == "1.0.0"
@@ -389,15 +398,15 @@ def test_старт_не_ждёт_холодной_сборки(
         assert not problems
         assert прошло < 1.0
         assert строит.wait(timeout=1)
-        модули = заново.resolve("Пример").modules
+        модули = _диагностический_контекст(заново).modules
         assert модули is not None
         assert модули.готов is False
         assert модули.прогресс[0] < модули.прогресс[1]
     finally:
         отпустить.set()
 
-    _дождаться(lambda: заново.resolve("Пример").modules.готов)
-    готовые = заново.resolve("Пример").modules
+    _дождаться(lambda: _диагностический_контекст(заново).modules.готов)
+    готовые = _диагностический_контекст(заново).modules
     assert готовые.оглавление.по_имени("сложить")
     assert готовые.прогресс[0] == готовые.прогресс[1]
 
@@ -427,7 +436,7 @@ def test_четыре_индекса_появляются_только_гото�
     try:
         assert not заново.startup()
         assert строит_поиск.wait(timeout=1)
-        модули = заново.resolve("Пример").modules
+        модули = _диагностический_контекст(заново).modules
         assert модули is not None
         assert модули.готов is False
         assert (модули.оглавление, модули.вызовы, модули.формы, модули.поиск) == (
@@ -439,8 +448,8 @@ def test_четыре_индекса_появляются_только_гото�
     finally:
         отпустить.set()
 
-    _дождаться(lambda: заново.resolve("Пример").modules.готов)
-    готовые = заново.resolve("Пример").modules
+    _дождаться(lambda: _диагностический_контекст(заново).modules.готов)
+    готовые = _диагностический_контекст(заново).modules
     assert all(
         индекс is not None
         for индекс in (
@@ -481,7 +490,7 @@ def test_прогресс_показывает_фактический_прохо
     try:
         assert not заново.startup()
         assert второй_файл.wait(timeout=1)
-        модули = заново.resolve("Пример").modules
+        модули = _диагностический_контекст(заново).modules
         assert модули.готов is False
         assert модули.этап == (1, 4)
         assert модули.название_этапа == "оглавление"
@@ -489,7 +498,7 @@ def test_прогресс_показывает_фактический_прохо
     finally:
         отпустить.set()
 
-    _дождаться(lambda: заново.resolve("Пример").modules.готов)
+    _дождаться(lambda: _диагностический_контекст(заново).modules.готов)
 
 
 @pytest.mark.parametrize(
@@ -530,13 +539,13 @@ def test_холодный_старт_считает_скомпилированн
     try:
         assert not fresh.startup()
         assert started.wait(timeout=1)
-        loaded = fresh.resolve("Пример").modules
+        loaded = _диагностический_контекст(fresh).modules
         assert loaded.этап == (1, 4)
         assert loaded.прогресс == (0, 2)
     finally:
         release.set()
 
-    _дождаться(lambda: fresh.resolve("Пример").modules.готов)
+    _дождаться(lambda: _диагностический_контекст(fresh).modules.готов)
 
 
 def test_без_выгрузки_кода_состояния_модулей_нет(tmp_path_factory):
@@ -567,7 +576,7 @@ def test_отказ_фоновой_сборки_не_остаётся_вечны
     _дождаться(lambda: заново.sources["Пример:modules"].status == STATUS_ERROR)
     источник = заново.sources["Пример:modules"]
     assert "не влезло" in источник.error
-    assert заново.resolve("Пример").modules.готов is False
+    assert _диагностический_контекст(заново).modules.готов is False
     assert "Фоновая сборка индекса кода" in caplog.text
     assert "MemoryError: не влезло" in caplog.text
 
@@ -698,7 +707,7 @@ def test_повторный_startup_не_запускает_вторую_сбо�
     finally:
         отпустить.set()
 
-    _дождаться(lambda: заново.resolve("Пример").modules.готов)
+    _дождаться(lambda: _диагностический_контекст(заново).modules.готов)
 
 
 def test_снятие_источника_во_время_сборки_не_воскрешает_индекс(
@@ -841,7 +850,7 @@ def test_два_параллельных_startup_запускают_одну_с�
         первый.join(timeout=3)
         второй.join(timeout=3)
 
-    _дождаться(lambda: заново.resolve("Пример").modules.готов)
+    _дождаться(lambda: _диагностический_контекст(заново).modules.готов)
     assert build_calls == 1
 
 
@@ -1086,14 +1095,14 @@ def test_старый_фоновый_writer_не_портит_кэш_новог�
     assert not reparse.is_alive()
     assert not reparse_errors
     _дождаться(lambda: "Пример:modules" not in заново._module_builds)
-    в_памяти = заново.resolve("Пример").modules.оглавление
+    в_памяти = _диагностический_контекст(заново).modules.оглавление
     assert в_памяти.по_имени("Новая")
     assert not в_памяти.по_имени("Сложить")
     заново.save()
 
     после_рестарта = Registry(реестр.data_dir)
     assert not после_рестарта.restore()
-    поднято = после_рестарта.resolve("Пример").modules
+    поднято = _диагностический_контекст(после_рестарта).modules
     assert поднято.готов is True
     assert поднято.оглавление.по_имени("Новая")
     assert not поднято.оглавление.по_имени("Сложить")
@@ -1131,7 +1140,7 @@ def test_заблокированный_warm_load_не_перетирает_repa
         поток.join(timeout=3)
 
     assert not поток.is_alive()
-    модули = заново.resolve("Пример").modules
+    модули = _диагностический_контекст(заново).modules
     assert модули.source is заново.sources["Пример:modules"]
     assert модули.source.origin == "new.zip"
     assert модули.оглавление.по_имени("Новая")
@@ -1270,7 +1279,7 @@ def test_startup_не_подменяет_swapped_reparse_старым_registry(
 
     assert not reparse.is_alive()
     source = реестр.sources["Пример:modules"]
-    loaded = реестр.resolve("Пример").modules
+    loaded = _диагностический_контекст(реестр).modules
     assert source.origin == "new.zip"
     assert loaded.source is source
     assert loaded.оглавление.по_имени("Новая")
@@ -1278,7 +1287,7 @@ def test_startup_не_подменяет_swapped_reparse_старым_registry(
 
     после_рестарта = Registry(реестр.data_dir)
     assert not после_рестарта.restore()
-    поднято = после_рестарта.resolve("Пример").modules
+    поднято = _диагностический_контекст(после_рестарта).modules
     assert поднято.готов is True
     assert поднято.source.origin == "new.zip"
     assert поднято.оглавление.по_имени("Новая")
@@ -1417,9 +1426,9 @@ def test_старый_remove_не_удаляет_новый_canonical_root(
     после_рестарта = Registry(реестр.data_dir)
     assert not после_рестарта.restore()
     поднято = (
-        после_рестарта.resolve("Пример", extension="Доп").extension
+        _диагностический_контекст(после_рестарта, extension="Доп").extension
         if расширение
-        else после_рестарта.resolve("Пример").modules
+        else _диагностический_контекст(после_рестарта).modules
     )
     assert поднято.готов is True
     assert поднято.source.origin == новый.name

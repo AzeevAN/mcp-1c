@@ -30,6 +30,7 @@ from mcp1c.tools import (
     get_related,
     search_objects,
 )
+from test_intake_v2_generation import _stage_b_generation
 import test_intake_v2_converter as converter_fixtures
 from test_intake_v2_converter import (
     _collection,
@@ -78,7 +79,7 @@ def test_remove_native_корпуса_удаляет_единый_агрегат
     )
     registry = Registry(tmp_path / "data")
     previous = registry.publish_generation(
-        registry.stage_generation(generation.manifest, generation.payloads)
+        _stage_b_generation(registry, generation.manifest, generation.payloads)
     )
     registry.incoming_dir.mkdir(parents=True)
     incoming = registry.incoming_dir / "оставить.zip"
@@ -114,7 +115,7 @@ def test_native_commit_атомарно_подключает_структуру_
     registry = Registry(tmp_path / "data")
 
     registry.publish_generation(
-        registry.stage_generation(generation.manifest, generation.payloads)
+        _stage_b_generation(registry, generation.manifest, generation.payloads)
     )
 
     context = registry.resolve("DemoConfiguration")
@@ -183,7 +184,7 @@ def test_native_плоская_xml_форма_доходит_до_runtime_вме
     )
     registry = Registry(tmp_path / "data-flat-form-xml")
     registry.publish_generation(
-        registry.stage_generation(generation.manifest, generation.payloads)
+        _stage_b_generation(registry, generation.manifest, generation.payloads)
     )
 
     context = registry.resolve("DemoConfiguration")
@@ -240,7 +241,7 @@ def test_native_common_command_карточка_граф_замена_и_restart
     registry = Registry(tmp_path / "data-common-command")
 
     registry.publish_generation(
-        registry.stage_generation(baseline.manifest, baseline.payloads)
+        _stage_b_generation(registry, baseline.manifest, baseline.payloads)
     )
     assert "`ОбщаяКоманда.Run`" in search_objects(
         registry,
@@ -278,7 +279,7 @@ def test_native_common_command_карточка_граф_замена_и_restart
     assert "form=Справочник.Items.Форма.Card" in incoming
 
     registry.publish_generation(
-        registry.stage_generation(changed.manifest, changed.payloads)
+        _stage_b_generation(registry, changed.manifest, changed.payloads)
     )
     assert "ОбщаяКоманда.Run" not in get_related(
         registry,
@@ -311,7 +312,7 @@ def test_native_common_command_карточка_граф_замена_и_restart
 
     monkeypatch.undo()
     restarted.publish_generation(
-        restarted.stage_generation(removed.manifest, removed.payloads)
+        _stage_b_generation(restarted, removed.manifest, removed.payloads)
     )
     assert "нет объекта `ОбщаяКоманда.Run`" in get_object(
         restarted,
@@ -339,7 +340,7 @@ def test_native_common_command_карточка_показывает_тип_па
     )
     registry = Registry(tmp_path / "data-common-command-parameter-type")
     registry.publish_generation(
-        registry.stage_generation(generation.manifest, generation.payloads)
+        _stage_b_generation(registry, generation.manifest, generation.payloads)
     )
     obj = registry.resolve("DemoConfiguration").configuration.config.get(
         "ОбщаяКоманда.Run"
@@ -376,7 +377,7 @@ def test_native_common_command_не_выдумывает_отсутствующ�
     )
     registry = Registry(tmp_path / "data-common-command-without-parameter-type")
     registry.publish_generation(
-        registry.stage_generation(generation.manifest, generation.payloads)
+        _stage_b_generation(registry, generation.manifest, generation.payloads)
     )
 
     card = get_object(
@@ -404,7 +405,7 @@ def test_native_extended_objects_доступны_через_mcp_после_rest
     )
     registry = Registry(tmp_path / "data")
     registry.publish_generation(
-        registry.stage_generation(generation.manifest, generation.payloads)
+        _stage_b_generation(registry, generation.manifest, generation.payloads)
     )
     expected = (
         ("ОбщийРеквизит.Tenant", "ОбщийРеквизит"),
@@ -584,7 +585,7 @@ def test_native_filter_criterion_изменение_и_удаление_пере
     registry = Registry(tmp_path / "data-filter-criterion")
 
     first = registry.publish_generation(
-        registry.stage_generation(baseline.manifest, baseline.payloads)
+        _stage_b_generation(registry, baseline.manifest, baseline.payloads)
     )
     original = registry.resolve("DemoConfiguration").configuration.config.get(
         "КритерийОтбора.ByItem"
@@ -593,7 +594,7 @@ def test_native_filter_criterion_изменение_и_удаление_пере
     assert original.comment == "Синтетический критерий отбора"
 
     second = registry.publish_generation(
-        registry.stage_generation(changed.manifest, changed.payloads)
+        _stage_b_generation(registry, changed.manifest, changed.payloads)
     )
     updated = registry.resolve("DemoConfiguration").configuration.config.get(
         "КритерийОтбора.ByItem"
@@ -603,7 +604,7 @@ def test_native_filter_criterion_изменение_и_удаление_пере
     assert updated.comment == "Обновлённый синтетический критерий"
 
     third = registry.publish_generation(
-        registry.stage_generation(removed.manifest, removed.payloads)
+        _stage_b_generation(registry, removed.manifest, removed.payloads)
     )
     assert third.generation_id != second.generation_id
     assert (
@@ -633,7 +634,7 @@ def test_native_http_service_endpoint_доступен_через_mcp_после
     )
     registry = Registry(tmp_path / "data-http-service")
     registry.publish_generation(
-        registry.stage_generation(generation.manifest, generation.payloads)
+        _stage_b_generation(registry, generation.manifest, generation.payloads)
     )
 
     def assert_http_contract(current: Registry) -> None:
@@ -685,7 +686,7 @@ def test_native_http_service_проходит_полную_mcp_сессию(tmp_
     )
     registry = Registry(tmp_path / "data-http-service-mcp-session")
     registry.publish_generation(
-        registry.stage_generation(generation.manifest, generation.payloads)
+        _stage_b_generation(registry, generation.manifest, generation.payloads)
     )
     server = build_server(registry)
 
@@ -774,7 +775,7 @@ def test_native_xdto_проходит_mcp_сессию_после_restart(tmp_pa
     )
     registry = Registry(tmp_path / "data-xdto-mcp-session")
     registry.publish_generation(
-        registry.stage_generation(generation.manifest, generation.payloads)
+        _stage_b_generation(registry, generation.manifest, generation.payloads)
     )
     restarted = Registry(registry.data_dir)
     assert restarted.restore() == []
@@ -836,7 +837,7 @@ def test_native_subsystem_проходит_полную_mcp_сессию(tmp_pat
     )
     registry = Registry(tmp_path / "data-subsystem-mcp-session")
     registry.publish_generation(
-        registry.stage_generation(generation.manifest, generation.payloads)
+        _stage_b_generation(registry, generation.manifest, generation.payloads)
     )
     server = build_server(registry)
 
@@ -923,7 +924,7 @@ def test_native_http_service_change_и_удаление_endpoint_пережив�
     registry = Registry(tmp_path / "data-http-change")
 
     first = registry.publish_generation(
-        registry.stage_generation(baseline.manifest, baseline.payloads)
+        _stage_b_generation(registry, baseline.manifest, baseline.payloads)
     )
     first_card = get_object(
         registry,
@@ -934,7 +935,7 @@ def test_native_http_service_change_и_удаление_endpoint_пережив�
     assert "`/hs/api/items/{id}`" in first_card
 
     second = registry.publish_generation(
-        registry.stage_generation(changed.manifest, changed.payloads)
+        _stage_b_generation(registry, changed.manifest, changed.payloads)
     )
     second_card = get_object(
         registry,
@@ -949,7 +950,7 @@ def test_native_http_service_change_и_удаление_endpoint_пережив�
     assert "`HTTPСервис.Api::Other` · привязка разрешена" in second_card
 
     third = registry.publish_generation(
-        registry.stage_generation(removed.manifest, removed.payloads)
+        _stage_b_generation(registry, removed.manifest, removed.payloads)
     )
     assert third.generation_id != second.generation_id
     removed_card = get_object(
@@ -1011,7 +1012,7 @@ def test_http_service_дочитывается_без_пропусков_и_не
     )
     registry = Registry(tmp_path / 'data-http-pagination')
     registry.publish_generation(
-        registry.stage_generation(generation.manifest, generation.payloads)
+        _stage_b_generation(registry, generation.manifest, generation.payloads)
     )
 
     first_pages = []
@@ -1118,7 +1119,7 @@ def test_http_service_дочитывается_без_пропусков_и_не
         http_template='/changed',
     )
     registry.publish_generation(
-        registry.stage_generation(changed.manifest, changed.payloads)
+        _stage_b_generation(registry, changed.manifest, changed.payloads)
     )
 
     with pytest.raises(RegistryError, match='Курсор.*изменивш'):
@@ -1189,7 +1190,7 @@ def test_subsystem_дочитывается_и_cursor_привязан_к_объ
     )
     registry = Registry(tmp_path / "data-subsystem-pagination")
     registry.publish_generation(
-        registry.stage_generation(generation.manifest, generation.payloads)
+        _stage_b_generation(registry, generation.manifest, generation.payloads)
     )
 
     pages = []
@@ -1238,7 +1239,7 @@ def test_subsystem_карточка_сохраняет_состояние_свя
     )
     registry = Registry(tmp_path / "data-subsystem-relation-state")
     registry.publish_generation(
-        registry.stage_generation(generation.manifest, generation.payloads)
+        _stage_b_generation(registry, generation.manifest, generation.payloads)
     )
     obj = registry.resolve("DemoConfiguration").configuration.config.get(
         "Подсистема.Sales.Retail"
@@ -1268,7 +1269,7 @@ def test_subsystem_переживает_restart_и_удаляется_новым
     _first_collection, first = _materialized(tmp_path, "subsystem-first", subsystems=True)
     _removed_collection, removed = _materialized(tmp_path, "subsystem-removed")
     registry = Registry(tmp_path / "data-subsystem-restart")
-    registry.publish_generation(registry.stage_generation(first.manifest, first.payloads))
+    registry.publish_generation(_stage_b_generation(registry, first.manifest, first.payloads))
 
     restarted = Registry(registry.data_dir)
     assert restarted.restore() == []
@@ -1282,7 +1283,7 @@ def test_subsystem_переживает_restart_и_удаляется_новым
     assert "`CommonPicture.Unknown` — не разрешена" in restarted_card
 
     restarted.publish_generation(
-        restarted.stage_generation(removed.manifest, removed.payloads)
+        _stage_b_generation(restarted, removed.manifest, removed.payloads)
     )
     assert "нет объекта `Подсистема.Sales.Retail`" in get_object(
         restarted,
@@ -1393,7 +1394,7 @@ def test_source_b_missing_register_properties_остаются_unknown_посл�
     )
     registry = Registry(tmp_path / "data-b-unknown")
     registry.publish_generation(
-        registry.stage_generation(generation.manifest, generation.payloads)
+        _stage_b_generation(registry, generation.manifest, generation.payloads)
     )
 
     restarted = Registry(registry.data_dir)
@@ -1657,14 +1658,14 @@ def test_смена_только_extended_не_поднимает_старый_o
     )
     registry = Registry(tmp_path / "data")
     previous = registry.publish_generation(
-        registry.stage_generation(first.manifest, first.payloads)
+        _stage_b_generation(registry, first.manifest, first.payloads)
     )
     assert registry.resolve("DemoConfiguration").configuration.config.get(
         "ОбщаяФорма.Workspace"
     ) is None
 
     registry.publish_generation(
-        registry.stage_generation(second.manifest, second.payloads),
+        _stage_b_generation(registry, second.manifest, second.payloads),
         expected_previous=previous,
     )
 
@@ -1696,7 +1697,7 @@ def test_native_журнал_покрытия_публикуется_и_восс
     registry = Registry(tmp_path / "data")
 
     registry.publish_generation(
-        registry.stage_generation(generation.manifest, generation.payloads)
+        _stage_b_generation(registry, generation.manifest, generation.payloads)
     )
 
     published = registry.modules["DemoConfiguration:modules"]
@@ -1737,7 +1738,7 @@ def test_native_base_не_принимает_неполную_schema_v1(
     _collection_value, generation = _materialized(tmp_path, "complete-base")
     registry = Registry(tmp_path / "data")
     registry.publish_generation(
-        registry.stage_generation(generation.manifest, generation.payloads)
+        _stage_b_generation(registry, generation.manifest, generation.payloads)
     )
     before = registry.active_generation_pointer(generation.manifest.identity)
     source = tmp_path / "source-a-incomplete"
@@ -1782,7 +1783,7 @@ def test_native_compiled_модуль_поднимается_из_warm_кэша(
     )
     registry = Registry(tmp_path / "data")
     registry.publish_generation(
-        registry.stage_generation(generation.manifest, generation.payloads)
+        _stage_b_generation(registry, generation.manifest, generation.payloads)
     )
     published = registry.modules["DemoConfiguration:modules"]
     assert published.каталог.entries["ОбщийМодуль.Sealed"].compiled is True
@@ -1814,7 +1815,7 @@ def test_native_opaque_модуль_поднимается_из_warm_кэша(
     )
     registry = Registry(tmp_path / "data")
     registry.publish_generation(
-        registry.stage_generation(generation.manifest, generation.payloads)
+        _stage_b_generation(registry, generation.manifest, generation.payloads)
     )
     published = registry.modules["DemoConfiguration:modules"]
     assert published.оглавление.скомпилирован("ОбщийМодуль.Sealed") is True
@@ -1846,7 +1847,7 @@ def test_schema_v1_после_native_переключает_весь_runtime_в_
     )
     registry = Registry(tmp_path / "data")
     registry.publish_generation(
-        registry.stage_generation(generation.manifest, generation.payloads)
+        _stage_b_generation(registry, generation.manifest, generation.payloads)
     )
     previous_pointer = registry.active_generation_pointer(
         generation.manifest.identity
@@ -1902,7 +1903,7 @@ def test_повторная_идентичная_schema_v1_поверх_native_�
     )
     registry = Registry(tmp_path / "data")
     registry.publish_generation(
-        registry.stage_generation(generation.manifest, generation.payloads)
+        _stage_b_generation(registry, generation.manifest, generation.payloads)
     )
     incoming = tmp_path / "source-a"
     incoming.mkdir()
@@ -1930,7 +1931,7 @@ def test_schema_v1_самостоятельно_публикуется_пове�
     )
     registry = Registry(tmp_path / "data")
     previous = registry.publish_generation(
-        registry.stage_generation(generation.manifest, generation.payloads)
+        _stage_b_generation(registry, generation.manifest, generation.payloads)
     )
     incoming = tmp_path / "source-a"
     incoming.mkdir()
@@ -1971,11 +1972,11 @@ def test_runtime_failure_до_commit_сохраняет_прежний_pointer_�
     )
     registry = Registry(tmp_path / "data")
     registry.publish_generation(
-        registry.stage_generation(first.manifest, first.payloads)
+        _stage_b_generation(registry, first.manifest, first.payloads)
     )
     old_pointer = registry.active_generation_pointer(first.manifest.identity)
     old_configuration = registry.resolve("DemoConfiguration").configuration
-    staged = registry.stage_generation(second.manifest, second.payloads)
+    staged = _stage_b_generation(registry, second.manifest, second.payloads)
 
     def fail_runtime(*_args, **_kwargs):
         raise RegistryError("синтетический отказ runtime")
@@ -2001,10 +2002,10 @@ def test_авария_сборки_runtime_оставляет_wal_и_откат�
     )
     registry = Registry(tmp_path / "data")
     registry.publish_generation(
-        registry.stage_generation(first.manifest, first.payloads)
+        _stage_b_generation(registry, first.manifest, first.payloads)
     )
     old_pointer = registry.active_generation_pointer(first.manifest.identity)
-    staged = registry.stage_generation(second.manifest, second.payloads)
+    staged = _stage_b_generation(registry, second.manifest, second.payloads)
 
     def crash_runtime(*_args, **_kwargs):
         raise SystemExit("синтетическая авария runtime")
@@ -2033,7 +2034,7 @@ def test_repacked_generation_сохраняет_identity_кэша_структу
     _collection_value, first = _materialized(tmp_path, "001", common_forms=True)
     registry = Registry(tmp_path / "data")
     registry.publish_generation(
-        registry.stage_generation(first.manifest, first.payloads)
+        _stage_b_generation(registry, first.manifest, first.payloads)
     )
     first_context = registry.resolve("DemoConfiguration")
 
@@ -2058,7 +2059,7 @@ def test_repacked_generation_сохраняет_identity_кэша_структу
     monkeypatch.setattr(registry, "_построить_индекс_кода", reject_rebuild)
 
     registry.publish_generation(
-        registry.stage_generation(second_manifest, payloads),
+        _stage_b_generation(registry, second_manifest, payloads),
         expected_previous=pointer,
     )
     second_context = registry.resolve("DemoConfiguration")

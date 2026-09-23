@@ -22,6 +22,7 @@ from mcp1c.intake_v2_transport import BrowserStagingStore
 from mcp1c.registry import Registry
 from mcp1c.source_modes import ActivationMode, ActivationStatus
 from test_intake_v2_collector import _configuration
+from test_intake_v2_extensions import _materialized, _stage_active_base
 
 
 SUBJECT = "mcp1c.intake_v2_api"
@@ -91,6 +92,16 @@ def test_extension_full_требует_родителя_и_проходит_prev
     assert candidate["actions"] == ["update_full"]
     with pytest.raises(IntakeApiConflict, match="родител"):
         service.start(candidate["id"], "update_full")
+
+    with pytest.raises(IntakeApiConflict, match="active B_FULL"):
+        service.start(
+            candidate["id"],
+            "update_full",
+            parent_configuration="DemoConfiguration",
+        )
+
+    _collection_value, base = _materialized(tmp_path, "api-extension-parent")
+    registry.publish_generation(_stage_active_base(registry, base))
 
     work = service.start(
         candidate["id"],

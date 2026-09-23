@@ -24,6 +24,7 @@ from mcp1c.registry import Registry
 from mcp1c.role_access import RoleAccessIndex
 from mcp1c.server import build_server
 from mcp1c.source_modes import ActivationMode
+from test_intake_v2_generation import _stage_b_generation
 from test_role_access_index import (
     RIGHTS_NS,
     _descriptor,
@@ -198,7 +199,7 @@ def _publish(
         generation_id=generation_id,
         configuration_name=configuration,
     )
-    registry.publish_generation(registry.stage_generation(manifest, payloads))
+    registry.publish_generation(_stage_b_generation(registry, manifest, payloads))
 
 
 def _add_missing_configuration(registry: Registry, root, name: str) -> None:

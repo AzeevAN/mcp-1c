@@ -13,6 +13,7 @@ from mcp1c.store import save_syntax
 from mcp1c.syntax_model import SyntaxIndex, SyntaxItem
 from mcp1c.tools import get_object, list_configurations, search_syntax
 from test_intake_v2_runtime import _materialized
+from test_intake_v2_generation import _stage_b_generation
 from test_dashboard_admin_api import _client
 import test_intake_v2_converter as fixtures
 
@@ -37,7 +38,7 @@ def test_b_only_явно_сообщает_неизвестные_факты_и_�
     ))
     _, generation = _materialized(tmp_path, "b-only")
     registry = Registry(tmp_path / "data")
-    registry.publish_generation(registry.stage_generation(generation.manifest, generation.payloads))
+    registry.publish_generation(_stage_b_generation(registry, generation.manifest, generation.payloads))
     _syntax(registry, tmp_path)
     registry.save()
     for current in (registry, Registry(registry.data_dir)):
@@ -121,7 +122,7 @@ def test_старое_поколение_v3_восстанавливается_�
         legacy.setattr(generation_module, "GENERATION_PARSER_VERSION", 3)
         _, generation = _materialized(tmp_path, "old-bundle")
     registry = Registry(tmp_path / "data")
-    pointer = registry.publish_generation(registry.stage_generation(generation.manifest, generation.payloads))
+    pointer = registry.publish_generation(_stage_b_generation(registry, generation.manifest, generation.payloads))
     root = registry.data_dir / pointer.root_path
     before = {p.relative_to(root): sha256(p.read_bytes()).hexdigest() for p in root.rglob("*") if p.is_file()}
     restarted = Registry(registry.data_dir)
@@ -138,7 +139,7 @@ def test_source_a_сохраняет_доказанные_факты_в_том_�
     collection, generation = _materialized(tmp_path, "a")
     registry = Registry(tmp_path / "data")
     if with_b:
-        registry.publish_generation(registry.stage_generation(generation.manifest, generation.payloads))
+        registry.publish_generation(_stage_b_generation(registry, generation.manifest, generation.payloads))
     base = convert_collection(collection).base
     base.platform = "8.3.24.1548"
     base.source_format = "json"
@@ -169,7 +170,7 @@ def test_полная_публикация_b_после_a_не_приписыв�
     registry = Registry(tmp_path / "data")
     registry.add_configuration(write_export(source, base))
     # Проверяется существующая полная замена base, а не content-only update.
-    registry.publish_generation(registry.stage_generation(generation.manifest, generation.payloads))
+    registry.publish_generation(_stage_b_generation(registry, generation.manifest, generation.payloads))
     _syntax(registry, tmp_path)
     registry.save()
     restarted = Registry(registry.data_dir)

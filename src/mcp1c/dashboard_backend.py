@@ -324,11 +324,8 @@ def _run_job(
     else:
         job["state"] = JOB_DONE
     finally:
-        # `directory` — всегда наш временный каталог из `upload`: другой
-        # вызывающей стороны у `_run_job` нет. Разбор выгрузки из `incoming/`
-        # идёт отдельной функцией `_run_incoming`, и она не удаляет ничего
-        # вовсе — исходник принадлежит человеку, а каталог `incoming/` сервер
-        # трогать не вправе.
+        # `directory` — временный каталог browser-upload; исходный incoming
+        # в двухфазном intake принадлежит человеку и здесь не удаляется.
         shutil.rmtree(directory, ignore_errors=True)
 
 _СКАНЕРЫ: dict[str, "IncomingScanner"] = {}
@@ -342,62 +339,6 @@ def _scanner(registry: Registry) -> "IncomingScanner":
     if ключ not in _СКАНЕРЫ:
         _СКАНЕРЫ[ключ] = IncomingScanner(registry)
     return _СКАНЕРЫ[ключ]
-
-def _configuration_for(registry: Registry, архив: Path) -> str:
-    """Определение конфигурации — по единственной загруженной, иначе отказ с
-    объяснением (привязка по манифесту — работа провайдера, разведка раздел 5)."""
-    имена = registry.snapshot().configuration_names
-    if len(имена) == 1:
-        return имена[0]
-    if not имена:
-        # Причина здесь другая, чем при нескольких: привязывать не к чему.
-        # Код ложится в каталог по имени конфигурации и учитывается ключом
-        # `<Имя>:modules` — без метаданных этого имени взять неоткуда.
-        raise RegistryError(
-            f"{архив.name}: не загружено ни одной конфигурации — сначала "
-            "загрузите выгрузку структуры (СтруктураКонфигурации_*.zip), "
-            "к ней и привязывается код."
-        )
-    raise RegistryError(
-        f"{архив.name}: загружено {len(имена)} конфигураций — выберите "
-        "нужную в форме рядом с кнопкой."
-    )
-
-def _run_incoming(
-    registry: Registry,
-    сканер,
-    job: dict,
-    архив: Path,
-    конфигурация: str | None = None,
-) -> None:
-    """Разбор выгрузки из `incoming/`. Исходник остаётся на месте.
-
-    `конфигурация` — уже проверенный обработчиком выбор человека (форма,
-    поле `configuration`). Пустая строка или `None` — поле не прислали или
-    человек оставил его пустым, тогда решает `_configuration_for` сама, как
-    и раньше.
-    """
-    job["state"] = JOB_PARSING
-    try:
-        имя_конфигурации = конфигурация or _configuration_for(registry, архив)
-        registry.add_modules(архив, configuration=имя_конфигурации)
-    except (ExportError, RegistryError, V8ContainerError, ValueError) as error:
-        # Известная ошибка проекта — это сообщение человеку, и имя класса ему
-        # ничего не добавляет: «загружено 2 конфигураций» он поймёт, а
-        # «RegistryError:» перед этим — нет. `_run_job` делит ошибки так же.
-        job["state"] = JOB_FAILED
-        job["error"] = str(error)
-        сканер.note_failure(архив, job["error"])
-    except Exception as error:
-        job["state"] = JOB_FAILED
-        job["error"] = f"{type(error).__name__}: {error}"
-        сканер.note_failure(архив, job["error"])
-        traceback.print_exc()
-    else:
-        job["state"] = JOB_DONE
-        сканер.clear_failure(архив)
-    finally:
-        сканер.finish(архив.name)
 
 SCOPES = {
     "objects": "объектам",

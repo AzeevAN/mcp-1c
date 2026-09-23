@@ -659,7 +659,7 @@ def _configuration_code_snapshot(
     base_id = f"{name}:modules"
     for _ in range(2):
         snapshot = registry.snapshot()
-        context = registry.resolve(name)
+        context = registry.resolve(name, diagnostic=True)
         if (
             snapshot.configurations.get(name) is not context.configuration
             or snapshot.syntax is not context.syntax
@@ -961,6 +961,27 @@ def code_coverage_lines(coverage: CodeCoverage | None) -> tuple[str, ...]:
 
 def list_configurations(registry: Registry) -> str:
     """Какие конфигурации загружены и что по ним доступно."""
+    names = registry.snapshot().configuration_names
+    blocked = [
+        name
+        for name in names
+        if (
+            (activation := registry.active_activation(
+                ExportIdentity.configuration(name)
+            )) is not None
+            and activation.status is ActivationStatus.RELOAD_REQUIRED
+        )
+    ]
+    if blocked:
+        return (
+            "# Состояние конфигураций\n\n"
+            + "\n".join(
+                f"- {name}: {'RELOAD_REQUIRED' if name in blocked else 'доступна'}"
+                for name in names
+            )
+            + "\n\nЗагрузите полный Source A или Source B через intake. "
+            "Конфигурационные данные старого поколения недоступны."
+        )
     for _ in range(2):
         capture = _capture_configurations_list(registry)
         if capture is None:
@@ -1268,8 +1289,13 @@ def _configurations_result(
                 syntax_relation=context.syntax_relation,
                 syntax_hidden=context.syntax_hidden,
                 notes=tuple(context.notes()),
-                code=tuple(
-                    state for state in code if state.configuration == config.name
+                code=(
+                    ()
+                    if activation is not None
+                    and activation.status is ActivationStatus.RELOAD_REQUIRED
+                    else tuple(
+                        state for state in code if state.configuration == config.name
+                    )
                 ),
                 extension_runtime=(
                     _source_state_row(runtime.source) if runtime is not None else None

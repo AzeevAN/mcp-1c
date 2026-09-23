@@ -13,6 +13,11 @@ from mcp1c.source_modes import (
 )
 from mcp1c.intake_v2 import ExportIdentity
 from mcp1c.intake_v2_registry import GenerationPointer, _identity_digest
+from mcp1c.registry import Registry, RegistryError
+from conftest import build_configuration, write_export
+from test_registry_modules import _выгрузка_в_файлы
+from test_intake_v2_extensions import _materialized
+from mcp1c import tools
 
 
 def _manifest(**overrides):
@@ -96,3 +101,91 @@ def test_generation_pointer_persists_activation_manifest():
     )
     restored = GenerationPointer.from_dict(pointer.to_dict())
     assert restored.activation == pointer.activation
+
+
+def _registry_with_pointer(tmp_path, activation):
+    incoming = tmp_path / "in"
+    incoming.mkdir()
+    registry = Registry(tmp_path / "data")
+    registry.add_configuration(
+        write_export(incoming, build_configuration(name="Розница"))
+    )
+    identity = ExportIdentity.configuration("Розница")
+    root = f"generations/{_identity_digest(identity)}/g1"
+    registry._generation_pointers[identity.grouping_key] = GenerationPointer(
+        identity=identity,
+        generation_id="g1",
+        root_path=root,
+        manifest_path=f"{root}/manifest.json",
+        manifest_sha256="c" * 64,
+        activation=activation,
+    )
+    return registry
+
+
+def test_reload_required_blocks_configuration_resolution(tmp_path):
+    registry = _registry_with_pointer(tmp_path, None)
+    with pytest.raises(RegistryError, match="reload_required"):
+        registry.resolve("Розница")
+
+
+@pytest.mark.parametrize("activation", [None, _manifest()])
+def test_native_generation_blocks_legacy_code_writer(tmp_path, activation):
+    registry = _registry_with_pointer(tmp_path, activation)
+    archive = _выгрузка_в_файлы(tmp_path)
+    with pytest.raises(RegistryError, match="(update_full|reload_required)"):
+        registry.add_modules(archive, configuration="Розница")
+    assert "Розница:modules" not in registry.sources
+
+
+def test_restored_native_without_activation_is_diagnostic_only(tmp_path):
+    _collection, materialized = _materialized(tmp_path, "old-native")
+    registry = Registry(tmp_path / "data")
+    registry.publish_generation(
+        registry.stage_generation(materialized.manifest, materialized.payloads)
+    )
+    restored = Registry(registry.data_dir)
+    assert restored.restore() == []
+
+    assert "RELOAD_REQUIRED" in tools.list_configurations(restored)
+    assert tools.sources_snapshot(restored).configuration_names == ("DemoConfiguration",)
+    with pytest.raises(RegistryError, match="reload_required"):
+        restored.resolve("DemoConfiguration")
+
+
+def test_restored_legacy_a_plus_separate_code_requires_full_reload(tmp_path):
+    incoming = tmp_path / "in"
+    incoming.mkdir()
+    registry = Registry(tmp_path / "data")
+    registry.add_configuration(
+        write_export(incoming, build_configuration(name="Розница"))
+    )
+    registry.add_modules(_выгрузка_в_файлы(tmp_path), configuration="Розница")
+    registry.save()
+
+    restored = Registry(registry.data_dir)
+    assert restored.restore() == []
+    activation = restored.active_activation(ExportIdentity.configuration("Розница"))
+    assert activation is not None
+    assert activation.status is ActivationStatus.RELOAD_REQUIRED
+    assert "RELOAD_REQUIRED" in tools.list_configurations(restored)
+    diagnostic = tools.sources_snapshot(restored)
+    assert diagnostic.configuration_names == ("Розница",)
+    assert diagnostic.configurations[0].code == ()
+    with pytest.raises(RegistryError, match="reload_required"):
+        restored.resolve("Розница")
+
+
+def test_restored_pure_source_a_remains_readable(tmp_path):
+    incoming = tmp_path / "in"
+    incoming.mkdir()
+    registry = Registry(tmp_path / "data")
+    registry.add_configuration(
+        write_export(incoming, build_configuration(name="Розница"))
+    )
+    registry.save()
+
+    restored = Registry(registry.data_dir)
+    assert restored.restore() == []
+    assert restored.active_activation(ExportIdentity.configuration("Розница")) is None
+    assert restored.resolve("Розница").name == "Розница"

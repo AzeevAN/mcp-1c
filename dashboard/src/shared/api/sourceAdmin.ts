@@ -17,8 +17,6 @@ export type IncomingExport = {
   state: string;
   detail: string;
   settling: boolean;
-  can_parse: boolean;
-  action: "parse" | "reparse";
 };
 
 export type ReferenceState = {
@@ -250,16 +248,6 @@ function useRefreshingMutation<TVariables, TResult>(
       ]);
     },
   });
-}
-
-export function useParseIncoming() {
-  return useRefreshingMutation(
-    ({ name, configuration }: { name: string; configuration: string }) =>
-      adminRequest<{ job: AdminJob }>("/api/v1/sources/incoming/parse", {
-        name,
-        configuration,
-      }),
-  );
 }
 
 export function useClearJobs() {

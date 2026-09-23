@@ -42,6 +42,7 @@ from .intake_v2_transport import BrowserStagingStore, TransportError
 from .intake_v2_probe import CandidateProbe, ProbeError, probe_export
 from .config_sources import CONFIG_SOURCES_ROOT, ConfigSourceBindings, ConfigSourceError
 from .registry import Registry, RegistryError, RegistrySnapshot
+from .source_modes import ActivationMode, ActivationStatus
 
 
 _MAX_EXTENSION_IMPACT_ITEMS = 200
@@ -332,6 +333,18 @@ class IntakeApiService:
             if parent_configuration not in snapshot.configuration_names:
                 raise IntakeApiConflict(
                     f"Родитель расширения не загружен: {parent_configuration}."
+                )
+            parent_activation = self.registry.active_activation(
+                ExportIdentity.configuration(parent_configuration)
+            )
+            if (
+                parent_activation is None
+                or parent_activation.status is not ActivationStatus.ACTIVE
+                or parent_activation.mode is not ActivationMode.B_FULL
+            ):
+                raise IntakeApiConflict(
+                    "Расширение доступно только поверх active B_FULL; "
+                    "родитель требует полной загрузки Source B."
                 )
             identity = ExportIdentity.extension(
                 candidate.probe.internal_name,

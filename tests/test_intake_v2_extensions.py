@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib
 import shutil
 from dataclasses import replace
+from hashlib import sha256
 
 import pytest
 
@@ -27,6 +28,7 @@ from mcp1c.intake_v2_planner import IntakeAction, plan_intake
 from mcp1c.intake_v2_probe import probe_export
 from mcp1c.model import Configuration, Field, MetadataObject
 from mcp1c.registry import KIND_EXTENSION, Registry, RegistryError
+from mcp1c.source_modes import ActivationComponent, ActivationManifest, ActivationMode
 from mcp1c.tools import list_extensions, sources_snapshot
 from conftest import write_export
 from test_intake_v2_converter import (
@@ -392,6 +394,31 @@ def _materialized(
     return collection, materialized
 
 
+def _stage_active_base(registry: Registry, generation: MaterializedGeneration):
+    """Явная B_FULL-активация синтетического родителя для runtime-сценариев."""
+    manifest = generation.manifest
+    digest = sha256(manifest.generation_id.encode()).hexdigest()
+    activation = ActivationManifest(
+        mode=ActivationMode.B_FULL,
+        identity_incarnation=f"inc-{manifest.generation_id}",
+        physical_generation_root_id=f"root-{manifest.generation_id}",
+        configuration_version="1.0",
+        main=ActivationComponent(
+            source="source-b",
+            origin=manifest.origin_name,
+            raw_sha256=manifest.raw_sha256,
+            payload_sha256=digest,
+        ),
+        extensions=(),
+        expected_previous_activation=None,
+        transaction_id=f"tx-{manifest.generation_id}",
+        recovery_id=f"recovery-{manifest.generation_id}",
+    )
+    return registry.stage_generation(
+        manifest, generation.payloads, activation=activation
+    )
+
+
 def test_registry_сохраняет_extension_generation_при_строгой_замене_базы(
     tmp_path,
 ):
@@ -409,7 +436,7 @@ def test_registry_сохраняет_extension_generation_при_строгой_
     )
     registry = Registry(tmp_path / "data")
     registry.publish_generation(
-        registry.stage_generation(base.manifest, base.payloads)
+        _stage_active_base(registry, base)
     )
     registry.publish_generation(
         registry.stage_generation(extension.manifest, extension.payloads)
@@ -442,7 +469,7 @@ def test_registry_сохраняет_extension_generation_при_строгой_
         ("DemoExtension", "Справочник.Items", "target_missing")
     ]
     registry.publish_generation(
-        registry.stage_generation(new_base.manifest, new_base.payloads),
+        _stage_active_base(registry, new_base),
         expected_previous=registry.active_generation_pointer(base.manifest.identity),
     )
 
@@ -492,7 +519,7 @@ def test_schema_v1_поверх_native_отключает_расширение_�
     )
     registry = Registry(tmp_path / "data")
     registry.publish_generation(
-        registry.stage_generation(base.manifest, base.payloads)
+        _stage_active_base(registry, base)
     )
     registry.publish_generation(
         registry.stage_generation(extension.manifest, extension.payloads)
@@ -539,14 +566,14 @@ def test_extension_publish_требует_существующего_родит�
     )
     registry = Registry(tmp_path / "data")
 
-    with pytest.raises(RegistryError, match="родител"):
+    with pytest.raises(RegistryError, match="active B_FULL"):
         registry.publish_generation(
             registry.stage_generation(extension.manifest, extension.payloads)
         )
     assert registry.active_generation_pointer(extension.manifest.identity) is None
 
 
-def test_native_расширение_поднимается_после_legacy_родителя(tmp_path):
+def test_native_расширение_отклоняется_после_legacy_родителя(tmp_path):
     incoming = tmp_path / "legacy-parent"
     incoming.mkdir()
     registry = Registry(tmp_path / "data")
@@ -565,34 +592,19 @@ def test_native_расширение_поднимается_после_legacy_р
         configuration_name="DemoExtension",
         extension=True,
     )
-    registry.publish_generation(
-        registry.stage_generation(extension.manifest, extension.payloads)
-    )
-
-    restarted = Registry(registry.data_dir)
-    assert restarted.restore() == []
-    restored = restarted.resolve(
-        "DemoConfiguration",
-        extension="DemoExtension",
-    )
-    assert restored.extension is not None and restored.extension.готов
+    with pytest.raises(RegistryError, match="active B_FULL"):
+        registry.publish_generation(
+            registry.stage_generation(extension.manifest, extension.payloads)
+        )
+    assert registry.active_generation_pointer(extension.manifest.identity) is None
 
 
 def test_remove_снимает_native_generation_расширения_без_legacy_source(
     tmp_path,
 ):
-    incoming = tmp_path / "legacy-parent-remove"
-    incoming.mkdir()
     registry = Registry(tmp_path / "data")
-    registry.add_configuration(
-        write_export(
-            incoming,
-            _configuration(
-                "DemoConfiguration",
-                _object("Items", "BaseField"),
-            ),
-        )
-    )
+    _base_collection, base = _materialized(tmp_path, "base-parent-remove")
+    registry.publish_generation(_stage_active_base(registry, base))
     _collection_value, extension = _materialized(
         tmp_path,
         "extension-remove",
@@ -645,6 +657,8 @@ def test_remove_снимает_legacy_source_и_native_generation_одного_�
         name="DemoConfiguration",
         extension="DemoExtension",
     )
+    _base_collection, base = _materialized(tmp_path, "base-remove-over-legacy")
+    registry.publish_generation(_stage_active_base(registry, base))
     _collection_value, extension = _materialized(
         tmp_path,
         "extension-remove-over-legacy",
@@ -685,7 +699,7 @@ def test_remove_native_конфигурации_каскадно_снимает_
     )
     registry = Registry(tmp_path / "data")
     base_pointer = registry.publish_generation(
-        registry.stage_generation(base.manifest, base.payloads)
+        _stage_active_base(registry, base)
     )
     extension_pointer = registry.publish_generation(
         registry.stage_generation(extension.manifest, extension.payloads)
@@ -723,7 +737,7 @@ def test_restore_поднимает_код_native_расширения_из_warm
     )
     registry = Registry(tmp_path / "data")
     registry.publish_generation(
-        registry.stage_generation(base.manifest, base.payloads)
+        _stage_active_base(registry, base)
     )
     registry.publish_generation(
         registry.stage_generation(extension.manifest, extension.payloads)
@@ -758,7 +772,7 @@ def test_startup_sweep_сохраняет_кэши_active_native_расшире�
     )
     registry = Registry(tmp_path / "data")
     registry.publish_generation(
-        registry.stage_generation(base.manifest, base.payloads)
+        _stage_active_base(registry, base)
     )
     registry.publish_generation(
         registry.stage_generation(extension.manifest, extension.payloads)
@@ -785,7 +799,7 @@ def test_extension_publish_CAS_отклоняет_смену_родителя(tm
     )
     registry = Registry(tmp_path / "data")
     registry.publish_generation(
-        registry.stage_generation(base.manifest, base.payloads)
+        _stage_active_base(registry, base)
     )
     real_build = registry._build_native_generation_runtime
 

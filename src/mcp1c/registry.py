@@ -1080,6 +1080,10 @@ class Registry:
         # держит основной замок и не мешает `resolve()`, но два восстановления
         # не могут одновременно резервировать одну фоновую сборку.
         self._startup_lock = threading.Lock()
+        # Сервер вызывает restore() до обслуживания запросов. Синтетические
+        # сборщики могут создавать старые индексы до этой границы, но работающий
+        # Registry не выдаёт смешанный вид A+код.
+        self._restored_for_serving = False
         # Фоновая сборка может закончиться раньше последовательного restore.
         # Поколения различают успешно завершённый полный startup и аварийно
         # оборванный частичный снимок: второй нельзя писать в registry.json.
@@ -1727,6 +1731,8 @@ class Registry:
                 digest=digest,
                 transport=source_transport,
             )
+        if previous is not None:
+            raise RegistryError("reload_required")
 
         try:
             materialize_standard_attributes(config)
@@ -2805,6 +2811,11 @@ class Registry:
         """CAS-token создаётся до extract/build, но без долгого lock."""
         with self._modules_cache_lock:
             with self._lock:
+                if ExportIdentity.configuration(configuration).grouping_key in self._generation_pointers:
+                    raise RegistryError(
+                        "legacy code-only загрузка недоступна для active Source A/B; "
+                        "используйте полный update_full"
+                    )
                 конфигурация = self.configurations.get(configuration)
                 if конфигурация is None:
                     raise RegistryError(
@@ -2840,7 +2851,9 @@ class Registry:
         """CAS по token, generation и identity привязанной конфигурации."""
         конфигурация = self.configurations.get(операция.configuration)
         return (
-            self._module_operations.get(операция.source_id) is операция
+            ExportIdentity.configuration(операция.configuration).grouping_key
+            not in self._generation_pointers
+            and self._module_operations.get(операция.source_id) is операция
             and self._modules_generation.get(операция.source_id)
             == операция.generation
             and конфигурация is not None
@@ -3442,6 +3455,12 @@ class Registry:
         `self.sources`, а `save()` записал бы реестр уже без них.
         """
         архив = Path(path)
+        with self._lock:
+            if ExportIdentity.configuration(configuration).grouping_key in self._generation_pointers:
+                raise RegistryError(
+                    "legacy code-only загрузка недоступна для active Source A/B; "
+                    "используйте полный update_full"
+                )
         if configuration not in self.configurations:
             raise RegistryError(
                 f"{архив.name}: конфигурация «{configuration}» не загружена."
@@ -3498,13 +3517,10 @@ class Registry:
                 active = self._generation_pointers.get(
                     ExportIdentity.configuration(configuration).grouping_key
                 )
-            if (
-                active is not None
-                and active.activation is not None
-                and active.activation.mode is not ActivationMode.B_FULL
-            ):
+            if active is not None:
                 raise RegistryError(
-                    "расширение можно опубликовать только поверх active B_FULL"
+                    "legacy загрузка расширения недоступна для active Source A/B; "
+                    "используйте полный update_full"
                 )
             return self._add_extension(
                 архив,
@@ -4144,6 +4160,7 @@ class Registry:
         *,
         require_configuration: bool = True,
         extension: str | None = None,
+        diagnostic: bool = False,
     ) -> ResolvedContext:
         """Контекст для инструментов.
 
@@ -4156,6 +4173,10 @@ class Registry:
         Без имени `ResolvedContext.extension` остаётся `None`, даже если у
         конфигурации есть загруженные расширения — молчаливый выбор «первого
         попавшегося» здесь так же не годится, как и для самой конфигурации.
+
+        `diagnostic` используется только снимком состояния источников: он
+        показывает причину обязательной перезагрузки, не обслуживая MCP-запросы
+        к объектам, коду, формам и ролям старого поколения.
         """
         requested_name = name
         for _ in range(2):
@@ -4197,6 +4218,21 @@ class Registry:
                         f"Конфигурация не загружена: {selected_name}. "
                         f"Доступны: {', '.join(names)}"
                     )
+                pointer = self._generation_pointers.get(
+                    ExportIdentity.configuration(selected_name).grouping_key
+                )
+                if pointer is not None:
+                    activation = classify_activation(
+                        pointer.activation.to_dict()
+                        if pointer.activation is not None else pointer.to_dict()
+                    )
+                    if (
+                        activation.status is ActivationStatus.RELOAD_REQUIRED
+                        and not diagnostic
+                    ):
+                        raise RegistryError("reload_required")
+                elif self._legacy_mixed_locked(selected_name) and not diagnostic:
+                    raise RegistryError("reload_required")
                 declaration = self._platform_declarations.get(selected_name)
                 platform_override = declaration.version if declaration else ""
                 modules_key = f"{selected_name}:modules"
@@ -4246,6 +4282,9 @@ class Registry:
             with self._lock:
                 unchanged = (
                     self.configurations.get(selected_name) is loaded
+                    and self._generation_pointers.get(
+                        ExportIdentity.configuration(selected_name).grouping_key
+                    ) is pointer
                     and self.syntax is syntax
                     and (
                         (
@@ -4554,10 +4593,30 @@ class Registry:
         """Вернуть mode/barrier active pointer без миграции старого state."""
         pointer = self.active_generation_pointer(identity)
         if pointer is None:
+            if identity.source_kind is SourceKind.CONFIGURATION:
+                with self._lock:
+                    if self._legacy_mixed_locked(identity.configuration_name):
+                        return classify_activation({"legacy_mixed": True})
             return None
         if pointer.activation is None:
             return classify_activation(pointer.to_dict())
         return classify_activation(pointer.activation.to_dict())
+
+    def _legacy_mixed_locked(self, configuration: str) -> bool:
+        """Старая A-структура с отдельным B-кодом/расширением не является A_ONLY."""
+        if not self._restored_for_serving or configuration not in self.configurations:
+            return False
+        modules_id = f"{configuration}:modules"
+        extension_prefix = f"{configuration}:ext:"
+        return (
+            modules_id in self.modules
+            or any(key.startswith(extension_prefix) for key in self.modules)
+            or any(
+                source.kind in (KIND_MODULES, KIND_EXTENSION)
+                and (source.id == modules_id or source.id.startswith(extension_prefix))
+                for source in self.sources.values()
+            )
+        )
 
     def require_active_activation(self, identity: ExportIdentity) -> ActivationClassification:
         """Fail-closed guard для consumers, которым нужен новый active contract."""
@@ -5213,9 +5272,9 @@ class Registry:
                     with self._lock:
                         parent = self._generation_pointers.get(parent_key)
                     if (
-                        parent is not None
-                        and parent.activation is not None
-                        and parent.activation.mode is not ActivationMode.B_FULL
+                        parent is None
+                        or parent.activation is None
+                        or parent.activation.mode is not ActivationMode.B_FULL
                     ):
                         raise RegistryError(
                             "расширение можно опубликовать только поверх active B_FULL"
@@ -5555,6 +5614,8 @@ class Registry:
 
     def restore(self) -> list[str]:
         """Поднять источники, записанные в registry.json."""
+        with self._lock:
+            self._restored_for_serving = True
         problems: list[str] = []
         if not self.registry_path.exists():
             return problems

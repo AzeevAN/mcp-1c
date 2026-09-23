@@ -116,31 +116,35 @@ def test_warm_cache_сохраняет_scope_вызовы_и_неразреше�
         )
     )
     registry = реестр_из_кода(tmp_path)
+    assert "Документ.Объект.Форма.Основная::Обработать" in tools.search_procedures(
+        registry, "Обработать", config="Пример", scope="Документ.Объект"
+    )
+    callers = tools.get_callers(
+        registry, "ОбщийМодуль.Цель::Рассчитать", config="Пример"
+    )
+    assert "Документ.Объект.Форма.Основная" in callers
+    assert "Подтверждённых мест: 1" in callers
+    assert "цель не удалось разрешить" in callers
+    assert "есть аннотация расширения" in tools.search_procedures(
+        registry, "Рассчитать", config="Пример"
+    )
     registry.save()
 
     warm = Registry(registry.data_dir)
     assert warm.startup() == []
+    loaded = warm.resolve("Пример", diagnostic=True).modules
+    assert loaded.готов is True
+    assert "Документ.Объект.Форма.Основная" in loaded.оглавление.модули
 
-    scoped = tools.search_procedures(
-        warm,
-        "Обработать",
-        config="Пример",
-        scope="Документ.Объект",
-    )
-    callers = tools.get_callers(
-        warm,
-        "ОбщийМодуль.Цель::Рассчитать",
-        config="Пример",
-    )
-    target_search = tools.search_procedures(
-        warm, "Рассчитать", config="Пример"
-    )
-
-    assert "Документ.Объект.Форма.Основная::Обработать" in scoped
-    assert "Документ.Объект.Форма.Основная" in callers
-    assert "Подтверждённых мест: 1" in callers
-    assert "цель не удалось разрешить" in callers
-    assert "есть аннотация расширения" in target_search
+    assert "RELOAD_REQUIRED" in tools.list_configurations(warm)
+    for call in (
+        lambda: tools.search_procedures(warm, "Обработать", config="Пример"),
+        lambda: tools.get_callers(
+            warm, "ОбщийМодуль.Цель::Рассчитать", config="Пример"
+        ),
+    ):
+        with pytest.raises(RegistryError, match="reload_required"):
+            call()
 
 
 def test_смена_поколения_container_повторяет_чтение_по_новому_локатору(
@@ -399,9 +403,9 @@ def test_скомпилированный_модуль_виден_но_проц�
     реестр.save()
     восстановленный = Registry(реестр.data_dir)
     восстановленный.startup()
-    поднятое = восстановленный.resolve("Пример").modules
-    assert поднятое.готов is True
-    assert поднятое.оглавление.скомпилирован("ОбщийМодуль.Закрытый") is True
+    assert "RELOAD_REQUIRED" in tools.list_configurations(восстановленный)
+    with pytest.raises(RegistryError, match="reload_required"):
+        восстановленный.resolve("Пример")
 
 
 def test_скомпилированный_модуль_расширения_остаётся_отдельным_корпусом(
@@ -1169,18 +1173,18 @@ def test_строящийся_индекс_показывает_этап_и_фа
         assert not заново.startup()
         assert второй_файл.wait(timeout=1)
 
-        ответ = tools.search_procedures(
-            заново, "Сложить", config="Пример"
-        )
-
-        assert "этап 1/4" in ответ
-        assert "оглавление" in ответ
-        assert "обработано 1 из 3" in ответ
+        with pytest.raises(RegistryError, match="reload_required"):
+            tools.search_procedures(заново, "Сложить", config="Пример")
+        # Диагностический путь может наблюдать сборку, не выдавая старый код.
+        loaded = заново.resolve("Пример", diagnostic=True).modules
+        assert loaded.этап == (1, 4)
+        assert loaded.название_этапа == "оглавление"
+        assert loaded.прогресс == (1, 3)
     finally:
         отпустить.set()
 
     край = time.monotonic() + 3
-    while not заново.resolve("Пример").modules.готов:
+    while not заново.modules["Пример:modules"].готов:
         assert time.monotonic() < край, "фоновая сборка не завершилась"
         time.sleep(0.01)
 
@@ -2857,7 +2861,7 @@ def test_get_object_объединяет_формы_из_оглавления_и
     заново.startup()
 
     ответ = tools.get_object(
-        заново, "Документ.А", config="Пример", detail="full"
+        реестр, "Документ.А", config="Пример", detail="full"
     )
 
     for форма in ("ТолькоМодуль", "ТолькоXML", "Обе", "Битая"):
@@ -2867,6 +2871,8 @@ def test_get_object_объединяет_формы_из_оглавления_и
         "## Формы объекта", 1
     )[0]
     assert "ТолькоМодуль" not in блок_модулей
+    with pytest.raises(RegistryError, match="reload_required"):
+        tools.get_object(заново, "Документ.А", config="Пример", detail="full")
 
 
 def test_get_object_считает_модуль_общей_формы_формой(tmp_path, реестр_из_кода):

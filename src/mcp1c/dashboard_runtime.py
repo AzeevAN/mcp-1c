@@ -265,22 +265,9 @@ def _job_payload(job) -> dict:
 
 def _admin_sources_payload(prepared) -> dict:
     """Административная часть снимка без второго обхода живого Registry."""
-    from .incoming import (
-        STATE_FAILED,
-        STATE_NEW,
-        STATE_STALE,
-        STATE_UPDATED,
-    )
-
-    actionable = {STATE_NEW, STATE_UPDATED, STATE_STALE, STATE_FAILED}
     configurations = list(prepared.sources.configuration_names)
     incoming = []
     for row in prepared.incoming:
-        can_parse = (
-            row.state in actionable
-            and not row.settling
-            and bool(configurations)
-        )
         incoming.append(
             {
                 "name": row.name,
@@ -288,12 +275,6 @@ def _admin_sources_payload(prepared) -> dict:
                 "state": row.state,
                 "detail": row.detail,
                 "settling": row.settling,
-                "can_parse": can_parse,
-                "action": (
-                    "reparse"
-                    if row.state in (STATE_UPDATED, STATE_STALE)
-                    else "parse"
-                ),
             }
         )
     return {
@@ -1653,99 +1634,10 @@ def _spa_routes(
         denied = _mutation_denied(request, action="Разбор")
         if denied is not None:
             return denied
-
-        from . import intake
-        from .incoming import SETTLE_SECONDS
-
-        payload = await _json_body(request)
-        raw_name = str(payload.get("name", ""))
-        name = Path(raw_name).name
-        if not name or name != raw_name:
-            return _json_error("Входящая выгрузка не найдена.", 404)
-        scanner = dashboard_backend._scanner(registry)
-        archive = registry.incoming_dir / name
-        if not archive.is_file():
-            return _json_error("Входящая выгрузка не найдена.", 404)
-
-        busy = scanner.running
-        if busy:
-            job = dashboard_backend._start_job(name, archive.stat().st_size)
-            job["state"] = dashboard_backend.JOB_FAILED
-            job["error"] = (
-                "уже идёт разбор другой выгрузки ("
-                + ", ".join(sorted(busy))
-                + ") — одновременно разбирается не больше одной"
-            )
-            return JSONResponse(
-                {"error": job["error"], "job": _job_payload(job)},
-                status_code=409,
-            )
-        if scanner.дописывается(archive):
-            job = dashboard_backend._start_job(name, archive.stat().st_size)
-            job["state"] = dashboard_backend.JOB_FAILED
-            job["error"] = (
-                f"{name}: файл изменялся только что — похоже, копирование ещё "
-                f"идёт. Повторите через {int(SETTLE_SECONDS)} с."
-            )
-            return JSONResponse(
-                {"error": job["error"], "job": _job_payload(job)},
-                status_code=409,
-            )
-
-        job = dashboard_backend._start_job(name, archive.stat().st_size)
-        try:
-            await heavy.run(intake.planned_size, archive)
-        except asyncio.CancelledError:
-            job["state"] = dashboard_backend.JOB_FAILED
-            job["error"] = "Проверка входящей выгрузки отменена до запуска разбора."
-            raise
-        except Exception as error:
-            job["state"] = dashboard_backend.JOB_FAILED
-            job["error"] = f"{archive.name}: не похоже на zip-архив ({error})"
-            await run_in_threadpool(scanner.note_failure, archive, job["error"])
-            return JSONResponse(
-                {"error": job["error"], "job": _job_payload(job)},
-                status_code=400,
-            )
-
-        configuration = str(payload.get("configuration", "")).strip()
-        if configuration and configuration not in registry.snapshot().configurations:
-            job["state"] = dashboard_backend.JOB_FAILED
-            job["error"] = (
-                f"конфигурации «{configuration}» нет в реестре — выберите "
-                "загруженную конфигурацию."
-            )
-            await run_in_threadpool(scanner.note_failure, archive, job["error"])
-            return JSONResponse(
-                {"error": job["error"], "job": _job_payload(job)},
-                status_code=400,
-            )
-
-        started, busy = scanner.try_start(name)
-        if not started:
-            job["state"] = dashboard_backend.JOB_FAILED
-            job["error"] = (
-                "уже идёт разбор другой выгрузки ("
-                + ", ".join(busy)
-                + ") — одновременно разбирается не больше одной"
-            )
-            return JSONResponse(
-                {"error": job["error"], "job": _job_payload(job)},
-                status_code=409,
-            )
-        task = heavy.spawn(
-            heavy.run(
-                dashboard_backend._run_incoming,
-                registry,
-                scanner,
-                job,
-                archive,
-                configuration or None,
-            )
+        return _json_error(
+            "Частичная загрузка Source B отключена; используйте полный intake update_full.",
+            410,
         )
-        dashboard_backend._ФОНОВЫЕ.add(task)
-        task.add_done_callback(dashboard_backend._ФОНОВЫЕ.discard)
-        return JSONResponse({"job": _job_payload(job)}, status_code=202)
 
     async def clear_jobs_api(request: Request) -> JSONResponse:
         denied = _mutation_denied(request, action="Очистка журнала")

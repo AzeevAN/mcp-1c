@@ -283,8 +283,8 @@ def test_one_shot_cli_холодно_строит_четыре_кэша_и_те�
         check=False,
     )
 
-    assert cold.returncode == 0, cold.stderr
-    assert "ОбщийМодуль.ОбщийПример::Сложить" in cold.stdout
+    assert cold.returncode == 2
+    assert "reload_required" in cold.stderr
     prefix = index_cache.safe_name("Пример:modules")
     cache = sorted(registry.cache_dir.glob(f"{prefix}.*"))
     assert len(cache) == 4
@@ -300,8 +300,8 @@ def test_one_shot_cli_холодно_строит_четыре_кэша_и_те�
         check=False,
     )
 
-    assert warm.returncode == 0, warm.stderr
-    assert "ОбщийМодуль.ОбщийПример::Сложить" in warm.stdout
+    assert warm.returncode == 2
+    assert "reload_required" in warm.stderr
     assert {path.name: path.stat().st_mtime_ns for path in cache} == timestamps
 
 

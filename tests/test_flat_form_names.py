@@ -9,6 +9,7 @@ from mcp1c.intake_v2_probe import probe_export
 from mcp1c.registry import Registry
 from mcp1c.module_address import разобрать_плоскую_xml_форму
 from test_intake_v2_collector import MemoryTree
+from test_intake_v2_generation import _stage_b_generation
 from test_intake_v2_converter import _document, _common_form, _common_form_xml, _catalog
 
 
@@ -44,7 +45,7 @@ def test_плоская_форма_сохраняет_descriptor_и_структ
     }
     generation = materialize_generation(collection, convert_collection(collection), tmp_path / "generation", generation_id="generation-names")
     registry = Registry(tmp_path / "data")
-    registry.publish_generation(registry.stage_generation(generation.manifest, generation.payloads))
+    registry.publish_generation(_stage_b_generation(registry, generation.manifest, generation.payloads))
     for current in (registry, Registry(registry.data_dir)):
         if current is not registry:
             assert current.restore() == []

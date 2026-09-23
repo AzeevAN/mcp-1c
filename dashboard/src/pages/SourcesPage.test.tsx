@@ -130,8 +130,6 @@ beforeEach(() => {
                 state: "не разобрано",
                 detail: "",
                 settling: false,
-                can_parse: true,
-                action: "parse",
               },
             ],
             incoming_exists: true,

@@ -17,6 +17,7 @@ from mcp1c.dashboard_runtime import (
 )
 from mcp1c.registry import STATUS_ERROR, Registry
 from test_intake_v2_runtime import _materialized
+from test_intake_v2_extensions import _stage_active_base
 
 
 def test_по_умолчанию_включён_современный_дашборд(monkeypatch):
@@ -296,7 +297,7 @@ def test_sources_api_отдаёт_журнал_native_generation(tmp_path):
     )
     registry = Registry(tmp_path / "data")
     registry.publish_generation(
-        registry.stage_generation(generation.manifest, generation.payloads)
+        _stage_active_base(registry, generation)
     )
     app = Starlette(
         routes=routes(
@@ -321,7 +322,7 @@ def test_sources_api_помечает_native_конфигурацию_без_sou
     _base_collection, base = _materialized(tmp_path, "dashboard-native-base")
     registry = Registry(tmp_path / "data")
     registry.publish_generation(
-        registry.stage_generation(base.manifest, base.payloads)
+        _stage_active_base(registry, base)
     )
 
     payload = _sources_payload(tools.sources_snapshot(registry), admin=True)

@@ -34,6 +34,7 @@ from mcp1c.intake_v2_registry import (
     load_layer_payload,
 )
 from mcp1c.registry import Registry
+from test_intake_v2_generation import _stage_b_generation
 
 
 SUBJECT = "mcp1c.role_access"
@@ -738,7 +739,7 @@ def test_registry_атомарно_подключает_role_index_и_подни
     )
     registry = Registry(tmp_path / "data")
 
-    registry.publish_generation(registry.stage_generation(manifest, payloads))
+    registry.publish_generation(_stage_b_generation(registry, manifest, payloads))
 
     roles = registry.resolve("DemoConfiguration").roles
     assert roles is not None and roles.state == "ready"
@@ -793,7 +794,7 @@ def test_ошибка_semantic_roles_не_ломает_остальные_сло
         ),),
         generation_id="generation-1",
     )
-    registry.publish_generation(registry.stage_generation(first, first_payloads))
+    registry.publish_generation(_stage_b_generation(registry, first, first_payloads))
     previous = registry.active_generation_pointer(first.identity)
     assert previous is not None
     malformed = (
@@ -812,7 +813,7 @@ def test_ошибка_semantic_roles_не_ломает_остальные_сло
     )
 
     registry.publish_generation(
-        registry.stage_generation(second, second_payloads),
+        _stage_b_generation(registry, second, second_payloads),
         expected_previous=previous,
     )
 

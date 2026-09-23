@@ -33,7 +33,7 @@ import pytest
 from conftest import build_configuration, modules_configuration_xml, write_export
 from module_samples import v8_container_bytes
 from mcp1c import index_cache, modules_index, tools
-from mcp1c.registry import Registry
+from mcp1c.registry import Registry, RegistryError
 
 
 def _корень_кода_в_zip(корень: Path, файл_zip: Path) -> Path:
@@ -371,15 +371,18 @@ def test_cold_warm_и_пересборка_битого_кэша_сохраня�
 
     monkeypatch.setattr(warm, "_построить_индекс_кода", нельзя_строить)
     assert warm.startup() == []
-    assert tools.sources_snapshot(warm).code == ожидаемое
+    assert tools.sources_snapshot(warm).code == ()
+    with pytest.raises(RegistryError, match="reload_required"):
+        warm.resolve("Пример")
+    assert tools._code_coverage(warm.resolve("Пример", diagnostic=True).modules) == ожидаемое[0].coverage
 
     forms_cache = реестр._cache_path(источник.id, "modules-forms")
     forms_cache.write_bytes("повреждено".encode())
     cold = Registry(реестр.data_dir)
     assert cold.startup() == []
     assert cold.wait_for_module_builds(timeout=10)
-    assert tools.sources_snapshot(cold).code == ожидаемое
-    coverage = tools.sources_snapshot(cold).code[0].coverage
+    assert tools.sources_snapshot(cold).code == ()
+    coverage = tools._code_coverage(cold.resolve("Пример", diagnostic=True).modules)
     assert dict(coverage.problem_categories)["form_xml_unreadable"] == 25
     assert len(coverage.problems) == 20
     assert coverage.problems_omitted == 5
@@ -424,11 +427,20 @@ def test_warm_get_object_видит_все_локальные_причины_з�
     monkeypatch.setattr(warm, "_построить_индекс_кода", нельзя_строить)
     assert warm.startup() == []
 
-    answer = tools.get_object(
-        warm, "Справочник.Контрагенты", config="Пример", detail="full"
-    )
-    assert answer.count("[invalid_syntax]") == 25
-    assert "Справочник.Контрагенты.Форма.Форма24" in answer
+    with pytest.raises(RegistryError, match="reload_required"):
+        tools.get_object(
+            warm, "Справочник.Контрагенты", config="Пример", detail="full"
+        )
+    формы = warm.resolve("Пример", diagnostic=True).modules.формы
+    причины = [
+        причина
+        for адрес, строки in формы.object_problems.items()
+        if адрес.startswith("Справочник.Контрагенты.Форма.")
+        for причина in строки
+    ]
+    assert len(причины) == 25
+    assert all(причина.категория == "invalid_syntax" for причина in причины)
+    assert any("Форма24" in причина.адрес for причина in причины)
 
 
 def test_read_only_кэш_не_мешает_холодной_диагностике(
@@ -448,7 +460,8 @@ def test_read_only_кэш_не_мешает_холодной_диагности�
     assert cold.startup() == []
     assert cold.wait_for_module_builds(timeout=10)
 
-    assert tools.sources_snapshot(cold).code == ожидаемое
+    assert tools.sources_snapshot(cold).code == ()
+    assert tools._code_coverage(cold.resolve("Пример", diagnostic=True).modules) == ожидаемое[0].coverage
     assert not any(
         path.is_file()
         for path in (

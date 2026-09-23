@@ -10,6 +10,7 @@ from conftest import write_export
 from mcp1c.intake_v2_converter import convert_collection
 from mcp1c.registry import Registry, RegistryError
 from test_intake_v2_runtime import _materialized
+from test_intake_v2_extensions import _stage_active_base
 
 
 def _source_a(root, base, version):
@@ -61,7 +62,7 @@ def test_source_a_отклоняет_конкурентное_изменение
                 assert registry.resolve(base.name).configuration.config.version == "0.9"
             if change.startswith("native"):
                 registry.publish_generation(
-                    registry.stage_generation(generation.manifest, generation.payloads)
+                    _stage_active_base(registry, generation)
                 )
             if change in ("remove", "native_then_remove"):
                 registry.remove(base.name)

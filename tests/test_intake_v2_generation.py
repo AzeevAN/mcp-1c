@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import hashlib
 import json
 import shutil
 
@@ -14,7 +15,9 @@ from mcp1c.intake_v2_collector import collect_source_b
 from mcp1c.intake_v2_converter import convert_collection
 from mcp1c.intake_v2_probe import probe_export
 from mcp1c.member_pack import INDEX_NAME, PACK_NAME
+from mcp1c.intake_v2_registry import load_layer_payload
 from mcp1c.registry import Registry
+from mcp1c.source_modes import ActivationComponent, ActivationManifest, ActivationMode
 from test_intake_v2_collector import MemoryTree, _configuration, _rights, _role
 from test_intake_v2_converter import (
     _collection,
@@ -23,6 +26,39 @@ from test_intake_v2_converter import (
 
 
 SUBJECT = "mcp1c.intake_v2_generation"
+
+
+def _stage_b_generation(registry, manifest, payloads):
+    """Подготовить синтетический Source B bundle с явной активацией."""
+    base = payloads[LayerKind.BASE_STRUCTURE]
+    base_path = base.manifest_path if hasattr(base, "manifest_path") else base
+    version = load_layer_payload(base_path).semantic["version"]
+    digest = hashlib.sha256(
+        "|".join(
+            f"{layer.kind.value}:{layer.payload_sha256}"
+            for layer in manifest.layers if layer.state is LayerState.READY
+        ).encode("utf-8")
+    ).hexdigest()
+    previous = registry.active_generation_pointer(manifest.identity)
+    activation = ActivationManifest(
+        mode=ActivationMode.B_FULL,
+        identity_incarnation=manifest.generation_id,
+        physical_generation_root_id=manifest.generation_id,
+        configuration_version=version,
+        main=ActivationComponent(
+            source="source-b",
+            origin=manifest.origin_name,
+            raw_sha256=manifest.raw_sha256,
+            payload_sha256=digest,
+        ),
+        extensions=(),
+        expected_previous_activation=(
+            previous.activation.sha256 if previous and previous.activation else None
+        ),
+        transaction_id=f"test-{manifest.generation_id}",
+        recovery_id=f"test-recovery-{manifest.generation_id}",
+    )
+    return registry.stage_generation(manifest, payloads, activation=activation)
 
 
 def _symbol(name: str):
@@ -98,7 +134,7 @@ def test_materializer_строит_пять_слоёв_и_generation_переж�
 
     registry = Registry(tmp_path / "data")
     registry.publish_generation(
-        registry.stage_generation(materialized.manifest, materialized.payloads)
+        _stage_b_generation(registry, materialized.manifest, materialized.payloads)
     )
     pointer = registry.active_generation_pointer(materialized.manifest.identity)
     shutil.rmtree(collection.root)
@@ -142,7 +178,7 @@ def test_materializer_сохраняет_xdto_как_ленивые_extended_mem
 
     registry = Registry(tmp_path / "data-xdto")
     registry.publish_generation(
-        registry.stage_generation(materialized.manifest, materialized.payloads)
+        _stage_b_generation(registry, materialized.manifest, materialized.payloads)
     )
     pointer = registry.active_generation_pointer(materialized.manifest.identity)
     shutil.rmtree(collection.root)
@@ -201,7 +237,7 @@ def test_generation_pack_с_пустым_member_публикуется_и_чит
     materialized = _materialized(tmp_path, "empty-member", collection)
     registry = Registry(tmp_path / "data-empty-member")
     registry.publish_generation(
-        registry.stage_generation(materialized.manifest, materialized.payloads)
+        _stage_b_generation(registry, materialized.manifest, materialized.payloads)
     )
 
     restarted = Registry(registry.data_dir)
@@ -239,7 +275,7 @@ def test_materializer_сохраняет_compiled_модуль_не_выдава
 
     registry = Registry(tmp_path / "data-compiled")
     registry.publish_generation(
-        registry.stage_generation(materialized.manifest, materialized.payloads)
+        _stage_b_generation(registry, materialized.manifest, materialized.payloads)
     )
     loaded = registry.modules["DemoConfiguration:modules"]
     entry = loaded.каталог.entries["ОбщийМодуль.Sealed"]
@@ -264,7 +300,7 @@ def test_общий_модуль_без_тела_виден_как_opaque_но_�
 
     registry = Registry(tmp_path / "data-opaque")
     registry.publish_generation(
-        registry.stage_generation(materialized.manifest, materialized.payloads)
+        _stage_b_generation(registry, materialized.manifest, materialized.payloads)
     )
     loaded = registry.modules["DemoConfiguration:modules"]
     entry = loaded.каталог.entries["ОбщийМодуль.Sealed"]
@@ -322,7 +358,7 @@ def test_native_generation_считает_пустое_тело_прочитан
     materialized = _materialized(tmp_path, "empty", collection)
     registry = Registry(tmp_path / "data-empty")
     registry.publish_generation(
-        registry.stage_generation(materialized.manifest, materialized.payloads)
+        _stage_b_generation(registry, materialized.manifest, materialized.payloads)
     )
     coverage = tools.sources_snapshot(registry).code[0].coverage
 
@@ -342,7 +378,7 @@ def test_native_generation_оставляет_нечитаемое_тело_ош
     materialized = _materialized(tmp_path, "unreadable", collection)
     registry = Registry(tmp_path / "data-unreadable")
     registry.publish_generation(
-        registry.stage_generation(materialized.manifest, materialized.payloads)
+        _stage_b_generation(registry, materialized.manifest, materialized.payloads)
     )
     coverage = tools.sources_snapshot(registry).code[0].coverage
 
@@ -484,7 +520,7 @@ def test_role_error_не_отменяет_остальные_готовые_сл
 
     registry = Registry(tmp_path / "data-error")
     registry.publish_generation(
-        registry.stage_generation(materialized.manifest, materialized.payloads)
+        _stage_b_generation(registry, materialized.manifest, materialized.payloads)
     )
     assert registry.active_generation(materialized.manifest.identity) == materialized.manifest
 
@@ -495,7 +531,7 @@ def test_tampered_member_блокирует_restore_даже_при_целом_l
     materialized = _materialized(tmp_path, "tamper", collection)
     registry = Registry(tmp_path / "data")
     registry.publish_generation(
-        registry.stage_generation(materialized.manifest, materialized.payloads)
+        _stage_b_generation(registry, materialized.manifest, materialized.payloads)
     )
     pointer = registry.active_generation_pointer(materialized.manifest.identity)
     code_manifest = json.loads(

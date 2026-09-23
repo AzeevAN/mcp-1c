@@ -232,13 +232,7 @@ def test_source_a_не_создаёт_смешанный_overlay_через_lega
             json={"name": extension.name, "configuration": _CONFIG},
             follow_redirects=False,
         )
-        assert response.status_code == 202
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
-            if dashboard._JOBS[-1]["state"] in (dashboard.JOB_DONE, dashboard.JOB_FAILED):
-                break
-            time.sleep(0.02)
-        assert dashboard._JOBS[-1]["state"] == dashboard.JOB_FAILED
+        assert response.status_code == 410
         assert target_registry.resolve(_CONFIG).modules is None
         assert "Дополнение" not in target_registry.snapshot().extension_names(_CONFIG)
 
@@ -393,9 +387,12 @@ def test_каталог_переживает_restart_без_исходных_zip
 
     restarted = Registry(registry.data_dir)
     assert restarted.restore() == []
-    answer = get_object(restarted, _OBJECT, config=_CONFIG, detail="fields")
-
-    assert "объявлен расширением «Дополнение»" in answer
+    assert restarted.resolve(_CONFIG, diagnostic=True).modules.структура is not None
+    assert "объявлен расширением «Дополнение»" in get_object(
+        registry, _OBJECT, config=_CONFIG, detail="fields"
+    )
+    with pytest.raises(RegistryError, match="reload_required"):
+        get_object(restarted, _OBJECT, config=_CONFIG, detail="fields")
 
 
 def test_плоская_выгрузка_строит_тот_же_семантический_каталог(tmp_path):

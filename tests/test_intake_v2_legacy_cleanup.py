@@ -11,6 +11,7 @@ from mcp1c.intake_v2_generation import materialize_generation
 from mcp1c.registry import KIND_EXTENSION, Registry, RegistryError
 from conftest import build_configuration, write_export
 from test_intake_v2_converter import _collection
+from test_intake_v2_extensions import _stage_active_base
 
 
 def _native_generation(tmp_path, suffix: str):
@@ -58,7 +59,7 @@ def test_native_commit_удаляет_только_legacy_структуру_и_
     generation = _native_generation(tmp_path, "001")
 
     registry.publish_generation(
-        registry.stage_generation(generation.manifest, generation.payloads)
+        _stage_active_base(registry, generation)
     )
 
     assert "DemoConfiguration" not in registry.sources
@@ -104,7 +105,7 @@ def test_авария_очистки_завершается_после_restart(
     )
     with pytest.raises(SystemExit, match="авария очистки legacy"):
         registry.publish_generation(
-            registry.stage_generation(generation.manifest, generation.payloads)
+            _stage_active_base(registry, generation)
         )
 
     assert registry.active_generation(generation.manifest.identity) is not None
@@ -138,7 +139,7 @@ def test_legacy_источник_вне_managed_data_не_удаляется(
     generation = _native_generation(tmp_path, "external")
 
     registry.publish_generation(
-        registry.stage_generation(generation.manifest, generation.payloads)
+        _stage_active_base(registry, generation)
     )
 
     assert source_path.is_file()
@@ -164,7 +165,7 @@ def test_cleanup_понимает_legacy_строки_без_новых_поле
     generation = _native_generation(tmp_path, "old-registry")
 
     registry.publish_generation(
-        registry.stage_generation(generation.manifest, generation.payloads)
+        _stage_active_base(registry, generation)
     )
 
     stored = json.loads(registry.registry_path.read_text(encoding="utf-8"))
@@ -194,7 +195,7 @@ def test_отказ_до_native_commit_сохраняет_legacy_строки_и
     monkeypatch.setattr(registry, "_build_native_generation_runtime", fail_runtime)
     with pytest.raises(RegistryError, match="отказ до commit"):
         registry.publish_generation(
-            registry.stage_generation(generation.manifest, generation.payloads)
+            _stage_active_base(registry, generation)
         )
 
     assert registry.active_generation(generation.manifest.identity) is None

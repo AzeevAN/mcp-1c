@@ -2491,6 +2491,95 @@ def _compare_configurations_snapshot(
 # --------------------------------------------------------------- код модулей
 
 
+MAX_MODULE_SOURCE_FILE_BYTES = 16 * 1024 * 1024
+
+
+@dataclass(frozen=True, slots=True)
+class ModuleSourceFile:
+    """Нормализованный исходник и идентичность прочитанного поколения."""
+
+    address: str
+    config: str
+    extension: str | None
+    content: bytes
+    sha256: str
+    revision: str
+
+    @property
+    def size_bytes(self) -> int:
+        return len(self.content)
+
+    @property
+    def state(self) -> str:
+        return "empty" if not self.content else "readable"
+
+
+def _module_source_file_once(
+    registry: Registry,
+    address: str,
+    config: str | None,
+    extension: str | None,
+) -> ModuleSourceFile:
+    context, loaded = _selected_modules(registry, config, extension)
+    состояние = _modules_availability_message(registry, context, loaded)
+    if состояние is not None:
+        raise RegistryError(состояние)
+    assert loaded is not None
+    if loaded.оглавление is None or loaded.каталог is None:
+        raise RegistryError("Готовый индекс кода неполон; перезагрузите источник.")
+    canonical = next(
+        (
+            item for item in loaded.оглавление.модули
+            if item.casefold() == address.casefold()
+        ),
+        None,
+    )
+    if canonical is None:
+        if not _modules_are_current(registry, loaded):
+            raise _StaleModules
+        raise RegistryError(f"Модуль `{address}` в загруженном коде не найден.")
+    if loaded.оглавление.скомпилирован(canonical):
+        if not _modules_are_current(registry, loaded):
+            raise _StaleModules
+        raise RegistryError("Исходный текст модуля недоступен: модуль скомпилирован.")
+    текст = _read_module_snapshot(registry, loaded, canonical)
+    content = текст.encode("utf-8")
+    if len(content) > MAX_MODULE_SOURCE_FILE_BYTES:
+        raise RegistryError("Модуль превышает предел файловой выдачи 16 МиБ.")
+    digest = hashlib.sha256(content).hexdigest()
+    identity = loaded.каталог.identity
+    revision = hashlib.sha256(
+        "\0".join((
+            identity.source_id, identity.source_sha256,
+            str(identity.generation), canonical, digest,
+        )).encode("utf-8")
+    ).hexdigest()
+    if not _modules_are_current(registry, loaded):
+        raise _StaleModules
+    return ModuleSourceFile(
+        address=canonical, config=context.name, extension=extension,
+        content=content, sha256=digest, revision=revision,
+    )
+
+
+def get_module_source_file(
+    registry: Registry,
+    address: str,
+    config: str | None = None,
+    extension: str | None = None,
+) -> ModuleSourceFile:
+    """Прочитать точный модуль одного актуального поколения для скачивания."""
+    if not isinstance(address, str) or not address.strip() or "::" in address:
+        raise RegistryError("address должен быть точным адресом модуля без `::`.")
+    address = address.strip()
+    for _ in range(2):
+        try:
+            return _module_source_file_once(registry, address, config, extension)
+        except _StaleModules:
+            continue
+    raise RegistryError("Код изменился во время чтения; повторите запрос.")
+
+
 def _procedure_limit(limit: int) -> int:
     """У поиска по коду предел — часть контракта, не молчаливый clamp."""
     if (

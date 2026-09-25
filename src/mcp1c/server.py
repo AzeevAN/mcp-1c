@@ -18,6 +18,7 @@ HTTP-эндпоинта — это не транспорт, а обходной 
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import os
 import sys
@@ -34,7 +35,7 @@ from mcp.types import CallToolResult, TextContent
 from pydantic import Field
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
-from starlette.responses import JSONResponse, PlainTextResponse, RedirectResponse
+from starlette.responses import JSONResponse, PlainTextResponse, RedirectResponse, Response
 
 from . import __version__, tools
 from .auth import same_token
@@ -51,6 +52,10 @@ from .capabilities import (
 from .dashboard_backend import MAX_UPLOAD, can_read
 from .dashboard_runtime import routes as dashboard_routes
 from .intake_v2_transport import MAX_BROWSER_UPLOAD_BYTES
+from .module_download import (
+    DOWNLOAD_PATH, TICKET_HEADER, DownloadTicketError,
+    ModuleDownloadTickets, public_base_url,
+)
 from .process_restart import RestartController
 from .reference_provider import (
     MAX_PAGE_CHARS,
@@ -565,6 +570,7 @@ class MCP1CServer(MCPServer):
             "search_objects",
             "search_procedures",
             "get_procedure",
+            "get_module_source_file",
             "get_callers",
             "get_object",
             "get_related",
@@ -693,6 +699,8 @@ INSTRUCTIONS = f"""
 выгрузки конфигурации в файлы; `search_procedures` ищет по её процедурам, но не
 по значениям документов, справочников и регистров. `get_procedure` читает
 тело только по точному адресу и ограничивает его окном до 200 строк.
+Если нужен контекст всего точного модуля, `get_module_source_file` выдаёт
+короткоживущую ссылку на gzip-файл исходника при настроенном публичном адресе.
 """.strip()
 
 
@@ -727,6 +735,7 @@ def build_server(
         instructions=INSTRUCTIONS,
         version=__version__,
     )
+    download_tickets = ModuleDownloadTickets()
 
     @server.tool(
         description=(
@@ -858,6 +867,58 @@ def build_server(
         return tools.get_procedure(
             registry, address, config, extension, start_line, lines
         )
+
+    @server.tool(
+        description=(
+            "Выдать ссылку на полный исходный текст одного точного модуля BSL "
+            "(включая модуль старой Form.bin) как gzip-файл. Используйте, когда "
+            "нужен контекст всего модуля; для одной процедуры достаточно "
+            "`get_procedure`. Сначала найдите адрес через поиск или оглавление. "
+            "Ответ содержит `download_url` и `headers`: сделайте HTTP GET с "
+            "этими заголовками в течение 5 минут, сохраните файл, распакуйте "
+            "gzip и сверьте SHA-256 распакованного UTF-8 текста с `sha256`. "
+            "URL не содержит секретов; билет действует только для этого "
+            "модуля и текущего поколения. Для скачивания клиенту нужен HTTP "
+            "доступ к серверу помимо MCP. Максимум 16 МиБ исходного текста."
+        )
+    )
+    @_expected_registry_errors
+    def get_module_source_file(
+        address: Annotated[str, Field(
+            description="Точный адрес модуля без `::`, например `ОбщийМодуль.ОбщегоНазначения`."
+        )],
+        config: CONFIG_PARAM = None,
+        extension: Annotated[str | None, Field(
+            description="Имя одного загруженного расширения; без него читается основная конфигурация."
+        )] = None,
+    ) -> str:
+        base = os.environ.get("MCP1C_PUBLIC_BASE_URL", "")
+        try:
+            origin = public_base_url(
+                base, https_required=access_mode() == ACCESS_HTTPS_PROXY
+            )
+        except ValueError as error:
+            raise RegistryError(str(error)) from error
+        source = tools.get_module_source_file(registry, address, config, extension)
+        claims = {
+            "address": source.address,
+            "config": source.config,
+            "extension": source.extension,
+            "revision": source.revision,
+            "sha256": source.sha256,
+            "size_bytes": source.size_bytes,
+        }
+        try:
+            ticket, expires_at = download_tickets.issue(claims)
+        except DownloadTicketError as error:
+            raise RegistryError(str(error)) from error
+        return json.dumps({
+            **claims,
+            "state": source.state,
+            "download_url": origin + DOWNLOAD_PATH,
+            "headers": {TICKET_HEADER: ticket},
+            "expires_at": expires_at,
+        }, ensure_ascii=False)
 
     @server.tool(
         description=(
@@ -1288,7 +1349,9 @@ def build_server(
             dependencies={"forms": registry},
         )
     )
-    _add_http_routes(server, registry, reference, restart, capability_runtime)
+    _add_http_routes(
+        server, registry, reference, restart, capability_runtime, download_tickets
+    )
     return server
 
 
@@ -1298,6 +1361,7 @@ def _add_http_routes(
     reference: ReferenceService,
     restart: RestartController,
     capabilities: CapabilityRuntime,
+    download_tickets: ModuleDownloadTickets,
 ) -> None:
     """Служебные HTTP-маршруты рядом с MCP: проверка живости и перезагрузка.
 
@@ -1352,6 +1416,37 @@ def _add_http_routes(
             }
         )
 
+    @server.custom_route(DOWNLOAD_PATH, methods=["GET"])
+    async def download_module_source(request: Request) -> Response:
+        try:
+            claims = download_tickets.verify(request.headers.get(TICKET_HEADER, ""))
+        except DownloadTicketError:
+            return JSONResponse({"error": "Билет скачивания недействителен."}, status_code=401)
+        try:
+            source = await run_in_threadpool(
+                tools.get_module_source_file,
+                registry, claims["address"], claims["config"], claims["extension"],
+            )
+        except RegistryError:
+            return JSONResponse({"error": "Снимок модуля больше недоступен."}, status_code=409)
+        if (
+            source.revision != claims["revision"]
+            or source.sha256 != claims["sha256"]
+            or source.size_bytes != claims["size_bytes"]
+        ):
+            return JSONResponse({"error": "Код изменился; запросите новую ссылку."}, status_code=409)
+        compressed = await run_in_threadpool(gzip.compress, source.content, compresslevel=6, mtime=0)
+        return Response(
+            compressed,
+            media_type="application/gzip",
+            headers={
+                "Content-Disposition": 'attachment; filename="module.bsl.gz"',
+                "Cache-Control": "no-store",
+                "X-Content-Sha256": source.sha256,
+                "X-Content-Size": str(source.size_bytes),
+            },
+        )
+
     # Дашборд монтируется тем же способом: `custom_route` — декоратор с
     # сигнатурой (path, methods, name), регистрирует по одному маршруту.
     # Имя передаётся явно, потому что два маршрута `/queries` (GET и POST) —
@@ -1393,6 +1488,7 @@ def mcp_guard(app):
         if (
             scope["type"] != "http"
             or path in OPEN_EXACT
+            or (path == DOWNLOAD_PATH and scope.get("method") == "GET")
             or path.startswith(OPEN_PREFIX)
         ):
             await app(scope, receive, send)

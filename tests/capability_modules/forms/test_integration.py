@@ -23,7 +23,7 @@ from conftest import write_export
 
 
 FIXTURES = Path(__file__).with_name("fixtures")
-CORE_TOOL_COUNT = 11
+CORE_TOOL_COUNT = 12
 FORM_TOOLS = [
     "get_managed_form_rules",
     "compile_managed_form",

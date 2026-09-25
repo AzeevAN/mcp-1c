@@ -40,6 +40,7 @@ CORE_TOOLS = [
     "search_objects",
     "search_procedures",
     "get_procedure",
+    "get_module_source_file",
     "get_callers",
     "get_object",
     "get_related",

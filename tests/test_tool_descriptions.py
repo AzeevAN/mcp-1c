@@ -220,7 +220,7 @@ async def test_карточка_процедуры_зарегистрирова�
     инструменты,
 ):
     все = await инструменты()
-    assert len(все) == 11
+    assert len(все) == 12
     (карточка,) = [tool for tool in все if tool.name == "get_procedure"]
 
     schema = карточка.input_schema or {}
@@ -244,9 +244,10 @@ async def test_обратный_поиск_вызовов_остаётся_ря�
     инструменты,
 ):
     все = await инструменты()
-    assert [tool.name for tool in все][3:6] == [
+    assert [tool.name for tool in все][3:7] == [
         "search_procedures",
         "get_procedure",
+        "get_module_source_file",
         "get_callers",
     ]
     (вызовы,) = [tool for tool in все if tool.name == "get_callers"]
@@ -261,7 +262,7 @@ async def test_обратный_поиск_вызовов_остаётся_ря�
     assert "привяз" in (вызовы.description or "").lower()
 
 
-async def test_tools_list_сохраняет_полный_порядок_одиннадцати_инструментов(
+async def test_tools_list_сохраняет_полный_порядок_двенадцати_инструментов(
     инструменты,
 ):
     assert [tool.name for tool in await инструменты()] == [
@@ -270,6 +271,7 @@ async def test_tools_list_сохраняет_полный_порядок_оди�
         "search_objects",
         "search_procedures",
         "get_procedure",
+        "get_module_source_file",
         "get_callers",
         "get_object",
         "get_related",

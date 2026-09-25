@@ -532,6 +532,7 @@ def test_default_service_игнорирует_удалённый_singleton(
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
     local = tmp_path / "private-mount" / "configuration.zip"
     _write_archive(local, "MountedConfiguration")
+    исходный_архив = local.read_bytes()
     monkeypatch.setenv("MCP1C_CONFIG_SOURCE", str(local))
     registry = Registry(tmp_path / "data")
     client = живой_клиент(
@@ -545,7 +546,7 @@ def test_default_service_игнорирует_удалённый_singleton(
     assert response.status_code == 200
     assert response.json()["candidates"] == []
     assert str(tmp_path) not in response.text
-    assert local.read_bytes() == _archive("MountedConfiguration")
+    assert local.read_bytes() == исходный_архив
 
 
 def test_create_строит_preview_и_публикует_только_после_confirm(

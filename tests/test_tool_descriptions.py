@@ -135,7 +135,14 @@ async def test_initialize_и_tools_list_описывают_только_спра
         tool for tool in await инструменты() if tool.name == "search_syntax"
     ]
 
-    assert initialize.instructions == server.instructions == INSTRUCTIONS
+    assert initialize.instructions == server.instructions
+    assert (initialize.instructions or "").startswith(INSTRUCTIONS)
+    assert "get_module_source_file" in (initialize.instructions or "")
+    disabled = build_server(
+        Registry(tmp_path / "download-disabled"),
+        enabled_capabilities=(),
+    )
+    assert disabled.instructions == INSTRUCTIONS
     assert "синтаксису платформы" in (initialize.instructions or "")
     assert "метод, свойство или объект платформы" in (поиск.description or "")
     свойства = (поиск.input_schema or {}).get("properties") or {}

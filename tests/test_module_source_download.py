@@ -11,6 +11,7 @@ import pytest
 from starlette.applications import Starlette
 
 from conftest import живой_клиент
+from mcp1c.capabilities import CapabilityRuntime, CapabilitySettingsStore
 from mcp1c.server import build_server, mcp_guard
 from module_samples import v8_container_bytes
 
@@ -180,6 +181,36 @@ async def test_скачивание_требует_выданный_билет(�
         assert ответ.status_code in {401, 403}
         assert b"\x1f\x8b" not in ответ.content
     assert _скачать(клиент, метаданные).status_code == 200
+
+
+async def test_отключение_после_restart_убирает_инструмент_и_http_маршрут(
+    сервер_с_модулями,
+):
+    сервер, клиент, реестр = сервер_с_модулями
+    метаданные = await _ссылка(сервер, "ОбщийМодуль.ОбщийПример")
+    assert _скачать(клиент, метаданные).status_code == 200
+
+    store = CapabilitySettingsStore(реестр.data_dir)
+    store.save(("module_source_download",))
+    active = CapabilityRuntime(store, active=store.load())
+    pending = active.save_desired(())
+    assert pending["pending_restart"] is True
+    assert "get_module_source_file" in [
+        tool.name for tool in await сервер.list_tools()
+    ]
+    assert _скачать(клиент, метаданные).status_code == 200
+
+    restarted = build_server(
+        реестр,
+        enabled_capabilities=store.load(),
+        capability_runtime=CapabilityRuntime(store, active=store.load()),
+    )
+    names = [tool.name for tool in await restarted.list_tools()]
+    assert "get_module_source_file" not in names
+    after_restart = живой_клиент(
+        Starlette(routes=restarted._custom_starlette_routes)
+    )
+    assert _скачать(after_restart, метаданные).status_code == 404
 
 
 async def test_http_охрана_пропускает_только_get_с_билетом(сервер_с_модулями):

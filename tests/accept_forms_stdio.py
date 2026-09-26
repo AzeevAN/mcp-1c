@@ -13,6 +13,7 @@ from tempfile import TemporaryDirectory
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp1c.capabilities import CapabilitySettingsStore
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -66,6 +67,10 @@ def _list_choice_spec(owner: str, role: str) -> dict[str, object]:
 
 
 async def _session(mode: str, data_dir: Path) -> dict[str, object]:
+    enabled = ("module_source_download",)
+    if mode != "off":
+        enabled += tuple(mode.split(","))
+    CapabilitySettingsStore(data_dir).save(enabled)
     server = StdioServerParameters(
         command=sys.executable,
         args=[
@@ -81,7 +86,6 @@ async def _session(mode: str, data_dir: Path) -> dict[str, object]:
             "PYTHONPATH": os.environ.get(
                 "MCP1C_ACCEPT_PYTHONPATH", str(ROOT / "src")
             ),
-            "MCP1C_CAPABILITIES": mode,
         },
     )
     async with stdio_client(server) as streams:

@@ -18,7 +18,7 @@ role-операции появляются, только когда хотя б�
 | `search_objects` | `query`, `config`, `kind`, `limit` | точные имена объектов по человеческой формулировке |
 | `search_procedures` | `query`, `config`, `extension`, `scope`, `limit` | процедуры основной конфигурации или одного расширения |
 | `get_procedure` | `address`, `config`, `extension`, `start_line`, `lines` | оглавление модуля либо ограниченное тело точной процедуры |
-| `get_module_source_file` | `address`, `config`, `extension` | URL и билет для скачивания полного UTF-8 BSL модуля как gzip-файла |
+| `get_module_source_file` | `address`, `config`, `extension` | условно: URL и билет для скачивания полного UTF-8 BSL модуля как gzip-файла |
 | `get_callers` | `address`, `config`, `extension`, `limit` | подтверждённые места вызова, подписки, задания и события форм |
 | `get_object` | `full_name`, `config`, `detail`, `cursor` | структура объекта, доказанное происхождение, постраничные HTTP-endpoint, таблицы запроса и кодовые сведения |
 | `get_related` | `full_name`, `config` | один шаг входящих и исходящих связей |
@@ -53,12 +53,18 @@ MCP-подключение. Внутренний динамический пут
 используется текущей сборкой.
 
 Четыре Forms-инструмента появляются только при startup, если `forms` входит в
-`capabilities.enabled` файла `data/server-settings.json`. Пока файла нет,
-`MCP1C_CAPABILITIES=forms` служит bootstrap; существующий файл всегда
-важнее env. Пустой массив сохраняет прежний каталог и не импортирует реализации
-модулей. Повторы, неизвестные имена и повреждённая schema останавливают процесс
-до Registry. Capability-модули выбираются только из встроенного каталога;
-произвольный import path не принимается. `GET /api/v1/capabilities` различает
+`capabilities.enabled` файла `data/server-settings.json`. Без файла применяются
+встроенные начальные значения: прежние capability-модули выключены, а
+`module_source_download` включён. В schema v2 `module_source_download` добавляется
+в `capabilities.enabled`; файл schema v1 до первого сохранения подразумевает
+включённое скачивание. Изменение настройки на экране «Дополнительные модули»
+вступает в силу после полного перезапуска. Если скачивание выключено,
+`get_module_source_file` отсутствует в `tools/list` и маршрут
+`GET /api/v1/modules/source` не зарегистрирован. Пустой массив сохраняет прежний
+каталог и не импортирует реализации модулей. Повторы, неизвестные имена и
+повреждённая schema останавливают процесс до Registry. Capability-модули
+выбираются только из встроенного каталога; произвольный import path не
+принимается. `GET /api/v1/capabilities` различает
 active и desired и показывает pending полного restart; `PUT` того же admin-
 маршрута сохраняет полный desired-набор. Экран «Дополнительные модули» показывает
 модуль до включения, суммарную измеренную стоимость контекста активных модулей,
@@ -215,9 +221,7 @@ workers. Одновременно принимается не больше 10 о
 2 МиБ каждый, итоговый JSON — 4 МиБ. Эти ограничения не относятся к core-
 инструментам и не занимают их worker pool.
 Изменённый bind-mounted `server-settings.json` применяется полным перезапуском
-bare-процесса или `docker compose restart mcp1c`. Env-bootstrap при отсутствии
-файла меняется через `docker compose up -d --force-recreate`, поскольку простой
-restart не перечитывает `.env`.
+bare-процесса или `docker compose restart mcp1c`.
 
 ## Рабочая последовательность для объявленных прав ролей
 

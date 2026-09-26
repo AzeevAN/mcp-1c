@@ -239,7 +239,6 @@ MCP1C_PORT=5001
 MCP1C_IMAGE=ghcr.io/azeevan/mcp-1c:4.0.0
 MCP1C_DASHBOARD=on
 MCP1C_ACCESS=local
-MCP1C_CAPABILITIES=off
 API_TOKEN=<первый случайный токен>
 ADMIN_TOKEN=<второй случайный токен>
 ```
@@ -276,7 +275,6 @@ chmod 0600 .env
 | `MCP1C_DASHBOARD` | `on` — SPA, `off` — без UI | `on` |
 | `MCP1C_ACCESS` | `local`, прямой `http` либо `https-proxy` | `local` |
 | `MCP1C_PUBLIC_BASE_URL` | явный HTTP(S) origin для скачивания полного модуля; без значения ссылка не выдаётся | пусто |
-| `MCP1C_CAPABILITIES` | bootstrap внутренних модулей, только пока нет `data/server-settings.json` | `off` |
 | `MCP1C_ALLOW_SELF_RESTART` | разрешить admin-дашборду завершить процесс для возврата внешним supervisor | Compose: `1`; bare-запуск: выключено |
 
 Прежнее значение `spa` переименовано в `on`. У удалённого серверного
@@ -1543,9 +1541,7 @@ PYTHONPATH=src .venv/bin/python -m mcp1c.server \
 ошибки проверки до старта.
 
 Bare-запуск также принимает `MCP1C_DASHBOARD=on|off` (по умолчанию `on`),
-`MCP1C_ACCESS=local|http|https-proxy` (по умолчанию `local`) и
-`MCP1C_CAPABILITIES=off|forms|metadata_authoring|role_access` как bootstrap при отсутствии
-`data/server-settings.json` (по умолчанию `off`). Для прямого
+`MCP1C_ACCESS=local|http|https-proxy` (по умолчанию `local`). Для прямого
 сетевого HTTP передайте `--host 0.0.0.0` либо конкретный IP; переменная
 `MCP1C_BIND_ADDRESS` относится только к Compose. Флаг
 `--require-tokens` включает ту же строгую проверку `API_TOKEN` и `ADMIN_TOKEN`,
@@ -1599,7 +1595,7 @@ SSE, он не подключится.
 | `search_objects` | человеческая формулировка → точное имя объекта |
 | `search_procedures` | имя или назначение → точный адрес процедуры |
 | `get_procedure` | оглавление модуля или ограниченное тело процедуры |
-| `get_module_source_file` | ссылка и короткоживущий билет на gzip-файл полного исходника одного модуля |
+| `get_module_source_file` | условно: ссылка и короткоживущий билет на gzip-файл полного исходника одного модуля |
 | `get_callers` | места вызовов, подписки, задания, HTTP-методы и события форм |
 | `get_object` | поля, их доказанное происхождение, постраничные HTTP-endpoint и подсистемы с продолжением по `cursor`, XDTO-пакеты и типы, таблицы запроса, связи и кодовые сведения объекта |
 | `get_related` | непосредственные входящие и исходящие связи |
@@ -1724,17 +1720,20 @@ mcp-1c, а не загрузчик сторонних плагинов. Пост
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "capabilities": {
-    "enabled": ["forms"]
+    "enabled": ["module_source_download"]
   }
 }
 ```
 
-Отсутствующий файл означает, что сервер использует `MCP1C_CAPABILITIES` как
-bootstrap/fallback. Как только файл существует, он всегда важнее env; поэтому
-будущая настройка из дашборда не потребует постоянной правки Compose. Пустой
-массив сохраняет прежний каталог `tools/list` и не импортирует реализации.
+Если файла нет, сервер применяет встроенные начальные значения: все прежние
+модули выключены, а `module_source_download` включён. Дашборд сохраняет полный
+набор настроек в версии 2. В ней `module_source_download` — отдельный элемент
+массива `capabilities.enabled`; пустой массив выключает его. Существующий файл
+версии 1 продолжает включать скачивание полного модуля до сохранения настроек;
+при сохранении он переводится на версию 2. Пустой список прежних capability-
+модулей сохраняет основной каталог `tools/list` и не импортирует реализации.
 Capability `role_access` по умолчанию выключен: это только видимость
 `find_roles_for_access` и `get_role_access` в MCP-каталоге. Role layer и его
 индексы при этом всё равно строятся и сохраняются. Включение или выключение
@@ -1743,6 +1742,9 @@ Capability `role_access` по умолчанию выключен: это тол
 включённом `role_access` обе ручки остаются зарегистрированы и для A-only,
 где возвращают `unsupported_by_source`, и для B с состояниями
 `available`/`present_empty`/`load_error`.
+Цена `module_source_download` в `tools/list`: 1 инструмент, 2 744 байта
+и 466 токенов (`o200k_base`, 2026-09-26); воспроизведение:
+`.venv/bin/python tools/measure_capability_context.py module_source_download --check`.
 Цена `role_access` в `tools/list`: 2 инструмента, 7 170 байт и 1 245 токенов
 (`o200k_base`, 2026-09-22); воспроизведение:
 `.venv/bin/python tools/measure_capability_context.py role_access --check`.
@@ -2225,13 +2227,13 @@ uv run --no-project --python .venv/bin/python --with tiktoken==0.11.0 \
 сессии нет; отдельный тест фиксирует отсутствие и импорта реализации, и имён
 инструментов.
 
-Файл ограничен 64 КиБ, обязан быть обычным файлом с `version=1` и точной
-секцией `capabilities.enabled`; неизвестное имя, повтор или повреждённая схема
-fail-closed останавливают startup до создания Registry. Запись секции выполняется
-атомарной заменой и сохраняет другие серверные секции. Для env-bootstrap имена
-регистрозависимы и перечисляются через запятую без пробелов; пустое значение,
-пустой элемент, повтор, смесь `off` с именем и неизвестное имя также
-отклоняются.
+Файл ограничен 64 КиБ, обязан быть обычным файлом с версией 1 или 2 и точной
+схемой соответствующей версии; неизвестное имя, повтор или повреждённая схема
+fail-closed останавливают startup до создания Registry. Настройки сохраняются
+атомарной заменой и меняются через дашборд, а не через переменные окружения.
+При выключенном `module_source_download` после полного перезапуска из
+`tools/list` исчезает `get_module_source_file`, а HTTP-маршрут
+`GET /api/v1/modules/source` больше не регистрируется.
 
 Перед добавлением сервер проверяет весь набор имён против ядра, условных
 reference/role-tools и других модулей; частично зарегистрированный набор при
@@ -2266,9 +2268,7 @@ reference/role-tools и других модулей; частично зарег
 После изменения bind-mounted `server-settings.json` bare-процесс нужно полностью
 остановить и запустить заново; для Compose достаточно
 `docker compose restart mcp1c`, потому что новый Python-процесс перечитает файл.
-Изменение env-bootstrap имеет смысл только без server settings и требует
-`docker compose up -d --force-recreate`: обычный Compose restart не перечитывает
-`.env`. Управляемый dashboard restart выполняет тот же полный restart процесса.
+Управляемый dashboard restart выполняет тот же полный restart процесса.
 
 Синтетический замер 2026-09-12 на macOS/Python 3.12, по 10 отдельных запусков
 на пустом временном Registry и с `server-settings.json`, с чередованием первого

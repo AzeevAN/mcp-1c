@@ -26,6 +26,7 @@ TOKENIZER_VERSION = "0.11.0"
 ENCODING = "o200k_base"
 METHOD = "canonical tools/list delta: UTF-8 JSON, sort_keys, compact separators"
 MEASURED_AT = {
+    "module_source_download": "2026-09-26",
     "forms": "2026-09-20",
     "metadata_authoring": "2026-09-20",
     "reference": "2026-09-21",
@@ -97,6 +98,18 @@ def main() -> int:
 
     if args.capability not in CAPABILITY_DEFINITIONS:
         raise SystemExit(f"Неизвестный capability `{args.capability}`.")
+    if args.capability == "module_source_download":
+        if args.write:
+            raise SystemExit("У встроенного скачивания нет отдельного manifest.")
+        measured = measurement(args.capability)
+        definition = CAPABILITY_DEFINITIONS[args.capability]
+        if args.check and (
+            definition.tool_count != measured["tool_count"]
+            or definition.approx_tokens != measured["approx_tokens"]
+        ):
+            raise SystemExit("Capability definition не совпадает с tools/list delta.")
+        print(json.dumps(measured, ensure_ascii=False, indent=2))
+        return 0
     manifest_path = (
         ROOT / "src" / "mcp1c" / "capability_modules" / args.capability / "manifest.json"
     )

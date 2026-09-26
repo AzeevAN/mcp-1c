@@ -25,7 +25,6 @@ from mcp1c.capabilities import (
     CapabilityModule,
     CapabilityTool,
     load_capability_modules,
-    parse_capability_config,
     resolve_capability_settings,
 )
 from mcp1c.reference_provider import ReferenceService
@@ -71,7 +70,7 @@ def _server(tmp_path, *, enabled_capabilities=()):
     return build_server(
         Registry(tmp_path),
         reference=reference,
-        enabled_capabilities=enabled_capabilities,
+        enabled_capabilities=(*enabled_capabilities, "module_source_download"),
     )
 
 
@@ -111,8 +110,7 @@ def test_off_не_импортирует_и_не_инициализирует_с
         "canary": CapabilityDefinition("canary", f"{module_name}:load")
     }
 
-    names = parse_capability_config("off", definitions=definitions)
-    modules = load_capability_modules(names, definitions=definitions)
+    modules = load_capability_modules((), definitions=definitions)
 
     assert modules == ()
     assert module_name not in sys.modules
@@ -140,8 +138,7 @@ def test_enabled_импортирует_и_инициализирует_толь
         "canary": CapabilityDefinition("canary", f"{module_name}:load")
     }
 
-    names = parse_capability_config("canary", definitions=definitions)
-    modules = load_capability_modules(names, definitions=definitions)
+    modules = load_capability_modules(("canary",), definitions=definitions)
 
     assert modules == (CapabilityModule("canary", ()),)
     assert import_marker.read_text(encoding="utf-8") == "imported"
@@ -176,51 +173,50 @@ def test_loader_передаёт_модулю_только_его_явную_з�
     assert received.read_text(encoding="utf-8") == "registry-view"
 
 
-@pytest.mark.parametrize(
-    "value",
-    ("", "forms,", ",forms", " forms", "forms ",
-     "forms,forms", "off,forms", "FORMS"),
-)
-def test_некорректная_конфигурация_отклоняется(value):
-    with pytest.raises(CapabilityConfigurationError):
-        parse_capability_config(value)
-
-
-def test_неизвестный_модуль_отклоняется_до_import():
-    with pytest.raises(CapabilityConfigurationError, match="unknown"):
-        parse_capability_config("unknown")
-
-
-def test_удалённая_заглушка_diagnostics_не_входит_в_закрытый_каталог():
-    with pytest.raises(CapabilityConfigurationError, match="diagnostics"):
-        parse_capability_config("diagnostics")
-
-
-def test_main_отклоняет_неизвестный_модуль_до_registry(tmp_path, monkeypatch):
+def test_main_игнорирует_устаревшую_env_переменную(tmp_path, monkeypatch):
     monkeypatch.setenv("MCP1C_CAPABILITIES", "unknown")
+    captured = {}
+
+    class FakeRegistry:
+        configurations = [object()]
+
+        def __init__(self, data):
+            self.data = data
+
+        def startup(self):
+            return []
+
+        def snapshot(self):
+            return self
+
+    class FakeServer:
+        def run(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(server_module, "Registry", FakeRegistry)
     monkeypatch.setattr(
         server_module,
-        "Registry",
-        lambda data: pytest.fail("Registry не должен создаваться"),
+        "build_server",
+        lambda registry, **kwargs: (
+            captured.update(enabled=kwargs["enabled_capabilities"]) or FakeServer()
+        ),
     )
 
-    with pytest.raises(SystemExit) as error:
-        server_module.main(["--data", str(tmp_path), "--transport", "stdio"])
+    assert server_module.main(
+        ["--data", str(tmp_path), "--transport", "stdio"]
+    ) == 0
+    assert captured["enabled"] == ("module_source_download",)
 
-    assert error.value.code == 2
 
-
-def test_server_settings_важнее_env_и_переживают_restart(tmp_path):
+def test_server_settings_переживают_restart_независимо_от_env(tmp_path, monkeypatch):
     store = CapabilitySettingsStore(tmp_path / "data")
-    store.save(("forms",))
+    store.save(("forms", "module_source_download"))
+    monkeypatch.setenv("MCP1C_CAPABILITIES", "unknown")
 
-    resolved_store, enabled = resolve_capability_settings(
-        tmp_path / "data",
-        environment="unknown",
-    )
+    resolved_store, enabled = resolve_capability_settings(tmp_path / "data")
 
-    assert enabled == ("forms",)
-    assert resolved_store.load() == ("forms",)
+    assert enabled == ("module_source_download", "forms")
+    assert resolved_store.load() == ("module_source_download", "forms")
 
 
 def test_enable_и_disable_применяются_двумя_независимыми_startup(
@@ -240,7 +236,7 @@ from mcp1c.registry import Registry
 from mcp1c.server import build_server
 
 data = Path(sys.argv[1])
-store, enabled = resolve_capability_settings(data, environment="off")
+store, enabled = resolve_capability_settings(data)
 registry = Registry(data)
 registry.startup()
 server = build_server(
@@ -263,50 +259,105 @@ print(json.dumps([tool.name for tool in asyncio.run(server.list_tools())]))
         )
         return json.loads(result.stdout)
 
-    store.save(("forms",))
+    store.save(("forms", "module_source_download"))
     enabled_tools = startup_tools()
     store.save(())
     disabled_tools = startup_tools()
 
     assert enabled_tools == [*CORE_TOOLS, *FORMS_TOOLS]
-    assert disabled_tools == CORE_TOOLS
+    assert disabled_tools == [tool for tool in CORE_TOOLS if tool != "get_module_source_file"]
 
 
-def test_после_удаления_settings_status_снова_предсказывает_env_bootstrap(tmp_path):
+def test_после_удаления_settings_status_показывает_дефолт(tmp_path, monkeypatch):
     initial = CapabilitySettingsStore(tmp_path / "data")
     initial.save(("forms",))
-    store, active = resolve_capability_settings(
-        tmp_path / "data",
-        environment="forms",
-    )
+    monkeypatch.setenv("MCP1C_CAPABILITIES", "forms")
+    store, active = resolve_capability_settings(tmp_path / "data")
     runtime = CapabilityRuntime(store, active=active)
 
     store.path.unlink()
 
-    assert runtime.payload()["desired"] == ["forms"]
-    assert runtime.pending_restart() is False
+    assert runtime.payload()["desired"] == ["module_source_download"]
+    assert runtime.pending_restart() is True
 
 
-def test_env_служит_fallback_только_пока_server_settings_не_созданы(tmp_path):
-    store, enabled = resolve_capability_settings(
-        tmp_path / "data",
-        environment="forms",
-    )
+def test_без_server_settings_применяется_дефолт_независимо_от_env(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("MCP1C_CAPABILITIES", "forms")
+    store, enabled = resolve_capability_settings(tmp_path / "data")
     runtime = CapabilityRuntime(store, active=enabled)
 
-    assert enabled == ("forms",)
+    assert enabled == ("module_source_download",)
     assert store.path.exists() is False
     assert runtime.payload()["pending_restart"] is False
 
+
+def test_v1_settings_сохраняют_исторический_список_и_включают_скачивание(tmp_path):
+    store = CapabilitySettingsStore(tmp_path)
+    store.path.write_text(
+        '{"version":1,"capabilities":{"enabled":["forms"]}}',
+        encoding="utf-8",
+    )
+
+    assert store.load() == ("module_source_download", "forms")
+
+    store.save(("forms",))
+    saved = json.loads(store.path.read_text(encoding="utf-8"))
+    assert saved["version"] == 2
+    assert saved["capabilities"]["enabled"] == ["forms"]
+    assert store.load() == ("forms",)
+
+
+def test_v2_settings_позволяют_отключить_скачивание_при_пустом_списке(tmp_path):
+    store = CapabilitySettingsStore(tmp_path)
+    store.path.write_text(
+        '{"version":2,"capabilities":{"enabled":[]}}',
+        encoding="utf-8",
+    )
+
+    assert store.load() == ()
+
+
+def test_dashboard_показывает_сохранённое_отключение_до_restart(tmp_path):
+    store = CapabilitySettingsStore(tmp_path)
+    store.save(("module_source_download",))
+    runtime = CapabilityRuntime(store, active=store.load())
+
+    payload = runtime.save_desired(())
+    download = next(
+        module for module in payload["modules"]
+        if module["id"] == "module_source_download"
+    )
+
+    assert payload["active"] == ["module_source_download"]
+    assert payload["desired"] == []
+    assert payload["pending_restart"] is True
+    assert download["active"] is True
+    assert download["desired"] is False
+    assert download["pending_restart"] is True
+    restarted = CapabilityRuntime(store, active=store.load()).payload()
+    assert restarted["pending_restart"] is False
+    assert restarted["active"] == []
+
+
+def test_status_показывает_выбор_до_restart(tmp_path):
+    store = CapabilitySettingsStore(tmp_path)
+    store.save(("forms", "module_source_download"))
+    runtime = CapabilityRuntime(store, active=store.load())
     store.save(())
 
     payload = runtime.payload()
-    assert payload["available"] == ["reference", "forms", "metadata_authoring", "role_access"]
-    assert payload["active"] == ["forms"]
+    assert payload["available"] == [
+        "module_source_download", "reference", "forms",
+        "metadata_authoring", "role_access",
+    ]
+    assert payload["active"] == ["module_source_download", "forms"]
     assert payload["desired"] == []
     assert payload["pending_restart"] is True
     assert {module["id"] for module in payload["modules"]} == {
-        "reference", "forms", "metadata_authoring", "role_access"
+        "module_source_download", "reference", "forms",
+        "metadata_authoring", "role_access",
     }
 
 
@@ -336,7 +387,7 @@ def test_повреждённые_server_settings_отклоняются_до_re
     "payload",
     (
         {},
-        {"version": 2, "capabilities": {"enabled": []}},
+        {"version": 3, "capabilities": {"enabled": []}},
         {"version": True, "capabilities": {"enabled": []}},
         {"version": 1.0, "capabilities": {"enabled": []}},
         {"version": 1},
@@ -465,6 +516,7 @@ def test_save_атомарно_заменяет_секцию_и_сохраняе
 
     payload = json.loads(store.path.read_text(encoding="utf-8"))
     assert payload["future"] == {"kept": True}
+    assert payload["version"] == 2
     assert payload["capabilities"] == {"enabled": ["forms"]}
     assert os.stat(store.path).st_mode & 0o777 == 0o600
 
@@ -553,7 +605,7 @@ def test_main_передаёт_capability_в_оба_транспорта(
     assert server_module.main(
         ["--data", str(tmp_path), "--transport", transport]
     ) == 0
-    assert captured["enabled"] == ("forms",)
+    assert captured["enabled"] == ("module_source_download",)
     assert ("run" in captured) is (transport == "stdio")
     assert ("http" in captured) is (transport == "streamable-http")
 
@@ -857,7 +909,7 @@ def test_ошибка_добавления_откатывает_весь_наб�
     assert _names(server) == CORE_TOOLS
 
 
-def test_public_startup_документирует_settings_и_bootstrap_env():
+def test_public_startup_документирует_settings_без_bootstrap_env():
     root = Path(__file__).resolve().parents[1]
     compose = (root / "compose.yaml").read_text(encoding="utf-8")
     example = (root / ".env.example").read_text(encoding="utf-8")
@@ -865,9 +917,9 @@ def test_public_startup_документирует_settings_и_bootstrap_env():
     tools_doc = (root / "docs" / "tools.md").read_text(encoding="utf-8")
     operations = (root / "docs" / "operations.md").read_text(encoding="utf-8")
 
-    assert "MCP1C_CAPABILITIES: ${MCP1C_CAPABILITIES-off}" in compose
-    assert "MCP1C_CAPABILITIES=off" in example
-    assert "`MCP1C_CAPABILITIES`" in readme
+    assert "MCP1C_CAPABILITIES" not in compose
+    assert "MCP1C_CAPABILITIES" not in example
+    assert "MCP1C_CAPABILITIES" not in readme
     assert "`data/server-settings.json`" in readme
     assert "`PUT /api/v1/capabilities`" in readme
     assert "«Дополнительные модули»" in readme
@@ -878,4 +930,6 @@ def test_public_startup_документирует_settings_и_bootstrap_env():
     assert "`PUT` того же admin-" in tools_doc
     assert "`data/server-settings.json`" in operations
     assert "`PUT /api/v1/capabilities`" in operations
-    assert '"capabilities":{"enabled":["forms"]}' in operations
+    assert "schema v2" in operations
+    assert "module_source_download" in operations
+    assert "capabilities.enabled" in operations

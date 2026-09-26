@@ -18,8 +18,8 @@ with tempfile.TemporaryDirectory() as directory:
     mode = os.environ["MCP1C_CAPABILITY_BENCH_MODE"]
     with open(os.path.join(directory, "server-settings.json"), "w") as stream:
         json.dump({
-            "version": 1,
-            "capabilities": {"enabled": [] if mode == "off" else [mode]},
+            "version": 2,
+            "capabilities": {"enabled": ["module_source_download"] if mode == "off" else ["module_source_download", mode]},
         }, stream)
     started = time.perf_counter()
     from mcp1c.capabilities import CapabilityRuntime, resolve_capability_settings
@@ -29,7 +29,7 @@ with tempfile.TemporaryDirectory() as directory:
     registry = Registry(directory)
     registry.startup()
     reference = ReferenceService.discover(directory / "missing-reference")
-    store, names = resolve_capability_settings(directory, environment="unknown")
+    store, names = resolve_capability_settings(directory)
     build_server(
         registry,
         reference=reference,

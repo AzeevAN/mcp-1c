@@ -42,8 +42,6 @@ services:
       MCP1C_ACCESS: ${MCP1C_ACCESS:-local}
       # Публичный origin для выдачи ссылки на gzip-файл полного модуля.
       MCP1C_PUBLIC_BASE_URL: ${MCP1C_PUBLIC_BASE_URL:-}
-      # Bootstrap до появления /data/server-settings.json; затем файл главнее.
-      MCP1C_CAPABILITIES: ${MCP1C_CAPABILITIES-off}
       MCP1C_ALLOW_SELF_RESTART: ${MCP1C_ALLOW_SELF_RESTART:-1}
     logging:
       driver: json-file

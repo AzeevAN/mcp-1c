@@ -699,9 +699,12 @@ INSTRUCTIONS = f"""
 выгрузки конфигурации в файлы; `search_procedures` ищет по её процедурам, но не
 по значениям документов, справочников и регистров. `get_procedure` читает
 тело только по точному адресу и ограничивает его окном до 200 строк.
-Если нужен контекст всего точного модуля, `get_module_source_file` выдаёт
-короткоживущую ссылку на gzip-файл исходника при настроенном публичном адресе.
 """.strip()
+
+MODULE_DOWNLOAD_INSTRUCTION = (
+    "Если нужен контекст всего точного модуля, `get_module_source_file` выдаёт "
+    "короткоживущую ссылку на gzip-файл исходника при настроенном публичном адресе."
+)
 
 
 def build_server(
@@ -710,13 +713,15 @@ def build_server(
     *,
     reference: ReferenceService | None = None,
     restart: RestartController | None = None,
-    enabled_capabilities: tuple[str, ...] = (),
+    enabled_capabilities: tuple[str, ...] | None = None,
     capability_runtime: CapabilityRuntime | None = None,
 ) -> MCP1CServer:
     if reference is None:
         reference = ReferenceService.discover(registry.data_dir)
     if restart is None:
         restart = RestartController(enabled=False)
+    if enabled_capabilities is None:
+        enabled_capabilities = CapabilitySettingsStore(registry.data_dir).load()
     if capability_runtime is None:
         capability_runtime = CapabilityRuntime(
             CapabilitySettingsStore(
@@ -732,7 +737,10 @@ def build_server(
     server = MCP1CServer(
         name=name,
         title="Структура конфигураций 1С",
-        instructions=INSTRUCTIONS,
+        instructions=(
+            INSTRUCTIONS + "\n\n" + MODULE_DOWNLOAD_INSTRUCTION
+            if "module_source_download" in enabled_capabilities else INSTRUCTIONS
+        ),
         version=__version__,
     )
     download_tickets = ModuleDownloadTickets()
@@ -868,8 +876,7 @@ def build_server(
             registry, address, config, extension, start_line, lines
         )
 
-    @server.tool(
-        description=(
+    module_source_tool_description = (
             "Выдать ссылку на полный исходный текст одного точного модуля BSL "
             "из загруженной конфигурации как gzip-файл. Используйте, когда "
             "нужен контекст всего модуля, в том числе без локальной выгрузки; "
@@ -884,7 +891,6 @@ def build_server(
             "URL не содержит секретов; билет действует только для этого "
             "модуля и текущего поколения. Для скачивания клиенту нужен HTTP "
             "доступ к серверу помимо MCP. Максимум 16 МиБ исходного текста."
-        )
     )
     @_expected_registry_errors
     def get_module_source_file(
@@ -930,6 +936,9 @@ def build_server(
                 "укажите HTTP-статус, фактические размер и SHA-256, совпадение."
             ),
         }, ensure_ascii=False)
+
+    if "module_source_download" in enabled_capabilities:
+        server.tool(description=module_source_tool_description)(get_module_source_file)
 
     @server.tool(
         description=(
@@ -1427,7 +1436,6 @@ def _add_http_routes(
             }
         )
 
-    @server.custom_route(DOWNLOAD_PATH, methods=["GET"])
     async def download_module_source(request: Request) -> Response:
         try:
             claims = download_tickets.verify(request.headers.get(TICKET_HEADER, ""))
@@ -1457,6 +1465,9 @@ def _add_http_routes(
                 "X-Content-Size": str(source.size_bytes),
             },
         )
+
+    if "module_source_download" in capabilities.active:
+        server.custom_route(DOWNLOAD_PATH, methods=["GET"])(download_module_source)
 
     # Дашборд монтируется тем же способом: `custom_route` — декоратор с
     # сигнатурой (path, methods, name), регистрирует по одному маршруту.
@@ -1599,7 +1610,6 @@ def main(argv: list[str] | None = None) -> int:
     try:
         capability_store, enabled_capabilities = resolve_capability_settings(
             args.data,
-            environment=os.environ.get("MCP1C_CAPABILITIES"),
         )
         access = access_mode()
         if args.require_tokens:

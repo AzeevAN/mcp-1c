@@ -351,29 +351,32 @@ PYTHONPATH=src .venv/bin/python -m mcp1c.server \
 конкретный IP; Compose вместо этого использует `MCP1C_BIND_ADDRESS`.
 
 Постоянный desired-набор внутренних модулей хранит
-`data/server-settings.json`, schema v1:
+`data/server-settings.json`, schema v2:
 
 ```json
-{"version":1,"capabilities":{"enabled":["forms"]}}
+{"version":2,"capabilities":{"enabled":["module_source_download"]}}
 ```
 
-Пустой `enabled` сохраняет основной каталог инструментов. Пока файла нет,
-`MCP1C_CAPABILITIES=off|forms` используется только как bootstrap;
-существующий файл всегда важнее env. Файл ограничен 64 КиБ, читается до
-Registry и при повреждении останавливает startup. `GET /api/v1/capabilities`
-для администратора показывает available/active/desired и `pending_restart`.
+Если файла нет, сервер применяет встроенные значения: прежние модули выключены,
+`module_source_download` включён. Файл schema v1 читается для совместимости и
+до первого сохранения подразумевает включённое скачивание полного модуля;
+сохранение из дашборда переводит его на schema v2. В v2 все переключатели
+хранятся полным массивом `capabilities.enabled`; пустой массив выключает
+`module_source_download` и сохраняет только основной каталог инструментов.
+Файл ограничен 64 КиБ, читается до Registry и при повреждении останавливает
+startup. `GET /api/v1/capabilities` для администратора показывает
+available/active/desired и `pending_restart`.
 `PUT /api/v1/capabilities` требует admin и same-origin для cookie-сессии,
 принимает полный `enabled`-массив и атомарно заменяет только capability-
 секцию. Тот же поток доступен в дашборде на экране «Дополнительные модули».
 После успешного `replace` новая версия считается применённой; если последующий
 durability-барьер каталога недоступен, сервер пишет предупреждение, но не
 возвращает ложный отказ при уже изменившемся файле.
-Состав tools меняется только после полного restart; само сохранение не отправляет
-`tools/list_changed`.
+Состав tools и наличие `GET /api/v1/modules/source` меняются только после
+полного restart; выключение убирает `get_module_source_file` из `tools/list` и
+снимает HTTP-маршрут. Само сохранение не отправляет `tools/list_changed`.
 После изменения bind-mounted файла bare-процесс останавливают и запускают
-заново; для Compose достаточно `docker compose restart mcp1c`. Если файла ещё
-нет и меняется именно env-bootstrap, нужен
-`docker compose up -d --force-recreate`: простой restart не перечитывает `.env`.
+заново; для Compose достаточно `docker compose restart mcp1c`.
 
 ## Источники данных
 

@@ -64,7 +64,10 @@ def test_status_различает_active_desired_и_pending_restart(tmp_path, m
 
     assert status.status_code == 200
     payload = status.json()
-    assert payload["available"] == ["reference", "forms", "metadata_authoring", "role_access"]
+    assert payload["available"] == [
+        "module_source_download", "reference", "forms",
+        "metadata_authoring", "role_access",
+    ]
     assert payload["active"] == []
     assert payload["desired"] == ["forms"]
     assert payload["pending_restart"] is True
@@ -125,13 +128,16 @@ def test_mutation_сохраняет_desired_и_возвращает_status(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["available"] == ["reference", "forms", "metadata_authoring", "role_access"]
+    assert payload["available"] == [
+        "module_source_download", "reference", "forms",
+        "metadata_authoring", "role_access",
+    ]
     assert payload["active"] == []
     assert payload["desired"] == ["forms"]
     assert payload["pending_restart"] is True
     assert payload["runtime"] == {"self_restart": True}
     assert json.loads(store.path.read_text(encoding="utf-8")) == {
-        "version": 1,
+        "version": 2,
         "capabilities": {"enabled": ["forms"]},
     }
     assert os.stat(store.path).st_mode & 0o777 == 0o600

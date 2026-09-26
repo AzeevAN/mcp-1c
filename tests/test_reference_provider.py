@@ -46,7 +46,7 @@ def test_reference_включен_публикует_ровно_две_ручк�
         enabled_capabilities=("reference",),
     ))
     assert names[-2:] == ["search_reference", "get_reference"]
-    assert len(names) == 14
+    assert len(names) == 13
     assert service.status.signature == "ed25519"
 
 

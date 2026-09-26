@@ -17,15 +17,12 @@ import re
 import stat
 import threading
 import uuid
-from typing import Final
 
 
-CAPABILITIES_ENV = "MCP1C_CAPABILITIES"
 SERVER_SETTINGS_NAME = "server-settings.json"
-SERVER_SETTINGS_VERSION = 1
+SERVER_SETTINGS_VERSION = 2
 MAX_SERVER_SETTINGS_BYTES = 64 * 1024
 _NAME_PATTERN = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
-_NO_ENV_FALLBACK: Final = object()
 logger = logging.getLogger(__name__)
 
 
@@ -42,7 +39,7 @@ class CapabilityDefinition:
     """Имя настройки и закрытый import path фабрики внутреннего модуля."""
 
     name: str
-    loader: str
+    loader: str | None
     display_name: str = ""
     description: str = ""
     tool_count: int | None = None
@@ -50,6 +47,7 @@ class CapabilityDefinition:
     tokenizer: str | None = None
     measured_at: str | None = None
     measurement_command: str | None = None
+    default_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -70,6 +68,15 @@ class CapabilityModule:
 
 
 CAPABILITY_DEFINITIONS: Mapping[str, CapabilityDefinition] = {
+    "module_source_download": CapabilityDefinition(
+        "module_source_download",
+        None,
+        "Скачивание полного модуля",
+        "Добавляет инструмент для получения полного исходника точного модуля BSL через краткоживущий билет и HTTP-ссылку.",
+        1, 466, "o200k_base", "2026-09-26",
+        "tools/measure_capability_context.py module_source_download --check",
+        default_enabled=True,
+    ),
     "reference": CapabilityDefinition(
         "reference",
         "mcp1c.capability_modules.reference:load",
@@ -167,18 +174,19 @@ class CapabilitySettingsStore:
         self,
         data_dir: str | Path,
         *,
-        fallback: tuple[str, ...] = (),
-        fallback_environment: str | None | object = _NO_ENV_FALLBACK,
+        fallback: tuple[str, ...] | None = None,
         definitions: Mapping[str, CapabilityDefinition] = CAPABILITY_DEFINITIONS,
     ) -> None:
         self.path = Path(data_dir) / SERVER_SETTINGS_NAME
         self.definitions = definitions
         self.fallback = _normalize_names(
-            list(fallback),
+            list(fallback if fallback is not None else (
+                name for name, definition in definitions.items()
+                if definition.default_enabled
+            )),
             source="capability fallback",
             definitions=definitions,
         )
-        self.fallback_environment = fallback_environment
         self._lock = threading.RLock()
 
     def normalize(self, enabled: object) -> tuple[str, ...]:
@@ -235,7 +243,7 @@ class CapabilitySettingsStore:
         if (
             not isinstance(payload, dict)
             or type(payload.get("version")) is not int
-            or payload["version"] != SERVER_SETTINGS_VERSION
+            or payload["version"] not in (1, SERVER_SETTINGS_VERSION)
         ):
             raise CapabilityConfigurationError(
                 f"{self.path}: неподдерживаемый формат server settings."
@@ -258,22 +266,25 @@ class CapabilitySettingsStore:
             payload = self._read_payload()
             if payload is None:
                 return None
+            enabled = payload["capabilities"]["enabled"]
+            if payload["version"] == 1:
+                # В старом формате переключателя скачивания не было: оно
+                # было включено всегда, поэтому сохраняем это поведение.
+                enabled = [*enabled, "module_source_download"] if (
+                    "module_source_download" in self.definitions
+                    and "module_source_download" not in enabled
+                ) else enabled
             return _normalize_names(
-                payload["capabilities"]["enabled"],
+                enabled,
                 source=str(self.path),
                 definitions=self.definitions,
             )
 
     def load(self) -> tuple[str, ...]:
-        """Прочитать desired-набор; fallback действует только без файла."""
+        """Прочитать desired-набор; defaults действуют только без файла."""
         stored = self.load_optional()
         if stored is not None:
             return stored
-        if self.fallback_environment is not _NO_ENV_FALLBACK:
-            return parse_capability_config(
-                self.fallback_environment,
-                definitions=self.definitions,
-            )
         return self.fallback
 
     def save(self, enabled: tuple[str, ...]) -> tuple[str, ...]:
@@ -283,6 +294,7 @@ class CapabilitySettingsStore:
             payload = self._read_payload()
             if payload is None:
                 payload = {"version": SERVER_SETTINGS_VERSION}
+            payload["version"] = SERVER_SETTINGS_VERSION
             payload["capabilities"] = {"enabled": list(normalized)}
             encoded = (
                 json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
@@ -385,64 +397,14 @@ class CapabilityRuntime:
 def resolve_capability_settings(
     data_dir: str | Path,
     *,
-    environment: str | None,
     definitions: Mapping[str, CapabilityDefinition] = CAPABILITY_DEFINITIONS,
 ) -> tuple[CapabilitySettingsStore, tuple[str, ...]]:
-    """Выбрать file-first startup config, сохранив env лишь как bootstrap."""
+    """Выбрать сохранённый набор или встроенные значения по умолчанию."""
     stored = CapabilitySettingsStore(
         data_dir,
-        fallback_environment=environment,
         definitions=definitions,
     )
-    selected = stored.load_optional()
-    if selected is not None:
-        return stored, selected
-    fallback = stored.load()
-    return stored, fallback
-
-
-def parse_capability_config(
-    value: str | None,
-    *,
-    definitions: Mapping[str, CapabilityDefinition] = CAPABILITY_DEFINITIONS,
-) -> tuple[str, ...]:
-    """Разобрать точные имена без импорта реализаций.
-
-    Отсутствующая переменная и буквальное ``off`` означают пустой набор.
-    Пустая строка, пробелы, повторы, смесь ``off`` с именем и неизвестные
-    значения отклоняются: неоднозначная настройка не должна частично включать
-    сервер.
-    """
-    if value is None or value == "off":
-        return ()
-    if not value or len(value) > 1024:
-        raise CapabilityConfigurationError(
-            f"{CAPABILITIES_ENV}: укажите `off` или точные имена модулей."
-        )
-
-    requested = value.split(",")
-    if any(not item or item != item.strip() for item in requested):
-        raise CapabilityConfigurationError(
-            f"{CAPABILITIES_ENV}: пустые элементы и пробелы недопустимы."
-        )
-    if "off" in requested:
-        raise CapabilityConfigurationError(
-            f"{CAPABILITIES_ENV}: `off` нельзя сочетать с именами модулей."
-        )
-    if len(set(requested)) != len(requested):
-        raise CapabilityConfigurationError(
-            f"{CAPABILITIES_ENV}: имя модуля нельзя повторять."
-        )
-
-    unknown = [name for name in requested if name not in definitions]
-    if unknown:
-        joined = ", ".join(f"`{name}`" for name in unknown)
-        raise CapabilityConfigurationError(
-            f"{CAPABILITIES_ENV}: неизвестные capability-модули: {joined}."
-        )
-
-    # Порядок tools/list задаёт код, а не порядок имён в окружении.
-    return tuple(name for name in definitions if name in requested)
+    return stored, stored.load()
 
 
 def _load_factory(definition: CapabilityDefinition) -> Callable[[], object]:
@@ -478,8 +440,12 @@ def load_capability_modules(
         definition = definitions.get(name)
         if definition is None:
             raise CapabilityConfigurationError(
-                f"{CAPABILITIES_ENV}: неизвестный capability-модуль `{name}`."
+                f"Неизвестный capability-модуль `{name}`."
             )
+        if definition.loader is None:
+            # Встроенная функция регистрирует инструмент и HTTP-маршрут
+            # вместе в server.py, но участвует в общем выборе dashboard.
+            continue
         factory = _load_factory(definition)
         try:
             raw_tools = (

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import gzip
 import json
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +25,8 @@ from .syntax_model import (
     SyntaxFacts,
     SyntaxIndex,
     SyntaxItem,
+    SyntaxLink,
+    SyntaxLinkSnapshot,
     SyntaxParam,
     SyntaxVariant,
 )
@@ -62,7 +64,7 @@ def _read(path: Path) -> dict[str, Any]:
 
 
 def save_syntax(index: SyntaxIndex, path: str | Path) -> Path:
-    payload = {
+    header = {
         "store_version": STORE_VERSION,
         "kind": "syntax",
         "platforms": index.platforms,
@@ -72,11 +74,35 @@ def save_syntax(index: SyntaxIndex, path: str | Path) -> Path:
         # Не сохранив это, после перезапуска сервер поднимет тот же индекс
         # из файла, и справка будет выглядеть целой.
         "warnings": index.warnings,
-        "items": [asdict(item) for item in index.items.values()],
     }
     target = Path(path)
-    _write(target, payload)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    # asdict всего индекса одновременно держал в памяти вторую копию всех
+    # страниц и ссылок. Пишем тот же JSON по одной карточке, сохраняя формат.
+    with gzip.open(tmp, "wt", encoding="utf-8", compresslevel=6) as stream:
+        stream.write(json.dumps(header, ensure_ascii=False, separators=(",", ":"))[:-1])
+        stream.write(',"items":[')
+        for number, item in enumerate(index.items.values()):
+            if number:
+                stream.write(",")
+            json.dump(_item_to_dict(item), stream, ensure_ascii=False, separators=(",", ":"))
+        stream.write("]}")
+    tmp.replace(target)
     return target
+
+
+def _item_to_dict(item: SyntaxItem) -> dict[str, Any]:
+    """Ссылки пишем компактно, не создавая для каждой четыре словарных поля."""
+    raw = asdict(replace(item, link_snapshots=[]))
+    raw["link_snapshots"] = [
+        [snapshot.platform, snapshot.source_id, [
+            [link.section, link.label, link.href, link.target_id]
+            for link in snapshot.links
+        ]]
+        for snapshot in item.link_snapshots
+    ]
+    return raw
 
 
 def load_syntax(path: str | Path) -> SyntaxIndex:
@@ -120,6 +146,20 @@ def _item_from_dict(raw: dict[str, Any]) -> SyntaxItem:
         )
         for f in raw.get("older") or []
     ]
+    snapshots = []
+    for snapshot in raw.get("link_snapshots") or []:
+        if isinstance(snapshot, dict):
+            platform = snapshot.get("platform", "")
+            source_id = snapshot.get("source_id", "")
+            links = snapshot.get("links") or []
+        else:
+            platform, source_id, links = snapshot
+        snapshots.append(SyntaxLinkSnapshot(
+            platform=platform,
+            source_id=source_id,
+            links=[SyntaxLink(**link) if isinstance(link, dict) else SyntaxLink(*link)
+                   for link in links],
+        ))
     return SyntaxItem(
         id=raw["id"],
         kind=raw["kind"],
@@ -136,6 +176,8 @@ def _item_from_dict(raw: dict[str, Any]) -> SyntaxItem:
         examples=list(raw.get("examples") or []),
         see_also=list(raw.get("see_also") or []),
         members={k: list(v) for k, v in (raw.get("members") or {}).items()},
+        link_snapshots=snapshots,
+        empty_link_mask=raw.get("empty_link_mask", 0),
         values=list(raw.get("values") or []),
         readonly=raw.get("readonly"),
         note=raw.get("note", ""),

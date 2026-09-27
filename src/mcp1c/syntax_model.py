@@ -117,6 +117,25 @@ class SyntaxFacts:
 
 
 @dataclass(slots=True)
+class SyntaxLink:
+    """Подпись и адрес одной ссылки в исходной странице справки."""
+
+    section: str
+    label: str
+    href: str
+    target_id: str = ""
+
+
+@dataclass(slots=True)
+class SyntaxLinkSnapshot:
+    """Ссылки именно одной страницы одной версии справки."""
+
+    platform: str
+    source_id: str
+    links: list[SyntaxLink] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class SyntaxItem:
     id: str
     kind: str
@@ -140,6 +159,12 @@ class SyntaxItem:
     values: list[str] = field(default_factory=list)
     readonly: bool | None = None
     note: str = ""
+    # [] у старого индекса означает, что ссылки не собирались; снимок с []
+    # означает, что страницу разобрали и ссылок в ней нет.
+    link_snapshots: list[SyntaxLinkSnapshot] = field(default_factory=list)
+    # Биты соответствуют SyntaxIndex.platforms. Пустые страницы встречаются
+    # часто, поэтому не держим для каждой отдельный объект снимка.
+    empty_link_mask: int = 0
 
     @property
     def full_ru(self) -> str:

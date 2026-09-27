@@ -15,7 +15,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from .syntax_model import SyntaxFacts, SyntaxIndex, SyntaxItem, parse_version
+from .syntax_links import target_page_id
+from .syntax_model import SyntaxFacts, SyntaxIndex, SyntaxItem, SyntaxLinkSnapshot, parse_version
 
 
 # Владельцы, у которых между версиями сменились оба имени сразу — русское и
@@ -97,11 +98,29 @@ def merge_syntax(indexes: list[SyntaxIndex]) -> SyntaxIndex:
         source=base.source,
         language=base.language,
     )
+    merged_positions = {platform: position for position, platform in enumerate(merged.platforms)}
+    base_bit_positions = [merged_positions.get(platform) for platform in base.platforms]
     # Копии, а не сами элементы: разобранные справки версий реестр держит и
     # пересобирает слитый вид при каждой загрузке. Правка на месте удвоила бы
     # факты на втором слиянии и испортила бы исходную справку.
     for item in base.items.values():
-        merged.add(_copy(item))
+        merged.add(_copy(
+            item,
+            link_snapshots=[],
+            empty_link_mask=_remap_empty_mask(item.empty_link_mask, base_bit_positions),
+        ))
+    if len(base.platforms) == 1:
+        base_ids = {item_id: item_id for item_id in base.items}
+        base_page_ids = set(base.items)
+        for item in base.items.values():
+            merged.items[item.id].link_snapshots = _translated_snapshots(
+                item, base, base_ids, base_page_ids
+            )
+    else:
+        # При последовательном слиянии слитая база уже содержит точные ID.
+        # Снимки не меняются, поэтому не копируем все связи при каждом шаге.
+        for item in base.items.values():
+            merged.items[item.id].link_snapshots = list(item.link_snapshots)
 
     # От свежих справок к старым: элемент, выпавший из базовой, описывается по
     # самой свежей справке, где он ещё был, а расхождения более старых
@@ -118,10 +137,14 @@ def merge_syntax(indexes: list[SyntaxIndex]) -> SyntaxIndex:
 
     for index in ordered[-2::-1]:
         platform = index.max_platform
+        bit_positions = [merged_positions.get(version) for version in index.platforms]
         # Внутри одной справки одинаковый ключ встречается у разных страниц —
         # 176 таких ключей в 8.3.5, это поля таблиц запросов. Схлопывать их
         # между собой нельзя: они описывают разные поля.
         claimed: set[tuple[str, str, str]] = set()
+        source_to_merged: dict[str, str] = {}
+        matched: list[tuple[SyntaxItem, SyntaxItem]] = []
+        page_ids = set(index.items) if len(index.platforms) == 1 else set()
         for item in index.items.values():
             key_en = _key_en(item)
             current = _same_element(known_id.get(item.id), item)
@@ -131,23 +154,84 @@ def merge_syntax(indexes: list[SyntaxIndex]) -> SyntaxIndex:
                     current = known_en.get(key_en)
             claimed.add(_key(item))
             if current is None:
-                copy = _copy(item, id=_free_id(merged, item.id, platform), until=platform)
+                copy = _copy(
+                    item,
+                    id=_free_id(merged, item.id, platform),
+                    until=platform,
+                    link_snapshots=[],
+                    empty_link_mask=_remap_empty_mask(item.empty_link_mask, bit_positions),
+                )
                 merged.add(copy)
                 known.setdefault(_key(copy), copy)
                 known_id.setdefault(copy.id, copy)
                 if key_en is not None:
                     known_en.setdefault(key_en, copy)
-                continue
-            facts = _difference(item, current, platform)
-            if facts is not None:
-                current.older.insert(0, facts)
+                current = copy
+            else:
+                facts = _difference(item, current, platform)
+                if facts is not None:
+                    current.older.insert(0, facts)
+                current.empty_link_mask |= _remap_empty_mask(item.empty_link_mask, bit_positions)
+            source_to_merged[item.id] = current.id
+            matched.append((item, current))
+
+        # Сначала сопоставить все страницы, затем их ссылки: цель может стоять
+        # в архиве после владельца и может получить ID с суффиксом версии.
+        for item, current in matched:
+            imported = _translated_snapshots(item, index, source_to_merged, page_ids)
+            existing = {snapshot.platform for snapshot in current.link_snapshots}
+            current.link_snapshots.extend(
+                snapshot for snapshot in imported if snapshot.platform not in existing
+            )
+            current.link_snapshots.sort(key=lambda snapshot: parse_version(snapshot.platform))
 
     return merged
 
 
 def _copy(item: SyntaxItem, **changes) -> SyntaxItem:
     """Копия элемента со своим списком версионных фактов."""
-    return replace(item, older=list(item.older), **changes)
+    fields = {"older": list(item.older), "link_snapshots": list(item.link_snapshots)}
+    fields.update(changes)
+    return replace(item, **fields)
+
+
+def _remap_empty_mask(mask: int, positions: list[int | None]) -> int:
+    """Перенести биты пустых страниц при изменении порядка версий."""
+    if not mask:
+        return 0
+    result = 0
+    for old_position, new_position in enumerate(positions):
+        if mask & (1 << old_position) and new_position is not None:
+            result |= 1 << new_position
+    return result
+
+
+def _translated_snapshots(
+    item: SyntaxItem,
+    source: SyntaxIndex,
+    id_map: dict[str, str],
+    page_ids: set[str],
+) -> list[SyntaxLinkSnapshot]:
+    """Перенести снимки связей в пространство ID слитого индекса."""
+    single_source = len(source.platforms) == 1
+    result: list[SyntaxLinkSnapshot] = []
+    for snapshot in item.link_snapshots:
+        links = []
+        for link in snapshot.links:
+            source_target = link.target_id
+            if not source_target and single_source:
+                source_target = target_page_id(
+                    snapshot.source_id or item.id, link.href, page_ids
+                )
+            links.append(replace(link, target_id=id_map.get(source_target, "")))
+        result.append(
+            replace(
+                snapshot,
+                platform=snapshot.platform or source.max_platform,
+                links=links,
+            )
+        )
+    return result
 
 
 def _same_element(candidate: SyntaxItem | None, item: SyntaxItem) -> SyntaxItem | None:

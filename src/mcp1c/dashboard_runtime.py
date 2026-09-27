@@ -431,11 +431,21 @@ def _card_payload(
     config: str,
     name: str,
     detail: str,
+    links_offset: int = 0,
 ) -> dict:
     """Карточка тем же вызовом и тем же Markdown-рендерером, что получает MCP."""
-    normalized_detail = detail if detail in DETAIL_LEVELS else "fields"
+    levels = [*DETAIL_LEVELS, "links"] if kind == "syntax" else list(DETAIL_LEVELS)
+    normalized_detail = detail if detail in levels else "fields"
     markdown = dashboard_backend._card_text(
-        registry, kind, config, name, normalized_detail
+        registry, kind, config, name, normalized_detail,
+        links_offset if kind == "syntax" and normalized_detail == "links" else 0,
+    )
+    navigation = (
+        dashboard_backend.tools.syntax_navigation_data(
+            registry, name, config or None,
+            links_offset if normalized_detail == "links" else 0,
+        )
+        if kind == "syntax" and normalized_detail in ("full", "links") else []
     )
     names = list(registry.snapshot().configuration_names)
     resolved_configuration = config or (names[0] if len(names) == 1 else "")
@@ -447,9 +457,10 @@ def _card_payload(
         "configuration_names": names,
         "configuration_required": kind == "object",
         "detail": normalized_detail,
-        "detail_levels": list(DETAIL_LEVELS),
+        "detail_levels": levels,
         "markdown": markdown,
         "html": dashboard_backend.render_markdown(markdown),
+        "navigation": navigation,
     }
 
 
@@ -878,8 +889,15 @@ def _spa_routes(
         config = request.query_params.get("config", "")
         name = request.query_params.get("name", "")
         detail = request.query_params.get("detail", "fields")
+        raw_offset = request.query_params.get("links_offset", "0")
         if not name.strip():
             return _json_error("Не указано имя карточки.", 422)
+        try:
+            links_offset = int(raw_offset)
+        except ValueError:
+            return _json_error("links_offset должен быть целым числом.", 422)
+        if links_offset < 0 or links_offset > 1_000_000:
+            return _json_error("links_offset вне допустимого диапазона.", 422)
         try:
             payload = await run_in_threadpool(
                 _card_payload,
@@ -888,6 +906,7 @@ def _spa_routes(
                 config=config,
                 name=name,
                 detail=detail,
+                links_offset=links_offset,
             )
         except RegistryError as error:
             return _json_error(str(error), 409)

@@ -4087,8 +4087,15 @@ def get_syntax(
     name: str,
     config: str | None = None,
     detail: str = FIELDS,
+    links_offset: int = 0,
 ) -> str:
     """Полное описание элемента платформы: сигнатура, параметры, доступность."""
+    if detail not in (*DETAIL_LEVELS, "links"):
+        raise RegistryError("Неизвестный уровень карточки синтаксиса.")
+    if links_offset < 0:
+        raise RegistryError("links_offset не может быть отрицательным.")
+    if links_offset and detail != "links":
+        raise RegistryError("links_offset используется только с detail=links.")
     context = _syntax_context(registry, config)
     keep = context.syntax_filter()
     wanted = name.strip().lower()
@@ -4135,6 +4142,13 @@ def get_syntax(
             + _notes_block(context)
         )
 
+    # По короткому имени находятся и чужие свойства с тем же именем. Если
+    # запрос совпал с полным публичным адресом, сначала показываем именно его;
+    # одноимённые варианты самого адреса по-прежнему выводим все.
+    addressed = [item for item in exact if item.address.casefold() == wanted]
+    if addressed:
+        exact = addressed
+
     if len(exact) > 1:
         addresses = {item.address.casefold() for item in exact}
         if len(addresses) == 1:
@@ -4153,7 +4167,14 @@ def get_syntax(
                     if context.platform
                     else None
                 )
-                rendered = render_syntax_item(item, detail, resolution).splitlines()
+                card = (
+                    f"# {item.address}\n"
+                    if detail == "links"
+                    else render_syntax_item(item, detail, resolution)
+                )
+                if detail in (FULL, "links"):
+                    card += _syntax_navigation(context, item, links_offset)
+                rendered = card.splitlines()
                 if rendered and rendered[0].startswith("# "):
                     rendered.pop(0)
                 while rendered and not rendered[0]:
@@ -4198,7 +4219,180 @@ def get_syntax(
         else None
     )
     return (
-        render_syntax_item(exact[0], detail, resolution)
+        (f"# {exact[0].address}\n" if detail == "links" else render_syntax_item(exact[0], detail, resolution))
+        + (_syntax_navigation(context, exact[0], links_offset) if detail in (FULL, "links") else "")
         + _отсечённые_однофамильцы(context, отсечённые, подробно=True)
         + _notes_block(context)
     )
+
+
+_SYNTAX_LINK_SECTIONS = {
+    "properties": "Свойства",
+    "methods": "Методы",
+    "events": "События",
+    "constructors": "Конструкторы",
+    "collection": "Элементы коллекции",
+    "see_also": "См. также",
+}
+
+
+_SYNTAX_LINK_PAGE_SIZE = 50
+
+
+def _syntax_navigation_page(context, item: SyntaxItem, offset: int) -> dict:
+    """Одна проверенная страница связей для MCP и дашборда."""
+    snapshots = item.link_snapshots
+    platforms = context.syntax.syntax.platforms
+    empty_versions = [
+        platform for position, platform in enumerate(platforms)
+        if item.empty_link_mask & (1 << position)
+    ]
+    if not snapshots and not empty_versions:
+        return {"state": "legacy", "items": [], "total": 0, "offset": offset,
+                "next_offset": None, "platform": ""}
+
+    if context.platform:
+        target_release = release(parse_version(context.platform))
+        snapshot = next(
+            (
+                entry for entry in snapshots
+                if release(parse_version(entry.platform)) == target_release
+            ),
+            None,
+        )
+        empty_platform = next(
+            (platform for platform in empty_versions
+             if release(parse_version(platform)) == target_release),
+            "",
+        )
+        if snapshot is None and not empty_platform:
+            return {"state": "unknown", "items": [], "total": 0, "offset": offset,
+                    "next_offset": None, "platform": ""}
+    else:
+        latest = max(
+            [entry.platform for entry in snapshots] + empty_versions,
+            key=parse_version,
+        )
+        snapshot = next((entry for entry in snapshots if entry.platform == latest), None)
+        empty_platform = latest
+
+    platform = snapshot.platform if snapshot else empty_platform
+    seen: set[tuple[str, str, str]] = set()
+    unique = []
+    for link in snapshot.links if snapshot else ():
+        # Одна цель бывает одновременно членом объекта и «См. также» с иной
+        # подписью. Убирать можно лишь повтор той же подписанной связи.
+        destination = f"id:{link.target_id}" if link.target_id else f"href:{link.href}"
+        dedupe_key = (link.section, " ".join(link.label.split()).casefold(), destination)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        unique.append(link)
+
+    entries = []
+    for link in unique[offset:offset + _SYNTAX_LINK_PAGE_SIZE]:
+        target = context.syntax.syntax.items.get(link.target_id) if link.target_id else None
+        label = " ".join(link.label.split()) or "Ссылка без подписи"
+        if target is None:
+            address, status = "", "unresolved"
+        elif context.platform and not target.available_in(context.platform):
+            address, status = "", "unavailable"
+        else:
+            matching = [
+                candidate for candidate in context.syntax.find_exact(target.address)
+                if not context.platform or candidate.available_in(context.platform)
+            ]
+            if len(matching) != 1 or matching[0].id != target.id:
+                address, status = "", "ambiguous"
+            else:
+                address, status = target.address, "ready"
+        entries.append({"section": link.section, "label": label,
+                        "address": address, "status": status,
+                        "target_name": target.name_ru if target else ""})
+    return {
+        "state": "known", "platform": platform, "items": entries,
+        "total": len(unique), "offset": offset,
+        "next_offset": offset + _SYNTAX_LINK_PAGE_SIZE
+        if offset + _SYNTAX_LINK_PAGE_SIZE < len(unique) else None,
+    }
+
+
+def _syntax_navigation(context, item: SyntaxItem, offset: int = 0) -> str:
+    """Текст навигации с явной границей ответа для крупной карточки."""
+    page = _syntax_navigation_page(context, item, offset)
+    if page["state"] == "legacy":
+        return (
+            "\n## Навигация\n\nСсылки не собирались при прежнем разборе справки. "
+            "Для навигации нужен повторный разбор исходной справки.\n"
+        )
+    if page["state"] == "unknown":
+        return (
+            "\n## Навигация\n\n"
+            f"Для платформы **{context.platform}** нет подтверждённого "
+            "состава ссылок этой карточки: справка её релиза не загружена "
+            "или в ней нет этой страницы. Используйте поиск по синтаксису.\n"
+        )
+
+    lines = [f"\n## Навигация — справка {page['platform']}", ""]
+    if not context.platform:
+        lines.extend(["Версия конфигурации не выбрана; доступность целей не проверена.", ""])
+
+    sections: dict[str, list[str]] = {}
+    for entry in page["items"]:
+        label = entry["label"]
+        if entry["status"] == "unresolved":
+            line = f"- {label} — цель не разрешена в исходной справке"
+        elif entry["status"] == "unavailable":
+            line = f"- {label} — недоступно в платформе {context.platform}"
+        elif entry["status"] == "ambiguous":
+            line = f"- {label} — публичный адрес неоднозначен"
+        else:
+            line = f"- `{entry['address']}`"
+            if label.casefold() != entry["target_name"].casefold():
+                line += f" — {label}"
+        sections.setdefault(entry["section"], []).append(line)
+
+    if not sections and page["total"] == 0:
+        lines.append("Ссылок в этой карточке нет.")
+    elif not sections:
+        lines.append("На этой странице связей нет.")
+    else:
+        for section, entries in sections.items():
+            lines.extend([f"### {_SYNTAX_LINK_SECTIONS.get(section, section)}", "", *entries, ""])
+        lines.append(
+            "Для перехода вызовите `get_syntax` с точным адресом из списка "
+            "и той же конфигурацией."
+        )
+    if page["total"] > _SYNTAX_LINK_PAGE_SIZE:
+        first = min(offset + 1, page["total"])
+        last = min(offset + len(page["items"]), page["total"])
+        lines.extend(["", f"Связи {first}–{last} из {page['total']}."])
+        if page["next_offset"] is not None:
+            lines.append(
+                "Следующая страница: вызовите `get_syntax` с тем же `name` и "
+                f"`config`, `detail=links`, `links_offset={page['next_offset']}`."
+            )
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def syntax_navigation_data(
+    registry: Registry, name: str, config: str | None = None, links_offset: int = 0
+) -> list[dict]:
+    """Структурированные проверенные переходы для карточки дашборда."""
+    context = _syntax_context(registry, config)
+    keep = context.syntax_filter()
+    exact = [item for item in context.syntax.find_exact(name.strip().lower()) if keep(item)]
+    addressed = [item for item in exact if item.address.casefold() == name.strip().casefold()]
+    if addressed:
+        exact = addressed
+    if len({item.address.casefold() for item in exact}) > 1:
+        return []
+    ordered = sorted(exact, key=lambda entry: (entry.kind, entry.id))
+    return [
+        {"variant": (
+            f"Вариант {position} из {len(ordered)} — "
+            if len(ordered) > 1 else ""
+         ) + KIND_TITLES.get(item.kind, item.kind),
+         **_syntax_navigation_page(context, item, links_offset)}
+        for position, item in enumerate(ordered, start=1)
+    ]

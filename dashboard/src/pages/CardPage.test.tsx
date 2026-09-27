@@ -165,3 +165,181 @@ it("показывает предметную ошибку API без потер
   expect(await screen.findByRole("alert")).toHaveTextContent("Справка платформы не подключена.");
   expect(screen.getByRole("link", { name: "К результатам запросов" })).toHaveAttribute("href", "/queries");
 });
+
+it("показывает ссылки синтаксиса отдельно от буквального ответа MCP и открывает точную карточку", async () => {
+  vi.mocked(fetch).mockResolvedValueOnce({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      ...objectCard,
+      kind: "syntax",
+      name: "Запрос",
+      configuration: "Демо",
+      configuration_names: ["Демо"],
+      detail: "full",
+      detail_levels: ["brief", "fields", "full", "links"],
+      markdown: "# Запрос\n\nБуквальный текст MCP",
+      html: "<h1>Запрос</h1><p>Буквальный текст MCP</p>",
+      navigation: [{
+        variant: "Запрос",
+        state: "known",
+        platform: "8.3.27.2130",
+        total: 3,
+        offset: 0,
+        next_offset: null,
+        items: [
+          { section: "methods", label: "Выполнить", address: "Запрос.Выполнить", status: "ready", target_name: "Выполнить" },
+          { section: "see_also", label: "Внешняя цель", address: "https://evil.invalid", status: "unresolved", target_name: "" },
+          { section: "methods", label: "Старый метод", address: "Запрос.СтарыйМетод", status: "unavailable", target_name: "СтарыйМетод" },
+        ],
+      }],
+    }),
+  } as Response);
+
+  render(
+    <MemoryRouter initialEntries={["/syntax?name=Запрос&config=Демо&detail=full"]}>
+      <QueryClientProvider client={client()}>
+        <Routes>
+          <Route path="/syntax" element={<><CardPage kind="syntax" /><LocationProbe /></>} />
+        </Routes>
+      </QueryClientProvider>
+    </MemoryRouter>,
+  );
+
+  expect(await screen.findByRole("heading", { name: "Связанные страницы справки" })).toBeInTheDocument();
+  expect(screen.getByText("Буквальный текст MCP")).toBeInTheDocument();
+  expect(screen.getAllByText("Методы:")).toHaveLength(2);
+  expect(screen.getByText("См. также:")).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Выполнить" })).toHaveAttribute("href", "/syntax?name=%D0%97%D0%B0%D0%BF%D1%80%D0%BE%D1%81.%D0%92%D1%8B%D0%BF%D0%BE%D0%BB%D0%BD%D0%B8%D1%82%D1%8C&detail=full&config=%D0%94%D0%B5%D0%BC%D0%BE");
+  expect(screen.queryByRole("link", { name: "Внешняя цель" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "Старый метод" })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Как есть" }));
+  expect(screen.getByText(/# Запрос/)).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Связанные страницы справки" })).toBeInTheDocument();
+});
+
+it("запрашивает страницы ссылок по offset и сбрасывает его при смене подробности", async () => {
+  vi.mocked(fetch).mockImplementation(async (input) => {
+    const url = new URL(String(input), "http://localhost");
+    const detail = url.searchParams.get("detail") || "fields";
+    const offset = Number(url.searchParams.get("links_offset") || "0");
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ...objectCard,
+        kind: "syntax",
+        name: "Глобальный контекст",
+        configuration: "",
+        configuration_names: [],
+        detail,
+        detail_levels: ["brief", "fields", "full", "links"],
+        navigation: [{
+          variant: "Глобальный контекст",
+          state: "known",
+          platform: "8.3.27.2130",
+          total: 120,
+          offset,
+          next_offset: offset < 100 ? offset + 50 : null,
+          items: [{ section: "methods", label: `Метод ${offset}`, address: `Метод${offset}`, status: "ready", target_name: `Метод${offset}` }],
+        }],
+      }),
+    } as Response;
+  });
+
+  render(
+    <MemoryRouter initialEntries={["/syntax?name=Глобальный+контекст&detail=links"]}>
+      <QueryClientProvider client={client()}>
+        <Routes><Route path="/syntax" element={<><CardPage kind="syntax" /><LocationProbe /></>} /></Routes>
+      </QueryClientProvider>
+    </MemoryRouter>,
+  );
+
+  expect(await screen.findByRole("link", { name: "Метод 0" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Далее" }));
+  expect(await screen.findByRole("link", { name: "Метод 50" })).toBeInTheDocument();
+  expect(vi.mocked(fetch)).toHaveBeenLastCalledWith(expect.stringContaining("links_offset=50"));
+  fireEvent.click(screen.getByRole("button", { name: "Назад" }));
+  expect(await screen.findByRole("link", { name: "Метод 0" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "full" }));
+  await waitFor(() => expect(screen.getByLabelText("Текущий адрес")).not.toHaveTextContent("links_offset"));
+});
+
+it("из полной карточки открывает следующую страницу ссылок одним переходом", async () => {
+  vi.mocked(fetch).mockImplementation(async (input) => {
+    const url = new URL(String(input), "http://localhost");
+    const detail = url.searchParams.get("detail") || "full";
+    const offset = Number(url.searchParams.get("links_offset") || "0");
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ...objectCard,
+        kind: "syntax",
+        name: "Глобальный контекст",
+        configuration: "Демо",
+        configuration_names: ["Демо"],
+        detail,
+        detail_levels: ["brief", "fields", "full", "links"],
+        navigation: [{
+          variant: "Глобальный контекст",
+          state: "known",
+          platform: "8.3.27.2130",
+          total: 70,
+          offset,
+          next_offset: offset === 0 ? 50 : null,
+          items: [{ section: "methods", label: `Метод ${offset}`, address: `Метод${offset}`, status: "ready", target_name: `Метод${offset}` }],
+        }],
+      }),
+    } as Response;
+  });
+
+  render(
+    <MemoryRouter initialEntries={["/syntax?name=Глобальный+контекст&config=Демо&detail=full"]}>
+      <QueryClientProvider client={client()}>
+        <Routes><Route path="/syntax" element={<><CardPage kind="syntax" /><LocationProbe /></>} /></Routes>
+      </QueryClientProvider>
+    </MemoryRouter>,
+  );
+
+  fireEvent.click(await screen.findByRole("button", { name: "Показать остальные ссылки" }));
+  expect(await screen.findByRole("link", { name: "Метод 50" })).toBeInTheDocument();
+  const lastRequest = new URL(String(vi.mocked(fetch).mock.lastCall?.[0]), "http://localhost");
+  expect(lastRequest.searchParams.get("detail")).toBe("links");
+  expect(lastRequest.searchParams.get("links_offset")).toBe("50");
+  expect(screen.getByLabelText("Текущий адрес")).toHaveTextContent("config=%D0%94%D0%B5%D0%BC%D0%BE");
+});
+
+it("пустая страница ссылок не показывает обратный диапазон", async () => {
+  vi.mocked(fetch).mockResolvedValueOnce({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      ...objectCard,
+      kind: "syntax",
+      configuration: "",
+      configuration_names: [],
+      detail: "links",
+      detail_levels: ["brief", "fields", "full", "links"],
+      navigation: [{
+        variant: "Глобальный контекст",
+        state: "known",
+        platform: "8.3.27.2130",
+        total: 70,
+        offset: 100,
+        next_offset: null,
+        items: [],
+      }],
+    }),
+  } as Response);
+
+  render(
+    <MemoryRouter initialEntries={["/syntax?name=Глобальный+контекст&detail=links&links_offset=100"]}>
+      <QueryClientProvider client={client()}><CardPage kind="syntax" /></QueryClientProvider>
+    </MemoryRouter>,
+  );
+
+  expect(await screen.findByText(/На этой странице ссылок нет/)).toBeInTheDocument();
+  expect(screen.queryByText(/Показаны 101/)).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Назад" })).toBeEnabled();
+});

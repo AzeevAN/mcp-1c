@@ -1,0 +1,39 @@
+.card-navigation {
+  border-top: 1px solid var(--border-color, #d9dce3);
+  padding: 1.5rem;
+}
+
+.card-navigation h2 {
+  margin: 0 0 1rem;
+  font-size: 1.1rem;
+}
+
+.card-navigation h3 {
+  margin: 1rem 0 0.35rem;
+  font-size: 1rem;
+}
+
+.card-navigation-group p {
+  margin: 0.35rem 0;
+}
+
+.card-navigation-group ul {
+  margin: 0.75rem 0;
+  padding-left: 1.5rem;
+  overflow-wrap: anywhere;
+}
+
+.card-navigation-group li {
+  margin: 0.4rem 0;
+}
+
+.card-navigation-section,
+.card-navigation-group small {
+  color: var(--text-muted, #5d6673);
+}
+
+.card-navigation-pages {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}

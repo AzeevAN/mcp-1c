@@ -570,10 +570,11 @@ def _card_text(
     config: str,
     name: str,
     detail: str,
+    links_offset: int = 0,
 ) -> str:
     """Буквальный текст карточки для MCP и JSON API SPA."""
     if kind == "syntax":
-        return tools.get_syntax(registry, name, config or None, detail)
+        return tools.get_syntax(registry, name, config or None, detail, links_offset)
     return tools.get_object(registry, name, config or None, detail)
 
 def _kind_title(scope: str, kind: str) -> str:

@@ -32,6 +32,8 @@ from .syntax_model import (
     KIND_QUERY_TABLE,
     SyntaxIndex,
     SyntaxItem,
+    SyntaxLink,
+    SyntaxLinkSnapshot,
     SyntaxParam,
     SyntaxVariant,
 )
@@ -94,6 +96,17 @@ def _link_texts(fragment: str) -> list[str]:
 
 def _link_hrefs(fragment: str) -> list[str]:
     return [href for href, _ in _RE_LINK.findall(fragment)]
+
+
+def _links(fragment: str, section: str, *, internal_only: bool = False) -> list[SyntaxLink]:
+    """Сохранять подпись вместе с адресом, не связывая две независимые выборки."""
+    return [
+        SyntaxLink(section=section, label=_text(label), href=href)
+        for href, label in _RE_LINK.findall(fragment)
+        # SyntaxHelperLanguage указывает на ресурс языка, не на HTML-карточку.
+        # Старое see_also сохраняется как было; навигация берёт только карточки.
+        if not internal_only or href.startswith("v8help://SyntaxHelperContext/")
+    ]
 
 
 def _split_bilingual(value: str) -> tuple[str, str]:
@@ -219,6 +232,8 @@ def parse_page(path: str, raw: bytes) -> SyntaxItem | None:
         return None
 
     item = SyntaxItem(id=path.rsplit(".", 1)[0], kind=_kind_from_path(path))
+    snapshot = SyntaxLinkSnapshot(platform="", source_id=item.id)
+    item.link_snapshots.append(snapshot)
 
     heading_match = _RE_HEADING.search(body)
     parent_match = _RE_TITLE.search(body)
@@ -274,6 +289,7 @@ def parse_page(path: str, raw: bytes) -> SyntaxItem | None:
 
         elif key.startswith("см. также"):
             item.see_also = [h for h in _link_hrefs(fragment) if h.startswith("v8help:")]
+            snapshot.links.extend(_links(fragment, "see_also", internal_only=True))
 
         elif key.startswith("примечание"):
             item.note = _text(fragment)
@@ -287,6 +303,7 @@ def parse_page(path: str, raw: bytes) -> SyntaxItem | None:
             member_key = _MEMBER_CHAPTERS.get(key)
             if member_key:
                 item.members[member_key] = _link_texts(fragment)
+                snapshot.links.extend(_links(fragment, member_key))
 
     if current.signature or current.params or current.description or current.returns:
         variants.append(current)
@@ -325,6 +342,11 @@ def parse_hbk(hbk_path: str | Path, platform: str = "") -> SyntaxIndex:
                 continue
             item = parse_page(name, archive.read(name))
             if item is not None and item.name_ru:
+                if platform and not item.link_snapshots[0].links:
+                    item.link_snapshots.clear()
+                    item.empty_link_mask = 1
+                else:
+                    item.link_snapshots[0].platform = platform
                 index.add(item)
 
     return index

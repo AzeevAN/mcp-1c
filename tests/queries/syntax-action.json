@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "domain": "syntax",
+  "cases": [
+    {
+      "query": "запустить фоновое задание",
+      "expected": ["objects/catalog63/catalog1482/BackgroundJobsManager/methods/Execute3343"],
+      "note": "ИЗВЕСТНЫЙ ПРОМАХ: действие без буквального имени метода; поисковый ключ улучшает ранг, но слепое A/B пока не показало пользы для итоговой задачи"
+    },
+    {
+      "query": "запустить фоновое задание экспорт данных",
+      "expected": ["objects/catalog63/catalog1482/BackgroundJobsManager/methods/Execute3343"],
+      "note": "ИЗВЕСТНЫЙ ПРОМАХ: формулировка независимого агента; ключ не принят без доказанного выигрыша итогового решения"
+    },
+    {
+      "query": "выполнить фоновое задание",
+      "expected": ["objects/catalog63/catalog1482/BackgroundJobsManager/methods/Execute3343"],
+      "note": "контрольная формулировка с буквальным глаголом метода"
+    }
+  ]
+}

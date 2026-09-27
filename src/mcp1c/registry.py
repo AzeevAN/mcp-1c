@@ -3738,7 +3738,12 @@ class Registry:
 
         # Готовый слитый вид снимает нужду читать справки версий вовсе — это и
         # есть смысл кэша: на трёх справках старт без него удваивался.
-        merged = self._cached_merged(по_версии) if len(по_версии) > 1 else None
+        # При повторном разборе того же HBK SHA исходника прежний, а уже
+        # переданный новый индекс должен заменить содержимое слитого вида.
+        merged = (
+            self._cached_merged(по_версии)
+            if len(по_версии) > 1 and not preloaded else None
+        )
         живые = по_версии
 
         if merged is None:
@@ -3774,7 +3779,7 @@ class Registry:
             return None, problems
 
         newest = живые[-1]
-        отпечаток = _combined_sha256(живые)
+        отпечаток = self._syntax_revision(живые)
         stamp = replace(newest, sha256=отпечаток)
         loaded = LoadedSyntax(
             source=newest,
@@ -3785,14 +3790,33 @@ class Registry:
         )
         return loaded, problems
 
+    def _syntax_revision(self, sources: list["Source"]) -> str:
+        """Отпечаток разобранных индексов, а не только исходных справок.
+
+        Повторный разбор того же HBK сохраняет исходный SHA, но заменяет
+        индекс атомарно. Метаданные файла обесценивают все производные кэши
+        без повторного чтения десятков мегабайт на каждом старте.
+        """
+        digest = hashlib.sha256()
+        for source in sorted(sources, key=lambda item: item.id):
+            try:
+                stat = self._absolute(source.stored_path).stat()
+                revision = (
+                    f"{stat.st_dev}:{stat.st_ino}:{stat.st_size}:{stat.st_mtime_ns}"
+                )
+            except OSError:
+                revision = "missing"
+            digest.update(f"{source.id}:{source.sha256}:{revision}|".encode())
+        return digest.hexdigest()
+
     def _merged_path(self, sources: list["Source"]) -> Path:
-        """Имя файла слитого вида — по набору справок и по отпечатку кода.
+        """Имя файла слитого вида — по разобранным индексам и коду.
 
         Отпечаток кода обязателен: слияние правится часто, и кэш, переживший
         правку, тихо отдавал бы результат прежней логики. Тем же штампом
         пользуются остальные производные (`index_cache`), и по той же причине.
         """
-        отпечаток = f"{_combined_sha256(sources)}:{index_cache._code_digest()}"
+        отпечаток = f"{self._syntax_revision(sources)}:{index_cache._code_digest()}"
         имя = hashlib.sha256(отпечаток.encode()).hexdigest()[:16]
         return self._syntax_index_dir() / f"merged-{имя}.json.gz"
 

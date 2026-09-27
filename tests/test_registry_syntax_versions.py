@@ -13,7 +13,13 @@ import pytest
 
 from mcp1c.registry import Registry, RegistryError
 from mcp1c.store import save_syntax
-from mcp1c.syntax_model import SyntaxIndex, SyntaxItem, SyntaxVariant
+from mcp1c.syntax_model import (
+    SyntaxIndex,
+    SyntaxItem,
+    SyntaxLink,
+    SyntaxLinkSnapshot,
+    SyntaxVariant,
+)
 
 from conftest import build_configuration, write_export
 
@@ -72,6 +78,65 @@ def test_справка_той_же_версии_заменяет_прежнюю
     assert sorted(registry.sources) == ["syntax-8.3.27.2130"]
     имена = {item.name_ru for item in registry.syntax.syntax.items.values()}
     assert имена == {"Найти", "СтрНайти"}
+
+
+def test_повторный_разбор_того_же_hbk_обновляет_слитый_вид_и_кэши(
+    tmp_path, monkeypatch
+):
+    """При том же SHA исходника новый разбор должен вытеснить старый слитый вид."""
+    from mcp1c import registry as registry_module
+
+    registry = Registry(tmp_path / "data")
+    incoming = tmp_path / "incoming"
+    registry.add_syntax(справка(incoming, "8.3.5.1570", имена=("Найти",)))
+    hbk = incoming / "syntax-8.3.26.15.hbk"
+    hbk.write_bytes(b"same source")
+    разборов = 0
+
+    def разобрать(_path, *, platform):
+        nonlocal разборов
+        разборов += 1
+        index = SyntaxIndex(platforms=[platform], source="test")
+        item = SyntaxItem(
+            id="objects/Запрос",
+            kind="object",
+            name_ru="Запрос",
+            description="Описание запроса",
+        )
+        if разборов == 1:
+            item.empty_link_mask = 1
+        else:
+            item.link_snapshots = [SyntaxLinkSnapshot(
+                platform=platform,
+                source_id=item.id,
+                links=[SyntaxLink("Методы", "НовыйМетод", "objects/Запрос/methods/НовыйМетод")],
+            )]
+            index.add(SyntaxItem(
+                id="objects/Запрос/methods/НовыйМетод",
+                kind="method",
+                name_ru="НовыйМетод",
+                parent_ru="Запрос",
+                description="Новый метод запроса",
+            ))
+        index.add(item)
+        return index
+
+    monkeypatch.setattr(registry_module, "parse_hbk", разобрать)
+    first = registry.add_syntax(hbk)
+    assert first.sha256 == registry.add_syntax(hbk).sha256
+
+    def проверить(проверяемый):
+        syntax = проверяемый.syntax.syntax
+        item = next(item for item in syntax.items.values() if item.name_ru == "Запрос")
+        assert [(snapshot.platform, snapshot.links[0].label)
+                for snapshot in item.link_snapshots] == [("8.3.26.15", "НовыйМетод")]
+        assert проверяемый.syntax.index.search("НовыйМетод", limit=5)
+
+    проверить(registry)
+    registry.save()
+    поднятый = Registry(tmp_path / "data")
+    поднятый.restore()
+    проверить(поднятый)
 
 
 def test_справка_без_версии_не_принимается(tmp_path):

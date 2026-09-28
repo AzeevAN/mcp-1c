@@ -111,6 +111,7 @@ def merge_syntax(indexes: list[SyntaxIndex]) -> SyntaxIndex:
             item,
             link_snapshots=[],
             empty_link_mask=_remap_empty_mask(item.empty_link_mask, base_bit_positions),
+            legacy_link_mask=_remap_legacy_mask(item, base, base_bit_positions),
         ))
     if len(base.platforms) == 1:
         base_ids = {item_id: item_id for item_id in base.items}
@@ -171,6 +172,7 @@ def merge_syntax(indexes: list[SyntaxIndex]) -> SyntaxIndex:
                     link_snapshots=[],
                     deprecations=[],
                     empty_link_mask=_remap_empty_mask(item.empty_link_mask, bit_positions),
+                    legacy_link_mask=_remap_legacy_mask(item, index, bit_positions),
                 )
                 merged.add(copy)
                 known.setdefault(_key(copy), copy)
@@ -183,6 +185,7 @@ def merge_syntax(indexes: list[SyntaxIndex]) -> SyntaxIndex:
                 if facts is not None:
                     current.older.insert(0, facts)
                 current.empty_link_mask |= _remap_empty_mask(item.empty_link_mask, bit_positions)
+                current.legacy_link_mask |= _remap_legacy_mask(item, index, bit_positions)
             source_to_merged[item.id] = current.id
             matched.append((item, current))
 
@@ -217,7 +220,7 @@ def _copy(item: SyntaxItem, **changes) -> SyntaxItem:
 
 
 def _remap_empty_mask(mask: int, positions: list[int | None]) -> int:
-    """Перенести биты пустых страниц при изменении порядка версий."""
+    """Перенести биты версионной маски при изменении порядка версий."""
     if not mask:
         return 0
     result = 0
@@ -225,6 +228,19 @@ def _remap_empty_mask(mask: int, positions: list[int | None]) -> int:
         if mask & (1 << old_position) and new_position is not None:
             result |= 1 << new_position
     return result
+
+
+def _remap_legacy_mask(
+    item: SyntaxItem, index: SyntaxIndex, positions: list[int | None]
+) -> int:
+    mask = _remap_empty_mask(item.legacy_link_mask, positions)
+    # В исходной справке одна версия. Если карточка есть, но парсер не записал
+    # ни снимок, ни пустую страницу, это старый разбор именно этой версии.
+    if len(index.platforms) == 1 and not item.link_snapshots and not item.empty_link_mask:
+        position = positions[0]
+        if position is not None:
+            mask |= 1 << position
+    return mask
 
 
 def _translated_snapshots(

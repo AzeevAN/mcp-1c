@@ -176,6 +176,9 @@ class SyntaxItem:
     # Биты соответствуют SyntaxIndex.platforms. Пустые страницы встречаются
     # часто, поэтому не держим для каждой отдельный объект снимка.
     empty_link_mask: int = 0
+    # При слиянии старых индексов пустой link_snapshots уже не отличить от
+    # отсутствия страницы. Сохраняем версии, где ссылки не собирались.
+    legacy_link_mask: int = 0
 
     @property
     def full_ru(self) -> str:

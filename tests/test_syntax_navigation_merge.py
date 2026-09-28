@@ -229,6 +229,9 @@ def test_старый_индекс_без_полей_связей_не_выгл�
 
     assert merged.platforms == ["8.3.5", "8.3.19", "8.3.27"]
     assert owner.empty_link_mask == 0b010
+    assert owner.legacy_link_mask == 0b001
     assert _links(owner) == {
         "8.3.27": [("Новый", "objects/Owner/methods/New")]
     }
+    restored = load_syntax(save_syntax(merged, tmp_path / "merged.json.gz"))
+    assert restored.items[owner.id].legacy_link_mask == 0b001

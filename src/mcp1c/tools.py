@@ -4303,7 +4303,11 @@ def _syntax_navigation_page(context, item: SyntaxItem, offset: int) -> dict:
         platform for position, platform in enumerate(platforms)
         if item.empty_link_mask & (1 << position)
     ]
-    if not snapshots and not empty_versions:
+    legacy_versions = [
+        platform for position, platform in enumerate(platforms)
+        if item.legacy_link_mask & (1 << position)
+    ]
+    if not snapshots and not empty_versions and not legacy_versions:
         return {"state": "legacy", "items": [], "total": 0, "offset": offset,
                 "next_offset": None, "platform": ""}
 
@@ -4322,15 +4326,22 @@ def _syntax_navigation_page(context, item: SyntaxItem, offset: int) -> dict:
             "",
         )
         if snapshot is None and not empty_platform:
-            return {"state": "unknown", "items": [], "total": 0, "offset": offset,
+            state = "legacy" if any(
+                release(parse_version(platform)) == target_release
+                for platform in legacy_versions
+            ) else "unknown"
+            return {"state": state, "items": [], "total": 0, "offset": offset,
                     "next_offset": None, "platform": ""}
     else:
         latest = max(
-            [entry.platform for entry in snapshots] + empty_versions,
+            [entry.platform for entry in snapshots] + empty_versions + legacy_versions,
             key=parse_version,
         )
         snapshot = next((entry for entry in snapshots if entry.platform == latest), None)
         empty_platform = latest
+        if snapshot is None and latest in legacy_versions and latest not in empty_versions:
+            return {"state": "legacy", "items": [], "total": 0, "offset": offset,
+                    "next_offset": None, "platform": ""}
 
     platform = snapshot.platform if snapshot else empty_platform
     seen: set[tuple[str, str, str]] = set()
@@ -4379,7 +4390,7 @@ def _syntax_navigation(context, item: SyntaxItem, offset: int = 0) -> str:
     if page["state"] == "legacy":
         return (
             "\n## Навигация\n\nСсылки не собирались при прежнем разборе справки. "
-            "Для навигации нужен повторный разбор исходной справки.\n"
+            "Для навигации нужен повторный разбор исходной справки `.hbk` этой версии.\n"
         )
     if page["state"] == "unknown":
         return (

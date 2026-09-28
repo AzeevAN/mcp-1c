@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import gzip
+import json
+
 import pytest
 
 from mcp1c.registry import Registry, RegistryError
 from mcp1c.store import save_syntax
 from mcp1c.syntax_model import SyntaxIndex, SyntaxItem, SyntaxLink, SyntaxLinkSnapshot
-from mcp1c.tools import get_syntax
+from mcp1c.tools import get_syntax, syntax_navigation_data
 
 from conftest import build_configuration, write_export
 
@@ -196,6 +199,49 @@ def test_старый_индекс_без_снимков_просит_повто
 
     assert "повторный разбор" in answer.lower()
     assert "ссылок в этой карточке нет" not in answer.lower()
+
+
+def test_старая_справка_в_смешанном_индексе_просит_повторный_разбор(tmp_path):
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    registry = Registry(tmp_path / "data")
+    old = SyntaxIndex(platforms=["8.3.5"], source="synthetic-8.3.5")
+    old.add(_owner("8.3.5", _link("Старый")))
+    old_path = save_syntax(old, incoming / "syntax-8.3.5.json.gz")
+    with gzip.open(old_path, "rt", encoding="utf-8") as stream:
+        payload = json.load(stream)
+    payload["items"][0].pop("link_snapshots")
+    payload["items"][0].pop("empty_link_mask")
+    with gzip.open(old_path, "wt", encoding="utf-8") as stream:
+        json.dump(payload, stream)
+    registry.add_syntax(old_path)
+
+    current = SyntaxIndex(platforms=["8.3.27"], source="synthetic-8.3.27")
+    current.add(_owner("8.3.27", _link("Новый")))
+    current.add(_method("Новый", since="8.3.27"))
+    registry.add_syntax(save_syntax(current, incoming / "syntax-8.3.27.json.gz"))
+    config = build_configuration()
+    config.platform = "8.3.5"
+    registry.add_configuration(write_export(incoming, config))
+    current_config = build_configuration("НоваяКонфигурация")
+    current_config.platform = "8.3.27"
+    registry.add_configuration(write_export(incoming, current_config))
+    missing_config = build_configuration("ПромежуточнаяКонфигурация")
+    missing_config.platform = "8.3.19"
+    registry.add_configuration(write_export(incoming, missing_config))
+
+    answer = get_syntax(registry, "Запрос", config=config.name, detail="full")
+    navigation = syntax_navigation_data(registry, "Запрос", config=config.name)
+    latest = syntax_navigation_data(registry, "Запрос", config=current_config.name)
+    missing = syntax_navigation_data(registry, "Запрос", config=missing_config.name)
+
+    assert "повторный разбор" in answer.lower()
+    assert "Запрос.Новый" not in answer
+    assert navigation[0]["state"] == "legacy"
+    assert navigation[0]["items"] == []
+    assert latest[0]["state"] == "known"
+    assert latest[0]["platform"] == "8.3.27"
+    assert missing[0]["state"] == "unknown"
 
 
 def test_короткое_имя_показывает_варианты_объекта_и_их_навигацию(tmp_path):

@@ -191,6 +191,7 @@ def _item_from_dict(raw: dict[str, Any]) -> SyntaxItem:
         link_snapshots=snapshots,
         deprecations=deprecations,
         empty_link_mask=raw.get("empty_link_mask", 0),
+        legacy_link_mask=raw.get("legacy_link_mask", 0),
         values=list(raw.get("values") or []),
         readonly=raw.get("readonly"),
         note=raw.get("note", ""),

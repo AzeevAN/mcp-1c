@@ -3800,6 +3800,24 @@ def _syntax_context(registry: Registry, config: str | None):
     return context
 
 
+def _syntax_notes_block(context) -> str:
+    notes = context.notes(critical_only=True)
+    if context.configuration is not None:
+        mode = context.configuration.config.compatibility_mode
+        if mode and mode not in {"DontUse", "НеИспользовать"}:
+            scope = (
+                "справка сопоставлена по версии платформы"
+                if parse_version(context.platform)
+                else "версия платформы неизвестна"
+            )
+            notes.append(
+                f"Режим совместимости {mode}: {scope}, но ограничения этого "
+                "режима для методов не "
+                "проверены. Компиляция в данном режиме — unknown."
+            )
+    return _render_notes(notes)
+
+
 def search_syntax(
     registry: Registry,
     query: str,
@@ -3844,11 +3862,11 @@ def search_syntax(
                 f"В версии платформы {context.platform} доступного ничего нет, "
                 "но подходящие элементы есть в других версиях.",
             ]
-            return "\n".join(head + скрытое) + "\n" + _notes_block(context)
+            return "\n".join(head + скрытое) + "\n" + _syntax_notes_block(context)
         return (
             f"По запросу «{query}» в справке платформы "
             f"ничего не найдено{where}."
-            + _notes_block(context)
+            + _syntax_notes_block(context)
         )
 
     out = [f"# Справка платформы: «{query}»"]
@@ -3866,6 +3884,9 @@ def search_syntax(
         facts = [KIND_TITLES.get(item.kind, item.kind)]
         if item.since:
             facts.append(f"с {item.since}")
+        deprecation = _deprecation_for_context(context, item)
+        if deprecation is not None:
+            facts.append(f"не рекомендуется с {deprecation.since}")
         # Доступность берётся по версии конфигурации: мобильных контекстов в
         # старых платформах не существовало, а справка приписала их задним
         # числом тысячам элементов.
@@ -3884,7 +3905,7 @@ def search_syntax(
         if resolution is not None and not resolution.exact:
             facts.append(f"сведения по справке {resolution.platform}")
         out.append(f"  {' · '.join(facts)}")
-    return "\n".join(out + _hidden_block(context, filtered_out)) + "\n" + _notes_block(context)
+    return "\n".join(out + _hidden_block(context, filtered_out)) + "\n" + _syntax_notes_block(context)
 
 
 def _hidden_block(context, filtered_out: list) -> list[str]:
@@ -3983,6 +4004,37 @@ def _unavailable_reason(item: SyntaxItem, target: tuple[int, ...]) -> str:
     return "недоступен в этой версии"
 
 
+def _deprecation_for_context(context, item: SyntaxItem):
+    """Предупреждение только из справки точного релиза конфигурации."""
+    if not item.deprecations or not context.platform:
+        return None
+    target = release(parse_version(context.platform))
+    return next(
+        (entry for entry in item.deprecations
+         if release(parse_version(entry.platform)) == target),
+        None,
+    )
+
+
+def _deprecation_block(context, item: SyntaxItem) -> str:
+    entry = _deprecation_for_context(context, item)
+    if entry is None:
+        return ""
+    lines = [f"\n**Не рекомендуется использовать с версии {entry.since}.**"]
+    for link in entry.replacements:
+        target = context.syntax.syntax.items.get(link.target_id) if link.target_id else None
+        if target is None:
+            lines.append(f"Рекомендуемая замена: {link.label} — цель не разрешена.")
+        elif context.platform and not target.available_in(context.platform):
+            lines.append(f"Рекомендуемая замена: {link.label} — недоступна в платформе {context.platform}.")
+        elif [candidate.id for candidate in context.syntax.find_exact(target.address)
+              if not context.platform or candidate.available_in(context.platform)] != [target.id]:
+            lines.append(f"Рекомендуемая замена: {link.label} — публичный адрес неоднозначен.")
+        else:
+            lines.append(f"Рекомендуемая замена: `{target.address}`.")
+    return "\n".join(lines) + "\n"
+
+
 def _отсечённые_однофамильцы(context, отсечённые: list[SyntaxItem], *,
                              подробно: bool) -> str:
     """Одноимённые, которых фильтр версии убрал, — названные вслух.
@@ -4052,7 +4104,7 @@ def _unavailable_here(context, matching: list[SyntaxItem]) -> str:
             f"Конфигурация {context.name} работает на **{context.platform}**; "
             "использовать их нельзя — код не скомпилируется."
         )
-        return "\n".join(out + рецепты) + "\n" + _notes_block(context)
+        return "\n".join(out + рецепты) + "\n" + _syntax_notes_block(context)
 
     item = matching[0]
     if _appears_later(item, target):
@@ -4069,7 +4121,7 @@ def _unavailable_here(context, matching: list[SyntaxItem]) -> str:
             f"**{context.platform}**.\n\n"
             f"Использовать его нельзя — код не скомпилируется."
             f"{хвост}\n"
-            + _notes_block(context)
+            + _syntax_notes_block(context)
         )
 
     return (
@@ -4078,7 +4130,7 @@ def _unavailable_here(context, matching: list[SyntaxItem]) -> str:
         f"и в более поздних справках отсутствует, а конфигурация "
         f"{context.name} работает на **{context.platform}**.\n\n"
         f"Использовать его нельзя — код не скомпилируется.\n"
-        + _notes_block(context)
+        + _syntax_notes_block(context)
     )
 
 
@@ -4124,7 +4176,7 @@ def get_syntax(
                     f"Точного совпадения нет, и всё похожее недоступно "
                     f"в {context.platform}."
                 ]
-                return "\n".join(head + скрытое) + "\n" + _notes_block(context)
+                return "\n".join(head + скрытое) + "\n" + _syntax_notes_block(context)
             # Называть надо ту справку, по которой ответ строился, а не
             # объединённый источник: тот всегда назовётся самой свежей из
             # загруженных, и отказ выходит подписан чужой версией.
@@ -4133,13 +4185,13 @@ def get_syntax(
             return (
                 f"В справке платформы {справка} нет элемента `{name}`"
                 + ("." if если_совпало else f", доступного в версии {context.platform}.")
-                + _notes_block(context)
+                + _syntax_notes_block(context)
             )
         suggestion = "\n".join(f"- `{h.doc.payload.full_ru}`" for h in hits[:5])
         return (
             "\n".join([f"Точного совпадения нет. Возможно:\n{suggestion}"] + скрытое)
             + "\n"
-            + _notes_block(context)
+            + _syntax_notes_block(context)
         )
 
     # По короткому имени находятся и чужие свойства с тем же именем. Если
@@ -4172,6 +4224,8 @@ def get_syntax(
                     if detail == "links"
                     else render_syntax_item(item, detail, resolution)
                 )
+                if detail != "links":
+                    card += _deprecation_block(context, item)
                 if detail in (FULL, "links"):
                     card += _syntax_navigation(context, item, links_offset)
                 rendered = card.splitlines()
@@ -4192,7 +4246,7 @@ def get_syntax(
                 "\n".join(out).rstrip()
                 + "\n"
                 + _отсечённые_однофамильцы(context, отсечённые, подробно=True)
-                + _notes_block(context)
+                + _syntax_notes_block(context)
             )
 
         out = [f"# Одноимённых элементов: {len(exact)}", ""]
@@ -4207,7 +4261,7 @@ def get_syntax(
             "\n".join(out)
             + "\n"
             + _отсечённые_однофамильцы(context, отсечённые, подробно=False)
-            + _notes_block(context)
+            + _syntax_notes_block(context)
         )
 
     # Карточка собирается под версию конфигурации: сигнатура, доступность и
@@ -4220,13 +4274,15 @@ def get_syntax(
     )
     return (
         (f"# {exact[0].address}\n" if detail == "links" else render_syntax_item(exact[0], detail, resolution))
+        + (_deprecation_block(context, exact[0]) if detail != "links" else "")
         + (_syntax_navigation(context, exact[0], links_offset) if detail in (FULL, "links") else "")
         + _отсечённые_однофамильцы(context, отсечённые, подробно=True)
-        + _notes_block(context)
+        + _syntax_notes_block(context)
     )
 
 
 _SYNTAX_LINK_SECTIONS = {
+    "replacement": "Рекомендуемая замена",
     "properties": "Свойства",
     "methods": "Методы",
     "events": "События",

@@ -16,7 +16,10 @@ from __future__ import annotations
 from dataclasses import replace
 
 from .syntax_links import target_page_id
-from .syntax_model import SyntaxFacts, SyntaxIndex, SyntaxItem, SyntaxLinkSnapshot, parse_version
+from .syntax_model import (
+    SyntaxDeprecation, SyntaxFacts, SyntaxIndex, SyntaxItem, SyntaxLinkSnapshot,
+    parse_version,
+)
 
 
 # Владельцы, у которых между версиями сменились оба имени сразу — русское и
@@ -122,6 +125,13 @@ def merge_syntax(indexes: list[SyntaxIndex]) -> SyntaxIndex:
         for item in base.items.values():
             merged.items[item.id].link_snapshots = list(item.link_snapshots)
 
+    base_ids = {item_id: item_id for item_id in base.items}
+    base_page_ids = set(base.items) if len(base.platforms) == 1 else set()
+    for item in base.items.values():
+        merged.items[item.id].deprecations = _translated_deprecations(
+            item, base, base_ids, base_page_ids,
+        )
+
     # От свежих справок к старым: элемент, выпавший из базовой, описывается по
     # самой свежей справке, где он ещё был, а расхождения более старых
     # накапливаются относительно неё.
@@ -159,6 +169,7 @@ def merge_syntax(indexes: list[SyntaxIndex]) -> SyntaxIndex:
                     id=_free_id(merged, item.id, platform),
                     until=platform,
                     link_snapshots=[],
+                    deprecations=[],
                     empty_link_mask=_remap_empty_mask(item.empty_link_mask, bit_positions),
                 )
                 merged.add(copy)
@@ -184,13 +195,23 @@ def merge_syntax(indexes: list[SyntaxIndex]) -> SyntaxIndex:
                 snapshot for snapshot in imported if snapshot.platform not in existing
             )
             current.link_snapshots.sort(key=lambda snapshot: parse_version(snapshot.platform))
+            imported_deprecations = _translated_deprecations(
+                item, index, source_to_merged, page_ids
+            )
+            existing_deprecations = {entry.platform for entry in current.deprecations}
+            current.deprecations.extend(
+                entry for entry in imported_deprecations
+                if entry.platform not in existing_deprecations
+            )
+            current.deprecations.sort(key=lambda entry: parse_version(entry.platform))
 
     return merged
 
 
 def _copy(item: SyntaxItem, **changes) -> SyntaxItem:
     """Копия элемента со своим списком версионных фактов."""
-    fields = {"older": list(item.older), "link_snapshots": list(item.link_snapshots)}
+    fields = {"older": list(item.older), "link_snapshots": list(item.link_snapshots),
+              "deprecations": list(item.deprecations)}
     fields.update(changes)
     return replace(item, **fields)
 
@@ -231,6 +252,29 @@ def _translated_snapshots(
                 links=links,
             )
         )
+    return result
+
+
+def _translated_deprecations(
+    item: SyntaxItem,
+    source: SyntaxIndex,
+    id_map: dict[str, str],
+    page_ids: set[str],
+) -> list[SyntaxDeprecation]:
+    """Перенести рекомендации замены в ID объединённой справки."""
+    single_source = len(source.platforms) == 1
+    result = []
+    for entry in item.deprecations:
+        links = []
+        for link in entry.replacements:
+            source_target = link.target_id
+            if not source_target and single_source:
+                source_target = target_page_id(entry.source_id or item.id, link.href, page_ids)
+            links.append(replace(link, target_id=id_map.get(source_target, "")))
+        result.append(replace(
+            entry, platform=entry.platform or source.max_platform,
+            replacements=links,
+        ))
     return result
 
 

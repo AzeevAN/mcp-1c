@@ -31,6 +31,7 @@ from .syntax_model import (
     KIND_QUERY_FIELD,
     KIND_QUERY_TABLE,
     SyntaxIndex,
+    SyntaxDeprecation,
     SyntaxItem,
     SyntaxLink,
     SyntaxLinkSnapshot,
@@ -56,6 +57,15 @@ _RE_TITLE = re.compile(r'class="V8SH_title"[^>]*>(.*?)</(?:p|div)>', re.I | re.S
 _RE_HEADING = re.compile(r'class="V8SH_heading"[^>]*>(.*?)</(?:p|div)>', re.I | re.S)
 _RE_CODESAMPLE = re.compile(r'class="V8SH_codesample"[^>]*>(.*?)</(?:pre|div|p)>', re.I | re.S)
 _RE_VERSION = re.compile(r"начиная с версии\s*([\d.]+)")
+_RE_SINCE_BLOCK = re.compile(
+    r'<div class="__SINCE_SHOW_STYLE__"[^>]*>(.*?)</div>', re.I | re.S
+)
+_RE_DEPRECATED_BLOCK = re.compile(
+    r'<div class="__DEPRECATED_SHOW_STYLE__"[^>]*>(.*?)</div>', re.I | re.S
+)
+_RE_LEGACY_VERSION = re.compile(
+    r'<p class="V8SH_versionInfo"[^>]*>(.*?)</p>', re.I | re.S
+)
 
 # Разбивка тела страницы на разделы по заголовкам V8SH_chapter.
 _RE_CHAPTER = re.compile(
@@ -246,9 +256,26 @@ def parse_page(path: str, raw: bytes) -> SyntaxItem | None:
         # Страница самого объекта: заголовок и есть имя.
         item.name_ru, item.name_en = _split_bilingual(title_match.group(1))
 
-    version_match = _RE_VERSION.search(body)
-    if version_match:
-        item.since = version_match.group(1).rstrip(".")
+    # Порог устаревания обычно стоит раньше порога появления. Обе фразы
+    # содержат «начиная с версии», поэтому искать по всему HTML нельзя.
+    since_block = _RE_SINCE_BLOCK.search(body) or _RE_LEGACY_VERSION.search(body)
+    if since_block:
+        version_match = _RE_VERSION.search(_text(since_block.group(1)))
+        if version_match:
+            item.since = version_match.group(1).rstrip(".")
+
+    deprecated_block = _RE_DEPRECATED_BLOCK.search(body)
+    if deprecated_block:
+        version_match = _RE_VERSION.search(_text(deprecated_block.group(1)))
+        if version_match:
+            replacements = _links(deprecated_block.group(1), "replacement", internal_only=True)
+            item.deprecations.append(SyntaxDeprecation(
+                platform="", since=version_match.group(1).rstrip("."),
+                source_id=item.id, replacements=replacements,
+            ))
+            # Связь видна и в обычной навигации, но не смешивается с
+            # «См. также»: это рекомендация заменить устаревший метод.
+            snapshot.links.extend(replacements)
 
     current = SyntaxVariant()
     variants: list[SyntaxVariant] = []
@@ -342,6 +369,8 @@ def parse_hbk(hbk_path: str | Path, platform: str = "") -> SyntaxIndex:
                 continue
             item = parse_page(name, archive.read(name))
             if item is not None and item.name_ru:
+                for deprecation in item.deprecations:
+                    deprecation.platform = platform
                 if platform and not item.link_snapshots[0].links:
                     item.link_snapshots.clear()
                     item.empty_link_mask = 1

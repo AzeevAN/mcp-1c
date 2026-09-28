@@ -704,7 +704,7 @@ export function SourcesPage() {
                     onRemove={query.data.permissions.admin ? setRemovalTarget : undefined}
                   />
                 ))
-                : <span className="reference-empty">Справочники не загружены</span>}
+                : <span className="reference-empty">Справки синтаксиса платформы не загружены</span>}
             </div>
           </div>
           <ReferenceSidebar admin={query.data?.permissions.admin ?? false} />

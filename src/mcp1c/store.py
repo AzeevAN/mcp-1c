@@ -25,6 +25,7 @@ from .syntax_model import (
     SyntaxFacts,
     SyntaxIndex,
     SyntaxItem,
+    SyntaxDeprecation,
     SyntaxLink,
     SyntaxLinkSnapshot,
     SyntaxParam,
@@ -102,6 +103,13 @@ def _item_to_dict(item: SyntaxItem) -> dict[str, Any]:
         ]]
         for snapshot in item.link_snapshots
     ]
+    raw["deprecations"] = [
+        [entry.platform, entry.since, entry.source_id, [
+            [link.section, link.label, link.href, link.target_id]
+            for link in entry.replacements
+        ]]
+        for entry in item.deprecations
+    ]
     return raw
 
 
@@ -160,6 +168,10 @@ def _item_from_dict(raw: dict[str, Any]) -> SyntaxItem:
             links=[SyntaxLink(**link) if isinstance(link, dict) else SyntaxLink(*link)
                    for link in links],
         ))
+    deprecations = [SyntaxDeprecation(
+        platform=entry[0], since=entry[1], source_id=entry[2],
+        replacements=[SyntaxLink(*link) for link in entry[3]],
+    ) for entry in raw.get("deprecations") or []]
     return SyntaxItem(
         id=raw["id"],
         kind=raw["kind"],
@@ -177,6 +189,7 @@ def _item_from_dict(raw: dict[str, Any]) -> SyntaxItem:
         see_also=list(raw.get("see_also") or []),
         members={k: list(v) for k, v in (raw.get("members") or {}).items()},
         link_snapshots=snapshots,
+        deprecations=deprecations,
         empty_link_mask=raw.get("empty_link_mask", 0),
         values=list(raw.get("values") or []),
         readonly=raw.get("readonly"),

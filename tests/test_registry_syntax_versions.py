@@ -7,12 +7,14 @@
 
 from __future__ import annotations
 
+from itertools import permutations
 from pathlib import Path
 
 import pytest
 
 from mcp1c.registry import Registry, RegistryError
 from mcp1c.store import save_syntax
+from mcp1c.tools import get_syntax
 from mcp1c.syntax_model import (
     SyntaxIndex,
     SyntaxItem,
@@ -53,6 +55,40 @@ def test_справки_разных_версий_живут_рядом(tmp_path
     assert sorted(registry.sources) == ["syntax-8.3.27.2130", "syntax-8.3.5.1570"]
     имена = {item.name_ru for item in registry.syntax.syntax.items.values()}
     assert имена == {"Найти", "СтрНайти", "КаноническаяЗаписьXML"}
+
+
+def test_порядок_загрузки_не_меняет_версионную_карточку(tmp_path):
+    incoming = tmp_path / "incoming"
+    versions = ("8.3.5.1570", "8.3.26.15", "8.3.27.2130")
+    paths = {
+        version: справка(
+            incoming, version, имена=("Метод",), сигнатура=f"Метод({version})"
+        ) for version in versions
+    }
+    outputs = []
+    for index, order in enumerate(permutations(versions)):
+        registry = Registry(tmp_path / f"data-{index}")
+        for version in order:
+            registry.add_syntax(paths[version])
+        assert registry.syntax.syntax.platforms == list(versions)
+        cards = []
+        for version in versions:
+            config = build_configuration(name=f"Конфигурация_{index}_{version}")
+            config.platform = version
+            registry.add_configuration(write_export(incoming, config))
+            cards.append(get_syntax(registry, "Глобальный контекст.Метод", config.name))
+        outputs.append(cards)
+    assert all(cards == outputs[0] for cards in outputs[1:])
+    for version, card in zip(versions, outputs[0]):
+        assert f"Метод({version})" in card
+
+
+def test_нечисловая_версия_справки_не_создаёт_ложный_порядок(tmp_path):
+    registry = Registry(tmp_path / "data")
+    path = справка(tmp_path / "incoming", "8.3.x", имена=("Метод",))
+    with pytest.raises(RegistryError, match="числовых частей"):
+        registry.add_syntax(path)
+    assert registry.sources == {}
 
 
 def test_элемент_только_из_старой_справки_ищется(tmp_path):

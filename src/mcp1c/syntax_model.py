@@ -136,6 +136,16 @@ class SyntaxLinkSnapshot:
 
 
 @dataclass(slots=True)
+class SyntaxDeprecation:
+    """Предупреждение и замены из конкретной версии страницы справки."""
+
+    platform: str
+    since: str
+    source_id: str
+    replacements: list[SyntaxLink] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class SyntaxItem:
     id: str
     kind: str
@@ -162,6 +172,7 @@ class SyntaxItem:
     # [] у старого индекса означает, что ссылки не собирались; снимок с []
     # означает, что страницу разобрали и ссылок в ней нет.
     link_snapshots: list[SyntaxLinkSnapshot] = field(default_factory=list)
+    deprecations: list[SyntaxDeprecation] = field(default_factory=list)
     # Биты соответствуют SyntaxIndex.platforms. Пустые страницы встречаются
     # часто, поэтому не держим для каждой отдельный объект снимка.
     empty_link_mask: int = 0

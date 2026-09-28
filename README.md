@@ -57,6 +57,17 @@ docker compose up -d
 - полная настройка Docker, токенов, источников и Dashboard описана в разделе
   [запуска в Docker](#запуск-в-docker).
 
+### Переход с 4.0.0 на 4.1.0
+
+Сохраните каталог `data/` и обновите образ и файлы Compose до `v4.1.0`.
+Для скачивания полного исходника модуля задайте в `.env`
+`MCP1C_PUBLIC_BASE_URL` с адресом, доступным MCP-клиенту. Без него инструмент
+возвращает явную ошибку; локальный `127.0.0.1` не подходит удалённому клиенту
+или клиенту в другом контейнере. После обновления перезапустите MCP-сессию,
+чтобы получить новый каталог инструментов. Для версионных переходов в
+карточках синтаксиса повторно загрузите исходные `.hbk`: прежний разобранный
+индекс остаётся читаемым, но не содержит связей навигации.
+
 ### Переход с 3.3.0 на 4.0.0
 
 Сохраните тот же каталог `data/`, замените образ и файлы Compose на выпуск
@@ -169,7 +180,7 @@ API остаётся отдельной ошибкой состояния.
 
 Единственный пользовательский [compose.yaml](compose.yaml):
 
-- получает готовый образ `ghcr.io/azeevan/mcp-1c:4.0.0` без локальной сборки;
+- получает готовый образ `ghcr.io/azeevan/mcp-1c:4.1.0` без локальной сборки;
 - запускает процесс как UID/GID `10001:10001`;
 - монтирует подготовленный каталог хоста в `/data`;
 - по умолчанию публикует порт только на `127.0.0.1`, а прямой HTTP требует
@@ -187,7 +198,7 @@ Compose-файла и встроенного proxy нет.
 Есть два поддержанных способа получить этот образ:
 
 1. Обычный пользователь скачивает готовый
-   `ghcr.io/azeevan/mcp-1c:4.0.0` и запускает один `compose.yaml` по инструкции
+   `ghcr.io/azeevan/mcp-1c:4.1.0` и запускает один `compose.yaml` по инструкции
    ниже.
 2. Разработчик собирает локальный тег из чистого checkout командой
    `python3 tools/build_image.py mcp1c:local`, указывает
@@ -227,9 +238,9 @@ curl --version
 mkdir mcp-1c
 cd mcp-1c
 curl --fail --show-error --location --output compose.yaml \
-  https://raw.githubusercontent.com/AzeevAN/mcp-1c/v4.0.0/compose.yaml
+  https://raw.githubusercontent.com/AzeevAN/mcp-1c/v4.1.0/compose.yaml
 curl --fail --show-error --location --output .env.example \
-  https://raw.githubusercontent.com/AzeevAN/mcp-1c/v4.0.0/.env.example
+  https://raw.githubusercontent.com/AzeevAN/mcp-1c/v4.1.0/.env.example
 ```
 
 Исходники и Node для обычного запуска не нужны. Точный release-тег в URL и
@@ -251,7 +262,7 @@ cp .env.example .env
 MCP1C_DATA_DIR=/srv/mcp1c/data
 MCP1C_BIND_ADDRESS=127.0.0.1
 MCP1C_PORT=5001
-MCP1C_IMAGE=ghcr.io/azeevan/mcp-1c:4.0.0
+MCP1C_IMAGE=ghcr.io/azeevan/mcp-1c:4.1.0
 MCP1C_DASHBOARD=on
 MCP1C_ACCESS=local
 API_TOKEN=<первый случайный токен>
@@ -284,7 +295,7 @@ chmod 0600 .env
 | `MCP1C_DATA_DIR` | bind source на машине Docker | `./data` |
 | `MCP1C_BIND_ADDRESS` | интерфейс хоста: loopback, конкретный IP либо все интерфейсы | `127.0.0.1` |
 | `MCP1C_PORT` | опубликованный порт хоста | `5001` |
-| `MCP1C_IMAGE` | готовый OCI-образ или точный digest | `ghcr.io/azeevan/mcp-1c:4.0.0` |
+| `MCP1C_IMAGE` | готовый OCI-образ или точный digest | `ghcr.io/azeevan/mcp-1c:4.1.0` |
 | `API_TOKEN` | чтение MCP и дашборда | обязателен |
 | `ADMIN_TOKEN` | загрузка, удаление, incoming, словарь, reload | обязателен и отличается от `API_TOKEN` |
 | `MCP1C_DASHBOARD` | `on` — SPA, `off` — без UI | `on` |

@@ -1561,6 +1561,12 @@ PYTHONPATH=src .venv/bin/python -m mcp1c.server \
   --data /абсолютный/путь/к/data
 ```
 
+В `stdio` сервер не открывает HTTP-маршрут скачивания, поэтому
+`get_module_source_file` отсутствует в `tools/list` даже при включённом
+`module_source_download`. Для чтения одной процедуры используйте
+`get_procedure`; для скачивания полного модуля подключайтесь через Streamable
+HTTP с доступным клиенту `MCP1C_PUBLIC_BASE_URL`.
+
 Ручной запуск не включает `--require-writable-data` автоматически. Это
 позволяет осознанно читать готовый Registry с read-only носителя. Если нужны
 загрузка, словарь и административные операции, добавьте флаг и устраните все
@@ -1694,7 +1700,9 @@ list_configurations → search_procedures → get_procedure → get_callers
 Когда нужно прочитать **весь модуль**, после получения его точного адреса
 вызовите `get_module_source_file(address, config, extension?)`. Для одной
 процедуры используйте `get_procedure`: файл нужен только для общего контекста
-модуля. Новый инструмент возвращает `download_url`, заголовки `headers`,
+модуля. Инструмент доступен только через Streamable HTTP при включённом
+`module_source_download`; в `stdio` его нет. Он возвращает `download_url`,
+заголовки `headers`,
 `size_bytes`, `sha256`, `revision`, `state`, время истечения `expires_at` и
 инструкцию `verification`.
 Сделайте HTTP GET по `download_url` с возвращёнными заголовками, сохраните

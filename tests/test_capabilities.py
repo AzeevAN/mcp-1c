@@ -12,7 +12,8 @@ import sys
 
 import anyio
 import pytest
-from mcp import ClientSession
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 from mcp.shared.memory import create_client_server_memory_streams
 
 from mcp1c.capabilities import (
@@ -88,6 +89,25 @@ def test_default_не_публикует_и_не_импортирует_capabili
     assert "mcp1c.capability_modules.forms" not in sys.modules
     assert "mcp1c.capability_modules.metadata_authoring" not in sys.modules
     assert set(METADATA_AUTHORING_TOOLS).isdisjoint(_names(server))
+
+
+@pytest.mark.anyio
+async def test_stdio_не_публикует_инструмент_без_http_маршрута(tmp_path):
+    server = StdioServerParameters(
+        command=sys.executable,
+        args=[
+            "-m", "mcp1c.server", "--transport", "stdio",
+            "--data", str(tmp_path),
+        ],
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")},
+    )
+    async with stdio_client(server) as streams:
+        async with ClientSession(*streams) as session:
+            await session.initialize()
+            names = {tool.name for tool in (await session.list_tools()).tools}
+
+    assert "get_procedure" in names
+    assert "get_module_source_file" not in names
 
 
 def test_off_не_импортирует_и_не_инициализирует_синтетический_модуль(

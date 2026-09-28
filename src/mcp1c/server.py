@@ -26,7 +26,7 @@ import threading
 import uuid
 from functools import wraps
 from pathlib import Path
-from typing import Annotated, Callable, ParamSpec, TypeVar
+from typing import Annotated, Callable, Literal, ParamSpec, TypeVar
 from urllib.parse import urlencode
 
 from mcp.server import MCPServer
@@ -737,6 +737,7 @@ def build_server(
     registry: Registry,
     name: str = "mcp1c",
     *,
+    transport: Literal["streamable-http", "stdio"] = "streamable-http",
     reference: ReferenceService | None = None,
     restart: RestartController | None = None,
     enabled_capabilities: tuple[str, ...] | None = None,
@@ -760,12 +761,16 @@ def build_server(
         raise CapabilityContractError(
             "Активный capability-набор не совпадает со startup-настройкой."
         )
+    module_download_available = (
+        "module_source_download" in enabled_capabilities
+        and transport == "streamable-http"
+    )
     server = MCP1CServer(
         name=name,
         title="Структура конфигураций 1С",
         instructions=(
             INSTRUCTIONS + "\n\n" + MODULE_DOWNLOAD_INSTRUCTION
-            if "module_source_download" in enabled_capabilities else INSTRUCTIONS
+            if module_download_available else INSTRUCTIONS
         ),
         version=__version__,
     )
@@ -963,7 +968,7 @@ def build_server(
             ),
         }, ensure_ascii=False)
 
-    if "module_source_download" in enabled_capabilities:
+    if module_download_available:
         server.tool(description=module_source_tool_description)(get_module_source_file)
 
     @server.tool(
@@ -1406,7 +1411,8 @@ def build_server(
         )
     )
     _add_http_routes(
-        server, registry, reference, restart, capability_runtime, download_tickets
+        server, registry, reference, restart, capability_runtime, download_tickets,
+        module_download_available=module_download_available,
     )
     return server
 
@@ -1418,6 +1424,8 @@ def _add_http_routes(
     restart: RestartController,
     capabilities: CapabilityRuntime,
     download_tickets: ModuleDownloadTickets,
+    *,
+    module_download_available: bool,
 ) -> None:
     """Служебные HTTP-маршруты рядом с MCP: проверка живости и перезагрузка.
 
@@ -1502,7 +1510,7 @@ def _add_http_routes(
             },
         )
 
-    if "module_source_download" in capabilities.active:
+    if module_download_available:
         server.custom_route(DOWNLOAD_PATH, methods=["GET"])(download_module_source)
 
     # Дашборд монтируется тем же способом: `custom_route` — декоратор с
@@ -1685,6 +1693,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         server = build_server(
             registry,
+            transport=args.transport,
             restart=RestartController.from_environment(),
             enabled_capabilities=enabled_capabilities,
             capability_runtime=CapabilityRuntime(

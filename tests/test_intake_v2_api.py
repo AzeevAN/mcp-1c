@@ -480,6 +480,10 @@ def test_browser_candidate_остаётся_в_списке_при_отказе_
     )
     assert uploaded.status_code == 201
     candidate_id = uploaded.json()["candidate"]["id"]
+    service.lifecycle.operations.create_job("job-failed-delete", candidate_id)
+    service.lifecycle.operations.fail(
+        "job-failed-delete", RuntimeError("синтетическая ошибка")
+    )
     payload_path = service.lifecycle.browser.payloads_dir / f"{candidate_id}.upload"
     original_unlink = Path.unlink
     failed_once = False
@@ -498,8 +502,15 @@ def test_browser_candidate_остаётся_в_списке_при_отказе_
     assert candidate_id in {
         item["id"] for item in service.snapshot()["candidates"]
     }
-    assert client.post(endpoint, headers=headers, json=request).status_code == 200
+    restarted = _service(registry)
+    assert (
+        restarted.lifecycle.operations.records.load_job("job-failed-delete").error
+        == "синтетическая ошибка"
+    )
+    restarted_client = _client(registry, restarted)
+    assert restarted_client.post(endpoint, headers=headers, json=request).status_code == 200
     assert not payload_path.exists()
+    assert restarted.lifecycle.operations.records.list_jobs() == ()
 
 
 def test_production_lifecycle_читает_browser_xml_как_incoming(tmp_path):

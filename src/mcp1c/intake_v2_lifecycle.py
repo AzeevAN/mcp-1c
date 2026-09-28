@@ -926,12 +926,14 @@ class IntakeLifecycle:
                 raise LifecycleConflict(
                     "Кандидат используется операцией; дождитесь её завершения или отмените preview."
                 )
-            for job in jobs:
-                self.operations.remove_job(job.job_id)
             try:
                 self.browser.discard(candidate_id)
             except TransportError as error:
                 raise LifecycleError(str(error)) from error
+            # При отказе удалить ZIP кандидат остаётся; его FAILED job нужна
+            # для диагностики и повторной попытки удаления.
+            for job in jobs:
+                self.operations.remove_job(job.job_id)
             self.operations.records.remove_candidate(candidate_id)
             # Каталог удаляем последним: если очистка оборвётся, повторный
             # вызов по тому же candidate_id сможет завершить операцию.

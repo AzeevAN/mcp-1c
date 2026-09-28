@@ -22,7 +22,7 @@
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install --require-hashes -r requirements-dev-lock.txt
-.venv/bin/python -m pytest          # 3272 теста; число проверено: .venv/bin/python -m pytest --collect-only -q (прогон 2026-09-28)
+.venv/bin/python -m pytest          # 3273 теста; число проверено: .venv/bin/python -m pytest --collect-only -q (прогон 2026-09-28)
 ```
 
 Тесты **не зависят от содержимого `data/`**: проприетарных выгрузок и справки

@@ -1,5 +1,6 @@
 """Ключевые публичные документы описывают текущее поведение, а не планы."""
 
+import asyncio
 from pathlib import Path
 import struct
 import zipfile
@@ -7,6 +8,8 @@ import zipfile
 import pytest
 
 from mcp1c.loader import ExportError, load
+from mcp1c.registry import Registry
+from mcp1c.server import build_server
 
 
 ROOT = Path(__file__).parents[1]
@@ -120,6 +123,32 @@ def test_публичные_документы_описывают_role_tools_api
     assert "tools/lab/measure_role_restrictions.py" in changelog
     assert "745 870" in changelog
     assert "237 375" in changelog
+
+
+def test_вступление_списка_инструментов_соответствует_регистрации(tmp_path):
+    introduction = _read("docs/tools.md").split("## Полный список", 1)[0]
+    registry = Registry(tmp_path / "data")
+
+    def names(*capabilities: str, transport: str = "streamable-http") -> set[str]:
+        server = build_server(
+            registry, enabled_capabilities=capabilities, transport=transport
+        )
+        return {tool.name for tool in asyncio.run(server.list_tools())}
+
+    core = names()
+    http = names("module_source_download")
+    stdio = names("module_source_download", transport="stdio")
+    roles = names("role_access")
+
+    assert len(core) == 11
+    assert http - core == {"get_module_source_file"}
+    assert stdio == core
+    assert roles - core == {"find_roles_for_access", "get_role_access"}
+    assert len(roles) == 13
+    assert "одиннадцать основных инструментов" in introduction
+    assert "module_source_download" in introduction
+    assert "startup-only capability `role_access`" in introduction
+    assert "без готового ролевого слоя" in introduction
 
 
 def test_публичные_контракты_источников_ролей_и_authoring_согласованы():

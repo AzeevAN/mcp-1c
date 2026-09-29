@@ -794,6 +794,7 @@ class RegistrySnapshot:
     modules: Mapping[str, RegistryCodeSnapshot]
     extension_runtime: Mapping[str, RegistryExtensionRuntimeSnapshot]
     generations: Mapping[tuple[str, ...], RegistryGenerationSnapshot]
+    source_lifecycle_token: tuple[str, int]
     _owner: object = field(repr=False, compare=False)
     _source_identities: tuple[Source, ...] = field(repr=False, compare=False)
     _fingerprint: tuple = field(repr=False, compare=False)
@@ -1065,6 +1066,9 @@ class Registry:
         # После удаления счётчик сохраняется: пусто -> B -> пусто тоже смена
         # состояния, которую не обнаружить сравнением одних pointers.
         self._configuration_revisions: dict[str, int] = {}
+        # Маркер UI переживает remove -> add даже при повторном использовании id().
+        self._source_lifecycle_nonce = uuid.uuid4().hex
+        self._source_lifecycle_revision = 0
         self._generation_pointers: dict[tuple[str, ...], GenerationPointer] = {}
         self._generation_manifests: dict[
             tuple[str, ...], GenerationManifest
@@ -1328,6 +1332,10 @@ class Registry:
                 modules=MappingProxyType(modules),
                 extension_runtime=MappingProxyType(runtime),
                 generations=MappingProxyType(generations),
+                source_lifecycle_token=(
+                    self._source_lifecycle_nonce,
+                    self._source_lifecycle_revision,
+                ),
                 _owner=self,
                 # Сильные ссылки исключают ABA через повторное использование
                 # Python ``id`` после remove/re-add между snapshot и CAS.
@@ -1674,11 +1682,16 @@ class Registry:
                 os.close(descriptor)
         return target_dir / target
 
+    def _advance_source_lifecycle_revision(self) -> None:
+        """Отметить публикацию или снятие источника под ``_lock``."""
+        self._source_lifecycle_revision += 1
+
     def _advance_configuration_revision(self, name: str) -> None:
         """Отметить смену базы под ``_lock``, включая удаление и restore."""
         self._configuration_revisions[name] = (
             self._configuration_revisions.get(name, 0) + 1
         )
+        self._advance_source_lifecycle_revision()
 
     @_protect_source_operation
     def add_configuration(
@@ -2033,6 +2046,7 @@ class Registry:
                 )
             self.extension_runtime[configuration] = loaded
             self.sources[source_id] = source
+            self._advance_source_lifecycle_revision()
         return source
 
     def _modules_root(self, configuration: str) -> Path:
@@ -2505,8 +2519,10 @@ class Registry:
                 if source.kind in (KIND_MODULES, KIND_EXTENSION)
             } | set(self.modules)
             for source_id in code_ids:
-                self.sources.pop(source_id, None)
-                self.modules.pop(source_id, None)
+                removed_source = self.sources.pop(source_id, None)
+                removed_modules = self.modules.pop(source_id, None)
+                if removed_source is not None or removed_modules is not None:
+                    self._advance_source_lifecycle_revision()
                 self._modules_generation[source_id] = (
                     self._modules_generation.get(source_id, 0) + 1
                 )
@@ -2984,6 +3000,7 @@ class Registry:
                         except OSError:
                             pass
                         raise
+                    self._advance_source_lifecycle_revision()
                 if временный_кэш is not None:
                     try:
                         файлы_кэша = tuple(временный_кэш.iterdir())
@@ -3348,7 +3365,9 @@ class Registry:
             if прежний_поток is not None and прежний_поток.is_alive() and прежние:
                 # Текущая сборка владеет своим Source. Подмена его
                 # объектом из JSON обесценила бы её CAS-публикацию.
-                self.sources[source.id] = прежние.source
+                if self.sources.get(source.id) is not прежние.source:
+                    self.sources[source.id] = прежние.source
+                    self._advance_source_lifecycle_revision()
                 return
             if self.sources.get(source.id) is not None and прежние is not None:
                 # Живой reparse мог успеть завершиться до второго
@@ -3356,6 +3375,7 @@ class Registry:
                 # старая строка registry не имеет права их откатывать.
                 return
             self.sources[source.id] = source
+            self._advance_source_lifecycle_revision()
             поколение = self._следующее_поколение_модулей(source.id)
             if source.locator_generation <= 0:
                 # Старые registry.json не знали стабильного поколения. Их
@@ -3701,6 +3721,7 @@ class Registry:
             # и заменяет прежнюю запись, другая версия дополняет набор.
             self.syntax_versions[source.id] = source
             self.sources[source.id] = source
+            self._advance_source_lifecycle_revision()
             self._relation_cache.clear()
             snapshot = dict(self.syntax_versions)
 
@@ -3865,6 +3886,8 @@ class Registry:
             prepared, problems = self._prepare_syntax(versions, preloaded)
             with self._lock:
                 if self._fingerprint(self.syntax_versions) == self._fingerprint(versions):
+                    if self.syntax is not prepared:
+                        self._advance_source_lifecycle_revision()
                     self.syntax = prepared
                     self._relation_cache.clear()
                     for problem in problems:
@@ -4078,6 +4101,7 @@ class Registry:
                 текущий = self.sources.pop(sid, None)
                 if текущий is None:
                     continue
+                self._advance_source_lifecycle_revision()
                 if текущий.kind in (KIND_MODULES, KIND_EXTENSION):
                     try:
                         coverage_log.remove(self.data_dir, sid)
@@ -4986,6 +5010,7 @@ class Registry:
                 for source_id in removable:
                     if self.sources.get(source_id) is memory_sources[source_id]:
                         self.sources.pop(source_id, None)
+                        self._advance_source_lifecycle_revision()
                 return len(removable)
 
     def _build_native_generation_runtime(

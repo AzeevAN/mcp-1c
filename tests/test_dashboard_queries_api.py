@@ -75,8 +75,12 @@ def test_изменение_источника_во_время_поиска_не
     assert result.json()["sources_revision"] is None
 
 
-def test_удаление_и_возврат_того_же_имени_не_восстанавливает_ревизию(tmp_path):
+def test_удаление_и_возврат_того_же_имени_не_восстанавливает_ревизию(tmp_path, monkeypatch):
+    from mcp1c import dashboard_runtime
     from mcp1c.dashboard_runtime import _queries_setup_payload
+
+    # Адрес объекта может быть повторно использован после удаления источника.
+    monkeypatch.setattr(dashboard_runtime, "id", lambda _: 1, raising=False)
     registry = _registry(tmp_path)
     before = _queries_setup_payload(registry)["sources_revision"]
     registry.remove(build_configuration().name)
@@ -84,6 +88,59 @@ def test_удаление_и_возврат_того_же_имени_не_вос
     registry.add_configuration(write_export(tmp_path / "incoming", build_configuration()))
     restored = _queries_setup_payload(registry)["sources_revision"]
     assert len({before, empty, restored}) == 3
+
+    # Между следующими remove/add нет запроса: ревизия должна помнить смену.
+    registry.remove(build_configuration().name)
+    registry.add_configuration(write_export(tmp_path / "incoming", build_configuration()))
+    assert _queries_setup_payload(registry)["sources_revision"] != restored
+
+
+def test_повторная_загрузка_справки_не_восстанавливает_ревизию(tmp_path, monkeypatch):
+    from mcp1c import dashboard_runtime
+    from mcp1c.dashboard_runtime import _queries_setup_payload
+
+    monkeypatch.setattr(dashboard_runtime, "id", lambda _: 1, raising=False)
+    registry = Registry(tmp_path / "data")
+    path = write_syntax(tmp_path / "data" / "index" / "syntax")
+    source = registry.add_syntax(path)
+    before = _queries_setup_payload(registry)["sources_revision"]
+    registry.remove(source.id)
+    registry.add_syntax(path)
+    assert _queries_setup_payload(registry)["sources_revision"] != before
+
+
+def test_повторная_загрузка_runtime_в_ту_же_секунду_меняет_ревизию(tmp_path, monkeypatch):
+    from mcp1c import registry as registry_module
+    from mcp1c.dashboard_runtime import _queries_setup_payload
+    from test_extension_runtime import _snapshot, _write
+
+    monkeypatch.setattr(registry_module, "_now", lambda: "2026-09-30T00:00:00+00:00")
+    registry = _registry(tmp_path)
+    path = _write(tmp_path / "runtime.json", _snapshot())
+    source = registry.add_extension_runtime(path)
+    before = _queries_setup_payload(registry)["sources_revision"]
+    registry.remove(source.id)
+    registry.add_extension_runtime(path)
+    assert _queries_setup_payload(registry)["sources_revision"] != before
+
+
+def test_повторная_загрузка_модулей_повышает_ревизию_жизненного_цикла(tmp_path, monkeypatch):
+    from mcp1c import registry as registry_module
+    from mcp1c.dashboard_runtime import _queries_setup_payload
+    from test_registry_modules import _выгрузка_в_файлы
+
+    monkeypatch.setattr(registry_module, "_now", lambda: "2026-09-30T00:00:00+00:00")
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    registry = Registry(tmp_path / "data")
+    registry.add_configuration(write_export(incoming, build_configuration(name="Розница")))
+    path = _выгрузка_в_файлы(tmp_path)
+    registry.add_modules(path, configuration="Розница")
+    before = _queries_setup_payload(registry)["sources_revision"]
+    before_token = registry.snapshot().source_lifecycle_token
+    registry.add_modules(path, configuration="Розница")
+    assert registry.snapshot().source_lifecycle_token != before_token
+    assert _queries_setup_payload(registry)["sources_revision"] != before
 
 
 def test_ревизия_учитывает_source_b_и_не_меняется_при_no_op(tmp_path):

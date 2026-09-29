@@ -314,8 +314,7 @@ def _sources_revision(snapshot) -> str:
         tuple(snapshot.sources.items()),
         tuple(snapshot.syntax_versions.items()),
         tuple((key, value.pointer) for key, value in snapshot.generations.items()),
-        tuple((name, id(loaded)) for name, loaded in snapshot.configurations.items()),
-        id(snapshot.syntax),
+        snapshot.source_lifecycle_token,
     )
     return hashlib.sha256(repr(evidence).encode()).hexdigest()
 

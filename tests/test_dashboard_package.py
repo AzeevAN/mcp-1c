@@ -40,15 +40,13 @@ def test_package_data_включает_корневые_branding_assets() -> Non
         assert (DEFAULT_DASHBOARD_DIST / name).is_file()
 
 
-def test_package_data_включает_dashboard_и_manifests_capabilities() -> None:
+def test_package_data_включает_dashboard() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     patterns = project["tool"]["setuptools"]["package-data"]["mcp1c"]
 
     assert patterns == [
         "dashboard_dist/*",
         "dashboard_dist/assets/*",
-        "capability_modules/forms/manifest.json",
-        "capability_modules/metadata_authoring/manifest.json",
     ]
     assert DEFAULT_DASHBOARD_DIST == ROOT / "src" / "mcp1c" / "dashboard_dist"
     index = (DEFAULT_DASHBOARD_DIST / "index.html").read_text(encoding="utf-8")

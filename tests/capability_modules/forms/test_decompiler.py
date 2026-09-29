@@ -7,8 +7,8 @@ from xml.etree import ElementTree as ET
 
 import pytest
 
-from mcp1c.capability_modules.forms.compiler import compile_managed_form
-from mcp1c.capability_modules.forms.decompiler import (
+from form_core.compiler import compile_managed_form
+from form_core.decompiler import (
     decompile_managed_form as _decompile_managed_form,
 )
 
@@ -1233,7 +1233,7 @@ def test_dtd_и_entity_отклоняются_до_xml_parser(monkeypatch, decla
         raise AssertionError("опасная декларация не должна доходить до XML parser")
 
     monkeypatch.setattr(
-        "mcp1c.capability_modules.forms.decompiler.ET.fromstring",
+        "form_core.decompiler.ET.fromstring",
         forbidden_parse,
     )
     result = decompile_managed_form(xml, form_name="ФормаПараметров")
@@ -1248,7 +1248,7 @@ def test_вход_сверх_лимита_отклоняется_до_xml_parser
     xml = _xml()
     limit = len(xml.encode("utf-8")) - 1
     monkeypatch.setattr(
-        "mcp1c.capability_modules.forms.decompiler.MAX_FORM_XML_BYTES",
+        "form_core.decompiler.MAX_FORM_XML_BYTES",
         limit,
     )
 
@@ -1256,7 +1256,7 @@ def test_вход_сверх_лимита_отклоняется_до_xml_parser
         raise AssertionError("слишком большой XML не должен разбираться")
 
     monkeypatch.setattr(
-        "mcp1c.capability_modules.forms.decompiler.ET.fromstring",
+        "form_core.decompiler.ET.fromstring",
         forbidden_parse,
     )
     result = decompile_managed_form(xml, form_name="ФормаПараметров")

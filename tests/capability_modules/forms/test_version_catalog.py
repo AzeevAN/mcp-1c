@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from mcp1c.capability_modules.forms.event_catalog import event_signature
-from mcp1c.capability_modules.forms.version_catalog import (
+from form_core.event_catalog import event_signature
+from form_core.version_catalog import (
     DEFAULT_PLATFORM_PROFILE,
     platform_profile,
     platform_resolution,

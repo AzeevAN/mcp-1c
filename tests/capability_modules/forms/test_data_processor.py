@@ -4,10 +4,10 @@ from copy import deepcopy
 
 import pytest
 
-from mcp1c.capability_modules.forms.checker import check_managed_form
-from mcp1c.capability_modules.forms.compiler import compile_managed_form
-from mcp1c.capability_modules.forms.decompiler import decompile_managed_form
-from mcp1c.capability_modules.forms.models import (
+from form_core.checker import check_managed_form
+from form_core.compiler import compile_managed_form
+from form_core.decompiler import decompile_managed_form
+from form_core.models import (
     FormsContractError,
     parse_managed_form_spec,
 )
@@ -105,7 +105,7 @@ def test_data_processor_default_form_can_be_empty_like_configurator():
     assert decompiled.specification == compiled.specification
 
 
-def test_data_processor_checker_rejects_application_bsl():
+def test_data_processor_checker_accepts_application_bsl_without_bindings():
     specification = _specification()
     compiled = compile_managed_form(specification)
     module_bsl = (
@@ -120,10 +120,12 @@ def test_data_processor_checker_rejects_application_bsl():
         module_bsl=module_bsl,
     )
 
-    assert checked.coverage.bsl_static == "failed"
-    assert "unsupported_data_processor_module_bsl" in {
-        item.code for item in checked.diagnostics
-    }
+    assert checked.coverage.bsl_static == "not_checked"
+    assert not any(item.status == "failed" for item in checked.diagnostics)
+    assert any(
+        item.code == "bsl_api_not_checked" and item.status == "not_checked"
+        for item in checked.diagnostics
+    )
 
 
 @pytest.mark.parametrize(
@@ -148,36 +150,6 @@ def test_data_processor_checker_rejects_application_bsl():
         (
             lambda value: value["attributes"][0].update({"name": "Данные"}),
             "$.attributes[0].name",
-        ),
-        (
-            lambda value: value["commands"].append(
-                {
-                    "name": "Выполнить",
-                    "title": {"ru": "Выполнить"},
-                    "action": "Выполнить",
-                }
-            ),
-            "$.commands",
-        ),
-        (
-            lambda value: value["events"].append(
-                {
-                    "event": "OnCreateAtServer",
-                    "handler": "ПриСозданииНаСервере",
-                }
-            ),
-            "$.events",
-        ),
-        (
-            lambda value: value["elements"].append(
-                {
-                    "kind": "button",
-                    "name": "Записать",
-                    "command": "Write",
-                    "command_kind": "form_standard",
-                }
-            ),
-            "$.elements[1]",
         ),
     ],
 )

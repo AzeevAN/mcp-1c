@@ -6,12 +6,12 @@ from typing import get_args, get_type_hints
 
 import pytest
 
-from mcp1c.capability_modules.forms.rules import (
+from form_core.rules import (
     RULE_TOPICS,
     FormsRuleQueryError,
     get_managed_form_rules,
 )
-from mcp1c.capability_modules.forms import models
+from form_core import models
 
 
 def test_темы_правил_закрыты_и_имеют_стабильный_порядок():
@@ -802,6 +802,12 @@ def test_events_публикуют_закрытый_owner_aware_каталог_�
         "async": "Асинх и Ждать только в клиентском контексте платформы 8.3.18+",
     }
     by_code = {rule["code"]: rule for rule in payload["rules"]}
+    dynamic_column = by_code["dynamic_value_table_column"]
+    assert dynamic_column["status"] == "supported"
+    assert "ИзменитьРеквизиты" in dynamic_column["summary"]
+    assert "ДанныеФормыКоллекция не имеет свойства Колонки" in dynamic_column[
+        "summary"
+    ]
     assert by_code["on_create_at_server_stub"]["value"] == {
         "directive": "&НаСервере",
         "parameters": ["Отказ", "СтандартнаяОбработка"],

@@ -8,10 +8,16 @@ import re
 import uuid
 import xml.etree.ElementTree as ET
 
+from form_core import check_managed_form, compile_managed_form
+
 
 MAX_ARTIFACTS = 32
 MAX_ARTIFACT_BYTES = 2 * 1024 * 1024
 MAX_TOTAL_BYTES = 8 * 1024 * 1024
+MAX_DATA_PROCESSOR_MODULE_BYTES = 256 * 1024
+DATA_PROCESSOR_HANDLER_BLOCKERS = frozenset(
+    {"handler_not_found", "handler_kind_differs", "handler_arity_mismatch"}
+)
 MD_NAMESPACE = "http://v8.1c.ru/8.3/MDClasses"
 LOGFORM_NAMESPACE = "http://v8.1c.ru/8.3/xcf/logform"
 DCS_SCHEMA_NAMESPACE = "http://v8.1c.ru/8.1/data-composition-system/schema"
@@ -653,39 +659,62 @@ def _check_forms(
                         form_xml_path,
                         "Основная форма обработки требует единственный главный реквизит `Объект`.",
                     )
-                structural_behavior = {
-                    _local(node.tag) for node in internal_form_entry[0].iter()
-                } & {
-                    "Button",
-                    "ButtonGroup",
-                    "Command",
-                    "CommandBar",
-                    "CommandName",
-                    "CommandSource",
-                    "Event",
-                    "Popup",
-                }
-                if any(
-                    _local(node.tag) in {"AutoCommandBar", "ContextMenu"}
-                    and len(node) > 0
+                module_bsl = artifacts.get(module_path)
+                if module_bsl is None and any(
+                    _local(node.tag) in {"Action", "Event"}
                     for node in internal_form_entry[0].iter()
                 ):
-                    structural_behavior.add("CommandContainer")
-                if structural_behavior:
                     report.fail(
                         "forms",
-                        "unsupported_data_processor_form_behavior",
-                        form_xml_path,
-                        "Команды и события формы обработки не входят в базовый контракт.",
-                    )
-                module_bsl = artifacts.get(module_path)
-                if module_bsl is not None and not _scaffold_only_module(module_bsl):
-                    report.fail(
-                        "forms",
-                        "unsupported_data_processor_module_bsl",
+                        "missing_form_module",
                         module_path,
-                        "Прикладной BSL формы обработки не входит в базовый контракт.",
+                        "Команды и события формы обработки требуют Module.bsl.",
                     )
+                if module_bsl is not None and len(module_bsl.encode("utf-8-sig")) > MAX_DATA_PROCESSOR_MODULE_BYTES:
+                    report.fail(
+                        "forms",
+                        "data_processor_module_too_large",
+                        module_path,
+                        f"Модуль формы обработки превышает {MAX_DATA_PROCESSOR_MODULE_BYTES} байт.",
+                    )
+                checked_form = check_managed_form(
+                    artifacts[form_xml_path],
+                    form_name=form_name,
+                    context={
+                        "owner": f"Обработка.{object_name}",
+                        "role": "object",
+                    },
+                    module_bsl=module_bsl,
+                )
+                for diagnostic in checked_form.diagnostics:
+                    if diagnostic.status == "failed" or diagnostic.code in DATA_PROCESSOR_HANDLER_BLOCKERS:
+                        report.fail(
+                            "forms",
+                            diagnostic.code,
+                            form_xml_path if diagnostic.level != "bsl_static" else module_path,
+                            diagnostic.message,
+                        )
+                if checked_form.specification is None:
+                    report.fail(
+                        "forms",
+                        "invalid_data_processor_form",
+                        form_xml_path,
+                        "Forms не смог восстановить спецификацию формы обработки.",
+                    )
+                elif not any(
+                    item.status == "failed" or item.code in DATA_PROCESSOR_HANDLER_BLOCKERS
+                    for item in checked_form.diagnostics
+                ):
+                    canonical_xml = compile_managed_form(
+                        checked_form.specification
+                    ).artifacts[0].content
+                    if canonical_xml != artifacts[form_xml_path]:
+                        report.fail(
+                            "forms",
+                            "noncanonical_data_processor_form_xml",
+                            form_xml_path,
+                            "Передайте Form.xml без ручных изменений из compile_managed_form.",
+                        )
             if kind.object_kind == "Отчет":
                 if main_names != ["Отчет"]:
                     report.fail(

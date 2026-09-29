@@ -6,7 +6,7 @@ import re
 from collections import Counter
 from xml.etree import ElementTree as ET
 
-from mcp1c.bsl_lex import разобрать
+from .bsl_lex import _код_строки, нормализовать, разобрать
 
 from .command_catalog import standard_command_supported
 from .decompiler import decompile_managed_form
@@ -684,6 +684,59 @@ def _scaffold_only_module(module_bsl: str) -> bool:
     return True
 
 
+def _check_form_value_table_columns(
+    specification: object, module_bsl: str | None
+) -> list[Diagnostic]:
+    if not isinstance(specification, dict) or module_bsl is None:
+        return []
+    attributes = specification.get("attributes")
+    if not isinstance(attributes, list):
+        return []
+    table_names = [
+        item["name"]
+        for item in attributes
+        if isinstance(item, dict)
+        and isinstance(item.get("name"), str)
+        and isinstance(item.get("type"), dict)
+        and item["type"].get("kind") == "value_table"
+    ]
+    if not table_names:
+        return []
+
+    # Лексер убирает комментарии и литералы, не сдвигая номера строк.
+    masked_lines: list[str] = []
+    in_string = False
+    for line in нормализовать(module_bsl).split("\n"):
+        masked, in_string = _код_строки(line, in_string, False)
+        masked_lines.append(masked)
+    masked_bsl = "\n".join(masked_lines)
+
+    diagnostics: list[Diagnostic] = []
+    for name in table_names:
+        match = re.search(
+            rf"(?i)(?<![\w.]){re.escape(name)}\s*\.\s*Колонки\b",
+            masked_bsl,
+        )
+        if match is None:
+            continue
+        line = masked_bsl.count("\n", 0, match.start()) + 1
+        diagnostics.append(
+            _diagnostic(
+                "failed",
+                "form_value_table_columns_unavailable",
+                "$module_bsl",
+                (
+                    f"Строка {line}: реквизит формы {name} имеет тип "
+                    "ДанныеФормыКоллекция без свойства Колонки. Для изменения "
+                    "структуры используйте ИзменитьРеквизиты с вложенным "
+                    "РеквизитФормы и добавьте элемент таблицы."
+                ),
+                level="bsl_static",
+            )
+        )
+    return diagnostics
+
+
 def check_managed_form(
     form_xml: object,
     *,
@@ -752,9 +805,15 @@ def check_managed_form(
     specification_context = (
         specification.get("context") if isinstance(specification, dict) else None
     )
+    table_diagnostics = _check_form_value_table_columns(
+        specification, safe_module
+    )
+    if table_diagnostics:
+        bsl_status = "failed"
+        bsl_diagnostics = [*bsl_diagnostics, *table_diagnostics]
     if (
         isinstance(specification_context, dict)
-        and specification_context.get("owner", "").startswith(("Обработка.", "Отчет."))
+        and specification_context.get("owner", "").startswith("Отчет.")
         and specification_context.get("role") == "object"
         and safe_module is not None
         and not _scaffold_only_module(safe_module)
@@ -764,13 +823,31 @@ def check_managed_form(
             *bsl_diagnostics,
             _diagnostic(
                 "failed",
-                (
-                    "unsupported_report_module_bsl"
-                    if specification_context.get("owner", "").startswith("Отчет.")
-                    else "unsupported_data_processor_module_bsl"
-                ),
+                "unsupported_report_module_bsl",
                 "$module_bsl",
                 "Прикладной BSL основной формы не входит в базовый контракт.",
+                level="bsl_static",
+            ),
+        ]
+    if (
+        isinstance(specification_context, dict)
+        and specification_context.get("owner", "").startswith("Обработка.")
+        and specification_context.get("role") == "object"
+        and safe_module is not None
+        and not _scaffold_only_module(safe_module)
+    ):
+        bsl_diagnostics = [
+            *bsl_diagnostics,
+            _diagnostic(
+                "not_checked",
+                "bsl_api_not_checked",
+                "$module_bsl",
+                (
+                    "Привязки обработчиков проверены, но методы и типы BSL не "
+                    "проверены. Сверьте используемые API через search_syntax/"
+                    "get_syntax по загруженной справке и скомпилируйте модуль "
+                    "в 1С."
+                ),
                 level="bsl_static",
             ),
         ]

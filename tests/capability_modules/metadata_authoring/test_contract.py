@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from mcp1c.capability_modules.metadata_authoring.checker import (
+from metadata_core.checker import (
     check_metadata_artifacts,
 )
 

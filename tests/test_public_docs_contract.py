@@ -163,13 +163,14 @@ def test_публичные_контракты_источников_ролей_�
     assert "startup-only capability `role_access`" in tools
     assert "даже когда готового индекса ролей ещё" in tools
     assert "даже если готового индекса ролей ещё нет" in readme
-    assert "после intake confirm" not in tools.split("Четыре Forms-инструмента", 1)[0]
+    assert "после intake confirm" not in tools.split("Создание и проверка форм", 1)[0]
     assert "`GET /api/v1/capabilities`" in dashboard
     assert "`PUT /api/v1/capabilities`" in dashboard
     assert "Административные ручки требуют `ADMIN_TOKEN`" in dashboard
     for text in (tools, readme):
-        assert "5 закрытых веток specification" in text
-    assert "`data_processor` и `report`" in tools
+        assert "1c-form-creator" in text
+        assert "1c-metadata-creator" in text
+    assert "Семь прежних authoring-инструментов" in tools
 
 
 def test_инструкция_загрузки_разделяет_source_a_source_b_и_публикацию():

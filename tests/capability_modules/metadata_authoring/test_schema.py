@@ -5,11 +5,11 @@ from copy import deepcopy
 import pytest
 from jsonschema import Draft202012Validator
 
-from mcp1c.capability_modules.metadata_authoring.compiler import (
+from metadata_core.compiler import (
     MetadataAuthoringContractError,
     compile_metadata_object,
 )
-from mcp1c.capability_modules.metadata_authoring.schema import (
+from metadata_core.schema import (
     METADATA_SPECIFICATION_SCHEMA,
 )
 

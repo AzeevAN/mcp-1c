@@ -4,10 +4,10 @@ from copy import deepcopy
 
 import pytest
 
-from mcp1c.capability_modules.forms.checker import check_managed_form
-from mcp1c.capability_modules.forms.compiler import compile_managed_form
-from mcp1c.capability_modules.forms.decompiler import decompile_managed_form
-from mcp1c.capability_modules.forms.models import FormsContractError, parse_managed_form_spec
+from form_core.checker import check_managed_form
+from form_core.compiler import compile_managed_form
+from form_core.decompiler import decompile_managed_form
+from form_core.models import FormsContractError, parse_managed_form_spec
 
 
 def _specification() -> dict[str, object]:

@@ -5,14 +5,14 @@ from copy import deepcopy
 import pytest
 from jsonschema import Draft202012Validator
 
-from mcp1c.capability_modules.forms.compiler import compile_managed_form
-from mcp1c.capability_modules.metadata_authoring.checker import check_metadata_artifacts
-from mcp1c.capability_modules.metadata_authoring.compiler import (
+from form_core.compiler import compile_managed_form
+from metadata_core.checker import check_metadata_artifacts
+from metadata_core.compiler import (
     MetadataAuthoringContractError,
     compile_metadata_object,
 )
-from mcp1c.capability_modules.metadata_authoring.rules import get_metadata_authoring_rules
-from mcp1c.capability_modules.metadata_authoring.schema import METADATA_SPECIFICATION_SCHEMA
+from metadata_core.rules import get_metadata_authoring_rules
+from metadata_core.schema import METADATA_SPECIFICATION_SCHEMA
 
 
 def _form_artifacts(*, with_local_attribute: bool = False) -> tuple[str, str]:

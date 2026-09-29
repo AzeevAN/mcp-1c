@@ -27,8 +27,6 @@ ENCODING = "o200k_base"
 METHOD = "canonical tools/list delta: UTF-8 JSON, sort_keys, compact separators"
 MEASURED_AT = {
     "module_source_download": "2026-09-26",
-    "forms": "2026-09-20",
-    "metadata_authoring": "2026-09-20",
     "reference": "2026-09-21",
     "role_access": "2026-09-22",
 }

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from mcp1c.capability_modules.forms.models import (
+from form_core.models import (
     BSL_RESERVED_KEYWORDS,
     FormsContractError,
     ManagedFormSpec,

@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from mcp1c.capability_modules.forms.compiler import compile_managed_form
-from mcp1c.capability_modules.forms.decompiler import decompile_managed_form
-from mcp1c.capability_modules.forms.models import (
+from form_core.compiler import compile_managed_form
+from form_core.decompiler import decompile_managed_form
+from form_core.models import (
     FormsContractError,
     parse_managed_form_spec,
 )

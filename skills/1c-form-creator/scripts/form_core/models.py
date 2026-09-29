@@ -2540,19 +2540,19 @@ def parse_managed_form_spec(payload: object) -> ManagedForm:
                     f"$.attributes[{main_object_indexes[0]}].saved_data",
                     "SavedData не входит в базовый контракт основной формы отчета.",
                 )
-        if context.owner.startswith(("Обработка.", "Отчет.")) and commands:
+        if context.owner.startswith("Отчет.") and commands:
             reader.issue(
                 "unsupported_owner_role_feature",
                 "$.commands",
                 "Команды основной формы не входят в базовый контракт.",
             )
-        if context.owner.startswith(("Обработка.", "Отчет.")) and events:
+        if context.owner.startswith("Отчет.") and events:
             reader.issue(
                 "unsupported_owner_role_feature",
                 "$.events",
                 "События основной формы не входят в базовый контракт.",
             )
-        if context.owner.startswith(("Обработка.", "Отчет.")):
+        if context.owner.startswith("Отчет."):
             for element, path, _parent_table in walked:
                 if isinstance(
                     element,

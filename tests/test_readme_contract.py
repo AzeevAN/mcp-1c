@@ -37,7 +37,7 @@ def test_счётчики_pytest_в_публичных_документах_со
     assert int(вклад.group(1)) == int(collected.group(1))
 
 
-def test_readme_выделяет_модульную_систему_и_forms() -> None:
+def test_readme_различает_mcp_и_локальные_skills() -> None:
     текст = (ROOT / "README.md").read_text(encoding="utf-8")
     раздел = текст.split("## Модульная система возможностей", 1)[1]
     раздел = раздел.split("\n## ", 1)[0]
@@ -46,16 +46,9 @@ def test_readme_выделяет_модульную_систему_и_forms() ->
     assert "подключаемых capability-модулей" in раздел
     assert "после перезапуска" in раздел
     assert "новую MCP-сессию" in раздел
-    assert "Forms («Управляемые формы»)" in раздел
-    assert "[описании инструментов](docs/tools.md)" in раздел
-    for tool in (
-        "get_managed_form_rules",
-        "compile_managed_form",
-        "check_managed_form",
-        "decompile_managed_form",
-    ):
-        assert tool in текст
-    assert "сам не изменяет конфигурацию" in раздел
+    assert "1c-form-creator" in раздел
+    assert "1c-metadata-creator" in раздел
+    assert "не\nпубликуются как MCP-инструменты" in раздел
 
 
 def test_список_исходников_называет_индексы_вызовов_и_форм():

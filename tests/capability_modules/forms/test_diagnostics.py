@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from mcp1c.capability_modules.forms.diagnostics import (
+from form_core.diagnostics import (
     Artifact,
     Coverage,
     Diagnostic,

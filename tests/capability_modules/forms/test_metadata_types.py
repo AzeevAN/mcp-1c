@@ -1,6 +1,6 @@
 import pytest
 
-from mcp1c.capability_modules.forms.metadata_types import (
+from form_core.metadata_types import (
     dynamic_list_registry_ref,
     dynamic_list_xml_table,
     metadata_object_registry_ref,

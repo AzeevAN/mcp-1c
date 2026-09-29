@@ -60,6 +60,4 @@ where = ["src"]
 mcp1c = [
     "dashboard_dist/*",
     "dashboard_dist/assets/*",
-    "capability_modules/forms/manifest.json",
-    "capability_modules/metadata_authoring/manifest.json",
 ]

@@ -14,6 +14,11 @@ import zipfile
 from pathlib import Path
 
 import pytest
+import sys
+
+_ROOT = Path(__file__).resolve().parents[1]
+for _skill in ("1c-form-creator", "1c-metadata-creator"):
+    sys.path.insert(0, str(_ROOT / "skills" / _skill / "scripts"))
 from starlette.testclient import TestClient
 
 from mcp1c.model import Configuration, Field, MetadataObject, TabularPart

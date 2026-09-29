@@ -1,4 +1,4 @@
-"""Публичная JSON Schema входа Metadata Authoring без runtime-перехвата."""
+"""Закрытая JSON Schema локальной specification метаданных."""
 
 from __future__ import annotations
 

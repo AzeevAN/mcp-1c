@@ -832,6 +832,33 @@ _RULES: dict[RuleTopic, tuple[FormRule, ...]] = {
     ),
     "commands_events": (
         FormRule(
+            "dynamic_value_table_column",
+            "supported",
+            (
+                "Если пользователь добавляет колонку value_table во время работы "
+                "формы, добавьте вложенный РеквизитФормы через "
+                "ИзменитьРеквизиты, затем поле в таблицу через "
+                "Элементы.Вставить и задайте ПутьКДанным "
+                "<ИмяТаблицы>.<ИмяКолонки>. ДанныеФормыКоллекция не имеет "
+                "свойства Колонки. Сигнатуры и контекст вызовов сверяйте "
+                "по справке платформы."
+            ),
+            "platform_documentation",
+        ),
+        FormRule(
+            "data_processor_module_handoff",
+            "required",
+            (
+                "Для встроенной Обработка.* compiler создаёт XML формы и каркас "
+                "Module.bsl. Агент реализует тело обработчиков в Module.bsl, "
+                "повторно вызывает check_managed_form с неизменённым Form.xml "
+                "и итоговым модулем, затем передаёт оба точных текста в "
+                "compile_metadata_object. XML вручную не пересобирается; "
+                "статическая проверка BSL не заменяет компиляцию в 1С."
+            ),
+            "contract_decision",
+        ),
+        FormRule(
             "custom_command_reference",
             "required",
             (

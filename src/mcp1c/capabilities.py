@@ -24,6 +24,7 @@ SERVER_SETTINGS_VERSION = 2
 MAX_SERVER_SETTINGS_BYTES = 64 * 1024
 _NAME_PATTERN = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 logger = logging.getLogger(__name__)
+_RETIRED_CAPABILITIES = frozenset({"forms", "metadata_authoring"})
 
 
 class CapabilityConfigurationError(ValueError):
@@ -84,22 +85,6 @@ CAPABILITY_DEFINITIONS: Mapping[str, CapabilityDefinition] = {
         "Добавляет 2 инструмента для поиска и чтения встроенного подписанного пакета общей справки по BSL, языку запросов, СКД и Конфигуратору.",
         2, 1070, "o200k_base", "2026-09-21",
         "tools/measure_capability_context.py reference --check",
-    ),
-    "forms": CapabilityDefinition(
-        "forms",
-        "mcp1c.capability_modules.forms:load",
-        "Управляемые формы",
-        "Добавляет 4 инструмента для объектных форм справочника, документа, встроенной обработки и отчёта, форм списка и выбора, а также форм записи и набора записей регистра: правила, компиляцию, декомпиляцию и проверку. Конфигурацию 1С не изменяет.",
-        4, 6141, "o200k_base", "2026-09-20",
-        "tools/measure_capability_context.py forms --check",
-    ),
-    "metadata_authoring": CapabilityDefinition(
-        "metadata_authoring",
-        "mcp1c.capability_modules.metadata_authoring:load",
-        "Создание метаданных",
-        "Добавляет 3 pure-инструмента: правила, компиляцию и статическую проверку артефактов справочника, непроводимого документа, регистра сведений, встроенной обработки или отчёта с основной управляемой формой и минимальной системной СКД. Содержательная СКД, макеты, внешние .epf и .erf не поддерживаются.",
-        3, 5762, "o200k_base", "2026-09-20",
-        "tools/measure_capability_context.py metadata_authoring --check",
     ),
     "role_access": CapabilityDefinition(
         "role_access",
@@ -253,8 +238,17 @@ class CapabilitySettingsStore:
             raise CapabilityConfigurationError(
                 f"{self.path}: повреждена секция `capabilities`."
             )
+        enabled = capabilities.get("enabled")
+        if not isinstance(enabled, list) or any(not isinstance(name, str) for name in enabled):
+            raise CapabilityConfigurationError(
+                f"{self.path}: `capabilities.enabled` должен быть массивом имён."
+            )
+        if len(set(enabled)) != len(enabled):
+            raise CapabilityConfigurationError(
+                f"{self.path}: имя capability-модуля нельзя повторять."
+            )
         _normalize_names(
-            capabilities.get("enabled"),
+            [name for name in enabled if name not in _RETIRED_CAPABILITIES],
             source=str(self.path),
             definitions=self.definitions,
         )
@@ -266,7 +260,8 @@ class CapabilitySettingsStore:
             payload = self._read_payload()
             if payload is None:
                 return None
-            enabled = payload["capabilities"]["enabled"]
+            enabled = [name for name in payload["capabilities"]["enabled"]
+                       if name not in _RETIRED_CAPABILITIES]
             if payload["version"] == 1:
                 # В старом формате переключателя скачивания не было: оно
                 # было включено всегда, поэтому сохраняем это поведение.

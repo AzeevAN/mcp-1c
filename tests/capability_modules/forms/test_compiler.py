@@ -7,8 +7,8 @@ from xml.etree import ElementTree as ET
 
 import pytest
 
-from mcp1c.capability_modules.forms.compiler import compile_managed_form
-from mcp1c.capability_modules.forms.models import FormsContractError
+from form_core.compiler import compile_managed_form
+from form_core.models import FormsContractError
 from mcp1c.bsl_lex import разобрать
 
 

@@ -48,17 +48,11 @@ CORE_TOOLS = [
     "search_syntax",
     "get_syntax",
 ]
-FORMS_TOOLS = [
-    "get_managed_form_rules",
-    "compile_managed_form",
-    "decompile_managed_form",
-    "check_managed_form",
-]
-METADATA_AUTHORING_TOOLS = [
-    "get_metadata_authoring_rules",
-    "compile_metadata_object",
-    "check_metadata_artifacts",
-]
+REMOVED_AUTHORING_TOOLS = {
+    "get_managed_form_rules", "compile_managed_form", "decompile_managed_form",
+    "check_managed_form", "get_metadata_authoring_rules",
+    "compile_metadata_object", "check_metadata_artifacts",
+}
 
 
 @pytest.fixture
@@ -88,7 +82,7 @@ def test_default_не_публикует_и_не_импортирует_capabili
     assert _names(server) == CORE_TOOLS
     assert "mcp1c.capability_modules.forms" not in sys.modules
     assert "mcp1c.capability_modules.metadata_authoring" not in sys.modules
-    assert set(METADATA_AUTHORING_TOOLS).isdisjoint(_names(server))
+    assert REMOVED_AUTHORING_TOOLS.isdisjoint(_names(server))
 
 
 @pytest.mark.anyio
@@ -230,13 +224,13 @@ def test_main_игнорирует_устаревшую_env_переменную
 
 def test_server_settings_переживают_restart_независимо_от_env(tmp_path, monkeypatch):
     store = CapabilitySettingsStore(tmp_path / "data")
-    store.save(("forms", "module_source_download"))
+    store.save(("reference", "module_source_download"))
     monkeypatch.setenv("MCP1C_CAPABILITIES", "unknown")
 
     resolved_store, enabled = resolve_capability_settings(tmp_path / "data")
 
-    assert enabled == ("module_source_download", "forms")
-    assert resolved_store.load() == ("module_source_download", "forms")
+    assert enabled == ("module_source_download", "reference")
+    assert resolved_store.load() == ("module_source_download", "reference")
 
 
 def test_enable_и_disable_применяются_двумя_независимыми_startup(
@@ -279,19 +273,19 @@ print(json.dumps([tool.name for tool in asyncio.run(server.list_tools())]))
         )
         return json.loads(result.stdout)
 
-    store.save(("forms", "module_source_download"))
+    store.save(("role_access", "module_source_download"))
     enabled_tools = startup_tools()
     store.save(())
     disabled_tools = startup_tools()
 
-    assert enabled_tools == [*CORE_TOOLS, *FORMS_TOOLS]
+    assert enabled_tools == [*CORE_TOOLS, "find_roles_for_access", "get_role_access"]
     assert disabled_tools == [tool for tool in CORE_TOOLS if tool != "get_module_source_file"]
 
 
 def test_после_удаления_settings_status_показывает_дефолт(tmp_path, monkeypatch):
     initial = CapabilitySettingsStore(tmp_path / "data")
-    initial.save(("forms",))
-    monkeypatch.setenv("MCP1C_CAPABILITIES", "forms")
+    initial.save(("reference",))
+    monkeypatch.setenv("MCP1C_CAPABILITIES", "reference")
     store, active = resolve_capability_settings(tmp_path / "data")
     runtime = CapabilityRuntime(store, active=active)
 
@@ -304,7 +298,7 @@ def test_после_удаления_settings_status_показывает_деф
 def test_без_server_settings_применяется_дефолт_независимо_от_env(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setenv("MCP1C_CAPABILITIES", "forms")
+    monkeypatch.setenv("MCP1C_CAPABILITIES", "reference")
     store, enabled = resolve_capability_settings(tmp_path / "data")
     runtime = CapabilityRuntime(store, active=enabled)
 
@@ -313,20 +307,39 @@ def test_без_server_settings_применяется_дефолт_незави
     assert runtime.payload()["pending_restart"] is False
 
 
-def test_v1_settings_сохраняют_исторический_список_и_включают_скачивание(tmp_path):
+def test_v1_settings_сохраняют_справку_и_включают_скачивание(tmp_path):
     store = CapabilitySettingsStore(tmp_path)
     store.path.write_text(
-        '{"version":1,"capabilities":{"enabled":["forms"]}}',
+        '{"version":1,"capabilities":{"enabled":["reference"]}}',
         encoding="utf-8",
     )
 
-    assert store.load() == ("module_source_download", "forms")
+    assert store.load() == ("module_source_download", "reference")
 
-    store.save(("forms",))
+    store.save(("reference",))
     saved = json.loads(store.path.read_text(encoding="utf-8"))
     assert saved["version"] == 2
-    assert saved["capabilities"]["enabled"] == ["forms"]
-    assert store.load() == ("forms",)
+    assert saved["capabilities"]["enabled"] == ["reference"]
+    assert store.load() == ("reference",)
+
+
+@pytest.mark.parametrize("version", (1, 2))
+def test_старые_authoring_settings_не_ломают_запуск_и_очищаются(tmp_path, version):
+    store = CapabilitySettingsStore(tmp_path)
+    store.path.write_text(
+        json.dumps({
+            "version": version,
+            "capabilities": {"enabled": ["forms", "metadata_authoring", "reference"]},
+        }),
+        encoding="utf-8",
+    )
+
+    expected = ("module_source_download", "reference") if version == 1 else ("reference",)
+    assert store.load() == expected
+    store.save(store.load())
+    assert json.loads(store.path.read_text(encoding="utf-8"))["capabilities"]["enabled"] == list(expected)
+    with pytest.raises(CapabilityConfigurationError):
+        store.save(("forms",))
 
 
 def test_v2_settings_позволяют_отключить_скачивание_при_пустом_списке(tmp_path):
@@ -363,21 +376,19 @@ def test_dashboard_показывает_сохранённое_отключен�
 
 def test_status_показывает_выбор_до_restart(tmp_path):
     store = CapabilitySettingsStore(tmp_path)
-    store.save(("forms", "module_source_download"))
+    store.save(("reference", "module_source_download"))
     runtime = CapabilityRuntime(store, active=store.load())
     store.save(())
 
     payload = runtime.payload()
     assert payload["available"] == [
-        "module_source_download", "reference", "forms",
-        "metadata_authoring", "role_access",
+        "module_source_download", "reference", "role_access",
     ]
-    assert payload["active"] == ["module_source_download", "forms"]
+    assert payload["active"] == ["module_source_download", "reference"]
     assert payload["desired"] == []
     assert payload["pending_restart"] is True
     assert {module["id"] for module in payload["modules"]} == {
-        "module_source_download", "reference", "forms",
-        "metadata_authoring", "role_access",
+        "module_source_download", "reference", "role_access",
     }
 
 
@@ -412,8 +423,8 @@ def test_повреждённые_server_settings_отклоняются_до_re
         {"version": 1.0, "capabilities": {"enabled": []}},
         {"version": 1},
         {"version": 1, "capabilities": []},
-        {"version": 1, "capabilities": {"enabled": "forms"}},
-        {"version": 1, "capabilities": {"enabled": ["forms", "forms"]}},
+        {"version": 1, "capabilities": {"enabled": "reference"}},
+        {"version": 1, "capabilities": {"enabled": ["reference", "reference"]}},
         {"version": 1, "capabilities": {"enabled": [], "extra": True}},
     ),
 )
@@ -430,7 +441,7 @@ def test_server_settings_fail_closed_на_неверной_schema(tmp_path, payl
     "raw",
     (
         '{"version":2,"version":1,"capabilities":{"enabled":[]}}',
-        '{"version":1,"capabilities":{"enabled":[],"enabled":["forms"]}}',
+        '{"version":1,"capabilities":{"enabled":[],"enabled":["reference"]}}',
         '{"version":1,"capabilities":{"enabled":[]},"future":NaN}',
     ),
 )
@@ -532,12 +543,12 @@ def test_save_атомарно_заменяет_секцию_и_сохраняе
         encoding="utf-8",
     )
 
-    store.save(("forms",))
+    store.save(("reference",))
 
     payload = json.loads(store.path.read_text(encoding="utf-8"))
     assert payload["future"] == {"kept": True}
     assert payload["version"] == 2
-    assert payload["capabilities"] == {"enabled": ["forms"]}
+    assert payload["capabilities"] == {"enabled": ["reference"]}
     assert os.stat(store.path).st_mode & 0o777 == 0o600
 
 
@@ -557,7 +568,7 @@ def test_ошибка_atomic_replace_не_портит_предыдущие_sett
     )
 
     with pytest.raises(CapabilityConfigurationError, match="сохранить"):
-        store.save(("forms",))
+        store.save(("reference",))
 
     assert store.path.read_bytes() == original
     assert list(tmp_path.glob(".server-settings.json.tmp-*")) == []
@@ -580,8 +591,8 @@ def test_ошибка_directory_fsync_после_replace_считается_пр
 
     monkeypatch.setattr(capability_module.os, "fsync", fsync_with_directory_failure)
 
-    assert store.save(("forms",)) == ("forms",)
-    assert store.load() == ("forms",)
+    assert store.save(("reference",)) == ("reference",)
+    assert store.load() == ("reference",)
     assert list(tmp_path.glob(".server-settings.json.tmp-*")) == []
 
 
@@ -613,7 +624,7 @@ def test_main_передаёт_capability_в_оба_транспорта(
         captured["enabled"] = kwargs["enabled_capabilities"]
         return FakeServer()
 
-    monkeypatch.setenv("MCP1C_CAPABILITIES", "forms")
+    monkeypatch.setenv("MCP1C_CAPABILITIES", "reference")
     monkeypatch.setattr(server_module, "Registry", FakeRegistry)
     monkeypatch.setattr(server_module, "build_server", fake_build)
     monkeypatch.setattr(
@@ -630,24 +641,9 @@ def test_main_передаёт_capability_в_оба_транспорта(
     assert ("http" in captured) is (transport == "streamable-http")
 
 
-def test_enabled_добавляет_ровно_четыре_forms_инструмента(tmp_path):
-    server = _server(tmp_path, enabled_capabilities=("forms",))
-
-    tools = asyncio.run(server.list_tools())
-    names = [tool.name for tool in tools]
-
-    assert names == [*CORE_TOOLS, *FORMS_TOOLS]
-    rules = tools[-4]
-    assert "topic" in rules.input_schema["properties"]
-    assert "не читает Registry" in (rules.description or "")
-
-
 @pytest.mark.anyio
-async def test_forms_инструмент_работает_через_полную_mcp_сессию(
-    tmp_path,
-):
-    server = _server(tmp_path, enabled_capabilities=("forms",))
-
+async def test_authoring_не_публикуется_в_mcp_сессии(tmp_path):
+    server = _server(tmp_path)
     async with create_client_server_memory_streams() as (client_streams, server_streams):
         async with anyio.create_task_group() as tasks:
             tasks.start_soon(
@@ -658,188 +654,12 @@ async def test_forms_инструмент_работает_через_полну
             try:
                 async with ClientSession(*client_streams) as session:
                     await session.initialize()
-                    listed = await session.list_tools()
-                    result = await session.call_tool("get_managed_form_rules", {})
+                    names = {tool.name for tool in (await session.list_tools()).tools}
             finally:
                 tasks.cancel_scope.cancel()
-
-    assert [tool.name for tool in listed.tools] == [*CORE_TOOLS, *FORMS_TOOLS]
-    assert result.is_error is False
-    assert json.loads(result.content[0].text)["topic"] == "overview"
-
-
-def test_enabled_добавляет_ровно_три_metadata_authoring_инструмента(tmp_path):
-    server = _server(tmp_path, enabled_capabilities=("metadata_authoring",))
-
-    tools = asyncio.run(server.list_tools())
-
-    assert [tool.name for tool in tools] == [
-        *CORE_TOOLS,
-        *METADATA_AUTHORING_TOOLS,
-    ]
-    assert "topic" in tools[-3].input_schema["properties"]
-    assert "ничего не пишет" in (tools[-3].description or "")
-    assert tools[-2].input_schema["required"] == ["specification"]
-    assert "если forms не пуст, artifacts" in (tools[-2].description or "")
-    specification = tools[-2].input_schema["properties"]["specification"]
-    assert len(specification["oneOf"]) == 5
-    catalog, register, document, data_processor, report = specification["oneOf"]
-    assert catalog["title"] == "Справочник"
-    assert register["title"] == "РегистрСведений"
-    assert document["title"] == "Документ"
-    assert data_processor["title"] == "Обработка"
-    assert report["title"] == "Отчет"
-    assert {
-        "schema_version", "object_ref", "format_version", "identity",
-        "synonym", "attributes", "forms", "code_length", "description_length",
-    } == set(catalog["required"])
-    assert {
-        "schema_version", "object_ref", "format_version", "identity",
-        "synonym", "attributes", "forms", "periodicity", "dimensions",
-        "resources",
-    } == set(register["required"])
-    assert catalog["additionalProperties"] is False
-    assert register["additionalProperties"] is False
-    assert document["additionalProperties"] is False
-    assert data_processor["additionalProperties"] is False
-    assert report["additionalProperties"] is False
-    assert {
-        "schema_version", "object_ref", "format_version", "identity",
-        "synonym", "attributes", "forms", "number_length",
-        "number_allowed_length", "number_periodicity", "check_unique",
-        "autonumbering", "posting", "real_time_posting",
-    } == set(document["required"])
-    assert {
-        "schema_version", "object_ref", "format_version", "identity",
-        "synonym", "attributes", "forms",
-    } == set(data_processor["required"])
-    assert data_processor["properties"]["attributes"]["maxItems"] == 0
-    assert data_processor["properties"]["forms"]["minItems"] == 1
-    assert data_processor["properties"]["forms"]["maxItems"] == 1
-    assert data_processor["properties"]["forms"]["items"]["properties"][
-        "default"
-    ] == {"const": True}
-    assert {
-        "schema_version", "object_ref", "format_version", "identity",
-        "synonym", "attributes", "forms",
-    } == set(report["required"])
-    assert report["properties"]["attributes"]["maxItems"] == 0
-    assert report["properties"]["forms"]["minItems"] == 1
-    assert report["properties"]["forms"]["maxItems"] == 1
-    assert report["properties"]["forms"]["items"]["properties"][
-        "role"
-    ] == {"const": "object"}
-    assert report["properties"]["forms"]["items"]["properties"][
-        "default"
-    ] == {"const": True}
-    form = catalog["properties"]["forms"]["items"]
-    assert set(form["required"]) == {
-        "name", "synonym", "default", "form_xml", "module_bsl",
-    }
-    assert "form" not in form["properties"]
-    assert form["additionalProperties"] is False
-    field_types = catalog["properties"]["attributes"]["items"]["properties"][
-        "type"
-    ]["oneOf"]
-    assert [variant["properties"]["kind"]["const"] for variant in field_types] == [
-        "string", "boolean", "number", "date", "catalog_ref", "document_ref",
-    ]
-    assert field_types[0]["properties"]["length"] == {
-        "type": "integer", "minimum": 1, "maximum": 1024,
-    }
-    assert field_types[2]["properties"]["digits"] == {
-        "type": "integer", "minimum": 1, "maximum": 32,
-    }
-    assert catalog["properties"]["object_ref"]["pattern"].startswith(
-        "^Справочник"
-    )
-    assert register["anyOf"] == [
-        {"properties": {name: {"minItems": 1}}, "required": [name]}
-        for name in ("dimensions", "resources", "attributes")
-    ]
-    encoded_specification = json.dumps(specification, ensure_ascii=False)
-    assert "configuration_xml" not in encoded_specification
-    assert "configuration_registration" not in encoded_specification
-    assert set(tools[-1].input_schema["required"]) == {
-        "object_ref",
-        "format_version",
-        "artifacts",
-    }
-    assert "configuration_xml" not in tools[-1].input_schema["properties"]
-    assert "configuration_registration" not in tools[-1].input_schema["properties"]
-    assert "result.artifacts" in (tools[-1].description or "")
-
-
-@pytest.mark.anyio
-async def test_metadata_authoring_rules_работают_через_mcp_сессию(tmp_path):
-    server = _server(tmp_path, enabled_capabilities=("metadata_authoring",))
-
-    async with create_client_server_memory_streams() as (client_streams, server_streams):
-        async with anyio.create_task_group() as tasks:
-            tasks.start_soon(
-                server._lowlevel_server.run,
-                *server_streams,
-                server._lowlevel_server.create_initialization_options(),
-            )
-            try:
-                async with ClientSession(*client_streams) as session:
-                    await session.initialize()
-                    listed = await session.list_tools()
-                    result = await session.call_tool(
-                        "get_metadata_authoring_rules", {}
-                    )
-                    rejected = await session.call_tool(
-                        "compile_metadata_object", {"specification": {}}
-                    )
-                    rejected_unknown = await session.call_tool(
-                        "compile_metadata_object",
-                        {
-                            "specification": {
-                                "schema_version": 1,
-                                "object_ref": "Справочник.Тестовый",
-                                "format_version": "2.20",
-                                "identity": "40000000-0000-0000-0000-000000000001",
-                                "synonym": "Тестовый",
-                                "code_length": 9,
-                                "description_length": 150,
-                                "attributes": [],
-                                "forms": [{"form": {}}],
-                            }
-                        },
-                    )
-                    checked = await session.call_tool(
-                        "check_metadata_artifacts",
-                        {
-                            "object_ref": "Справочник.Тестовый",
-                            "format_version": "2.20",
-                            "artifacts": {},
-                        },
-                    )
-            finally:
-                tasks.cancel_scope.cancel()
-
-    assert [tool.name for tool in listed.tools] == [
-        *CORE_TOOLS,
-        *METADATA_AUTHORING_TOOLS,
-    ]
-    assert result.is_error is False
-    assert json.loads(result.content[0].text)["status"] == "supported"
-    assert rejected.is_error is False
-    assert json.loads(rejected.content[0].text)["status"] == "rejected"
-    assert rejected_unknown.is_error is False
-    rejected_unknown_payload = json.loads(rejected_unknown.content[0].text)
-    assert rejected_unknown_payload["status"] == "rejected"
-    assert rejected_unknown_payload["diagnostics"][0]["code"] == "unknown_field"
-    assert rejected_unknown_payload["diagnostics"][0]["path"] == (
-        "$specification.forms[0].form"
-    )
-    assert checked.is_error is False
-    checked_payload = json.loads(checked.content[0].text)
-    assert checked_payload["status"] == "failed"
-    assert any(
-        item["code"] == "missing_metadata_descriptor"
-        for item in checked_payload["diagnostics"]
-    )
+    assert names.isdisjoint(REMOVED_AUTHORING_TOOLS)
+    assert "get_object" in names
+    assert "search_syntax" in names
 
 
 def _noop() -> str:
@@ -943,8 +763,8 @@ def test_public_startup_документирует_settings_без_bootstrap_env
     assert "`data/server-settings.json`" in readme
     assert "`PUT /api/v1/capabilities`" in readme
     assert "«Дополнительные модули»" in readme
-    assert "tests/measure_capability_startup.py --runs 10" in readme
-    assert "`get_managed_form_rules`" in tools_doc
+    assert "`1c-form-creator`" in tools_doc
+    assert "`1c-metadata-creator`" in tools_doc
     assert "`diagnostics_status`" not in tools_doc
     assert "`diagnostics_status`" not in readme
     assert "`PUT` того же admin-" in tools_doc

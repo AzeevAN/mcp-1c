@@ -2,18 +2,18 @@ from typing import get_args
 
 import pytest
 
-from mcp1c.capability_modules.metadata_authoring.checker import (
+from metadata_core.checker import (
     check_metadata_artifacts,
 )
-from mcp1c.capability_modules.metadata_authoring.compiler import (
+from metadata_core.compiler import (
     compile_metadata_object,
 )
-from mcp1c.capability_modules.metadata_authoring.rules import (
+from metadata_core.rules import (
     RULE_TOPICS,
     RuleTopic,
     get_metadata_authoring_rules,
 )
-from mcp1c.capability_modules.metadata_authoring.tools import load
+from pathlib import Path
 
 
 def test_rules_публикуют_границу_и_пять_поддержанных_видов():
@@ -135,15 +135,16 @@ def test_forms_topic_публикует_обязательную_цепочку_
         "get_managed_form_rules(topic=overview)",
         "запросить перечисленные в overview предметные темы Forms",
         "compile_managed_form для каждой формы и её role",
-        "check_managed_form на тех же точных возвращённых строках",
-        "программно передать точные Form.xml и Module.bsl byte-for-byte плюс ту же role в forms[]",
+        "для Обработка.* реализовать тела обработчиков в Module.bsl, не меняя Form.xml",
+        "check_managed_form на неизменённом Form.xml и итоговом Module.bsl",
+        "программно передать эти точные проверенные строки плюс ту же role в forms[]",
         "compile_metadata_object",
         "check_metadata_artifacts",
     ]
     assert rules["exact_handoff"] == {
-        "source": "строки Form.xml и Module.bsl из compile_managed_form",
-        "forms_check_input": "те же точные возвращённые строки",
-        "metadata_forms_input": "те же точные строки byte-for-byte",
+        "source": "Form.xml из compile_managed_form; Module.bsl из compiler либо с заполненными агентом телами обработчиков Обработка.*",
+        "forms_check_input": "неизменённый Form.xml и итоговый Module.bsl",
+        "metadata_forms_input": "те же точные проверенные строки byte-for-byte",
         "forbidden_transformations": [
             "retype",
             "summarize",
@@ -163,25 +164,12 @@ def test_forms_topic_публикует_обязательную_цепочку_
     assert "не заменяет Forms compile/check" in rules["manual_xml"]
 
 
-def test_tool_descriptions_ставят_forms_workflow_до_metadata_compile():
-    tools = {tool.name: tool for tool in load()}
-    rules_description = tools["get_metadata_authoring_rules"].description
-    compile_description = tools["compile_metadata_object"].description
-    checker_description = tools["check_metadata_artifacts"].description
-
-    assert "topic=forms" in rules_description
-    assert compile_description.startswith("Если forms[] непуст")
-    assert compile_description.index("compile_managed_form") < compile_description.index(
-        "Pure-компиляция"
-    )
-    assert "Metadata checker не подтверждает provenance" in compile_description
-    assert "тех же точных возвращённых строках" in compile_description
-    assert "byte-for-byte" in compile_description
-    assert "не сокращайте" in compile_description
-    assert "не используйте minimal_shape_reference" in compile_description
-    assert "десятки KB является нормальным" in compile_description
-    assert "ровно одну форму с default=true" in compile_description
-    assert "поддержанного закрытого XML-профиля" in checker_description
+def test_skill_ставит_forms_workflow_до_metadata_compile():
+    skill = Path(__file__).resolve().parents[3] / "skills/1c-metadata-creator/SKILL.md"
+    description = skill.read_text(encoding="utf-8")
+    assert "1c-form-creator" in description
+    assert "Form.xml" in description
+    assert "metadata_creator.py build" in description
 
 
 def test_rules_фиксируют_полные_generated_types():
@@ -227,7 +215,9 @@ def test_rules_фиксируют_полные_generated_types():
     assert data_processor["compiler_specification_example"]["forms"][0][
         "default"
     ] is True
-    assert "byte-for-byte" in data_processor["compiler_specification_example_note"]
+    assert "проверенный итоговый Module.bsl" in data_processor[
+        "compiler_specification_example_note"
+    ]
     assert data_processor["forms_profile"]["main_attribute"] == {
         "name": "Объект",
         "type": {

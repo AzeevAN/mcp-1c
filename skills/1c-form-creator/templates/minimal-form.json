@@ -1,0 +1,70 @@
+{
+  "schema_version": 2,
+  "context": {
+    "owner": "Обработка.ТестоваяОбработка",
+    "role": "custom"
+  },
+  "form_name": "ФормаПараметров",
+  "format_version": "2.16",
+  "title": {
+    "ru": "Параметры"
+  },
+  "attributes": [
+    {
+      "name": "ПервоеЗначение",
+      "type": {
+        "kind": "string",
+        "length": 100
+      }
+    },
+    {
+      "name": "ВтороеЗначение",
+      "type": {
+        "kind": "string",
+        "length": 100
+      }
+    }
+  ],
+  "elements": [
+    {
+      "kind": "usual_group",
+      "name": "ГруппаПараметров",
+      "title": {
+        "ru": "Параметры"
+      },
+      "children": [
+        {
+          "kind": "input_field",
+          "name": "ПервоеЗначение",
+          "data_path": "ПервоеЗначение"
+        },
+        {
+          "kind": "input_field",
+          "name": "ВтороеЗначение",
+          "data_path": "ВтороеЗначение"
+        },
+        {
+          "kind": "button",
+          "name": "Проверить",
+          "command": "Проверить",
+          "default": true
+        }
+      ]
+    }
+  ],
+  "commands": [
+    {
+      "name": "Проверить",
+      "title": {
+        "ru": "Проверить"
+      },
+      "action": "Проверить"
+    }
+  ],
+  "events": [
+    {
+      "event": "OnCreateAtServer",
+      "handler": "ПриСозданииНаСервере"
+    }
+  ]
+}

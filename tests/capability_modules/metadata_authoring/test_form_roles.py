@@ -1,20 +1,19 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from pathlib import Path
 
 import pytest
 from jsonschema import Draft202012Validator
 
-from mcp1c.capability_modules.forms.compiler import compile_managed_form
-from mcp1c.capability_modules.metadata_authoring.checker import (
+from form_core.compiler import compile_managed_form
+from metadata_core.checker import (
     check_metadata_artifacts,
 )
-from mcp1c.capability_modules.metadata_authoring.compiler import (
+from metadata_core.compiler import (
     MetadataAuthoringContractError,
     compile_metadata_object,
 )
-from mcp1c.capability_modules.metadata_authoring.schema import (
+from metadata_core.schema import (
     METADATA_SPECIFICATION_SCHEMA,
 )
 
@@ -784,13 +783,3 @@ def test_forms_output_role_profiles_compile_and_check(
     )
 
     assert checked["status"] == "passed"
-
-
-def test_metadata_authoring_has_no_direct_forms_dependency():
-    root = Path(__file__).resolve().parents[3]
-    package = root / "src/mcp1c/capability_modules/metadata_authoring"
-
-    source = "\n".join(path.read_text(encoding="utf-8") for path in package.glob("*.py"))
-
-    assert "capability_modules.forms" not in source
-    assert "from ..forms" not in source

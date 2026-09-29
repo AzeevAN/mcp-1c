@@ -1405,10 +1405,7 @@ def build_server(
                 )
 
     server.add_capability_modules(
-        load_capability_modules(
-            enabled_capabilities,
-            dependencies={"forms": registry},
-        )
+        load_capability_modules(enabled_capabilities)
     )
     _add_http_routes(
         server, registry, reference, restart, capability_runtime, download_tickets,

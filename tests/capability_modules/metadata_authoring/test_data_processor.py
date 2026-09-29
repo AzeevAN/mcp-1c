@@ -5,15 +5,16 @@ from copy import deepcopy
 import pytest
 from jsonschema import Draft202012Validator
 
-from mcp1c.capability_modules.forms.compiler import compile_managed_form
-from mcp1c.capability_modules.metadata_authoring.checker import (
+from form_core.compiler import compile_managed_form
+from form_core.checker import check_managed_form
+from metadata_core.checker import (
     check_metadata_artifacts,
 )
-from mcp1c.capability_modules.metadata_authoring.compiler import (
+from metadata_core.compiler import (
     MetadataAuthoringContractError,
     compile_metadata_object,
 )
-from mcp1c.capability_modules.metadata_authoring.schema import (
+from metadata_core.schema import (
     METADATA_SPECIFICATION_SCHEMA,
 )
 
@@ -70,6 +71,187 @@ def _specification() -> dict[str, object]:
                 "module_bsl": module_bsl,
             }
         ],
+    }
+
+
+def _interactive_specification() -> dict[str, object]:
+    owner = "Обработка.Импорт"
+    columns = ["Артикул", "Размер", "Вес", "Наименование", "Цена"]
+    form = compile_managed_form(
+        {
+            "schema_version": 2,
+            "context": {"owner": owner, "role": "object"},
+            "form_name": "Форма",
+            "format_version": "2.20",
+            "title": {"ru": "Импорт Excel"},
+            "attributes": [
+                {
+                    "name": "Объект",
+                    "type": {"kind": "metadata_object", "object": owner},
+                    "main": True,
+                },
+                {
+                    "name": "ТаблицаДанных",
+                    "type": {
+                        "kind": "value_table",
+                        "columns": [
+                            {
+                                "name": name,
+                                "type": {"kind": "string", "length": 0},
+                            }
+                            for name in columns
+                        ],
+                    },
+                },
+            ],
+            "elements": [
+                {"kind": "button", "name": "ЗагрузитьКнопка", "command": "Загрузить"},
+                {
+                    "kind": "table",
+                    "name": "ТаблицаДанныхПоле",
+                    "data_path": "ТаблицаДанных",
+                    "columns": [
+                        {
+                            "kind": "input_field",
+                            "name": f"Поле{name}",
+                            "data_path": f"ТаблицаДанных.{name}",
+                        }
+                        for name in columns
+                    ],
+                },
+            ],
+            "commands": [
+                {"name": "Загрузить", "title": {"ru": "Загрузить Excel"}, "action": "Загрузить"}
+            ],
+            "events": [],
+        }
+    )
+    artifacts = {item.path: item.content for item in form.artifacts}
+    form_xml = artifacts["Forms/Форма/Ext/Form.xml"]
+    module_bsl = artifacts["Forms/Форма/Ext/Form/Module.bsl"].replace(
+        "// TODO: Реализовать обработчик команды.",
+        'Сообщить("Загрузка запущена");',
+    )
+    checked_form = check_managed_form(
+        form_xml,
+        form_name="Форма",
+        context={"owner": owner, "role": "object"},
+        module_bsl=module_bsl,
+    )
+    assert checked_form.coverage.structural == "passed"
+    assert checked_form.coverage.bsl_static == "passed"
+    specification = _specification()
+    specification["forms"][0]["form_xml"] = form_xml
+    specification["forms"][0]["module_bsl"] = module_bsl
+    return specification
+
+
+def test_data_processor_interactive_form_preserves_checked_module():
+    specification = _interactive_specification()
+    compiled = compile_metadata_object(specification)
+    artifacts = {item["path"]: item["content"] for item in compiled["artifacts"]}
+
+    module_path = "DataProcessors/Импорт/Forms/Форма/Ext/Form/Module.bsl"
+    assert artifacts[module_path] == specification["forms"][0]["module_bsl"]
+    assert "<CommandName>Form.Command.Загрузить</CommandName>" in artifacts[
+        "DataProcessors/Импорт/Forms/Форма/Ext/Form.xml"
+    ]
+    checked = check_metadata_artifacts(
+        compiled["object_ref"], compiled["format_version"], artifacts
+    )
+    assert checked["status"] == "passed"
+
+
+def test_data_processor_rejects_form_collection_columns_as_table_schema():
+    specification = _interactive_specification()
+    form = specification["forms"][0]
+    form["module_bsl"] = form["module_bsl"].replace(
+        'Сообщить("Загрузка запущена");',
+        'ТаблицаДанных.Колонки.Добавить("Цвет");',
+    )
+
+    checked = check_managed_form(
+        form["form_xml"],
+        form_name="Форма",
+        context={"owner": "Обработка.Импорт", "role": "object"},
+        module_bsl=form["module_bsl"],
+    )
+
+    assert checked.coverage.bsl_static == "failed"
+    assert any(
+        item.code == "form_value_table_columns_unavailable"
+        for item in checked.diagnostics
+    )
+    with pytest.raises(MetadataAuthoringContractError):
+        compile_metadata_object(specification)
+
+
+def test_data_processor_columns_text_in_comment_or_literal_is_not_code():
+    specification = _interactive_specification()
+    form = specification["forms"][0]
+    form["module_bsl"] = form["module_bsl"].replace(
+        'Сообщить("Загрузка запущена");',
+        '// ТаблицаДанных.Колонки.Добавить("Цвет");\r\n'
+        'Сообщить("ТаблицаДанных.Колонки");',
+    )
+
+    checked = check_managed_form(
+        form["form_xml"],
+        form_name="Форма",
+        context={"owner": "Обработка.Импорт", "role": "object"},
+        module_bsl=form["module_bsl"],
+    )
+
+    assert checked.coverage.bsl_static == "passed"
+    assert not any(
+        item.code == "form_value_table_columns_unavailable"
+        for item in checked.diagnostics
+    )
+
+
+def test_data_processor_rejects_unbound_command_handler():
+    specification = _interactive_specification()
+    specification["forms"][0]["module_bsl"] = specification["forms"][0][
+        "module_bsl"
+    ].replace("Процедура Загрузить(", "Процедура Чужая(", 1)
+
+    with pytest.raises(MetadataAuthoringContractError) as caught:
+        compile_metadata_object(specification)
+    assert caught.value.diagnostics[0]["code"] == "invalid_data_processor_form"
+    assert "handler_not_found" in caught.value.diagnostics[0]["message"]
+
+
+def test_data_processor_checker_requires_command_module():
+    compiled = compile_metadata_object(_interactive_specification())
+    artifacts = {item["path"]: item["content"] for item in compiled["artifacts"]}
+    del artifacts["DataProcessors/Импорт/Forms/Форма/Ext/Form/Module.bsl"]
+
+    checked = check_metadata_artifacts(
+        compiled["object_ref"], compiled["format_version"], artifacts
+    )
+    assert checked["status"] == "failed"
+    assert "missing_form_module" in {
+        item["code"] for item in checked["diagnostics"]
+    }
+
+
+def test_data_processor_module_has_bounded_transport_size():
+    specification = _interactive_specification()
+    oversized = specification["forms"][0]["module_bsl"] + "//" + "а" * 131_072
+    specification["forms"][0]["module_bsl"] = oversized
+
+    with pytest.raises(MetadataAuthoringContractError) as caught:
+        compile_metadata_object(specification)
+    assert caught.value.diagnostics[0]["code"] == "data_processor_module_too_large"
+
+    compiled = compile_metadata_object(_interactive_specification())
+    artifacts = {item["path"]: item["content"] for item in compiled["artifacts"]}
+    artifacts["DataProcessors/Импорт/Forms/Форма/Ext/Form/Module.bsl"] = oversized
+    checked = check_metadata_artifacts(
+        compiled["object_ref"], compiled["format_version"], artifacts
+    )
+    assert "data_processor_module_too_large" in {
+        item["code"] for item in checked["diagnostics"]
     }
 
 
@@ -194,25 +376,19 @@ def test_data_processor_compiler_rejects_foreign_form_owner():
         ),
         (
             lambda form: form.update(
-                {"module_bsl": form["module_bsl"] + "\r\nПроцедура Выполнить()\r\nКонецПроцедуры\r\n"}
-            ),
-            "unsupported_data_processor_module_bsl",
-        ),
-        (
-            lambda form: form.update(
                 {
                     "form_xml": form["form_xml"].replace(
                         "</Form>", "<Commands><Command/></Commands></Form>", 1
                     )
                 }
             ),
-            "unsupported_data_processor_form_behavior",
+            "noncanonical_data_processor_form_xml",
         ),
         (
             lambda form: form.update(
                 {"form_xml": _with_namespaced_command_container(form["form_xml"])}
             ),
-            "unsupported_data_processor_form_behavior",
+            "noncanonical_data_processor_form_xml",
         ),
         (
             lambda form: form.update(
@@ -228,11 +404,11 @@ def test_data_processor_compiler_rejects_foreign_form_owner():
                     )
                 }
             ),
-            "unsupported_data_processor_form_behavior",
+            "noncanonical_data_processor_form_xml",
         ),
     ],
 )
-def test_data_processor_compiler_rejects_out_of_scope_form_behavior(mutate, code):
+def test_data_processor_compiler_rejects_hand_edited_form_xml(mutate, code):
     specification = _specification()
     mutate(specification["forms"][0])
 
@@ -255,12 +431,12 @@ def test_data_processor_compiler_rejects_out_of_scope_form_behavior(mutate, code
             lambda content: content.replace(
                 "</Form>", "<Events><Event/></Events></Form>", 1
             ),
-            "unsupported_data_processor_form_behavior",
+            "missing_form_module",
         ),
         (
             "DataProcessors/Импорт/Forms/Форма/Ext/Form.xml",
             _with_namespaced_command_container,
-            "unsupported_data_processor_form_behavior",
+            "noncanonical_data_processor_form_xml",
         ),
         (
             "DataProcessors/Импорт/Forms/Форма/Ext/Form.xml",
@@ -273,16 +449,11 @@ def test_data_processor_compiler_rejects_out_of_scope_form_behavior(mutate, code
                 ),
                 1,
             ),
-            "unsupported_data_processor_form_behavior",
-        ),
-        (
-            "DataProcessors/Импорт/Forms/Форма/Ext/Form/Module.bsl",
-            lambda content: content + "\r\nПроцедура Выполнить()\r\nКонецПроцедуры\r\n",
-            "unsupported_data_processor_module_bsl",
+            "noncanonical_data_processor_form_xml",
         ),
     ],
 )
-def test_data_processor_checker_rejects_out_of_scope_form_behavior(path, mutate, code):
+def test_data_processor_checker_rejects_hand_edited_form_xml(path, mutate, code):
     compiled = compile_metadata_object(_specification())
     artifacts = {item["path"]: item["content"] for item in compiled["artifacts"]}
     artifacts[path] = mutate(artifacts.get(path, ""))

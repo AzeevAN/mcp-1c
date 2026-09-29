@@ -56,11 +56,10 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
             "Отчет",
         ],
         "recommended_call_order": [
-            "get_metadata_authoring_rules",
-            "compile_managed_form (для каждой формы)",
-            "check_managed_form (для каждой формы)",
-            "compile_metadata_object",
-            "check_metadata_artifacts",
+            "metadata_creator.py inspect --config CONFIG_DIR",
+            "form_creator.py build и validate (если forms[] непуст)",
+            "metadata_creator.py build --spec SPEC --output EMPTY_DIR",
+            "metadata_creator.py validate --bundle EMPTY_DIR --object-ref OWNER --format-version VERSION",
         ],
         "compiler_schema_version": 1,
         "compiler_is_pure": True,
@@ -385,11 +384,13 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
         },
         "compiler_specification_example_note": (
             "Сначала соберите role=object форму через Forms rules → compile → check, "
-            "затем программно передайте точные Form.xml и Module.bsl byte-for-byte."
+            "при необходимости реализуйте обработчики в Module.bsl и повторите "
+            "check_managed_form; затем программно передайте неизменённый Form.xml "
+            "и проверенный итоговый Module.bsl без переписывания XML."
         ),
         "limitations": [
             "без внешней .epf",
-            "без команд, событий, макетов и прикладного BSL объекта метаданных",
+            "команды, события и BSL поддержаны только в основной форме; модуль объекта и макеты не входят в контракт",
             "без дополнительных и вспомогательных форм",
         ],
     },
@@ -684,15 +685,16 @@ _RULES: dict[RuleTopic, dict[str, object]] = {
             "get_managed_form_rules(topic=overview)",
             "запросить перечисленные в overview предметные темы Forms",
             "compile_managed_form для каждой формы и её role",
-            "check_managed_form на тех же точных возвращённых строках",
-            "программно передать точные Form.xml и Module.bsl byte-for-byte плюс ту же role в forms[]",
+            "для Обработка.* реализовать тела обработчиков в Module.bsl, не меняя Form.xml",
+            "check_managed_form на неизменённом Form.xml и итоговом Module.bsl",
+            "программно передать эти точные проверенные строки плюс ту же role в forms[]",
             "compile_metadata_object",
             "check_metadata_artifacts",
         ],
         "exact_handoff": {
-            "source": "строки Form.xml и Module.bsl из compile_managed_form",
-            "forms_check_input": "те же точные возвращённые строки",
-            "metadata_forms_input": "те же точные строки byte-for-byte",
+            "source": "Form.xml из compile_managed_form; Module.bsl из compiler либо с заполненными агентом телами обработчиков Обработка.*",
+            "forms_check_input": "неизменённый Form.xml и итоговый Module.bsl",
+            "metadata_forms_input": "те же точные проверенные строки byte-for-byte",
             "forbidden_transformations": [
                 "retype",
                 "summarize",

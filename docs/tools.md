@@ -32,13 +32,6 @@ startup-only capability `role_access`: они попадают в `tools/list` �
 | `get_reference` | `item_id`, `section_id`, `cursor`, `max_chars`, `platform` | страница точной карточки или раздела и `next_cursor` |
 | `find_roles_for_access` | `full_name`, `operations`, `config`, `child_path`, `include_conditional`, `cursor`, `limit` | роли-кандидаты, доказанные пробелы и точное сопоставление операций правам платформы |
 | `get_role_access` | `role`, `config`, `full_name`, `detail`, `cursor`, `limit`, `restriction_ref`, `restriction_cursor`, `max_chars` | компактные объекты роли, явная дочерняя/аудитная детализация либо окно RLS/шаблона |
-| `get_managed_form_rules` | `topic` (`overview` по умолчанию) | условно: один компактный раздел доказанных правил первой вертикали Forms |
-| `compile_managed_form` | `specification` Forms schema v2 с обязательным `context` | условно: каноническая спецификация и тексты `Form.xml`/`Form/Module.bsl`, без записи |
-| `decompile_managed_form` | `form_xml`, `form_name`, `context`, `module_bsl` (необязательно) | условно: каноническая schema v2 либо честный inventory непокрытых XML-путей |
-| `check_managed_form` | `form_xml`, `form_name`, `context`, `module_bsl` (необязательно) | условно: раздельные статические результаты XML, структуры, ссылок и BSL |
-| `get_metadata_authoring_rules` | `topic` (`overview` по умолчанию) | условно: правила полного комплекта справочника, базового непроводимого документа или регистра сведений |
-| `compile_metadata_object` | `specification` Metadata Authoring schema v1 с обязательным `format_version` | условно: owner-relative descriptor и формы без чтения или записи `Configuration.xml` |
-| `check_metadata_artifacts` | `object_ref`, `format_version`, `artifacts` | условно: read-only проверка owner-relative descriptor, generated types, UUID, QName и объявленных форм |
 
 Если загружено больше одной конфигурации, `config` обязателен там, где он
 предусмотрен. Сервер не выбирает первую конфигурацию молча.
@@ -55,176 +48,16 @@ startup-only capability `role_access`, даже когда готового ин
 MCP-подключение. Внутренний динамический путь без startup-контроля не
 используется текущей сборкой.
 
-Четыре Forms-инструмента появляются только при startup, если `forms` входит в
-`capabilities.enabled` файла `data/server-settings.json`. Без файла применяются
-встроенные начальные значения: прежние capability-модули выключены, а
-`module_source_download` включён. В schema v2 `module_source_download` добавляется
-в `capabilities.enabled`; файл schema v1 до первого сохранения подразумевает
-включённое скачивание. Изменение настройки на экране «Дополнительные модули»
-вступает в силу после полного перезапуска. Если скачивание выключено,
-`get_module_source_file` отсутствует в `tools/list` и маршрут
-`GET /api/v1/modules/source` не зарегистрирован. Пустой массив сохраняет прежний
-каталог и не импортирует реализации модулей. Повторы, неизвестные имена и
-повреждённая schema останавливают процесс до Registry. Capability-модули
-выбираются только из встроенного каталога; произвольный import path не
-принимается. `GET /api/v1/capabilities` различает
-active и desired и показывает pending полного restart; `PUT` того же admin-
-маршрута сохраняет полный desired-набор. Экран «Дополнительные модули» показывает
-модуль до включения, суммарную измеренную стоимость контекста активных модулей,
-те же состояния, требует явного сохранения и отдельно
-подтверждает полный restart. Startup-изменение не создаёт
-`tools/list_changed`.
-
-Capability `metadata_authoring` по тем же startup-правилам добавляет ровно 3
-инструмента. Сначала агент вызывает
-`get_metadata_authoring_rules(topic="overview")`, затем тематические разделы и
-`compile_metadata_object(specification)`. Compiler schema v1 детерминированно
-выводит внутренние UUID из явного `identity` и возвращает текстовые артефакты.
-Темы `catalog`, `document`, `information_register`, `data_processor` и `report` возвращают точные полные примеры,
-которые проходят `compile → check` и адаптируются caller к найденной структуре.
-При непустом `forms[]` агент обязан запросить тему `forms` и выполнить Forms
-`rules → compile → check` для каждой роли до Metadata compile. Справочный XML
-из `artifacts` — только shape reference, а не готовый артефакт формы.
-До первого вызова `tools/list` показывает 5 закрытых веток specification,
-их обязательные поля, плоский `forms`, варианты типов, диапазоны и patterns.
-Schema-only facade оставляет runtime-вход обычным словарём, поэтому ошибочный
-запрос возвращает предметный `status=rejected` с diagnostics, а не сырой
-MCP/Pydantic exception.
-Элемент `forms[]` принимает необязательную semantic `role`: `object`, `list`
-или `choice` для справочника/документа и `record`, `list` либо `record_set`
-для регистра сведений. Встроенная обработка поддерживает ровно одну
-`role=object` форму с `default=true`, которая заполняет `DefaultForm`;
-`ВнешняяОбработка.*` и `.epf` не поддерживаются. Обычная default-форма создания и редактирования одной
-записи — `role=record` с `default=true`, которая заполняет
-`DefaultRecordForm`. `record_set` требует `default=false`, не подменяет форму
-записи, а `DefaultRecordSetForm` не подтверждён и не генерируется.
-Отсутствующая роль совместимо означает прежнюю основную роль владельца.
-`default=true` действует внутри роли; каждая представленная роль требует ровно
-одну default-форму, а дополнительные формы той же роли имеют `default=false`.
-Пустой `Default*Form` допустим только для отсутствующей роли. Отдельные роли
-`list` и `choice` требуют отдельных физических форм в текущей версии.
-Обязательный `format_version` агент читает из корневого `version` локального
-`Configuration.xml` и передаёт короткой строкой; сам файл модулю не передаётся.
-Справочник явно задаёт `code_length` (`0..50`) и
-`description_length` (`0..150`). Положительная длина включает соответствующий
-стандартный реквизит; на обычной основной форме он задаётся путём
-`Объект.Code`/`Объект.Description`, а не одноимённым реквизитом формы.
-Отсутствие существующего стандартного поля на основной форме отклоняет
-specification, а checker независимо отклоняет такой готовый bundle. Тень поля
-объекта или записи также отклоняется. Затем агент вызывает
-`check_metadata_artifacts(object_ref, format_version, artifacts)`. Вертикаль принимает
-только `Справочник.<Имя>`, `Документ.<Имя>`, `РегистрСведений.<Имя>`,
-встроенную `Обработка.<Имя>` и базовый встроенный `Отчет.<Имя>`, и проверяет переданный
-текстовый bundle. Корневой `version` каждого объявленного `Ext/Form.xml`
-обязан совпадать с переданным `format_version`; отсутствие версии или
-несовпадение даёт `failed`. `Configuration.xml`, регистрация объекта и пути вне
-каталога владельца не входят в контракт. Абсолютный путь, обратный слеш,
-пустой сегмент, `.` или `..` отклоняется как `unsafe_artifact_path`; лишний
-файл сверх точного комплекта объекта и объявленных форм — как
-`unexpected_artifact`. Локальные файлы, Registry и 1С не читаются и не
-изменяются. Для формы обязательны descriptor и `Ext/Form.xml`; scaffold-only
-`Module.bsl` в канонический Metadata bundle не включается.
-Документ ограничен базовым непроводимым профилем: строковый номер длиной
-`1..50`, `Variable`/`Fixed`, периодичность `Nonperiodical`/`Year`, явные
-уникальность и автонумерация, `Posting=Deny` и `RealTimePosting=Deny`.
-Compiler создаёт 5 generated types, стандартные реквизиты `Posted`, `Ref`,
-`DeletionMark`, `Date`, `Number` и `InputByString` по номеру. Табличные части,
-движения, события, команды проведения и прикладной BSL не входят в эту
-вертикаль. Объектная форма, отдельные формы списка и выбора передаются через
-`forms[]` после отдельного `Forms compile → check`; Metadata Authoring не
-вызывает Forms checker автоматически. Его standalone checker проверяет
-комплект, default-ссылки и владельца `DocumentObject`, но не угадывает semantic
-role формы из XML.
-Write/apply и импорт конфигурации не входят в контракт. Статический GREEN не
-доказывает нативную загрузку. Три схемы занимают 24 228 байт, примерно 5 762
-токен `tiktoken 0.11.0 / o200k_base` по замеру 2026-09-20:
-
-```bash
-uv run --no-project --python .venv/bin/python --with tiktoken==0.11.0 \
-  python tools/measure_capability_context.py metadata_authoring --check
-```
-
-Содержимое тематических правил возвращается только через `tools/call` и не
-входит в постоянную дельту `tools/list`. При выключенном модуле отсутствуют и
-3 инструмента, и импорт его реализации.
-
-Первая вертикаль Forms используется в таком порядке:
-
-1. `get_managed_form_rules(topic="overview")`, затем только нужные тематические
-   разделы;
-2. `compile_managed_form(specification=...)` для получения двух текстовых
-   артефактов;
-3. `check_managed_form(...)` для статической проверки результата;
-4. `decompile_managed_form(...)`, когда нужно разобрать существующий XML или
-   подтвердить канонический roundtrip.
-
-Forms принимает только `schema_version=2`. В `context.owner` передаётся
-каноническая ссылка `ВидМетаданных.Имя`, а `context.role` задаёт роль формы;
-decompile/check требуют тот же context и не угадывают его из XML. Поддержаны
-semantic-вертикали `Справочник.* + role=object` и
-`Документ.* + role=object` с совпадающим
-главным `metadata_object`: compiler выводит соответственно `CatalogObject` или
-`DocumentObject`, а поля используют `Объект.*`. Для этих же владельцев
-поддержаны `role=list|choice`: главный автоматический `dynamic_list` и таблица
-называются `Список`, `main_table` совпадает с owner. `list` не содержит
-маркеров выбора, а `choice` выводит `WindowOpeningMode=LockOwnerWindow` и
-`ChoiceMode=true`; эти значения не задаются отдельными полями схемы. Ручные
-запросы, параметры, виртуальные таблицы, расширенные `ListSettings`, события,
-команды и общая физическая форма для обеих ролей находятся вне минимального
-профиля. Также поддержан
-`РегистрСведений.* + record` с главным реквизитом `Запись`,
-`main=true`, `saved_data=true` и путями `Запись.<Реквизит>`. Для формы записи
-compiler использует `InformationRegisterRecordManager`; пустую корневую
-`AutoCommandBar` стандартными командами заполняет платформа. Отдельный
-register-list использует главный `DynamicList` и таблицу `Список`; отдельный
-`record_set` — главный `InformationRegisterRecordSet`, `SavedData=true`,
-таблицу `НаборЗаписей` и owner-relative пути. `custom` оставляет
-semantic-проверку `not_checked` и не означает поддержку конкретного вида
-объекта. Основная выгрузка конфигурации `schema v1` этим изменением не
-затрагивается.
-
-Default list/choice выводит системную группу пользовательских настроек и
-таблицу `Список` с `DefaultItem=true`, табличным `CommandBarLocation=None` и
-`UserSettingsGroup`; корневой `CommandBarLocation` отсутствует. Object-форма
-справочника получает `WindowOpeningMode` и `UseForFoldersAndItems`, object-форма
-документа — `AutoTime`, `UsePostingMode`, `RepostOnWrite`, record-форма
-регистра — `WindowOpeningMode`. Эти узлы вычисляются из owner/role и строго
-проверяются decompiler.
-
-Все четыре операции чистые: не читают Registry/`data/`, не записывают файлы и
-не импортируют форму в 1С. `passed` в статическом checker не доказывает нативный
-импорт, запуск или внешний вид. Более широкая форма возвращается как inventory,
-который нельзя передавать обратно в compiler как lossless-результат. Сторонние
-плагины, runtime-переключение и доступ к локальным проектам не реализованы.
-Русские и английские зарезервированные слова BSL запрещены во всех полях
-идентификаторов спецификации; checker также отклоняет их в XML-привязках
-обработчиков. Результат `РеквизитФормыВЗначение` является мутабельным
-прикладным объектом, поэтому `ЗначениеЗаполнено` для него вызывает runtime-
-ошибку платформы. Checker отклоняет прямой вызов и простую передачу результата
-через переменную с diagnostic `mutable_value_filled_not_supported`; это узкая
-проверка подтверждённого паттерна, а не полный BSL data-flow. В статическом
-однострочном `Запрос.Текст` checker отдельно ловит дополнительную top-level
-запятую между предикатами второго аргумента `СрезПоследних` и возвращает
-`query_virtual_table_condition_separator`. Вложенные запятые не считаются
-разделителями аргументов; динамический или многострочный текст получает
-`query_text_not_checked`. Остальной синтаксис языка запросов не проверяется.
-Канонические ссылки Registry публикуют точный `pattern`; JSON Schema также
-выражает условную обязательность `command_owner` для `item_standard` и `item`
-для одноимённого источника команд.
-Фактическая дельта четырёх схем — 26 224 байта, приблизительно 6 141 токен по
-`tiktoken 0.11.0 / o200k_base` (замер 2026-09-20); динамические ответы в число
-не входят.
-
-Тяжёлые `compile`/`decompile`/`check` выполняются в отдельном пуле из двух
-workers. Одновременно принимается не больше 10 операций: две выполняются,
-остальные ожидают; следующий вызов получает явную ошибку перегрузки. Лимит
-ожидания клиента — 10 секунд. Уже начатая потоковая работа при timeout не
-прерывается небезопасно, остаётся учтённой до завершения, а её результат
-отбрасывается. `specification` ограничена 256 КиБ, `Form.xml` и `Module.bsl` —
-2 МиБ каждый, итоговый JSON — 4 МиБ. Эти ограничения не относятся к core-
-инструментам и не занимают их worker pool.
-Изменённый bind-mounted `server-settings.json` применяется полным перезапуском
-bare-процесса или `docker compose restart mcp1c`.
+Создание и проверка форм и метаданных выполняются локальными skills:
+[`1c-form-creator`](../skills/1c-form-creator/SKILL.md) и
+[`1c-metadata-creator`](../skills/1c-metadata-creator/SKILL.md).
+Семь прежних authoring-инструментов и переключатели `forms` и
+`metadata_authoring` удалены. Read-only данные о формах Source B остаются
+в `get_object` и связанных инструментах. Состав доступных дополнительных
+модулей смотрите в `GET /api/v1/capabilities`; сохранённые старые значения
+двух удалённых модулей пропускаются при чтении настроек.
+`PUT` того же admin-маршрута сохраняет полный desired-набор; изменения
+вступают в силу после полного перезапуска и нового MCP-подключения.
 
 ## Рабочая последовательность для объявленных прав ролей
 

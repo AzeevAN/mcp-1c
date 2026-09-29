@@ -12,10 +12,10 @@ vi.mock("../shared/api/sourceAdmin", async (importOriginal) => ({
 }));
 
 const ready = {
-  available: ["forms", "metadata_authoring"],
+  available: ["reference", "role_access"],
   modules: [
-    { id: "forms", display_name: "Управляемые формы", description: "Добавляет 4 инструмента для объектных форм справочника, документа, встроенной обработки и отчёта, форм списка и выбора, а также форм записи и набора записей регистра: правила, компиляцию, декомпиляцию и проверку. Конфигурацию 1С не изменяет.", tool_count: 4, approx_tokens: 6141, tokenizer: "o200k_base", measured_at: "2026-09-20", measurement_command: "measure forms", active: false, desired: false, pending_restart: false },
-    { id: "metadata_authoring", display_name: "Создание метаданных", description: "Добавляет 3 pure-инструмента: правила, компиляцию и статическую проверку артефактов справочника, непроводимого документа, регистра сведений, встроенной обработки или отчёта с основной управляемой формой и минимальной системной СКД. Содержательная СКД, макеты, внешние .epf и .erf не поддерживаются.", tool_count: 3, approx_tokens: 5762, tokenizer: "o200k_base", measured_at: "2026-09-20", measurement_command: "measure metadata", active: false, desired: false, pending_restart: false },
+    { id: "reference", display_name: "Общая справка", description: "Поиск и чтение общей справки BSL.", tool_count: 2, approx_tokens: 1070, tokenizer: "o200k_base", measured_at: "2026-09-21", measurement_command: "measure reference", active: false, desired: false, pending_restart: false },
+    { id: "role_access", display_name: "Доступ ролей", description: "Поиск объявленных прав ролей.", tool_count: 2, approx_tokens: 1245, tokenizer: "o200k_base", measured_at: "2026-09-22", measurement_command: "measure role_access", active: false, desired: false, pending_restart: false },
   ],
   active: [],
   desired: [],
@@ -55,8 +55,8 @@ it.each([360, 1440])(
     mount();
 
     expect(await screen.findByRole("heading", { name: "Дополнительные модули" })).toBeInTheDocument();
-    expect(screen.getByRole("checkbox", { name: /forms/i })).toBeVisible();
-    expect(screen.getByRole("checkbox", { name: /metadata_authoring/i })).toBeVisible();
+    expect(screen.getByRole("checkbox", { name: /reference/i })).toBeVisible();
+    expect(screen.getByRole("checkbox", { name: /role_access/i })).toBeVisible();
     expect(screen.getByRole("button", { name: "Сохранить выбор" })).toBeVisible();
   },
 );
@@ -66,7 +66,7 @@ it("показывает active отдельно от несохранённог
   mount();
 
   expect(await screen.findByRole("heading", { name: "Дополнительные модули" })).toBeInTheDocument();
-  const forms = screen.getByRole("checkbox", { name: /forms/i });
+  const forms = screen.getByRole("checkbox", { name: /reference/i });
   expect(forms).not.toBeChecked();
   expect(within(forms.closest("label")!).getByText("В текущем процессе: выключен")).toBeInTheDocument();
 
@@ -80,59 +80,34 @@ it("показывает active отдельно от несохранённог
 it("суммирует стоимость контекста активных модулей", async () => {
   const active = {
     ...ready,
-    active: ["forms", "metadata_authoring"],
+    active: ["reference", "role_access"],
   };
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => active }));
   mount();
 
-  expect(await screen.findByText("≈ 11 903 токенов")).toBeInTheDocument();
+  expect(await screen.findByText("≈ 2 315 токенов")).toBeInTheDocument();
   expect(screen.getByText("Сумма активных модулей")).toBeInTheDocument();
 });
 
-it("объясняет границу Forms до включения", async () => {
+it("показывает только действующие модули", async () => {
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ready }));
   mount();
 
-  const forms = await screen.findByRole("checkbox", { name: /forms/i });
-  const card = forms.closest("label")!;
-  expect(within(card).getByText("Управляемые формы")).toBeInTheDocument();
-  expect(within(card).getByText(/4 инструмента/)).toBeInTheDocument();
-  expect(within(card).getByText(/форм списка и выбора/)).toBeInTheDocument();
-  expect(within(card).getByText(/набора записей регистра/)).toBeInTheDocument();
-  expect(within(card).getByText(/встроенной обработки/)).toBeInTheDocument();
-  expect(within(card).getByText(/отчёта/)).toBeInTheDocument();
-  expect(within(card).getByText(/Конфигурацию 1С не изменяет/)).toBeInTheDocument();
-  expect(within(card).getByText(/6 141.*o200k_base/)).toBeInTheDocument();
-  expect(forms).not.toBeChecked();
-});
-
-it("объясняет границу Metadata Authoring до включения", async () => {
-  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ready }));
-  mount();
-
-  const capability = await screen.findByRole("checkbox", { name: /metadata_authoring/i });
-  const card = capability.closest("label")!;
-  expect(within(card).getByText("Создание метаданных")).toBeInTheDocument();
-  expect(within(card).getByText(/3 pure-инструмента/)).toBeInTheDocument();
-  expect(within(card).getByText(/непроводимого документа/)).toBeInTheDocument();
-  expect(within(card).getByText(/встроенной обработки/)).toBeInTheDocument();
-  expect(within(card).getByText(/отчёта с основной управляемой формой/)).toBeInTheDocument();
-  expect(within(card).getByText(/минимальной системной СКД/)).toBeInTheDocument();
-  expect(within(card).getByText(/Содержательная СКД, макеты/)).toBeInTheDocument();
-  expect(within(card).getByText(/внешние \.epf и \.erf/)).toBeInTheDocument();
-  expect(within(card).getByText(/5 762.*o200k_base/)).toBeInTheDocument();
-  expect(capability).not.toBeChecked();
+  expect(await screen.findByRole("checkbox", { name: /reference/i })).toBeVisible();
+  expect(screen.getByRole("checkbox", { name: /role_access/i })).toBeVisible();
+  expect(screen.queryByRole("checkbox", { name: /forms/i })).not.toBeInTheDocument();
+  expect(screen.queryByRole("checkbox", { name: /metadata_authoring/i })).not.toBeInTheDocument();
 });
 
 it("не теряет несохранённый выбор при фоновом обновлении статуса", async () => {
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ready }));
   const client = mount();
-  const forms = await screen.findByRole("checkbox", { name: /forms/i });
+  const forms = await screen.findByRole("checkbox", { name: /reference/i });
   fireEvent.click(forms);
 
   client.setQueryData(["capabilities"], {
     ...ready,
-    active: ["forms"],
+    active: ["reference"],
   });
 
   await waitFor(() => expect(within(forms.closest("label")!).getByText("В текущем процессе: включён")).toBeInTheDocument());
@@ -141,17 +116,17 @@ it("не теряет несохранённый выбор при фоново�
 });
 
 it("сохраняет весь desired-набор и показывает pending", async () => {
-  const pending = { ...ready, desired: ["forms"], pending_restart: true };
+  const pending = { ...ready, desired: ["reference"], pending_restart: true };
   vi.stubGlobal("fetch", vi.fn(async (_path, options?: RequestInit) => ({
     ok: true,
     json: async () => options?.method === "PUT" ? pending : ready,
   })));
   mount();
-  fireEvent.click(await screen.findByRole("checkbox", { name: /forms/i }));
+  fireEvent.click(await screen.findByRole("checkbox", { name: /reference/i }));
   fireEvent.click(screen.getByRole("button", { name: "Сохранить выбор" }));
 
   expect(await screen.findByText("Изменение сохранено и ожидает перезапуска.")).toBeInTheDocument();
-  const forms = screen.getByRole("checkbox", { name: /forms/i });
+  const forms = screen.getByRole("checkbox", { name: /reference/i });
   expect(within(forms.closest("label")!).getByText("В текущем процессе: выключен")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Перезапустить и применить" })).toBeEnabled();
 });
@@ -159,7 +134,7 @@ it("сохраняет весь desired-набор и показывает pendi
 it("при выключенном self-restart оставляет операторскую инструкцию вместо кнопки", async () => {
   const pending = {
     ...ready,
-    desired: ["forms"],
+    desired: ["reference"],
     pending_restart: true,
     runtime: { self_restart: false },
   };
@@ -171,7 +146,7 @@ it("при выключенном self-restart оставляет операто
 });
 
 it("требует отдельного подтверждения restart и возвращает фокус по Escape", async () => {
-  const pending = { ...ready, desired: ["forms"], pending_restart: true };
+  const pending = { ...ready, desired: ["reference"], pending_restart: true };
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => pending }));
   mount();
   const trigger = await screen.findByRole("button", { name: "Перезапустить и применить" });

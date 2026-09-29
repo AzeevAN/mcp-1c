@@ -1,0 +1,30 @@
+{
+  "schema_version": 2,
+  "context": {"owner": "Обработка.Импорт", "role": "object"},
+  "form_name": "Форма",
+  "format_version": "2.20",
+  "title": {"ru": "Импорт"},
+  "attributes": [
+    {"name": "Объект", "type": {"kind": "metadata_object", "object": "Обработка.Импорт"}, "main": true},
+    {"name": "ТаблицаДанных", "type": {"kind": "value_table", "columns": [
+      {"name": "Артикул", "type": {"kind": "string", "length": 0}},
+      {"name": "Размер", "type": {"kind": "string", "length": 0}},
+      {"name": "Вес", "type": {"kind": "string", "length": 0}},
+      {"name": "Наименование", "type": {"kind": "string", "length": 0}},
+      {"name": "Цена", "type": {"kind": "string", "length": 0}}
+    ]}
+    }
+  ],
+  "elements": [
+    {"kind": "button", "name": "ЗагрузитьКнопка", "command": "Загрузить"},
+    {"kind": "table", "name": "ТаблицаДанныхПоле", "data_path": "ТаблицаДанных", "columns": [
+      {"kind": "input_field", "name": "ПолеАртикул", "data_path": "ТаблицаДанных.Артикул"},
+      {"kind": "input_field", "name": "ПолеРазмер", "data_path": "ТаблицаДанных.Размер"},
+      {"kind": "input_field", "name": "ПолеВес", "data_path": "ТаблицаДанных.Вес"},
+      {"kind": "input_field", "name": "ПолеНаименование", "data_path": "ТаблицаДанных.Наименование"},
+      {"kind": "input_field", "name": "ПолеЦена", "data_path": "ТаблицаДанных.Цена"}
+    ]}
+  ],
+  "commands": [{"name": "Загрузить", "title": {"ru": "Загрузить"}, "action": "Загрузить"}],
+  "events": []
+}

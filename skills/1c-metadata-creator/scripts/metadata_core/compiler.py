@@ -9,7 +9,10 @@ import re
 import uuid
 import xml.etree.ElementTree as ET
 
+from form_core import check_managed_form, compile_managed_form
 from .checker import (
+    DATA_PROCESSOR_HANDLER_BLOCKERS,
+    MAX_DATA_PROCESSOR_MODULE_BYTES,
     MAX_ARTIFACTS,
     MAX_ARTIFACT_BYTES,
     MAX_TOTAL_BYTES,
@@ -361,36 +364,56 @@ def _validate_form(
                 f"{path}.form_xml",
                 "Основная форма обработки требует единственный главный реквизит `Объект`.",
             )
-        structural_behavior = {
-            node.tag.rsplit("}", 1)[-1]
-            for node in root.iter()
-        } & {
-            "Button",
-            "ButtonGroup",
-            "Command",
-            "CommandBar",
-            "CommandName",
-            "CommandSource",
-            "Event",
-            "Popup",
-        }
-        if any(
-            node.tag.rsplit("}", 1)[-1] in {"AutoCommandBar", "ContextMenu"}
-            and len(node) > 0
-            for node in root.iter()
-        ):
-            structural_behavior.add("CommandContainer")
-        if structural_behavior:
+        main_types = [
+            type_node.text.strip()
+            for attribute in form_attributes
+            if attribute.findtext(f"{{{LOGFORM}}}MainAttribute") == "true"
+            for type_node in attribute.iter(f"{{{V8}}}Type")
+            if type_node.text and type_node.text.strip()
+        ]
+        expected_type = f"cfg:DataProcessorObject.{owner_name}"
+        if main_types != [expected_type]:
             _fail(
-                "unsupported_data_processor_form_behavior",
+                "form_owner_mismatch",
                 f"{path}.form_xml",
-                "Команды и события формы обработки не входят в базовый контракт.",
+                f"Главный реквизит формы должен иметь тип `{expected_type}`.",
             )
-        if not _scaffold_only_module(value["module_bsl"]):
+        if len(value["module_bsl"].encode("utf-8-sig")) > MAX_DATA_PROCESSOR_MODULE_BYTES:
             _fail(
-                "unsupported_data_processor_module_bsl",
+                "data_processor_module_too_large",
                 f"{path}.module_bsl",
-                "Прикладной BSL формы обработки не входит в базовый контракт.",
+                f"Модуль формы обработки превышает {MAX_DATA_PROCESSOR_MODULE_BYTES} байт.",
+            )
+        checked_form = check_managed_form(
+            form_xml,
+            form_name=value["name"],
+            context={"owner": f"{owner_kind}.{owner_name}", "role": role},
+            module_bsl=value["module_bsl"],
+        )
+        failed = [
+            item for item in checked_form.diagnostics
+            if item.status == "failed" or item.code in DATA_PROCESSOR_HANDLER_BLOCKERS
+        ]
+        if failed:
+            _fail(
+                "invalid_data_processor_form",
+                f"{path}.form_xml",
+                f"Forms проверка: {failed[0].code}: {failed[0].message}",
+            )
+        if checked_form.specification is None:
+            _fail(
+                "invalid_data_processor_form",
+                f"{path}.form_xml",
+                "Forms не смог восстановить спецификацию формы обработки.",
+            )
+        canonical_xml = compile_managed_form(
+            checked_form.specification
+        ).artifacts[0].content
+        if canonical_xml != form_xml:
+            _fail(
+                "noncanonical_data_processor_form_xml",
+                f"{path}.form_xml",
+                "Передайте Form.xml без ручных изменений из compile_managed_form.",
             )
     if owner_kind == "Отчет":
         if (

@@ -6,10 +6,10 @@ from xml.etree import ElementTree as ET
 
 import pytest
 
-from mcp1c.capability_modules.forms.checker import (
+from form_core.checker import (
     check_managed_form as _check_managed_form,
 )
-from mcp1c.capability_modules.forms.compiler import compile_managed_form
+from form_core.compiler import compile_managed_form
 
 
 FIXTURES = Path(__file__).with_name("fixtures")

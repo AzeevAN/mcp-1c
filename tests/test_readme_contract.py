@@ -18,7 +18,8 @@ def test_счётчики_pytest_в_публичных_документах_со
         contributing,
     )
 
-    assert ".venv/bin/python -m pytest\n" in readme
+    assert "](CONTRIBUTING.md)" in readme
+    assert ".venv/bin/python -m pytest" in contributing
     assert "| Тесты |" not in readme
     assert вклад is not None
 
@@ -39,16 +40,19 @@ def test_счётчики_pytest_в_публичных_документах_со
 
 def test_readme_различает_mcp_и_локальные_skills() -> None:
     текст = (ROOT / "README.md").read_text(encoding="utf-8")
-    раздел = текст.split("## Модульная система возможностей", 1)[1]
-    раздел = раздел.split("\n## ", 1)[0]
+    модули = текст.split("## Инструменты и дополнительные модули", 1)[1]
+    модули = модули.split("\n## ", 1)[0]
+    skills = текст.split("## Skills", 1)[1].split("\n## ", 1)[0]
 
-    assert "постоянного read-only ядра" in раздел
-    assert "подключаемых capability-модулей" in раздел
-    assert "после перезапуска" in раздел
-    assert "новую MCP-сессию" in раздел
-    assert "1c-form-creator" in раздел
-    assert "1c-metadata-creator" in раздел
-    assert "не\nпубликуются как MCP-инструменты" in раздел
+    assert "read-only ядро" in модули
+    assert "capability-модулями" in модули
+    assert "перезапустите сервер" in модули
+    assert "новую\nMCP-сессию" in текст
+    assert "](docs/operations.md#внутренние-capability-модули)" in модули
+    assert "1c-form-creator" in skills
+    assert "1c-metadata-creator" in skills
+    assert "не публикуются как MCP-инструменты" in skills
+    assert "](skills/README.md)" in skills
 
 
 def test_список_исходников_называет_индексы_вызовов_и_форм():

@@ -547,7 +547,10 @@ def test_дизайн_не_выдаёт_готовые_возможности_з
 
 
 def test_readme_фиксирует_единый_docker_контракт_и_проверку_прав():
-    text = (ROOT / "README.md").read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "](docs/installation.md)" in readme
+    assert "docker-compose.classic.yml" not in readme
+    text = (ROOT / "docs" / "installation.md").read_text(encoding="utf-8")
 
     assert "compose.yaml" in text
     assert "MCP1C_DASHBOARD=on" in text

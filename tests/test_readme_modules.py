@@ -93,16 +93,19 @@ def test_readme_описывает_строгий_roundtrip_кэша_кода():
 
 def test_документация_различает_zip_структуры_и_архив_конфигуратора():
     readme = _text("README.md")
+    loading = _text("docs/configuration-loading.md")
+    assert "](docs/configuration-loading.md)" in readme
+    assert "Source A" in readme and "Source B" in readme
     dashboard = _text("dashboard/README.md")
     operations = _text("docs/operations.md")
 
-    for text in (readme, dashboard, operations):
+    for text in (loading, dashboard, operations):
         assert "Выгрузить конфигурацию в файлы…" in text
         assert "Архив" in text
         assert "СтруктураКонфигурации_*.zip" in text
         assert "data/incoming/" in text
 
-    for text in (readme, dashboard, operations):
+    for text in (loading, dashboard, operations):
         assert "/api/v1/sources/intake/upload" in text
         assert "read-only" in text
     assert "без родительской" in dashboard

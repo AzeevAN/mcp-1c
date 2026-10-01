@@ -176,3 +176,6 @@ worktrees/
 !/docs/operations.md
 !/docs/architecture.md
 !/docs/configuration-loading.md
+
+# Публичное руководство установки.
+!docs/installation.md

@@ -38,7 +38,7 @@ def test_readme_показывает_обезличенный_дашборд():
 
 def test_readme_не_выдаёт_локальный_registry_за_состав_установки():
     readme = _read("README.md")
-    introduction = readme.split("## Почему MCP 1C", 1)[0]
+    introduction = readme.split("## Возможности", 1)[0]
 
     assert "полностью синтетических данных" in introduction
     assert "всё состояние\nконкретной установки находится в каталоге `data/`" in introduction
@@ -59,7 +59,9 @@ def test_schema_описывает_рабочие_предопределённы
     assert "перечислить их из встроенного языка нельзя" not in schema
     assert "МетаОбъект.ПолучитьИменаПредопределенных()" in exporter
     assert "ВЫБРАТЬ ИмяПредопределенныхДанных КАК Имя" in exporter
-    for text in (schema, readme, sources):
+    assert "](docs/schema-v1.md)" in readme
+    assert "](docs/data-sources.md)" in readme
+    for text in (schema, sources, _read("docs/configuration-loading.md")):
         assert "ИмяПредопределенныхДанных" in text
         assert "ПометкаУдаления" in text
         assert "Проведен" in text
@@ -109,12 +111,13 @@ def test_публичные_документы_описывают_role_tools_api
     dashboard = _read("dashboard/README.md")
     changelog = _read("CHANGELOG.md").split("## [2.0.1]", 1)[0]
 
+    assert "](docs/tools.md)" in readme
     for text in (readme, tools):
         assert "find_roles_for_access" in text
         assert "get_role_access" in text
         assert "объявленн" in text and "прав" in text
-        assert "эффектив" in text and "доступ" in text
-        assert "restriction_ref" in text
+    assert "эффектив" in tools and "доступ" in tools
+    assert "restriction_ref" in tools
     assert "`/roles`" in readme
     assert "tools/list" in tools and "roles=ready" in tools
     assert "RoleAccessIndex" in sources
@@ -162,7 +165,9 @@ def test_публичные_контракты_источников_ролей_�
     assert "текущий converter не получает имена" not in sources
     assert "startup-only capability `role_access`" in tools
     assert "даже когда готового индекса ролей ещё" in tools
-    assert "даже если готового индекса ролей ещё нет" in readme
+    assert "](docs/tools.md)" in readme
+    assert "find_roles_for_access" in readme
+    assert "get_role_access" in readme
     assert "после intake confirm" not in tools.split("Создание и проверка форм", 1)[0]
     assert "`GET /api/v1/capabilities`" in dashboard
     assert "`PUT /api/v1/capabilities`" in dashboard

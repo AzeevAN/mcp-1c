@@ -760,8 +760,7 @@ def test_public_startup_документирует_settings_без_bootstrap_env
     assert "MCP1C_CAPABILITIES" not in compose
     assert "MCP1C_CAPABILITIES" not in example
     assert "MCP1C_CAPABILITIES" not in readme
-    assert "`data/server-settings.json`" in readme
-    assert "`PUT /api/v1/capabilities`" in readme
+    assert "](docs/operations.md#внутренние-capability-модули)" in readme
     assert "«Дополнительные модули»" in readme
     assert "`1c-form-creator`" in tools_doc
     assert "`1c-metadata-creator`" in tools_doc

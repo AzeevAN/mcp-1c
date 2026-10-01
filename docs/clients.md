@@ -89,14 +89,20 @@ claude mcp add --transport http 1c http://127.0.0.1:5001/mcp \
 ```toml
 [mcp_servers.mcp1c]
 url = "http://127.0.0.1:5001/mcp"
-
-[mcp_servers.mcp1c.http_headers]
-X-Api-Token = "значение_API_TOKEN"
+env_http_headers = { "X-Api-Token" = "MCP1C_API_TOKEN" }
 ```
 
-Формат локального клиента может меняться между версиями Codex. Если текущая
-версия не принимает `http_headers`, сверьте её справку MCP или используйте
-локальный `stdio`, где сетевой токен не нужен.
+Перед запуском Codex задайте `MCP1C_API_TOKEN` значением `API_TOKEN` вашего
+сервера. Если терминал открыт в каталоге установки с `.env` из быстрого старта:
+
+```bash
+export MCP1C_API_TOKEN="$(sed -n 's/^API_TOKEN=//p' .env)"
+codex
+```
+
+Значение токена остаётся в окружении клиента и не записывается в TOML.
+Для HTTPS замените URL на адрес вашего сервера.
+Поддерживаемые поля описаны в [официальной документации Codex](https://developers.openai.com/codex/mcp/).
 
 ## Cursor
 

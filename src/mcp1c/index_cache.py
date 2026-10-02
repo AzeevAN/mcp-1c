@@ -38,6 +38,7 @@ JSON проигрывает не из-за разбора, а из-за стру
 
 from __future__ import annotations
 
+import errno
 import gzip
 import hashlib
 import hmac
@@ -72,6 +73,18 @@ MAX_CACHE_PAYLOAD_BYTES = 512 * 1024 * 1024
 _MAX_HEADER_BYTES = 16 * 1024
 
 KEY_FILE_NAME = ".cache-key"
+# Префикс временного каталога сборки кэша модулей в Registry.
+_MODULES_STAGING_PREFIX = ".modules-cache.tmp-"
+# Ошибки os.link на файловых системах без жёстких ссылок (часть сетевых и
+# FUSE-томов, bind-монтирования Docker Desktop): тогда — rename.
+_NO_HARDLINK = frozenset(
+    code
+    for code in (
+        getattr(errno, name, None)
+        for name in ("EPERM", "ENOTSUP", "EOPNOTSUPP", "EXDEV", "ENOSYS")
+    )
+    if code is not None
+)
 _KEY_BYTES = 32
 _MAC_HEX_BYTES = 64
 # Ключ читается с диска один раз на каталог и процесс: тёплый старт поднимает
@@ -154,11 +167,13 @@ def _key_directory(path: Path) -> Path:
 
     Registry собирает кэш модулей во временном `.modules-cache.tmp-*` внутри
     каталога кэша и затем переносит файлы: подпись обязана остаться верной,
-    поэтому скрытые временные каталоги делят ключ с родителем.
+    поэтому такой каталог делит ключ с родителем. Подъём — ровно на один
+    уровень и только для этого префикса: иначе ключ искался бы в каталоге,
+    который кэшу не принадлежит.
     """
     directory = path.parent
-    while directory.name.startswith(".") and directory.parent != directory:
-        directory = directory.parent
+    if directory.name.startswith(_MODULES_STAGING_PREFIX):
+        return directory.parent
     return directory
 
 
@@ -176,6 +191,12 @@ def _read_key_file(key_path: Path) -> bytes | None:
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode):
             raise _KeyUnavailable("ключ кэша не является обычным файлом")
+        # Чужой или доступный другим ключ не берём и не подменяем: его мог
+        # подложить кто угодно с записью в каталог, а решать — оператору.
+        if info.st_uid != os.geteuid():
+            raise _KeyUnavailable("ключ кэша принадлежит другому пользователю")
+        if info.st_mode & 0o077:
+            raise _KeyUnavailable("ключ кэша доступен группе или всем")
         if info.st_size != _KEY_BYTES:
             return None
         key = os.read(descriptor, _KEY_BYTES + 1)
@@ -206,10 +227,18 @@ def _create_key(directory: Path, *, replace_broken: bool) -> bytes:
                 # не должны перезаписать ключ друг друга — второй берёт первый.
                 os.link(temporary, key_path)
             except FileExistsError:
-                existing = _read_key_file(key_path)
-                if existing is None:
-                    raise _KeyUnavailable("ключ кэша создаётся другим процессом")
-                key = existing
+                key = _existing_key(key_path)
+            except OSError as error:
+                if error.errno not in _NO_HARDLINK:
+                    raise
+                # Без жёстких ссылок атомарного «создать, если нет» нет:
+                # rename только когда ключа ещё нет, а затем повторное чтение —
+                # при гонке все процессы сойдутся на последнем записанном.
+                if key_path.exists() or key_path.is_symlink():
+                    key = _existing_key(key_path)
+                else:
+                    os.rename(temporary, key_path)
+                    key = _existing_key(key_path)
     except OSError as error:
         raise _KeyUnavailable(str(error)) from error
     finally:
@@ -218,6 +247,13 @@ def _create_key(directory: Path, *, replace_broken: bool) -> bytes:
         except OSError:
             pass
     return key
+
+
+def _existing_key(key_path: Path) -> bytes:
+    existing = _read_key_file(key_path)
+    if existing is None:
+        raise _KeyUnavailable("ключ кэша создаётся другим процессом")
+    return existing
 
 
 def _key_for(path: Path, *, create: bool) -> bytes:

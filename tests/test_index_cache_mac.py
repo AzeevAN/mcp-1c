@@ -9,6 +9,7 @@ MAC защищает от порчи и подмены файла кэша те�
 
 from __future__ import annotations
 
+import errno
 import gzip
 import marshal
 import os
@@ -143,3 +144,60 @@ def test_каталог_только_для_чтения_даёт_промах_�
         assert index_cache.load_blob(cache / "blob", source_sha256="abc", kind="blob") is None
     finally:
         cache.chmod(0o700)
+
+
+def _saved_with_key(tmp_path):
+    path = tmp_path / "blob"
+    index_cache.save_blob({"a": 1}, path, source_sha256="abc", kind="blob")
+    index_cache._KEYS.clear()
+    return path, tmp_path / index_cache.KEY_FILE_NAME
+
+
+@pytest.mark.parametrize("mode", [0o640, 0o604, 0o660, 0o644])
+def test_ключ_доступный_группе_или_всем_не_используется(tmp_path, mode):
+    path, key = _saved_with_key(tmp_path)
+    key.chmod(mode)
+
+    assert index_cache.load_blob(path, source_sha256="abc", kind="blob") is None
+    assert (
+        index_cache.save_blob({"a": 2}, path, source_sha256="abc", kind="blob") is None
+    )
+    # Ключ не подменён молча: решать, чей он, оператору.
+    assert stat.S_IMODE(key.lstat().st_mode) == mode
+
+
+def test_ключ_чужого_владельца_не_используется(tmp_path, monkeypatch):
+    path, _key = _saved_with_key(tmp_path)
+    real = os.geteuid()
+    monkeypatch.setattr(index_cache.os, "geteuid", lambda: real + 1)
+
+    assert index_cache.load_blob(path, source_sha256="abc", kind="blob") is None
+
+
+def test_ключ_поднимается_только_из_временного_каталога_модулей(tmp_path):
+    hidden = tmp_path / ".hidden"
+    hidden.mkdir()
+    index_cache.save_blob({"a": 1}, hidden / "blob", source_sha256="abc", kind="blob")
+    assert (hidden / index_cache.KEY_FILE_NAME).exists()
+    assert not (tmp_path / index_cache.KEY_FILE_NAME).exists()
+
+    nested = tmp_path / ".modules-cache.tmp-x" / ".deeper"
+    nested.mkdir(parents=True)
+    index_cache.save_blob({"a": 1}, nested / "blob", source_sha256="abc", kind="blob")
+    # Подъём ровно на один уровень и только для `.modules-cache.tmp-*`.
+    assert (nested / index_cache.KEY_FILE_NAME).exists()
+    assert not (tmp_path / ".modules-cache.tmp-x" / index_cache.KEY_FILE_NAME).exists()
+
+
+@pytest.mark.parametrize("code", [errno.EPERM, errno.ENOTSUP, errno.EXDEV])
+def test_без_жёстких_ссылок_ключ_создаётся_переименованием(tmp_path, monkeypatch, code):
+    def no_link(_source, _target):
+        raise OSError(code, os.strerror(code))
+
+    monkeypatch.setattr(index_cache.os, "link", no_link)
+    path = tmp_path / "blob"
+
+    assert index_cache.save_blob({"a": 1}, path, source_sha256="abc", kind="blob") == path
+    index_cache._KEYS.clear()
+    assert index_cache.load_blob(path, source_sha256="abc", kind="blob") == {"a": 1}
+    assert [p.name for p in tmp_path.iterdir() if p.name.endswith(".tmp")] == []

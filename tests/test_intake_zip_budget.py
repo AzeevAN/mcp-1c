@@ -379,3 +379,75 @@ def test_каталог_сверяет_сумму_выбранных_файло�
     with pytest.raises(CollectorError, match="суммарный"):
         collect_source_b(tree, probe_export(tree), tmp_path / "collection")
     assert not (tmp_path / "collection").exists()
+
+
+def test_предел_разбираемого_xml_выше_реальных_выгрузок():
+    from mcp1c.resource_limits import INTAKE_MAX_PARSED_XML_BYTES
+
+    # Крупнейший разбираемый целиком файл реальных выгрузок — Form.xml
+    # на 3,52 МиБ; ×6,8 запаса.
+    assert INTAKE_MAX_PARSED_XML_BYTES == 24 * MIB
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "Catalogs/Demo.xml",
+        "Catalogs/Demo/Forms/Main/Ext/Form.xml",
+        "Roles/Big.xml",
+    ],
+)
+def test_xml_больше_предела_разбора_отвергается_до_сборки(tmp_path, monkeypatch, path):
+    """Один XML до 4 ГиБ проходил бюджет архива и разбирался в DOM целиком."""
+    import os as _os
+
+    monkeypatch.setattr(intake_v2_collector, "INTAKE_MAX_PARSED_XML_BYTES", 1 * MIB)
+    archive = tmp_path / "big.zip"
+    archive.write_bytes(
+        _zip_bytes(
+            {
+                "Configuration.xml": _configuration(),
+                path: _os.urandom(1 * MIB + 1),
+            }
+        )
+    )
+    tree = ZipExportTree(archive, transport=CandidateTransport.INCOMING)
+    probe = probe_export(tree)
+    target = tmp_path / "work" / "collection"
+    try:
+        with pytest.raises(CollectorError, match="разбирается в памяти целиком") as error:
+            collect_source_b(tree, probe, target)
+    finally:
+        tree.close()
+    assert path in str(error.value)
+    assert not target.exists()
+    assert _written(tmp_path / "work") == 0
+
+
+def test_предел_разбора_не_касается_потоковых_прав_и_кода(tmp_path, monkeypatch):
+    """Rights.xml разбирается потоком, модуль — не XML, тело макета не
+    разбирается вовсе: им предел DOM не нужен."""
+    import os as _os
+
+    monkeypatch.setattr(intake_v2_collector, "INTAKE_MAX_PARSED_XML_BYTES", 1 * MIB)
+    archive = tmp_path / "ok.zip"
+    archive.write_bytes(
+        _zip_bytes(
+            {
+                "Configuration.xml": _configuration(),
+                "Catalogs/Demo/Ext/ObjectModule.bsl": b"//" + _os.urandom(1 * MIB).hex().encode()[: 1 * MIB],
+                "Roles/Big/Ext/Rights.xml": _os.urandom(1 * MIB + 1),
+                "Catalogs/Demo/Templates/Макет/Ext/Template.xml": _os.urandom(1 * MIB + 1),
+            }
+        )
+    )
+    tree = ZipExportTree(archive, transport=CandidateTransport.INCOMING)
+    probe = probe_export(tree)
+    try:
+        intake_v2_collector._preflight(
+            tree,
+            intake_v2_collector._plan(tree, probe.wrapper, intake_v2_collector.DEFAULT_KIND_SPECS),
+            tmp_path,
+        )
+    finally:
+        tree.close()

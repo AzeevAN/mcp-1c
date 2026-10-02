@@ -32,6 +32,7 @@ from .intake_v2 import (
 )
 from .intake_v2_probe import CandidateProbe, ProbeError
 from .intake_v2_transport import TransportError
+from .resource_limits import INTAKE_MAX_PARSED_XML_BYTES
 from .member_pack import MemberPackError, MemberPackWriter, open_stored_member
 
 
@@ -1274,6 +1275,27 @@ def _preflight(
     записанной на диск байты. Оценка места — сверху: роли пишутся в gzip.
     """
     paths = [step.raw_path for step in plan if step.reads]
+    # Предел архива пропускает запись до 4 ГиБ, а XML описаний и форм
+    # разбирается в DOM целиком: его отдельный предел проверяется здесь же,
+    # до первого распакованного байта, с именем записи в отказе.
+    limit = INTAKE_MAX_PARSED_XML_BYTES
+    for step in plan:
+        # Тело макета converter не читает вовсе, а реальные бывают по 59 МиБ.
+        template_body = PurePosixPath(step.source_path).parts[-2:] == (
+            "Ext",
+            "Template.xml",
+        )
+        parsed_whole = (
+            step.kind in (ArtifactKind.METADATA, ArtifactKind.FORMS)
+            and not template_body
+        ) or step.role_kind == "descriptor"
+        if step.reads and parsed_whole:
+            size = tree.size(step.raw_path)
+            if size > limit:
+                raise CollectorError(
+                    f"{step.source_path}: {size} байт больше предела {limit} "
+                    "для файла, который разбирается в памяти целиком"
+                )
     validate = getattr(tree, "validate_selection", None)
     if validate is not None:
         try:

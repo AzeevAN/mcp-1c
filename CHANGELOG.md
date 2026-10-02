@@ -348,8 +348,11 @@
   останавливается на первом элементе (не весь файл), кодировку определяет так
   же, как ElementTree, а прочитанные байты возвращает разборщику без перемотки
   потока. Отказ — подкласс `ET.ParseError`, поэтому идёт по прежним путям
-  «XML не разбирается». Тест запрещает прямые вызовы `ET.parse/iterparse/
-  fromstring/canonicalize` в `src/mcp1c` в обход хелпера. RED: XML с DTD и
+  «XML не разбирается». Тест запрещает в `src/mcp1c` вне хелпера прямые
+  вызовы `ET.parse/iterparse/fromstring/canonicalize`, те же функции через
+  `ElementTree.` или `from xml.etree... import`, а также `minidom`, `sax`,
+  `expat`/`ParserCreate` и `lxml`; сама регулярка стража проверена на каждом
+  варианте обхода. RED: XML с DTD и
   1000 ссылками на сущность в 1 КиБ (ниже порога expat) раскрывался в
   мегабайт текста и принимался probe, Registry, loader, collector и
   дескриптором роли.

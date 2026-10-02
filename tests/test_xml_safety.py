@@ -123,21 +123,67 @@ def test_слишком_длинный_пролог_отвергается():
         xml_safety.fromstring(payload)
 
 
+# canonicalize от ET.tostring собственного дерева допустим: DOCTYPE в
+# сериализованном ElementTree не бывает.
+DIRECT_XML = re.compile(
+    r"\bET\.(parse|iterparse|fromstring|fromstringlist|XML|XMLParser|"
+    r"XMLPullParser)\(|\bET\.canonicalize\((?!\s*xml_data=ET\.tostring\()"
+    r"|\bxml\.(dom|sax|parsers)\b|\bpyexpat\b"
+    # Обход через другое имя модуля: ElementTree.parse(...), импорт
+    # функций разбора напрямую, minidom, expat и lxml.
+    r"|\bElementTree\.(parse|iterparse|fromstring|fromstringlist|XML|"
+    r"XMLParser|XMLPullParser|canonicalize)\b"
+    r"|\bfrom\s+xml\.etree(\.ElementTree|\.cElementTree)?\s+import\b"
+    r"|\bimport\s+xml\.etree\.cElementTree\b"
+    r"|\bminidom\b|\bexpat\b|\bParserCreate\b|\blxml\b"
+    r"|\bimport\s+xml\.etree\.ElementTree(?!\s+as\s+ET\b)"
+)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "root = ET.fromstring(data)",
+        "ET.parse(stream)",
+        "for e in ET.iterparse(stream):",
+        "ET.canonicalize(from_file=stream)",
+        "tree = ElementTree.parse(path)",
+        "from xml.etree.ElementTree import fromstring",
+        "from xml.etree import ElementTree",
+        "import xml.etree.ElementTree",
+        "import xml.etree.cElementTree as ET",
+        "from xml.dom import minidom",
+        "parser = expat.ParserCreate()",
+        "from pyexpat import ParserCreate",
+        "import xml.sax",
+        "from lxml import etree",
+    ],
+)
+def test_страж_ловит_каждый_вариант_обхода(line):
+    assert DIRECT_XML.search(line)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "import xml.etree.ElementTree as ET",
+        "def f(element: ET.Element) -> ET.Element:",
+        "ET.canonicalize(xml_data=ET.tostring(root, encoding='unicode'))",
+        "root = xml_safety.fromstring(data)",
+    ],
+)
+def test_страж_не_трогает_допустимое(line):
+    assert not DIRECT_XML.search(line)
+
+
 def test_все_серверные_парсеры_идут_через_xml_safety():
     """Прямой вызов разборщика ElementTree в обход проверки не допускается."""
-    # canonicalize от ET.tostring собственного дерева допустим: DOCTYPE в
-    # сериализованном ElementTree не бывает.
-    direct = re.compile(
-        r"\bET\.(parse|iterparse|fromstring|fromstringlist|XML|XMLParser|"
-        r"XMLPullParser)\(|\bET\.canonicalize\((?!\s*xml_data=ET\.tostring\()"
-        r"|\bxml\.(dom|sax|parsers)\b|\bpyexpat\b"
-    )
     offenders = []
     for path in sorted(SRC.glob("*.py")):
         if path.name == "xml_safety.py":
             continue
         text = path.read_text(encoding="utf-8")
-        for match in direct.finditer(text):
+        for match in DIRECT_XML.finditer(text):
             number = text.count("\n", 0, match.start()) + 1
             offenders.append(f"{path.name}:{number}")
     assert offenders == []

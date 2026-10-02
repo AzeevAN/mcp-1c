@@ -101,14 +101,6 @@ MAX_TRACKED_LOGIN_CLIENTS = 4096
 # продолжают проверяться адреса, успешно входившие за последние 12 часов.
 GLOBAL_LOGIN_FAILURE_LIMIT = 100
 
-# Под блокировкой стойкий токен ещё сверяется (иначе чужие догадки отрезали бы
-# всех за общим NAT-адресом). «Стойкий» проверяется по длине, а не по
-# случайности: длинную заглушку вроде `change-me-…` угадать можно. Поэтому и
-# здесь различные неудачи считаются, но с потолком на порядок выше: верные
-# клиенты его не достигают, а перебор длинного предсказуемого токена остаётся
-# ограничен тысячей догадок за окно.
-LOCKED_STRONG_FAILURE_LIMIT = 1000
-
 MAX_KNOWN_GOOD_CLIENTS = 1024
 
 # Порядок вставки словаря — порядок создания: первая запись старейшая.
@@ -119,8 +111,6 @@ _SESSIONS: dict[str, tuple[str, float]] = {}
 _LOGIN_FAILURES: dict[str, dict[bytes, float]] = {}
 
 _GLOBAL_FAILURES: dict[bytes, float] = {}
-
-_LOCKED_FAILURES: dict[bytes, float] = {}
 
 _KNOWN_GOOD_CLIENTS: dict[str, float] = {}
 
@@ -294,21 +284,12 @@ def check_token(request: Request, given: str) -> tuple[str | None, int | None]:
             # продолжал бы перебор, ради сдерживания которого блокировка
             # существует. Неверная догадка здесь не учитывается — окно
             # истекает само, а не продлевается атакующим.
-            strong = [
-                (token, level)
-                for token, level in ((admin, LEVEL_ADMIN), (api, LEVEL_READ))
-                if token_is_strong(token)
-            ]
-            _fresh(_LOCKED_FAILURES, now, LOGIN_FAILURE_WINDOW_SECONDS)
-            if not strong or len(_LOCKED_FAILURES) >= LOCKED_STRONG_FAILURE_LIMIT:
-                return None, retry_after
-            for token, level in strong:
-                if same_token(given, token):
+            # «Стойкий» — не только длина: предсказуемую длинную строку
+            # `token_is_strong` стойкой не считает, и она под блокировкой не
+            # сверяется, как короткая.
+            for token, level in ((admin, LEVEL_ADMIN), (api, LEVEL_READ)):
+                if token_is_strong(token) and same_token(given, token):
                     return level, None
-            fingerprint = hmac.new(
-                _FAILURE_KEY, given.encode("utf-8"), hashlib.sha256
-            ).digest()[:16]
-            _LOCKED_FAILURES[fingerprint] = now
             return None, retry_after
         if same_token(given, admin):
             level = LEVEL_ADMIN
@@ -393,10 +374,10 @@ def login_from_foreign_site(request: Request) -> bool:
     # Proxy с настройками по умолчанию (nginx: `Host: $proxy_host`) передаёт
     # внутренний адрес, и Origin публичного имени с Host не совпадёт. Имена,
     # объявленные оператором как свои, — тоже свой сайт.
-    return not _origin_declared(hostname, port)
+    return not _origin_declared(scheme, hostname, port)
 
 
-def _origin_declared(hostname: str, port: int) -> bool:
+def _origin_declared(scheme: str, hostname: str, port: int) -> bool:
     try:
         declared = allowed_hosts()
     except HostConfigurationError:
@@ -411,7 +392,10 @@ def _origin_declared(hostname: str, port: int) -> bool:
         if split is None:
             continue
         name, entry_port = split
-        if name.strip("[]").lower().rstrip(".") == hostname and entry_port in (None, port):
+        # Имя без порта — только стандартный порт схемы самого Origin:
+        # страница на другом порту того же имени для формы входа чужая.
+        expected = entry_port or (443 if scheme == "https" else 80)
+        if name.strip("[]").lower().rstrip(".") == hostname and expected == port:
             return True
     return False
 

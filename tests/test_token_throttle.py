@@ -32,8 +32,8 @@ ADMIN = "admin-weak"
 
 # Стойкие (как требует `--require-tokens`): под блокировкой их сверка не
 # выдаёт ничего полезного, и владелец верного токена проходит.
-STRONG_READ = "reader-token-" + "r" * 24
-STRONG_ADMIN = "admin-token-" + "a" * 24
+STRONG_READ = "Qm7vR2xK9pLt4WcZ8hNbE3sYgU6dJfA1oTq5"
+STRONG_ADMIN = "Zx4Pk8Lw2Ns6Hd9Vb3Tm7Rq1Gy5Cf0Ja8Ue2"
 
 
 @pytest.fixture
@@ -337,21 +337,39 @@ def test_перезагрузка_по_заголовку_админа_прох�
     assert reader.status_code == 403
 
 
-def test_перебор_длинного_токена_под_блокировкой_ограничен(strong_tokens, monkeypatch):
-    """«Стойкий» проверяется по длине: под блокировкой перебор длинного
-    предсказуемого токена тоже упирается в потолок различных неудач."""
-    monkeypatch.setattr(backend, "LOCKED_STRONG_FAILURE_LIMIT", 5)
+@pytest.mark.parametrize(
+    "token",
+    [
+        "change-me-change-me-change-me-change-me",
+        "a" * 40,
+        "ab" * 20,
+        "Abcdefgh12345678Abcdefgh12345678",
+        "0123456789abcdef0123456789abcdef0123",
+    ],
+)
+def test_предсказуемый_длинный_токен_под_блокировкой_не_сверяется(monkeypatch, token):
+    """«Стойкий» проверяется не только по длине: длинную предсказуемую
+    строку под блокировкой не сверяют, иначе её перебирали бы без предела."""
+    monkeypatch.setenv("API_TOKEN", token)
+    monkeypatch.setenv("ADMIN_TOKEN", STRONG_ADMIN)
     for attempt in range(backend.LOGIN_FAILURE_LIMIT):
-        token = f"guess-{attempt}"
-        backend.check_token(_request("10.0.0.9", token), token)
-    for attempt in range(5):
-        token = f"locked-{attempt}"
-        level, retry = backend.check_token(_request("10.0.0.9", token), token)
-        assert level is None and retry is not None
+        guess = f"guess-{attempt}"
+        backend.check_token(_request("10.0.0.9", guess), guess)
 
-    # Потолок исчерпан: под блокировкой токен больше не сверяется вовсе.
-    level, retry = backend.check_token(_request("10.0.0.9", STRONG_READ), STRONG_READ)
+    level, retry = backend.check_token(_request("10.0.0.9", token), token)
     assert level is None and retry is not None
+    # Случайный токен рядом по-прежнему проходит.
+    assert backend.check_token(_request("10.0.0.9", STRONG_ADMIN), STRONG_ADMIN)[0] == (
+        backend.LEVEL_ADMIN
+    )
+
+
+def test_сгенерированный_токен_считается_стойким():
+    import secrets
+
+    from mcp1c.runtime_config import token_is_strong
+
+    assert all(token_is_strong(secrets.token_urlsafe(32)) for _ in range(2000))
 
 
 def test_вход_за_proxy_с_публичным_адресом_проходит(strong_tokens, tmp_path, monkeypatch):
@@ -369,7 +387,11 @@ def test_вход_за_proxy_с_публичным_адресом_проходи
             follow_redirects=False,
         )
         assert ok.status_code == 303, origin
-    for origin in ("https://dash.example.org", "http://localhost:3000"):
+    for origin in (
+        "https://dash.example.org",
+        "http://localhost:3000",
+        "https://mcp.example.com:8443",
+    ):
         denied = client.post(
             "/login", data={"token": STRONG_ADMIN}, headers={"origin": origin}
         )

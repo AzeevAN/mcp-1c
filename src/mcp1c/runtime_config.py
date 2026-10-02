@@ -105,16 +105,36 @@ def _validate_token(name: str, value: str) -> None:
 def token_is_strong(value: str) -> bool:
     """Выдерживает ли токен онлайн-перебор без блокировки.
 
-    Те же правила, что у `--require-tokens`: 32+ печатных ASCII-символа и не
-    известная заглушка. Такой токен ответ «совпало» не раскрывает — догадаться
-    до него за время жизни процесса нельзя, — поэтому его сверяют и под
-    блокировкой перебора.
+    Правила `--require-tokens` (32+ печатных ASCII-символа, не известная
+    заглушка) плюс признаки случайности: не меньше 16 различных символов, без
+    слова-заглушки внутри и без повторяющегося периода. Такой токен ответ
+    «совпало» не раскрывает — догадаться до него за время жизни процесса
+    нельзя, — поэтому его сверяют и под блокировкой перебора.
     """
     try:
         _validate_token("token", value)
     except TokenConfigurationError:
         return False
-    return True
+    return not _looks_predictable(value)
+
+
+# Длина сама по себе не делает токен случайным: `change-me-change-me-…` или
+# `aaaa…` длиннее 32 символов, но угадываются. Секрет из
+# `secrets.token_urlsafe(32)` (43 символа из 64) таких признаков не имеет:
+# различных символов в нём почти всегда больше 20, периода нет.
+_MIN_DISTINCT_CHARS = 16
+
+
+def _looks_predictable(value: str) -> bool:
+    if len(set(value)) < _MIN_DISTINCT_CHARS:
+        return True
+    folded = value.casefold()
+    if any(marker in folded for marker in _PLACEHOLDER_TOKENS if len(marker) >= 6):
+        return True
+    for period in range(1, len(value) // 2 + 1):
+        if all(value[i] == value[i % period] for i in range(len(value))):
+            return True
+    return False
 
 
 def require_tokens(environ: Mapping[str, str] | None = None) -> None:

@@ -44,7 +44,7 @@ def test_multipart_отвергает_второй_file_part(
     login(client)
     monkeypatch.setattr(
         dashboard,
-        "_start_job",
+        "start_job",
         lambda *args, **kwargs: pytest.fail("обработчик не должен запускаться"),
     )
 
@@ -90,7 +90,7 @@ def test_multipart_останавливает_file_part_до_запуска_об
     monkeypatch.setattr(formparsers, "SpooledTemporaryFile", temporary_file)
     monkeypatch.setattr(
         dashboard,
-        "_start_job",
+        "start_job",
         lambda *args, **kwargs: pytest.fail("файл уже превысил temp-лимит"),
     )
 

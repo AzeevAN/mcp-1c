@@ -46,15 +46,15 @@ from .dashboard_backend import (
     LEVEL_ADMIN,
     LEVEL_READ,
     SESSION_TTL_SECONDS,
-    _admin_token,
-    _api_token,
-    _authorized,
-    _create_session,
-    _csrf_denied,
-    _drop_session,
-    _session_level,
+    admin_authorized,
+    admin_token,
+    api_token,
     can_read,
     check_token,
+    create_session,
+    csrf_denied,
+    drop_session,
+    session_level,
 )
 from .dictionary import ANY_CONFIGURATION, SOURCE_BUILTIN, DictionaryError
 from .graph_view import DEFAULT_LIMIT as DEFAULT_GRAPH_LIMIT
@@ -373,7 +373,7 @@ def _copy_upload(source, target: Path, job: dict) -> int:
             size += len(chunk)
             job["size"] = size
             if size > dashboard_backend.MAX_UPLOAD:
-                raise dashboard_backend._UploadTooLarge
+                raise dashboard_backend.UploadTooLarge
             output.write(chunk)
     return size
 
@@ -410,7 +410,7 @@ def _sources_revision(snapshot) -> str:
 
 def _run_revisioned_queries(registry, config, scope, phrases):
     snapshot = registry.snapshot()
-    results = dashboard_backend._run_queries(registry, config or None, scope, phrases)
+    results = dashboard_backend.run_queries(registry, config or None, scope, phrases)
     payload = _query_results_payload(config, scope, phrases, results)
     # Гонка не должна приписать старой выдаче ревизию уже нового источника.
     payload["sources_revision"] = (
@@ -482,12 +482,12 @@ def _query_results_payload(
                             if scope == "syntax"
                             else hit.doc.id
                         ),
-                        "kind": dashboard_backend._kind_title(
+                        "kind": dashboard_backend.kind_title(
                             scope, hit.doc.kind
                         ),
                         "score": hit.score,
                         "reason": hit.reason,
-                        "card_url": dashboard_backend._card_link(
+                        "card_url": dashboard_backend.card_link(
                             scope, config, hit
                         ),
                     }
@@ -497,7 +497,7 @@ def _query_results_payload(
                     {
                         "title": getattr(hit.doc.payload, "address", "")
                         or hit.doc.id,
-                        "reason": dashboard_backend._hidden_reason(
+                        "reason": dashboard_backend.hidden_reason(
                             hit.doc.payload
                         ),
                     }
@@ -524,7 +524,7 @@ def _card_payload(
     """Карточка тем же вызовом и тем же Markdown-рендерером, что получает MCP."""
     levels = [*DETAIL_LEVELS, "links"] if kind == "syntax" else list(DETAIL_LEVELS)
     normalized_detail = detail if detail in levels else "fields"
-    markdown = dashboard_backend._card_text(
+    markdown = dashboard_backend.card_text(
         registry, kind, config, name, normalized_detail,
         links_offset if kind == "syntax" and normalized_detail == "links" else 0,
     )
@@ -722,7 +722,7 @@ def _dictionary_payload(
 def _admin_denied(request: Request, *, action: str) -> JSONResponse | None:
     if not os.environ.get("ADMIN_TOKEN", ""):
         return _json_error(f"{action} выключено: не задан ADMIN_TOKEN.", 404)
-    if not _authorized(request):
+    if not admin_authorized(request):
         return _json_error("Нужен вход администратора.", 403)
     return None
 
@@ -731,7 +731,7 @@ def _mutation_denied(request: Request, *, action: str) -> JSONResponse | None:
     denied = _admin_denied(request, action=action)
     if denied is not None:
         return denied
-    csrf = _csrf_denied(request)
+    csrf = csrf_denied(request)
     if csrf is not None:
         return _json_error("Запрос отклонён проверкой источника.", csrf.status_code)
     return None
@@ -980,12 +980,12 @@ def _spa_routes(
                 "server": {"status": "ok", "version": __version__},
                 "permissions": {
                     "read": True,
-                    "admin": _authorized(request),
+                    "admin": admin_authorized(request),
                 },
                 "authentication": {
                     "read_required": bool(os.environ.get("API_TOKEN", "")),
                     "admin_available": bool(os.environ.get("ADMIN_TOKEN", "")),
-                    "session_level": _session_level(request),
+                    "session_level": session_level(request),
                 },
                 "summary": {
                     "configurations": configurations,
@@ -1005,13 +1005,13 @@ def _spa_routes(
             # Это ожидаемый конфликт чтения, а не авария сервера.
             return _json_error(str(error), 409)
         return JSONResponse(
-            _sources_payload(snapshot, admin=_authorized(request))
+            _sources_payload(snapshot, admin=admin_authorized(request))
         )
 
     async def platform_set_api(request: Request) -> JSONResponse:
-        if not _authorized(request):
+        if not admin_authorized(request):
             return _json_error("Нужен административный токен.", 401)
-        denied = _csrf_denied(request)
+        denied = csrf_denied(request)
         if denied is not None:
             return denied
         body = await _json_body(request)
@@ -1030,9 +1030,9 @@ def _spa_routes(
         return JSONResponse({"configuration": configuration, **declaration.to_dict()})
 
     async def platform_clear_api(request: Request) -> JSONResponse:
-        if not _authorized(request):
+        if not admin_authorized(request):
             return _json_error("Нужен административный токен.", 401)
-        denied = _csrf_denied(request)
+        denied = csrf_denied(request)
         if denied is not None:
             return denied
         body = await _json_body(request)
@@ -1160,7 +1160,7 @@ def _spa_routes(
             _dictionary_payload,
             registry,
             config=request.query_params.get("config", ""),
-            admin=_authorized(request),
+            admin=admin_authorized(request),
         )
         return JSONResponse(payload)
 
@@ -1179,7 +1179,7 @@ def _spa_routes(
         targets = [target.strip() for target in raw_targets if target.strip()]
         try:
             normalized, saved_targets = await run_in_threadpool(
-                dashboard_backend._apply_dictionary_change,
+                dashboard_backend.apply_dictionary_change,
                 registry,
                 lambda dictionary: dictionary.add_alias(
                     phrase, targets, config or None
@@ -1217,7 +1217,7 @@ def _spa_routes(
             return _json_error("Неизвестная область псевдонима.", 422)
         try:
             removed = await run_in_threadpool(
-                dashboard_backend._apply_dictionary_change,
+                dashboard_backend.apply_dictionary_change,
                 registry,
                 lambda dictionary: dictionary.remove_alias(
                     phrase, None if scope == ANY_CONFIGURATION else scope
@@ -1244,7 +1244,7 @@ def _spa_routes(
             return _json_error("words должен быть списком строк.", 422)
         try:
             group = await run_in_threadpool(
-                dashboard_backend._apply_dictionary_change,
+                dashboard_backend.apply_dictionary_change,
                 registry,
                 lambda dictionary: dictionary.add_synonyms(words),
             )
@@ -1269,7 +1269,7 @@ def _spa_routes(
             return _json_error("words должен быть списком строк.", 422)
         try:
             removed = await run_in_threadpool(
-                dashboard_backend._apply_dictionary_change,
+                dashboard_backend.apply_dictionary_change,
                 registry,
                 lambda dictionary: dictionary.remove_synonyms(words),
             )
@@ -1525,7 +1525,7 @@ def _spa_routes(
     @admin_endpoint("Управление источниками")
     async def admin_sources_api(request: Request) -> JSONResponse:
         prepared = await run_in_threadpool(
-            dashboard_backend._prepare_sources_page,
+            dashboard_backend.prepare_sources_page,
             registry,
             authorized=True,
         )
@@ -1618,15 +1618,15 @@ def _spa_routes(
     async def intake_upload_api(request: Request) -> JSONResponse:
         service = (await intake_service())
         try:
-            form = await dashboard_backend._limited_upload_form(
+            form = await dashboard_backend.limited_upload_form(
                 request,
                 service.lifecycle.browser.max_upload_bytes,
                 allowed_fields=frozenset(),
             )
-        except dashboard_backend._UploadTooLarge:
+        except dashboard_backend.UploadTooLarge:
             limit = service.lifecycle.browser.max_upload_bytes // 1024 // 1024
             return _json_error(f"Файл больше {limit} МБ.", 413)
-        except dashboard_backend._UploadStorageFull:
+        except dashboard_backend.UploadStorageFull:
             return _json_error("Недостаточно места для временного файла загрузки.", 507)
         except MultiPartException:
             return _json_error(
@@ -1800,13 +1800,13 @@ def _spa_routes(
     @admin_endpoint("Загрузка", mutation=True)
     async def upload_source_api(request: Request) -> JSONResponse:
         try:
-            form = await dashboard_backend._limited_upload_form(request)
-        except dashboard_backend._UploadTooLarge:
+            form = await dashboard_backend.limited_upload_form(request)
+        except dashboard_backend.UploadTooLarge:
             return _json_error(
                 f"Файл больше {dashboard_backend.MAX_UPLOAD // 1024 // 1024} МБ.",
                 413,
             )
-        except dashboard_backend._UploadStorageFull:
+        except dashboard_backend.UploadStorageFull:
             return _json_error("Недостаточно места для временного файла загрузки.", 507)
         except MultiPartException:
             return _json_error(
@@ -1833,7 +1833,7 @@ def _spa_routes(
         try:
             directory = tempfile.mkdtemp()
             target = Path(directory) / name
-            job = dashboard_backend._start_job(name, 0)
+            job = dashboard_backend.start_job(name, 0)
             # Копирование до 500 МБ из spool в файл — синхронный дисковый I/O.
             # В event loop оно на медленном томе останавливало `/health` и MCP.
             # Поток не прерывается отменой запроса: `finally` ниже закроет
@@ -1843,16 +1843,16 @@ def _spa_routes(
             )
             task = heavy.spawn(
                 heavy.run(
-                    dashboard_backend._run_job,
+                    dashboard_backend.run_job,
                     registry, job, directory, target, suffix,
                     allow_truncated=allow_truncated,
                 )
             )
             handed_off = True
-            dashboard_backend._ФОНОВЫЕ.add(task)
-            task.add_done_callback(dashboard_backend._ФОНОВЫЕ.discard)
+            dashboard_backend.ФОНОВЫЕ.add(task)
+            task.add_done_callback(dashboard_backend.ФОНОВЫЕ.discard)
             return JSONResponse({"job": _job_payload(job)}, status_code=202)
-        except dashboard_backend._UploadTooLarge:
+        except dashboard_backend.UploadTooLarge:
             return _json_error(
                 f"Файл больше {dashboard_backend.MAX_UPLOAD // 1024 // 1024} МБ.",
                 413,
@@ -1868,8 +1868,8 @@ def _spa_routes(
             if not handed_off:
                 if directory is not None:
                     shutil.rmtree(directory, ignore_errors=True)
-                if job is not None and job in dashboard_backend._JOBS:
-                    dashboard_backend._JOBS.remove(job)
+                if job is not None and job in dashboard_backend.JOBS:
+                    dashboard_backend.JOBS.remove(job)
             uploaded.file.close()
 
     @heavy_endpoint
@@ -1884,12 +1884,12 @@ def _spa_routes(
     async def clear_jobs_api(request: Request) -> JSONResponse:
         completed = [
             job
-            for job in dashboard_backend._JOBS
+            for job in dashboard_backend.JOBS
             if job["state"]
             in (dashboard_backend.JOB_DONE, dashboard_backend.JOB_FAILED)
         ]
         for job in completed:
-            dashboard_backend._JOBS.remove(job)
+            dashboard_backend.JOBS.remove(job)
         return JSONResponse({"cleared": len(completed)})
 
     @admin_endpoint("Удаление", mutation=True)
@@ -2247,7 +2247,7 @@ def _spa_routes(
     )
     async def login(request: Request):
         """Обменять токен на серверную cookie-сессию SPA."""
-        if not _admin_token() and not _api_token():
+        if not admin_token() and not api_token():
             return PlainTextResponse(
                 "Вход выключен: не задан ни ADMIN_TOKEN, ни API_TOKEN.", 404
             )
@@ -2265,7 +2265,7 @@ def _spa_routes(
         if level is None:
             return PlainTextResponse("Неверный токен.", status_code=403)
 
-        session = _create_session(level)
+        session = create_session(level)
         response = RedirectResponse(
             "/sources" if level == LEVEL_ADMIN else "/", status_code=303
         )
@@ -2282,10 +2282,10 @@ def _spa_routes(
 
     async def logout(request: Request):
         """Закрыть cookie-сессию с обязательной same-origin проверкой."""
-        denied = _csrf_denied(request)
+        denied = csrf_denied(request)
         if denied is not None:
             return denied
-        _drop_session(request.cookies.get(COOKIE, ""))
+        drop_session(request.cookies.get(COOKIE, ""))
         response = RedirectResponse("/login", status_code=303)
         response.delete_cookie(
             COOKIE,
@@ -2421,7 +2421,7 @@ def _reference_routes(
 
     @read_endpoint
     async def reference_status_api(request: Request) -> JSONResponse:
-        return JSONResponse(reference.payload(detailed=_authorized(request)))
+        return JSONResponse(reference.payload(detailed=admin_authorized(request)))
 
     return [
         Route(

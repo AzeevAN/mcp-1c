@@ -44,7 +44,7 @@ def _wait_until(condition, timeout: float = 20.0) -> None:
 def test_admin_snapshot_скрыт_от_токена_чтения(tmp_path, monkeypatch):
     monkeypatch.setenv("API_TOKEN", "read-token")
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
-    monkeypatch.setattr(dashboard, "_JOBS", [])
+    monkeypatch.setattr(dashboard, "JOBS", [])
     client = _client(Registry(tmp_path / "data"))
 
     _login(client, "read-token")
@@ -89,7 +89,7 @@ def test_admin_snapshot_скрыт_от_токена_чтения(tmp_path, monk
 def test_spa_upload_запрещён_токену_чтения(tmp_path, monkeypatch):
     monkeypatch.setenv("API_TOKEN", "read-token")
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
-    monkeypatch.setattr(dashboard, "_JOBS", [])
+    monkeypatch.setattr(dashboard, "JOBS", [])
     registry = Registry(tmp_path / "data")
     client = _client(registry)
     _login(client, "read-token")
@@ -101,13 +101,13 @@ def test_spa_upload_запрещён_токену_чтения(tmp_path, monkeyp
 
     assert response.status_code == 403
     assert registry.snapshot().sources == {}
-    assert dashboard._JOBS == []
+    assert dashboard.JOBS == []
 
 
 def test_spa_cookie_mutation_отвергает_чужой_origin(tmp_path, monkeypatch):
     monkeypatch.delenv("API_TOKEN", raising=False)
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
-    monkeypatch.setattr(dashboard, "_JOBS", [])
+    monkeypatch.setattr(dashboard, "JOBS", [])
     exports = tmp_path / "exports"
     exports.mkdir()
     registry = Registry(tmp_path / "data")
@@ -138,7 +138,7 @@ def test_spa_upload_принимает_файл_и_публикует_источ
 ):
     monkeypatch.delenv("API_TOKEN", raising=False)
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
-    monkeypatch.setattr(dashboard, "_JOBS", [])
+    monkeypatch.setattr(dashboard, "JOBS", [])
     registry = Registry(tmp_path / "data")
     export_dir = tmp_path / "export"
     export_dir.mkdir()
@@ -168,7 +168,7 @@ def test_spa_incoming_не_разбирает_частичный_код(
 ):
     monkeypatch.delenv("API_TOKEN", raising=False)
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
-    monkeypatch.setattr(dashboard, "_JOBS", [])
+    monkeypatch.setattr(dashboard, "JOBS", [])
     registry = Registry(tmp_path / "data")
     exports = tmp_path / "exports"
     exports.mkdir()
@@ -209,7 +209,7 @@ def test_spa_remove_требует_точного_подтверждения_и_
 ):
     monkeypatch.delenv("API_TOKEN", raising=False)
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
-    monkeypatch.setattr(dashboard, "_JOBS", [])
+    monkeypatch.setattr(dashboard, "JOBS", [])
     registry = реестр_из_кода(корень_кода, name="Отраслевая конфигурация А")
     client = _client(registry)
     _login(client)
@@ -236,7 +236,7 @@ def test_spa_forget_удаляет_только_файл_из_списка_orpha
 ):
     monkeypatch.delenv("API_TOKEN", raising=False)
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
-    monkeypatch.setattr(dashboard, "_JOBS", [])
+    monkeypatch.setattr(dashboard, "JOBS", [])
     registry = Registry(tmp_path / "data")
     orphan = registry.sources_dir / "hbk" / "устаревшая.hbk"
     orphan.parent.mkdir(parents=True)

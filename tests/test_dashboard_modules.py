@@ -76,7 +76,7 @@ def test_prepare_sources_повторяет_дисковый_обход_посл
 
     monkeypatch.setattr(реестр_с_кодом, "orphan_sources", scan_and_replace)
 
-    prepared = dashboard._prepare_sources_page(
+    prepared = dashboard.prepare_sources_page(
         реестр_с_кодом, authorized=False
     )
 
@@ -100,7 +100,7 @@ def test_prepare_sources_после_двух_смен_возвращает_ст�
 
     monkeypatch.setattr(реестр_с_кодом, "orphan_sources", scan_and_reparse)
 
-    prepared = dashboard._prepare_sources_page(
+    prepared = dashboard.prepare_sources_page(
         реестр_с_кодом, authorized=False
     )
 

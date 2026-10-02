@@ -103,7 +103,7 @@ def test_source_a_не_создаёт_смешанный_overlay_через_lega
 ):
     monkeypatch.setenv("ADMIN_TOKEN", "synthetic-admin-token")
     monkeypatch.delenv("API_TOKEN", raising=False)
-    monkeypatch.setattr(dashboard, "_JOBS", [])
+    monkeypatch.setattr(dashboard, "JOBS", [])
     registry = Registry(tmp_path / "data")
     service = IntakeApiService.for_registry(registry, directory_settle_seconds=0)
     base_archive = _archive(
@@ -174,7 +174,7 @@ def test_source_a_не_создаёт_смешанный_overlay_через_lega
     assert restarted.resolve(_CONFIG).modules is None
     assert "Дополнение" not in restarted.snapshot().extension_names(_CONFIG)
 
-    monkeypatch.setattr(dashboard, "_JOBS", [])
+    monkeypatch.setattr(dashboard, "JOBS", [])
     parse_with_legacy_http(restarted)
 
 

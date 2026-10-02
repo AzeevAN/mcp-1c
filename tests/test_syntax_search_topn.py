@@ -4,7 +4,7 @@ import pytest
 
 from conftest import build_syntax_registry
 from mcp1c import cli
-from mcp1c.dashboard_backend import _run_queries
+from mcp1c.dashboard_backend import run_queries
 from mcp1c.syntax_model import SyntaxItem
 from mcp1c.tools import search_syntax
 from test_dashboard_queries_api import _client
@@ -63,7 +63,7 @@ def test_доступные_ниже_предварительных_окон_н�
         result = response.json()["results"][0]
         assert len(result["hits"]) == 5
         assert len(result["hidden"]) <= 5
-        assert [h.doc.payload.address for h in _run_queries(registry, context.name, "syntax", ["Загрузить"])[0][1]] == expected[:5]
+        assert [h.doc.payload.address for h in run_queries(registry, context.name, "syntax", ["Загрузить"])[0][1]] == expected[:5]
 
 
 @pytest.mark.parametrize("kind", ["method", "property"])
@@ -79,7 +79,7 @@ def test_mcp_kind_и_удалённые_методы_фильтруются_до
 def test_действительно_недоступное_не_становится_доступным(tmp_path):
     registry = build_syntax_registry(tmp_path, items(available=0), "8.3.5.1570")
     assert "доступного ничего нет" in search_syntax(registry, "Загрузить", limit=1)
-    _, hits, hidden = _run_queries(registry, None, "syntax", ["Загрузить"])[0]
+    _, hits, hidden = run_queries(registry, None, "syntax", ["Загрузить"])[0]
     assert hits == []
     assert len(hidden) == 5
     assert "ничего не найдено" in search_syntax(registry, "НесуществующийЗапрос")
@@ -89,7 +89,7 @@ def test_неизвестная_платформа_не_ограничивает
     registry = build_syntax_registry(tmp_path, items(), "")
     context = registry.resolve()
     expected = context.syntax.index.search("Загрузить", limit=5)
-    _, hits, hidden = _run_queries(registry, None, "syntax", ["Загрузить"])[0]
+    _, hits, hidden = run_queries(registry, None, "syntax", ["Загрузить"])[0]
     assert [h.doc.id for h in hits] == [h.doc.id for h in expected]
     assert hidden == []
     assert "Фактическая версия платформы неизвестна" in search_syntax(registry, "Загрузить")

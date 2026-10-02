@@ -44,7 +44,7 @@ def test_без_admin_token_маршрута_нет(tmp_path, monkeypatch):
 def test_старая_ручка_отключена_без_разбора_и_записи(tmp_path, monkeypatch):
     monkeypatch.setenv("ADMIN_TOKEN", "секрет")
     monkeypatch.delenv("API_TOKEN", raising=False)
-    monkeypatch.setattr(dashboard, "_JOBS", [])
+    monkeypatch.setattr(dashboard, "JOBS", [])
     client, registry, archive = _стенд(tmp_path)
     before = archive.read_bytes()
     client.post("/login", data={"token": "секрет"})
@@ -57,5 +57,5 @@ def test_старая_ручка_отключена_без_разбора_и_з�
     assert response.status_code == 410
     assert "update_full" in response.json()["error"]
     assert "Розница:modules" not in registry.sources
-    assert dashboard._JOBS == []
+    assert dashboard.JOBS == []
     assert archive.read_bytes() == before

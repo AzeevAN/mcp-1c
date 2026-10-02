@@ -494,13 +494,13 @@ def чистый_журнал_загрузок():
     """
     from mcp1c import dashboard_backend as dashboard
 
-    dashboard._JOBS.clear()
+    dashboard.JOBS.clear()
     dashboard._SESSIONS.clear()
     dashboard._LOGIN_FAILURES.clear()
     dashboard._GLOBAL_FAILURES.clear()
     dashboard._KNOWN_GOOD_CLIENTS.clear()
     yield
-    dashboard._JOBS.clear()
+    dashboard.JOBS.clear()
     dashboard._SESSIONS.clear()
     dashboard._LOGIN_FAILURES.clear()
     dashboard._GLOBAL_FAILURES.clear()

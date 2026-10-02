@@ -3,6 +3,10 @@
 Здесь живут единые правила авторизации, загрузки, фоновых заданий, поиска
 и подготовки данных. HTTP API и SPA-маршруты определены в
 ``dashboard_runtime.py``.
+
+Имена без подчёркивания — API для ``dashboard_runtime`` и ``server``
+(авторизация, сессии, загрузка, журнал заданий, подготовка страниц);
+имена с подчёркиванием — внутреннее устройство модуля.
 """
 
 from __future__ import annotations
@@ -131,11 +135,11 @@ KIND_COLORS = {
 
 KIND_FALLBACK = "#8f8f8f"
 
-def _admin_token() -> str:
+def admin_token() -> str:
     """Читается на каждый запрос, а не при импорте: так его подменяют тесты."""
     return os.environ.get("ADMIN_TOKEN", "")
 
-def _api_token() -> str:
+def api_token() -> str:
     """Токен чтения. Пуст — читать может кто угодно, как было всегда."""
     return os.environ.get("API_TOKEN", "")
 
@@ -169,7 +173,7 @@ def _drop_expired_sessions_locked(now: float) -> None:
         if now >= expires_at:
             del _SESSIONS[session]
 
-def _create_session(level: str) -> str:
+def create_session(level: str) -> str:
     """Выдать новую серверную сессию, вытеснив просроченные и старейшие."""
     session = secrets.token_urlsafe(32)
     now = time.monotonic()
@@ -180,11 +184,11 @@ def _create_session(level: str) -> str:
         _SESSIONS[session] = (level, now + SESSION_TTL_SECONDS)
     return session
 
-def _drop_session(session: str) -> None:
+def drop_session(session: str) -> None:
     with _AUTH_LOCK:
         _SESSIONS.pop(session, None)
 
-def _session_level(request: Request) -> str | None:
+def session_level(request: Request) -> str | None:
     """Уровень серверной браузерной сессии без раскрытия самой cookie."""
     session = request.cookies.get(COOKIE, "")
     if not session:
@@ -249,7 +253,7 @@ def check_token(request: Request, given: str) -> tuple[str | None, int | None]:
     """
     if not given:
         return None, None
-    admin, api = _admin_token(), _api_token()
+    admin, api = admin_token(), api_token()
     if not admin and not api:
         return None, None
     client = _login_client(request)
@@ -286,9 +290,9 @@ def header_token_check(request: Request) -> tuple[str | None, int | None]:
         request.scope[_HEADER_AUTH_KEY] = cached
     return cached
 
-def _authorized(request: Request) -> bool:
+def admin_authorized(request: Request) -> bool:
     """Право записи: загрузка источников, удаление, правка словаря."""
-    if _session_level(request) == LEVEL_ADMIN:
+    if session_level(request) == LEVEL_ADMIN:
         return True
     return header_token_check(request)[0] == LEVEL_ADMIN
 
@@ -318,7 +322,7 @@ def _cookie_mutation_is_same_origin(request: Request) -> bool:
     Явный админский заголовок не является фоновым полномочием браузера и потому
     не требует CSRF-проверки, даже если клиент заодно прислал cookie.
     """
-    if _session_level(request) is None:
+    if session_level(request) is None:
         return True
     if header_token_check(request)[0] == LEVEL_ADMIN:
         return True
@@ -331,7 +335,7 @@ def _cookie_mutation_is_same_origin(request: Request) -> bool:
     actual = _origin_key(source, allow_path=not bool(origin))
     return expected is not None and actual == expected
 
-def _csrf_denied(request: Request) -> PlainTextResponse | None:
+def csrf_denied(request: Request) -> PlainTextResponse | None:
     if _cookie_mutation_is_same_origin(request):
         return None
     return PlainTextResponse(
@@ -339,10 +343,10 @@ def _csrf_denied(request: Request) -> PlainTextResponse | None:
         status_code=403,
     )
 
-class _UploadTooLarge(MultiPartException):
+class UploadTooLarge(MultiPartException):
     """File-part пересёк границу до следующей записи в spool."""
 
-class _UploadStorageFull(RuntimeError):
+class UploadStorageFull(RuntimeError):
     """Во временном хранилище multipart кончилось место или квота."""
 
 class _ProtectedUploadFile(UploadFile):
@@ -391,12 +395,12 @@ class _LimitedUploadParser(MultiPartParser):
         if self._current_part.file is not None:
             self._current_file_size += end - start
             if self._current_file_size > self.file_limit:
-                raise _UploadTooLarge(
+                raise UploadTooLarge(
                     f"File-part превысил предел {self.file_limit} байт."
                 )
         super().on_part_data(data, start, end)
 
-async def _limited_upload_form(
+async def limited_upload_form(
     request: Request,
     file_limit: int | None = None,
     *,
@@ -425,7 +429,7 @@ async def _limited_upload_form(
             errno.ENOSPC,
             getattr(errno, "EDQUOT", -1),
         ):
-            raise _UploadStorageFull("недостаточно места для multipart") from error
+            raise UploadStorageFull("недостаточно места для multipart") from error
         raise
     items = form.multi_items()
     files = [(name, value) for name, value in items if isinstance(value, UploadFile)]
@@ -444,10 +448,10 @@ def can_read(request: Request) -> bool:
     Админский токен годится и здесь — иначе владельцу пришлось бы держать в
     клиенте два заголовка вместо одного.
     """
-    expected = _api_token()
+    expected = api_token()
     if not expected:
         return True
-    if _session_level(request) is not None:
+    if session_level(request) is not None:
         return True
     return header_token_check(request)[0] is not None
 
@@ -459,18 +463,18 @@ JOB_DONE = "готово"
 
 JOB_FAILED = "ошибка"
 
-_JOBS: list[dict] = []
+JOBS: list[dict] = []
 
-_ФОНОВЫЕ: set[asyncio.Task] = set()
+ФОНОВЫЕ: set[asyncio.Task] = set()
 
 JOBS_KEPT = 10
 
-def _start_job(name: str, size: int) -> dict:
+def start_job(name: str, size: int) -> dict:
     job = {"name": name, "size": size, "state": JOB_READING, "error": "", "result": ""}
-    _JOBS.append(job)
-    завершённые = [j for j in _JOBS if j["state"] in (JOB_DONE, JOB_FAILED)]
+    JOBS.append(job)
+    завершённые = [j for j in JOBS if j["state"] in (JOB_DONE, JOB_FAILED)]
     for лишнее in завершённые[:-JOBS_KEPT]:
-        _JOBS.remove(лишнее)
+        JOBS.remove(лишнее)
     return job
 
 def _index_source(
@@ -499,7 +503,7 @@ def _index_source(
                 raise
             registry.reload_if_changed()
 
-def _run_job(
+def run_job(
     registry: Registry,
     job: dict,
     directory: str,
@@ -552,7 +556,7 @@ SCOPES = {
     "syntax": "справке платформы",
 }
 
-def _run_queries(
+def run_queries(
     registry: Registry, config: str | None, scope: str, phrases: list[str]
 ) -> list[tuple[str, list, list]]:
     """Прогон фраз по выбранному индексу. Пять попаданий на фразу.
@@ -739,7 +743,7 @@ def render_markdown(text: str) -> str:
     закрыть_цитату()
     return "".join(куски)
 
-def _card_link(scope: str, config: str, hit) -> str:
+def card_link(scope: str, config: str, hit) -> str:
     """Куда ведёт имя в таблице результатов.
 
     У реквизита своей карточки нет — ведём на объект-владелец. У элемента
@@ -758,7 +762,7 @@ def _card_link(scope: str, config: str, hit) -> str:
         page = "/object"
     return f"{page}?config={quote(config)}&name={quote(name)}"
 
-def _card_text(
+def card_text(
     registry: Registry,
     kind: str,
     config: str,
@@ -771,7 +775,7 @@ def _card_text(
         return tools.get_syntax(registry, name, config or None, detail, links_offset)
     return tools.get_object(registry, name, config or None, detail)
 
-def _kind_title(scope: str, kind: str) -> str:
+def kind_title(scope: str, kind: str) -> str:
     """Подпись вида найденного элемента — той же таблицей, что видит агент.
 
     Для `fields` берётся та же подпись, что печатает CLI и MCP
@@ -784,7 +788,7 @@ def _kind_title(scope: str, kind: str) -> str:
         return FIELD_KIND_TITLES.get(kind, kind)
     return kind
 
-def _hidden_reason(item) -> str:
+def hidden_reason(item) -> str:
     """Человекочитаемое объяснение фильтра версии для SPA."""
     if item.until:
         return f"описан по версию {item.until} включительно, дальше его нет"
@@ -823,7 +827,7 @@ class _SourcesPageData:
     jobs: tuple[_JobRow, ...]
     authorized: bool
 
-def _prepare_sources_page(
+def prepare_sources_page(
     registry: Registry,
     *,
     authorized: bool,
@@ -859,7 +863,7 @@ def _prepare_sources_page(
                 state=str(job["state"]),
                 error=str(job["error"]),
             )
-            for job in _JOBS
+            for job in JOBS
         )
         return _SourcesPageData(
             sources=sources,
@@ -899,7 +903,7 @@ def _prepare_sources_page(
         authorized=last.authorized,
     )
 
-def _apply_dictionary_change(registry: Registry, mutation):
+def apply_dictionary_change(registry: Registry, mutation):
     """Записать словарь и подхватить его без перезапуска.
 
     Пересборки индексов не требуется: ни синонимы, ни псевдонимы не участвуют

@@ -34,7 +34,7 @@ def test_ошибка_записи_словаря_без_пути(tmp_path, monk
     def failing(*args, **kwargs):
         raise OSError(errno.ENOSPC, "No space left on device", SECRET_PATH)
 
-    monkeypatch.setattr(dashboard_backend, "_apply_dictionary_change", failing)
+    monkeypatch.setattr(dashboard_backend, "apply_dictionary_change", failing)
 
     response = client.post(
         "/api/v1/dictionary/synonyms", json={"words": ["склад", "хранилище"]}
@@ -76,7 +76,7 @@ def test_ошибка_приёма_файла_без_пути(tmp_path, monkeypa
 def test_неожиданная_ошибка_разбора_не_уходит_в_задание_текстом(
     tmp_path, monkeypatch, capsys
 ):
-    job = dashboard_backend._start_job("структура.zip", 1)
+    job = dashboard_backend.start_job("структура.zip", 1)
     directory = tmp_path / "upload"
     directory.mkdir()
 
@@ -85,7 +85,7 @@ def test_неожиданная_ошибка_разбора_не_уходит_в
 
     monkeypatch.setattr(dashboard_backend, "_index_source", boom)
 
-    dashboard_backend._run_job(
+    dashboard_backend.run_job(
         Registry(tmp_path / "data"), job, str(directory),
         directory / "структура.zip", ".zip",
     )

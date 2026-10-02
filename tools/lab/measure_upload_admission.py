@@ -41,7 +41,7 @@ async def probe(capacity):
     limiter.total_tokens = capacity
     with TemporaryDirectory(prefix="mcp1c-admission-measure-") as folder:
         app = mcp_guard(Starlette(routes=routes(Registry(Path(folder) / "data"))))
-        with patch.object(dashboard_backend, "_run_job", worker), patch.object(dashboard_backend, "_JOBS", []):
+        with patch.object(dashboard_backend, "run_job", worker), patch.object(dashboard_backend, "JOBS", []):
             try:
                 async with httpx.AsyncClient(
                     transport=httpx.ASGITransport(app=app), base_url="http://testserver",
@@ -68,14 +68,14 @@ async def probe(capacity):
                     assert limiter.borrowed_tokens == 0
                     print(json.dumps({
                         "read_pool_capacity": capacity, "accepted": statuses.count(202),
-                        "rejected": statuses.count(409), "jobs": len(dashboard_backend._JOBS),
+                        "rejected": statuses.count(409), "jobs": len(dashboard_backend.JOBS),
                         "temp_directories": len(directories), "borrowed_default_tokens": limiter.borrowed_tokens,
                         "read_runs": 50, "read_median_ms": round(median(samples), 3),
                         "read_p95_ms": round(sorted(samples)[47], 3),
                     }), flush=True)
             finally:
                 release.set()
-                await asyncio.gather(*tuple(dashboard_backend._ФОНОВЫЕ))
+                await asyncio.gather(*tuple(dashboard_backend.ФОНОВЫЕ))
                 limiter.total_tokens = original
             assert all(not directory.exists() for directory in directories)
 

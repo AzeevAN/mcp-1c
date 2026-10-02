@@ -100,7 +100,7 @@ def test_bootstrap_дашборда_не_блокирует_loop_замком_re
 def test_запись_загруженного_файла_идёт_не_в_event_loop(tmp_path, monkeypatch):
     monkeypatch.delenv("API_TOKEN", raising=False)
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
-    monkeypatch.setattr(dashboard, "_JOBS", [])
+    monkeypatch.setattr(dashboard, "JOBS", [])
     exports = tmp_path / "exports"
     exports.mkdir()
     payload = write_export(exports, build_configuration()).read_bytes()

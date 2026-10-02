@@ -70,8 +70,8 @@ def test_multipart_нехватка_места_даёт_контролируем
 def test_upload_ограничен_до_body_и_не_занимает_пул_чтения(tmp_path, monkeypatch, check):
     monkeypatch.setenv("API_TOKEN", "synthetic-read")
     monkeypatch.setenv("ADMIN_TOKEN", "synthetic-admin")
-    monkeypatch.setattr(dashboard_backend, "_JOBS", [])
-    monkeypatch.setattr(dashboard_backend, "_ФОНОВЫЕ", set())
+    monkeypatch.setattr(dashboard_backend, "JOBS", [])
+    monkeypatch.setattr(dashboard_backend, "ФОНОВЫЕ", set())
     entered, release = Event(), Event()
     saved = []
 
@@ -84,7 +84,7 @@ def test_upload_ограничен_до_body_и_не_занимает_пул_ч�
         finally:
             shutil.rmtree(directory)
 
-    monkeypatch.setattr(dashboard_backend, "_run_job", worker)
+    monkeypatch.setattr(dashboard_backend, "run_job", worker)
 
     async def scenario():
         limiter = anyio.to_thread.current_default_thread_limiter()
@@ -121,11 +121,11 @@ def test_upload_ограничен_до_body_и_не_занимает_пул_ч�
                         response = await client.post(path, content=body())
                         assert response.status_code == 409, (path, response.text)
                         assert not consumed
-                    assert len(dashboard_backend._JOBS) == 1
-                    assert len(dashboard_backend._ФОНОВЫЕ) == 1
+                    assert len(dashboard_backend.JOBS) == 1
+                    assert len(dashboard_backend.ФОНОВЫЕ) == 1
         finally:
             release.set()
-            await asyncio.gather(*tuple(dashboard_backend._ФОНОВЫЕ), return_exceptions=True)
+            await asyncio.gather(*tuple(dashboard_backend.ФОНОВЫЕ), return_exceptions=True)
             if read is not None:
                 await read
             limiter.total_tokens = previous
@@ -142,7 +142,7 @@ def test_ошибка_загрузки_освобождает_допуск(tmp_p
 
     monkeypatch.setenv("API_TOKEN", "synthetic-read")
     monkeypatch.setenv("ADMIN_TOKEN", "synthetic-admin")
-    monkeypatch.setattr(dashboard_backend, "_JOBS", [])
+    monkeypatch.setattr(dashboard_backend, "JOBS", [])
     if failure == "write":
         from starlette import formparsers
 
@@ -166,11 +166,11 @@ def test_ошибка_загрузки_освобождает_допуск(tmp_p
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver", headers={"x-api-token": "synthetic-admin"}) as client:
             response = await client.post("/api/v1/sources/upload", files={"file": ("broken.hbk", b"invalid archive")})
             assert response.status_code == (500 if failure == "write" else 202)
-            await _wait(lambda: not dashboard_backend._ФОНОВЫЕ)
+            await _wait(lambda: not dashboard_backend.ФОНОВЫЕ)
             if failure == "parse":
-                assert dashboard_backend._JOBS[-1]["state"] == dashboard_backend.JOB_FAILED
+                assert dashboard_backend.JOBS[-1]["state"] == dashboard_backend.JOB_FAILED
             else:
-                assert dashboard_backend._JOBS == []
+                assert dashboard_backend.JOBS == []
             retry = await client.post("/api/v1/sources/upload", files={"file": ("invalid.txt", b"synthetic")})
             assert retry.status_code == 400
 
@@ -184,7 +184,7 @@ def test_отмена_приёма_закрывает_spool_и_удаляет_ч
 
     monkeypatch.setenv("API_TOKEN", "synthetic-read")
     monkeypatch.setenv("ADMIN_TOKEN", "synthetic-admin")
-    monkeypatch.setattr(dashboard_backend, "_JOBS", [])
+    monkeypatch.setattr(dashboard_backend, "JOBS", [])
     spools, directories = [], []
     real_spool = formparsers.SpooledTemporaryFile
     real_mkdtemp = dashboard_runtime.tempfile.mkdtemp
@@ -249,7 +249,7 @@ def test_отмена_приёма_закрывает_spool_и_удаляет_ч
                 await watcher
             assert spools and all(file.closed for file in spools)
             assert all(not path.exists() for path in directories)
-            assert dashboard_backend._JOBS == []
+            assert dashboard_backend.JOBS == []
             retry = await client.post("/api/v1/sources/upload", files={"file": ("invalid.txt", b"synthetic")})
             assert retry.status_code == 400
 

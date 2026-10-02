@@ -58,7 +58,7 @@ def test_поиск_помечен_ревизией_источников_и_он
 def test_изменение_источника_во_время_поиска_не_выдаёт_актуальную_ревизию(tmp_path, monkeypatch):
     from mcp1c import dashboard_backend
     registry = _registry(tmp_path)
-    original = dashboard_backend._run_queries
+    original = dashboard_backend.run_queries
 
     def changed(*args):
         result = original(*args)
@@ -67,7 +67,7 @@ def test_изменение_источника_во_время_поиска_не
         registry.add_configuration(write_export(tmp_path / "incoming", config))
         return result
 
-    monkeypatch.setattr(dashboard_backend, "_run_queries", changed)
+    monkeypatch.setattr(dashboard_backend, "run_queries", changed)
     with _client(registry, tmp_path) as client:
         result = client.post("/api/v1/queries", json={
             "config": "", "scope": "objects", "phrases": ["товары"],

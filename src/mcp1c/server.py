@@ -54,8 +54,8 @@ from .dashboard_backend import MAX_UPLOAD, can_read
 from .dashboard_runtime import routes as dashboard_routes
 from .intake_v2_transport import MAX_BROWSER_UPLOAD_BYTES
 from .module_download import (
-    DOWNLOAD_PATH, TICKET_HEADER, DownloadTicketError,
-    ModuleDownloadTickets, public_base_url,
+    DOWNLOAD_PATH, TICKET_HEADER, TICKET_LIFETIME_SECONDS, CompressedModuleCache,
+    DownloadTicketError, ModuleDownloadTickets, public_base_url,
 )
 from .process_restart import RestartController
 from .reference_provider import (
@@ -920,14 +920,18 @@ def build_server(
             "нужен контекст всего модуля, в том числе без локальной выгрузки; "
             "для одной процедуры достаточно "
             "`get_procedure`. Сначала найдите адрес через поиск или оглавление. "
-            "Ответ содержит `download_url` и `headers`: сделайте HTTP GET с "
-            "этими заголовками в течение 5 минут, сохраните файл, распакуйте "
+            "Ответ содержит `download_url` и `headers`: сделайте один HTTP GET "
+            f"с этими заголовками в течение {TICKET_LIFETIME_SECONDS} секунд, "
+            "сохраните файл, распакуйте "
             "gzip. Перед использованием текста сами вычислите размер и SHA-256 "
             "распакованных байтов UTF-8, сравните с `size_bytes` и `sha256` "
             "ответа MCP. При несовпадении не используйте файл и сообщите об "
             "ошибке. HTTP-заголовок с хешем не заменяет локальную проверку. "
-            "URL не содержит секретов; билет действует только для этого "
-            "модуля и текущего поколения. Для скачивания клиенту нужен HTTP "
+            f"URL секретов не содержит, а заголовок `{TICKET_HEADER}` — секрет: "
+            "не выводите его пользователю и не записывайте в логи. Билет "
+            "одноразовый и действует только для этого модуля и текущего "
+            "поколения; для повтора запросите новую ссылку. Для скачивания "
+            "клиенту нужен HTTP "
             "доступ к серверу помимо MCP. Максимум 16 МиБ исходного текста."
     )
     @_expected_registry_errors
@@ -1484,6 +1488,8 @@ def _add_http_routes(
             }
         )
 
+    compressed_sources = CompressedModuleCache()
+
     async def download_module_source(request: Request) -> Response:
         try:
             claims = download_tickets.verify(request.headers.get(TICKET_HEADER, ""))
@@ -1502,7 +1508,16 @@ def _add_http_routes(
             or source.size_bytes != claims["size_bytes"]
         ):
             return JSONResponse({"error": "Код изменился; запросите новую ссылку."}, status_code=409)
-        compressed = await run_in_threadpool(gzip.compress, source.content, compresslevel=6, mtime=0)
+        cache_key = (
+            claims["config"], claims["extension"], claims["address"],
+            source.revision, source.sha256, source.size_bytes,
+        )
+        compressed = compressed_sources.get(cache_key)
+        if compressed is None:
+            compressed = await run_in_threadpool(
+                gzip.compress, source.content, compresslevel=6, mtime=0
+            )
+            compressed_sources.put(cache_key, compressed)
         return Response(
             compressed,
             media_type="application/gzip",

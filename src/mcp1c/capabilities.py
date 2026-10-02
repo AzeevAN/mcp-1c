@@ -74,7 +74,7 @@ CAPABILITY_DEFINITIONS: Mapping[str, CapabilityDefinition] = {
         None,
         "Скачивание полного модуля",
         "Добавляет инструмент для получения полного исходника точного модуля BSL через краткоживущий билет и HTTP-ссылку.",
-        1, 466, "o200k_base", "2026-09-26",
+        1, 514, "o200k_base", "2026-10-02",
         "tools/measure_capability_context.py module_source_download --check",
         default_enabled=True,
     ),

@@ -403,8 +403,8 @@ Capability `role_access` по умолчанию выключен: это тол
 включённом `role_access` обе ручки остаются зарегистрированы и для A-only,
 где возвращают `unsupported_by_source`, и для B с состояниями
 `available`/`present_empty`/`load_error`.
-Цена `module_source_download` в `tools/list`: 1 инструмент, 2 744 байта
-и 466 токенов (`o200k_base`, 2026-09-26); воспроизведение:
+Цена `module_source_download` в `tools/list`: 1 инструмент, 3 012 байт
+и 514 токенов (`o200k_base`, 2026-10-02); воспроизведение:
 `.venv/bin/python tools/measure_capability_context.py module_source_download --check`.
 Цена `role_access` в `tools/list`: 2 инструмента, 7 170 байт и 1 245 токенов
 (`o200k_base`, 2026-09-22); воспроизведение:

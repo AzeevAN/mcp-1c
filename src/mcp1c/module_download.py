@@ -7,15 +7,25 @@ import hashlib
 import hmac
 import json
 import secrets
+import threading
 import time
+from collections import OrderedDict
+from collections.abc import Hashable
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
 
 DOWNLOAD_PATH = "/api/v1/modules/source"
 TICKET_HEADER = "X-Mcp1c-Download-Ticket"
-TICKET_LIFETIME_SECONDS = 300
+# Клиент скачивает файл сразу после ответа инструмента; минуты хватает с
+# запасом, а билет, попавший в транскрипт или лог, быстро теряет цену.
+TICKET_LIFETIME_SECONDS = 60
 MAX_TICKET_LENGTH = 8192
+# Сжатие модуля до 16 МиБ стоит заметного CPU, а одноразовый билет заставляет
+# агента запрашивать новую ссылку на тот же снимок. Кэш держит готовый gzip,
+# но не больше 64 МиБ и 64 модулей: это память процесса, а не хранилище.
+COMPRESSED_CACHE_MAX_BYTES = 64 * 1024 * 1024
+COMPRESSED_CACHE_MAX_ENTRIES = 64
 
 
 class DownloadTicketError(ValueError):
@@ -56,16 +66,56 @@ def _decode(value: str) -> bytes:
     )
 
 
+class CompressedModuleCache:
+    """Ограниченный LRU готовых gzip-файлов по точному снимку модуля."""
+
+    def __init__(
+        self,
+        *,
+        max_bytes: int = COMPRESSED_CACHE_MAX_BYTES,
+        max_entries: int = COMPRESSED_CACHE_MAX_ENTRIES,
+    ):
+        self._max_bytes = max_bytes
+        self._max_entries = max_entries
+        self._items: OrderedDict[Hashable, bytes] = OrderedDict()
+        self._size = 0
+        self._lock = threading.Lock()
+
+    def get(self, key: Hashable) -> bytes | None:
+        with self._lock:
+            value = self._items.get(key)
+            if value is not None:
+                self._items.move_to_end(key)
+            return value
+
+    def put(self, key: Hashable, value: bytes) -> None:
+        if len(value) > self._max_bytes:
+            return
+        with self._lock:
+            previous = self._items.pop(key, None)
+            if previous is not None:
+                self._size -= len(previous)
+            self._items[key] = value
+            self._size += len(value)
+            while self._size > self._max_bytes or len(self._items) > self._max_entries:
+                _, evicted = self._items.popitem(last=False)
+                self._size -= len(evicted)
+
+
 class ModuleDownloadTickets:
-    """Билеты ограничены одним модулем и живут только в этом процессе."""
+    """Билеты ограничены одним модулем, одним скачиванием и этим процессом."""
 
     def __init__(self, *, lifetime_seconds: int = TICKET_LIFETIME_SECONDS):
         self._key = secrets.token_bytes(32)
         self._lifetime_seconds = lifetime_seconds
+        # jti использованных билетов до их истечения: подпись сама по себе
+        # не мешает предъявить тот же билет повторно.
+        self._used: dict[str, int] = {}
+        self._lock = threading.Lock()
 
     def issue(self, claims: dict[str, object]) -> tuple[str, str]:
         expires = int(time.time()) + self._lifetime_seconds
-        payload = {"v": 1, "exp": expires, **claims}
+        payload = {"v": 1, "exp": expires, "jti": secrets.token_urlsafe(16), **claims}
         raw = json.dumps(
             payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         ).encode("utf-8")
@@ -94,7 +144,7 @@ class ModuleDownloadTickets:
         if (
             not isinstance(payload, dict)
             or set(payload) != {
-                "v", "exp", "address", "config", "extension", "revision",
+                "v", "exp", "jti", "address", "config", "extension", "revision",
                 "sha256", "size_bytes",
             }
             or payload["v"] != 1
@@ -103,11 +153,19 @@ class ModuleDownloadTickets:
             or payload["size_bytes"] < 0
             or not all(
                 isinstance(payload[key], str) and payload[key]
-                for key in ("address", "config", "revision", "sha256")
+                for key in ("jti", "address", "config", "revision", "sha256")
             )
             or (payload["extension"] is not None and not isinstance(payload["extension"], str))
         ):
             raise DownloadTicketError("Билет скачивания недействителен.")
-        if int(time.time()) >= payload["exp"]:
+        now = int(time.time())
+        if now >= payload["exp"]:
             raise DownloadTicketError("Срок билета скачивания истёк.")
+        with self._lock:
+            for jti, expires in list(self._used.items()):
+                if now >= expires:
+                    del self._used[jti]
+            if payload["jti"] in self._used:
+                raise DownloadTicketError("Билет скачивания уже использован.")
+            self._used[payload["jti"]] = payload["exp"]
         return payload

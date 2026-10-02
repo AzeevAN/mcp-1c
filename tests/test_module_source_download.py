@@ -198,6 +198,7 @@ async def test_отключение_после_restart_убирает_инстр
     assert "get_module_source_file" in [
         tool.name for tool in await сервер.list_tools()
     ]
+    метаданные = await _ссылка(сервер, "ОбщийМодуль.ОбщийПример")
     assert _скачать(клиент, метаданные).status_code == 200
 
     restarted = build_server(
@@ -254,7 +255,7 @@ async def test_просроченный_билет_не_отдаёт_файл(с
     сервер, клиент, _ = сервер_с_модулями
     метаданные = await _ссылка(сервер, "ОбщийМодуль.ОбщийПример")
     выдан_в = module_download.time.time()
-    monkeypatch.setattr(module_download.time, "time", lambda: выдан_в + 301)
+    monkeypatch.setattr(module_download.time, "time", lambda: выдан_в + 61)
 
     ответ = _скачать(клиент, метаданные)
 
@@ -306,3 +307,84 @@ async def test_неверный_адрес_не_выдаёт_ссылку(сер
         "get_module_source_file", {"address": адрес, "config": "Пример"}
     )
     assert "download_url" not in str(ответ)
+
+
+async def test_билет_одноразовый(сервер_с_модулями):
+    """Билет из транскрипта или лога не даёт повторного скачивания."""
+    сервер, клиент, _ = сервер_с_модулями
+    метаданные = await _ссылка(сервер, "ОбщийМодуль.ОбщийПример")
+
+    первый = _скачать(клиент, метаданные)
+    повтор = _скачать(клиент, метаданные)
+
+    assert первый.status_code == 200
+    assert повтор.status_code == 401
+    assert b"\x1f\x8b" not in повтор.content
+
+
+async def test_билет_живёт_минуту(сервер_с_модулями, monkeypatch):
+    from mcp1c import module_download
+
+    сервер, клиент, _ = сервер_с_модулями
+    выдан_в = module_download.time.time()
+    monkeypatch.setattr(module_download.time, "time", lambda: выдан_в)
+    метаданные = await _ссылка(сервер, "ОбщийМодуль.ОбщийПример")
+    monkeypatch.setattr(module_download.time, "time", lambda: выдан_в + 59)
+
+    assert module_download.TICKET_LIFETIME_SECONDS == 60
+    assert _скачать(клиент, метаданные).status_code == 200
+
+
+async def test_сжатый_модуль_берётся_из_кэша(сервер_с_модулями, monkeypatch):
+    from mcp1c import server as server_module
+
+    сервер, клиент, _ = сервер_с_модулями
+    сжатия = []
+    настоящий = server_module.gzip.compress
+
+    def считающий(data, *args, **kwargs):
+        сжатия.append(len(data))
+        return настоящий(data, *args, **kwargs)
+
+    monkeypatch.setattr(server_module.gzip, "compress", считающий)
+
+    for _ in range(3):
+        метаданные = await _ссылка(сервер, "ОбщийМодуль.ОбщийПример")
+        ответ = _скачать(клиент, метаданные)
+        assert ответ.status_code == 200
+        assert hashlib.sha256(gzip.decompress(ответ.content)).hexdigest() == метаданные["sha256"]
+
+    assert len(сжатия) == 1
+
+
+def test_кэш_сжатых_модулей_ограничен_по_байтам():
+    from mcp1c.module_download import CompressedModuleCache
+
+    cache = CompressedModuleCache(max_bytes=10, max_entries=8)
+    cache.put(("a",), b"12345")
+    cache.put(("b",), b"12345")
+    assert cache.get(("a",)) == b"12345"
+    cache.put(("c",), b"12345")
+
+    # Вытесняется давно не использованный элемент, а не только что прочитанный.
+    assert cache.get(("b",)) is None
+    assert cache.get(("a",)) == b"12345"
+    assert cache.get(("c",)) == b"12345"
+    # Один слишком большой результат не вычищает весь кэш ради себя.
+    cache.put(("big",), b"x" * 11)
+    assert cache.get(("big",)) is None
+    assert cache.get(("a",)) == b"12345"
+
+
+async def test_описание_называет_заголовок_билета_секретом(сервер_с_модулями):
+    сервер, _, _ = сервер_с_модулями
+    описание = next(
+        tool.description
+        for tool in await сервер.list_tools()
+        if tool.name == "get_module_source_file"
+    )
+
+    assert "X-Mcp1c-Download-Ticket" in описание
+    assert "секрет" in описание
+    assert "одноразов" in описание
+    assert "60 секунд" in описание

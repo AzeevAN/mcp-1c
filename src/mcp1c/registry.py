@@ -111,6 +111,7 @@ from .intake_v2_runtime import (
 )
 from .loader import ExportError, load
 from .model import Configuration
+from .module_catalog import catalog_files
 from .module_content import LocatorIdentity
 from .resource_limits import ResourceLimitError
 from .role_access import LoadedRoleAccess
@@ -2086,10 +2087,13 @@ class Registry:
         self,
         source: Source,
         loaded: LoadedModules,
-        *,
-        persist: bool,
     ) -> bool:
-        """Записать журнал только пока Source и готовый пакет ещё актуальны."""
+        """Записать журнал только пока Source и готовый пакет ещё актуальны.
+
+        `registry.json` здесь не пишется: предупреждение о сбое журнала
+        живёт в памяти до следующей записи реестра, а сам корпус уже
+        опубликован предыдущей атомарной записью.
+        """
         with self._modules_cache_lock:
             with self._lock:
                 if not self._пакет_кода_актуален(source, loaded):
@@ -2131,16 +2135,6 @@ class Registry:
                 ]
                 if not записан:
                     source.warnings.append(coverage_log.WRITE_WARNING)
-            if persist:
-                try:
-                    self.save()
-                except (OSError, RegistryError):
-                    # Сам корпус уже опубликован предыдущей атомарной записью
-                    # registry.json. Потеря нового предупреждения или пути до
-                    # следующего старта не превращает кэш/журнал в источник.
-                    # RegistryChangedExternally здесь тоже не повод повторять
-                    # всю загрузку кода: второй extract и рокировка лишние.
-                    pass
             return записан
 
     def _пакет_кода_актуален(
@@ -2260,9 +2254,7 @@ class Registry:
                         опубликовано = True
             if опубликовано:
                 self._журналировать_ограничения_кода(source, индексы)
-                self._обновить_журнал_покрытия(
-                    source, готовые, persist=False
-                )
+                self._обновить_журнал_покрытия(source, готовые)
         except Exception as error:
             logger.exception(
                 "Фоновая сборка индекса кода %s завершилась ошибкой.",
@@ -2409,9 +2401,7 @@ class Registry:
                 self._журналировать_ограничения_кода(source, индексы)
                 готовые = self.modules.get(source.id)
                 if готовые is not None:
-                    self._обновить_журнал_покрытия(
-                        source, готовые, persist=False
-                    )
+                    self._обновить_журнал_покрытия(source, готовые)
             return
 
         self._запустить_фоновую_сборку(source, корень, поколение)
@@ -2435,7 +2425,7 @@ class Registry:
         дождаться: threading.Thread | None = None,
     ) -> None:
         """Опубликовать заглушку `готов=False` и начать сборку индекса кода."""
-        файлы_каталога = modules_index.catalog_files(корень)
+        файлы_каталога = catalog_files(корень)
         строится = LoadedModules(
             source=source,
             корень=корень,
@@ -4311,11 +4301,7 @@ class Registry:
             prepared.module_source,
             prepared.module_indices,
         )
-        self._обновить_журнал_покрытия(
-            prepared.module_source,
-            loaded,
-            persist=False,
-        )
+        self._обновить_журнал_покрытия(prepared.module_source, loaded)
 
     @_refresh_on_external_change(retry=False)
     def publish_generation(

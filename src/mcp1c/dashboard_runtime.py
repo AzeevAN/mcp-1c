@@ -44,7 +44,6 @@ from .capabilities import (
 from .dashboard_backend import (
     COOKIE,
     LEVEL_ADMIN,
-    LEVEL_READ,
     SESSION_TTL_SECONDS,
     admin_authorized,
     admin_token,
@@ -445,7 +444,7 @@ def _queries_setup_payload(registry: Registry) -> dict:
         ],
         "limits": {
             "phrases": dashboard_backend.MAX_QUERY_PHRASES,
-            "phrase_chars": dashboard_backend.MAX_QUERY_CHARS,
+            "phrase_chars": MAX_QUERY_CHARS,
             "results_per_phrase": 5,
         },
         "availability": {
@@ -1076,12 +1075,12 @@ def _spa_routes(
                 422,
             )
         if any(
-            len(phrase) > dashboard_backend.MAX_QUERY_CHARS
+            len(phrase) > MAX_QUERY_CHARS
             for phrase in phrases
         ):
             return _json_error(
                 "Каждая поисковая фраза должна содержать не более "
-                f"{dashboard_backend.MAX_QUERY_CHARS} символов.",
+                f"{MAX_QUERY_CHARS} символов.",
                 422,
             )
         try:

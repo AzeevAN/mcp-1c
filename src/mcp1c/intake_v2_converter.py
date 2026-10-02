@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, fields, is_dataclass
@@ -27,7 +26,7 @@ from .form_structure import (
     parse_form_descriptor,
     parse_form_xml,
 )
-from .intake_v2 import LayerKind, MetadataKindSpec, SourceKind
+from .intake_v2 import MetadataKindSpec, SourceKind
 from .intake_v2_collector import (
     DEFAULT_KIND_SPECS,
     ArtifactKind,

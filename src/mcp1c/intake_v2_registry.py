@@ -27,9 +27,7 @@ from .intake_v2 import (
     LayerKind,
     LayerManifest,
     LayerState,
-    RecoveryAction,
     RecoveryPhase,
-    RecoveryRecord,
     decide_recovery,
 )
 from .member_pack import (

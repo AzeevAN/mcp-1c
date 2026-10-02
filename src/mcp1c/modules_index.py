@@ -60,7 +60,7 @@ from .form_structure import (
     parse_form_descriptor,
     parse_form_xml,
 )
-from .module_catalog import ModuleCatalog, build_catalog, catalog_files
+from .module_catalog import ModuleCatalog, build_catalog
 from .module_content import (
     ContentReadError,
     LocatorIdentity,

@@ -35,14 +35,11 @@ from .heavy_operations import _settled
 from .intake_v2 import CandidateTransport
 from .loader import ExportError
 from .registry import (
-    KIND_EXTENSION,
-    KIND_EXTENSION_RUNTIME,
-    KIND_MODULES,
     Registry,
     RegistryChangedExternally,
     RegistryError,
 )
-from .search import FIELD_KIND_TITLES, MAX_QUERY_CHARS
+from .search import FIELD_KIND_TITLES
 from .syntax_model import KIND_TITLES
 from .v8container import V8ContainerError
 
@@ -541,8 +538,10 @@ def run_job(
 _СКАНЕРЫ: dict[str, "IncomingScanner"] = {}
 
 def _scanner(registry: Registry) -> "IncomingScanner":
-    """Сканер один на каталог данных: множество `running` живёт в памяти, и
-    страница обязана видеть то же самое, что обработчик разбора."""
+    """Сканер один на каталог данных: его словарь состояния (хеши и отказы
+    файлов `incoming/`) живёт в памяти под одним замком и пишется в
+    `incoming-state.json` целиком. Второй экземпляр на тот же каталог держал
+    бы свою копию и затирал бы записи первого."""
     from .incoming import IncomingScanner
 
     ключ = str(registry.data_dir)

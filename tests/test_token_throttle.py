@@ -370,6 +370,9 @@ def test_сгенерированный_токен_считается_стойк
     from mcp1c.runtime_config import token_is_strong
 
     assert all(token_is_strong(secrets.token_urlsafe(32)) for _ in range(2000))
+    # `openssl rand -hex 32` из README: алфавит hex, не больше 16 символов.
+    assert all(token_is_strong(secrets.token_hex(32)) for _ in range(2000))
+    assert all(token_is_strong(secrets.token_hex(16)) for _ in range(2000))
 
 
 def test_вход_за_proxy_с_публичным_адресом_проходит(strong_tokens, tmp_path, monkeypatch):

@@ -106,7 +106,7 @@ def token_is_strong(value: str) -> bool:
     """Выдерживает ли токен онлайн-перебор без блокировки.
 
     Правила `--require-tokens` (32+ печатных ASCII-символа, не известная
-    заглушка) плюс признаки случайности: не меньше 16 различных символов, без
+    заглушка) плюс признаки случайности: не меньше 8 различных символов, без
     слова-заглушки внутри и без повторяющегося периода. Такой токен ответ
     «совпало» не раскрывает — догадаться до него за время жизни процесса
     нельзя, — поэтому его сверяют и под блокировкой перебора.
@@ -119,10 +119,11 @@ def token_is_strong(value: str) -> bool:
 
 
 # Длина сама по себе не делает токен случайным: `change-me-change-me-…` или
-# `aaaa…` длиннее 32 символов, но угадываются. Секрет из
-# `secrets.token_urlsafe(32)` (43 символа из 64) таких признаков не имеет:
-# различных символов в нём почти всегда больше 20, периода нет.
-_MIN_DISTINCT_CHARS = 16
+# `aaaa…` длиннее 32 символов, но угадываются. Порог различных символов
+# учитывает алфавит hex: в `openssl rand -hex 32` из README их не больше 16,
+# и в замере на миллионе `secrets.token_hex(16)` ни один не оказался ниже 8;
+# `token_urlsafe(32)` из `.env.example` даёт больше 20.
+_MIN_DISTINCT_CHARS = 8
 
 
 def _looks_predictable(value: str) -> bool:
@@ -131,10 +132,9 @@ def _looks_predictable(value: str) -> bool:
     folded = value.casefold()
     if any(marker in folded for marker in _PLACEHOLDER_TOKENS if len(marker) >= 6):
         return True
-    for period in range(1, len(value) // 2 + 1):
-        if all(value[i] == value[i % period] for i in range(len(value))):
-            return True
-    return False
+    # Строка с периодом p < len находится в удвоенной себе раньше позиции len:
+    # проверка периода за линейное время, без перебора всех p.
+    return (value + value).find(value, 1) < len(value)
 
 
 def require_tokens(environ: Mapping[str, str] | None = None) -> None:

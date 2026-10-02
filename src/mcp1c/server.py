@@ -194,11 +194,11 @@ def _http_body_limit(scope) -> int:
         path = scope.get("path", "")
         if path == "/login":
             return HTTP_BODY_LIMIT_LOGIN
-        if path == "/queries":
+        if path == "/api/v1/queries":
             return HTTP_BODY_LIMIT_QUERIES
         if path == "/api/v1/sources/intake/upload":
             return HTTP_BODY_LIMIT_INTAKE_UPLOAD
-        if path in ("/sources", "/api/v1/sources/upload"):
+        if path == "/api/v1/sources/upload":
             return HTTP_BODY_LIMIT_UPLOAD
     return HTTP_BODY_LIMIT_DEFAULT
 

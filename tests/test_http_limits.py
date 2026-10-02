@@ -29,6 +29,7 @@ def _body_client() -> TestClient:
     app = Starlette(
         routes=[
             Route("/login", consume, methods=["POST"]),
+            Route("/api/v1/queries", consume, methods=["POST"]),
             Route("/queries", consume, methods=["POST"]),
             Route("/sources", consume, methods=["POST"]),
             Route("/api/v1/sources/upload", consume, methods=["POST"]),
@@ -45,8 +46,7 @@ def test_login_query_and_upload_have_different_declared_limits() -> None:
 
     assert client.post("/login", content=b"x" * LOGIN_BODY_LIMIT).status_code == 200
     assert client.post("/login", content=medium).status_code == 413
-    assert client.post("/queries", content=medium).status_code == 200
-    assert client.post("/sources", content=medium).status_code == 200
+    assert client.post("/api/v1/queries", content=medium).status_code == 200
     assert (
         client.post(
             "/api/v1/sources/upload",
@@ -66,7 +66,7 @@ def test_login_query_and_upload_have_different_declared_limits() -> None:
 
     assert (
         client.post(
-            "/queries",
+            "/api/v1/queries",
             content=b"x",
             headers={"content-length": str(QUERY_BODY_LIMIT + 1)},
         ).status_code
@@ -77,16 +77,6 @@ def test_login_query_and_upload_have_different_declared_limits() -> None:
             "/mcp",
             content=b"x",
             headers={"content-length": str(DEFAULT_BODY_LIMIT + 1)},
-        ).status_code
-        == 413
-    )
-    assert (
-        client.post(
-            "/sources",
-            content=b"x",
-            headers={
-                "content-length": str(UPLOAD_FILE_LIMIT + UPLOAD_OVERHEAD + 1)
-            },
         ).status_code
         == 413
     )
@@ -119,6 +109,35 @@ def test_login_query_and_upload_have_different_declared_limits() -> None:
             },
         ).status_code
         == 413
+    )
+
+
+def test_пакет_запросов_api_v1_ограничен_одним_мебибайтом() -> None:
+    """Реальный маршрут пакета запросов — `/api/v1/queries`, не прежний `/queries`."""
+    client = _body_client()
+
+    assert (
+        client.post("/api/v1/queries", content=b"x" * QUERY_BODY_LIMIT).status_code
+        == 200
+    )
+    assert (
+        client.post(
+            "/api/v1/queries", content=b"x" * (QUERY_BODY_LIMIT + 1)
+        ).status_code
+        == 413
+    )
+
+
+def test_устаревшие_пути_получают_общий_лимит() -> None:
+    client = _body_client()
+    upload_sized = {"content-length": str(DEFAULT_BODY_LIMIT + 1)}
+
+    # Старые `/sources` и `/queries` больше не маршруты загрузки и пакета:
+    # особые лимиты к ним не применяются.
+    assert client.post("/sources", content=b"x", headers=upload_sized).status_code == 413
+    assert (
+        client.post("/queries", content=b"x" * (QUERY_BODY_LIMIT + 1)).status_code
+        == 200
     )
 
 

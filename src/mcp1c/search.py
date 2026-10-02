@@ -313,6 +313,7 @@ class SearchIndex:
         self._lex_rank = _EMPTY_INDEX
         self._kind_masks: dict[str, np.ndarray] = {}
         self._dirty = True
+        self._finalize_lock = Lock()
 
         for doc in docs or ():
             self.add(doc)
@@ -398,10 +399,23 @@ class SearchIndex:
         раз, и массивы для этого не годятся. Заморозка происходит при первом
         запросе после изменения — на справке она стоит около секунды и
         окупается вчетверо меньшей памятью.
+
+        Первая заморозка может прийти из нескольких потоков сразу: индекс
+        публикуется незамороженным, и его одновременно замораживают публикатор
+        кэша (`export_state`) и запросы `search`. Упаковка очищает словари
+        наполнения по ходу, поэтому второй поток без замка упаковал бы уже
+        пустой словарь и оставил пустую выдачу — она ушла бы и в кэш. Замок с
+        повторной проверкой берётся только пока индекс грязный: горячий путь
+        поиска по замороженному индексу остаётся одной проверкой флага.
         """
         if not self._dirty:
             return
+        with self._finalize_lock:
+            if self._dirty:
+                self._freeze()
 
+    def _freeze(self) -> None:
+        """Сама заморозка; вызывается только под `_finalize_lock`."""
         self._stems = sorted(self._by_stem)
         self._doc_ids = list(self.docs)
         self._position = {doc_id: i for i, doc_id in enumerate(self._doc_ids)}
@@ -607,6 +621,7 @@ class SearchIndex:
             raise ValueError("настройки поискового индекса некорректны")
 
         index = cls.__new__(cls)
+        index._finalize_lock = Lock()
         index.weights = dict(weights)
         index.exact_fields = set(exact_fields)
         index.synonyms = SYNONYMS if synonyms is None else synonyms

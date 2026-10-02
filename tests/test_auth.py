@@ -367,3 +367,89 @@ def test_браузер_получает_отказ_ссылкой_на_вход
     клиент = client.get("/", headers={"accept": "application/json"})
     assert клиент.status_code == 401
     assert "X-Api-Token" in клиент.text
+
+
+def test_сессия_истекает_через_ttl(tmp_path, monkeypatch):
+    from mcp1c import dashboard_backend
+
+    monkeypatch.setenv("API_TOKEN", "reader-token")
+    client, _ = client_for(tmp_path)
+    сейчас = dashboard_backend.time.monotonic()
+    monkeypatch.setattr(dashboard_backend.time, "monotonic", lambda: сейчас)
+
+    ответ = client.post("/login", data={"token": "reader-token"}, follow_redirects=False)
+    assert f"Max-Age={dashboard_backend.SESSION_TTL_SECONDS}" in ответ.headers["set-cookie"]
+    assert client.get("/api/v1/dashboard/bootstrap").status_code == 200
+
+    monkeypatch.setattr(
+        dashboard_backend.time,
+        "monotonic",
+        lambda: сейчас + dashboard_backend.SESSION_TTL_SECONDS + 1,
+    )
+    assert client.get("/api/v1/dashboard/bootstrap").status_code == 401
+    assert dashboard_backend._SESSIONS == {}
+
+
+def test_число_сессий_ограничено_и_вытесняет_старейшую(tmp_path, monkeypatch):
+    from mcp1c import dashboard_backend
+
+    monkeypatch.setenv("API_TOKEN", "reader-token")
+    monkeypatch.setattr(dashboard_backend, "MAX_SESSIONS", 3)
+    client, _ = client_for(tmp_path)
+
+    cookies = []
+    for _ in range(4):
+        client.post("/login", data={"token": "reader-token"}, follow_redirects=False)
+        cookies.append(client.cookies.get("mcp1c_session"))
+        client.cookies.clear()
+
+    assert len(dashboard_backend._SESSIONS) == 3
+    client.cookies.set("mcp1c_session", cookies[0])
+    assert client.get("/api/v1/dashboard/bootstrap").status_code == 401
+    client.cookies.set("mcp1c_session", cookies[-1])
+    assert client.get("/api/v1/dashboard/bootstrap").status_code == 200
+
+
+def test_перебор_токена_ограничен_по_адресу(tmp_path, monkeypatch):
+    from mcp1c import dashboard_backend
+
+    monkeypatch.setenv("API_TOKEN", "reader-token")
+    client, _ = client_for(tmp_path)
+    сейчас = dashboard_backend.time.monotonic()
+    monkeypatch.setattr(dashboard_backend.time, "monotonic", lambda: сейчас)
+
+    for _ in range(dashboard_backend.LOGIN_FAILURE_LIMIT):
+        assert client.post("/login", data={"token": "wrong"}).status_code == 403
+
+    # Даже верный токен не проверяется, пока адрес исчерпал попытки:
+    # иначе отказ подсказывал бы, что очередная догадка совпала.
+    заблокирован = client.post(
+        "/login", data={"token": "reader-token"}, follow_redirects=False
+    )
+    assert заблокирован.status_code == 429
+    assert int(заблокирован.headers["retry-after"]) > 0
+    assert dashboard_backend._SESSIONS == {}
+
+    monkeypatch.setattr(
+        dashboard_backend.time,
+        "monotonic",
+        lambda: сейчас + dashboard_backend.LOGIN_FAILURE_WINDOW_SECONDS + 1,
+    )
+    assert (
+        client.post(
+            "/login", data={"token": "reader-token"}, follow_redirects=False
+        ).status_code
+        == 303
+    )
+
+
+def test_https_proxy_ставит_secure_даже_при_http_схеме(tmp_path, monkeypatch):
+    monkeypatch.setenv("API_TOKEN", "reader-token")
+    monkeypatch.setenv("MCP1C_ACCESS", "https-proxy")
+    client, _ = client_for(tmp_path)
+
+    response = client.post(
+        "/login", data={"token": "reader-token"}, follow_redirects=False
+    )
+
+    assert "; Secure" in response.headers["set-cookie"]

@@ -497,5 +497,9 @@ def чистый_журнал_загрузок():
     from mcp1c import dashboard_backend as dashboard
 
     dashboard._JOBS.clear()
+    dashboard._SESSIONS.clear()
+    dashboard._LOGIN_FAILURES.clear()
     yield
     dashboard._JOBS.clear()
+    dashboard._SESSIONS.clear()
+    dashboard._LOGIN_FAILURES.clear()

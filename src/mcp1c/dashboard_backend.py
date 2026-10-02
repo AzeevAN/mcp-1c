@@ -10,7 +10,10 @@ import asyncio
 import errno
 import os
 import re
+import secrets
 import shutil
+import threading
+import time
 import traceback
 from dataclasses import dataclass
 from html import escape
@@ -52,7 +55,31 @@ LEVEL_READ = "read"
 
 LEVEL_ADMIN = "admin"
 
-_SESSIONS: dict[str, str] = {}
+# Сессия браузера — бессрочный пропуск, пока жив процесс, если не ограничить
+# её срок: украденная cookie работала бы до рестарта. 12 часов покрывают
+# рабочий день без повторного входа. Предел числа нужен потому, что вход по
+# скрипту иначе растит словарь без конца; вытесняется старейшая сессия.
+SESSION_TTL_SECONDS = 12 * 60 * 60
+
+MAX_SESSIONS = 256
+
+# Вне Docker токен может быть коротким, и онлайн-перебор формы входа ничем не
+# сдерживался. Десяти неудач за пять минут хватает на опечатки человека и
+# делает перебор бессмысленно медленным. Адрес клиента берётся из ASGI scope:
+# за proxy он верен только при настроенном доверии к X-Forwarded-For.
+LOGIN_FAILURE_LIMIT = 10
+
+LOGIN_FAILURE_WINDOW_SECONDS = 5 * 60
+
+MAX_TRACKED_LOGIN_CLIENTS = 4096
+
+# Порядок вставки словаря — порядок создания: первая запись старейшая.
+_SESSIONS: dict[str, tuple[str, float]] = {}
+
+_LOGIN_FAILURES: dict[str, list[float]] = {}
+
+# Сессии читаются и из event loop, и из потоков run_in_threadpool.
+_AUTH_LOCK = threading.Lock()
 
 KIND_COLORS = {
     "Справочник": "#4c8ed9",
@@ -97,10 +124,80 @@ def _token_from_headers(request: Request) -> str:
     prefix = "bearer "
     return auth[len(prefix):] if auth.lower().startswith(prefix) else ""
 
+def _drop_expired_sessions_locked(now: float) -> None:
+    for session, (_, expires_at) in list(_SESSIONS.items()):
+        if now >= expires_at:
+            del _SESSIONS[session]
+
+def _create_session(level: str) -> str:
+    """Выдать новую серверную сессию, вытеснив просроченные и старейшие."""
+    session = secrets.token_urlsafe(32)
+    now = time.monotonic()
+    with _AUTH_LOCK:
+        _drop_expired_sessions_locked(now)
+        while len(_SESSIONS) >= MAX_SESSIONS:
+            del _SESSIONS[next(iter(_SESSIONS))]
+        _SESSIONS[session] = (level, now + SESSION_TTL_SECONDS)
+    return session
+
+def _drop_session(session: str) -> None:
+    with _AUTH_LOCK:
+        _SESSIONS.pop(session, None)
+
 def _session_level(request: Request) -> str | None:
     """Уровень серверной браузерной сессии без раскрытия самой cookie."""
     session = request.cookies.get(COOKIE, "")
-    return _SESSIONS.get(session) if session else None
+    if not session:
+        return None
+    with _AUTH_LOCK:
+        entry = _SESSIONS.get(session)
+        if entry is None:
+            return None
+        level, expires_at = entry
+        if time.monotonic() >= expires_at:
+            del _SESSIONS[session]
+            return None
+        return level
+
+def _login_client(request: Request) -> str:
+    return request.client.host if request.client is not None else ""
+
+def _recent_failures_locked(client: str, now: float) -> list[float]:
+    failures = [
+        moment
+        for moment in _LOGIN_FAILURES.get(client, ())
+        if now - moment < LOGIN_FAILURE_WINDOW_SECONDS
+    ]
+    if failures:
+        _LOGIN_FAILURES[client] = failures
+    else:
+        _LOGIN_FAILURES.pop(client, None)
+    return failures
+
+def login_retry_after(request: Request) -> int | None:
+    """Через сколько секунд адрес снова сможет пробовать вход, если исчерпал попытки."""
+    now = time.monotonic()
+    with _AUTH_LOCK:
+        failures = _recent_failures_locked(_login_client(request), now)
+        if len(failures) < LOGIN_FAILURE_LIMIT:
+            return None
+        return max(1, int(failures[0] + LOGIN_FAILURE_WINDOW_SECONDS - now) + 1)
+
+def record_login_failure(request: Request) -> None:
+    client = _login_client(request)
+    now = time.monotonic()
+    with _AUTH_LOCK:
+        failures = _recent_failures_locked(client, now)
+        failures.append(now)
+        # Повторная вставка переносит адрес в конец: вытесняется самый давний.
+        _LOGIN_FAILURES.pop(client, None)
+        _LOGIN_FAILURES[client] = failures[-LOGIN_FAILURE_LIMIT:]
+        while len(_LOGIN_FAILURES) > MAX_TRACKED_LOGIN_CLIENTS:
+            del _LOGIN_FAILURES[next(iter(_LOGIN_FAILURES))]
+
+def clear_login_failures(request: Request) -> None:
+    with _AUTH_LOCK:
+        _LOGIN_FAILURES.pop(_login_client(request), None)
 
 def _authorized(request: Request) -> bool:
     """Право записи: загрузка источников, удаление, правка словаря."""
@@ -134,8 +231,7 @@ def _cookie_mutation_is_same_origin(request: Request) -> bool:
     Явный админский заголовок не является фоновым полномочием браузера и потому
     не требует CSRF-проверки, даже если клиент заодно прислал cookie.
     """
-    session = request.cookies.get(COOKIE, "")
-    if not session or session not in _SESSIONS:
+    if _session_level(request) is None:
         return True
     if same_token(_token_from_headers(request), _admin_token()):
         return True

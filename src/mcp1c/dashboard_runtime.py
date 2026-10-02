@@ -43,13 +43,18 @@ from .dashboard_backend import (
     COOKIE,
     LEVEL_ADMIN,
     LEVEL_READ,
-    _SESSIONS,
+    SESSION_TTL_SECONDS,
     _admin_token,
     _api_token,
     _authorized,
+    _create_session,
     _csrf_denied,
+    _drop_session,
     _session_level,
     can_read,
+    clear_login_failures,
+    login_retry_after,
+    record_login_failure,
 )
 from .dictionary import ANY_CONFIGURATION, SOURCE_BUILTIN
 from .graph_view import DEFAULT_LIMIT as DEFAULT_GRAPH_LIMIT
@@ -105,10 +110,13 @@ from .role_access_service import (
 )
 from .render import DETAIL_LEVELS
 from .runtime_config import (
+    ACCESS_HTTPS_PROXY,
     DASHBOARD_MODES,
     DASHBOARD_OFF,
     DASHBOARD_ON,
+    AccessModeError,
     DashboardModeError,
+    access_mode,
     dashboard_mode,
 )
 from .search import MAX_QUERY_CHARS
@@ -302,6 +310,20 @@ def _json_error(message: str, status_code: int) -> JSONResponse:
 
 
 _REVISION_SALT = secrets.token_hex(16)
+
+
+def _secure_cookie(request: Request) -> bool:
+    """`Secure` нужен и за TLS proxy, даже если до backend дошла схема http.
+
+    Схема запроса за proxy верна, только когда ему доверены X-Forwarded-*;
+    режим `https-proxy` сам по себе означает, что браузер видит HTTPS.
+    """
+    if request.url.scheme == "https":
+        return True
+    try:
+        return access_mode() == ACCESS_HTTPS_PROXY
+    except AccessModeError:
+        return False
 
 
 def _sources_revision(snapshot) -> str:
@@ -2099,6 +2121,15 @@ def _spa_routes(
             return PlainTextResponse(
                 "Вход выключен: не задан ни ADMIN_TOKEN, ни API_TOKEN.", 404
             )
+        retry_after = login_retry_after(request)
+        if retry_after is not None:
+            # Токен при блокировке не сверяется вовсе: иначе ответ выдал бы,
+            # что очередная догадка совпала.
+            return PlainTextResponse(
+                "Слишком много неудачных попыток входа. Повторите позже.",
+                status_code=429,
+                headers={"Retry-After": str(retry_after)},
+            )
         form = await request.form()
         given = str(form.get("token", ""))
         if same_token(given, _admin_token()):
@@ -2106,19 +2137,21 @@ def _spa_routes(
         elif same_token(given, _api_token()):
             level = LEVEL_READ
         else:
+            record_login_failure(request)
             return PlainTextResponse("Неверный токен.", status_code=403)
 
-        session = secrets.token_urlsafe(32)
-        _SESSIONS[session] = level
+        clear_login_failures(request)
+        session = _create_session(level)
         response = RedirectResponse(
             "/sources" if level == LEVEL_ADMIN else "/", status_code=303
         )
         response.set_cookie(
             COOKIE,
             session,
+            max_age=SESSION_TTL_SECONDS,
             httponly=True,
             samesite="strict",
-            secure=request.url.scheme == "https",
+            secure=_secure_cookie(request),
             path="/",
         )
         return response
@@ -2128,12 +2161,12 @@ def _spa_routes(
         denied = _csrf_denied(request)
         if denied is not None:
             return denied
-        _SESSIONS.pop(request.cookies.get(COOKIE, ""), None)
+        _drop_session(request.cookies.get(COOKIE, ""))
         response = RedirectResponse("/login", status_code=303)
         response.delete_cookie(
             COOKIE,
             path="/",
-            secure=request.url.scheme == "https",
+            secure=_secure_cookie(request),
             httponly=True,
             samesite="strict",
         )

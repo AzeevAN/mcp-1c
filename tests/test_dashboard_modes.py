@@ -211,36 +211,48 @@ def test_spa_api_источников_требует_токен_чтения(tmp
     assert allowed_sources.status_code == 200
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Найдено при переводе на native: bootstrap считает code_corpora только "
-        "по строкам учёта KIND_MODULES/KIND_EXTENSION, а native-корпус их не "
-        "имеет — счётчик 0. Отдельная задача."
-    ),
-)
-def test_bootstrap_считает_синтетические_источники(
-    tmp_path, реестр_с_кодом
-):
+def _bootstrap_summary(tmp_path, registry):
     app = Starlette(
         routes=routes(
-            реестр_с_кодом,
+            registry,
             mode=DASHBOARD_ON,
             static_dir=tmp_path / "dashboard-dist",
         )
     )
-
     with TestClient(app) as client:
-        summary = client.get("/api/v1/dashboard/bootstrap").json()["summary"]
+        return client.get("/api/v1/dashboard/bootstrap").json()["summary"]
+
+
+def test_bootstrap_считает_конфигурации_объекты_и_справки(
+    tmp_path, реестр_с_кодом
+):
+    summary = _bootstrap_summary(tmp_path, реестр_с_кодом)
 
     # Выгрузка в файлы объявляет и владельцев кода: два объекта модели и
     # три владельца модулей корня кода.
-    assert summary == {
-        "configurations": 1,
-        "metadata_objects": 5,
-        "code_corpora": 1,
-        "reference_sources": 0,
-    }
+    assert summary["configurations"] == 1
+    assert summary["metadata_objects"] == 5
+    assert summary["reference_sources"] == 0
+
+
+def test_bootstrap_считает_корпус_кода_native_поколения(
+    tmp_path, реестр_с_кодом
+):
+    # У native-корпуса нет строки учёта KIND_MODULES: счёт по строкам
+    # источников давал 0 при загруженном коде.
+    assert _bootstrap_summary(tmp_path, реестр_с_кодом)["code_corpora"] == 1
+
+
+def test_bootstrap_считает_корпус_расширения_отдельно(
+    tmp_path, корень_кода, реестр_из_кода, архив_кода
+):
+    registry = реестр_из_кода(корень_кода, name="Пример")
+    загрузить_код(registry, 
+        архив_кода(корень_кода, extension="Доп"),
+        configuration="Пример",
+    )
+
+    assert _bootstrap_summary(tmp_path, registry)["code_corpora"] == 2
 
 
 def test_sources_api_группирует_конфигурацию_модули_и_расширение(

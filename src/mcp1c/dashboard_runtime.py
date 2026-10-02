@@ -960,10 +960,12 @@ def _spa_routes(
             return (
                 len(snapshot.configurations),
                 sum(len(loaded.config) for loaded in snapshot.configurations.values()),
-                sum(
-                    source.kind in (KIND_MODULES, KIND_EXTENSION)
-                    for source in snapshot.sources.values()
-                ),
+                # Native-корпус кода не имеет строки учёта KIND_MODULES, а
+                # легаси-строка recovery может ещё не иметь загруженного
+                # пакета. `snapshot.modules` — объединение обоих по одному
+                # ключу (`<конфигурация>:modules`, `<конфигурация>:ext:<имя>`),
+                # поэтому каждый корпус считается ровно один раз.
+                len(snapshot.modules),
                 len(snapshot.syntax_versions),
             )
 

@@ -134,10 +134,23 @@ def test_чтение_считает_фактические_байты_а_не_�
     assert budget.read_total <= 41
 
 
+def _collect_from(tmp_path, archive, transport=CandidateTransport.INCOMING):
+    tree = ZipExportTree(archive, transport=transport)
+    try:
+        probe = probe_export(tree)
+        return collect_source_b(tree, probe, tmp_path / "work" / "collection")
+    finally:
+        tree.close()
+
+
+def _written(root: Path) -> int:
+    return sum(path.stat().st_size for path in root.rglob("*") if path.is_file())
+
+
 @pytest.mark.parametrize(
     "transport", [CandidateTransport.INCOMING, CandidateTransport.BROWSER]
 )
-def test_zip_bomb_отвергается_при_открытии_по_заявленному_составу(
+def test_zip_bomb_отвергается_до_сборки_по_заявленному_составу(
     tmp_path, monkeypatch, transport
 ):
     archive = tmp_path / "bomb.zip"
@@ -146,8 +159,10 @@ def test_zip_bomb_отвергается_при_открытии_по_заявл
     monkeypatch.setenv(INTAKE_MAX_UNPACKED_ENV, "4MiB")
 
     # Первым срабатывает предел записи: он равен общему пределу 4 МиБ.
-    with pytest.raises(TransportLimitError, match="превышает предел 4194304"):
-        ZipExportTree(archive, transport=transport)
+    with pytest.raises(CollectorError, match="превышает предел 4194304"):
+        _collect_from(tmp_path, archive, transport)
+    # Отказ до первой записи: на томе сборки нет распакованных байтов.
+    assert _written(tmp_path / "work") == 0
 
 
 @pytest.mark.parametrize(
@@ -160,8 +175,51 @@ def test_сжатие_сильнее_предела_отвергается_и_б
     archive = tmp_path / "bomb.zip"
     archive.write_bytes(_zip_bytes(_bomb(8 * MIB)))
 
-    with pytest.raises(TransportLimitError, match="коэффициент сжатия"):
-        ZipExportTree(archive, transport=transport)
+    with pytest.raises(CollectorError, match="коэффициент сжатия"):
+        _collect_from(tmp_path, archive, transport)
+    # И прямое открытие записи сверяет тот же предел.
+    tree = ZipExportTree(archive, transport=transport)
+    try:
+        with pytest.raises(TransportLimitError, match="коэффициент сжатия"):
+            tree.open("Roles/Bomb.xml")
+    finally:
+        tree.close()
+
+
+def test_непрочитанный_балласт_не_блокирует_ни_обнаружение_ни_сборку(
+    tmp_path, monkeypatch
+):
+    """Балласт не читается, значит не распаковывается и бомбой не является."""
+    monkeypatch.setenv(INTAKE_MAX_UNPACKED_ENV, "4MiB")
+    archive = tmp_path / "ballast.zip"
+    archive.write_bytes(
+        _zip_bytes(
+            {
+                "Configuration.xml": _configuration(),
+                "Catalogs/Demo/Ext/ObjectModule.bsl": b"procedure Demo() endprocedure",
+                # Больше общего предела и сжат ~1000:1, но collector его не берёт.
+                "Ext/ParentConfigurations/Supply.cf": b"\0" * (8 * MIB),
+            }
+        )
+    )
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    archive.replace(incoming / "ballast.zip")
+    managed = tmp_path / "managed"
+    snapshot = IntakeLifecycle(
+        CandidateCatalog(managed / "catalog"),
+        BrowserStagingStore(managed / "uploads"),
+        IntakeCoordinator(managed / "operations", DurableCandidateStore(managed / "records")),
+        incoming_root=incoming,
+        directory_settle_seconds=0,
+    ).refresh()
+    assert snapshot.issues == ()
+    assert len(snapshot.candidates) == 1
+
+    result = _collect_from(tmp_path, incoming / "ballast.zip")
+    assert [item.source_path for item in result.code] == [
+        "Catalogs/Demo/Ext/ObjectModule.bsl"
+    ]
 
 
 def test_параметр_профиля_ограничивает_прочитанный_объём(tmp_path):
@@ -192,40 +250,20 @@ def test_параметр_профиля_ограничивает_прочита
         tree.close()
 
 
-def test_incoming_zip_bomb_даёт_понятную_причину_в_refresh(tmp_path, monkeypatch):
-    monkeypatch.setenv(INTAKE_MAX_UNPACKED_ENV, "4MiB")
-    incoming = tmp_path / "incoming"
-    incoming.mkdir()
-    (incoming / "bomb.zip").write_bytes(_zip_bytes(_bomb(8 * MIB)))
-    managed = tmp_path / "managed"
-    records = DurableCandidateStore(managed / "records")
-
-    snapshot = IntakeLifecycle(
-        CandidateCatalog(managed / "catalog"),
-        BrowserStagingStore(managed / "uploads"),
-        IntakeCoordinator(managed / "operations", records),
-        incoming_root=incoming,
-        directory_settle_seconds=0,
-    ).refresh()
-
-    assert snapshot.candidates == ()
-    assert len(snapshot.issues) == 1
-    assert "превышает предел 4194304" in snapshot.issues[0].message
-    # Отказ случился до сборки: на managed-томе нет распакованных байтов.
-    written = sum(
-        path.stat().st_size for path in managed.rglob("*") if path.is_file()
-    )
-    assert written < 64 * 1024
-
-
 def test_browser_upload_с_бомбой_отвергается_тем_же_профилем(tmp_path, monkeypatch):
     monkeypatch.setenv(INTAKE_MAX_UNPACKED_ENV, "4MiB")
     store = BrowserStagingStore(tmp_path / "managed")
     raw = _zip_bytes(_bomb(8 * MIB))
     store.accept("candidate-bomb", "bomb.zip", io.BytesIO(raw))
 
-    with pytest.raises(TransportLimitError, match="превышает предел 4194304"):
-        store.open_tree("candidate-bomb")
+    tree = store.open_tree("candidate-bomb")
+    try:
+        with pytest.raises(TransportLimitError, match="превышает предел 4194304"):
+            tree.validate_selection(["Roles/Bomb.xml"])
+        with pytest.raises(TransportLimitError, match="предел"):
+            tree.open("Roles/Bomb.xml")
+    finally:
+        tree.close()
 
 
 def test_сумма_записей_сверяется_с_общим_пределом(tmp_path, monkeypatch):
@@ -242,8 +280,12 @@ def test_сумма_записей_сверяется_с_общим_предел
         )
     )
 
-    with pytest.raises(TransportLimitError, match="суммарный распакованный объём"):
-        ZipExportTree(archive, transport=CandidateTransport.INCOMING)
+    tree = ZipExportTree(archive, transport=CandidateTransport.INCOMING)
+    try:
+        with pytest.raises(TransportLimitError, match="суммарный распакованный объём"):
+            tree.validate_selection(tree.paths())
+    finally:
+        tree.close()
 
 
 def test_сборка_проверяет_свободное_место_до_записи(tmp_path, monkeypatch):
@@ -273,3 +315,42 @@ def test_сборка_проверяет_свободное_место_до_за
 
     assert not target.exists()
     assert list((tmp_path / "work").glob(".*.tmp")) == []
+
+
+def test_оценка_места_учитывает_только_выбранные_записи(tmp_path, monkeypatch):
+    archive = tmp_path / "candidate.zip"
+    selected = {
+        "Configuration.xml": _configuration(),
+        "Catalogs/Demo/Ext/ObjectModule.bsl": b"procedure Demo() endprocedure",
+    }
+    archive.write_bytes(
+        _zip_bytes({**selected, "Ext/ParentConfigurations/Supply.cf": b"\0" * (8 * MIB)})
+    )
+    needed = sum(map(len, selected.values())) + intake_v2_collector._FREE_SPACE_RESERVE
+    usage = namedtuple("usage", "total used free")
+    monkeypatch.setattr(
+        intake_v2_collector.shutil, "disk_usage", lambda _path: usage(0, 0, needed)
+    )
+
+    result = _collect_from(tmp_path, archive)
+    assert len(result.code) == 1
+
+
+def test_limited_reader_не_читает_мимо_учёта():
+    limits = ResourceLimits(
+        max_entries=10, max_entry_bytes=8, max_total_bytes=8, max_compression_ratio=50
+    )
+    budget = ResourceBudget(limits, "архив")
+    reader = LimitedReader(io.BytesIO(b"x" * 100), budget, "entry")
+
+    buffer = bytearray(4)
+    assert reader.readinto(buffer) == 4
+    assert reader.read1(4) == b"xxxx"
+    assert budget.read_total == 8
+    with pytest.raises(ResourceLimitError):
+        reader.read1(1)
+    # Методы, которые прочитали бы исходный поток без учёта, не делегируются.
+    for name in ("readline", "readlines", "seek", "tell", "peek", "fileno"):
+        with pytest.raises(AttributeError):
+            getattr(reader, name)
+    assert reader.seekable() is False

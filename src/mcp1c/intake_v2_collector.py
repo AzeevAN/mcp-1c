@@ -1093,20 +1093,196 @@ def _role_error(root: Path, errors: list[tuple[str, str]]) -> RoleSnapshot:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _Step:
+    """Решение collector-а по одному пути: копировать, роль или диагностика.
+
+    Выбор отделён от чтения, чтобы до сборки знать, какие записи будут
+    прочитаны: по ним одним сверяются бюджет и свободное место, а балласт,
+    который никто не читает, их не занимает и не блокирует выгрузку.
+    """
+
+    raw_path: str
+    source_path: str
+    artifact_path: str = ""
+    kind: ArtifactKind | None = None
+    source_name: str = ""
+    address: str = ""
+    predefined: bool = False
+    role_kind: str = ""
+    role_name: str = ""
+    diagnostic: tuple[str, str, str] | None = None
+
+    @property
+    def reads(self) -> bool:
+        return self.diagnostic is None
+
+
+def _plan_step(
+    raw_path: str,
+    wrapper: str,
+    tree_specs: Mapping[str, MetadataKindSpec],
+    flat_specs: Mapping[str, MetadataKindSpec],
+) -> _Step | None:
+    source_path = _without_wrapper(raw_path, wrapper)
+
+    def copy(kind, source_name, address="", artifact_path=source_path, **extra):
+        return _Step(
+            raw_path,
+            source_path,
+            artifact_path=artifact_path,
+            kind=kind,
+            source_name=source_name,
+            address=address,
+            **extra,
+        )
+
+    def diagnostic(code: str, signature: str) -> _Step:
+        return _Step(raw_path, source_path, diagnostic=(code, signature, source_path))
+
+    if source_path == "Configuration.xml":
+        return copy(ArtifactKind.METADATA, "Configuration")
+    predefined = _predefined_owner(source_path, tree_specs, flat_specs)
+    if predefined is not None:
+        owner, _spec = predefined
+        return copy(ArtifactKind.METADATA, "Predefined", owner, predefined=True)
+    role_path = _role_path_kind(source_path)
+    if role_path is not None:
+        role_kind, role_name, canonical_role_path = role_path
+        return _Step(
+            raw_path,
+            source_path,
+            artifact_path=canonical_role_path,
+            role_kind=role_kind,
+            role_name=role_name,
+        )
+    if source_path.startswith("Roles/"):
+        return diagnostic("unsupported_layout", "Roles")
+    if _is_schedule_payload(source_path):
+        return None
+    if (
+        source_path.startswith("__MACOSX/")
+        or PurePosixPath(source_path).name.startswith("._")
+        or PurePosixPath(source_path).name == ".DS_Store"
+    ):
+        return None
+
+    configuration_code = source_path.startswith("Ext/") or (
+        "/" not in source_path and source_path.startswith("Configuration.")
+    )
+    if configuration_code:
+        try:
+            address = _code_address(source_path)
+        except ValueError:
+            address = None
+        if address is not None:
+            return copy(ArtifactKind.CODE, "Configuration", address)
+        if _looks_like_code(source_path):
+            return diagnostic("unsupported_layout", "Configuration")
+        return None
+
+    spec = _spec_for(source_path, tree_specs, flat_specs)
+    if spec is None:
+        if source_path.endswith(".xml"):
+            return diagnostic("unsupported_metadata", _unknown_signature(source_path))
+        if _looks_like_code(source_path) or _looks_like_form(source_path):
+            return diagnostic("unsupported_layout", _unknown_signature(source_path))
+        return None
+    layout = "tree" if "/" in source_path else "flat"
+    if layout not in spec.layouts:
+        return None
+    if spec.policy is not MetadataKindPolicy.SUPPORTED:
+        return None
+
+    parts = PurePosixPath(source_path).parts
+    if (
+        spec.extended_adapter == "xdto_package"
+        and len(parts) == 4
+        and parts[0] == "XDTOPackages"
+        and parts[2:] == ("Ext", "Package.bin")
+    ):
+        return copy(ArtifactKind.METADATA, spec.source_name)
+
+    try:
+        code_address = _code_address(source_path)
+    except ValueError:
+        code_address = None
+    if code_address is not None:
+        if spec.supports(LayerKind.CODE):
+            return copy(ArtifactKind.CODE, spec.source_name, code_address)
+        return diagnostic("unsupported_layout", spec.source_name)
+
+    try:
+        form_address = _form_address(source_path, spec)
+    except ValueError:
+        form_address = None
+    if form_address is not None:
+        if spec.supports(LayerKind.FORMS):
+            return copy(ArtifactKind.FORMS, spec.source_name, form_address)
+        return diagnostic("unsupported_layout", spec.source_name)
+
+    metadata_source_path = source_path
+    if "/" not in source_path and source_path.endswith(".xml"):
+        normalized = _flat_metadata_path(source_path, spec)
+        if normalized is None:
+            return None
+        metadata_source_path = normalized
+    if (
+        spec.extended_adapter == "subsystem"
+        and not _is_subsystem_metadata_path(metadata_source_path)
+    ):
+        return None
+    if source_path.endswith(".xml") and spec.layers & _STRUCTURE_LAYERS:
+        return copy(
+            ArtifactKind.METADATA,
+            spec.source_name,
+            artifact_path=metadata_source_path,
+        )
+    if _looks_like_code(source_path) or _looks_like_form(source_path):
+        return diagnostic("unsupported_layout", spec.source_name)
+    return None
+
+
+def _plan(
+    tree: VirtualExportTree,
+    wrapper: str,
+    kind_specs: Iterable[MetadataKindSpec],
+) -> list[_Step]:
+    tree_specs, flat_specs = _kind_maps(kind_specs)
+    steps = []
+    for raw_path in tree.paths():
+        step = _plan_step(raw_path, wrapper, tree_specs, flat_specs)
+        if step is not None:
+            steps.append(step)
+    return steps
+
+
 def _target_exists(path: Path) -> bool:
     return path.is_symlink() or path.exists()
 
 
-def _require_free_space(tree: VirtualExportTree, directory: Path) -> None:
-    """Отказать до сборки, если заявленный объём входа не помещается на том.
+def _preflight(
+    tree: VirtualExportTree,
+    plan: list[_Step],
+    directory: Path,
+) -> None:
+    """До сборки сверить бюджет и свободное место по записям, которые прочтутся.
 
-    Оценка сверху: заявленный размер всех элементов, хотя collector копирует
-    только выбранные, а роли пишет в gzip. Транспорт уже ограничил сумму
-    профилем лимитов и не даст прочитать больше заявленного, поэтому проверка
-    до сборки закрывает заполнение тома честным, но слишком большим входом.
+    Балласт (родительские .cf, расписания, служебные файлы macOS, неизвестные
+    виды) не читается, а значит и не распаковывается: бомбой он не является и
+    в оценку не входит. Выбранные же записи транспорт сверяет со своим
+    профилем лимитов — сумма, запись, коэффициент сжатия — целиком, до первой
+    записанной на диск байты. Оценка места — сверху: роли пишутся в gzip.
     """
-    planned = sum(tree.size(path) for path in tree.paths())
-    required = planned + _FREE_SPACE_RESERVE
+    paths = [step.raw_path for step in plan if step.reads]
+    validate = getattr(tree, "validate_selection", None)
+    if validate is not None:
+        try:
+            validate(paths)
+        except TransportError as error:
+            message = str(error).strip() or "выбранные записи превышают бюджет"
+            raise CollectorError(message[:2048]) from error
+    required = sum(tree.size(path) for path in paths) + _FREE_SPACE_RESERVE
     try:
         free = shutil.disk_usage(directory).free
     except OSError as error:
@@ -1135,14 +1311,14 @@ def collect_source_b(
         raise CollectorError("probe относится к другому снимку virtual tree")
     if tree.transport is not probe.transport or tree.origin_name != probe.origin_name:
         raise CollectorError("provenance virtual tree не совпадает с probe")
-    tree_specs, flat_specs = _kind_maps(kind_specs)
+    plan = _plan(tree, probe.wrapper, kind_specs)
     target = Path(target)
     if _target_exists(target):
         raise CollectorError("target collection уже существует")
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.parent.is_symlink() or not target.parent.is_dir():
         raise CollectorError("родитель target должен быть обычным каталогом")
-    _require_free_space(tree, target.parent)
+    _preflight(tree, plan, target.parent)
     temporary = Path(
         tempfile.mkdtemp(
             dir=target.parent,
@@ -1161,217 +1337,42 @@ def collect_source_b(
     try:
         pack = MemberPackWriter(temporary)
         pack.open()
-        for raw_path in tree.paths():
-            source_path = _without_wrapper(raw_path, probe.wrapper)
-            if source_path == "Configuration.xml":
-                artifacts.append(
-                    _copy_artifact(
-                        tree,
-                        raw_path,
-                        source_path,
-                        pack,
-                        ArtifactKind.METADATA,
-                        "Configuration",
-                    )
-                )
+        for step in plan:
+            if step.diagnostic is not None:
+                diagnostics.add(*step.diagnostic)
                 continue
-            predefined = _predefined_owner(source_path, tree_specs, flat_specs)
-            if predefined is not None:
-                owner, _spec = predefined
-                artifacts.append(
-                    _copy_artifact(
-                        tree,
-                        raw_path,
-                        source_path,
-                        pack,
-                        ArtifactKind.METADATA,
-                        "Predefined",
-                        owner,
-                    )
-                )
-                predefined_seen = True
-                continue
-            role_path = _role_path_kind(source_path)
-            if role_path is not None:
-                role_kind, role_name, canonical_role_path = role_path
-                if role_kind == "descriptor":
-                    role_descriptors.add(role_name)
+            if step.role_kind:
+                if step.role_kind == "descriptor":
+                    role_descriptors.add(step.role_name)
                 else:
-                    role_rights.add(role_name)
+                    role_rights.add(step.role_name)
                 try:
                     role_artifacts.append(
                         _canonicalize_role(
                             tree,
-                            raw_path,
-                            canonical_role_path,
+                            step.raw_path,
+                            step.artifact_path,
                             pack,
                         )
                     )
                 except ET.ParseError as error:
-                    role_errors.append((source_path, f"XML не разбирается: {error}"))
+                    role_errors.append(
+                        (step.source_path, f"XML не разбирается: {error}")
+                    )
                 continue
-            if source_path.startswith("Roles/"):
-                diagnostics.add(
-                    "unsupported_layout",
-                    "Roles",
-                    source_path,
+            artifacts.append(
+                _copy_artifact(
+                    tree,
+                    step.raw_path,
+                    step.artifact_path,
+                    pack,
+                    step.kind,
+                    step.source_name,
+                    step.address,
                 )
-                continue
-            if _is_schedule_payload(source_path):
-                continue
-            if (
-                source_path.startswith("__MACOSX/")
-                or PurePosixPath(source_path).name.startswith("._")
-                or PurePosixPath(source_path).name == ".DS_Store"
-            ):
-                continue
-
-            configuration_code = source_path.startswith("Ext/") or (
-                "/" not in source_path and source_path.startswith("Configuration.")
             )
-            if configuration_code:
-                try:
-                    address = _code_address(source_path)
-                except ValueError:
-                    address = None
-                if address is not None:
-                    artifacts.append(
-                        _copy_artifact(
-                            tree,
-                            raw_path,
-                            source_path,
-                            pack,
-                            ArtifactKind.CODE,
-                            "Configuration",
-                            address,
-                        )
-                    )
-                elif _looks_like_code(source_path):
-                    diagnostics.add(
-                        "unsupported_layout",
-                        "Configuration",
-                        source_path,
-                    )
-                continue
-
-            spec = _spec_for(source_path, tree_specs, flat_specs)
-            if spec is None:
-                if source_path.endswith(".xml"):
-                    diagnostics.add(
-                        "unsupported_metadata",
-                        _unknown_signature(source_path),
-                        source_path,
-                    )
-                elif _looks_like_code(source_path) or _looks_like_form(source_path):
-                    diagnostics.add(
-                        "unsupported_layout",
-                        _unknown_signature(source_path),
-                        source_path,
-                    )
-                continue
-            layout = "tree" if "/" in source_path else "flat"
-            if layout not in spec.layouts:
-                continue
-            if spec.policy is not MetadataKindPolicy.SUPPORTED:
-                continue
-
-            parts = PurePosixPath(source_path).parts
-            if (
-                spec.extended_adapter == "xdto_package"
-                and len(parts) == 4
-                and parts[0] == "XDTOPackages"
-                and parts[2:] == ("Ext", "Package.bin")
-            ):
-                artifacts.append(
-                    _copy_artifact(
-                        tree,
-                        raw_path,
-                        source_path,
-                        pack,
-                        ArtifactKind.METADATA,
-                        spec.source_name,
-                    )
-                )
-                continue
-
-            try:
-                code_address = _code_address(source_path)
-            except ValueError:
-                code_address = None
-            if code_address is not None:
-                if spec.supports(LayerKind.CODE):
-                    artifacts.append(
-                        _copy_artifact(
-                            tree,
-                            raw_path,
-                            source_path,
-                            pack,
-                            ArtifactKind.CODE,
-                            spec.source_name,
-                            code_address,
-                        )
-                    )
-                else:
-                    diagnostics.add(
-                        "unsupported_layout",
-                        spec.source_name,
-                        source_path,
-                    )
-                continue
-
-            try:
-                form_address = _form_address(source_path, spec)
-            except ValueError:
-                form_address = None
-            if form_address is not None:
-                if spec.supports(LayerKind.FORMS):
-                    artifacts.append(
-                        _copy_artifact(
-                            tree,
-                            raw_path,
-                            source_path,
-                            pack,
-                            ArtifactKind.FORMS,
-                            spec.source_name,
-                            form_address,
-                        )
-                    )
-                else:
-                    diagnostics.add(
-                        "unsupported_layout",
-                        spec.source_name,
-                        source_path,
-                    )
-                continue
-
-            metadata_source_path = source_path
-            if "/" not in source_path and source_path.endswith(".xml"):
-                normalized = _flat_metadata_path(source_path, spec)
-                if normalized is None:
-                    continue
-                metadata_source_path = normalized
-            if (
-                spec.extended_adapter == "subsystem"
-                and not _is_subsystem_metadata_path(metadata_source_path)
-            ):
-                continue
-            if source_path.endswith(".xml") and spec.layers & _STRUCTURE_LAYERS:
-                artifacts.append(
-                    _copy_artifact(
-                        tree,
-                        raw_path,
-                        metadata_source_path,
-                        pack,
-                        ArtifactKind.METADATA,
-                        spec.source_name,
-                    )
-                )
-            elif _looks_like_code(source_path) or _looks_like_form(source_path):
-                diagnostics.add(
-                    "unsupported_layout",
-                    spec.source_name,
-                    source_path,
-                )
+            if step.predefined:
+                predefined_seen = True
 
         pack.finish()
 

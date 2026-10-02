@@ -704,6 +704,14 @@ class _TransportReader:
         except (zipfile.BadZipFile, zlib.error, EOFError, OSError) as error:
             raise self._failure_type(self._failure_message) from error
 
+    def read1(self, size: int = -1) -> bytes:
+        return self.read(size)
+
+    def readinto(self, buffer) -> int:
+        data = self.read(len(buffer))
+        buffer[: len(data)] = data
+        return len(data)
+
     def readable(self) -> bool:
         return True
 
@@ -754,9 +762,12 @@ class ZipExportTree:
         # Browser и incoming принимают полные выгрузки больше гигабайта, и
         # потому живут на своём, более высоком профиле; но без потолка ZIP на
         # десятки мегабайт раскрывался в десятки гигабайт и заполнял том.
-        whole_archive = transport is not CandidateTransport.LOCAL_FILE
         if limits is None:
-            limits = intake_archive_limits() if whole_archive else ARCHIVE_LIMITS
+            limits = (
+                ARCHIVE_LIMITS
+                if transport is CandidateTransport.LOCAL_FILE
+                else intake_archive_limits()
+            )
         self.path = Path(path)
         self.transport = transport
         self.origin_name = _display_name(origin_name or self.path.name)
@@ -767,20 +778,6 @@ class ZipExportTree:
             archive = zipfile.ZipFile(source)
             members = self._inspect(archive, limits)
             budget = _read_budget(limits, "ZIP файловой выгрузки")
-            if whole_archive:
-                # Заявленный состав intake-профиля сверяется целиком при
-                # открытии: отказ приходит до probe и до сборки, а не после
-                # того, как распакованные байты уже легли на диск. Для
-                # LOCAL_FILE узкий ARCHIVE_LIMITS проверяется по выбранным
-                # элементам: крупный балласт, который никто не читает, не
-                # должен блокировать выгрузку.
-                _validate_opened_member_rows(
-                    budget,
-                    (
-                        (path, member.size, member.compressed_size)
-                        for path, member in sorted(members.items())
-                    ),
-                )
         except (zipfile.BadZipFile, OSError, EOFError) as error:
             if archive is not None:
                 archive.close()
@@ -852,6 +849,24 @@ class ZipExportTree:
             return self._members[path].size
         except KeyError:
             raise KeyError(path) from None
+
+    def validate_selection(self, paths: Iterable[str]) -> None:
+        """Сверить заявленный состав записей, которые будут прочитаны.
+
+        Вызывается до сборки: сумма, предел записи и коэффициент сжатия
+        выбранного проверяются целиком по центральному каталогу, и бомба
+        отвергается до того, как первый распакованный байт ляжет на диск.
+        Балласт, который никто не читает, сюда не передаётся и выгрузку не
+        блокирует; чтение всё равно остаётся под бюджетом ``LimitedReader``.
+        """
+        rows = []
+        for path in paths:
+            member = self._members[_requested_path(path)]
+            rows.append((path, member.size, member.compressed_size))
+        # Свежий бюджет: проверяется состав, а не уже прочитанное probe.
+        _validate_opened_member_rows(
+            _read_budget(self._budget.limits, self._budget.label), rows
+        )
 
     def fingerprint(self) -> str:
         return self._fingerprint

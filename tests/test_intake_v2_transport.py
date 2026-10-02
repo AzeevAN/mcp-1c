@@ -204,8 +204,12 @@ def test_browser_source_b_читает_сжатый_xml_как_incoming(tmp_path
     bomb_zip = archive_with(b"<Template>" + b"A" * (2 * 1024 * 1024) + b"</Template>")
     store.accept("candidate-bomb", "bomb.zip", io.BytesIO(bomb_zip))
     TransportLimitError = _symbol("TransportLimitError")
-    with pytest.raises(TransportLimitError, match="коэффициент сжатия"):
-        store.open_tree("candidate-bomb")
+    tree = store.open_tree("candidate-bomb")
+    try:
+        with pytest.raises(TransportLimitError, match="коэффициент сжатия"):
+            tree.open("Catalogs/Demo/Templates/Label/Ext/Template.xml")
+    finally:
+        tree.close()
 
 
 def test_browser_staging_отвергает_подмену_payload_того_же_размера(tmp_path):
@@ -320,10 +324,15 @@ def test_zip_tree_отвергает_symlink_и_ограничивает_zip_bom
         max_total_bytes=8192,
         max_compression_ratio=2,
     )
-    # Browser и incoming сверяют заявленный состав целиком при открытии.
+    # Browser и incoming сверяют профиль при открытии выбранной записи и в
+    # validate_selection до сборки.
     for transport in (CandidateTransport.INCOMING, CandidateTransport.BROWSER):
+        tree = ZipExportTree(bomb_zip, transport=transport, limits=limits)
         with pytest.raises(TransportLimitError, match="сжати"):
-            ZipExportTree(bomb_zip, transport=transport, limits=limits)
+            tree.validate_selection(["Configuration.xml"])
+        with pytest.raises(TransportLimitError, match="сжати"):
+            tree.open("Configuration.xml")
+        tree.close()
 
     bounded_tree = ZipExportTree(
         bomb_zip,
@@ -419,8 +428,14 @@ def test_incoming_и_browser_zip_одинаково_применяют_проф�
     )
     tight = _small_limits(max_entry_bytes=8, max_total_bytes=9)
     for transport in (CandidateTransport.INCOMING, CandidateTransport.BROWSER):
+        tree = ZipExportTree(archive_path, transport=transport, limits=tight)
         with pytest.raises(TransportLimitError, match="превышает предел 8"):
-            ZipExportTree(archive_path, transport=transport, limits=tight)
+            tree.validate_selection(tree.paths())
+        with tree.open("Configuration.xml") as stream:
+            assert stream.read() == b"12345"
+        with pytest.raises(TransportLimitError, match="превышает предел 8"):
+            tree.open("Catalogs/Demo.xml")
+        tree.close()
 
     roomy = _small_limits(max_entry_bytes=16, max_total_bytes=32)
     for transport in (CandidateTransport.INCOMING, CandidateTransport.BROWSER):

@@ -217,8 +217,19 @@ class LimitedReader:
         self._read += len(data)
         return data
 
+    def read1(self, size: int = -1) -> bytes:
+        return self.read(size)
+
+    def readinto(self, buffer) -> int:
+        data = self.read(len(buffer))
+        buffer[: len(data)] = data
+        return len(data)
+
     def readable(self) -> bool:
         return True
+
+    def seekable(self) -> bool:
+        return False
 
     def close(self) -> None:
         self._stream.close()
@@ -229,8 +240,18 @@ class LimitedReader:
     def __exit__(self, *exc_info: object) -> None:
         self.close()
 
+    # Прежде __getattr__ отдавал исходному потоку всё подряд: readline, seek,
+    # readinto читали бы мимо учёта. Потребители зовут только read(), поэтому
+    # остальное запрещено явно, а не делегируется молча.
+    _PASSTHROUGH = frozenset({"name", "mode", "closed"})
+
     def __getattr__(self, name: str):
-        return getattr(self._stream, name)
+        if name in LimitedReader._PASSTHROUGH:
+            return getattr(self._stream, name)
+        raise AttributeError(
+            f"LimitedReader не поддерживает {name}: чтение идёт только через "
+            "read/read1/readinto под бюджетом"
+        )
 
 
 class LimitedZipFile:

@@ -46,7 +46,7 @@ try:  # pragma: no cover - на Windows межпроцессного flock не�
 except ImportError:  # pragma: no cover
     fcntl = None
 
-from . import coverage_log, index_cache, modules_index, structure_origin
+from . import coverage_log, index_cache, modules_index, source_ids, structure_origin
 from .dictionary import Dictionary, DictionaryError
 from .extension_runtime import (
     ExtensionRuntimeError,
@@ -792,7 +792,7 @@ class RegistrySnapshot:
         return tuple(self.configurations)
 
     def extension_names(self, configuration: str) -> tuple[str, ...]:
-        prefix = f"{configuration}:ext:"
+        prefix = source_ids.extension_prefix(configuration)
         legacy = {
             source_id[len(prefix):]
             for source_id, source in self.sources.items()
@@ -827,7 +827,7 @@ class RegistrySnapshot:
             raise RegistryError(
                 f"Снимок конфигурации повреждён: {configuration}."
             )
-        modules = self.modules.get(f"{configuration}:modules")
+        modules = self.modules.get(source_ids.modules_id(configuration))
         code_source = (
             modules.source
             if modules is not None and modules.ready
@@ -1423,9 +1423,9 @@ class Registry:
         for manifest in self._generation_manifests.values():
             layers = {layer.kind: layer for layer in manifest.layers}
             if manifest.identity.source_kind is SourceKind.EXTENSION:
-                source_id = (
-                    f"{manifest.identity.parent_configuration}:ext:"
-                    f"{index_cache.safe_name(manifest.identity.extension_name)}"
+                source_id = source_ids.extension_modules_id(
+                    manifest.identity.parent_configuration,
+                    index_cache.safe_name(manifest.identity.extension_name),
                 )
                 if any(
                     layers.get(kind) is not None
@@ -1452,7 +1452,7 @@ class Registry:
                 and layers[kind].state is LayerState.READY
                 for kind in (LayerKind.CODE, LayerKind.FORMS)
             ):
-                source_id = f"{configuration}:modules"
+                source_id = source_ids.modules_id(configuration)
                 names.update(
                     self._cache_path(source_id, kind).name
                     for kind in self.CACHE_KINDS[KIND_MODULES]
@@ -2073,7 +2073,7 @@ class Registry:
             raise RegistryError(f"{source_path.name}: {error}") from error
 
         configuration = snapshot.configuration.name
-        source_id = f"{configuration}:extension-runtime"
+        source_id = source_ids.extension_runtime_id(configuration)
         if expected_id and source_id != expected_id:
             raise RegistryError(
                 f"{source_path.name}: идентификатор снимка «{source_id}» "
@@ -2313,14 +2313,14 @@ class Registry:
                 else None
             )
             try:
-                if source_id.endswith(":modules"):
-                    configuration = source_id[: -len(":modules")]
+                if source_id.endswith(source_ids.MODULES_SUFFIX):
+                    configuration = source_id[: -len(source_ids.MODULES_SUFFIX)]
                     if not configuration:
                         raise ValueError("empty configuration")
                     ожидаемый_корень = self._modules_root(configuration)
                 else:
                     configuration, separator, extension = source_id.partition(
-                        ":ext:"
+                        source_ids.EXTENSION_SEPARATOR
                     )
                     if not separator or not configuration or not extension:
                         raise ValueError("invalid source id")
@@ -2695,11 +2695,11 @@ class Registry:
         for pointer in self._generation_pointers.values():
             identity = pointer.identity
             native_source_id = (
-                f"{identity.configuration_name}:modules"
+                source_ids.modules_id(identity.configuration_name)
                 if identity.source_kind is SourceKind.CONFIGURATION
-                else (
-                    f"{identity.parent_configuration}:ext:"
-                    f"{index_cache.safe_name(identity.extension_name)}"
+                else source_ids.extension_modules_id(
+                    identity.parent_configuration,
+                    index_cache.safe_name(identity.extension_name),
                 )
             )
             if (
@@ -3013,12 +3013,12 @@ class Registry:
     def _владелец_источника_кода(source: Source) -> str | None:
         """Имя конфигурации из стабильной схемы id источника кода."""
         if source.kind == KIND_MODULES:
-            суффикс = ":modules"
+            суффикс = source_ids.MODULES_SUFFIX
             if source.id.endswith(суффикс):
                 return source.id[: -len(суффикс)] or None
             return None
         if source.kind == KIND_EXTENSION:
-            configuration, разделитель, extension = source.id.partition(":ext:")
+            configuration, разделитель, extension = source.id.partition(source_ids.EXTENSION_SEPARATOR)
             if разделитель and configuration and extension:
                 return configuration
         return None
@@ -3326,8 +3326,8 @@ class Registry:
         # данные, которые ещё нужны для ручного разбора журнала.
         self._ensure_not_blocked()
         self._ensure_owner("Снятие источника")
-        if source_id.endswith(":modules"):
-            configuration = source_id.removesuffix(":modules")
+        if source_id.endswith(source_ids.MODULES_SUFFIX):
+            configuration = source_id.removesuffix(source_ids.MODULES_SUFFIX)
             identity = ExportIdentity.configuration(configuration)
             with self._lock:
                 aggregate_exists = (
@@ -3388,9 +3388,9 @@ class Registry:
                     for key, pointer in self._generation_pointers.items()
                     if pointer.identity.source_kind is SourceKind.EXTENSION
                     and source_id
-                    == (
-                        f"{pointer.identity.parent_configuration}:ext:"
-                        f"{index_cache.safe_name(pointer.identity.extension_name)}"
+                    == source_ids.extension_modules_id(
+                        pointer.identity.parent_configuration,
+                        index_cache.safe_name(pointer.identity.extension_name),
                     )
                 ),
                 None,
@@ -3447,9 +3447,9 @@ class Registry:
             # расширение снимается само по себе, без цепочки.
             цепочка = [source_id]
             if configuration_removal:
-                модули_id = f"{source_id}:modules"
-                префикс_расширений = f"{source_id}:ext:"
-                runtime_id = f"{source_id}:extension-runtime"
+                модули_id = source_ids.modules_id(source_id)
+                префикс_расширений = source_ids.extension_prefix(source_id)
+                runtime_id = source_ids.extension_runtime_id(source_id)
                 цепочка += sorted(
                     sid
                     for sid in self.sources
@@ -3565,7 +3565,7 @@ class Registry:
                 elif текущий.kind in (KIND_MODULES, KIND_EXTENSION):
                     pass
                 elif текущий.kind == KIND_EXTENSION_RUNTIME:
-                    configuration = sid.removesuffix(":extension-runtime")
+                    configuration = sid.removesuffix(source_ids.EXTENSION_RUNTIME_SUFFIX)
                     self.extension_runtime.pop(configuration, None)
                 elif self.syntax_versions.pop(sid, None) is not None:
                     self._relation_cache.clear()
@@ -3579,7 +3579,7 @@ class Registry:
                 self._generation_manifests.pop(native_key, None)
                 if identity.source_kind is SourceKind.CONFIGURATION:
                     configuration = identity.configuration_name
-                    modules_id = f"{configuration}:modules"
+                    modules_id = source_ids.modules_id(configuration)
                     self.configurations.pop(configuration, None)
                     self.modules.pop(modules_id, None)
                     self.roles.pop(configuration, None)
@@ -3600,9 +3600,9 @@ class Registry:
                         )
                     инвалидировать.add(modules_id)
                 else:
-                    native_source_id = (
-                        f"{identity.parent_configuration}:ext:"
-                        f"{index_cache.safe_name(identity.extension_name)}"
+                    native_source_id = source_ids.extension_modules_id(
+                        identity.parent_configuration,
+                        index_cache.safe_name(identity.extension_name),
                     )
                     self.modules.pop(native_source_id, None)
                     self.extension_structures.pop(native_source_id, None)
@@ -3728,7 +3728,7 @@ class Registry:
                     raise ReloadRequired("reload_required")
                 declaration = self._platform_declarations.get(selected_name)
                 platform_override = declaration.version if declaration else ""
-                modules_key = f"{selected_name}:modules"
+                modules_key = source_ids.modules_id(selected_name)
                 modules = self.modules.get(modules_key)
                 roles = self.roles.get(selected_name)
                 runtime = self.extension_runtime.get(selected_name)
@@ -3738,7 +3738,7 @@ class Registry:
                 extension_roles = None
                 if extension is not None:
                     extension_key = (
-                        f"{selected_name}:ext:{index_cache.safe_name(extension)}"
+                        source_ids.extension_modules_id(selected_name, index_cache.safe_name(extension))
                     )
                     расширение = self.modules.get(extension_key)
                     extension_structure = self.extension_structures.get(extension_key)
@@ -4243,8 +4243,8 @@ class Registry:
         """Старая A-структура с отдельным B-кодом/расширением не является A_ONLY."""
         if not self._restored_for_serving or configuration not in self.configurations:
             return False
-        modules_id = f"{configuration}:modules"
-        extension_prefix = f"{configuration}:ext:"
+        modules_id = source_ids.modules_id(configuration)
+        extension_prefix = source_ids.extension_prefix(configuration)
         return (
             modules_id in self.modules
             or any(key.startswith(extension_prefix) for key in self.modules)
@@ -4292,7 +4292,7 @@ class Registry:
         loaded = self.configurations.get(identity.configuration_name)
         if loaded is None:
             return None
-        modules = self.modules.get(f"{identity.configuration_name}:modules")
+        modules = self.modules.get(source_ids.modules_id(identity.configuration_name))
         code_source = (
             modules.source if modules is not None and modules.готов else None
         )
@@ -4422,7 +4422,7 @@ class Registry:
             return ("sources", "configurations"), parts[-1], False
         elif source.kind == KIND_MODULES:
             expected = Path("modules") / index_cache.safe_name(
-                source.id.removesuffix(":modules")
+                source.id.removesuffix(source_ids.MODULES_SUFFIX)
             )
             if stored != expected:
                 return None
@@ -4508,7 +4508,7 @@ class Registry:
         configuration = pointer.identity.configuration_name
         expected = {
             (configuration, KIND_CONFIGURATION),
-            (f"{configuration}:modules", KIND_MODULES),
+            (source_ids.modules_id(configuration), KIND_MODULES),
         }
         records: list[tuple[Source, dict[str, object]]] = []
         try:
@@ -4551,7 +4551,7 @@ class Registry:
                     source.id: self.sources.get(source.id)
                     for source, _raw in records
                 }
-                modules_id = f"{pointer.identity.configuration_name}:modules"
+                modules_id = source_ids.modules_id(pointer.identity.configuration_name)
                 self._следующее_поколение_модулей(modules_id)
 
             for source, _raw in records:
@@ -4612,9 +4612,9 @@ class Registry:
         cache_owner = (
             identity.configuration_name
             if identity.source_kind is SourceKind.CONFIGURATION
-            else (
-                f"{identity.parent_configuration}:ext:"
-                f"{index_cache.safe_name(identity.extension_name)}"
+            else source_ids.extension_modules_id(
+                identity.parent_configuration,
+                index_cache.safe_name(identity.extension_name),
             )
         )
         try:
@@ -5026,7 +5026,7 @@ class Registry:
                             self._словарь_конфигурации_locked(loaded_configuration)
                         )
                         self._advance_configuration_revision(name)
-                        modules_key = f"{name}:modules"
+                        modules_key = source_ids.modules_id(name)
                         if loaded_modules is None:
                             self.modules.pop(modules_key, None)
                         else:
@@ -5042,9 +5042,9 @@ class Registry:
                                 self._generation_manifests.pop(
                                     child.identity.grouping_key, None
                                 )
-                                extension_key = (
-                                    f"{child.identity.parent_configuration}:ext:"
-                                    f"{index_cache.safe_name(child.identity.extension_name)}"
+                                extension_key = source_ids.extension_modules_id(
+                                    child.identity.parent_configuration,
+                                    index_cache.safe_name(child.identity.extension_name),
                                 )
                                 self.modules.pop(extension_key, None)
                                 self.extension_structures.pop(extension_key, None)
@@ -5066,9 +5066,9 @@ class Registry:
                         self._relation_cache.pop(name, None)
                     else:
                         identity = manifest.identity
-                        extension_key = (
-                            f"{identity.parent_configuration}:ext:"
-                            f"{index_cache.safe_name(identity.extension_name)}"
+                        extension_key = source_ids.extension_modules_id(
+                            identity.parent_configuration,
+                            index_cache.safe_name(identity.extension_name),
                         )
                         if loaded_modules is None:
                             self.modules.pop(extension_key, None)
@@ -5244,7 +5244,7 @@ class Registry:
             loaded = self.configurations.get(configuration)
             if loaded is None:
                 raise UnknownConfiguration(f"Конфигурация не загружена: {configuration}.")
-            modules = self.modules.get(f"{configuration}:modules")
+            modules = self.modules.get(source_ids.modules_id(configuration))
             code_source = (
                 modules.source
                 if modules is not None and modules.готов
@@ -5514,7 +5514,7 @@ class Registry:
                     loaded_configuration
                 )
                 self._advance_configuration_revision(name)
-                modules_key = f"{name}:modules"
+                modules_key = source_ids.modules_id(name)
                 if loaded_modules is None:
                     self.modules.pop(modules_key, None)
                 else:
@@ -5610,9 +5610,9 @@ class Registry:
             assert loaded_configuration is None
             native_runtime[key] = (prepared, None, loaded_modules)
             identity = manifest.identity
-            extension_key = (
-                f"{identity.parent_configuration}:ext:"
-                f"{index_cache.safe_name(identity.extension_name)}"
+            extension_key = source_ids.extension_modules_id(
+                identity.parent_configuration,
+                index_cache.safe_name(identity.extension_name),
             )
             structure = prepared.runtime.extension_structure
             assert structure is not None
@@ -5724,7 +5724,7 @@ class Registry:
                 problems.append(f"{source.id}: {error}{перенести(source, error)}")
 
         for source in отложенный_runtime:
-            владелец = source.id.removesuffix(":extension-runtime")
+            владелец = source.id.removesuffix(source_ids.EXTENSION_RUNTIME_SUFFIX)
             if владелец in новые_перенесённые:
                 # Снимок без временно не поднятой конфигурации не публикуется,
                 # но и не теряется вместе с ней.

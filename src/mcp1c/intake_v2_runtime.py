@@ -272,7 +272,13 @@ def _metadata_object(value: object, label: str) -> MetadataObject:
 def configuration_from_base_layer(
     semantic: object, *, source_profile: LayerSourceProfile | None = None,
 ) -> Configuration:
-    """Восстановить формат-независимую модель из canonical base layer."""
+    """Восстановить формат-независимую модель из canonical base layer.
+
+    Пишет слой `intake_v2_converter.base_layer_data`. Reader шире writer-а:
+    принимает прежние наборы полей и по профилю Source B сбрасывает
+    `platform`, поэтому общий модуль схемы не выделен — согласованность
+    закрепляет `tests/test_intake_v2_layer_roundtrip.py`.
+    """
     raw = _mapping(semantic, "base_structure")
     legacy_keys = {
         "name",

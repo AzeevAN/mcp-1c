@@ -3985,7 +3985,12 @@ def _field_data(value: Field, *, include_balance: bool = False) -> dict[str, obj
 
 
 def base_layer_data(base: Configuration) -> dict[str, object]:
-    """Вернуть канонические данные только базового структурного слоя."""
+    """Вернуть канонические данные только базового структурного слоя.
+
+    Читает слой `intake_v2_runtime.configuration_from_base_layer`; новое поле
+    здесь без поля там отклонит каждое поколение. Согласованность закрепляет
+    `tests/test_intake_v2_layer_roundtrip.py`.
+    """
     if not isinstance(base, Configuration):
         raise TypeError("base должен быть Configuration")
     objects = []
@@ -4130,7 +4135,11 @@ def _extended_payload_data(value: object | None) -> object:
 
 
 def extended_layer_data(extended: ExtendedStructure) -> dict[str, object]:
-    """Вернуть канонические metadata-данные без тел кода и разбора форм."""
+    """Вернуть канонические metadata-данные без тел кода и разбора форм.
+
+    Читает слой `intake_v2_runtime._compose_extended_structure` (точный набор
+    полей объекта); round-trip — `tests/test_intake_v2_layer_roundtrip.py`.
+    """
     if not isinstance(extended, ExtendedStructure):
         raise TypeError("extended должен быть ExtendedStructure")
     return {

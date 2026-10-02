@@ -498,10 +498,12 @@ def чистый_журнал_загрузок():
     dashboard._SESSIONS.clear()
     dashboard._LOGIN_FAILURES.clear()
     dashboard._GLOBAL_FAILURES.clear()
+    dashboard._LOCKED_FAILURES.clear()
     dashboard._KNOWN_GOOD_CLIENTS.clear()
     yield
     dashboard.JOBS.clear()
     dashboard._SESSIONS.clear()
     dashboard._LOGIN_FAILURES.clear()
     dashboard._GLOBAL_FAILURES.clear()
+    dashboard._LOCKED_FAILURES.clear()
     dashboard._KNOWN_GOOD_CLIENTS.clear()

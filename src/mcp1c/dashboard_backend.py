@@ -34,7 +34,13 @@ from .auth import same_token
 from .heavy_operations import _settled
 from .intake_v2 import CandidateTransport
 from .loader import ExportError
-from .runtime_config import split_host, token_is_strong
+from .runtime_config import (
+    LOOPBACK_HOSTS,
+    HostConfigurationError,
+    allowed_hosts,
+    split_host,
+    token_is_strong,
+)
 from .registry import (
     Registry,
     RegistryChangedExternally,
@@ -95,6 +101,14 @@ MAX_TRACKED_LOGIN_CLIENTS = 4096
 # продолжают проверяться адреса, успешно входившие за последние 12 часов.
 GLOBAL_LOGIN_FAILURE_LIMIT = 100
 
+# Под блокировкой стойкий токен ещё сверяется (иначе чужие догадки отрезали бы
+# всех за общим NAT-адресом). «Стойкий» проверяется по длине, а не по
+# случайности: длинную заглушку вроде `change-me-…` угадать можно. Поэтому и
+# здесь различные неудачи считаются, но с потолком на порядок выше: верные
+# клиенты его не достигают, а перебор длинного предсказуемого токена остаётся
+# ограничен тысячей догадок за окно.
+LOCKED_STRONG_FAILURE_LIMIT = 1000
+
 MAX_KNOWN_GOOD_CLIENTS = 1024
 
 # Порядок вставки словаря — порядок создания: первая запись старейшая.
@@ -105,6 +119,8 @@ _SESSIONS: dict[str, tuple[str, float]] = {}
 _LOGIN_FAILURES: dict[str, dict[bytes, float]] = {}
 
 _GLOBAL_FAILURES: dict[bytes, float] = {}
+
+_LOCKED_FAILURES: dict[bytes, float] = {}
 
 _KNOWN_GOOD_CLIENTS: dict[str, float] = {}
 
@@ -278,9 +294,21 @@ def check_token(request: Request, given: str) -> tuple[str | None, int | None]:
             # продолжал бы перебор, ради сдерживания которого блокировка
             # существует. Неверная догадка здесь не учитывается — окно
             # истекает само, а не продлевается атакующим.
-            for token, level in ((admin, LEVEL_ADMIN), (api, LEVEL_READ)):
-                if token_is_strong(token) and same_token(given, token):
+            strong = [
+                (token, level)
+                for token, level in ((admin, LEVEL_ADMIN), (api, LEVEL_READ))
+                if token_is_strong(token)
+            ]
+            _fresh(_LOCKED_FAILURES, now, LOGIN_FAILURE_WINDOW_SECONDS)
+            if not strong or len(_LOCKED_FAILURES) >= LOCKED_STRONG_FAILURE_LIMIT:
+                return None, retry_after
+            for token, level in strong:
+                if same_token(given, token):
                     return level, None
+            fingerprint = hmac.new(
+                _FAILURE_KEY, given.encode("utf-8"), hashlib.sha256
+            ).digest()[:16]
+            _LOCKED_FAILURES[fingerprint] = now
             return None, retry_after
         if same_token(given, admin):
             level = LEVEL_ADMIN
@@ -352,14 +380,40 @@ def login_from_foreign_site(request: Request) -> bool:
         return False
     actual = _origin_key(origin.strip(), allow_path=False)
     host = split_host(request.headers.get("host", ""))
-    if actual is None or host is None:
+    if actual is None:
         return True
     scheme, hostname, port = actual
-    host_name, host_port = host
-    # Стандартный порт в Host не пишут; схему Host не несёт, поэтому порт
-    # по умолчанию берётся из схемы самого Origin.
-    host_port = host_port or (443 if scheme == "https" else 80)
-    return (hostname, port) != (host_name.strip("[]"), host_port)
+    if host is not None:
+        host_name, host_port = host
+        # Стандартный порт в Host не пишут; схему Host не несёт, поэтому порт
+        # по умолчанию берётся из схемы самого Origin.
+        host_port = host_port or (443 if scheme == "https" else 80)
+        if (hostname, port) == (host_name.strip("[]"), host_port):
+            return False
+    # Proxy с настройками по умолчанию (nginx: `Host: $proxy_host`) передаёт
+    # внутренний адрес, и Origin публичного имени с Host не совпадёт. Имена,
+    # объявленные оператором как свои, — тоже свой сайт.
+    return not _origin_declared(hostname, port)
+
+
+def _origin_declared(hostname: str, port: int) -> bool:
+    try:
+        declared = allowed_hosts()
+    except HostConfigurationError:
+        return False
+    for entry in declared:
+        # Loopback-имена объявлены по умолчанию для проверки Host, но для
+        # формы входа они не «свои»: страница на другом локальном порту —
+        # чужой сайт.
+        if entry in LOOPBACK_HOSTS:
+            continue
+        split = split_host(entry)
+        if split is None:
+            continue
+        name, entry_port = split
+        if name.strip("[]").lower().rstrip(".") == hostname and entry_port in (None, port):
+            return True
+    return False
 
 
 def _cookie_mutation_is_same_origin(request: Request) -> bool:

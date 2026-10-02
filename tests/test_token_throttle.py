@@ -335,3 +335,42 @@ def test_перезагрузка_по_заголовку_админа_прох�
     # Токен чтения в X-Admin-Token даёт чтение, но не перезагрузку.
     reader = client.post("/admin/reload", headers={"x-admin-token": STRONG_READ})
     assert reader.status_code == 403
+
+
+def test_перебор_длинного_токена_под_блокировкой_ограничен(strong_tokens, monkeypatch):
+    """«Стойкий» проверяется по длине: под блокировкой перебор длинного
+    предсказуемого токена тоже упирается в потолок различных неудач."""
+    monkeypatch.setattr(backend, "LOCKED_STRONG_FAILURE_LIMIT", 5)
+    for attempt in range(backend.LOGIN_FAILURE_LIMIT):
+        token = f"guess-{attempt}"
+        backend.check_token(_request("10.0.0.9", token), token)
+    for attempt in range(5):
+        token = f"locked-{attempt}"
+        level, retry = backend.check_token(_request("10.0.0.9", token), token)
+        assert level is None and retry is not None
+
+    # Потолок исчерпан: под блокировкой токен больше не сверяется вовсе.
+    level, retry = backend.check_token(_request("10.0.0.9", STRONG_READ), STRONG_READ)
+    assert level is None and retry is not None
+
+
+def test_вход_за_proxy_с_публичным_адресом_проходит(strong_tokens, tmp_path, monkeypatch):
+    """nginx по умолчанию передаёт внутренний Host: Origin публичного имени
+    из MCP1C_PUBLIC_BASE_URL / MCP1C_ALLOWED_HOSTS — свой сайт."""
+    monkeypatch.setenv("MCP1C_PUBLIC_BASE_URL", "https://mcp.example.com")
+    monkeypatch.setenv("MCP1C_ALLOWED_HOSTS", "dash.example.org:8443")
+    client = _full_client(tmp_path)
+
+    for origin in ("https://mcp.example.com", "https://dash.example.org:8443"):
+        ok = client.post(
+            "/login",
+            data={"token": STRONG_ADMIN},
+            headers={"origin": origin},
+            follow_redirects=False,
+        )
+        assert ok.status_code == 303, origin
+    for origin in ("https://dash.example.org", "http://localhost:3000"):
+        denied = client.post(
+            "/login", data={"token": STRONG_ADMIN}, headers={"origin": origin}
+        )
+        assert denied.status_code == 403, origin

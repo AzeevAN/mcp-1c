@@ -204,7 +204,8 @@ def _open_lock_file(path: Path) -> int:
     симлинку направить fchmod на чужой файл и открыть его на чтение всем;
     fchmod делается только для своего файла.
     """
-    flags = getattr(os, "O_NOFOLLOW", 0)
+    # O_NONBLOCK: FIFO на месте замка иначе подвесил бы open до fstat.
+    flags = getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
         descriptor = os.open(path, os.O_RDWR | os.O_CREAT | flags, 0o644)
     except PermissionError:

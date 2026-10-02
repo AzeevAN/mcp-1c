@@ -1,1 +1,0 @@
-"""Тесты capability Metadata Authoring."""

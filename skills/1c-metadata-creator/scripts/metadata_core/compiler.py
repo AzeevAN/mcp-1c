@@ -413,7 +413,7 @@ def _validate_form(
             _fail(
                 "noncanonical_data_processor_form_xml",
                 f"{path}.form_xml",
-                "Передайте Form.xml без ручных изменений из compile_managed_form.",
+                "Передайте Form.xml без ручных изменений из `form_creator.py build`.",
             )
     if owner_kind == "Отчет":
         if (

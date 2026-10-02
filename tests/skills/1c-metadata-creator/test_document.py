@@ -3,15 +3,11 @@ from __future__ import annotations
 from copy import deepcopy
 
 import pytest
-from jsonschema import Draft202012Validator
 
 from metadata_core.checker import check_metadata_artifacts
 from metadata_core.compiler import (
     MetadataAuthoringContractError,
     compile_metadata_object,
-)
-from metadata_core.schema import (
-    METADATA_SPECIFICATION_SCHEMA,
 )
 
 
@@ -72,10 +68,6 @@ def _document(*, with_form: bool = False) -> dict[str, object]:
 @pytest.mark.parametrize("with_form", [False, True])
 def test_document_schema_compiler_checker_green(with_form):
     specification = _document(with_form=with_form)
-    errors = list(
-        Draft202012Validator(METADATA_SPECIFICATION_SCHEMA).iter_errors(specification)
-    )
-    assert errors == []
 
     first = compile_metadata_object(specification)
     second = compile_metadata_object(specification)
@@ -142,10 +134,6 @@ def test_document_default_object_form_requires_configurator_fields(data_path):
 def test_document_schema_and_runtime_fail_closed(field, value):
     specification = _document()
     specification[field] = value
-    schema_errors = list(
-        Draft202012Validator(METADATA_SPECIFICATION_SCHEMA).iter_errors(specification)
-    )
-    assert schema_errors
     with pytest.raises(MetadataAuthoringContractError):
         compile_metadata_object(specification)
 
@@ -250,7 +238,6 @@ def test_document_ref_does_not_widen_other_object_kinds():
     specification = _document()
     bad = deepcopy(specification)
     bad["attributes"][0]["type"]["object"] = "Отчет.Чужой"
-    assert list(Draft202012Validator(METADATA_SPECIFICATION_SCHEMA).iter_errors(bad))
     with pytest.raises(MetadataAuthoringContractError) as caught:
         compile_metadata_object(bad)
     assert "invalid_value" in {item["code"] for item in caught.value.diagnostics}

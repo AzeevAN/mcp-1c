@@ -1,3 +1,4 @@
+# VENDORED: копия src/mcp1c/bsl_lex.py, правится только синхронно (tests/skills/test_skills_shared_contract.py)
 """Лексер BSL: границы процедур, сигнатура с переносом строк, `Экспорт`.
 
 Фундамент провайдера `modules` (`docs/modules-provider-design.md`, раздел 3):

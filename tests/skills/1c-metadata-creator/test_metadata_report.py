@@ -3,7 +3,6 @@ from __future__ import annotations
 from copy import deepcopy
 
 import pytest
-from jsonschema import Draft202012Validator
 
 from form_core.compiler import compile_managed_form
 from metadata_core.checker import check_metadata_artifacts
@@ -11,10 +10,6 @@ from metadata_core.compiler import (
     MetadataAuthoringContractError,
     compile_metadata_object,
 )
-from metadata_core.rules import get_metadata_authoring_rules
-from metadata_core.schema import METADATA_SPECIFICATION_SCHEMA
-
-
 def _form_artifacts(*, with_local_attribute: bool = False) -> tuple[str, str]:
     attributes = [{
         "name": "Отчет",
@@ -94,24 +89,6 @@ def test_report_compile_and_exact_bundle_check():
     assert check_metadata_artifacts(
         compiled["object_ref"], compiled["format_version"], artifacts
     )["status"] == "passed"
-
-
-def test_report_schema_and_rules_are_discoverable():
-    assert list(
-        Draft202012Validator(METADATA_SPECIFICATION_SCHEMA).iter_errors(
-            _specification()
-        )
-    ) == []
-    rules = get_metadata_authoring_rules("report")
-    assert rules["object_ref"] == "Отчет.<Имя>"
-    assert rules["generated_types"] == ["Object", "Manager"]
-    assert rules["forms_profile"]["main_attribute"]["name"] == "Отчет"
-    assert rules["use_standard_commands"] is True
-    assert rules["data_composition_schema_profile"]["settings_variant"] == "Основной"
-    assert rules["forms_profile"]["derived_by_forms_compiler"]["auto_command_bar"] == (
-        "standard_platform_filled"
-    )
-    assert ".erf" in rules["scope"]
 
 
 def test_report_metadata_accepts_local_non_main_form_attribute():

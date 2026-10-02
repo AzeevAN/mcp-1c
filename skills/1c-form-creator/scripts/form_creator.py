@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import difflib
 import json
+import re
 import sys
 import uuid
 from pathlib import Path
@@ -59,7 +60,9 @@ def _configuration_file(path: str) -> Path:
 def _configuration_info(path: Path) -> tuple[str, ET.Element, str, str]:
     raw = path.read_bytes()
     source = raw.decode("utf-8-sig")
-    if "<!DOCTYPE" in source.upper() or "<!ENTITY" in source.upper():
+    # Та же строгая проверка, что в metadata_creator.py: skills самостоятельны,
+    # поэтому правило продублировано, а не импортировано; тест держит их равными.
+    if re.search(r"<!\s*(DOCTYPE|ENTITY)\b", source, re.I):
         raise ValueError("Configuration.xml: DTD/ENTITY запрещены")
     root = ET.fromstring(source)
     if _local(root.tag) != "MetaDataObject":

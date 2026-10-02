@@ -187,31 +187,6 @@ def platform_compatibility_note(
     )
 
 
-def platform_profiles_payload() -> list[dict[str, object]]:
-    """Вернуть публичную матрицу без локальных путей к исходной справке."""
-
-    return [
-        {
-            "name": profile.name,
-            "minimum": ".".join(str(part) for part in profile.minimum),
-            "maximum": ".".join(str(part) for part in profile.maximum),
-            "documented_versions": list(profile.documented_versions),
-            "event_profile": profile.event_profile,
-            "form_formats": list(profile.formats),
-            "support": profile.support,
-            "evidence": {
-                "documented": list(profile.documented_versions),
-                "interval": (
-                    "exact_only"
-                    if profile.minimum == profile.maximum
-                    else "inferred_between_confirmed_versions"
-                ),
-            },
-        }
-        for profile in PLATFORM_PROFILES
-    ]
-
-
 __all__ = [
     "DEFAULT_PLATFORM_PROFILE",
     "DOCUMENTED_8_3_5_PROFILE",
@@ -224,5 +199,4 @@ __all__ = [
     "platform_compatibility_note",
     "platform_profile",
     "platform_resolution",
-    "platform_profiles_payload",
 ]

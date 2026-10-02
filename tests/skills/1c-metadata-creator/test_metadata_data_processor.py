@@ -3,7 +3,6 @@ from __future__ import annotations
 from copy import deepcopy
 
 import pytest
-from jsonschema import Draft202012Validator
 
 from form_core.compiler import compile_managed_form
 from form_core.checker import check_managed_form
@@ -13,9 +12,6 @@ from metadata_core.checker import (
 from metadata_core.compiler import (
     MetadataAuthoringContractError,
     compile_metadata_object,
-)
-from metadata_core.schema import (
-    METADATA_SPECIFICATION_SCHEMA,
 )
 
 
@@ -274,11 +270,6 @@ def _with_namespaced_command_container(content: str) -> str:
 
 def test_data_processor_compile_and_exact_bundle_check():
     specification = _specification()
-    assert list(
-        Draft202012Validator(METADATA_SPECIFICATION_SCHEMA).iter_errors(
-            specification
-        )
-    ) == []
 
     compiled = compile_metadata_object(specification)
     artifacts = {item["path"]: item["content"] for item in compiled["artifacts"]}
@@ -336,11 +327,6 @@ def test_data_processor_schema_and_runtime_fail_closed(mutate, code):
     specification = deepcopy(_specification())
     mutate(specification)
 
-    assert list(
-        Draft202012Validator(METADATA_SPECIFICATION_SCHEMA).iter_errors(
-            specification
-        )
-    )
     with pytest.raises(MetadataAuthoringContractError) as caught:
         compile_metadata_object(specification)
     assert caught.value.diagnostics[0]["code"] == code
@@ -573,11 +559,6 @@ def test_data_processor_requires_one_default_main_form(mutate, code):
     specification = deepcopy(_specification())
     mutate(specification)
 
-    assert list(
-        Draft202012Validator(METADATA_SPECIFICATION_SCHEMA).iter_errors(
-            specification
-        )
-    )
     with pytest.raises(MetadataAuthoringContractError) as caught:
         compile_metadata_object(specification)
     assert caught.value.diagnostics[0]["code"] == code

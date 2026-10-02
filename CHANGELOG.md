@@ -39,6 +39,15 @@
   записи больше не оставляет обрезанный JSON, из-за которого терялись
   записанные отказы разбора. Кэш хеша и отказы файлов, исчезнувших из
   `incoming/`, убираются при показе списка.
+- Skills `1c-form-creator` и `1c-metadata-creator` больше не советуют агенту
+  вызывать несуществующие MCP-инструменты (`check_metadata_artifacts`,
+  `check_managed_form`, `compile_managed_form`): после переноса авторства из MCP
+  это команды CLI. Тексты диагностик теперь называют `form_creator.py build|validate`
+  и `metadata_creator.py validate`.
+- Проверка DTD в `form_creator.py` приведена к строгой проверке
+  `metadata_creator.py` (`<!\s*(DOCTYPE|ENTITY)\b`, без учёта регистра): раньше
+  `<! ENTITY` обходила её и доходила до разборщика с невнятной ошибкой. Тест
+  прогоняет оба skill на одних и тех же входах.
 
 #### Изменено
 
@@ -47,6 +56,21 @@
   собраны в `intake_v2_fsio`. Записи job, candidate, request, preview и
   commit теперь читаются так же защищённо, как каталог кандидатов: без окна
   подмены файла на символическую ссылку между проверкой и чтением.
+- Тесты skills перенесены из `tests/capability_modules/{forms,metadata_authoring}`
+  в `tests/skills/1c-form-creator` и `tests/skills/1c-metadata-creator`.
+
+#### Добавлено
+
+- Копия `bsl_lex.py` в `form_core` получила шапку `VENDORED`, а тест сравнивает
+  её тело с `src/mcp1c/bsl_lex.py` побайтно: правка лексера в одном месте больше
+  не разведёт копии молча.
+
+#### Удалено
+
+- Мёртвый код skills, живший только за счёт тестов: `form_core/rules.py`,
+  `form_core/terminology.py`, `form_core/__init__.load()` (импортировал
+  отсутствующий `.tools`), `metadata_core/rules.py`, `metadata_core/schema.py`,
+  `platform_profiles_payload` и их тесты. CLI skills их не вызывает.
 
 ## [4.2.0] - 2026-10-01
 

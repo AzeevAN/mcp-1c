@@ -137,11 +137,11 @@ class _Report:
             },
             "diagnostics": self.diagnostics,
             "instructions": (
-                ["Исправьте diagnostics и повторите check_metadata_artifacts."]
+                ["Исправьте diagnostics и повторите команду `metadata_creator.py validate`."]
                 if failed
                 else [
                     "Статическая проверка пройдена; нативный импорт в 1С не проверен.",
-                    "Semantic role Form.xml здесь не проверяется: используйте результат check_managed_form.",
+                    "Semantic role Form.xml здесь не проверяется: выполните `form_creator.py validate` для формы.",
                 ]
             ),
         }
@@ -713,7 +713,7 @@ def _check_forms(
                             "forms",
                             "noncanonical_data_processor_form_xml",
                             form_xml_path,
-                            "Передайте Form.xml без ручных изменений из compile_managed_form.",
+                            "Передайте Form.xml без ручных изменений из `form_creator.py build`.",
                         )
             if kind.object_kind == "Отчет":
                 if main_names != ["Отчет"]:

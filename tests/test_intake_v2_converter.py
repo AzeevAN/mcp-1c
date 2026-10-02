@@ -2663,3 +2663,34 @@ def test_bot_не_скрывает_расхождение_регистра_descr
         convert_collection(
             _collection(tmp_path, bots=True, bot_module_name="assistant")
         )
+
+
+def test_каждый_extended_adapter_спецификации_есть_в_таблице():
+    """Новый вид с extended-слоем без адаптера ловится здесь, а не на
+    первой реальной выгрузке."""
+    table = _symbol("_EXTENDED_ADAPTERS")
+    declared = {
+        spec.extended_adapter
+        for spec in DEFAULT_KIND_SPECS
+        if spec.extended_adapter
+    }
+
+    assert declared <= set(table)
+
+
+def test_неизвестный_extended_adapter_отклоняется(tmp_path):
+    import dataclasses
+
+    convert_collection = _symbol("convert_collection")
+    ConversionError = _symbol("ConversionError")
+    specs = tuple(
+        dataclasses.replace(spec, extended_adapter="nonexistent")
+        if spec.source_name == "CommonAttributes"
+        else spec
+        for spec in DEFAULT_KIND_SPECS
+    )
+
+    with pytest.raises(
+        ConversionError, match="для CommonAttributes не реализован adapter nonexistent"
+    ):
+        convert_collection(_collection(tmp_path), kind_specs=specs)

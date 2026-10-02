@@ -4166,6 +4166,150 @@ def _sha256(value: object, prefix: bytes) -> str:
     return hashlib.sha256(prefix + payload).hexdigest()
 
 
+@dataclass(slots=True)
+class _ExtendedAdapterContext:
+    """Общее для адаптеров extended-слоя состояние одного convert_collection.
+
+    `exchange_plan_contents` и `xdto_payloads` адаптеры расходуют (`pop`):
+    остаток после обхода означает парный файл без descriptor.
+    """
+
+    collection: CollectionResult
+    diagnostics: _Diagnostics
+    module_symbols: Mapping
+    metadata_by_path: Mapping[str, CollectionArtifact]
+    exchange_plan_contents: dict
+    xdto_payloads: dict
+    bot_module_addresses: Mapping[str, str]
+
+
+def _adapt_common_attribute(root, artifact, context):
+    yield _common_attribute(root, context.diagnostics, artifact.source_path)
+
+
+def _adapt_session_parameter(root, artifact, context):
+    properties = _descriptor(root, "SessionParameter", artifact.source_path)[1]
+    _unknown_properties(
+        properties,
+        {"Name", "Synonym", "Comment", "Type"},
+        context.diagnostics,
+        "SessionParameter",
+    )
+    yield _session_parameter(root, artifact.source_path)
+
+
+def _adapt_document_journal(root, artifact, context):
+    yield _document_journal(root, context.diagnostics, artifact.source_path)
+
+
+def _adapt_filter_criterion(root, artifact, context):
+    yield _filter_criterion(root, context.diagnostics, artifact.source_path)
+
+
+def _adapt_common_command(root, artifact, context):
+    yield _common_command(root, context.diagnostics, artifact.source_path)
+
+
+def _adapt_subsystem(root, artifact, context):
+    interface_path = artifact.source_path[:-4] + "/Ext/CommandInterface.xml"
+    interface_artifact = context.metadata_by_path.get(interface_path)
+    yield _subsystem(
+        root,
+        _parse_xml(context.collection, interface_artifact)
+        if interface_artifact is not None
+        else None,
+        context.diagnostics,
+        artifact.source_path,
+    )
+
+
+def _adapt_exchange_plan(root, artifact, context):
+    properties = _descriptor(root, "ExchangePlan", artifact.source_path)[1]
+    name = _required_text(
+        _child(properties, "Name"), f"{artifact.source_path}.Name"
+    )
+    content_artifact = context.exchange_plan_contents.pop(name.casefold(), None)
+    if content_artifact is None:
+        raise ConversionError(
+            f"{artifact.source_path}: отсутствует обязательный Content.xml"
+        )
+    yield _exchange_plan(
+        root,
+        _parse_xml(context.collection, content_artifact),
+        context.diagnostics,
+        artifact.source_path,
+        content_artifact.source_path,
+    )
+
+
+def _adapt_event_subscription(root, artifact, context):
+    yield _event_subscription(
+        root, context.module_symbols, context.diagnostics, artifact.source_path
+    )
+
+
+def _adapt_scheduled_job(root, artifact, context):
+    yield _scheduled_job(
+        root, context.module_symbols, context.diagnostics, artifact.source_path
+    )
+
+
+def _adapt_http_service(root, artifact, context):
+    yield _http_service(
+        root, context.module_symbols, context.diagnostics, artifact.source_path
+    )
+
+
+def _adapt_xdto_package(root, artifact, context):
+    properties = _descriptor(root, "XDTOPackage", artifact.source_path)[1]
+    name = _required_text(
+        _child(properties, "Name"), f"{artifact.source_path}.Name"
+    )
+    payload_artifact = context.xdto_payloads.pop(name.casefold(), None)
+    if payload_artifact is None:
+        raise ConversionError(
+            f"{artifact.source_path}: отсутствует обязательный Package.bin"
+        )
+    yield from _xdto_package(
+        root,
+        _read_artifact_bytes(context.collection, payload_artifact),
+        context.diagnostics,
+        artifact.source_path,
+        payload_artifact.source_path,
+    )
+
+
+def _adapt_bot(root, artifact, context):
+    yield _bot(
+        root,
+        context.bot_module_addresses,
+        context.diagnostics,
+        artifact.source_path,
+    )
+
+
+# Адаптеры extended-слоя по `MetadataKindSpec.extended_adapter`. Новый вид
+# метаданных с extended-слоем — одна функция и одна строка здесь, а не новая
+# ветка в общем цикле. `None` — вид, чьи объекты строятся не по descriptor,
+# а отдельным проходом (`common_form` — `_common_form_objects`). Имя,
+# которого здесь нет, — ошибка спецификации видов, а не молчаливый пропуск.
+_EXTENDED_ADAPTERS = MappingProxyType({
+    "bot": _adapt_bot,
+    "common_attribute": _adapt_common_attribute,
+    "common_command": _adapt_common_command,
+    "common_form": None,
+    "document_journal": _adapt_document_journal,
+    "event_subscription": _adapt_event_subscription,
+    "exchange_plan": _adapt_exchange_plan,
+    "filter_criterion": _adapt_filter_criterion,
+    "http_service": _adapt_http_service,
+    "scheduled_job": _adapt_scheduled_job,
+    "session_parameter": _adapt_session_parameter,
+    "subsystem": _adapt_subsystem,
+    "xdto_package": _adapt_xdto_package,
+})
+
+
 def convert_collection(
     collection: CollectionResult,
     *,
@@ -4237,6 +4381,15 @@ def convert_collection(
             raise ConversionError(f"дублируется нумератор {rule.address}")
         numbering_rules[key] = rule
 
+    adapter_context = _ExtendedAdapterContext(
+        collection=collection,
+        diagnostics=diagnostics,
+        module_symbols=module_symbols,
+        metadata_by_path=metadata_by_path,
+        exchange_plan_contents=exchange_plan_contents,
+        xdto_payloads=xdto_payloads,
+        bot_module_addresses=bot_module_addresses,
+    )
     for artifact in collection.metadata:
         if artifact.source_path == "Configuration.xml":
             continue
@@ -4290,157 +4443,22 @@ def convert_collection(
                         )
 
                     )
-        if spec.extended_adapter == "common_attribute":
-            obj = _common_attribute(root, diagnostics, artifact.source_path)
-            if obj.full_name in extended_objects:
-                raise ConversionError(f"дублируется extended object {obj.full_name}")
-            extended_objects[obj.full_name] = obj
-        elif spec.extended_adapter == "session_parameter":
-            properties = _descriptor(root, "SessionParameter", artifact.source_path)[1]
-            _unknown_properties(
-                properties,
-                {"Name", "Synonym", "Comment", "Type"},
-                diagnostics,
-                "SessionParameter",
-            )
-            obj = _session_parameter(root, artifact.source_path)
-            if obj.full_name in extended_objects:
-                raise ConversionError(f"дублируется extended object {obj.full_name}")
-            extended_objects[obj.full_name] = obj
-        elif spec.extended_adapter == "document_journal":
-            obj = _document_journal(root, diagnostics, artifact.source_path)
-            if obj.full_name in extended_objects:
-                raise ConversionError(f"дублируется extended object {obj.full_name}")
-            extended_objects[obj.full_name] = obj
-        elif spec.extended_adapter == "filter_criterion":
-            obj = _filter_criterion(root, diagnostics, artifact.source_path)
-            if obj.full_name in extended_objects:
-                raise ConversionError(f"дублируется extended object {obj.full_name}")
-            extended_objects[obj.full_name] = obj
-        elif spec.extended_adapter == "common_command":
-            obj = _common_command(root, diagnostics, artifact.source_path)
-            if obj.full_name in extended_objects:
-                raise ConversionError(f"дублируется extended object {obj.full_name}")
-            extended_objects[obj.full_name] = obj
-        elif spec.extended_adapter == "subsystem":
-            interface_path = (
-                artifact.source_path[:-4] + "/Ext/CommandInterface.xml"
-            )
-            interface_artifact = metadata_by_path.get(interface_path)
-            obj = _subsystem(
-                root,
-                _parse_xml(collection, interface_artifact)
-                if interface_artifact is not None
-                else None,
-                diagnostics,
-                artifact.source_path,
-            )
-            if obj.full_name in extended_objects:
-                raise ConversionError(f"дублируется extended object {obj.full_name}")
-            extended_objects[obj.full_name] = obj
-        elif spec.extended_adapter == "exchange_plan":
-            properties = _descriptor(root, "ExchangePlan", artifact.source_path)[1]
-            name = _required_text(
-                _child(properties, "Name"), f"{artifact.source_path}.Name"
-            )
-            content_artifact = exchange_plan_contents.pop(name.casefold(), None)
-            if content_artifact is None:
+        if spec.extended_adapter:
+            if spec.extended_adapter not in _EXTENDED_ADAPTERS:
                 raise ConversionError(
-                    f"{artifact.source_path}: отсутствует обязательный Content.xml"
+                    f"для {spec.source_name} не реализован adapter "
+                    f"{spec.extended_adapter}"
                 )
-            obj = _exchange_plan(
-                root,
-                _parse_xml(collection, content_artifact),
-                diagnostics,
-                artifact.source_path,
-                content_artifact.source_path,
-            )
-            if obj.full_name in extended_objects:
-                raise ConversionError(f"дублируется extended object {obj.full_name}")
-            extended_objects[obj.full_name] = obj
-        elif spec.extended_adapter == "event_subscription":
-            obj = _event_subscription(
-                root,
-                module_symbols,
-                diagnostics,
-                artifact.source_path,
-            )
-            if obj.full_name in extended_objects:
-                raise ConversionError(f"дублируется extended object {obj.full_name}")
-            extended_objects[obj.full_name] = obj
-        elif spec.extended_adapter == "scheduled_job":
-            obj = _scheduled_job(
-                root,
-                module_symbols,
-                diagnostics,
-                artifact.source_path,
-            )
-            if obj.full_name in extended_objects:
-                raise ConversionError(f"дублируется extended object {obj.full_name}")
-            extended_objects[obj.full_name] = obj
-        elif spec.extended_adapter == "http_service":
-            obj = _http_service(
-                root,
-                module_symbols,
-                diagnostics,
-                artifact.source_path,
-            )
-            if obj.full_name in extended_objects:
-                raise ConversionError(f"дублируется extended object {obj.full_name}")
-            extended_objects[obj.full_name] = obj
-        elif spec.extended_adapter == "xdto_package":
-            properties = _descriptor(
-                root, "XDTOPackage", artifact.source_path
-            )[1]
-            name = _required_text(
-                _child(properties, "Name"), f"{artifact.source_path}.Name"
-            )
-            payload_artifact = xdto_payloads.pop(name.casefold(), None)
-            if payload_artifact is None:
-                raise ConversionError(
-                    f"{artifact.source_path}: отсутствует обязательный Package.bin"
-                )
-            for obj in _xdto_package(
-                root,
-                _read_artifact_bytes(collection, payload_artifact),
-                diagnostics,
-                artifact.source_path,
-                payload_artifact.source_path,
-            ):
-                if obj.full_name in extended_objects:
-                    raise ConversionError(
-                        f"дублируется extended object {obj.full_name}"
-                    )
-                extended_objects[obj.full_name] = obj
-        elif spec.extended_adapter == "bot":
-            obj = _bot(
-                root,
-                bot_module_addresses,
-                diagnostics,
-                artifact.source_path,
-            )
-            if obj.full_name in extended_objects:
-                raise ConversionError(f"дублируется extended object {obj.full_name}")
-            extended_objects[obj.full_name] = obj
-        elif spec.extended_adapter and spec.extended_adapter not in {
-            "bot",
-            "common_attribute",
-            "common_command",
-            "common_form",
-            "document_journal",
-            "event_subscription",
-            "exchange_plan",
-            "filter_criterion",
-            "http_service",
-            "scheduled_job",
-            "session_parameter",
-            "subsystem",
-            "xdto_package",
-        }:
-            raise ConversionError(
-                f"для {spec.source_name} не реализован adapter "
-                f"{spec.extended_adapter}"
-            )
+            adapter = _EXTENDED_ADAPTERS[spec.extended_adapter]
+            if adapter is not None:
+                # Объекты добавляются по одному, по мере выдачи адаптером:
+                # дубль сообщается раньше, чем адаптер разберёт следующий.
+                for obj in adapter(root, artifact, adapter_context):
+                    if obj.full_name in extended_objects:
+                        raise ConversionError(
+                            f"дублируется extended object {obj.full_name}"
+                        )
+                    extended_objects[obj.full_name] = obj
 
     predefined_ok = collection.predefined_available
     for artifact in collection.metadata:

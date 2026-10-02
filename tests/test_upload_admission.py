@@ -139,15 +139,27 @@ def test_upload_ограничен_до_body_и_не_занимает_пул_ч�
 
 @pytest.mark.parametrize("failure", ["parse", "write"])
 def test_ошибка_загрузки_освобождает_допуск(tmp_path, monkeypatch, failure):
-    from starlette.datastructures import UploadFile
 
     monkeypatch.setenv("API_TOKEN", "synthetic-read")
     monkeypatch.setenv("ADMIN_TOKEN", "synthetic-admin")
     monkeypatch.setattr(dashboard_backend, "_JOBS", [])
     if failure == "write":
-        async def failed_read(*args, **kwargs):
-            raise OSError("синтетический отказ диска")
-        monkeypatch.setattr(UploadFile, "read", failed_read)
+        from starlette import formparsers
+
+        real_spool = formparsers.SpooledTemporaryFile
+
+        # Перенос из spool идёт в рабочем потоке синхронным `read`, поэтому
+        # отказ диска моделируется на самом spool, а не на async-обёртке.
+        def failing_spool(*args, **kwargs):
+            result = real_spool(*args, **kwargs)
+
+            def failed_read(*args, **kwargs):
+                raise OSError("синтетический отказ диска")
+
+            result.read = failed_read
+            return result
+
+        monkeypatch.setattr(formparsers, "SpooledTemporaryFile", failing_spool)
 
     async def scenario():
         app = mcp_guard(Starlette(routes=routes(Registry(tmp_path / "data"))))
@@ -168,7 +180,6 @@ def test_ошибка_загрузки_освобождает_допуск(tmp_p
 @pytest.mark.parametrize("stage", ["multipart", "copy"])
 def test_отмена_приёма_закрывает_spool_и_удаляет_частичную_job(tmp_path, monkeypatch, stage):
     from starlette import formparsers
-    from starlette.datastructures import UploadFile
     from mcp1c import dashboard_runtime
 
     monkeypatch.setenv("API_TOKEN", "synthetic-read")
@@ -178,9 +189,23 @@ def test_отмена_приёма_закрывает_spool_и_удаляет_ч
     real_spool = formparsers.SpooledTemporaryFile
     real_mkdtemp = dashboard_runtime.tempfile.mkdtemp
 
+    copy_entered = Event()
+    copy_release = Event()
+
     def spool(*args, **kwargs):
         result = real_spool(*args, **kwargs)
         spools.append(result)
+        if stage == "copy":
+            real_read = result.read
+
+            # Перенос из spool идёт в рабочем потоке: пауза ставится на его
+            # синхронный `read`, чтобы отмена пришла посреди копирования.
+            def paused_read(*args, **kwargs):
+                copy_entered.set()
+                assert copy_release.wait(5)
+                return real_read(*args, **kwargs)
+
+            result.read = paused_read
         return result
 
     def directory(*args, **kwargs):
@@ -194,16 +219,13 @@ def test_отмена_приёма_закрывает_spool_и_удаляет_ч
     async def scenario():
         entered = asyncio.Event()
         never = asyncio.Event()
-        real_read = UploadFile.read
 
-        async def paused_read(file, *args, **kwargs):
-            if file.filename == "cancel.hbk":
-                entered.set()
-                await never.wait()
-            return await real_read(file, *args, **kwargs)
+        async def copy_started():
+            await asyncio.wait_for(asyncio.to_thread(copy_entered.wait, 2), 3)
+            entered.set()
 
         if stage == "copy":
-            monkeypatch.setattr(UploadFile, "read", paused_read)
+            watcher = asyncio.create_task(copy_started())
         app = mcp_guard(Starlette(routes=routes(Registry(tmp_path / "data"))))
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver", headers={"x-api-token": "synthetic-admin"}) as client:
             async def body():
@@ -220,8 +242,11 @@ def test_отмена_приёма_закрывает_spool_и_удаляет_ч
             assert busy.status_code == 409
             request.cancel()
             never.set()
+            copy_release.set()
             with pytest.raises(asyncio.CancelledError):
                 await request
+            if stage == "copy":
+                await watcher
             assert spools and all(file.closed for file in spools)
             assert all(not path.exists() for path in directories)
             assert dashboard_backend._JOBS == []

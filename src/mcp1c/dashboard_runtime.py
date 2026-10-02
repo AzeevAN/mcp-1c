@@ -312,6 +312,23 @@ def _json_error(message: str, status_code: int) -> JSONResponse:
 _REVISION_SALT = secrets.token_hex(16)
 
 
+def _copy_upload(source, target: Path, job: dict) -> int:
+    """Перенести принятый multipart-файл в каталог задания, соблюдая предел."""
+    source.seek(0)
+    size = 0
+    with target.open("wb") as output:
+        while True:
+            chunk = source.read(dashboard_backend.CHUNK)
+            if not chunk:
+                break
+            size += len(chunk)
+            job["size"] = size
+            if size > dashboard_backend.MAX_UPLOAD:
+                raise dashboard_backend._UploadTooLarge
+            output.write(chunk)
+    return size
+
+
 def _secure_cookie(request: Request) -> bool:
     """`Secure` нужен и за TLS proxy, даже если до backend дошла схема http.
 
@@ -769,14 +786,26 @@ def _spa_routes(
                 {"error": "Нужен токен чтения."},
                 status_code=401,
             )
-        snapshot = registry.snapshot()
-        metadata_objects = sum(
-            len(loaded.config) for loaded in snapshot.configurations.values()
-        )
-        code_corpora = sum(
-            source.kind in (KIND_MODULES, KIND_EXTENSION)
-            for source in snapshot.sources.values()
-        )
+        def counts() -> tuple[int, int, int, int]:
+            # `snapshot()` ждёт `_lock` Registry, который публикация держит и
+            # на fsync, — поэтому в потоке, а не в event loop.
+            snapshot = registry.snapshot()
+            return (
+                len(snapshot.configurations),
+                sum(len(loaded.config) for loaded in snapshot.configurations.values()),
+                sum(
+                    source.kind in (KIND_MODULES, KIND_EXTENSION)
+                    for source in snapshot.sources.values()
+                ),
+                len(snapshot.syntax_versions),
+            )
+
+        (
+            configurations,
+            metadata_objects,
+            code_corpora,
+            reference_sources,
+        ) = await run_in_threadpool(counts)
         return JSONResponse(
             {
                 "api_version": "v1",
@@ -792,10 +821,10 @@ def _spa_routes(
                     "session_level": _session_level(request),
                 },
                 "summary": {
-                    "configurations": len(snapshot.configurations),
+                    "configurations": configurations,
                     "metadata_objects": metadata_objects,
                     "code_corpora": code_corpora,
-                    "reference_sources": len(snapshot.syntax_versions),
+                    "reference_sources": reference_sources,
                 },
             }
         )
@@ -1022,7 +1051,9 @@ def _spa_routes(
         scope = payload.get("scope")
         if not isinstance(phrase, str) or not isinstance(scope, str):
             return _json_error("phrase и scope должны быть строками.", 422)
-        if scope != ANY_CONFIGURATION and scope not in registry.snapshot().configurations:
+        if scope != ANY_CONFIGURATION and scope not in (
+            await run_in_threadpool(registry.snapshot)
+        ).configurations:
             return _json_error("Неизвестная область псевдонима.", 422)
         try:
             removed = await run_in_threadpool(
@@ -1095,7 +1126,7 @@ def _spa_routes(
                 {"error": "Не указан source_id."}, status_code=400
             )
         for _ in range(2):
-            snapshot = registry.snapshot()
+            snapshot = await run_in_threadpool(registry.snapshot)
             code = snapshot.modules.get(source_id)
             source = (
                 code.source
@@ -1709,17 +1740,13 @@ def _spa_routes(
             directory = tempfile.mkdtemp()
             target = Path(directory) / name
             job = dashboard_backend._start_job(name, 0)
-            size = 0
-            with target.open("wb") as output:
-                while True:
-                    chunk = await uploaded.read(dashboard_backend.CHUNK)
-                    if not chunk:
-                        break
-                    size += len(chunk)
-                    job["size"] = size
-                    if size > dashboard_backend.MAX_UPLOAD:
-                        raise dashboard_backend._UploadTooLarge
-                    output.write(chunk)
+            # Копирование до 500 МБ из spool в файл — синхронный дисковый I/O.
+            # В event loop оно на медленном томе останавливало `/health` и MCP.
+            # Поток не прерывается отменой запроса: `finally` ниже закроет
+            # spool только после того, как копирование вернёт управление.
+            await run_in_threadpool(
+                _copy_upload, uploaded.file, target, job
+            )
             task = heavy.spawn(
                 heavy.run(
                     dashboard_backend._run_job,
@@ -1787,7 +1814,7 @@ def _spa_routes(
                     "Нельзя удалять конфигурацию во время операции intake.",
                     409,
                 )
-            snapshot = registry.snapshot()
+            snapshot = await run_in_threadpool(registry.snapshot)
             registry_target_exists = (
                 configuration in snapshot.configuration_names
                 or source_id in snapshot.sources
@@ -1820,7 +1847,9 @@ def _spa_routes(
                         service.purge_configuration,
                         configuration,
                     )
-                if service is not None and configuration not in registry.snapshot().configuration_names:
+                if service is not None and configuration not in (
+                    await run_in_threadpool(registry.snapshot)
+                ).configuration_names:
                     await run_in_threadpool(service.unbind_directory, configuration)
             except RegistryError as error:
                 return _json_error(str(error), 400)

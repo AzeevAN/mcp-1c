@@ -1458,12 +1458,12 @@ def _add_http_routes(
         # конфигураций — уже сведения о клиенте, кто у него внедрён и как
         # называются его доработки. Без токена отдаём только живость и
         # счётчики; с токеном — прежний ответ целиком.
-        return JSONResponse(
-            {
-                **tools.health(registry, detailed=can_read(request)),
-                "runtime_id": restart.runtime_id,
-            }
+        # `snapshot()` ждёт `_lock`, который публикация держит и на fsync;
+        # в event loop это остановило бы вместе с health и MCP-запросы.
+        body = await run_in_threadpool(
+            tools.health, registry, detailed=can_read(request)
         )
+        return JSONResponse({**body, "runtime_id": restart.runtime_id})
 
     @server.custom_route("/admin/reload", methods=["POST"])
     async def reload(request: Request) -> JSONResponse:
@@ -1485,13 +1485,14 @@ def _add_http_routes(
         # Состав источников называется тем же способом, что в `/health`:
         # иначе два ответа про одно и то же расходятся, и первым же
         # расхождением стала пустая строка вместо «справки платформы нет».
-        return JSONResponse(
-            {
+        def summary() -> dict:
+            return {
                 **tools.health(registry, detailed=True),
                 "messages": messages,
                 "dictionary": registry.dictionary.stats(),
             }
-        )
+
+        return JSONResponse(await run_in_threadpool(summary))
 
     compressed_sources = CompressedModuleCache()
 

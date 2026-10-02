@@ -10,6 +10,7 @@ import uuid
 import xml.etree.ElementTree as ET
 
 from form_core import check_managed_form, compile_managed_form
+from .xml_guard import FORBIDDEN_DECLARATION
 from .checker import (
     DATA_PROCESSOR_HANDLER_BLOCKERS,
     MAX_DATA_PROCESSOR_MODULE_BYTES,
@@ -31,7 +32,6 @@ LOGFORM = "http://v8.1c.ru/8.3/xcf/logform"
 _NAME = re.compile(r"^[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*$")
 _OBJECT_REF = re.compile(r"^(Справочник|РегистрСведений|Документ|Обработка|Отчет)\.([A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*)$")
 _FORMAT_VERSION = re.compile(r"^\d+\.\d+(?:\.\d+)*$")
-_FORBIDDEN_XML = re.compile(r"<!\s*(?:DOCTYPE|ENTITY)\b", re.I)
 _QNAME = re.compile(r"^([A-Za-z_][A-Za-z0-9_.-]*):[^\s:]+$")
 _FORM_ROLES = frozenset(
     {"object", "list", "choice", "record", "record_set"}
@@ -270,7 +270,7 @@ def _validate_form(
         )
     value["role"] = role
     form_xml = _text(value["form_xml"], f"{path}.form_xml")
-    if _FORBIDDEN_XML.search(form_xml):
+    if FORBIDDEN_DECLARATION.search(form_xml):
         _fail("forbidden_xml_declaration", f"{path}.form_xml", "DTD и ENTITY запрещены.")
     try:
         namespaces = {

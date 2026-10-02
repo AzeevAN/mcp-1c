@@ -47,7 +47,9 @@
 - Проверка DTD в `form_creator.py` приведена к строгой проверке
   `metadata_creator.py` (`<!\s*(DOCTYPE|ENTITY)\b`, без учёта регистра): раньше
   `<! ENTITY` обходила её и доходила до разборщика с невнятной ошибкой. Тест
-  прогоняет оба skill на одних и тех же входах.
+  прогоняет оба skill на одних и тех же входах. Регулярка DTD/ENTITY вынесена в
+  один `xml_guard.py` внутри каждого skill, а её копии в `decompiler.py`,
+  `checker.py` и `compiler.py` заменены импортом; тесты покрывают все эти места.
 
 #### Изменено
 
@@ -69,7 +71,7 @@
 
 - Мёртвый код skills, живший только за счёт тестов: `form_core/rules.py`,
   `form_core/terminology.py`, `form_core/__init__.load()` (импортировал
-  отсутствующий `.tools`), `metadata_core/rules.py`, `metadata_core/schema.py`,
+  отсутствующий `.tools`), `metadata_core/rules.py`,
   `platform_profiles_payload` и их тесты. CLI skills их не вызывает.
 
 ## [4.2.0] - 2026-10-01

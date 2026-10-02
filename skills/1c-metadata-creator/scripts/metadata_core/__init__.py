@@ -14,8 +14,10 @@ if str(_form_scripts) not in sys.path:
 
 from .checker import check_metadata_artifacts
 from .compiler import MetadataAuthoringContractError, compile_metadata_object
+from .schema import METADATA_SPECIFICATION_SCHEMA
 
 __all__ = [
+    "METADATA_SPECIFICATION_SCHEMA",
     "MetadataAuthoringContractError",
     "check_metadata_artifacts",
     "compile_metadata_object",

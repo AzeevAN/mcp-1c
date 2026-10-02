@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 
 import pytest
+from jsonschema import Draft202012Validator
 
 from form_core.compiler import compile_managed_form
 from metadata_core.checker import check_metadata_artifacts
@@ -10,6 +11,9 @@ from metadata_core.compiler import (
     MetadataAuthoringContractError,
     compile_metadata_object,
 )
+from metadata_core.schema import METADATA_SPECIFICATION_SCHEMA
+
+
 def _form_artifacts(*, with_local_attribute: bool = False) -> tuple[str, str]:
     attributes = [{
         "name": "Отчет",
@@ -89,6 +93,14 @@ def test_report_compile_and_exact_bundle_check():
     assert check_metadata_artifacts(
         compiled["object_ref"], compiled["format_version"], artifacts
     )["status"] == "passed"
+
+
+def test_report_schema_accepts_specification():
+    assert list(
+        Draft202012Validator(METADATA_SPECIFICATION_SCHEMA).iter_errors(
+            _specification()
+        )
+    ) == []
 
 
 def test_report_metadata_accepts_local_non_main_form_attribute():

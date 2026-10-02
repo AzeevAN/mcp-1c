@@ -85,3 +85,143 @@ def test_form_core_не_импортирует_отсутствующий_tools(
     import form_core
 
     assert not hasattr(form_core, "load")
+
+
+# --- общие помощники для проверок metadata_core / form_core ---
+
+def _data_processor_specification() -> dict[str, object]:
+    from form_core.compiler import compile_managed_form
+
+    owner = "Обработка.Импорт"
+    form = compile_managed_form({
+        "schema_version": 2,
+        "context": {"owner": owner, "role": "object"},
+        "form_name": "Форма",
+        "format_version": "2.20",
+        "title": {"ru": "Импорт"},
+        "attributes": [
+            {"name": "Объект", "type": {"kind": "metadata_object", "object": owner}, "main": True},
+            {"name": "Параметр", "type": {"kind": "string", "length": 100}},
+        ],
+        "elements": [{"kind": "input_field", "name": "Параметр", "data_path": "Параметр"}],
+        "commands": [],
+        "events": [],
+    })
+    return {
+        "schema_version": 1,
+        "object_ref": owner,
+        "format_version": "2.20",
+        "identity": "74000000-0000-0000-0000-000000000001",
+        "synonym": "Импорт",
+        "attributes": [],
+        "forms": [{
+            "name": "Форма",
+            "synonym": "Форма",
+            "role": "object",
+            "default": True,
+            "form_xml": form.artifacts[0].content,
+            "module_bsl": form.artifacts[1].content,
+        }],
+    }
+
+
+def _with_declaration(xml: str, declaration: str) -> str:
+    head, sep, tail = xml.partition("?>")
+    return head + sep + "\n" + declaration + tail
+
+
+_DECLARATIONS = ["<!DOCTYPE a>", "<! DOCTYPE a>", "<!doctype a>", "<! ENTITY x \"y\">", "<!\tENTITY x \"y\">"]
+
+
+@pytest.mark.parametrize("declaration", _DECLARATIONS)
+def test_metadata_compiler_отвергает_dtd_и_entity_в_form_xml(declaration: str) -> None:
+    from metadata_core.compiler import MetadataAuthoringContractError, compile_metadata_object
+
+    spec = _data_processor_specification()
+    spec["forms"][0]["form_xml"] = _with_declaration(spec["forms"][0]["form_xml"], declaration)
+
+    with pytest.raises(MetadataAuthoringContractError) as caught:
+        compile_metadata_object(spec)
+
+    assert caught.value.diagnostics[0]["code"] == "forbidden_xml_declaration"
+
+
+@pytest.mark.parametrize("declaration", _DECLARATIONS)
+def test_metadata_checker_отвергает_dtd_и_entity_в_артефактах(declaration: str) -> None:
+    from metadata_core.checker import check_metadata_artifacts
+    from metadata_core.compiler import compile_metadata_object
+
+    compiled = compile_metadata_object(_data_processor_specification())
+    artifacts = [dict(item) for item in compiled["artifacts"]]
+    form = next(item for item in artifacts if item["path"].endswith("Form.xml"))
+    form["content"] = _with_declaration(form["content"], declaration)
+
+    checked = check_metadata_artifacts(compiled["object_ref"], compiled["format_version"], artifacts)
+
+    assert checked["status"] == "failed"
+    assert "forbidden_xml_declaration" in {item["code"] for item in checked["diagnostics"]}
+
+
+@pytest.mark.parametrize(
+    ("declaration", "code"),
+    [
+        ("<!DOCTYPE a>", "doctype_forbidden"),
+        ("<! DOCTYPE a>", "doctype_forbidden"),
+        ("<!doctype a>", "doctype_forbidden"),
+        ("<! ENTITY x \"y\">", "entity_forbidden"),
+        ("<!\tENTITY x \"y\">", "entity_forbidden"),
+    ],
+)
+def test_form_decompiler_отвергает_dtd_и_entity(declaration: str, code: str) -> None:
+    from form_core.decompiler import decompile_managed_form
+
+    form_xml = _data_processor_specification()["forms"][0]["form_xml"]
+
+    result = decompile_managed_form(
+        _with_declaration(form_xml, declaration),
+        form_name="Форма",
+        context={"owner": "Обработка.Импорт", "role": "object"},
+    )
+
+    assert code in {item.code for item in result.diagnostics}
+
+
+# --- тексты инструкций ссылаются на команды CLI ---
+
+_STALE_TOOLS = ("check_metadata_artifacts", "check_managed_form", "compile_managed_form", "get_managed_form_rules")
+
+
+def test_validate_passed_называет_команду_form_creator() -> None:
+    from metadata_core.checker import check_metadata_artifacts
+    from metadata_core.compiler import compile_metadata_object
+
+    compiled = compile_metadata_object(_data_processor_specification())
+    checked = check_metadata_artifacts(compiled["object_ref"], compiled["format_version"], compiled["artifacts"])
+
+    assert checked["status"] == "passed"
+    text = " ".join(checked["instructions"])
+    assert "form_creator.py validate" in text
+    assert not any(name in text for name in _STALE_TOOLS)
+
+
+def test_неканоничный_form_xml_отсылает_к_form_creator_build() -> None:
+    from metadata_core.checker import check_metadata_artifacts
+    from metadata_core.compiler import MetadataAuthoringContractError, compile_metadata_object
+
+    spec = _data_processor_specification()
+    compiled = compile_metadata_object(spec)
+    spec["forms"][0]["form_xml"] += "\r\n"
+
+    with pytest.raises(MetadataAuthoringContractError) as caught:
+        compile_metadata_object(spec)
+    compiler_text = json.dumps(caught.value.diagnostics, ensure_ascii=False)
+    assert "form_creator.py build" in compiler_text
+    assert not any(name in compiler_text for name in _STALE_TOOLS)
+
+    artifacts = [dict(item) for item in compiled["artifacts"]]
+    form = next(item for item in artifacts if item["path"].endswith("Form.xml"))
+    form["content"] += "\r\n"
+    checked = check_metadata_artifacts(compiled["object_ref"], compiled["format_version"], artifacts)
+    checker_text = json.dumps(checked["diagnostics"], ensure_ascii=False)
+    assert "form_creator.py build" in checker_text
+    assert not any(name in checker_text for name in _STALE_TOOLS)

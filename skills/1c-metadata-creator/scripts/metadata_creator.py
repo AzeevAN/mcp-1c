@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
+from metadata_core.xml_guard import FORBIDDEN_DECLARATION
 from metadata_core import (
     MetadataAuthoringContractError,
     check_metadata_artifacts,
@@ -72,7 +73,7 @@ def _configuration(path: Path) -> tuple[str, str, str, ET.Element]:
     target = path / "Configuration.xml" if path.is_dir() else path
     raw = target.read_bytes()
     source = raw.decode("utf-8-sig")
-    if re.search(r"<!\s*(DOCTYPE|ENTITY)\b", source, re.I):
+    if FORBIDDEN_DECLARATION.search(source):
         raise ValueError("Configuration.xml: DTD/ENTITY запрещены")
     root = ET.fromstring(source)
     if _local(root.tag) != "MetaDataObject":

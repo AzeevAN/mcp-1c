@@ -74,3 +74,10 @@ def test_build_rejects_wrong_configuration_version_before_writing(tmp_path: Path
     assert built.returncode == 2
     assert "не совпадает" in built.stderr
     assert not output.exists()
+
+
+def test_skill_ставит_forms_workflow_до_metadata_compile() -> None:
+    description = (ROOT / "skills/1c-metadata-creator/SKILL.md").read_text(encoding="utf-8")
+    assert "1c-form-creator" in description
+    assert "Form.xml" in description
+    assert "metadata_creator.py build" in description

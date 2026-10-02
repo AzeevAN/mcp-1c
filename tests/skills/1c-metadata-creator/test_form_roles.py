@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 
 import pytest
+from jsonschema import Draft202012Validator
 
 from form_core.compiler import compile_managed_form
 from metadata_core.checker import (
@@ -11,6 +12,9 @@ from metadata_core.checker import (
 from metadata_core.compiler import (
     MetadataAuthoringContractError,
     compile_metadata_object,
+)
+from metadata_core.schema import (
+    METADATA_SPECIFICATION_SCHEMA,
 )
 
 
@@ -300,6 +304,9 @@ def test_catalog_object_list_choice_defaults_compile_and_check():
         _form("ФормаВыбора", "choice", default=True),
     ]
 
+    assert list(
+        Draft202012Validator(METADATA_SPECIFICATION_SCHEMA).iter_errors(specification)
+    ) == []
     compiled = compile_metadata_object(specification)
     descriptor = compiled["artifacts"][0]["content"]
 
@@ -342,6 +349,11 @@ def test_information_register_list_default_and_record_set_compile_and_check():
         _form("ФормаНабораЗаписей", "record_set", default=False),
     ]
 
+    assert list(
+        Draft202012Validator(METADATA_SPECIFICATION_SCHEMA).iter_errors(
+            specification
+        )
+    ) == []
     compiled = compile_metadata_object(specification)
     descriptor = compiled["artifacts"][0]["content"]
 
@@ -365,6 +377,18 @@ def test_information_register_record_set_cannot_be_default():
     specification["forms"] = [
         _form("ФормаНабораЗаписей", "record_set", default=True)
     ]
+
+    schema_errors = list(
+        Draft202012Validator(METADATA_SPECIFICATION_SCHEMA).iter_errors(
+            specification
+        )
+    )
+    assert len(schema_errors) == 1
+    assert any(
+        error.validator == "const"
+        and list(error.absolute_path)[-1:] == ["default"]
+        for error in schema_errors[0].context
+    )
 
     with pytest.raises(MetadataAuthoringContractError) as caught:
         compile_metadata_object(specification)

@@ -15,6 +15,7 @@ from .metadata_types import (
     metadata_reference_registry_ref,
 )
 from .models import FormsContractError, managed_form_to_spec, parse_managed_form_spec
+from .xml_guard import FORBIDDEN_DOCTYPE as _FORBIDDEN_DOCTYPE, FORBIDDEN_ENTITY as _FORBIDDEN_ENTITY
 from .version_catalog import (
     form_format_compatibility_note,
     normalized_form_format,
@@ -37,8 +38,6 @@ _DATA_PATH = re.compile(
     r"[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*"
     r"(?:\.[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё0-9_]*)*\Z"
 )
-_FORBIDDEN_DOCTYPE = re.compile(r"<!\s*DOCTYPE\b", re.IGNORECASE)
-_FORBIDDEN_ENTITY = re.compile(r"<!\s*ENTITY\b", re.IGNORECASE)
 _SINGLETON_TAGS = frozenset(
     {
         "Title",

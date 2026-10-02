@@ -3,7 +3,6 @@
 Формат выгрузки определяется раскладкой (разведка, раздел 6): иерархическая
 даёт `.bsl` и `Form.xml`, плоская — `.txt` и контейнеры `.Form`.
 """
-from pathlib import Path
 
 import pytest
 
@@ -12,7 +11,6 @@ from mcp1c.intake import (
     FORMAT_TREE,
     detect_format,
     is_wanted,
-    safe_target,
     SELECTION_VERSION,
 )
 
@@ -140,17 +138,6 @@ def test_канонический_макет_исключён_но_настоя�
     assert not is_wanted("Catalogs/Пример.Template.txt", FORMAT_FLAT)
     assert is_wanted("Catalogs/Пример.template.txt", FORMAT_FLAT)
     assert is_wanted("Catalogs/Пример.Module.txt", FORMAT_FLAT)
-
-
-def test_член_с_выходом_наружу_отвергается(tmp_path):
-    for имя in ("../наружу.bsl", "/абсолютный.bsl", "a/../../наружу.bsl"):
-        assert safe_target(имя, tmp_path) is None, имя
-
-
-def test_обычный_член_ложится_внутрь_корня(tmp_path):
-    цель = safe_target("Catalogs/Товары/Ext/ObjectModule.bsl", tmp_path)
-    assert цель is not None
-    assert tmp_path in цель.parents
 
 
 def test_ресурсная_вилка_finder_отвергается():

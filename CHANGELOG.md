@@ -661,6 +661,14 @@
 
 #### Удалено
 
+- `intake.planned_size`, `intake.enough_space`, `intake.extract`,
+  `intake.safe_target` и резерв места под индекс (`INDEX_RESERVE*`) — план
+  места и распаковка ZIP в `data/modules` для удалённого приёма кода
+  отдельно от структуры; их звали только юнит-тесты и
+  `tools/lab/measure_intake_run.py`, который мерил этот уже несуществующий
+  путь и удалён вместе с ними. Отбор (`карта_архива`, `_отобранные_записи`),
+  которым bootstrap узнаёт выгрузку в файлы, остался; его тесты обёртки,
+  дублей, опасных путей и мусора Finder переписаны на сам отбор.
 - Мёртвый код skills, живший только за счёт тестов: `form_core/rules.py`,
   `form_core/terminology.py`, `form_core/__init__.load()` (импортировал
   отсутствующий `.tools`), `metadata_core/rules.py`,

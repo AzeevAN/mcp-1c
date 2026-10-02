@@ -241,7 +241,11 @@ class V8Container:
                     )
 
             start = addr + BLOCK_HEADER_SIZE
-            chunk = self._data[start : start + block_size]
+            # Копируется не больше, чем документу ещё недостаёт: block_size из
+            # заголовка может указывать за конец файла, и тогда каждый
+            # маленький документ копировал бы весь хвост до EOF.
+            wanted = min(block_size, total - collected)
+            chunk = self._data[start : start + wanted]
             chunks.append(bytes(chunk))
             collected += len(chunk)
             if collected > self._limits.max_entry_bytes:
@@ -277,7 +281,7 @@ class V8Container:
         seen_attrs: set[int] = set()
         for offset in range(0, len(table), 12):
             attrs_addr, data_addr, _ = struct.unpack_from("<III", table, offset)
-            if attrs_addr == EMPTY_ADDR:
+            if attrs_addr in (EMPTY_ADDR, 0):
                 continue
             if attrs_addr in seen_attrs:
                 raise V8ContainerError(

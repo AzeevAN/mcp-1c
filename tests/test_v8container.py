@@ -136,3 +136,62 @@ def test_атрибуты_записей_расходуют_бюджет_кон�
     with V8Container(raw) as container:
         assert len(container) == 10
         assert container.read("entry3") == b"x"
+
+
+def _oversized_blocks_container(entries: int, tail_bytes: int) -> bytes:
+    """Атрибуты на разных адресах, но каждый блок заявляет block_size 0x1FFFFFFF.
+
+    doc_size честный (несколько десятков байт), а длина блока указывает за
+    конец файла: без обрезки по doc_size каждая запись копировала бы весь
+    хвост до EOF.
+    """
+    table_size = 12 * entries
+    cursor = HEADER_SIZE + BLOCK_HEADER_SIZE + table_size
+    blocks = []
+    addresses = []
+    for index in range(entries):
+        attrs = b"\x00" * 20 + f"e{index}".encode("utf-16-le") + b"\x00\x00"
+        block = (
+            b"\r\n"
+            + f"{len(attrs):08x} {0x1FFFFFFF:08x} {EMPTY_ADDR:08x}".encode("ascii")
+            + b" \r\n"
+            + attrs
+        )
+        addresses.append(cursor)
+        cursor += len(block)
+        blocks.append(block)
+    from module_samples import _block
+
+    table = b"".join(struct.pack("<III", address, EMPTY_ADDR, 0) for address in addresses)
+    return header() + _block(table) + b"".join(blocks) + b"\0" * tail_bytes
+
+
+def test_длина_блока_за_пределом_документа_не_копирует_хвост():
+    import time
+
+    raw = _oversized_blocks_container(entries=1000, tail_bytes=50 * 1024 * 1024)
+    started = time.perf_counter()
+    with V8Container(raw) as container:
+        assert len(container) == 1000
+        assert container.namelist()[7] == "e7"
+        # Бюджет списан по реально скопированным байтам атрибутов, не по хвосту.
+        assert container._budget.read_total < 1000 * 64
+    assert time.perf_counter() - started < 2.0
+
+
+def test_нулевой_адрес_атрибутов_пропускается_как_пустой():
+    from module_samples import _block
+
+    raw = v8_container_bytes([("first", b"1")])
+    # Две записи с attrs_addr == 0: это «пусто», а не повтор адреса.
+    table_start = HEADER_SIZE + BLOCK_HEADER_SIZE
+    first = raw[table_start : table_start + 12]
+    attrs_addr, data_addr, _ = struct.unpack("<III", first)
+    table = first + struct.pack("<III", 0, 0, 0) * 2
+    shift = 24
+    table = struct.pack("<III", attrs_addr + shift, data_addr + shift, 0) + table[12:]
+    rebuilt = header() + _block(table) + raw[table_start + 12 :]
+
+    with V8Container(rebuilt) as container:
+        assert container.namelist() == ["first"]
+        assert container.read("first") == b"1"

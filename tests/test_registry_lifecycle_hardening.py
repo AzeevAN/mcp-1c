@@ -387,3 +387,25 @@ def test_reload_пересобирает_застрявший_неготовый
     restarted.startup()
     assert restarted.wait_for_module_builds(timeout=30)
     assert restarted.modules[source.id].готов
+
+
+def test_cli_reg_add_проходит_страховку_startup(tmp_path, capsys):
+    from mcp1c.cli import main
+
+    registry, _first = _blocked_generation_registry(tmp_path)
+    registry_before = registry.registry_path.read_bytes()
+    wal_before = registry.generation_recovery_path.read_bytes()
+    incoming = tmp_path / "cli-input"
+    incoming.mkdir()
+    archive = write_export(incoming, build_configuration(name="Другая"))
+
+    code = main(["reg-add", str(archive), "--data", str(registry.data_dir)])
+
+    assert code == 2
+    assert "только для чтения" in capsys.readouterr().err
+    assert registry.registry_path.read_bytes() == registry_before
+    assert registry.generation_recovery_path.read_bytes() == wal_before
+
+    registry.generation_recovery_path.unlink()
+    assert main(["reg-add", str(archive), "--data", str(registry.data_dir)]) == 0
+    assert "Другая" in _rows(Registry(registry.data_dir))

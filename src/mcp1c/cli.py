@@ -128,6 +128,10 @@ def _cmd_find(args: argparse.Namespace) -> int:
 
 
 def _registry(args: argparse.Namespace) -> Registry:
+    # Только startup разбирает журналы прерванных операций и ведёт поколение
+    # восстановления. Голый restore() пропускал WAL, а фоновая сборка кода
+    # считала такой частичный снимок завершённым и могла сохранить его в
+    # registry.json.
     registry = Registry(args.data)
     for message in registry.startup():
         print(f"  {message}", file=sys.stderr)
@@ -146,8 +150,7 @@ def _registry_for_code(args: argparse.Namespace) -> Registry:
 
 
 def _cmd_reg_add(args: argparse.Namespace) -> int:
-    registry = Registry(args.data)
-    registry.restore()
+    registry = _registry(args)
     path = Path(args.path)
     suffix = path.suffix.lower()
     if suffix == ".hbk":
@@ -394,8 +397,7 @@ def _cmd_dict_synonyms(args: argparse.Namespace) -> int:
 
 
 def _cmd_dict_alias(args: argparse.Namespace) -> int:
-    registry = Registry(args.data)
-    registry.restore()
+    registry = _registry(args)
 
     if args.remove:
         removed = registry.dictionary.remove_alias(args.phrase, args.config)

@@ -1404,53 +1404,10 @@ class Registry:
                     ),
                     progress=loaded.прогресс if loaded is not None else (0, 0),
                 )
-            fingerprint = (
-                tuple((name, id(loaded)) for name, loaded in configurations.items()),
-                id(self.syntax) if self.syntax is not None else None,
-                tuple(
-                    (
-                        platform,
-                        id(self.syntax_versions[platform]),
-                        syntax_versions[platform],
-                    )
-                    for platform in syntax_versions
-                ),
-                tuple(
-                    (source.id, id(source), sources[source.id])
-                    for source in source_objects
-                ),
-                tuple(
-                    (
-                        source_id,
-                        id(loaded),
-                        id(loaded.source),
-                        SourceSnapshot.capture(loaded.source),
-                        loaded.готов,
-                        loaded.этап,
-                        loaded.название_этапа,
-                        loaded.прогресс,
-                    )
-                    for source_id, loaded in loaded_modules.items()
-                ),
-                tuple(
-                    (
-                        name,
-                        id(loaded),
-                        id(loaded.source),
-                        runtime[name].source,
-                        loaded.snapshot,
-                    )
-                    for name, loaded in sorted(self.extension_runtime.items())
-                ),
-                tuple(
-                    (
-                        key,
-                        generation.pointer,
-                        generation.manifest,
-                    )
-                    for key, generation in generations.items()
-                ),
-            )
+            # Тот же вызов, что и в `snapshot_is_current`, под тем же `_lock`:
+            # вторая копия набора полей разошлась бы с первой молча при
+            # добавлении поля — вечные отказы CAS или пропуск устаревшего.
+            fingerprint = self._snapshot_fingerprint_locked()
             return RegistrySnapshot(
                 configurations=MappingProxyType(configurations),
                 syntax_versions=MappingProxyType(syntax_versions),

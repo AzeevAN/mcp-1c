@@ -128,3 +128,49 @@ def test_scanner_атомарно_занимает_единственный_сл
     assert len(запущенные) == 1
     assert отклонённые == [(запущенные[0],)]
     assert scanner.running == frozenset(запущенные)
+
+
+def test_отпечаток_snapshot_совпадает_с_cas_после_разных_операций(tmp_path):
+    """CAS сравнивает отпечаток снимка с ``_snapshot_fingerprint_locked``.
+
+    Две независимые реализации одного набора полей расходились бы молча при
+    добавлении поля в одну из них: вечные отказы CAS или пропуск устаревшего.
+    """
+    from test_intake_v2_registry import _manifest
+
+    from conftest import build_configuration, write_export, write_syntax
+
+    registry = Registry(tmp_path / "data")
+    exports = tmp_path / "exports"
+    exports.mkdir()
+
+    def сверить() -> None:
+        snapshot = registry.snapshot()
+        with registry._lock:
+            assert snapshot._fingerprint == registry._snapshot_fingerprint_locked()
+        assert registry.snapshot_is_current(snapshot)
+
+    сверить()
+    registry.add_configuration(write_export(exports, build_configuration()))
+    сверить()
+    registry.add_syntax(write_syntax(exports))
+    сверить()
+    manifest, payloads = _manifest(tmp_path, "generation-001")
+    registry.publish_generation(registry.stage_generation(manifest, payloads))
+    сверить()
+    registry.sources["ТестоваяКонфигурация:modules"] = Source(
+        id="ТестоваяКонфигурация:modules", kind=KIND_MODULES
+    )
+    сверить()
+    registry.remove("ТестоваяКонфигурация:modules")
+    сверить()
+
+
+def test_snapshot_берёт_отпечаток_у_единственной_реализации(tmp_path, monkeypatch):
+    registry = Registry(tmp_path / "data")
+    маркер = ("единственная реализация",)
+    monkeypatch.setattr(
+        registry, "_snapshot_fingerprint_locked", lambda: маркер
+    )
+
+    assert registry.snapshot()._fingerprint is маркер

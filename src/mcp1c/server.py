@@ -755,16 +755,15 @@ MODULE_DOWNLOAD_INSTRUCTION = (
 )
 
 
-def build_server(
+def _startup_dependencies(
     registry: Registry,
-    name: str = "mcp1c",
     *,
-    transport: Literal["streamable-http", "stdio"] = "streamable-http",
-    reference: ReferenceService | None = None,
-    restart: RestartController | None = None,
-    enabled_capabilities: tuple[str, ...] | None = None,
-    capability_runtime: CapabilityRuntime | None = None,
-) -> MCP1CServer:
+    reference: ReferenceService | None,
+    restart: RestartController | None,
+    enabled_capabilities: tuple[str, ...] | None,
+    capability_runtime: CapabilityRuntime | None,
+) -> tuple[ReferenceService, RestartController, tuple[str, ...], CapabilityRuntime]:
+    """Зависимости сервера по умолчанию и сверка capability-набора."""
     if reference is None:
         reference = ReferenceService.discover(registry.data_dir)
     if restart is None:
@@ -783,21 +782,11 @@ def build_server(
         raise CapabilityContractError(
             "Активный capability-набор не совпадает со startup-настройкой."
         )
-    module_download_available = (
-        "module_source_download" in enabled_capabilities
-        and transport == "streamable-http"
-    )
-    server = MCP1CServer(
-        name=name,
-        title="Структура конфигураций 1С",
-        instructions=(
-            INSTRUCTIONS + "\n\n" + MODULE_DOWNLOAD_INSTRUCTION
-            if module_download_available else INSTRUCTIONS
-        ),
-        version=__version__,
-    )
-    download_tickets = ModuleDownloadTickets()
+    return reference, restart, enabled_capabilities, capability_runtime
 
+
+def _register_overview_and_code_tools(server: MCP1CServer, registry: Registry) -> None:
+    """Обзор конфигураций и расширений, поиск объектов и код процедур."""
     @server.tool(
         description=(
             "Какие конфигурации 1С загружены, на какой платформе и что по ним "
@@ -929,6 +918,15 @@ def build_server(
             registry, address, config, extension, start_line, lines
         )
 
+
+def _register_module_source_tool(
+    server: MCP1CServer,
+    registry: Registry,
+    download_tickets: ModuleDownloadTickets,
+    *,
+    available: bool,
+) -> None:
+    """Ссылка на полный модуль — только когда скачивание включено и есть HTTP."""
     module_source_tool_description = (
             "Выдать ссылку на полный исходный текст одного точного модуля BSL "
             "из загруженной конфигурации как gzip-файл. Используйте, когда "
@@ -994,9 +992,14 @@ def build_server(
             ),
         }, ensure_ascii=False)
 
-    if module_download_available:
+    if available:
         server.tool(description=module_source_tool_description)(get_module_source_file)
 
+
+def _register_callers_object_and_syntax_tools(
+    server: MCP1CServer, registry: Registry
+) -> None:
+    """Вызовы процедуры, структура и связи объектов, сравнение, справка."""
     @server.tool(
         description=(
             "Кто вызывает точную процедуру: подтверждённые места в коде с "
@@ -1159,6 +1162,13 @@ def build_server(
     ) -> str:
         return tools.get_syntax(registry, name, config, detail, links_offset)
 
+
+def _register_role_tools(
+    server: MCP1CServer,
+    registry: Registry,
+    enabled_capabilities: tuple[str, ...],
+) -> None:
+    """Инструменты ролей: регистрируются выключенными и включаются по набору."""
     @_expected_role_errors
     def find_roles_for_access(
         full_name: Annotated[str, Field(
@@ -1297,6 +1307,13 @@ def build_server(
         enabled="role_access" in enabled_capabilities,
     )
 
+
+def _register_reference_tools(
+    server: MCP1CServer,
+    reference: ReferenceService,
+    enabled_capabilities: tuple[str, ...],
+) -> None:
+    """Общая справка: только при включённой capability и проверенном пакете."""
     if "reference" in enabled_capabilities:
         if reference.provider is None:
             raise CapabilityContractError(
@@ -1429,6 +1446,58 @@ def build_server(
                     content=[TextContent(type="text", text=message)],
                     structured_content={"result": message}, is_error=True,
                 )
+
+
+def build_server(
+    registry: Registry,
+    name: str = "mcp1c",
+    *,
+    transport: Literal["streamable-http", "stdio"] = "streamable-http",
+    reference: ReferenceService | None = None,
+    restart: RestartController | None = None,
+    enabled_capabilities: tuple[str, ...] | None = None,
+    capability_runtime: CapabilityRuntime | None = None,
+) -> MCP1CServer:
+    """Собрать MCP-сервер: инструменты, их порядок и HTTP-маршруты.
+
+    Порядок регистрации инструментов — порядок `tools/list`, то есть часть
+    публичного контракта и замера контекста; помощники ниже вызываются в
+    том же порядке, в каком инструменты объявлялись в одной функции.
+    """
+    reference, restart, enabled_capabilities, capability_runtime = (
+        _startup_dependencies(
+            registry,
+            reference=reference,
+            restart=restart,
+            enabled_capabilities=enabled_capabilities,
+            capability_runtime=capability_runtime,
+        )
+    )
+    module_download_available = (
+        "module_source_download" in enabled_capabilities
+        and transport == "streamable-http"
+    )
+    server = MCP1CServer(
+        name=name,
+        title="Структура конфигураций 1С",
+        instructions=(
+            INSTRUCTIONS + "\n\n" + MODULE_DOWNLOAD_INSTRUCTION
+            if module_download_available else INSTRUCTIONS
+        ),
+        version=__version__,
+    )
+    download_tickets = ModuleDownloadTickets()
+
+    _register_overview_and_code_tools(server, registry)
+    _register_module_source_tool(
+        server,
+        registry,
+        download_tickets,
+        available=module_download_available,
+    )
+    _register_callers_object_and_syntax_tools(server, registry)
+    _register_role_tools(server, registry, enabled_capabilities)
+    _register_reference_tools(server, reference, enabled_capabilities)
 
     server.add_capability_modules(
         load_capability_modules(enabled_capabilities)

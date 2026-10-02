@@ -610,6 +610,19 @@ class DurableCandidateStore:
     def remove_job(self, job_id: str) -> None:
         self._remove(self.jobs_dir, job_id)
 
+    def job_modified_at(self, job_id: str) -> float:
+        """Время последней записи job (`mtime` её файла), секунды эпохи.
+
+        Отдельного поля времени в записи нет; запись переписывается на каждом
+        переходе, так что у FAILED-job это время отказа.
+        """
+        try:
+            return self._path(self.jobs_dir, job_id).lstat().st_mtime
+        except FileNotFoundError:
+            raise KeyError(job_id) from None
+        except OSError as error:
+            raise CandidateStoreError("candidate store недоступен") from error
+
     def scan_jobs(self) -> tuple[tuple[CandidateJob, ...], tuple[UnreadableJob, ...]]:
         """Прочитать все job, отделив нечитаемые записи от остальных.
 

@@ -471,3 +471,50 @@ def test_incoming_state_пишется_атомарно_и_забывает_уд
     assert state_path.read_bytes() == written
     assert before != written
     assert not [p for p in state_path.parent.iterdir() if p.name.endswith(".tmp")]
+
+
+def test_старт_удаляет_старые_failed_job_без_кандидата(tmp_path):
+    """FAILED-job, упавшая до probe, не держит ни конфигурацию, ни кандидата:
+    снять её нечем, и без срока хранения такие записи копятся вечно. Job с
+    доказанным кандидатом остаётся — её диагностика нужна, а снимает её
+    удаление конфигурации."""
+    from mcp1c.intake_v2_lifecycle import FAILED_UNPROBED_JOB_RETENTION_SECONDS
+
+    managed, browser, records, operations = _backend(tmp_path)
+    incoming = tmp_path / "incoming"
+    _write_zip(incoming / "extension.zip", _extension())
+    _write_zip(incoming / "configuration.zip", _archive_descriptor())
+    lifecycle = IntakeLifecycle(
+        CandidateCatalog(managed / "catalog"),
+        browser,
+        operations,
+        incoming_root=incoming,
+    )
+    by_kind = {
+        candidate.probe.source_kind.value: candidate.candidate_id
+        for candidate in lifecycle.refresh().candidates
+    }
+    # Кандидат расширения так и не прошёл probe ни в одной job.
+    for job_id in ("job-old", "job-fresh"):
+        operations.create_job(job_id, by_kind["extension"])
+        operations.fail(job_id, OperationError("архив изменился до probe"))
+    lifecycle.start("job-probed", by_kind["configuration"])
+    operations.fail("job-probed", OperationError("отменено"))
+    # Диагностика request прежней job удаляется вместе с ней.
+    request = operations.requests_dir / "job-old.json"
+    request.write_text("{}", encoding="utf-8")
+    old = time.time() - FAILED_UNPROBED_JOB_RETENTION_SECONDS - 60
+    for job_id in ("job-old", "job-probed"):
+        os.utime(records.jobs_dir / f"{job_id}.json", (old, old))
+
+    restarted = IntakeLifecycle(
+        lifecycle.catalog,
+        lifecycle.browser,
+        IntakeCoordinator(operations.root, records),
+        incoming_root=lifecycle.incoming_root,
+    )
+
+    remaining = {job.job_id for job in restarted.operations.records.list_jobs()}
+    assert remaining == {"job-fresh", "job-probed"}
+    assert not request.exists()
+    assert FAILED_UNPROBED_JOB_RETENTION_SECONDS == 30 * 24 * 3600

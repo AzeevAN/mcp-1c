@@ -14,6 +14,7 @@ import logging
 import os
 import stat
 import threading
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -59,6 +60,11 @@ _INTERRUPTED_JOB_ERROR = (
     "операция прервана перезапуском сервиса; "
     "автоматическое возобновление не выполняется"
 )
+# Срок хранения FAILED-job, упавшей до probe. У такой job нет записи
+# кандидата, а значит и конфигурации: её не снимает ни удаление
+# конфигурации, ни (для incoming и каталогов) удаление ZIP. Месяц — с
+# запасом, чтобы администратор успел прочитать причину отказа.
+FAILED_UNPROBED_JOB_RETENTION_SECONDS = 30 * 24 * 3600
 
 
 class LifecycleError(RuntimeError):
@@ -412,6 +418,7 @@ class IntakeLifecycle:
         self.directory_settle_seconds = float(directory_settle_seconds)
         self._lock = threading.RLock()
         self._fail_interrupted_jobs()
+        self._expire_unprobed_failed_jobs()
 
     def _fail_interrupted_jobs(self) -> None:
         """Закрыть jobs прежнего процесса до приёма новых операций.
@@ -446,6 +453,46 @@ class IntakeLifecycle:
                         "Не удалось закрыть прерванную job %s: %s", job.job_id, error
                     )
                     continue
+
+    def _expire_unprobed_failed_jobs(self) -> None:
+        """Удалить FAILED-job старше срока, упавшие до probe.
+
+        Признак «до probe» — нет записи кандидата: её пишет только успешный
+        probe, и без неё у job нет identity, то есть конфигурации. Job с
+        кандидатом не трогаем: её причина отказа нужна при разборе, а снимает
+        её удаление конфигурации. Вместе с job уходят её request, preview и
+        work. Уборка расходная: сбой на одной записи не мешает старту и
+        повторится на следующем.
+        """
+        log = logging.getLogger(__name__)
+        with self._lock:
+            records = self.operations.records
+            jobs, _broken = records.scan_jobs()
+            deadline = time.time() - FAILED_UNPROBED_JOB_RETENTION_SECONDS
+            for job in jobs:
+                if job.state is not CandidateJobState.FAILED:
+                    continue
+                try:
+                    records.load_candidate(job.candidate_id)
+                    continue
+                except KeyError:
+                    pass
+                except CandidateStoreError:
+                    # Нечитаемая запись кандидата — не доказательство, что
+                    # его нет: оставляем job до ручного разбора.
+                    continue
+                try:
+                    if records.job_modified_at(job.job_id) > deadline:
+                        continue
+                    self.operations.remove_job(job.job_id)
+                except KeyError:
+                    continue
+                except (CandidateStoreError, OperationError) as error:
+                    log.warning(
+                        "Не удалось удалить устаревшую failed job %s: %s",
+                        job.job_id,
+                        error,
+                    )
 
     @staticmethod
     def _issue(source_id: str, origin_name: str, error: Exception) -> DiscoveryIssue:

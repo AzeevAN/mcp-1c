@@ -119,6 +119,21 @@ def test_гость_не_публикует_поколение_и_не_сним�
         _stop(server)
 
 
+def test_гость_не_удаляет_осиротевшие_каталоги_кода(tmp_path):
+    from test_registry_code_dir_sweep import _сироты
+
+    data = tmp_path / "data"
+    data.mkdir()
+    server = _start_server(data)
+    try:
+        # Сироты появились уже после старта владельца: убирать их — его дело.
+        сироты = _сироты(data)
+        Registry(data).startup()
+        assert all(путь.is_dir() for путь in сироты.values())
+    finally:
+        _stop(server)
+
+
 def test_операция_сервера_перечитывает_чужой_registry_json(tmp_path):
     incoming = tmp_path / "input"
     incoming.mkdir()

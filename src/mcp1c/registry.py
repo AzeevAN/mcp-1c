@@ -5668,6 +5668,37 @@ class Registry:
             if path.is_dir():
                 shutil.rmtree(path, ignore_errors=True)
 
+    def _подмести_осиротевшие_каталоги_кода(self) -> None:
+        """Дочистить `.<имя>.retired-*` и `.<имя>.tmp-*` в modules/ и extensions/.
+
+        `.retired-*` уже отвязан от реестра операцией `remove` и остаётся,
+        только если процесс погиб до `rmtree`; `.tmp-*` — от рокировки
+        прежнего приёма кода. Раньше их подбирал следующий `add_modules`,
+        которого больше нет. `.<имя>.old-*` не трогаем: это отставленная
+        копия после отказа отката, и удалить её — решение человека.
+        Вызывается только владельцем под `_modules_cache_lock`: гость
+        не убирает за живым сервером.
+        """
+        корни = [self.modules_dir, self.extensions_dir]
+        try:
+            корни += [
+                каталог
+                for каталог in self.extensions_dir.iterdir()
+                if каталог.is_dir() and not каталог.is_symlink()
+            ]
+        except OSError:
+            pass
+        for корень in корни:
+            try:
+                кандидаты = tuple(корень.glob(".*.retired-*")) + tuple(
+                    корень.glob(".*.tmp-*")
+                )
+            except OSError:
+                continue
+            for path in кандидаты:
+                if path.is_dir() and not path.is_symlink():
+                    shutil.rmtree(path, ignore_errors=True)
+
     def wait_for_module_builds(self, timeout: float = 90.0) -> bool:
         """Дождаться фоновых индексов кода, но не дольше ``timeout`` секунд.
 
@@ -5752,6 +5783,10 @@ class Registry:
             try:
                 module_messages = self._восстановить_рокировку_кода()
                 self._подмести_временный_кэш_модулей()
+                if not module_messages:
+                    # Только после доказанного восстановления: `.tmp-*`
+                    # неразобранной рокировки ещё нужен человеку.
+                    self._подмести_осиротевшие_каталоги_кода()
             finally:
                 self._modules_cache_lock.release()
             # Без попытки восстановления прежний вердикт не меняется.

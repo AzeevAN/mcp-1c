@@ -188,6 +188,10 @@ class _ModuleOperationCancelled(RegistryError):
     """Устаревший foreground add/reparse отменён новым поколением."""
 
 
+class _NativeGenerationActive(RegistryError):
+    """Bootstrap не заменяет schema-v1 файлом уже активное native-поколение."""
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -1704,6 +1708,7 @@ class Registry:
         known_origin: str = "",
         allow_truncated: bool = False,
         source_transport: CandidateTransport = CandidateTransport.LOCAL_FILE,
+        replace_native: bool = True,
     ) -> Source:
         source_path = Path(path)
         # При restore сохранённая строка registry.json — ожидание, а не
@@ -1734,6 +1739,11 @@ class Registry:
             revision = self._configuration_revisions.get(config.name, 0)
             previous = self.active_generation_pointer(identity)
             active = self.active_generation(identity)
+        if previous is not None and not replace_native:
+            raise _NativeGenerationActive(
+                f"{source_path.name}: у конфигурации «{config.name}» уже есть "
+                "активное native-поколение; файл schema v1 его не заменяет."
+            )
         if previous is not None and active is not None:
             return self._replace_native_base(
                 config,
@@ -5997,7 +6007,7 @@ class Registry:
         if not self.bootstrap_dir.exists():
             return added
 
-        known = {s.sha256 for s in self.sources.values()}
+        known = self._bootstrap_known_sha256()
         справок = 0
         for path in sorted(self.bootstrap_dir.rglob("*")):
             if not path.is_file():
@@ -6018,17 +6028,43 @@ class Registry:
                 continue
             try:
                 if suffix == ".zip":
-                    source = self.add_configuration(path)
+                    # После native-публикации legacy-строка A снята, и её sha
+                    # из `known` пропадает. Повтор A поверх B_FULL на каждом
+                    # старте публиковал бы A_ONLY и терял код, формы и роли:
+                    # bootstrap наполняет пустой реестр, а не заменяет
+                    # поколение, которое человек опубликовал явно.
+                    source = self.add_configuration(path, replace_native=False)
                 else:
                     source = self.add_syntax(path, rebuild=False)
                     справок += 1
                 added.append(source.id)
+            except _NativeGenerationActive:
+                continue
             except Exception as error:
                 added.append(f"{path.name}: ОШИБКА — {error}")
 
         if справок:
             self._apply_syntax(dict(self.syntax_versions))
         return added
+
+    def _bootstrap_known_sha256(self) -> set[str]:
+        """Sha исходников, уже представленных строками или native-поколениями.
+
+        Native Source не дублируется строкой ``sources``, поэтому его исходник
+        узнаётся только по ``raw_sha256`` manifest, активации и слоёв.
+        """
+        with self._lock:
+            known = {source.sha256 for source in self.sources.values()}
+            for manifest in self._generation_manifests.values():
+                known.add(manifest.raw_sha256)
+                for layer in manifest.layers:
+                    if layer.provenance is not None:
+                        known.add(layer.provenance.raw_sha256)
+            for pointer in self._generation_pointers.values():
+                if pointer.activation is not None:
+                    known.add(pointer.activation.main.raw_sha256)
+        known.discard("")
+        return known
 
     def _syntax_index_dir(self) -> Path:
         return self.index_dir / "syntax"

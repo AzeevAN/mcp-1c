@@ -49,6 +49,8 @@ services:
       # Публичный origin для выдачи ссылки на gzip-файл полного модуля.
       MCP1C_PUBLIC_BASE_URL: ${MCP1C_PUBLIC_BASE_URL:-}
       MCP1C_ALLOW_SELF_RESTART: ${MCP1C_ALLOW_SELF_RESTART:-1}
+      # Пусто — дефолт 16 ГиБ распакованного на ZIP полной выгрузки.
+      MCP1C_INTAKE_MAX_UNPACKED: ${MCP1C_INTAKE_MAX_UNPACKED:-}
     logging:
       driver: json-file
       options:

@@ -42,7 +42,7 @@ from .intake_v2_transport import (
     open_export_tree,
 )
 from .config_sources import ConfigSourceError, source_path
-from .resource_limits import ARCHIVE_LIMITS, ResourceLimits
+from .resource_limits import ARCHIVE_LIMITS, ResourceLimits, intake_archive_limits
 
 
 _FORMAT_VERSION = 1
@@ -370,6 +370,7 @@ class IntakeLifecycle:
         local_sources: Mapping[str, Path] | None = None,
         config_sources_root: Path | None = None,
         limits: ResourceLimits = ARCHIVE_LIMITS,
+        intake_limits: ResourceLimits | None = None,
         directory_settle_seconds: float = 5.0,
     ):
         if not isinstance(catalog, CandidateCatalog):
@@ -380,6 +381,12 @@ class IntakeLifecycle:
             raise TypeError("operations должен быть IntakeCoordinator")
         if not isinstance(limits, ResourceLimits):
             raise TypeError("limits должен быть ResourceLimits")
+        if intake_limits is None:
+            # Окружение читается один раз на процесс: невалидное значение
+            # останавливает старт, а не первый же приём выгрузки.
+            intake_limits = intake_archive_limits()
+        if not isinstance(intake_limits, ResourceLimits):
+            raise TypeError("intake_limits должен быть ResourceLimits")
         if (
             isinstance(directory_settle_seconds, bool)
             or not isinstance(directory_settle_seconds, (int, float))
@@ -400,6 +407,8 @@ class IntakeLifecycle:
             dict(sorted(normalized_sources.items()))
         )
         self.limits = limits
+        # Browser и incoming: профиль полной выгрузки, см. intake_archive_limits.
+        self.intake_limits = intake_limits
         self.directory_settle_seconds = float(directory_settle_seconds)
         self._lock = threading.RLock()
         self._fail_interrupted_jobs()
@@ -677,7 +686,9 @@ class IntakeLifecycle:
     @contextmanager
     def _open(self, locator: CandidateLocator) -> Iterator[object]:
         if locator.transport is CandidateTransport.BROWSER:
-            tree = self.browser.open_tree(locator.entry_name, limits=self.limits)
+            tree = self.browser.open_tree(
+                locator.entry_name, limits=self.intake_limits
+            )
         elif locator.transport is CandidateTransport.INCOMING:
             if self.incoming_root is None:
                 raise LifecycleConflict("incoming больше не настроен")
@@ -685,7 +696,7 @@ class IntakeLifecycle:
                 self.incoming_root / locator.entry_name,
                 CandidateTransport.INCOMING,
                 origin_name=locator.entry_name,
-                limits=self.limits,
+                limits=self.intake_limits,
             )
         else:
             if self.config_sources_root is not None and locator.transport is CandidateTransport.LOCAL_DIRECTORY:

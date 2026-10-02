@@ -32,6 +32,7 @@ from .resource_limits import (
     ResourceBudget,
     ResourceLimitError,
     ResourceLimits,
+    intake_archive_limits,
 )
 
 
@@ -158,19 +159,20 @@ def _read_small_regular_file(path: Path, limit: int) -> bytes:
         raise TransportError("запись browser staging недоступна") from error
 
 
-def _read_budget(
-    limits: ResourceLimits,
-    label: str,
-    *,
-    enforce_content_limits: bool = True,
-) -> ResourceBudget:
+def _read_budget(limits: ResourceLimits, label: str) -> ResourceBudget:
     if not isinstance(limits, ResourceLimits):
         raise TypeError("limits должен быть ResourceLimits")
-    return ResourceBudget(
-        limits,
-        label,
-        enforce_content_limits=enforce_content_limits,
-    )
+    return ResourceBudget(limits, label)
+
+
+def _validate_opened_member_rows(
+    budget: ResourceBudget,
+    rows: Iterable[tuple[str, int, int]],
+) -> None:
+    try:
+        budget.validate_members(rows)
+    except ResourceLimitError as error:
+        raise TransportLimitError(str(error)) from error
 
 
 def _validate_opened_member(
@@ -180,10 +182,7 @@ def _validate_opened_member(
     compressed_size: int,
 ) -> None:
     """Проверить бюджет только для выбранного разборщиком элемента."""
-    try:
-        budget.validate_members(((name, size, compressed_size),))
-    except ResourceLimitError as error:
-        raise TransportLimitError(str(error)) from error
+    _validate_opened_member_rows(budget, ((name, size, compressed_size),))
 
 
 @dataclass(frozen=True, slots=True)
@@ -546,7 +545,7 @@ class BrowserStagingStore:
         self,
         candidate_id: str,
         *,
-        limits: ResourceLimits = ARCHIVE_LIMITS,
+        limits: ResourceLimits | None = None,
     ) -> ZipExportTree:
         record = self.load(candidate_id)
         tree = ZipExportTree(
@@ -681,12 +680,15 @@ class _TransportReader:
         budget: ResourceBudget,
         name: str,
         *,
+        compressed_size: int | None = None,
         owners: tuple[object, ...] = (),
         lock: threading.RLock | None = None,
         failure_message: str = "ZIP повреждён или не прошёл CRC",
         failure_type: type[TransportError] = TransportError,
     ):
-        self._limited = LimitedReader(stream, budget, name)
+        self._limited = LimitedReader(
+            stream, budget, name, compressed_size=compressed_size
+        )
         self._owners = owners
         self._lock = lock or threading.RLock()
         self._failure_message = failure_message
@@ -745,10 +747,16 @@ class ZipExportTree:
         *,
         transport: CandidateTransport,
         origin_name: str | None = None,
-        limits: ResourceLimits = ARCHIVE_LIMITS,
+        limits: ResourceLimits | None = None,
     ):
         if transport not in self._ALLOWED_TRANSPORTS:
             raise ValueError("для ZIP выбран неподдержанный transport")
+        # Browser и incoming принимают полные выгрузки больше гигабайта, и
+        # потому живут на своём, более высоком профиле; но без потолка ZIP на
+        # десятки мегабайт раскрывался в десятки гигабайт и заполнял том.
+        whole_archive = transport is not CandidateTransport.LOCAL_FILE
+        if limits is None:
+            limits = intake_archive_limits() if whole_archive else ARCHIVE_LIMITS
         self.path = Path(path)
         self.transport = transport
         self.origin_name = _display_name(origin_name or self.path.name)
@@ -758,14 +766,21 @@ class ZipExportTree:
         try:
             archive = zipfile.ZipFile(source)
             members = self._inspect(archive, limits)
-            budget = _read_budget(
-                limits,
-                "ZIP файловой выгрузки",
-                # После принятия browser и incoming используют одни правила
-                # чтения: структура ZIP, CRC и стабильность проверяются, а
-                # фиксированные бюджеты распаковки на них не распространяются.
-                enforce_content_limits=transport is CandidateTransport.LOCAL_FILE,
-            )
+            budget = _read_budget(limits, "ZIP файловой выгрузки")
+            if whole_archive:
+                # Заявленный состав intake-профиля сверяется целиком при
+                # открытии: отказ приходит до probe и до сборки, а не после
+                # того, как распакованные байты уже легли на диск. Для
+                # LOCAL_FILE узкий ARCHIVE_LIMITS проверяется по выбранным
+                # элементам: крупный балласт, который никто не читает, не
+                # должен блокировать выгрузку.
+                _validate_opened_member_rows(
+                    budget,
+                    (
+                        (path, member.size, member.compressed_size)
+                        for path, member in sorted(members.items())
+                    ),
+                )
         except (zipfile.BadZipFile, OSError, EOFError) as error:
             if archive is not None:
                 archive.close()
@@ -919,6 +934,7 @@ class ZipExportTree:
                     member_stream,
                     self._budget,
                     path,
+                    compressed_size=actual.compressed_size,
                     lock=self._lock,
                 )
             except TransportError:
@@ -1271,15 +1287,19 @@ def open_export_tree(
     transport: CandidateTransport,
     *,
     origin_name: str | None = None,
-    limits: ResourceLimits = ARCHIVE_LIMITS,
+    limits: ResourceLimits | None = None,
     directory_settle_seconds: float = DIRECTORY_SETTLE_SECONDS,
 ) -> ZipExportTree | DirectoryExportTree:
-    """Открыть настроенный вход без выбора parser или публикации Registry."""
+    """Открыть настроенный вход без выбора parser или публикации Registry.
+
+    ``limits=None`` выбирает профиль по транспорту: intake-профиль для
+    incoming, ``ARCHIVE_LIMITS`` для локальных ZIP и каталогов.
+    """
     if transport is CandidateTransport.LOCAL_DIRECTORY:
         return DirectoryExportTree(
             source,
             origin_name=origin_name,
-            limits=limits,
+            limits=ARCHIVE_LIMITS if limits is None else limits,
             settle_seconds=directory_settle_seconds,
         )
     if transport in {CandidateTransport.INCOMING, CandidateTransport.LOCAL_FILE}:

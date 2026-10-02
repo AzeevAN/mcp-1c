@@ -39,6 +39,9 @@ COLLECTION_FORMAT_VERSION = 1
 SELECTION_VERSION = 11
 _READ_CHUNK = 1 << 20
 _MANIFEST_LIMIT = 64 * 1024 * 1024
+# Запас сверх оценки сборки: ENOSPC посреди записи ломал не только staging,
+# но и соседние durable-записи вроде registry.json.
+_FREE_SPACE_RESERVE = 64 * 1024 * 1024
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _MAX_DIAGNOSTIC_EXAMPLES = 3
 _STRUCTURE_LAYERS = frozenset(
@@ -1093,6 +1096,27 @@ def _target_exists(path: Path) -> bool:
     return path.is_symlink() or path.exists()
 
 
+def _require_free_space(tree: VirtualExportTree, directory: Path) -> None:
+    """Отказать до сборки, если заявленный объём входа не помещается на том.
+
+    Оценка сверху: заявленный размер всех элементов, хотя collector копирует
+    только выбранные, а роли пишет в gzip. Транспорт уже ограничил сумму
+    профилем лимитов и не даст прочитать больше заявленного, поэтому проверка
+    до сборки закрывает заполнение тома честным, но слишком большим входом.
+    """
+    planned = sum(tree.size(path) for path in tree.paths())
+    required = planned + _FREE_SPACE_RESERVE
+    try:
+        free = shutil.disk_usage(directory).free
+    except OSError as error:
+        raise CollectorError("не удалось проверить свободное место") from error
+    if free < required:
+        raise CollectorError(
+            "для сборки выгрузки недостаточно свободного места: нужно не "
+            f"меньше {required} байт, свободно {free}"
+        )
+
+
 def collect_source_b(
     tree: VirtualExportTree,
     probe: CandidateProbe,
@@ -1117,6 +1141,7 @@ def collect_source_b(
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.parent.is_symlink() or not target.parent.is_dir():
         raise CollectorError("родитель target должен быть обычным каталогом")
+    _require_free_space(tree, target.parent)
     temporary = Path(
         tempfile.mkdtemp(
             dir=target.parent,

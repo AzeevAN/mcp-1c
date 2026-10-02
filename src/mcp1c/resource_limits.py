@@ -7,14 +7,18 @@
 
 from __future__ import annotations
 
+import os
+import re
 import zipfile
 import zlib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Iterable
 
 
 MIB = 1024 * 1024
+GIB = 1024 * MIB
 
 
 class ResourceLimitError(ValueError):
@@ -27,6 +31,10 @@ class ResourceLimits:
     max_entry_bytes: int
     max_total_bytes: int
     max_compression_ratio: int
+    # Записи не крупнее порога не проверяются по коэффициенту сжатия: малый
+    # шаблон из повторов жмётся сильно, а ущерба от него нет — объём всё
+    # равно ограничен абсолютными пределами записи и суммы.
+    ratio_min_bytes: int = 0
 
 
 ARCHIVE_LIMITS = ResourceLimits(
@@ -44,29 +52,81 @@ V8_LIMITS = ResourceLimits(
 )
 
 
+INTAKE_MAX_UNPACKED_ENV = "MCP1C_INTAKE_MAX_UNPACKED"
+
+# Профиль intake (browser-upload и incoming) выше ARCHIVE_LIMITS: полные
+# файловые выгрузки больше гигабайта легальны. Дефолты взяты с запасом от
+# замера реальных выгрузок (2026-10-02): крупнейшая — 2,01 ГиБ распакованных,
+# 33 189 записей; самая большая запись — 713 МиБ (.cf родителя); больше всего
+# записей — 37 037; сильнее всего сжат XML-шаблон на 2 МиБ — 243,6:1, а среди
+# записей крупнее 16 МиБ — 146,3:1. Deflate даёт до ~1032:1, поэтому 512:1
+# отсекает максимально сжатые бомбы, не задевая выгрузки.
+INTAKE_DEFAULT_MAX_UNPACKED = 16 * GIB
+INTAKE_MAX_ENTRY_BYTES = 4 * GIB
+INTAKE_MAX_ENTRIES = 100_000
+INTAKE_MAX_COMPRESSION_RATIO = 512
+INTAKE_RATIO_MIN_BYTES = 1 * MIB
+
+_SIZE_RE = re.compile(r"(\d+)\s*([KMGT]?)(?:I?B)?", re.IGNORECASE)
+_SIZE_UNITS = {"": 1, "K": 1024, "M": MIB, "G": GIB, "T": 1024 * GIB}
+
+
+def _parse_size(name: str, raw: str) -> int:
+    match = _SIZE_RE.fullmatch(raw.strip())
+    if match is None:
+        raise ValueError(
+            f"{name} должен быть целым числом байт либо с суффиксом "
+            f"K/M/G/T (например 16GiB). Получено: {raw!r}."
+        )
+    value = int(match.group(1)) * _SIZE_UNITS[match.group(2).upper()]
+    if value <= 0:
+        raise ValueError(f"{name} должен быть положительным. Получено: {raw!r}.")
+    return value
+
+
+def intake_archive_limits(
+    environ: Mapping[str, str] | None = None,
+) -> ResourceLimits:
+    """Профиль бюджета browser- и incoming-ZIP с учётом окружения.
+
+    Пустое значение переменной означает дефолт: так Compose может передавать
+    её всегда, не навязывая собственное число.
+    """
+    source = os.environ if environ is None else environ
+    raw = source.get(INTAKE_MAX_UNPACKED_ENV, "")
+    total = (
+        _parse_size(INTAKE_MAX_UNPACKED_ENV, raw)
+        if raw.strip()
+        else INTAKE_DEFAULT_MAX_UNPACKED
+    )
+    return ResourceLimits(
+        max_entries=INTAKE_MAX_ENTRIES,
+        max_entry_bytes=min(INTAKE_MAX_ENTRY_BYTES, total),
+        max_total_bytes=total,
+        max_compression_ratio=INTAKE_MAX_COMPRESSION_RATIO,
+        ratio_min_bytes=INTAKE_RATIO_MIN_BYTES,
+    )
+
+
 class ResourceBudget:
     """Проверка заявленного состава и реально прочитанных байтов."""
 
-    def __init__(
-        self,
-        limits: ResourceLimits,
-        label: str,
-        *,
-        enforce_content_limits: bool = True,
-    ):
-        if not isinstance(enforce_content_limits, bool):
-            raise TypeError("enforce_content_limits должен быть bool")
+    def __init__(self, limits: ResourceLimits, label: str):
         self.limits = limits
         self.label = label
-        self.enforce_content_limits = enforce_content_limits
         self.read_total = 0
+
+    def ratio_exceeded(self, size: int, compressed_size: int) -> bool:
+        if size <= self.limits.ratio_min_bytes:
+            return False
+        return compressed_size == 0 or (
+            size > compressed_size * self.limits.max_compression_ratio
+        )
 
     def validate_members(
         self, members: Iterable[tuple[str, int, int]]
     ) -> None:
         rows = list(members)
-        if not self.enforce_content_limits:
-            return
         if len(rows) > self.limits.max_entries:
             raise ResourceLimitError(
                 f"{self.label}: число записей {len(rows)} превышает предел "
@@ -90,28 +150,19 @@ class ResourceBudget:
                     f"{self.label}: суммарный распакованный объём превышает "
                     f"предел {self.limits.max_total_bytes} байт."
                 )
-            if size and (
-                compressed_size == 0
-                or size > compressed_size * self.limits.max_compression_ratio
-            ):
+            if size and self.ratio_exceeded(size, compressed_size):
                 raise ResourceLimitError(
                     f"{self.label}: коэффициент сжатия записи {name!r} "
                     f"превышает предел {self.limits.max_compression_ratio}:1."
                 )
 
     def consume(self, name: str, entry_total: int, amount: int) -> None:
-        if (
-            self.enforce_content_limits
-            and entry_total + amount > self.limits.max_entry_bytes
-        ):
+        if entry_total + amount > self.limits.max_entry_bytes:
             raise ResourceLimitError(
                 f"{self.label}: запись {name!r} при чтении превысила предел "
                 f"{self.limits.max_entry_bytes} байт."
             )
-        if (
-            self.enforce_content_limits
-            and self.read_total + amount > self.limits.max_total_bytes
-        ):
+        if self.read_total + amount > self.limits.max_total_bytes:
             raise ResourceLimitError(
                 f"{self.label}: реально прочитанный объём превысил предел "
                 f"{self.limits.max_total_bytes} байт."
@@ -120,23 +171,48 @@ class ResourceBudget:
 
 
 class LimitedReader:
-    """Файловый объект, который не отдаёт больше бюджета даже при ложном header."""
+    """Файловый объект, который не отдаёт больше бюджета даже при ложном header.
 
-    def __init__(self, stream: BinaryIO, budget: ResourceBudget, name: str):
+    Считаются фактически прочитанные байты: заявленный в заголовке размер
+    может врать, а коэффициент сжатия при известном ``compressed_size``
+    сверяется с тем, что реально вышло из распаковщика.
+    """
+
+    def __init__(
+        self,
+        stream: BinaryIO,
+        budget: ResourceBudget,
+        name: str,
+        *,
+        compressed_size: int | None = None,
+    ):
         self._stream = stream
         self._budget = budget
         self._name = name
         self._read = 0
+        self._compressed_size = compressed_size
 
     def read(self, size: int = -1) -> bytes:
-        if self._budget.enforce_content_limits:
-            entry_left = self._budget.limits.max_entry_bytes - self._read
-            total_left = self._budget.limits.max_total_bytes - self._budget.read_total
-            allowed = min(entry_left, total_left)
-            requested = allowed + 1 if size < 0 else min(size, allowed + 1)
-        else:
-            requested = size
+        limits = self._budget.limits
+        entry_left = limits.max_entry_bytes - self._read
+        total_left = limits.max_total_bytes - self._budget.read_total
+        allowed = max(0, min(entry_left, total_left))
+        if self._compressed_size is not None:
+            ratio_allowed = max(
+                limits.ratio_min_bytes,
+                self._compressed_size * limits.max_compression_ratio,
+            )
+            allowed = max(0, min(allowed, ratio_allowed - self._read))
+        requested = allowed + 1 if size < 0 else min(size, allowed + 1)
         data = self._stream.read(requested)
+        if self._compressed_size is not None and self._budget.ratio_exceeded(
+            self._read + len(data), self._compressed_size
+        ):
+            raise ResourceLimitError(
+                f"{self._budget.label}: коэффициент сжатия записи "
+                f"{self._name!r} при чтении превысил предел "
+                f"{limits.max_compression_ratio}:1."
+            )
         self._budget.consume(self._name, self._read, len(data))
         self._read += len(data)
         return data

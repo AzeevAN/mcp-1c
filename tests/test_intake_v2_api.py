@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import base64
 import importlib
 import io
 import json
+import random
 import threading
 import time
 import zipfile
@@ -519,9 +521,11 @@ def test_production_lifecycle_читает_browser_xml_как_incoming(tmp_path)
     service = IntakeApiService.for_registry(
         registry, config_sources_root=tmp_path / "sources"
     )
+    # Как у реального шаблона этикетки: около 230:1, ниже предела 512:1.
     xml = (
         b"<Template><Data>"
         + b"A" * (2 * 1024 * 1024)
+        + base64.b64encode(random.Random(1).randbytes(6000))
         + b"</Data></Template>"
     )
     path = "Catalogs/Demo/Templates/Label/Ext/Template.xml"

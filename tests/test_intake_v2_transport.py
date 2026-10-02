@@ -199,14 +199,13 @@ def test_browser_source_b_читает_сжатый_xml_как_incoming(tmp_path
     finally:
         tree.close()
 
+    # Сжатие около 1000:1 — уже не шаблон, а бомба: реальные выгрузки не
+    # превышают 243,6:1, а профиль intake допускает до 512:1.
     bomb_zip = archive_with(b"<Template>" + b"A" * (2 * 1024 * 1024) + b"</Template>")
     store.accept("candidate-bomb", "bomb.zip", io.BytesIO(bomb_zip))
-    tree = store.open_tree("candidate-bomb")
-    try:
-        with tree.open("Catalogs/Demo/Templates/Label/Ext/Template.xml") as stream:
-            assert stream.read() == b"<Template>" + b"A" * (2 * 1024 * 1024) + b"</Template>"
-    finally:
-        tree.close()
+    TransportLimitError = _symbol("TransportLimitError")
+    with pytest.raises(TransportLimitError, match="коэффициент сжатия"):
+        store.open_tree("candidate-bomb")
 
 
 def test_browser_staging_отвергает_подмену_payload_того_же_размера(tmp_path):
@@ -289,7 +288,7 @@ def test_zip_tree_fail_closed_на_опасном_или_неоднозначн�
         )
 
 
-def test_zip_tree_отвергает_symlink_и_ограничивает_zip_bomb_только_для_browser(
+def test_zip_tree_отвергает_symlink_и_ограничивает_zip_bomb_всех_транспортов(
     tmp_path,
 ):
     TransportLimitError = _symbol("TransportLimitError")
@@ -321,21 +320,10 @@ def test_zip_tree_отвергает_symlink_и_ограничивает_zip_bom
         max_total_bytes=8192,
         max_compression_ratio=2,
     )
-    incoming_tree = ZipExportTree(
-        bomb_zip,
-        transport=CandidateTransport.INCOMING,
-        limits=limits,
-    )
-    with incoming_tree.open("Configuration.xml") as stream:
-        assert stream.read() == b" " * 4096
-
-    browser_tree = ZipExportTree(
-        bomb_zip,
-        transport=CandidateTransport.BROWSER,
-        limits=limits,
-    )
-    with browser_tree.open("Configuration.xml") as stream:
-        assert stream.read() == b" " * 4096
+    # Browser и incoming сверяют заявленный состав целиком при открытии.
+    for transport in (CandidateTransport.INCOMING, CandidateTransport.BROWSER):
+        with pytest.raises(TransportLimitError, match="сжати"):
+            ZipExportTree(bomb_zip, transport=transport, limits=limits)
 
     bounded_tree = ZipExportTree(
         bomb_zip,
@@ -417,7 +405,8 @@ def test_zip_и_каталог_не_считают_непрочитанный_б
             tree.open("Ext/ParentConfigurations/Supply.cf")
 
 
-def test_incoming_и_browser_zip_одинаково_читают_полезные_файлы(tmp_path):
+def test_incoming_и_browser_zip_одинаково_применяют_профиль_intake(tmp_path):
+    TransportLimitError = _symbol("TransportLimitError")
     ZipExportTree = _symbol("ZipExportTree")
 
     archive_path = tmp_path / "candidate.zip"
@@ -428,27 +417,19 @@ def test_incoming_и_browser_zip_одинаково_читают_полезны�
             "Catalogs/Demo.xml": b"6789012345",
         },
     )
-    limits = _small_limits(max_entry_bytes=8, max_total_bytes=9)
+    tight = _small_limits(max_entry_bytes=8, max_total_bytes=9)
+    for transport in (CandidateTransport.INCOMING, CandidateTransport.BROWSER):
+        with pytest.raises(TransportLimitError, match="превышает предел 8"):
+            ZipExportTree(archive_path, transport=transport, limits=tight)
 
-    incoming = ZipExportTree(
-        archive_path,
-        transport=CandidateTransport.INCOMING,
-        limits=limits,
-    )
-    with incoming.open("Configuration.xml") as stream:
-        assert stream.read() == b"12345"
-    with incoming.open("Catalogs/Demo.xml") as stream:
-        assert stream.read() == b"6789012345"
-
-    browser = ZipExportTree(
-        archive_path,
-        transport=CandidateTransport.BROWSER,
-        limits=limits,
-    )
-    with browser.open("Configuration.xml") as stream:
-        assert stream.read() == b"12345"
-    with browser.open("Catalogs/Demo.xml") as stream:
-        assert stream.read() == b"6789012345"
+    roomy = _small_limits(max_entry_bytes=16, max_total_bytes=32)
+    for transport in (CandidateTransport.INCOMING, CandidateTransport.BROWSER):
+        tree = ZipExportTree(archive_path, transport=transport, limits=roomy)
+        with tree.open("Configuration.xml") as stream:
+            assert stream.read() == b"12345"
+        with tree.open("Catalogs/Demo.xml") as stream:
+            assert stream.read() == b"6789012345"
+        tree.close()
 
 
 def test_tree_обнаруживает_изменение_zip_и_каталога_во_время_операции(tmp_path):

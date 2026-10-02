@@ -33,7 +33,7 @@ import uuid
 import xml.etree.ElementTree as ET
 import zipfile
 from collections import Counter
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from functools import wraps
@@ -1072,8 +1072,15 @@ class Registry:
         # их по этому признаку потока, а не по параметрам вызова.
         self._restore_scope = threading.local()
         # Staging разных кандидатов может идти параллельно, но pointer и общий
-        # WAL переключаются только одним publisher за раз.
-        self._generation_mutation_lock = threading.Lock()
+        # WAL переключаются только одним publisher за раз. Startup/reload
+        # держит этот же замок целиком: иначе он прочитал бы живой WAL идущей
+        # публикации как аварийный и откатил её staging, а restore применил
+        # бы прочитанные до долгой сборки pointers поверх параллельной
+        # публикации или remove. Поэтому recovery и native-часть restore
+        # берут его же. Замок реентерабельный: restore поднимает строки через
+        # add_configuration, который берёт его сам. Порядок:
+        # startup -> mutation -> cache -> registry.
+        self._generation_mutation_lock = threading.RLock()
         # Версии нужны только для незавершённых публикаций внутри процесса.
         # После удаления счётчик сохраняется: пусто -> B -> пусто тоже смена
         # состояния, которую не обнаружить сравнением одних pointers.
@@ -5776,6 +5783,17 @@ class Registry:
     def _restore_rows(self) -> list[str]:
         with self._lock:
             self._restored_for_serving = True
+        # От чтения registry.json до применения native pointers и runtime
+        # restore сериализован с publish/remove: иначе снимок, прочитанный до
+        # долгой сборки runtime, затёр бы опубликованное за это время
+        # поколение или вернул бы снятое. Legacy-строки ниже идут уже без
+        # него: у них свой CAS по ревизии конфигурации, и remove во время
+        # их подъёма остаётся возможен.
+        with ExitStack() as native_phase:
+            native_phase.enter_context(self._generation_mutation_lock)
+            return self._restore_rows_locked(native_phase)
+
+    def _restore_rows_locked(self, native_phase: ExitStack) -> list[str]:
         problems: list[str] = []
         if not self.registry_path.exists():
             return problems
@@ -5953,6 +5971,7 @@ class Registry:
 
         for prepared, _configuration, _modules in native_runtime.values():
             self._save_native_runtime_cache(prepared)
+        native_phase.close()
 
         # Код восстанавливается вторым проходом: порядок строк в
         # registry.json не является контрактом, а модули/расширение
@@ -6398,7 +6417,10 @@ class Registry:
         # перезагрузкой, без пересборки образа и рестарта контейнера.
         self.reload_dictionary()
         try:
-            messages = self.recover_generation_publish()
+            # Живая публикация держит этот замок от записи WAL до его
+            # очистки: reload дожидается её, а не откатывает чужой staging.
+            with self._generation_mutation_lock:
+                messages = self.recover_generation_publish()
         except RecoveryBlocked as error:
             self._generation_recovery_blocked = True
             return [str(error)]

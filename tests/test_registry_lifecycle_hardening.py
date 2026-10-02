@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import errno
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -236,3 +237,66 @@ def test_перенесённую_строку_можно_снять_явно(
 
     restarted.remove("Пример")
     assert "Пример" not in _rows(restarted)
+
+
+def test_reload_ждёт_публикацию_поколения_и_не_откатывает_staging(
+    tmp_path, monkeypatch
+):
+    first, first_payloads = _manifest(tmp_path, "generation-001")
+    second, second_payloads = _manifest(
+        tmp_path, "generation-002", suffix="-changed"
+    )
+    registry = Registry(tmp_path / "data")
+    registry.publish_generation(registry.stage_generation(first, first_payloads))
+    staged = registry.stage_generation(second, second_payloads)
+
+    в_середине = threading.Event()
+    продолжить = threading.Event()
+    подлинная_сборка = registry._build_native_generation_runtime
+
+    def остановленная_сборка(*args, **kwargs):
+        # Останавливается только публикатор: WAL уже записан, staging ещё
+        # не продвинут. Восстановление reload собирает runtime без паузы.
+        if threading.current_thread().name == "publisher":
+            в_середине.set()
+            assert продолжить.wait(10)
+        return подлинная_сборка(*args, **kwargs)
+
+    monkeypatch.setattr(
+        registry, "_build_native_generation_runtime", остановленная_сборка
+    )
+    ошибки: list[BaseException] = []
+
+    def опубликовать():
+        try:
+            registry.publish_generation(staged)
+        except BaseException as error:  # pragma: no cover - диагностика
+            ошибки.append(error)
+
+    publisher = threading.Thread(target=опубликовать, name="publisher")
+    publisher.start()
+    reload = threading.Thread(target=registry.startup, name="reload")
+    try:
+        assert в_середине.wait(10)
+        reload.start()
+        reload.join(0.5)
+
+        # Reload ждёт публикацию, а не разбирает её живой WAL как аварийный.
+        reload_ждал = reload.is_alive()
+        staging_цел = staged.root.exists()
+        wal_цел = registry.generation_recovery_path.exists()
+    finally:
+        продолжить.set()
+        publisher.join(10)
+    assert reload_ждал
+    assert staging_цел and wal_цел
+    reload.join(10)
+    assert not publisher.is_alive() and not reload.is_alive()
+    assert ошибки == []
+    assert registry.active_generation(second.identity) == second
+
+    restarted = Registry(registry.data_dir)
+    assert restarted.startup() == []
+    assert restarted.active_generation(second.identity) == second
+    pointer = restarted.active_generation_pointer(second.identity)
+    restarted._generation_store.verify(pointer)

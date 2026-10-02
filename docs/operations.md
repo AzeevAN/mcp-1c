@@ -364,6 +364,21 @@ PYTHONPATH=src .venv/bin/python -m mcp1c.bench \
 Сохранённый JSON является производным от локальных данных и остаётся внутри
 `data/`.
 
+## Задержка инструментов `tools/measure_tool_latency.py`
+
+Скрипт поднимает Registry и печатает цену первого вызова и медиану повторов
+для `get_object`, `list_configurations`, `get_related`, `get_procedure`
+(оглавление модуля, процедура, опечатка в адресе), `get_callers` и
+`search_procedures`. `restore()` пишет кэш индексов в каталог данных, поэтому
+мерить лучше на копии:
+
+```bash
+cp -cR data /tmp/mcp1c-measure
+PYTHONPATH=src .venv/bin/python tools/measure_tool_latency.py \
+  --data /tmp/mcp1c-measure --config ИмяКонфигурации \
+  --object Справочник.Номенклатура --repeat 20
+```
+
 ## Ручной запуск `mcp1c.server`
 
 Полный набор флагов:

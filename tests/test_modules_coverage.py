@@ -472,3 +472,68 @@ def test_ошибка_индекса_в_инструментах_кода_обе
     assert "Traceback" not in answer
     assert "Permission denied" not in answer
     assert "/private/" not in answer
+
+
+def test_агрегаты_кода_считаются_один_раз_на_поколение(
+    tmp_path, реестр_из_кода, архив_кода, корень_кода, monkeypatch
+):
+    """`get_object`, `list_configurations`, `get_related` и инструменты кода
+    не обходят весь корпус заново на каждый вызов: пакет кода неизменяем, и
+    его агрегаты — тоже. Новое поколение считает их заново."""
+    from mcp1c import modules_index
+
+    registry = реестр_из_кода(корень_кода)
+    обходы: list[int] = []
+    сводка = modules_index.Оглавление.сводка
+    покрытие = modules_index.Оглавление.покрытие_процедур
+
+    def считать_сводку(self):
+        обходы.append(id(self))
+        return сводка(self)
+
+    def считать_покрытие(self):
+        обходы.append(id(self))
+        return покрытие(self)
+
+    monkeypatch.setattr(modules_index.Оглавление, "сводка", считать_сводку)
+    monkeypatch.setattr(
+        modules_index.Оглавление, "покрытие_процедур", считать_покрытие
+    )
+
+    def вызвать_всё() -> list[str]:
+        return [
+            tools.get_object(registry, "Документ.Пример", config="Пример"),
+            tools.get_object(
+                registry, "Документ.Пример", config="Пример", detail="full"
+            ),
+            tools.list_configurations(registry),
+            tools.get_related(registry, "Документ.Пример", config="Пример"),
+            tools.get_procedure(
+                registry, "ОбщийМодуль.ОбщийПример", config="Пример"
+            ),
+            tools.search_procedures(registry, "Сложить", config="Пример"),
+        ]
+
+    первые = вызвать_всё()
+    после_первых = len(обходы)
+    повторные = вызвать_всё()
+
+    assert повторные == первые
+    # Сводка и покрытие процедур — по одному обходу на поколение.
+    assert после_первых == 2
+    assert len(обходы) == после_первых
+
+    новый = tmp_path / "new"
+    _write(
+        новый,
+        "CommonModules/ОбщийПример/Ext/Module.bsl",
+        "Функция Вычесть(А, Б) Экспорт\n\tВозврат А - Б;\nКонецФункции\n",
+    )
+    registry.add_modules(архив_кода(новый), configuration="Пример")
+
+    ответ = tools.get_procedure(
+        registry, "ОбщийМодуль.ОбщийПример", config="Пример"
+    )
+
+    assert "Вычесть" in ответ
+    assert len(обходы) > после_первых

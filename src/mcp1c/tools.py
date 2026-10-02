@@ -20,6 +20,8 @@ import difflib
 import hashlib
 import heapq
 import json
+import threading
+import weakref
 from bisect import bisect_right
 from dataclasses import dataclass
 from pathlib import Path
@@ -485,15 +487,89 @@ def _all_code_problems(loaded: LoadedModules) -> tuple[CodeProblemRow, ...]:
     )
 
 
+@dataclass(slots=True)
+class _CodeAggregates:
+    """Агрегаты одного неизменяемого пакета кода, посчитанные по требованию.
+
+    Структуры, из которых они выведены, держатся здесь же: по ним проверяется,
+    что запись относится к тому же пакету, а не к случайно совпавшему ключу.
+    """
+
+    оглавление: object
+    формы: object
+    каталог: object
+    summary: _CodeSummary | None = None
+    coverage: CodeCoverage | None = None
+    coverage_without_rows: CodeCoverage | None = None
+
+
+# Пакет кода после публикации не меняется, а `get_object`, `list_configurations`,
+# `get_related` и все инструменты по коду раньше пересчитывали его агрегаты на
+# каждый вызов: на конфигурации из 2 867 модулей это 9 мс из 13 мс `get_object`.
+# Ключ — поисковый индекс пакета, потому что `LoadedModules` и его структуры
+# объявлены со `__slots__` без слабых ссылок, а индекс живёт ровно столько же,
+# сколько пакет. Слабый ключ отпускает агрегаты вместе со старым поколением.
+_CODE_AGGREGATES: "weakref.WeakKeyDictionary[object, _CodeAggregates]" = (
+    weakref.WeakKeyDictionary()
+)
+_CODE_AGGREGATES_LOCK = threading.Lock()
+
+
+def _code_aggregates(loaded: LoadedModules) -> _CodeAggregates | None:
+    ключ = loaded.поиск
+    if ключ is None:
+        return None
+    with _CODE_AGGREGATES_LOCK:
+        запись = _CODE_AGGREGATES.get(ключ)
+        if (
+            запись is None
+            or запись.оглавление is not loaded.оглавление
+            or запись.формы is not loaded.формы
+            or запись.каталог is not loaded.каталог
+        ):
+            запись = _CodeAggregates(
+                loaded.оглавление, loaded.формы, loaded.каталог
+            )
+            _CODE_AGGREGATES[ключ] = запись
+        return запись
+
+
 def _code_coverage(
     loaded: LoadedModules, *, include_problem_rows: bool = True
 ) -> CodeCoverage:
     if loaded.каталог is None or loaded.формы is None:
         raise RegistryError("Готовый индекс кода неполон; перезагрузите источник.")
-    каталог = loaded.каталог
-    формы = loaded.формы
     if loaded.оглавление is None:
         raise RegistryError("Готовый индекс кода неполон; перезагрузите источник.")
+    # Два варианта кэшируются раздельно: короткому предупреждению список
+    # проблем не нужен, и строить его ради кэша значило бы платить за то, от
+    # чего вариант без строк и избавлен. Гонка двух потоков на промахе лишь
+    # посчитает одно и то же дважды — результат неизменяем.
+    агрегаты = _code_aggregates(loaded)
+    if агрегаты is not None:
+        готовое = (
+            агрегаты.coverage
+            if include_problem_rows
+            else агрегаты.coverage_without_rows
+        )
+        if готовое is not None:
+            return готовое
+    результат = _compute_code_coverage(
+        loaded, include_problem_rows=include_problem_rows
+    )
+    if агрегаты is not None:
+        if include_problem_rows:
+            агрегаты.coverage = результат
+        else:
+            агрегаты.coverage_without_rows = результат
+    return результат
+
+
+def _compute_code_coverage(
+    loaded: LoadedModules, *, include_problem_rows: bool
+) -> CodeCoverage:
+    каталог = loaded.каталог
+    формы = loaded.формы
     процедур_всего, процедур_частично, частичные_модули = (
         loaded.оглавление.покрытие_процедур()
     )
@@ -624,6 +700,16 @@ def _summarize_code(loaded: LoadedModules) -> _CodeSummary:
     """Агрегаты готового пакета без чтения модулей и списка ``Запись``."""
     if loaded.оглавление is None or loaded.формы is None:
         raise RegistryError("Готовый индекс кода неполон; перезагрузите источник.")
+    агрегаты = _code_aggregates(loaded)
+    if агрегаты is not None and агрегаты.summary is not None:
+        return агрегаты.summary
+    результат = _compute_code_summary(loaded)
+    if агрегаты is not None:
+        агрегаты.summary = результат
+    return результат
+
+
+def _compute_code_summary(loaded: LoadedModules) -> _CodeSummary:
     toc = loaded.оглавление.сводка()
     порядок = lambda value: (value.casefold(), value)
     return _CodeSummary(

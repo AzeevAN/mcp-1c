@@ -2923,6 +2923,7 @@ class Registry:
         self, операция: _ModuleOperation, архив: Path
     ):
         """Один цикл на источник; новая заявка отменяет старую в очереди."""
+        отказ = False
         with операция.lifecycle_lock:
             try:
                 with self._lock:
@@ -2930,6 +2931,7 @@ class Registry:
                         raise self._отмена_операции_модулей(операция, архив)
                 yield
             except BaseException as error:
+                отказ = True
                 with self._lock:
                     устарела = not self._операция_модулей_актуальна(
                         операция
@@ -2941,6 +2943,45 @@ class Registry:
                 raise
             finally:
                 self._завершить_операцию_модулей(операция)
+                if отказ:
+                    try:
+                        self._возобновить_сборку_после_отказа(операция)
+                    except Exception:
+                        logger.exception(
+                            "Не удалось перезапустить сборку индекса кода %s.",
+                            операция.source_id,
+                        )
+
+    def _возобновить_сборку_после_отказа(
+        self, операция: _ModuleOperation
+    ) -> None:
+        """Перезапустить холодную сборку, отменённую упавшей операцией.
+
+        Резервирование поднимает поколение до распаковки, и идущая фоновая
+        сборка того же источника по CAS отбрасывает свой результат. Если сама
+        операция упала до публикации, прежний Source остаётся заглушкой
+        `готов=False` навсегда: ни сборка, ни restore её уже не поднимут.
+        """
+        source_id = операция.source_id
+        with self._lock:
+            source = self.sources.get(source_id)
+            loaded = self.modules.get(source_id)
+            конфигурация = self.configurations.get(операция.configuration)
+            if (
+                source_id in self._module_operations
+                or source is None
+                or loaded is None
+                or loaded.готов
+                or loaded.source is not source
+                or конфигурация is None
+                or конфигурация.source is not операция.configuration_source
+                or not source.stored_path
+            ):
+                return
+            поколение = self._следующее_поколение_модулей(source_id)
+        self._запустить_фоновую_сборку(
+            source, self._absolute(source.stored_path), поколение
+        )
 
     def _опубликовать_операцию_модулей(
         self,
@@ -3399,10 +3440,16 @@ class Registry:
                     self.sources[source.id] = прежние.source
                     self._advance_source_lifecycle_revision()
                 return
-            if self.sources.get(source.id) is not None and прежние is not None:
+            if (
+                self.sources.get(source.id) is not None
+                and прежние is not None
+                and прежние.готов
+            ):
                 # Живой reparse мог успеть завершиться до второго
                 # прохода restore. Его Source/индекс уже опубликованы;
                 # старая строка registry не имеет права их откатывать.
+                # Неготовая заглушка без живой сборки (сбой или отменённая
+                # сборка) — не публикация: reload строит её заново.
                 return
             self.sources[source.id] = source
             self._advance_source_lifecycle_revision()
@@ -3443,6 +3490,12 @@ class Registry:
                     )
             return
 
+        self._запустить_фоновую_сборку(source, корень, поколение)
+
+    def _запустить_фоновую_сборку(
+        self, source: Source, корень: Path, поколение: int
+    ) -> None:
+        """Опубликовать заглушку `готов=False` и начать сборку индекса кода."""
         файлы_каталога = modules_index.catalog_files(корень)
         строится = LoadedModules(
             source=source,

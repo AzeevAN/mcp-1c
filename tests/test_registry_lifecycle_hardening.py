@@ -14,7 +14,7 @@ import pytest
 
 from conftest import build_configuration, write_export, write_syntax
 from mcp1c.intake_v2_registry import ExportIdentity
-from mcp1c.registry import Registry, RegistryRecoveryBlocked
+from mcp1c.registry import Registry, RegistryError, RegistryRecoveryBlocked
 from mcp1c.source_modes import ActivationMode
 from test_intake_v2_extensions import _stage_active_base
 from test_intake_v2_legacy_cleanup import _native_generation
@@ -300,3 +300,90 @@ def test_reload_ждёт_публикацию_поколения_и_не_отк�
     assert restarted.active_generation(second.identity) == second
     pointer = restarted.active_generation_pointer(second.identity)
     restarted._generation_store.verify(pointer)
+
+
+def _холодный_реестр_с_кодом(tmp_path, архив_кода, корень_кода):
+    incoming = tmp_path / "input"
+    incoming.mkdir()
+    registry = Registry(tmp_path / "data")
+    registry.add_configuration(
+        write_export(incoming, build_configuration(name="Пример"))
+    )
+    source = registry.add_modules(архив_кода(корень_кода), configuration="Пример")
+    # Без кэша startup строит индекс кода фоном, источник в `loading`.
+    for path in registry.cache_dir.glob("*modules*"):
+        path.unlink()
+    return registry, source
+
+
+def _задержать_фоновую_сборку(registry, monkeypatch):
+    начата = threading.Event()
+    отпустить = threading.Event()
+    подлинная = registry._построить_индекс_кода
+
+    def сборка(*args, **kwargs):
+        if threading.current_thread().name.startswith("modules:"):
+            начата.set()
+            assert отпустить.wait(10)
+        return подлинная(*args, **kwargs)
+
+    monkeypatch.setattr(registry, "_построить_индекс_кода", сборка)
+    return начата, отпустить
+
+
+def test_провал_reparse_во_время_холодной_сборки_не_оставляет_loading(
+    tmp_path, архив_кода, корень_кода, monkeypatch
+):
+    registry, source = _холодный_реестр_с_кодом(
+        tmp_path, архив_кода, корень_кода
+    )
+    restarted = Registry(registry.data_dir)
+    начата, отпустить = _задержать_фоновую_сборку(restarted, monkeypatch)
+    try:
+        restarted.startup()
+        assert начата.wait(10)
+        assert not restarted.modules[source.id].готов
+
+        def сбой_распаковки(*_args, **_kwargs):
+            raise OSError(errno.EIO, "синтетический сбой распаковки")
+
+        monkeypatch.setattr(restarted, "_extract_to_temp", сбой_распаковки)
+        with pytest.raises(RegistryError, match="прежний разбор сохранён"):
+            restarted.add_modules(архив_кода(корень_кода), configuration="Пример")
+    finally:
+        отпустить.set()
+    assert restarted.wait_for_module_builds(timeout=30)
+
+    # Отменённая reparse-ом холодная сборка перезапущена: источник готов.
+    assert restarted.modules[source.id].готов
+    assert restarted.sources[source.id].status == "ready"
+
+
+def test_reload_пересобирает_застрявший_неготовый_код(
+    tmp_path, архив_кода, корень_кода, monkeypatch
+):
+    registry, source = _холодный_реестр_с_кодом(
+        tmp_path, архив_кода, корень_кода
+    )
+    restarted = Registry(registry.data_dir)
+    подлинная = restarted._построить_индекс_кода
+    отказов = {"осталось": 1}
+
+    def сборка(*args, **kwargs):
+        if (
+            threading.current_thread().name.startswith("modules:")
+            and отказов["осталось"]
+        ):
+            отказов["осталось"] -= 1
+            raise OSError(errno.EIO, "синтетический сбой сборки")
+        return подлинная(*args, **kwargs)
+
+    monkeypatch.setattr(restarted, "_построить_индекс_кода", сборка)
+    restarted.startup()
+    assert restarted.wait_for_module_builds(timeout=30)
+    assert not restarted.modules[source.id].готов
+    assert restarted.sources[source.id].status == "error"
+
+    restarted.startup()
+    assert restarted.wait_for_module_builds(timeout=30)
+    assert restarted.modules[source.id].готов

@@ -179,3 +179,84 @@ def test_cli_не_затирает_нечитаемый_словарь(tmp_path,
 
     assert cli.main(["dict-show", "--data", str(data)]) == 0
     assert "не читается" in capsys.readouterr().err
+
+
+def test_правка_применяется_к_актуальному_файлу_а_не_к_памяти(tmp_path):
+    registry = Registry(tmp_path / "data")
+    registry.mutate_dictionary(lambda d: d.add_synonyms(["возчик", "перевозчик"]))
+    # Оператор правит файл на томе (или `dict-*` CLI) без reload сервера.
+    external = Dictionary.load(registry.dictionary_path)
+    external.add_alias("склад", ["Справочник.Склады"])
+    external.save(registry.dictionary_path)
+
+    registry.mutate_dictionary(lambda d: d.add_synonyms(["склад", "хранилище"]))
+
+    on_disk = Dictionary.load(registry.dictionary_path)
+    assert on_disk.aliases == {"*": {"склад": ["Справочник.Склады"]}}
+    assert on_disk.synonym_groups == [["возчик", "перевозчик"], ["склад", "хранилище"]]
+    assert registry.dictionary.aliases == on_disk.aliases
+    assert registry.dictionary.synonym_groups == on_disk.synonym_groups
+
+
+def test_правка_не_затирает_файл_испорченный_после_старта(tmp_path):
+    registry = Registry(tmp_path / "data")
+    registry.mutate_dictionary(lambda d: d.add_synonyms(["возчик", "перевозчик"]))
+    registry.dictionary_path.write_text("{", encoding="utf-8")
+
+    with pytest.raises(DictionaryError, match="не записана"):
+        registry.mutate_dictionary(lambda d: d.add_synonyms(["а", "б"]))
+
+    assert registry.dictionary_path.read_text(encoding="utf-8") == "{"
+    assert registry.dictionary_error
+    assert registry.dictionary.synonym_groups == [["возчик", "перевозчик"]]
+
+
+def test_правка_без_изменений_не_пишет_файл(tmp_path, monkeypatch):
+    registry = Registry(tmp_path / "data")
+    registry.mutate_dictionary(lambda d: d.add_synonyms(["возчик", "перевозчик"]))
+
+    def forbidden(self, path=None):
+        raise OSError(30, "Read-only file system")
+
+    monkeypatch.setattr(Dictionary, "save", forbidden)
+    assert registry.mutate_dictionary(lambda d: d.remove_synonyms(["нет", "такой"])) is False
+    assert registry.mutate_dictionary(lambda d: d.remove_alias("нет такого")) is False
+
+
+def test_cli_снятие_отсутствующей_группы_на_томе_только_для_чтения(tmp_path, capsys):
+    from mcp1c import cli
+
+    data = tmp_path / "data"
+    data.mkdir()
+    Dictionary(synonym_groups=[["возчик", "перевозчик"]]).save(data / "dictionary.json")
+    before = (data / "dictionary.json").read_bytes()
+    data.chmod(0o555)
+    try:
+        code = cli.main(["dict-synonyms", "нет", "такой", "--remove", "--data", str(data)])
+    finally:
+        data.chmod(0o755)
+
+    assert code == 1
+    assert "такой группы нет" in capsys.readouterr().out
+    assert (data / "dictionary.json").read_bytes() == before
+
+
+def test_отказ_fsync_каталога_после_replace_не_расходит_память_с_диском(
+    tmp_path, monkeypatch
+):
+    registry = Registry(tmp_path / "data")
+    registry.mutate_dictionary(lambda d: d.add_synonyms(["возчик", "перевозчик"]))
+    original = os.fsync
+
+    def failing_dir(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(5, "Input/output error")
+        return original(fd)
+
+    monkeypatch.setattr(dictionary_module.os, "fsync", failing_dir)
+    registry.mutate_dictionary(lambda d: d.add_synonyms(["склад", "хранилище"]))
+    monkeypatch.undo()
+
+    expected = [["возчик", "перевозчик"], ["склад", "хранилище"]]
+    assert Dictionary.load(registry.dictionary_path).synonym_groups == expected
+    assert registry.dictionary.synonym_groups == expected

@@ -1001,6 +1001,11 @@ class Registry:
         except DictionaryError as error:
             self.dictionary = Dictionary(path=self.dictionary_path)
             self._dictionary_error = str(error)
+        # Таблица синонимов действующего словаря. Меняется только под
+        # `_lock` вместе с `self.dictionary`; каждая вставка индекса в карты
+        # реестра берёт её под тем же замком. Иначе индекс, собранный до
+        # правки словаря и опубликованный после неё, жил бы со старой.
+        self._synonyms = self.dictionary.synonyms()
 
         self._lock = threading.RLock()
         self._source_reservations: Counter[Path] = Counter()
@@ -1820,7 +1825,9 @@ class Registry:
                     f"Конфигурация «{config.name}» изменилась во время загрузки "
                     "Source A. Повторите загрузку."
                 )
-            self.configurations[config.name] = loaded
+            self.configurations[config.name] = self._словарь_конфигурации_locked(
+                loaded
+            )
             self.sources[source.id] = source
             self._relation_cache.pop(config.name, None)
             self._advance_configuration_revision(config.name)
@@ -2369,6 +2376,21 @@ class Registry:
                     self._modules_generation.get(source_id, 0) + 1
                 )
 
+    def _словарь_модулей_locked(self, loaded: LoadedModules) -> LoadedModules:
+        """Под `_lock`: поиск кода получает действующую таблицу синонимов."""
+        if loaded.поиск is not None:
+            loaded.поиск.synonyms = self._synonyms
+        return loaded
+
+    def _словарь_конфигурации_locked(
+        self, loaded: LoadedConfiguration
+    ) -> LoadedConfiguration:
+        """Под `_lock`: индексы метаданных и полей — с действующим словарём."""
+        loaded.index.synonyms = self._synonyms
+        loaded.index.aliases = self.dictionary.aliases_for(loaded.config.name)
+        loaded.field_index.synonyms = self._synonyms
+        return loaded
+
     def _с_локальными_синонимами(
         self, индексы: modules_index.Индексы
     ) -> modules_index.Индексы:
@@ -2720,7 +2742,9 @@ class Registry:
                     if self._поколение_актуально(source, поколение, строится):
                         source.status = STATUS_READY
                         source.error = ""
-                        self.modules[source_id] = готовые
+                        self.modules[source_id] = self._словарь_модулей_locked(
+                            готовые
+                        )
                         опубликовано = True
             if опубликовано:
                 self._журналировать_ограничения_кода(source, индексы)
@@ -2865,8 +2889,8 @@ class Registry:
                     return
                 source.status = STATUS_READY
                 source.error = ""
-                self.modules[source.id] = self._готовые_модули(
-                    source, корень, индексы
+                self.modules[source.id] = self._словарь_модулей_locked(
+                    self._готовые_модули(source, корень, индексы)
                 )
                 опубликовано = True
             if опубликовано:
@@ -4945,13 +4969,17 @@ class Registry:
                     self._generation_manifests[key] = manifest
                     if loaded_configuration is not None:
                         name = loaded_configuration.config.name
-                        self.configurations[name] = loaded_configuration
+                        self.configurations[name] = (
+                            self._словарь_конфигурации_locked(loaded_configuration)
+                        )
                         self._advance_configuration_revision(name)
                         modules_key = f"{name}:modules"
                         if loaded_modules is None:
                             self.modules.pop(modules_key, None)
                         else:
-                            self.modules[modules_key] = loaded_modules
+                            self.modules[modules_key] = (
+                                self._словарь_модулей_locked(loaded_modules)
+                            )
                         if prepared_runtime.runtime.roles is None:
                             self.roles.pop(name, None)
                         else:
@@ -4992,7 +5020,9 @@ class Registry:
                         if loaded_modules is None:
                             self.modules.pop(extension_key, None)
                         else:
-                            self.modules[extension_key] = loaded_modules
+                            self.modules[extension_key] = (
+                                self._словарь_модулей_locked(loaded_modules)
+                            )
                         structure = prepared_runtime.runtime.extension_structure
                         assert structure is not None
                         self.extension_structures[extension_key] = structure
@@ -5057,7 +5087,10 @@ class Registry:
             if self.registry_path.exists():
                 payload = json.loads(self.registry_path.read_text(encoding="utf-8"))
             pointers = self._generation_pointers_from_payload(payload)
-        except (OSError, json.JSONDecodeError, BundleStoreError) as error:
+        except (OSError, ValueError, BundleStoreError) as error:
+            # ValueError покрывает и JSONDecodeError, и UnicodeDecodeError:
+            # невалидный UTF-8 в registry.json рядом с WAL раньше ронял старт
+            # traceback-ом вместо fail-closed блокировки.
             raise RecoveryBlocked(
                 "generation recovery неоднозначен: registry pointer не читается"
             ) from error
@@ -5229,9 +5262,25 @@ class Registry:
                     f"{self._dictionary_error} Правка не записана, чтобы не "
                     "затереть файл."
                 )
-            candidate = self.dictionary.copy()
+            # База правки — файл на диске, а не память: правку оператора на
+            # томе или командой `dict-*` до reload иначе молча затёрла бы
+            # следующая правка из дашборда.
+            try:
+                candidate = Dictionary.load(self.dictionary_path)
+            except DictionaryError as error:
+                self._dictionary_error = str(error)
+                raise DictionaryError(
+                    f"{error} Правка не записана, чтобы не затереть файл."
+                ) from error
+            before = candidate.copy()
             result = mutation(candidate)
-            candidate.save(self.dictionary_path)
+            # Правка без изменений файл не трогает: снятие отсутствующей
+            # группы не должно падать на томе только для чтения.
+            if (candidate.synonym_groups, candidate.aliases) != (
+                before.synonym_groups,
+                before.aliases,
+            ):
+                candidate.save(self.dictionary_path)
             self._publish_dictionary(candidate)
             return result
 
@@ -5265,6 +5314,7 @@ class Registry:
         synonyms = dictionary.synonyms()
         with self._lock:
             self.dictionary = dictionary
+            self._synonyms = synonyms
             for name, loaded in self.configurations.items():
                 loaded.index.synonyms = synonyms
                 loaded.index.aliases = dictionary.aliases_for(name)
@@ -5404,13 +5454,17 @@ class Registry:
                 loaded_modules,
             ) in native_runtime.items():
                 name = loaded_configuration.config.name
-                self.configurations[name] = loaded_configuration
+                self.configurations[name] = self._словарь_конфигурации_locked(
+                    loaded_configuration
+                )
                 self._advance_configuration_revision(name)
                 modules_key = f"{name}:modules"
                 if loaded_modules is None:
                     self.modules.pop(modules_key, None)
                 else:
-                    self.modules[modules_key] = loaded_modules
+                    self.modules[modules_key] = self._словарь_модулей_locked(
+                        loaded_modules
+                    )
                 if _prepared.runtime.roles is None:
                     self.roles.pop(name, None)
                 else:
@@ -5510,7 +5564,9 @@ class Registry:
                 if loaded_modules is None:
                     self.modules.pop(extension_key, None)
                 else:
-                    self.modules[extension_key] = loaded_modules
+                    self.modules[extension_key] = self._словарь_модулей_locked(
+                        loaded_modules
+                    )
                 self.extension_structures[extension_key] = structure
                 self.extension_relations[extension_key] = (
                     prepared.extension_relations

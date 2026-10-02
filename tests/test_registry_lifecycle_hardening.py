@@ -423,3 +423,17 @@ def test_недоступный_снимок_расширений_даёт_ош�
     каталог.mkdir()
     with pytest.raises(ExtensionRuntimeError, match="недоступен"):
         load_extension_runtime(каталог)
+
+
+def test_невалидный_utf8_registry_json_при_wal_закрывает_запись(tmp_path):
+    registry, _first = _blocked_generation_registry(tmp_path)
+    registry.registry_path.write_bytes(b'{"registry_version": 1, "x": "\xff"}')
+    before = registry.registry_path.read_bytes()
+
+    restarted = Registry(registry.data_dir)
+    problems = restarted.startup()
+
+    assert problems and "неоднознач" in problems[0]
+    with pytest.raises(RegistryRecoveryBlocked):
+        restarted.save()
+    assert restarted.registry_path.read_bytes() == before

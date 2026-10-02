@@ -118,3 +118,31 @@ def test_свежесобранный_поиск_процедур_видит_л�
 
     ответ = tools.search_procedures(registry, "суммирует", config="Пример")
     assert "ОбщийМодуль.ОбщийПример::Сложить" in ответ
+
+
+def test_правка_словаря_во_время_сборки_доходит_до_опубликованного_поколения(
+    tmp_path, monkeypatch
+):
+    from test_intake_v2_extensions import _materialized, _stage_active_base
+
+    registry = Registry(tmp_path / "data")
+    _collection, generation = _materialized(tmp_path, "generation-001")
+    подлинная = registry._build_native_generation_runtime
+
+    def правка_посреди(root, manifest):
+        prepared = подлинная(root, manifest)
+        # Сборка уже взяла словарь; правка приходит до вставки в карты.
+        registry.mutate_dictionary(
+            lambda dictionary: dictionary.add_synonyms(["возчик", "перевозчик"])
+        )
+        return prepared
+
+    monkeypatch.setattr(registry, "_build_native_generation_runtime", правка_посреди)
+    registry.publish_generation(_stage_active_base(registry, generation))
+
+    loaded = registry.configurations["DemoConfiguration"]
+    assert "перевозчик" in loaded.index.synonyms.get("возчик", ())
+    assert "перевозчик" in loaded.field_index.synonyms.get("возчик", ())
+    modules = registry.modules["DemoConfiguration:modules"]
+    assert modules.поиск is not None
+    assert "перевозчик" in modules.поиск.synonyms.get("возчик", ())

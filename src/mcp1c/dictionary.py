@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import stat
 import uuid
@@ -30,6 +31,8 @@ from pathlib import Path
 from typing import Iterable
 
 from .synonyms import BUILTIN_ALIASES, SYNONYM_GROUPS
+
+logger = logging.getLogger(__name__)
 
 DICTIONARY_VERSION = 1
 ANY_CONFIGURATION = "*"
@@ -124,11 +127,23 @@ def _write_durably(target: Path, text: str) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         temporary.replace(target)
-        directory = os.open(target.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        # После replace новый словарь уже виден на диске. Отказ fsync
+        # каталога не отменяет запись: исключение здесь оставило бы в памяти
+        # прежний словарь при новом файле, поэтому только журнал.
         try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+            directory = os.open(
+                target.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            )
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        except OSError as error:
+            logger.warning(
+                "fsync каталога словаря не выполнен (%s): запись видна, но "
+                "может не пережить сбой питания",
+                error.strerror or type(error).__name__,
+            )
     finally:
         temporary.unlink(missing_ok=True)
 

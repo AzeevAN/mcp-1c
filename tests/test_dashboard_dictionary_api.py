@@ -129,11 +129,14 @@ def test_dictionary_api_снимает_точный_локальный_слой_
 ):
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
     registry = _registry(tmp_path)
-    registry.dictionary.add_alias(
-        "склад", ["Справочник.Контрагенты"], None
-    )
-    registry.dictionary.add_alias(
-        "склад", ["Документ.Приход"], "ТестоваяКонфигурация"
+    # Через запись на диск: правка дашборда берёт базой файл, а не память.
+    registry.mutate_dictionary(
+        lambda dictionary: (
+            dictionary.add_alias("склад", ["Справочник.Контрагенты"], None),
+            dictionary.add_alias(
+                "склад", ["Документ.Приход"], "ТестоваяКонфигурация"
+            ),
+        )
     )
 
     with _client(registry) as client:

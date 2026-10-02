@@ -683,13 +683,21 @@ def _check_capability_names(enabled_capabilities: tuple[str, ...]) -> None:
 
     Набор из `server-settings.json` проверяется при чтении, но `build_server`
     зовут и напрямую (тесты, замеры), и опечатка в имени не должна выглядеть
-    как выключенный модуль.
+    как выключенный модуль. Повтор имени — противоречие сборке: так было и
+    при загрузчике модулей, и `active` такого набора не совпал бы с
+    нормализованным набором из настроек.
     """
+    seen: set[str] = set()
     for name in enabled_capabilities:
         if name not in CAPABILITY_DEFINITIONS:
             raise CapabilityConfigurationError(
                 f"Неизвестный capability-модуль `{name}`."
             )
+        if name in seen:
+            raise CapabilityContractError(
+                f"Capability-модуль `{name}` указан повторно."
+            )
+        seen.add(name)
 
 
 def _startup_dependencies(
@@ -1410,6 +1418,9 @@ def build_server(
             capability_runtime=capability_runtime,
         )
     )
+    # До регистрации: иначе отказ справки или ролей заслонил бы причину —
+    # опечатку или повтор в самом наборе.
+    _check_capability_names(enabled_capabilities)
     module_download_available = (
         "module_source_download" in enabled_capabilities
         and transport == "streamable-http"
@@ -1436,7 +1447,6 @@ def build_server(
     _register_role_tools(server, registry, enabled_capabilities)
     _register_reference_tools(server, reference, enabled_capabilities)
 
-    _check_capability_names(enabled_capabilities)
     _add_http_routes(
         server, registry, reference, restart, capability_runtime, download_tickets,
         module_download_available=module_download_available,

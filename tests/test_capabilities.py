@@ -21,6 +21,7 @@ from mcp1c.capabilities import (
     CapabilitySettingsStore,
     MAX_SERVER_SETTINGS_BYTES,
     CapabilityConfigurationError,
+    CapabilityContractError,
     resolve_capability_settings,
 )
 from mcp1c.reference_provider import ReferenceService
@@ -103,6 +104,30 @@ def test_неизвестное_имя_capability_отклоняется_при_
     """Опечатка в startup-наборе — отказ, а не молча выключенный модуль."""
     with pytest.raises(CapabilityConfigurationError, match="`unknown`"):
         _server(tmp_path, enabled_capabilities=("unknown",))
+
+
+@pytest.mark.parametrize(
+    "enabled",
+    [
+        ("reference", "reference"),
+        ("module_source_download", "module_source_download"),
+    ],
+)
+def test_повтор_имени_capability_с_готовым_runtime_отклоняется(tmp_path, enabled):
+    """Повтор в startup-наборе — противоречие сборке, а не тихий дубль.
+
+    Без готового runtime повтор ловит ещё чтение fallback-настроек; с
+    runtime от вызывающего его ловила только загрузка модулей, которой нет.
+    """
+    with pytest.raises(CapabilityContractError, match="повторно"):
+        build_server(
+            Registry(tmp_path),
+            reference=ReferenceService.discover(tmp_path / "missing-reference"),
+            enabled_capabilities=enabled,
+            capability_runtime=CapabilityRuntime(
+                CapabilitySettingsStore(tmp_path), active=enabled
+            ),
+        )
 
 
 def test_main_игнорирует_устаревшую_env_переменную(tmp_path, monkeypatch):

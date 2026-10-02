@@ -59,11 +59,12 @@ from .heavy_operations import HeavyOperations
 from .intake_v2_api import (
     IntakeApiConflict,
     IntakeApiError,
+    IntakeApiInvalid,
     IntakeApiNotFound,
     IntakeApiService,
     IntakeWork,
 )
-from .intake_v2 import ExportIdentity
+from .intake_v2 import CandidateStoreError, ExportIdentity, IntakeV2ContractError
 from .intake_v2_lifecycle import LifecycleError
 from .intake_v2_operations import OperationConflict, OperationError
 from .intake_v2_transport import (
@@ -1403,6 +1404,7 @@ def _spa_routes(
             LifecycleError,
             OperationError,
             RegistryError,
+            CandidateStoreError,
         ) as error:
             return _json_error(str(error), 409)
         return JSONResponse(payload)
@@ -1488,9 +1490,9 @@ def _spa_routes(
                 )
             except IntakeApiNotFound as error:
                 return _json_error(str(error), 404)
-            except (IntakeApiConflict, LifecycleError) as error:
+            except (IntakeApiConflict, LifecycleError, CandidateStoreError) as error:
                 return _json_error(str(error), 409)
-            except IntakeApiError as error:
+            except (IntakeApiError, IntakeV2ContractError) as error:
                 return _json_error(str(error), 422)
             task = heavy.spawn(run_intake_work(service, work))
             intake_tasks.add(task)
@@ -1506,7 +1508,13 @@ def _spa_routes(
             return denied
         try:
             return JSONResponse(await run_in_threadpool(intake_service().jobs_snapshot))
-        except (IntakeApiError, LifecycleError, OperationError, RegistryError) as error:
+        except (
+            IntakeApiError,
+            LifecycleError,
+            OperationError,
+            RegistryError,
+            CandidateStoreError,
+        ) as error:
             return _json_error(str(error), 409)
 
     async def intake_job_api(request: Request) -> JSONResponse:
@@ -1520,7 +1528,14 @@ def _spa_routes(
             )
         except IntakeApiNotFound as error:
             return _json_error(str(error), 404)
-        except (IntakeApiError, LifecycleError, OperationError) as error:
+        except (IntakeApiInvalid, IntakeV2ContractError) as error:
+            return _json_error(str(error), 422)
+        except (
+            IntakeApiError,
+            LifecycleError,
+            OperationError,
+            CandidateStoreError,
+        ) as error:
             return _json_error(str(error), 409)
         return JSONResponse({"job": payload})
 
@@ -1534,6 +1549,7 @@ def _spa_routes(
             payload.get("job_id"), str
         ):
             return _json_error("Нужен единственный строковый job_id.", 422)
+        service = intake_service()
         async with intake_start_lock:
             if any(not task.done() for task in intake_tasks):
                 return _json_error(
@@ -1541,19 +1557,33 @@ def _spa_routes(
                     409,
                 )
             try:
-                job = await heavy.run(
-                    intake_service().confirm,
-                    payload["job_id"],
-                )
+                job = await heavy.run(service.confirm, payload["job_id"])
+                response: JSONResponse = JSONResponse({"job": job})
             except IntakeApiNotFound as error:
-                return _json_error(str(error), 404)
-            except (IntakeApiConflict, OperationConflict) as error:
-                return _json_error(str(error), 409)
-            except (IntakeApiError, LifecycleError, OperationError) as error:
-                return _json_error(str(error), 422)
-        if role_tools_refresh is not None:
+                response = _json_error(str(error), 404)
+            except (
+                IntakeApiConflict,
+                OperationConflict,
+                CandidateStoreError,
+            ) as error:
+                response = _json_error(str(error), 409)
+            except (
+                IntakeApiError,
+                LifecycleError,
+                OperationError,
+                IntakeV2ContractError,
+            ) as error:
+                response = _json_error(str(error), 422)
+            # Публикация и последующая очистка (browser ZIP, payload ответа)
+            # — разные шаги. Если упала только очистка, поколение уже
+            # опубликовано, и инструменты ролей обязаны его увидеть сразу, а
+            # не после повторного confirm.
+            refresh = response.status_code == 200 or await run_in_threadpool(
+                service.is_committed, payload["job_id"]
+            )
+        if refresh and role_tools_refresh is not None:
             await role_tools_refresh()
-        return JSONResponse({"job": job})
+        return response
 
     @heavy_endpoint
     async def intake_discard_api(request: Request) -> JSONResponse:
@@ -1578,9 +1608,14 @@ def _spa_routes(
                 )
             except IntakeApiNotFound as error:
                 return _json_error(str(error), 404)
-            except IntakeApiConflict as error:
+            except (IntakeApiConflict, CandidateStoreError) as error:
                 return _json_error(str(error), 409)
-            except (IntakeApiError, LifecycleError, OperationError) as error:
+            except (
+                IntakeApiError,
+                LifecycleError,
+                OperationError,
+                IntakeV2ContractError,
+            ) as error:
                 return _json_error(str(error), 422)
         return JSONResponse(result)
 
@@ -1606,7 +1641,7 @@ def _spa_routes(
                 )
             except IntakeApiNotFound as error:
                 return _json_error(str(error), 404)
-            except IntakeApiConflict as error:
+            except (IntakeApiConflict, CandidateStoreError) as error:
                 return _json_error(str(error), 409)
             except (IntakeApiError, LifecycleError, OperationError) as error:
                 return _json_error(str(error), 422)

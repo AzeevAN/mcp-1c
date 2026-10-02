@@ -11,6 +11,7 @@ from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Mapping
 
+from . import intake_v2_fsio as fsio
 from .intake_v2 import (
     ExportIdentity,
     GenerationManifest,
@@ -97,12 +98,7 @@ class _ModuleBody:
     source_member: str = ""
 
 
-def _sync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+_sync_directory = fsio.sync_directory
 
 
 def _write(path: Path, payload: bytes) -> None:

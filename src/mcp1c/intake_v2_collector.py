@@ -22,6 +22,7 @@ from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Iterable, Mapping
 
 from . import module_address
+from . import intake_v2_fsio as fsio
 from .intake_v2 import (
     LayerKind,
     LayerState,
@@ -1047,12 +1048,7 @@ def _write_json(path: Path, value: object) -> None:
         os.fsync(output.fileno())
 
 
-def _sync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+_sync_directory = fsio.sync_directory
 
 
 def _ready_roles(

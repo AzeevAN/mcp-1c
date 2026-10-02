@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Iterable
 
+from . import intake_v2_fsio as fsio
 from .intake_v2 import CandidateTransport
 from .resource_limits import (
     ARCHIVE_LIMITS,
@@ -38,7 +39,6 @@ MAX_BROWSER_UPLOAD_BYTES = 4 * 1024 * MIB
 DIRECTORY_SETTLE_SECONDS = 5.0
 _READ_CHUNK = 1 << 20
 _STAGING_FORMAT_VERSION = 1
-_IDENTIFIER_RE = re.compile(r"[A-Za-z0-9._-]+\Z")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _MAX_PATH_BYTES = 4096
 _MAX_PATH_DEPTH = 64
@@ -62,11 +62,7 @@ class TransportUnstableError(TransportError):
 
 
 def _candidate_id(value: object) -> str:
-    if (
-        not isinstance(value, str)
-        or not _IDENTIFIER_RE.fullmatch(value)
-        or len(value) > 128
-    ):
+    if not fsio.is_safe_identifier(value):
         raise TransportSecurityError("candidate_id имеет недопустимый формат")
     return value
 
@@ -128,13 +124,7 @@ def _fingerprint(parts: Iterable[object]) -> str:
     return digest.hexdigest()
 
 
-def _sync_directory(directory: Path) -> None:
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-    descriptor = os.open(directory, flags)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+_sync_directory = fsio.sync_directory
 
 
 def _ensure_regular_directory(path: Path, label: str) -> None:
@@ -155,41 +145,21 @@ def _ensure_regular_directory(path: Path, label: str) -> None:
 def _read_small_regular_file(path: Path, limit: int) -> bytes:
     """Прочитать малую metadata-запись без окна перехода по symlink."""
     try:
-        before = path.lstat()
+        return fsio.read_record(path, limit=limit)
     except FileNotFoundError:
         raise
-    except OSError as error:
-        raise TransportError("запись browser staging недоступна") from error
-    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+    except fsio.RecordTypeError:
         raise TransportSecurityError(
             "запись browser staging должна быть обычным файлом"
-        )
-    if before.st_size > limit:
-        raise TransportLimitError("запись browser staging превышает предел")
-    descriptor: int | None = None
-    try:
-        descriptor = os.open(
-            path,
-            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
-        )
-        after = os.fstat(descriptor)
-        if _identity(before) != _identity(after):
-            raise TransportUnstableError(
-                "запись browser staging изменилась во время чтения"
-            )
-        with os.fdopen(descriptor, "rb") as stream:
-            descriptor = None
-            payload = stream.read(limit + 1)
-        if len(payload) > limit:
-            raise TransportLimitError("запись browser staging превышает предел")
-        return payload
-    except TransportError:
-        raise
+        ) from None
+    except fsio.RecordTooLargeError:
+        raise TransportLimitError("запись browser staging превышает предел") from None
+    except fsio.RecordChangedError:
+        raise TransportUnstableError(
+            "запись browser staging изменилась во время чтения"
+        ) from None
     except OSError as error:
         raise TransportError("запись browser staging недоступна") from error
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
 
 
 def _read_budget(

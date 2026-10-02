@@ -13,12 +13,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
+from . import intake_v2_fsio as fsio
 from .intake_v2 import (
+    CandidateStoreError,
     CandidateTransport,
     CandidateJobStage,
     CandidateJobState,
     DurableCandidateStore,
     ExportIdentity,
+    IntakeV2ContractError,
     LayerManifest,
     SourceKind,
 )
@@ -35,6 +38,7 @@ from .intake_v2_operations import (
     IntakeCommitResult,
     IntakeCoordinator,
     OperationConflict,
+    OperationError,
     OperationStalePreview,
 )
 from .intake_v2_planner import IntakeAction, LayerVersion
@@ -64,6 +68,25 @@ class IntakeApiNotFound(IntakeApiError):
     """Candidate или job с указанным идентификатором отсутствует."""
 
 
+class IntakeApiInvalid(IntakeApiError):
+    """Идентификатор из запроса не может быть именем durable-записи."""
+
+
+def _request_identifier(value: object, label: str) -> str:
+    """Проверить id клиента до того, как он станет компонентом пути.
+
+    Хранилища проверяют id и сами, но их отказ — исключение контракта, которое
+    HTTP-слой видел как необработанное (500). Здесь отказ однозначно 422.
+    """
+    if not fsio.is_safe_identifier(value):
+        raise IntakeApiInvalid(
+            f"{label} должен начинаться с латинской буквы или цифры, содержать "
+            "только латинские буквы, цифры, '.', '_' или '-' и быть не длиннее "
+            "128 символов."
+        )
+    return value  # type: ignore[return-value]
+
+
 @dataclass(frozen=True, slots=True)
 class IntakeWork:
     job_id: str
@@ -71,7 +94,6 @@ class IntakeWork:
     action: IntakeAction
     active: GenerationView | None
     generation_id: str
-    resume: bool = False
 
 
 def _layer_version_payload(
@@ -249,10 +271,38 @@ class IntakeApiService:
             "actions": self._actions(candidate, registry_snapshot),
         }
 
+    def _listed_job_payload(self, job) -> dict[str, object]:
+        """Payload job для списка: сбой одной job не скрывает остальные.
+
+        Иначе одна DONE-job с утраченным preview (оборванный discard, ручная
+        правка каталога) отвечала 409 на весь список, и в интерфейсе нельзя
+        было даже увидеть её, чтобы отменить.
+        """
+        try:
+            return self.job_payload(job.job_id)
+        except (
+            IntakeApiError,
+            LifecycleError,
+            OperationError,
+            RegistryError,
+            CandidateStoreError,
+            IntakeV2ContractError,
+        ) as error:
+            return {
+                "transport": None,
+                "job_id": job.job_id,
+                "candidate_id": job.candidate_id,
+                "state": CandidateJobState.FAILED.value,
+                "stage": CandidateJobStage.FAILED.value,
+                "error": str(error) or error.__class__.__name__,
+                "preview": None,
+                "commit": None,
+            }
+
     def jobs_snapshot(self) -> dict[str, object]:
         """Читать сохранённые операции без обнаружения или хеширования входов."""
         with self.lifecycle.stable_jobs() as jobs:
-            return {"jobs": [self.job_payload(job.job_id) for job in jobs]}
+            return {"jobs": [self._listed_job_payload(job) for job in jobs]}
 
     def snapshot(self) -> dict[str, object]:
         refreshed = self.lifecycle.refresh()
@@ -261,7 +311,7 @@ class IntakeApiService:
         # этой короткой секции. Здесь нужна атомарность только между списком job
         # и их payload: иначе конкурентный discard оставляет ложный HTTP 409.
         with self.lifecycle.stable_jobs() as jobs:
-            job_payloads = [self.job_payload(job.job_id) for job in jobs]
+            job_payloads = [self._listed_job_payload(job) for job in jobs]
         return {
             "api_version": "v1",
             "directories": self.directory_sources(),
@@ -389,6 +439,9 @@ class IntakeApiService:
             selected_action = IntakeAction(action)
         except (TypeError, ValueError) as error:
             raise IntakeApiError("Неизвестное действие intake.") from error
+        _request_identifier(candidate_id, "candidate_id")
+        if job_id:
+            _request_identifier(job_id, "job_id")
         try:
             candidate = self.lifecycle.catalog.load(candidate_id)
         except KeyError:
@@ -400,18 +453,14 @@ class IntakeApiService:
         except KeyError:
             previous = None
         if previous is not None and previous.state is CandidateJobState.PARSING:
-            self.lifecycle.start(
-                job_id,
-                candidate_id,
-                parent_configuration=parent_configuration,
-            )
-            return IntakeWork(
-                job_id,
-                candidate_id,
-                selected_action,
-                None,
-                "",
-                resume=True,
+            # Прежняя ветка «resume» сюда не доходила: маршрут не пускает start
+            # при живой задаче intake, а PARSING прежнего процесса закрывается
+            # при старте lifecycle. PARSING без задачи остаётся, только если
+            # не удалось записать даже отказ; запускать поверх неё второй
+            # parse с тем же work нельзя.
+            raise IntakeApiConflict(
+                "Job ещё выполняется или её состояние не удалось сохранить; "
+                "дождитесь завершения или перезапустите сервис."
             )
         if previous is not None and previous.state is CandidateJobState.DONE:
             try:
@@ -450,12 +499,6 @@ class IntakeApiService:
         if not isinstance(work, IntakeWork):
             raise TypeError("work должен быть IntakeWork")
         try:
-            if work.resume:
-                self.lifecycle.resume(
-                    work.job_id,
-                    expected_action=work.action,
-                )
-                return
             self.lifecycle.prepare(
                 work.job_id,
                 action=work.action,
@@ -466,7 +509,23 @@ class IntakeApiService:
             self.lifecycle.operations.fail(work.job_id, error)
             raise
 
+    def is_committed(self, job_id: str) -> bool:
+        """Есть ли у job durable commit result — то есть поколение опубликовано.
+
+        HTTP-слой спрашивает это после неудачного confirm: публикация могла
+        пройти, а упасть — только последующая очистка. Ошибки чтения означают
+        «не доказано», а не отказ запроса.
+        """
+        if not fsio.is_safe_identifier(job_id):
+            return False
+        try:
+            self.lifecycle.operations.load_commit(job_id)
+        except Exception:
+            return False
+        return True
+
     def confirm(self, job_id: str) -> dict[str, object]:
+        _request_identifier(job_id, "job_id")
         try:
             self.lifecycle.operations.records.load_job(job_id)
         except KeyError:
@@ -502,6 +561,7 @@ class IntakeApiService:
         return self.job_payload(job_id)
 
     def discard(self, job_id: str) -> dict[str, str]:
+        _request_identifier(job_id, "job_id")
         try:
             self.lifecycle.operations.records.load_job(job_id)
         except KeyError:
@@ -541,6 +601,7 @@ class IntakeApiService:
             raise IntakeApiConflict(str(error)) from error
 
     def job_payload(self, job_id: str) -> dict[str, object]:
+        _request_identifier(job_id, "job_id")
         try:
             job = self.lifecycle.operations.records.load_job(job_id)
         except KeyError:
@@ -653,6 +714,7 @@ class IntakeApiService:
 __all__ = [
     "IntakeApiConflict",
     "IntakeApiError",
+    "IntakeApiInvalid",
     "IntakeApiNotFound",
     "IntakeApiService",
     "IntakeWork",

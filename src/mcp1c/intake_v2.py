@@ -9,20 +9,22 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import stat
-import tempfile
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import BinaryIO, Protocol, runtime_checkable
 
+from . import intake_v2_fsio as fsio
+
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
-_IDENTIFIER_RE = re.compile(r"[A-Za-z0-9._-]+\Z")
 _STORE_FORMAT_VERSION = 1
+# Job и candidate — килобайты; предел лишь не даёт подложенному файлу
+# заставить сервер прочитать в память гигабайт.
+_MAX_STORE_RECORD_BYTES = 1 << 20
 
 
 class IntakeV2ContractError(ValueError):
@@ -114,9 +116,10 @@ def _required_text(value: object, label: str) -> str:
 
 def _safe_identifier(value: object, label: str) -> str:
     value = _required_text(value, label)
-    if not _IDENTIFIER_RE.fullmatch(value):
+    if not fsio.is_safe_identifier(value):
         raise IntakeV2ContractError(
-            f"{label} должен содержать только ASCII-буквы, цифры, '.', '_' или '-'"
+            f"{label} должен начинаться с ASCII-буквы или цифры, содержать только "
+            "ASCII-буквы, цифры, '.', '_' или '-' и быть не длиннее 128 символов"
         )
     return value
 
@@ -514,46 +517,28 @@ class DurableCandidateStore:
             + "\n"
         ).encode("utf-8")
 
-    @staticmethod
-    def _sync_directory(directory: Path) -> None:
-        descriptor = os.open(directory, os.O_RDONLY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-
     def _write(self, path: Path, kind: str, payload: dict[str, object]) -> None:
-        temporary: Path | None = None
         try:
-            descriptor, raw_path = tempfile.mkstemp(
-                dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
-            )
-            temporary = Path(raw_path)
-            with os.fdopen(descriptor, "wb") as stream:
-                stream.write(self._encoded(kind, payload))
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, path)
-            temporary = None
-            self._sync_directory(path.parent)
+            fsio.write_record_atomic(path, self._encoded(kind, payload))
         except (OSError, UnicodeError, TypeError, ValueError) as error:
             raise CandidateStoreError("не удалось атомарно записать candidate store") from error
-        finally:
-            if temporary is not None:
-                try:
-                    temporary.unlink(missing_ok=True)
-                except OSError:
-                    pass
 
     def _read(self, path: Path, expected_kind: str) -> object:
-        if path.is_symlink():
-            raise CandidateStoreError(
-                "запись candidate store не может быть символической ссылкой"
-            )
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
+            raw = json.loads(
+                fsio.read_record(path, limit=_MAX_STORE_RECORD_BYTES).decode("utf-8")
+            )
         except FileNotFoundError:
             raise KeyError(path.stem) from None
+        except fsio.RecordTypeError:
+            raise CandidateStoreError(
+                "запись candidate store должна быть обычным файлом, "
+                "а не символической ссылкой"
+            ) from None
+        except fsio.RecordReadError as error:
+            raise CandidateStoreError(
+                "запись candidate store превышает предел или изменилась при чтении"
+            ) from error
         except (OSError, UnicodeError, json.JSONDecodeError) as error:
             raise CandidateStoreError("candidate store повреждён или недоступен") from error
         if (
@@ -597,7 +582,7 @@ class DurableCandidateStore:
             )
         try:
             path.unlink()
-            self._sync_directory(directory)
+            fsio.sync_directory(directory)
         except OSError as error:
             raise CandidateStoreError(
                 "не удалось удалить запись candidate store"
@@ -634,10 +619,20 @@ class DurableCandidateStore:
                     raise CandidateStoreError(
                         "candidate store содержит символическую ссылку"
                     )
-                if path.is_file() and path.suffix == ".json":
+                # Скрытые имена — временные файлы и записи, созданные до
+                # запрета ``.``/``..`` в job_id; штатный id так не начинается.
+                if (
+                    path.is_file()
+                    and path.suffix == ".json"
+                    and not path.name.startswith(".")
+                ):
                     job_ids.append(_safe_identifier(path.stem, "job_id"))
         except CandidateStoreError:
             raise
+        except IntakeV2ContractError as error:
+            raise CandidateStoreError(
+                "candidate store содержит запись с недопустимым job_id"
+            ) from error
         except OSError as error:
             raise CandidateStoreError("candidate store недоступен") from error
         return tuple(self.load_job(job_id) for job_id in sorted(job_ids))

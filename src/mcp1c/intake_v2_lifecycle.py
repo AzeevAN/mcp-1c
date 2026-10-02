@@ -11,9 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import stat
-import tempfile
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -21,6 +19,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Iterator, Mapping
 
+from . import intake_v2_fsio as fsio
 from .intake_v2 import (
     CandidateJob,
     CandidateJobState,
@@ -44,7 +43,14 @@ from .resource_limits import ARCHIVE_LIMITS, ResourceLimits
 
 _FORMAT_VERSION = 1
 _MAX_RECORD_BYTES = 64 * 1024
-_IDENTIFIER_RE = re.compile(r"[A-Za-z0-9._-]+\Z")
+_UNFINISHED_JOB_STATES = frozenset(
+    {
+        CandidateJobState.ACCEPTED,
+        CandidateJobState.PROBING,
+        CandidateJobState.READY,
+        CandidateJobState.PARSING,
+    }
+)
 _INTERRUPTED_JOB_ERROR = (
     "операция прервана перезапуском сервиса; "
     "автоматическое возобновление не выполняется"
@@ -60,12 +66,7 @@ class LifecycleConflict(LifecycleError):
 
 
 def _identifier(value: object, label: str) -> str:
-    if (
-        not isinstance(value, str)
-        or not value
-        or len(value) > 128
-        or not _IDENTIFIER_RE.fullmatch(value)
-    ):
+    if not fsio.is_safe_identifier(value):
         raise LifecycleError(f"{label} имеет недопустимый формат")
     return value
 
@@ -86,16 +87,7 @@ def _entry_name(value: object, *, allow_empty: bool = False) -> str:
     return value
 
 
-def _identity(info: os.stat_result) -> tuple[int, int, int, int]:
-    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
-
-
-def _sync_directory(directory: Path) -> None:
-    descriptor = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+_sync_directory = fsio.sync_directory
 
 
 def _ensure_directory(path: Path, label: str) -> None:
@@ -302,60 +294,30 @@ class CandidateCatalog:
         encoded = self._encoded(candidate)
         if len(encoded) > _MAX_RECORD_BYTES:
             raise LifecycleError("запись candidate catalog превышает предел")
-        temporary: Path | None = None
         try:
-            descriptor, raw_path = tempfile.mkstemp(
-                dir=self.records_dir,
-                prefix=f".{candidate.candidate_id}.",
-                suffix=".tmp",
-            )
-            temporary = Path(raw_path)
-            with os.fdopen(descriptor, "wb") as stream:
-                stream.write(encoded)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, target)
-            temporary = None
-            _sync_directory(self.records_dir)
+            fsio.write_record_atomic(target, encoded)
         except OSError as error:
             raise LifecycleError("не удалось сохранить candidate catalog") from error
-        finally:
-            if temporary is not None:
-                try:
-                    temporary.unlink(missing_ok=True)
-                except OSError:
-                    pass
 
     def load(self, candidate_id: str) -> DiscoveredCandidate:
         path = self._path(candidate_id)
-        descriptor: int | None = None
         try:
-            before = path.lstat()
-            if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
-                raise LifecycleError(
-                    "запись candidate catalog должна быть обычным файлом"
-                )
-            if before.st_size > _MAX_RECORD_BYTES:
-                raise LifecycleError("запись candidate catalog превышает предел")
-            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-            after = os.fstat(descriptor)
-            if _identity(before) != _identity(after):
-                raise LifecycleError("запись candidate catalog изменилась при чтении")
-            with os.fdopen(descriptor, "rb") as stream:
-                descriptor = None
-                encoded = stream.read(_MAX_RECORD_BYTES + 1)
-            if len(encoded) > _MAX_RECORD_BYTES:
-                raise LifecycleError("запись candidate catalog превышает предел")
+            encoded = fsio.read_record(path, limit=_MAX_RECORD_BYTES)
             raw = json.loads(encoded.decode("utf-8"))
         except FileNotFoundError:
             raise KeyError(candidate_id) from None
-        except LifecycleError:
-            raise
+        except fsio.RecordTypeError:
+            raise LifecycleError(
+                "запись candidate catalog должна быть обычным файлом"
+            ) from None
+        except fsio.RecordTooLargeError:
+            raise LifecycleError("запись candidate catalog превышает предел") from None
+        except fsio.RecordChangedError:
+            raise LifecycleError(
+                "запись candidate catalog изменилась при чтении"
+            ) from None
         except (OSError, UnicodeError, json.JSONDecodeError) as error:
             raise LifecycleError("запись candidate catalog повреждена") from error
-        finally:
-            if descriptor is not None:
-                os.close(descriptor)
         if (
             not isinstance(raw, dict)
             or raw.get("format_version") != _FORMAT_VERSION
@@ -443,10 +405,19 @@ class IntakeLifecycle:
         self._fail_interrupted_jobs()
 
     def _fail_interrupted_jobs(self) -> None:
-        """Закрыть jobs прежнего процесса до приёма новых операций."""
+        """Закрыть jobs прежнего процесса до приёма новых операций.
+
+        Нетерминальна не только PARSING. Обрыв между ``start`` и ``prepare``
+        оставляет ACCEPTED/PROBING/READY, а их никто не продолжит: start и
+        prepare живут в одном запросе одного процесса, и после рестарта
+        хозяина у такой job нет. Без закрытия она держала бы конфигурацию
+        (снять нельзя, «идёт операция») и ZIP кандидата. Lifecycle создаётся
+        один раз на процесс, до первого start, поэтому живую job этот обход
+        не застаёт.
+        """
         with self._lock:
             for job in self.operations.records.list_jobs():
-                if job.state is CandidateJobState.PARSING:
+                if job.state in _UNFINISHED_JOB_STATES:
                     self.operations.fail(
                         job.job_id,
                         OperationError(_INTERRUPTED_JOB_ERROR),
@@ -862,6 +833,9 @@ class IntakeLifecycle:
                         )
                     return candidate
             try:
+                # Отказ по родителю — до create_job: иначе каждая попытка
+                # оставляла бы FAILED-job с той же самой ошибкой.
+                self.operations.ensure_candidate_binding(job_id, expected)
                 with self._open(discovered.locator) as tree:
                     if job is None:
                         self.operations.create_job(job_id, candidate_id)
@@ -892,19 +866,6 @@ class IntakeLifecycle:
                 action=action,
                 active=active,
                 generation_id=generation_id,
-            )
-
-    def resume(
-        self, job_id: str, *, expected_action: IntakeAction
-    ) -> IntakePreview:
-        """Возобновить оборванный parse с ранее сохранёнными параметрами."""
-        job = self.operations.records.load_job(job_id)
-        discovered = self.catalog.load(job.candidate_id)
-        with self._open(discovered.locator) as tree:
-            return self.operations.resume(
-                job_id,
-                tree,
-                expected_action=expected_action,
             )
 
     def discard(self, job_id: str) -> None:

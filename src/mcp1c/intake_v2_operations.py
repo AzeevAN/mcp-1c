@@ -9,11 +9,8 @@ from __future__ import annotations
 
 import json
 import hashlib
-import os
-import re
 import shutil
 import stat
-import tempfile
 import uuid
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
@@ -24,15 +21,18 @@ from .intake_v2 import (
     CandidateJob,
     CandidateJobStage,
     CandidateJobState,
+    CandidateStoreError,
     DurableCandidateStore,
     ExportCandidate,
     ExportIdentity,
     GenerationManifest,
+    IntakeV2ContractError,
     LayerKind,
     LayerState,
     SourceKind,
     VirtualExportTree,
 )
+from . import intake_v2_fsio as fsio
 from .intake_v2_collector import collect_source_b
 from .intake_v2_composition import compose_generation, compose_manifest
 from .intake_v2_converter import convert_collection
@@ -63,7 +63,6 @@ from .source_modes import (
 _PREVIEW_FORMAT_VERSION = 1
 _MAX_PREVIEW_RECORD_BYTES = 64 << 20
 _MAX_REQUEST_RECORD_BYTES = 4 << 20
-_IDENTIFIER_RE = re.compile(r"[A-Za-z0-9._-]+\Z")
 
 
 def _activation_for_generation(
@@ -172,7 +171,7 @@ class _OperationRequest:
             (self.candidate_id, "candidate_id"),
             (self.generation_id, "generation_id"),
         ):
-            if not isinstance(value, str) or not _IDENTIFIER_RE.fullmatch(value):
+            if not fsio.is_safe_identifier(value):
                 raise OperationError(f"{label} операции имеет недопустимый формат")
         if not isinstance(self.action, IntakeAction):
             raise OperationError("action операции должен быть IntakeAction")
@@ -227,7 +226,7 @@ class IntakeCommitResult:
             (self.job_id, "job_id"),
             (self.candidate_id, "candidate_id"),
         ):
-            if not isinstance(value, str) or not _IDENTIFIER_RE.fullmatch(value):
+            if not fsio.is_safe_identifier(value):
                 raise OperationError(f"{label} commit result имеет недопустимый формат")
         if not isinstance(self.no_op, bool):
             raise OperationError("no_op commit result должен быть bool")
@@ -278,12 +277,7 @@ class IntakeCommitResult:
             raise OperationError("commit result содержит неверные поля") from error
 
 
-def _sync_directory(directory: Path) -> None:
-    descriptor = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+_sync_directory = fsio.sync_directory
 
 
 def _ensure_directory(path: Path, label: str) -> None:
@@ -674,6 +668,7 @@ class IntakeCoordinator:
         _ensure_directory(self.previews_dir, "operation previews")
         _ensure_directory(self.commits_dir, "operation commits")
         self._cleanup_temporary_records()
+        self._cleanup_orphaned_payloads()
 
     def _cleanup_temporary_records(self) -> None:
         try:
@@ -701,6 +696,51 @@ class IntakeCoordinator:
             raise
         except OSError as error:
             raise OperationError("не удалось восстановить operation previews") from error
+
+    def _cleanup_orphaned_payloads(self) -> None:
+        """Дочистить производные данные job, чья запись уже снята.
+
+        ``_discard_payload`` снимает запись job первой, чтобы оборванная
+        очистка не оставляла в списке job без preview. Остаток (work и малые
+        записи) без job никому не нужен и убирается здесь, при старте.
+        Нечитаемую запись job не трогаем: её payload может понадобиться.
+        Уборка попутная: чужой файл или сбой удаления не мешают старту,
+        мусор лишь остаётся до следующей попытки.
+        """
+        def orphan(job_id: str) -> bool:
+            if not fsio.is_safe_identifier(job_id):
+                return False
+            try:
+                self.records.load_job(job_id)
+            except KeyError:
+                return True
+            except (CandidateStoreError, IntakeV2ContractError):
+                return False
+            return False
+
+        def entries(directory: Path) -> list[Path]:
+            try:
+                return sorted(directory.iterdir())
+            except OSError:
+                return []
+
+        for path in entries(self.work_dir):
+            if orphan(path.name):
+                try:
+                    self._discard_work(path.name)
+                except OperationError:
+                    pass
+        for directory, label in (
+            (self.requests_dir, "request операции"),
+            (self.previews_dir, "preview record"),
+            (self.commits_dir, "commit result"),
+        ):
+            for path in entries(directory):
+                if path.suffix == ".json" and orphan(path.stem):
+                    try:
+                        self._discard_record(directory, path.stem, label)
+                    except OperationError:
+                        pass
 
     def _work_root(self, job_id: str) -> Path:
         self.records.load_job(job_id)
@@ -739,30 +779,12 @@ class IntakeCoordinator:
         encoded = self._encoded_record(kind, payload)
         if len(encoded) > limit:
             raise OperationError(f"{label} превышает допустимый размер")
-        target = directory / f"{record_id}.json"
-        temporary: Path | None = None
+        if not fsio.is_safe_identifier(record_id):
+            raise OperationError("job_id операции имеет недопустимый формат")
         try:
-            descriptor, raw_path = tempfile.mkstemp(
-                dir=directory,
-                prefix=f".{record_id}.",
-                suffix=".tmp",
-            )
-            temporary = Path(raw_path)
-            with os.fdopen(descriptor, "wb") as stream:
-                stream.write(encoded)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, target)
-            temporary = None
-            _sync_directory(directory)
+            fsio.write_record_atomic(directory / f"{record_id}.json", encoded)
         except OSError as error:
             raise OperationError(f"не удалось атомарно сохранить {label}") from error
-        finally:
-            if temporary is not None:
-                try:
-                    temporary.unlink(missing_ok=True)
-                except OSError:
-                    pass
 
     @staticmethod
     def _read_record(
@@ -773,18 +795,19 @@ class IntakeCoordinator:
         limit: int,
         label: str,
     ) -> dict[str, object]:
+        if not fsio.is_safe_identifier(record_id):
+            raise OperationError("job_id операции имеет недопустимый формат")
         path = directory / f"{record_id}.json"
         try:
-            info = path.lstat()
-            if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
-                raise OperationError(f"{label} должен быть обычным файлом")
-            if info.st_size > limit:
-                raise OperationError(f"{label} превышает допустимый размер")
-            raw = json.loads(path.read_text(encoding="utf-8"))
+            raw = json.loads(fsio.read_record(path, limit=limit).decode("utf-8"))
         except FileNotFoundError:
             raise KeyError(record_id) from None
-        except OperationError:
-            raise
+        except fsio.RecordTypeError:
+            raise OperationError(f"{label} должен быть обычным файлом") from None
+        except fsio.RecordTooLargeError:
+            raise OperationError(f"{label} превышает допустимый размер") from None
+        except fsio.RecordChangedError:
+            raise OperationError(f"{label} изменился во время чтения") from None
         except (OSError, UnicodeError, json.JSONDecodeError) as error:
             raise OperationError(f"{label} повреждён или недоступен") from error
         if (
@@ -918,6 +941,46 @@ class IntakeCoordinator:
             current = current.__cause__
         return "; ".join(parts)[:2048]
 
+    def ensure_candidate_binding(
+        self, job_id: str, candidate: ExportCandidate
+    ) -> None:
+        """Проверить, что candidate можно привязать так, как просит job.
+
+        Запись candidate хранит выбранного родителя расширения. Пока её держит
+        живая job, другой родитель запрещён: preview этой job сверяется с
+        записью. Если же ссылок нет или остались только FAILED, прежний выбор
+        ничего не защищает, и запись перепривязывается. Иначе для ZIP из
+        incoming, который не меняется, обхода не было бы вовсе.
+        """
+        try:
+            previous = self.records.load_candidate(candidate.candidate_id)
+        except KeyError:
+            return
+        if previous == candidate:
+            return
+        only_parent_changed = (
+            previous.identity.source_kind is SourceKind.EXTENSION
+            and candidate.identity.source_kind is SourceKind.EXTENSION
+            and previous.identity.extension_name == candidate.identity.extension_name
+            and replace(previous, identity=candidate.identity) == candidate
+        )
+        if not only_parent_changed:
+            raise OperationError("candidate изменился после сохранённого probe")
+        holders = sorted(
+            other.job_id
+            for other in self.records.list_jobs()
+            if other.candidate_id == candidate.candidate_id
+            and other.job_id != job_id
+            and other.state is not CandidateJobState.FAILED
+        )
+        if holders:
+            raise OperationConflict(
+                "Расширение уже привязано к родителю "
+                f"{previous.identity.parent_configuration} операцией {holders[0]}. "
+                "Дождитесь её завершения или отмените preview, затем выберите "
+                "другого родителя."
+            )
+
     def probe(
         self,
         job_id: str,
@@ -940,12 +1003,7 @@ class IntakeCoordinator:
                 job.candidate_id,
                 parent_configuration,
             )
-            try:
-                previous = self.records.load_candidate(job.candidate_id)
-            except KeyError:
-                previous = None
-            if previous is not None and previous != candidate:
-                raise OperationError("candidate изменился после сохранённого probe")
+            self.ensure_candidate_binding(job.job_id, candidate)
             self.records.save_candidate(candidate)
             self._save_job(job.transition(CandidateJobState.READY))
             return candidate
@@ -969,7 +1027,7 @@ class IntakeCoordinator:
 
     @staticmethod
     def _discard_record(directory: Path, job_id: str, label: str) -> None:
-        if not _IDENTIFIER_RE.fullmatch(job_id):
+        if not fsio.is_safe_identifier(job_id):
             raise OperationError("job_id операции имеет недопустимый формат")
         path = directory / f"{job_id}.json"
         try:
@@ -986,10 +1044,30 @@ class IntakeCoordinator:
         except OSError as error:
             raise OperationError(f"не удалось удалить {label}") from error
 
-    def _discard_work(self, job_id: str) -> None:
-        if not _IDENTIFIER_RE.fullmatch(job_id):
+    def _job_work(self, job_id: str) -> Path:
+        """Каталог work одной job, который гарантированно лежит внутри work/.
+
+        Regexp уже не пускает ``.``/``..``, но ``rmtree`` по этому пути
+        необратим, поэтому граница проверяется ещё и по разрешённому пути:
+        удалить можно только прямого потомка ``work/``.
+        """
+        if not fsio.is_safe_identifier(job_id):
             raise OperationError("job_id операции имеет недопустимый формат")
         root = self.work_dir / job_id
+        try:
+            # Символическую ссылку отвергают сами вызывающие с точным текстом;
+            # resolve() увёл бы её за пределы work/ и дал бы менее ясный отказ.
+            if (
+                not root.is_symlink()
+                and root.resolve().parent != self.work_dir.resolve()
+            ):
+                raise OperationError("operation work вышел за пределы work")
+        except OSError as error:
+            raise OperationError("не удалось проверить operation work") from error
+        return root
+
+    def _discard_work(self, job_id: str) -> None:
+        root = self._job_work(job_id)
         try:
             info = root.lstat()
         except FileNotFoundError:
@@ -1013,6 +1091,11 @@ class IntakeCoordinator:
     ) -> None:
         """Удалить производные данные job, оставляя durable retry при commit."""
         self.records.load_job(job_id)
+        if not keep_job:
+            # Запись job снимается первой: если очистка ниже оборвётся, в
+            # списке не останется DONE-job без preview, которая роняла бы
+            # чтение всех операций. Остаток дочистит следующий старт.
+            self.records.remove_job(job_id)
         self._discard_work(job_id)
         self._discard_record(
             self.requests_dir, job_id, "request операции"
@@ -1024,8 +1107,6 @@ class IntakeCoordinator:
             self._discard_record(
                 self.commits_dir, job_id, "commit result"
             )
-        if not keep_job:
-            self.records.remove_job(job_id)
 
     def discard(self, job_id: str) -> None:
         """Отменить неопубликованный preview и удалить всю его job."""
@@ -1041,6 +1122,24 @@ class IntakeCoordinator:
         else:
             raise OperationConflict("Опубликованную job отменить нельзя.")
         self._discard_payload(job_id, keep_commit=False, keep_job=False)
+        self._forget_unreferenced_candidate(job.candidate_id)
+
+    def _forget_unreferenced_candidate(self, candidate_id: str) -> None:
+        """Убрать привязку candidate, если на неё больше не ссылается ни одна job.
+
+        Сам вход (ZIP, каталог) и его probe в каталоге кандидатов остаются:
+        снимается только выбор родителя, сделанный отменённой операцией.
+        """
+        try:
+            if any(
+                job.candidate_id == candidate_id for job in self.records.list_jobs()
+            ):
+                return
+            self.records.remove_candidate(candidate_id)
+        except CandidateStoreError:
+            # Привязка лишь мешает выбрать другого родителя; отмену preview
+            # она не отменяет. Повторить можно следующим discard или remove.
+            return
 
     def remove_job(self, job_id: str) -> None:
         """Каскадно удалить terminal job при снятии её конфигурации."""
@@ -1052,7 +1151,7 @@ class IntakeCoordinator:
         self._discard_payload(job_id, keep_commit=False, keep_job=False)
 
     def _reset_work(self, job_id: str) -> Path:
-        root = self.work_dir / job_id
+        root = self._job_work(job_id)
         if root.is_symlink():
             raise OperationError("operation work не может быть символической ссылкой")
         try:
@@ -1165,7 +1264,7 @@ class IntakeCoordinator:
             cleanup_error = ""
             try:
                 self._discard_preview(job_id)
-                work = self.work_dir / job_id
+                work = self._job_work(job_id)
                 if work.is_symlink():
                     raise OperationError(
                         "operation work не может быть символической ссылкой"
@@ -1184,25 +1283,6 @@ class IntakeCoordinator:
             if isinstance(error, OperationError) and not cleanup_error:
                 raise
             raise OperationError(message) from error
-
-    def resume(
-        self,
-        job_id: str,
-        tree: VirtualExportTree,
-        *,
-        expected_action: IntakeAction,
-    ) -> IntakePreview:
-        """Возобновить parsing только с его durable request."""
-        request = self._load_request(job_id)
-        if request.action is not expected_action:
-            raise OperationError("action не совпадает с durable request")
-        return self.prepare(
-            job_id,
-            tree,
-            action=request.action,
-            active=request.active,
-            generation_id=request.generation_id,
-        )
 
     def fail(self, job_id: str, error: Exception) -> CandidateJob:
         """Зафиксировать отказ до входа в ``prepare`` и убрать partial work."""

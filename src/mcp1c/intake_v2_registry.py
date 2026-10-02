@@ -13,13 +13,13 @@ import os
 import shutil
 import stat
 import tempfile
-import uuid
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import BinaryIO, Mapping
 
+from . import intake_v2_fsio as fsio
 from .intake_v2 import (
     CandidateTransport,
     ExportIdentity,
@@ -563,26 +563,12 @@ def legacy_generation_view(
     )
 
 
-def _sync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+_sync_directory = fsio.sync_directory
 
 
 def _write_atomic(path: Path, payload: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp-{uuid.uuid4().hex}")
-    try:
-        with temporary.open("xb") as stream:
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-        _sync_directory(path.parent)
-    finally:
-        temporary.unlink(missing_ok=True)
+    fsio.write_record_atomic(path, payload)
 
 
 class GenerationBundleStore:
@@ -643,11 +629,13 @@ class GenerationBundleStore:
             before = source.lstat()
             if not stat.S_ISREG(before.st_mode):
                 raise BundleStoreError("payload слоя должен быть обычным файлом")
+            # Каталог готовится до открытия: всё, что может бросить между
+            # os.open и try, оставляло бы дескриптор открытым.
+            target.parent.mkdir(parents=True, exist_ok=True)
+            digest = hashlib.sha256(_layer_prefix(kind))
             descriptor = os.open(
                 source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
             )
-            target.parent.mkdir(parents=True, exist_ok=True)
-            digest = hashlib.sha256(_layer_prefix(kind))
             try:
                 opened = os.fstat(descriptor)
                 with os.fdopen(descriptor, "rb", closefd=False) as input_stream:

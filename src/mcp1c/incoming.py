@@ -16,6 +16,7 @@ import threading
 import time
 from pathlib import Path
 
+from . import intake_v2_fsio as fsio
 from .intake import SELECTION_VERSION
 from .registry import KIND_EXTENSION, KIND_MODULES, Registry
 
@@ -122,10 +123,15 @@ class IncomingScanner:
             # `dumps` и `write_text`, и на диск ложится более старый снимок:
             # кэш хеша переживёт потерю, а записанный отказ — нет, он и
             # существует ради того, чтобы пережить рестарт.
+            #
+            # Замена атомарная: `write_text` поверх файла при обрыве оставлял
+            # обрезанный JSON, и `_load` молча начинал с пустого состояния —
+            # терялся именно записанный отказ, ради которого файл и существует.
             with self._замок:
                 self._state_path.parent.mkdir(parents=True, exist_ok=True)
-                self._state_path.write_text(
-                    json.dumps(self._state, ensure_ascii=False), encoding="utf-8"
+                fsio.write_record_atomic(
+                    self._state_path,
+                    json.dumps(self._state, ensure_ascii=False).encode("utf-8"),
                 )
         except OSError:
             # Кэш расходный: если записать не смогли (том read-only, нет места),
@@ -192,6 +198,30 @@ class IncomingScanner:
             self._state["failures"].pop(путь.name, None)
         self._save()
 
+    def _забыть_исчезнувшие(self, каталог: Path) -> None:
+        """Убрать кэш хеша и отказ файлов, которых в `incoming/` больше нет.
+
+        Ключ — имя файла, и без уборки каждый когда-либо положенный архив
+        оставался в `incoming-state.json` навсегда. Наличие проверяется по
+        диску в момент уборки, а не по списку начала обхода: отказ файла,
+        положенного во время показа, не теряется. Вернувшийся под тем же
+        именем файл всё равно сверяется заново: хеш — по размеру и `mtime`,
+        отказ — по хешу.
+        """
+        with self._замок:
+            изменено = False
+            for раздел in ("digests", "failures"):
+                for имя in list(self._state[раздел]):
+                    try:
+                        есть = (каталог / имя).exists()
+                    except (OSError, ValueError):
+                        есть = True
+                    if not есть:
+                        del self._state[раздел][имя]
+                        изменено = True
+        if изменено:
+            self._save()
+
     def scan(self) -> list[dict]:
         каталог = self.registry.incoming_dir
         строки: list[dict] = []
@@ -243,6 +273,7 @@ class IncomingScanner:
                 # Файл исчез между glob и stat, или это каталог вместо файла.
                 # Одна строка не имеет права уносить всю страницу — пропускаем.
                 pass
+        self._забыть_исчезнувшие(каталог)
         return строки
 
     def _состояние(self, путь: Path, по_хешу: dict, по_имени: dict) -> tuple[str, str]:

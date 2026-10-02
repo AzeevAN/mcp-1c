@@ -270,12 +270,26 @@ class V8Container:
                 f"{self._limits.max_entries}."
             )
 
+        # До 200 000 записей могли ссылаться на один документ атрибутов до
+        # предела записи: каждый читался заново и вне бюджета — часы CPU на
+        # одном специально собранном файле. У настоящего контейнера у каждой
+        # записи свой документ атрибутов, поэтому повтор — признак подделки.
+        seen_attrs: set[int] = set()
         for offset in range(0, len(table), 12):
             attrs_addr, data_addr, _ = struct.unpack_from("<III", table, offset)
             if attrs_addr == EMPTY_ADDR:
                 continue
+            if attrs_addr in seen_attrs:
+                raise V8ContainerError(
+                    f"Повторный адрес атрибутов {attrs_addr} в таблице контейнера."
+                )
+            seen_attrs.add(attrs_addr)
 
             attrs = self._read_document(attrs_addr)
+            try:
+                self._budget.consume(f"attrs@{attrs_addr}", 0, len(attrs))
+            except ResourceLimitError as error:
+                raise V8ResourceLimitError(str(error)) from error
             if len(attrs) < 20:
                 continue
 

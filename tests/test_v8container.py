@@ -18,6 +18,7 @@ import struct
 import pytest
 
 from mcp1c.v8container import (
+    BLOCK_HEADER_SIZE,
     EMPTY_ADDR,
     HEADER_SIZE,
     V8Container,
@@ -94,3 +95,44 @@ def test_сжатая_запись_не_распаковывается_без_п
     with V8Container(raw) as container:
         with pytest.raises(V8ContainerError, match="предел|сжати"):
             container.read("bomb")
+
+
+def _shared_attrs_container(entries: int, attrs_size: int) -> bytes:
+    """Таблица, где все записи ссылаются на один документ атрибутов.
+
+    Так собранный Form.bin/.hbk заставлял читать один и тот же крупный
+    документ заново для каждой из ``entries`` записей вне всякого бюджета.
+    """
+    from module_samples import _block
+
+    attrs = b"\x00" * 20 + "Имя".encode("utf-16-le") + b"\x00" * (attrs_size - 26)
+    table_size = 12 * entries
+    attrs_address = HEADER_SIZE + BLOCK_HEADER_SIZE + table_size
+    table = struct.pack("<III", attrs_address, EMPTY_ADDR, 0) * entries
+    return header() + _block(table) + _block(attrs)
+
+
+def test_повторный_адрес_атрибутов_отвергается():
+    raw = _shared_attrs_container(entries=1000, attrs_size=64 * 1024)
+
+    with pytest.raises(V8ContainerError, match="атрибут"):
+        V8Container(raw)
+
+
+def test_атрибуты_записей_расходуют_бюджет_контейнера():
+    from mcp1c.resource_limits import ResourceLimits
+    from mcp1c.v8container import V8ResourceLimitError
+
+    raw = v8_container_bytes([(f"entry{index}", b"x") for index in range(10)])
+    tight = ResourceLimits(
+        max_entries=100,
+        max_entry_bytes=1024,
+        max_total_bytes=200,
+        max_compression_ratio=200,
+    )
+    with pytest.raises(V8ResourceLimitError, match="предел"):
+        V8Container(raw, limits=tight)
+
+    with V8Container(raw) as container:
+        assert len(container) == 10
+        assert container.read("entry3") == b"x"

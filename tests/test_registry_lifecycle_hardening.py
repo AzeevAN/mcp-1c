@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import errno
 import json
+import os
 import threading
 from pathlib import Path
 
@@ -409,3 +410,105 @@ def test_cli_reg_add_проходит_страховку_startup(tmp_path, capsy
     registry.generation_recovery_path.unlink()
     assert main(["reg-add", str(archive), "--data", str(registry.data_dir)]) == 0
     assert "Другая" in _rows(Registry(registry.data_dir))
+
+
+def _открытых_дескрипторов() -> int:
+    return len(os.listdir("/dev/fd"))
+
+
+@pytest.mark.skipif(not Path("/dev/fd").is_dir(), reason="нужен /dev/fd")
+def test_отказ_открыть_исходник_не_оставляет_дескриптор(tmp_path, monkeypatch):
+    incoming = tmp_path / "input"
+    incoming.mkdir()
+    archive = write_export(incoming, build_configuration(name="Пример"))
+    registry = Registry(tmp_path / "data")
+    подлинный_open = Path.open
+
+    def отказ(self, *args, **kwargs):
+        if self == archive:
+            raise PermissionError(errno.EACCES, "синтетический отказ")
+        return подлинный_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", отказ)
+    before = _открытых_дескрипторов()
+    for _ in range(5):
+        with registry._source_file_operation(archive), pytest.raises(
+            RegistryError, match="не удалось безопасно сохранить"
+        ):
+            registry._store_source(
+                archive, "configurations", source_id="Пример", digest="0" * 64
+            )
+    assert _открытых_дескрипторов() == before
+    assert not list((registry.sources_dir / "configurations").glob(".*.tmp"))
+
+
+def test_снос_старого_кода_не_стирает_чужой_журнал_рокировки(
+    tmp_path, архив_кода, корень_кода, monkeypatch
+):
+    incoming = tmp_path / "input"
+    incoming.mkdir()
+    registry = Registry(tmp_path / "data")
+    registry.add_configuration(
+        write_export(incoming, build_configuration(name="Пример"))
+    )
+    registry.add_modules(архив_кода(корень_кода), configuration="Пример")
+    чужой = {"version": 1, "source_id": "Другая:modules", "temporary": "x"}
+    подлинный_снос = registry._drop_modules_root
+
+    def снос_с_чужой_операцией(корень):
+        # Пока старый каталог сносится вне замков, другая операция кода
+        # успевает записать свой журнал перед собственной рокировкой.
+        registry._module_swap_path.write_text(
+            json.dumps(чужой), encoding="utf-8"
+        )
+        return подлинный_снос(корень)
+
+    monkeypatch.setattr(registry, "_drop_modules_root", снос_с_чужой_операцией)
+    registry.add_modules(архив_кода(корень_кода), configuration="Пример")
+
+    assert json.loads(
+        registry._module_swap_path.read_text(encoding="utf-8")
+    ) == чужой
+
+
+def test_registry_другой_версии_не_затирается(tmp_path):
+    data = tmp_path / "data"
+    data.mkdir()
+    registry_path = data / "registry.json"
+    registry_path.write_text(
+        json.dumps({"registry_version": 99, "sources": [{"id": "будущее"}]}),
+        encoding="utf-8",
+    )
+    before = registry_path.read_bytes()
+
+    registry = Registry(data)
+    messages = registry.startup()
+
+    assert any("версии 99" in message for message in messages)
+    assert registry_path.read_bytes() == before
+    with pytest.raises(RegistryRecoveryBlocked, match="версии 99"):
+        registry.save()
+    assert registry_path.read_bytes() == before
+
+
+def test_startup_подметает_осиротевшие_schema_v1_base(tmp_path):
+    data = tmp_path / "data"
+    сирота = data / ".schema-v1-base-crash"
+    сирота.mkdir(parents=True)
+    (сирота / "base_structure.json").write_text("{}", encoding="utf-8")
+
+    Registry(data).startup()
+
+    assert not сирота.exists()
+
+
+def test_недоступный_снимок_расширений_даёт_ошибку_контракта(tmp_path):
+    from mcp1c.extension_runtime import (
+        ExtensionRuntimeError,
+        load_extension_runtime,
+    )
+
+    каталог = tmp_path / "snapshot.json"
+    каталог.mkdir()
+    with pytest.raises(ExtensionRuntimeError, match="недоступен"):
+        load_extension_runtime(каталог)

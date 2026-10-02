@@ -294,4 +294,8 @@ def load_extension_runtime(path: str | Path) -> ExtensionRuntimeSnapshot:
         raise ExtensionRuntimeError("снимок должен быть в UTF-8") from error
     except json.JSONDecodeError as error:
         raise ExtensionRuntimeError("снимок не является корректным JSON") from error
+    except OSError as error:
+        # Файл мог исчезнуть или стать недоступным между stat и чтением;
+        # вызывающий ждёт только ExtensionRuntimeError.
+        raise ExtensionRuntimeError("файл снимка недоступен") from error
     return _parse(raw)

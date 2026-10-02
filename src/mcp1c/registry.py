@@ -1093,6 +1093,9 @@ class Registry:
             tuple[str, ...], GenerationManifest
         ] = {}
         self._generation_recovery_blocked = False
+        # registry.json другой версии формата нельзя ни прочитать, ни молча
+        # заменить пустым состоянием: это чужие (обычно более новые) данные.
+        self._registry_version_blocked = ""
         self._platform_declarations: dict[str, PlatformDeclaration] = {}
         # Правка словаря — одна операция от изменения объекта до публикации
         # перечитанных таблиц. Обычный `_lock` на дисковой записи держать нельзя,
@@ -1670,9 +1673,15 @@ class Registry:
             file_fd = os.open(temporary, flags, 0o600, dir_fd=target_fd)
             temporary_created = True
             copied = hashlib.sha256()
-            with path.open("rb") as source_stream, os.fdopen(
-                file_fd, "wb", closefd=True
-            ) as target_stream:
+            # Дескриптор сразу переходит во владение file-объекта: при
+            # отказе открыть исходник он закрывается вместе с ним, а не
+            # утекает до конца процесса.
+            try:
+                target_file = os.fdopen(file_fd, "wb", closefd=True)
+            except BaseException:
+                os.close(file_fd)
+                raise
+            with target_file as target_stream, path.open("rb") as source_stream:
                 for block in iter(lambda: source_stream.read(1 << 20), b""):
                     copied.update(block)
                     target_stream.write(block)
@@ -1905,98 +1914,102 @@ class Registry:
                     "active generation изменилась во время проверки schema-v1 no-op"
                 )
             return loaded.source
-        payload = LayerPayload(LayerKind.BASE_STRUCTURE, semantic)
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-        temporary = Path(
-            tempfile.mkdtemp(prefix=".schema-v1-base-", dir=self.data_dir)
-        )
-        staged: StagedGeneration | None = None
-        try:
-            payload_path = temporary / "base_structure.json"
-            with payload_path.open("xb") as stream:
-                stream.write(payload.to_json_bytes())
-                stream.flush()
-                os.fsync(stream.fileno())
-            base = LayerManifest(
-                kind=LayerKind.BASE_STRUCTURE,
-                state=LayerState.READY,
-                content_sha256=content_sha256,
-                payload_sha256=hash_layer_payload(
-                    LayerKind.BASE_STRUCTURE,
-                    payload_path,
-                ),
-                relative_path="layers/base_structure.json",
-                items_total=len(config),
-                provenance=LayerProvenance(
-                    profile=LayerSourceProfile.SCHEMA_V1,
-                    transport=transport,
-                    origin_name=origin,
-                    raw_sha256=digest,
-                    parser_version=1,
-                    selection_version=1,
-                ),
+        # Временный каталог живёт под тем же замком, что и публикация:
+        # startup подметает `.schema-v1-base-*`, оставшиеся после SIGKILL,
+        # и не должен удалить каталог идущей замены базы в этом процессе.
+        with self._generation_mutation_lock:
+            payload = LayerPayload(LayerKind.BASE_STRUCTURE, semantic)
+            self.data_dir.mkdir(parents=True, exist_ok=True)
+            temporary = Path(
+                tempfile.mkdtemp(prefix=".schema-v1-base-", dir=self.data_dir)
             )
-            if not any(layer.kind is LayerKind.BASE_STRUCTURE for layer in active.layers):
-                raise RegistryError("active generation не содержит base_structure")
-            generation_id = f"schema-v1-{uuid.uuid4().hex}"
-            manifest = GenerationManifest(
-                format_version=active.format_version,
-                generation_id=generation_id,
-                identity=active.identity,
-                parser_version=active.parser_version,
-                selection_version=active.selection_version,
-                source_transport=transport,
-                origin_name=origin,
-                raw_sha256=digest,
-                layers=(base,),
-            )
-            activation = ActivationManifest(
-                mode=ActivationMode.A_ONLY,
-                identity_incarnation=generation_id,
-                physical_generation_root_id=generation_id,
-                configuration_version=config.version,
-                main=ActivationComponent(
-                    source="source-a",
-                    origin=origin,
-                    raw_sha256=digest,
+            staged: StagedGeneration | None = None
+            try:
+                payload_path = temporary / "base_structure.json"
+                with payload_path.open("xb") as stream:
+                    stream.write(payload.to_json_bytes())
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                base = LayerManifest(
+                    kind=LayerKind.BASE_STRUCTURE,
+                    state=LayerState.READY,
+                    content_sha256=content_sha256,
                     payload_sha256=hash_layer_payload(
                         LayerKind.BASE_STRUCTURE,
                         payload_path,
                     ),
-                ),
-                extensions=(),
-                expected_previous_activation=(
-                    previous.activation.sha256
-                    if previous.activation is not None
-                    else None
-                ),
-                transaction_id=f"schema-v1-{uuid.uuid4().hex}",
-                recovery_id=uuid.uuid4().hex,
-            )
-            sources = {LayerKind.BASE_STRUCTURE: LayerPayloadSource(payload_path)}
-            staged = self.stage_generation(
-                manifest,
-                sources,
-                activation=activation,
-            )
-            pointer = self.publish_generation(
-                staged,
-                expected_previous=previous,
-            )
-            staged = None
-            with self._lock:
-                loaded = self.configurations.get(config.name)
-                current = self._generation_pointers.get(active.identity.grouping_key)
-            if loaded is None or current != pointer:
-                raise RegistryError("schema-v1 generation опубликована не полностью")
-            return loaded.source
-        finally:
-            if staged is not None:
-                try:
-                    self.discard_staged_generation(staged)
-                except (OSError, BundleStoreError):
-                    pass
-            shutil.rmtree(temporary, ignore_errors=True)
+                    relative_path="layers/base_structure.json",
+                    items_total=len(config),
+                    provenance=LayerProvenance(
+                        profile=LayerSourceProfile.SCHEMA_V1,
+                        transport=transport,
+                        origin_name=origin,
+                        raw_sha256=digest,
+                        parser_version=1,
+                        selection_version=1,
+                    ),
+                )
+                if not any(layer.kind is LayerKind.BASE_STRUCTURE for layer in active.layers):
+                    raise RegistryError("active generation не содержит base_structure")
+                generation_id = f"schema-v1-{uuid.uuid4().hex}"
+                manifest = GenerationManifest(
+                    format_version=active.format_version,
+                    generation_id=generation_id,
+                    identity=active.identity,
+                    parser_version=active.parser_version,
+                    selection_version=active.selection_version,
+                    source_transport=transport,
+                    origin_name=origin,
+                    raw_sha256=digest,
+                    layers=(base,),
+                )
+                activation = ActivationManifest(
+                    mode=ActivationMode.A_ONLY,
+                    identity_incarnation=generation_id,
+                    physical_generation_root_id=generation_id,
+                    configuration_version=config.version,
+                    main=ActivationComponent(
+                        source="source-a",
+                        origin=origin,
+                        raw_sha256=digest,
+                        payload_sha256=hash_layer_payload(
+                            LayerKind.BASE_STRUCTURE,
+                            payload_path,
+                        ),
+                    ),
+                    extensions=(),
+                    expected_previous_activation=(
+                        previous.activation.sha256
+                        if previous.activation is not None
+                        else None
+                    ),
+                    transaction_id=f"schema-v1-{uuid.uuid4().hex}",
+                    recovery_id=uuid.uuid4().hex,
+                )
+                sources = {LayerKind.BASE_STRUCTURE: LayerPayloadSource(payload_path)}
+                staged = self.stage_generation(
+                    manifest,
+                    sources,
+                    activation=activation,
+                )
+                pointer = self.publish_generation(
+                    staged,
+                    expected_previous=previous,
+                )
+                staged = None
+                with self._lock:
+                    loaded = self.configurations.get(config.name)
+                    current = self._generation_pointers.get(active.identity.grouping_key)
+                if loaded is None or current != pointer:
+                    raise RegistryError("schema-v1 generation опубликована не полностью")
+                return loaded.source
+            finally:
+                if staged is not None:
+                    try:
+                        self.discard_staged_generation(staged)
+                    except (OSError, BundleStoreError):
+                        pass
+                shutil.rmtree(temporary, ignore_errors=True)
 
     @_protect_source_operation
     def add_extension_runtime(
@@ -2412,6 +2425,34 @@ class Registry:
                 "источник сохранён. Проверьте каталог данных и права процесса."
             ) from error
         return отставленный
+
+    def _снять_свой_журнал_рокировки(self, временный: Path) -> None:
+        """Удалить журнал, только если он всё ещё описывает эту операцию.
+
+        Снос отставленного каталога идёт вне замков, и за это время другая
+        операция кода может записать в тот же файл свой журнал. Безусловный
+        unlink стёр бы чужое намерение до её rename, и восстановление после
+        аварии уже не узнало бы о незавершённой рокировке.
+        """
+        with self._modules_cache_lock:
+            try:
+                marker = json.loads(
+                    self._module_swap_path.read_text(encoding="utf-8")
+                )
+            except FileNotFoundError:
+                return
+            except (OSError, ValueError):
+                # Нечитаемый журнал разберёт startup; удалять его вслепую нельзя.
+                return
+            if (
+                not isinstance(marker, dict)
+                or marker.get("temporary") != self._relative(временный)
+            ):
+                return
+            try:
+                self._module_swap_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def _путь_из_журнала_рокировки(self, raw: object) -> Path:
         if not isinstance(raw, str) or not raw:
@@ -3087,10 +3128,7 @@ class Registry:
                 снести(отставленный)
             # Если unlink не удался, следующий startup увидит уже новое
             # поколение в registry.json и безопасно завершит уборку.
-            try:
-                self._module_swap_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+            self._снять_свой_журнал_рокировки(временный)
             self._журналировать_ограничения_кода(source, индексы)
             self._обновить_журнал_покрытия(
                 source, loaded, persist=True
@@ -3388,6 +3426,7 @@ class Registry:
                 != self._startup_generation
                 or self._generation_recovery_blocked
                 or self._module_recovery_blocked
+                or self._registry_version_blocked
             ):
                 return False
             self.save()
@@ -5776,6 +5815,8 @@ class Registry:
         """
         if allow_restore and getattr(self._restore_scope, "active", False):
             return
+        if self._registry_version_blocked:
+            raise RegistryRecoveryBlocked(self._registry_version_blocked)
         if self._generation_recovery_blocked:
             raise RegistryRecoveryBlocked(
                 "Реестр открыт только для чтения: журнал публикации поколения "
@@ -5847,16 +5888,24 @@ class Registry:
             return self._restore_rows_locked(native_phase)
 
     def _restore_rows_locked(self, native_phase: ExitStack) -> list[str]:
+        self._registry_version_blocked = ""
         problems: list[str] = []
         if not self.registry_path.exists():
             return problems
 
         payload = json.loads(self.registry_path.read_text(encoding="utf-8"))
         if payload.get("registry_version") != REGISTRY_VERSION:
-            return [
-                f"registry.json версии {payload.get('registry_version')}, "
-                f"ожидается {REGISTRY_VERSION} — источники будут перечитаны заново."
-            ]
+            # Раньше старт продолжался и итоговый save() записывал пустое
+            # состояние поверх чужого формата: откат пакета на старую версию
+            # стирал реестр новой. Файл остаётся дословно, запись закрыта.
+            self._registry_version_blocked = (
+                "Реестр открыт только для чтения: registry.json версии "
+                f"{payload.get('registry_version')}, а этот сервер понимает "
+                f"версию {REGISTRY_VERSION}. Файл не перезаписан; запустите "
+                "версию сервера, которая его создала, или перенесите файл и "
+                "выполните перезагрузку."
+            )
+            return [self._registry_version_blocked]
 
         pointers = self._generation_pointers_from_payload(payload)
         raw_declarations = payload.get("platform_declarations", {})
@@ -6411,6 +6460,20 @@ class Registry:
             self._last_successful_startup_generation = поколение
             return результат
 
+    def _подмести_временные_базы_schema_v1(self) -> None:
+        """Удалить `.schema-v1-base-*`, пережившие аварийную остановку.
+
+        Вызывается под ``_generation_mutation_lock``: живая замена базы держит
+        его на всё время жизни своего каталога.
+        """
+        try:
+            кандидаты = tuple(self.data_dir.glob(".schema-v1-base-*"))
+        except OSError:
+            return
+        for path in кандидаты:
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path, ignore_errors=True)
+
     def _подмести_временный_кэш_модулей(self) -> None:
         """Удалить staging-каталоги, пережившие аварийную остановку."""
         try:
@@ -6474,6 +6537,7 @@ class Registry:
             # очистки: reload дожидается её, а не откатывает чужой staging.
             with self._generation_mutation_lock:
                 messages = self.recover_generation_publish()
+                self._подмести_временные_базы_schema_v1()
         except RecoveryBlocked as error:
             self._generation_recovery_blocked = True
             return [str(error)]
@@ -6499,7 +6563,7 @@ class Registry:
         if self._module_recovery_blocked:
             self._заблокировать_источники_кода_после_ошибки_рокировки()
         messages += self.restore()
-        if self._module_recovery_blocked:
+        if self._module_recovery_blocked or self._registry_version_blocked:
             # Сохраняем исходный registry.json и code-cache дословно: после
             # ручного исправления/удаления WAL следующий startup должен
             # суметь поднять прежнее готовое поколение, а не обнаружить, что

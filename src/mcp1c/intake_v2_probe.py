@@ -10,7 +10,8 @@ from pathlib import PurePosixPath
 from types import MappingProxyType
 from typing import Iterable, Mapping
 
-from . import xml_safety
+from . import export_identity, xml_safety
+from .export_identity import ExportVerdict
 from .intake_v2 import (
     CandidateTransport,
     ExportIdentity,
@@ -298,38 +299,20 @@ def _properties(payload: bytes) -> dict[str, str]:
         node = properties.find(f"{{{_NS_MDCLASSES}}}{tag}")
         return (node.text or "").strip() if node is not None else ""
 
-    return {
-        name: value(name)
-        for name in (
-            "Name",
-            "Version",
-            "NamePrefix",
-            "ObjectBelonging",
-            "ConfigurationExtensionPurpose",
-            "CompatibilityMode",
-        )
-    }
+    return {name: value(name) for name in export_identity.PROPERTY_TAGS}
 
 
 def _identity_from_properties(properties: Mapping[str, str]) -> tuple[SourceKind, str]:
     name = _required_text(properties["Name"], "Name в Configuration.xml")
-    belonging = properties["ObjectBelonging"]
-    purpose = properties["ConfigurationExtensionPurpose"]
-    compatibility = properties["CompatibilityMode"]
-    strong_extension = bool(belonging) or bool(purpose)
-    if strong_extension:
-        if (
-            belonging
-            and purpose
-            and properties["NamePrefix"]
-            and not compatibility
-        ):
-            return SourceKind.EXTENSION, name
+    verdict = export_identity.classify(properties)
+    if verdict is ExportVerdict.EXTENSION:
+        return SourceKind.EXTENSION, name
+    if verdict is ExportVerdict.CONFIGURATION:
+        return SourceKind.CONFIGURATION, name
+    if verdict is ExportVerdict.INCOMPLETE_EXTENSION:
         raise ProbeError(
             "признаки расширения в Configuration.xml неполны или противоречивы"
         )
-    if compatibility:
-        return SourceKind.CONFIGURATION, name
     raise ProbeError(
         "нет положительного признака конфигурации или полного набора расширения"
     )

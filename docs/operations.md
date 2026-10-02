@@ -369,7 +369,9 @@ PYTHONPATH=src .venv/bin/python -m mcp1c.bench \
 Скрипт поднимает Registry и печатает цену первого вызова и медиану повторов
 для `get_object`, `list_configurations`, `get_related`, `get_procedure`
 (оглавление модуля, процедура, опечатка в адресе), `get_callers` и
-`search_procedures`. `restore()` пишет кэш индексов в каталог данных, поэтому
+`search_procedures`, а также `search_syntax`, `find_roles_for_access` и
+снимок источников, который дашборд опрашивает раз в 2 с во время сборки.
+`restore()` пишет кэш индексов в каталог данных, поэтому
 мерить лучше на копии:
 
 ```bash

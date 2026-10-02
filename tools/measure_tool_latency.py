@@ -26,8 +26,9 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from mcp1c import tools  # noqa: E402
+from mcp1c import role_access_service, tools  # noqa: E402
 from mcp1c.registry import Registry  # noqa: E402
+from mcp1c.role_access import OPERATION_RIGHTS  # noqa: E402
 
 
 def _measure(fn, repeat: int) -> tuple[float, float]:
@@ -82,6 +83,15 @@ def main(argv: list[str] | None = None) -> int:
         "search_procedures": lambda: tools.search_procedures(
             registry, "заполнить реквизиты", args.config
         ),
+        "search_syntax": lambda: tools.search_syntax(
+            registry, "ТаблицаЗначений", args.config
+        ),
+        # Все операции сразу — худший случай подбора минимального набора ролей.
+        "find_roles_for_access": lambda: role_access_service.find_roles_payload(
+            registry, obj, tuple(OPERATION_RIGHTS), config=args.config,
+            include_conditional=True,
+        ),
+        "sources_snapshot (опрос дашборда)": lambda: tools.sources_snapshot(registry),
     }
     print(
         f"{args.config}: модулей {len(toc.модули)}, объект {obj}, "

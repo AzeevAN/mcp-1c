@@ -175,7 +175,8 @@ def test_http_по_умолчанию_слушает_loopback_и_не_довер
     assert параметры == {
         "host": "127.0.0.1",
         "port": 8000,
-        "trust_proxy_headers": False,
+        "forwarded_allow_ips": None,
+        "allowed_hosts": ("127.0.0.1", "localhost", "[::1]"),
     }
 
 
@@ -205,7 +206,7 @@ def test_http_доверяет_proxy_по_native_runtime_переменной(tm
     )
 
     assert server_module.main(["--data", str(tmp_path)]) == 0
-    assert параметры["trust_proxy_headers"] is True
+    assert параметры["forwarded_allow_ips"] == "*"
 
 
 def test_прямой_http_не_доверяет_proxy_и_предупреждает_о_tls(
@@ -236,7 +237,7 @@ def test_прямой_http_не_доверяет_proxy_и_предупрежда
     )
 
     assert server_module.main(["--data", str(tmp_path)]) == 0
-    assert параметры["trust_proxy_headers"] is False
+    assert параметры["forwarded_allow_ips"] is None
     stderr = capsys.readouterr().err
     assert "MCP1C_ACCESS=http" in stderr
     assert "без TLS" in stderr
@@ -263,7 +264,7 @@ def test_uvicorn_доверяет_forwarded_headers_только_по_явном
     вызовы = []
 
     class FakeServer:
-        def streamable_http_app(self, *, host):
+        def streamable_http_app(self, *, host, transport_security):
             return ("app", host)
 
     monkeypatch.setitem(
@@ -274,10 +275,12 @@ def test_uvicorn_доверяет_forwarded_headers_только_по_явном
     monkeypatch.setattr(server_module, "mcp_guard", lambda app: ("guard", app))
 
     server_module._run_streamable_http(
-        FakeServer(), host="127.0.0.1", port=8000, trust_proxy_headers=False
+        FakeServer(), host="127.0.0.1", port=8000,
+        forwarded_allow_ips=None, allowed_hosts=None,
     )
     server_module._run_streamable_http(
-        FakeServer(), host="0.0.0.0", port=8000, trust_proxy_headers=True
+        FakeServer(), host="0.0.0.0", port=8000,
+        forwarded_allow_ips="*", allowed_hosts=None,
     )
 
     assert вызовы[0][1]["proxy_headers"] is False

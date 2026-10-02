@@ -120,3 +120,18 @@ def test_compose_объясняет_корни_без_singleton():
     assert "/config-sources/config-a" in compose
     assert "read_only: true" in compose
     assert "MCP1C_CONFIG_SOURCE_HOST" not in compose
+
+
+def test_compose_передаёт_список_хостов_и_proxy_без_обязательности():
+    from mcp1c.runtime_config import forwarded_allow_ips, host_check_required
+
+    compose = _compose()
+
+    assert "MCP1C_TRUSTED_PROXIES: ${MCP1C_TRUSTED_PROXIES:-}" in compose
+    assert "MCP1C_ALLOWED_HOSTS: ${MCP1C_ALLOWED_HOSTS:-}" in compose
+    # Пустые значения из Compose не меняют штатный контейнер: прямой режим
+    # не получает доверия proxy, а bind 0.0.0.0 с токеном — проверки Host.
+    tokens = {"API_TOKEN": "a" * 40, "MCP1C_TRUSTED_PROXIES": "", "MCP1C_ALLOWED_HOSTS": ""}
+    assert forwarded_allow_ips(False, tokens) is None
+    assert forwarded_allow_ips(True, tokens) == "*"
+    assert host_check_required("0.0.0.0", tokens) is False

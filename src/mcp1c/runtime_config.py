@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import string
 from collections.abc import Mapping
+from urllib.parse import urlsplit
 
 
 DASHBOARD_ON = "on"
@@ -40,6 +42,16 @@ class AccessModeError(ValueError):
 
 class TokenConfigurationError(ValueError):
     """Официальный HTTP-запуск получил небезопасный набор токенов."""
+
+
+class HostConfigurationError(ValueError):
+    """Список допустимых хостов или доверенных proxy записан неверно."""
+
+
+# Имена, под которыми к процессу обращаются с той же машины. Порт не
+# фиксируется: Compose публикует 8000 контейнера как 5001 хоста, а MCP
+# Inspector и подобные инструменты приходят со своего loopback-порта.
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "[::1]")
 
 
 def dashboard_mode(environ: Mapping[str, str] | None = None) -> str:
@@ -101,3 +113,132 @@ def require_tokens(environ: Mapping[str, str] | None = None) -> None:
         raise TokenConfigurationError(
             "API_TOKEN и ADMIN_TOKEN должны различаться."
         )
+
+
+def is_loopback_bind(host: str) -> bool:
+    """Слушает ли сервер только собственную машину."""
+    value = host.strip().removeprefix("[").removesuffix("]").lower()
+    if value == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        return False
+
+
+def split_host(value: str) -> tuple[str, int | None] | None:
+    """Разобрать `host[:port]` так же, как его пишет клиент в заголовке Host."""
+    try:
+        parsed = urlsplit("//" + value)
+        port = parsed.port
+    except ValueError:
+        return None
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    if (
+        not hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+        or any(char in hostname for char in "*/\\ ")
+    ):
+        return None
+    if ":" in hostname:
+        hostname = f"[{hostname}]"
+    return hostname, port
+
+
+def _host_entry(raw: str) -> str:
+    split = split_host(raw.strip())
+    if split is None:
+        raise HostConfigurationError(
+            "MCP1C_ALLOWED_HOSTS ждёт имена или адреса через запятую в виде "
+            f"`host` либо `host:port`, без схемы и пути. Получено: {raw.strip()!r}."
+        )
+    hostname, port = split
+    return hostname if port is None else f"{hostname}:{port}"
+
+
+def allowed_hosts(environ: Mapping[str, str] | None = None) -> tuple[str, ...]:
+    """Имена, под которыми браузер вправе обращаться к серверу.
+
+    Без такого списка страница с чужого сайта после DNS rebinding читает API
+    дашборда как свой origin. Источники: loopback, хост из
+    `MCP1C_PUBLIC_BASE_URL` (по нему уже ходит клиент за файлом модуля) и явный
+    `MCP1C_ALLOWED_HOSTS`. Неверный публичный адрес здесь не роняет старт: о нём
+    сообщит сам инструмент скачивания, как и раньше.
+    """
+    source = os.environ if environ is None else environ
+    entries = list(LOOPBACK_HOSTS)
+    base = source.get("MCP1C_PUBLIC_BASE_URL", "").strip()
+    if base:
+        parsed = urlsplit(base)
+        split = split_host(parsed.netloc) if parsed.scheme in ("http", "https") else None
+        if split is not None:
+            hostname, port = split
+            entries.append(hostname if port is None else f"{hostname}:{port}")
+    for item in source.get("MCP1C_ALLOWED_HOSTS", "").split(","):
+        if item.strip():
+            entries.append(_host_entry(item))
+    return tuple(dict.fromkeys(entries))
+
+
+def host_check_required(bind_host: str, environ: Mapping[str, str] | None = None) -> bool:
+    """Включать ли проверку Host/Origin для всего HTTP-приложения.
+
+    Rebinding опасен там, где чтение не требует секрета: браузер жертвы
+    токена не знает, а cookie сессии привязана к настоящему имени сервера.
+    Поэтому проверка обязательна без `API_TOKEN` и на loopback (там список
+    имён известен заранее). В контейнере bind `0.0.0.0` и токены обязательны,
+    а клиенты приходят по IP, DNS-имени или `host.docker.internal`, — проверка
+    включается только явным `MCP1C_ALLOWED_HOSTS`, чтобы не сломать штатный
+    Compose.
+    """
+    source = os.environ if environ is None else environ
+    return (
+        not source.get("API_TOKEN", "")
+        or is_loopback_bind(bind_host)
+        or bool(source.get("MCP1C_ALLOWED_HOSTS", "").strip())
+    )
+
+
+def forwarded_allow_ips(
+    trust_proxy_headers: bool, environ: Mapping[str, str] | None = None
+) -> str | None:
+    """Адреса proxy, чьим `X-Forwarded-*` верит Uvicorn.
+
+    Без явного списка остаётся `*`: в Compose запрос от proxy хоста приходит
+    в контейнер с адреса шлюза Docker-сети, который заранее неизвестен.
+    Тогда защита держится на том, что порт backend доступен только proxy.
+    Uvicorn молча превращает нераспознанный адрес в литерал, и опечатка
+    отключила бы доверие без следа, — поэтому список проверяется здесь.
+    """
+    source = os.environ if environ is None else environ
+    raw = source.get("MCP1C_TRUSTED_PROXIES", "").strip()
+    if not trust_proxy_headers:
+        if raw:
+            raise HostConfigurationError(
+                "MCP1C_TRUSTED_PROXIES действует только при MCP1C_ACCESS=https-proxy "
+                "или --trust-proxy-headers."
+            )
+        return None
+    if not raw:
+        return "*"
+    items = []
+    for item in raw.split(","):
+        value = item.strip()
+        if not value:
+            continue
+        try:
+            if "/" in value:
+                ipaddress.ip_network(value, strict=False)
+            else:
+                ipaddress.ip_address(value)
+        except ValueError as error:
+            raise HostConfigurationError(
+                "MCP1C_TRUSTED_PROXIES ждёт IP-адреса или сети CIDR через запятую. "
+                f"Получено: {value!r}."
+            ) from error
+        items.append(value)
+    return ",".join(items)

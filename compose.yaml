@@ -40,6 +40,12 @@ services:
       MCP1C_DASHBOARD: ${MCP1C_DASHBOARD:-on}
       # Только `https-proxy` доверяет X-Forwarded-* от внешнего TLS proxy.
       MCP1C_ACCESS: ${MCP1C_ACCESS:-local}
+      # IP или CIDR proxy через запятую. Пусто в `https-proxy` — доверять
+      # любому источнику: тогда порт backend обязан быть доступен только proxy.
+      MCP1C_TRUSTED_PROXIES: ${MCP1C_TRUSTED_PROXIES:-}
+      # Имена сервера через запятую (`host` или `host:port`). Заданный список
+      # включает проверку Host/Origin против DNS rebinding и в контейнере.
+      MCP1C_ALLOWED_HOSTS: ${MCP1C_ALLOWED_HOSTS:-}
       # Публичный origin для выдачи ссылки на gzip-файл полного модуля.
       MCP1C_PUBLIC_BASE_URL: ${MCP1C_PUBLIC_BASE_URL:-}
       MCP1C_ALLOW_SELF_RESTART: ${MCP1C_ALLOW_SELF_RESTART:-1}

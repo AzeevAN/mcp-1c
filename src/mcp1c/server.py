@@ -31,6 +31,7 @@ from urllib.parse import urlencode
 
 from mcp.server import MCPServer
 from mcp.server.subscriptions import InMemorySubscriptionBus, ToolsListChanged
+from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import CallToolResult, TextContent
 from pydantic import Field
 from starlette.concurrency import run_in_threadpool
@@ -78,8 +79,14 @@ from .runtime_config import (
     ACCESS_HTTP,
     ACCESS_HTTPS_PROXY,
     AccessModeError,
+    HostConfigurationError,
     TokenConfigurationError,
+    split_host,
     access_mode,
+    allowed_hosts as configured_allowed_hosts,
+    forwarded_allow_ips as configured_forwarded_allow_ips,
+    host_check_required,
+    is_loopback_bind,
     require_tokens,
 )
 
@@ -1584,12 +1591,108 @@ def mcp_guard(app):
     return http_body_guard(wrapped)
 
 
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def _host_allowed(value: str, hosts: tuple[str, ...]) -> bool:
+    split = split_host(value)
+    if split is None:
+        return False
+    hostname, port = split
+    for entry in hosts:
+        allowed_name, allowed_port = split_host(entry) or ("", None)
+        if allowed_name == hostname and (allowed_port is None or allowed_port == port):
+            return True
+    return False
+
+
+def _origin_allowed(origin: str, hosts: tuple[str, ...]) -> bool:
+    scheme, separator, rest = origin.partition("://")
+    if not separator or scheme.lower() not in ("http", "https") or "/" in rest:
+        return False
+    return _host_allowed(rest, hosts)
+
+
+def trusted_host_guard(app, hosts: tuple[str, ...] | None):
+    """Отклонить запрос к чужому имени до любого маршрута приложения.
+
+    SDK проверяет Host и Origin только у `/mcp`, а API дашборда, `/health` и
+    служебные маршруты добавлены рядом через `custom_route`. Без внешнего слоя
+    страница с чужого сайта после DNS rebinding читает их как свой origin, если
+    чтение не закрыто токеном. Origin сверяется только у изменяющих методов:
+    у браузерного GET он бывает и у законных переходов, а записи с чужого
+    сайта нужны только атакующему. `None` — проверка выключена осознанно
+    (контейнер с обязательными токенами, см. `host_check_required`).
+    """
+    if hosts is None:
+        return app
+
+    async def wrapped(scope, receive, send):
+        if scope["type"] not in ("http", "websocket"):
+            await app(scope, receive, send)
+            return
+        headers = {}
+        for name, value in scope.get("headers", ()):
+            headers.setdefault(name.lower(), value.decode("latin-1"))
+        if not _host_allowed(headers.get(b"host", ""), hosts):
+            response = PlainTextResponse(
+                "Недопустимый заголовок Host. Добавьте имя, по которому "
+                "клиенты обращаются к серверу, в MCP1C_ALLOWED_HOSTS.",
+                status_code=421,
+            )
+            await response(scope, receive, send)
+            return
+        origin = headers.get(b"origin")
+        if (
+            origin is not None
+            and scope.get("method", "GET") not in _SAFE_METHODS
+            and not _origin_allowed(origin, hosts)
+        ):
+            response = PlainTextResponse(
+                "Запрос с чужого origin отклонён.", status_code=403
+            )
+            await response(scope, receive, send)
+            return
+        await app(scope, receive, send)
+
+    return wrapped
+
+
+def _transport_security(hosts: tuple[str, ...] | None) -> TransportSecuritySettings:
+    """Те же правила для SDK, чтобы `/mcp` не жил по своему списку.
+
+    Без явных настроек SDK сам включает защиту только при loopback bind и
+    только для loopback-имён, а при `0.0.0.0` выключает её. Явный объект
+    убирает это неявное расхождение с внешним слоем.
+    """
+    if hosts is None:
+        return TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    host_patterns: list[str] = []
+    origin_patterns: list[str] = []
+    for entry in hosts:
+        hostname, port = split_host(entry) or (entry, None)
+        suffixes = [""] if port is not None else ["", ":*"]
+        base = hostname if port is None else f"{hostname}:{port}"
+        host_patterns.extend(base + suffix for suffix in suffixes)
+        origin_patterns.extend(
+            f"{scheme}://{base}{suffix}"
+            for scheme in ("http", "https")
+            for suffix in suffixes
+        )
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=host_patterns,
+        allowed_origins=origin_patterns,
+    )
+
+
 def _run_streamable_http(
     server: MCPServer,
     *,
     host: str,
     port: int,
-    trust_proxy_headers: bool,
+    forwarded_allow_ips: str | None,
+    allowed_hosts: tuple[str, ...] | None,
 ) -> None:
     """То же, что `server.run('streamable-http')`, но с охраной вокруг.
 
@@ -1598,17 +1701,19 @@ def _run_streamable_http(
     """
     import uvicorn
 
-    app = server.streamable_http_app(host=host)
+    app = server.streamable_http_app(
+        host=host, transport_security=_transport_security(allowed_hosts)
+    )
     uvicorn.run(
-        mcp_guard(app),
+        trusted_host_guard(mcp_guard(app), allowed_hosts),
         host=host,
         port=port,
         log_level="info",
-        # X-Forwarded-Proto влияет на флаг Secure сессионной cookie. По
-        # умолчанию не доверяем заголовку от клиента. Значение `*` допустимо
-        # только за изолированным proxy, явно включённым оператором.
-        proxy_headers=trust_proxy_headers,
-        forwarded_allow_ips="*" if trust_proxy_headers else None,
+        # X-Forwarded-Proto влияет на флаг Secure сессионной cookie, а
+        # X-Forwarded-For — на адрес клиента в журнале и в ограничении
+        # попыток входа. По умолчанию заголовкам клиента не верим.
+        proxy_headers=forwarded_allow_ips is not None,
+        forwarded_allow_ips=forwarded_allow_ips,
     )
 
 
@@ -1646,6 +1751,14 @@ def main(argv: list[str] | None = None) -> int:
             "ADMIN_TOKEN; используется официальным Docker-образом"
         ),
     )
+    parser.add_argument(
+        "--insecure-open-read",
+        action="store_true",
+        help=(
+            "разрешить HTTP не на loopback без API_TOKEN: чтение структуры "
+            "конфигураций откроется всем, кто дотянется до адреса"
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -1655,12 +1768,45 @@ def main(argv: list[str] | None = None) -> int:
         access = access_mode()
         if args.require_tokens:
             require_tokens()
+        hosts: tuple[str, ...] | None = None
+        forwarded: str | None = None
+        if args.transport != "stdio":
+            hosts = (
+                configured_allowed_hosts()
+                if host_check_required(args.host)
+                else None
+            )
+            forwarded = configured_forwarded_allow_ips(
+                args.trust_proxy_headers or access == ACCESS_HTTPS_PROXY
+            )
     except (
         AccessModeError,
         CapabilityConfigurationError,
+        HostConfigurationError,
         TokenConfigurationError,
     ) as error:
         parser.error(str(error))
+
+    open_network_read = (
+        args.transport != "stdio"
+        and not is_loopback_bind(args.host)
+        and not os.environ.get("API_TOKEN", "")
+    )
+    if open_network_read and not args.insecure_open_read:
+        # Инвариант «вне своей машины токен чтения обязателен» держится кодом,
+        # а не только документацией: MCP отдаёт структуру конфигураций целиком.
+        parser.error(
+            f"--host {args.host} слушает не только эту машину, а API_TOKEN не "
+            "задан: чтение конфигураций было бы открыто всей сети. Задайте "
+            "API_TOKEN или осознанно добавьте --insecure-open-read."
+        )
+    if open_network_read:
+        print(
+            "Предупреждение: --insecure-open-read открывает чтение без токена "
+            "всем, кто дотянется до адреса. Имена, по которым к серверу "
+            "обращаются клиенты, перечислите в MCP1C_ALLOWED_HOSTS.",
+            file=sys.stderr,
+        )
 
     if args.transport != "stdio" and access == ACCESS_HTTP:
         print(
@@ -1709,9 +1855,8 @@ def main(argv: list[str] | None = None) -> int:
             server,
             host=args.host,
             port=args.port,
-            trust_proxy_headers=(
-                args.trust_proxy_headers or access == ACCESS_HTTPS_PROXY
-            ),
+            forwarded_allow_ips=forwarded,
+            allowed_hosts=hosts,
         )
     return 0
 

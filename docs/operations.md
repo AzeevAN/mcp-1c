@@ -336,6 +336,7 @@ PYTHONPATH=src .venv/bin/python -m mcp1c.bench \
 | `--trust-proxy-headers` | доверять `X-Forwarded-*` только за своим reverse proxy |
 | `--require-writable-data` | создать рабочие подкаталоги и проверить запись; Docker включает автоматически |
 | `--require-tokens` | до старта потребовать разные безопасные `API_TOKEN` и `ADMIN_TOKEN`; Docker включает автоматически |
+| `--insecure-open-read` | разрешить сетевой `--host` без `API_TOKEN`; без флага такой старт останавливается |
 
 ```bash
 PYTHONPATH=src .venv/bin/python -m mcp1c.server \
@@ -349,6 +350,14 @@ PYTHONPATH=src .venv/bin/python -m mcp1c.server \
 `MCP1C_ACCESS=local|http|https-proxy` задаёт доверие к сетевой топологии.
 Для bare-запуска прямой `http` дополнительно требует `--host 0.0.0.0` либо
 конкретный IP; Compose вместо этого использует `MCP1C_BIND_ADDRESS`.
+
+Доверие к `X-Forwarded-*` (`https-proxy` или `--trust-proxy-headers`) сужает
+`MCP1C_TRUSTED_PROXIES` — IP или CIDR через запятую; без него доверяется любой
+источник. Проверку `Host`/`Origin` против DNS rebinding включают отсутствие
+`API_TOKEN`, loopback-`--host` или заданный `MCP1C_ALLOWED_HOSTS`; к loopback и
+хосту `MCP1C_PUBLIC_BASE_URL` переменная добавляет имена `host` или
+`host:port`. Подробно — в
+[установке](installation.md#2-подготовить-окружение).
 
 ## Источники данных
 

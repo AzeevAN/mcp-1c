@@ -418,8 +418,9 @@ def test_перебор_токена_ограничен_по_адресу(tmp_pa
     сейчас = dashboard_backend.time.monotonic()
     monkeypatch.setattr(dashboard_backend.time, "monotonic", lambda: сейчас)
 
-    for _ in range(dashboard_backend.LOGIN_FAILURE_LIMIT):
-        assert client.post("/login", data={"token": "wrong"}).status_code == 403
+    # Считаются различные догадки: повтор одного токена перебором не является.
+    for attempt in range(dashboard_backend.LOGIN_FAILURE_LIMIT):
+        assert client.post("/login", data={"token": f"wrong-{attempt}"}).status_code == 403
 
     # Даже верный токен не проверяется, пока адрес исчерпал попытки:
     # иначе отказ подсказывал бы, что очередная догадка совпала.

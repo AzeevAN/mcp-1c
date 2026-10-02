@@ -329,3 +329,27 @@ def test_sdk_получает_явные_настройки_защиты(monkeyp
     # Внешний слой стоит перед всем приложением, а не только перед `/mcp`.
     client = TestClient(вызовы[0][0], base_url="http://attacker.example:8000")
     assert client.get("/health").status_code == 421
+
+
+@pytest.mark.parametrize("value", ["172.18.0.1/16", ",", " , ,"])
+def test_trusted_proxies_отвергает_нестрогую_сеть_и_пустой_список(value):
+    # Uvicorn разбирает сеть строго: `172.18.0.1/16` у него не сеть, а
+    # литерал, и доверие молча выключилось бы.
+    with pytest.raises(HostConfigurationError) as error:
+        forwarded_allow_ips(True, {"MCP1C_TRUSTED_PROXIES": value})
+    if "/" in value:
+        assert "172.18.0.0/16" in str(error.value)
+
+
+def test_неразбираемый_public_base_url_даёт_понятную_ошибку():
+    with pytest.raises(HostConfigurationError, match="MCP1C_PUBLIC_BASE_URL"):
+        allowed_hosts({"MCP1C_PUBLIC_BASE_URL": "http://[::1"})
+
+
+def test_отказ_по_origin_подсказывает_переменную():
+    client = _client(allowed_hosts({}))
+
+    response = client.post("/api/v1/queries", headers={"origin": "http://evil.example"})
+
+    assert response.status_code == 403
+    assert "MCP1C_ALLOWED_HOSTS" in response.text

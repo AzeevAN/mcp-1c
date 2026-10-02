@@ -8,6 +8,8 @@
 from __future__ import annotations
 import asyncio
 import errno
+import hashlib
+import hmac
 import os
 import re
 import secrets
@@ -63,20 +65,45 @@ SESSION_TTL_SECONDS = 12 * 60 * 60
 
 MAX_SESSIONS = 256
 
-# Вне Docker токен может быть коротким, и онлайн-перебор формы входа ничем не
-# сдерживался. Десяти неудач за пять минут хватает на опечатки человека и
-# делает перебор бессмысленно медленным. Адрес клиента берётся из ASGI scope:
-# за proxy он верен только при настроенном доверии к X-Forwarded-For.
+# Вне Docker токен может быть коротким, и онлайн-перебор ничем не сдерживался.
+# Ограничение общее для формы входа и для заголовков (`X-Api-Token`,
+# `Authorization: Bearer`, `X-Admin-Token`) на `/mcp`, API и `/admin/reload`:
+# иначе перебор просто переходил с формы на заголовок.
+#
+# Считаются различные неверные токены, а не запросы: перебору нужны новые
+# догадки, а клиент со старым токеном в цикле повторов шлёт одну и ту же.
+# За NAT Docker Desktop все клиенты приходят с адреса шлюза, и такой клиент
+# иначе отрезал бы от сервера всех. Десяти разных неудач за пять минут хватает
+# на опечатки человека. Успешный вход счётчик не сбрасывает: окно истекает
+# само, иначе держатель токена чтения перебирал бы токен администратора,
+# чередуя догадки с успешными входами.
 LOGIN_FAILURE_LIMIT = 10
 
 LOGIN_FAILURE_WINDOW_SECONDS = 5 * 60
 
 MAX_TRACKED_LOGIN_CLIENTS = 4096
 
+# Адрес клиента за proxy с доверием `*` подделывается левым элементом
+# X-Forwarded-For, и лимит по адресу тогда обходится сменой адреса. Общий
+# потолок различных неудач со всех адресов это останавливает. Чтобы волна
+# перебора не отрезала уже работающих клиентов, под общим потолком
+# продолжают проверяться адреса, успешно входившие за последние 12 часов.
+GLOBAL_LOGIN_FAILURE_LIMIT = 100
+
+MAX_KNOWN_GOOD_CLIENTS = 1024
+
 # Порядок вставки словаря — порядок создания: первая запись старейшая.
 _SESSIONS: dict[str, tuple[str, float]] = {}
 
-_LOGIN_FAILURES: dict[str, list[float]] = {}
+# адрес → {отпечаток неверного токена → момент}; отпечаток — HMAC с ключом
+# процесса, чтобы в памяти не лежали сами догадки.
+_LOGIN_FAILURES: dict[str, dict[bytes, float]] = {}
+
+_GLOBAL_FAILURES: dict[bytes, float] = {}
+
+_KNOWN_GOOD_CLIENTS: dict[str, float] = {}
+
+_FAILURE_KEY = secrets.token_bytes(32)
 
 # Сессии читаются и из event loop, и из потоков run_in_threadpool.
 _AUTH_LOCK = threading.Lock()
@@ -174,48 +201,95 @@ def _session_level(request: Request) -> str | None:
 def _login_client(request: Request) -> str:
     return request.client.host if request.client is not None else ""
 
-def _recent_failures_locked(client: str, now: float) -> list[float]:
-    failures = [
-        moment
-        for moment in _LOGIN_FAILURES.get(client, ())
-        if now - moment < LOGIN_FAILURE_WINDOW_SECONDS
-    ]
-    if failures:
-        _LOGIN_FAILURES[client] = failures
-    else:
+def _fresh(entries: dict, now: float, window: float) -> dict:
+    for key, moment in list(entries.items()):
+        if now - moment >= window:
+            del entries[key]
+    return entries
+
+def _retry_after_locked(client: str, now: float) -> int | None:
+    own = _fresh(_LOGIN_FAILURES.get(client, {}), now, LOGIN_FAILURE_WINDOW_SECONDS)
+    if not own:
         _LOGIN_FAILURES.pop(client, None)
-    return failures
+    elif len(own) >= LOGIN_FAILURE_LIMIT:
+        return max(1, int(min(own.values()) + LOGIN_FAILURE_WINDOW_SECONDS - now) + 1)
+    _fresh(_GLOBAL_FAILURES, now, LOGIN_FAILURE_WINDOW_SECONDS)
+    _fresh(_KNOWN_GOOD_CLIENTS, now, SESSION_TTL_SECONDS)
+    if (
+        len(_GLOBAL_FAILURES) >= GLOBAL_LOGIN_FAILURE_LIMIT
+        and client not in _KNOWN_GOOD_CLIENTS
+    ):
+        return max(
+            1,
+            int(min(_GLOBAL_FAILURES.values()) + LOGIN_FAILURE_WINDOW_SECONDS - now) + 1,
+        )
+    return None
 
-def login_retry_after(request: Request) -> int | None:
-    """Через сколько секунд адрес снова сможет пробовать вход, если исчерпал попытки."""
-    now = time.monotonic()
-    with _AUTH_LOCK:
-        failures = _recent_failures_locked(_login_client(request), now)
-        if len(failures) < LOGIN_FAILURE_LIMIT:
-            return None
-        return max(1, int(failures[0] + LOGIN_FAILURE_WINDOW_SECONDS - now) + 1)
+def _record_failure_locked(client: str, given: str, now: float) -> None:
+    fingerprint = hmac.new(_FAILURE_KEY, given.encode("utf-8"), hashlib.sha256).digest()[:16]
+    own = _LOGIN_FAILURES.pop(client, {})
+    own[fingerprint] = now
+    # Повторная вставка переносит адрес в конец: вытесняется самый давний.
+    _LOGIN_FAILURES[client] = own
+    while len(_LOGIN_FAILURES) > MAX_TRACKED_LOGIN_CLIENTS:
+        del _LOGIN_FAILURES[next(iter(_LOGIN_FAILURES))]
+    _GLOBAL_FAILURES[client.encode("utf-8", "replace") + b"\0" + fingerprint] = now
+    while len(_GLOBAL_FAILURES) > GLOBAL_LOGIN_FAILURE_LIMIT:
+        del _GLOBAL_FAILURES[next(iter(_GLOBAL_FAILURES))]
 
-def record_login_failure(request: Request) -> None:
+def check_token(request: Request, given: str) -> tuple[str | None, int | None]:
+    """Сверить предъявленный токен с учётом ограничения перебора.
+
+    Возвращает (уровень, None) при совпадении, (None, None) при неверном или
+    пустом токене и (None, секунды) при исчерпанных попытках — тогда токен не
+    сверяется вовсе, иначе ответ выдал бы, что очередная догадка совпала.
+    Проверка лимита, сверка и учёт неудачи идут под одним замком без `await`:
+    параллельные придержанные запросы не получают лишних проб.
+    """
+    if not given:
+        return None, None
+    admin, api = _admin_token(), _api_token()
+    if not admin and not api:
+        return None, None
     client = _login_client(request)
     now = time.monotonic()
     with _AUTH_LOCK:
-        failures = _recent_failures_locked(client, now)
-        failures.append(now)
-        # Повторная вставка переносит адрес в конец: вытесняется самый давний.
-        _LOGIN_FAILURES.pop(client, None)
-        _LOGIN_FAILURES[client] = failures[-LOGIN_FAILURE_LIMIT:]
-        while len(_LOGIN_FAILURES) > MAX_TRACKED_LOGIN_CLIENTS:
-            del _LOGIN_FAILURES[next(iter(_LOGIN_FAILURES))]
+        retry_after = _retry_after_locked(client, now)
+        if retry_after is not None:
+            return None, retry_after
+        if same_token(given, admin):
+            level = LEVEL_ADMIN
+        elif same_token(given, api):
+            level = LEVEL_READ
+        else:
+            _record_failure_locked(client, given, now)
+            return None, None
+        _KNOWN_GOOD_CLIENTS.pop(client, None)
+        _KNOWN_GOOD_CLIENTS[client] = now
+        while len(_KNOWN_GOOD_CLIENTS) > MAX_KNOWN_GOOD_CLIENTS:
+            del _KNOWN_GOOD_CLIENTS[next(iter(_KNOWN_GOOD_CLIENTS))]
+        return level, None
 
-def clear_login_failures(request: Request) -> None:
-    with _AUTH_LOCK:
-        _LOGIN_FAILURES.pop(_login_client(request), None)
+_HEADER_AUTH_KEY = "mcp1c.header_auth"
+
+def header_token_check(request: Request) -> tuple[str | None, int | None]:
+    """Результат сверки токена из заголовка, один раз на запрос.
+
+    Права проверяются несколько раз за запрос (внешний слой, маршрут, флаг
+    admin в ответе); без кэша одна неверная догадка считалась бы дважды.
+    Кэш живёт в ASGI scope, общем для всех `Request` одного запроса.
+    """
+    cached = request.scope.get(_HEADER_AUTH_KEY)
+    if cached is None:
+        cached = check_token(request, _token_from_headers(request))
+        request.scope[_HEADER_AUTH_KEY] = cached
+    return cached
 
 def _authorized(request: Request) -> bool:
     """Право записи: загрузка источников, удаление, правка словаря."""
     if _session_level(request) == LEVEL_ADMIN:
         return True
-    return same_token(_token_from_headers(request), _admin_token())
+    return header_token_check(request)[0] == LEVEL_ADMIN
 
 def _origin_key(value: str, *, allow_path: bool) -> tuple[str, str, int] | None:
     """Канонический origin без зависимости от написания стандартного порта."""
@@ -245,7 +319,7 @@ def _cookie_mutation_is_same_origin(request: Request) -> bool:
     """
     if _session_level(request) is None:
         return True
-    if same_token(_token_from_headers(request), _admin_token()):
+    if header_token_check(request)[0] == LEVEL_ADMIN:
         return True
 
     origin = request.headers.get("origin", "")
@@ -374,8 +448,7 @@ def can_read(request: Request) -> bool:
         return True
     if _session_level(request) is not None:
         return True
-    given = _token_from_headers(request)
-    return same_token(given, expected) or same_token(given, _admin_token())
+    return header_token_check(request)[0] is not None
 
 JOB_READING = "принимается"
 

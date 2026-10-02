@@ -148,3 +148,34 @@ def test_запись_загруженного_файла_идёт_не_в_event
     assert response.status_code == 202
     assert записи_в_loop
     assert not any(записи_в_loop)
+
+
+def test_журнал_покрытия_сверяет_активацию_и_снимок_не_в_event_loop(
+    корень_кода, реестр_из_кода, monkeypatch
+):
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    registry = реестр_из_кода(корень_кода, name="Пример")
+    client = живой_клиент(Starlette(routes=routes(registry, mode=DASHBOARD_ON)))
+    вызовы: list[tuple[str, bool]] = []
+
+    def record(name, original):
+        def wrapper(*args, **kwargs):
+            try:
+                asyncio.get_running_loop()
+                вызовы.append((name, True))
+            except RuntimeError:
+                вызовы.append((name, False))
+            return original(*args, **kwargs)
+        return wrapper
+
+    monkeypatch.setattr(
+        registry, "active_activation", record("activation", registry.active_activation)
+    )
+    monkeypatch.setattr(
+        registry, "snapshot_is_current", record("current", registry.snapshot_is_current)
+    )
+
+    client.get("/api/v1/sources/coverage?source_id=Пример:modules")
+
+    assert {name for name, _ in вызовы} >= {"activation", "current"}
+    assert not any(in_loop for _, in_loop in вызовы)

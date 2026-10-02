@@ -173,7 +173,12 @@ def allowed_hosts(environ: Mapping[str, str] | None = None) -> tuple[str, ...]:
     entries = list(LOOPBACK_HOSTS)
     base = source.get("MCP1C_PUBLIC_BASE_URL", "").strip()
     if base:
-        parsed = urlsplit(base)
+        try:
+            parsed = urlsplit(base)
+        except ValueError as error:
+            raise HostConfigurationError(
+                f"MCP1C_PUBLIC_BASE_URL не разбирается как адрес: {error}."
+            ) from error
         split = split_host(parsed.netloc) if parsed.scheme in ("http", "https") else None
         if split is not None:
             hostname, port = split
@@ -232,13 +237,27 @@ def forwarded_allow_ips(
             continue
         try:
             if "/" in value:
-                ipaddress.ip_network(value, strict=False)
+                # Строго, как Uvicorn: адрес с битами хоста он не считает
+                # сетью, и доверие тогда молча выключилось бы.
+                ipaddress.ip_network(value, strict=True)
             else:
                 ipaddress.ip_address(value)
         except ValueError as error:
+            hint = ""
+            if "/" in value:
+                try:
+                    network = ipaddress.ip_network(value, strict=False)
+                    hint = f" Возможно, имелась в виду сеть {network}."
+                except ValueError:
+                    pass
             raise HostConfigurationError(
-                "MCP1C_TRUSTED_PROXIES ждёт IP-адреса или сети CIDR через запятую. "
-                f"Получено: {value!r}."
+                "MCP1C_TRUSTED_PROXIES ждёт IP-адреса или сети CIDR без битов "
+                f"хоста через запятую. Получено: {value!r}.{hint}"
             ) from error
         items.append(value)
+    if not items:
+        raise HostConfigurationError(
+            "MCP1C_TRUSTED_PROXIES не содержит ни одного адреса; оставьте "
+            "переменную пустой или перечислите IP и сети CIDR."
+        )
     return ",".join(items)

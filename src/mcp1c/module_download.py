@@ -10,7 +10,7 @@ import secrets
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Hashable
+from collections.abc import Callable, Hashable
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
@@ -67,7 +67,13 @@ def _decode(value: str) -> bytes:
 
 
 class CompressedModuleCache:
-    """Ограниченный LRU готовых gzip-файлов по точному снимку модуля."""
+    """Ограниченный LRU готовых gzip-файлов по точному снимку модуля.
+
+    Ключ содержит ревизию, поэтому устаревший файл не отдаётся никогда. Но
+    после удаления или перепарсинга источника его содержимое не должно
+    оставаться в памяти процесса: каждая запись помнит снимок Registry, при
+    котором её положили, и `prune` выбрасывает записи устаревших снимков.
+    """
 
     def __init__(
         self,
@@ -77,29 +83,45 @@ class CompressedModuleCache:
     ):
         self._max_bytes = max_bytes
         self._max_entries = max_entries
-        self._items: OrderedDict[Hashable, bytes] = OrderedDict()
+        self._items: OrderedDict[Hashable, tuple[bytes, object]] = OrderedDict()
         self._size = 0
         self._lock = threading.Lock()
 
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._items)
+
     def get(self, key: Hashable) -> bytes | None:
         with self._lock:
-            value = self._items.get(key)
-            if value is not None:
-                self._items.move_to_end(key)
-            return value
+            entry = self._items.get(key)
+            if entry is None:
+                return None
+            self._items.move_to_end(key)
+            return entry[0]
 
-    def put(self, key: Hashable, value: bytes) -> None:
+    def put(self, key: Hashable, value: bytes, marker: object = None) -> None:
         if len(value) > self._max_bytes:
             return
         with self._lock:
             previous = self._items.pop(key, None)
             if previous is not None:
-                self._size -= len(previous)
-            self._items[key] = value
+                self._size -= len(previous[0])
+            self._items[key] = (value, marker)
             self._size += len(value)
             while self._size > self._max_bytes or len(self._items) > self._max_entries:
-                _, evicted = self._items.popitem(last=False)
+                _, (evicted, _) = self._items.popitem(last=False)
                 self._size -= len(evicted)
+
+    def prune(self, is_live: Callable[[object], bool]) -> None:
+        """Выбросить записи, чей снимок Registry больше не текущий."""
+        with self._lock:
+            entries = list(self._items.items())
+        stale = [key for key, (_, marker) in entries if not is_live(marker)]
+        with self._lock:
+            for key in stale:
+                entry = self._items.pop(key, None)
+                if entry is not None:
+                    self._size -= len(entry[0])
 
 
 class ModuleDownloadTickets:

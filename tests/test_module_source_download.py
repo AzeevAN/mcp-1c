@@ -388,3 +388,34 @@ async def test_описание_называет_заголовок_билета
     assert "секрет" in описание
     assert "одноразов" in описание
     assert "60 секунд" in описание
+
+
+async def test_кэш_gzip_не_держит_код_сменившегося_источника(
+    сервер_с_модулями, корень_кода, архив_кода
+):
+    сервер, клиент, реестр = сервер_с_модулями
+    первый = await _ссылка(сервер, "ОбщийМодуль.ОбщийПример")
+    assert _скачать(клиент, первый).status_code == 200
+    assert len(сервер.compressed_module_cache) == 1
+
+    исходник = корень_кода / "CommonModules" / "ОбщийПример" / "Ext" / "Module.bsl"
+    исходник.write_text("Процедура Новая()\nКонецПроцедуры\n", encoding="utf-8")
+    реестр.add_modules(архив_кода(корень_кода), configuration="Пример")
+
+    # Следующее скачивание любого модуля вычищает записи прежнего снимка.
+    другой = await _ссылка(сервер, "Документ.Пример.Форма.Двоичная")
+    assert _скачать(клиент, другой).status_code == 200
+    assert len(сервер.compressed_module_cache) == 1
+
+
+def test_кэш_gzip_выбрасывает_записи_устаревших_снимков():
+    from mcp1c.module_download import CompressedModuleCache
+
+    cache = CompressedModuleCache(max_bytes=100, max_entries=8)
+    cache.put(("old",), b"old", "снимок-1")
+    cache.put(("new",), b"new", "снимок-2")
+
+    cache.prune(lambda marker: marker == "снимок-2")
+
+    assert cache.get(("old",)) is None
+    assert cache.get(("new",)) == b"new"

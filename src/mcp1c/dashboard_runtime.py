@@ -35,7 +35,6 @@ from starlette.responses import (
 from starlette.routing import Route
 
 from . import __version__, coverage_log, dashboard_backend, tools
-from .auth import same_token
 from .capabilities import (
     CapabilityConfigurationError,
     CapabilityRuntime,
@@ -55,9 +54,7 @@ from .dashboard_backend import (
     _drop_session,
     _session_level,
     can_read,
-    clear_login_failures,
-    login_retry_after,
-    record_login_failure,
+    check_token,
 )
 from .dictionary import ANY_CONFIGURATION, SOURCE_BUILTIN
 from .graph_view import DEFAULT_LIMIT as DEFAULT_GRAPH_LIMIT
@@ -1198,8 +1195,10 @@ def _spa_routes(
             return JSONResponse(
                 {"error": "Не указан source_id."}, status_code=400
             )
-        for _ in range(2):
-            snapshot = await run_in_threadpool(registry.snapshot)
+        def attempt() -> tuple[int, dict] | None:
+            # Снимок, активация и поздний CAS берут `_lock` Registry, который
+            # публикация держит и на fsync, — вся попытка идёт в потоке.
+            snapshot = registry.snapshot()
             code = snapshot.modules.get(source_id)
             source = (
                 code.source
@@ -1207,23 +1206,25 @@ def _spa_routes(
                 else snapshot.sources.get(source_id)
             )
             if source is None or source.kind not in (KIND_MODULES, KIND_EXTENSION):
-                return JSONResponse({"error": "Журнал не найден."}, status_code=404)
+                return 404, {"error": "Журнал не найден."}
             owner, _, _ = source_id.partition(":")
             activation = registry.active_activation(ExportIdentity.configuration(owner))
             if activation is not None and activation.status is ActivationStatus.RELOAD_REQUIRED:
                 if registry.snapshot_is_current(snapshot):
-                    return JSONResponse({"error": "reload_required"}, status_code=409)
-                continue
-            payload = await run_in_threadpool(
-                coverage_log.load_current, registry.data_dir, source
-            )
+                    return 409, {"error": "reload_required"}
+                return None
+            payload = coverage_log.load_current(registry.data_dir, source)
             if not registry.snapshot_is_current(snapshot):
-                continue
+                return None
             if payload is None:
-                return JSONResponse(
-                    {"error": "Актуальный журнал недоступен."}, status_code=404
-                )
-            return JSONResponse(payload)
+                return 404, {"error": "Актуальный журнал недоступен."}
+            return 200, payload
+
+        for _ in range(2):
+            result = await run_in_threadpool(attempt)
+            if result is not None:
+                status, body = result
+                return JSONResponse(body, status_code=status)
         return JSONResponse({"error": "Источники изменились; повторите запрос."}, status_code=409)
 
     def role_param(request: Request, name: str, *, maximum: int) -> str | None:
@@ -2238,26 +2239,20 @@ def _spa_routes(
             return PlainTextResponse(
                 "Вход выключен: не задан ни ADMIN_TOKEN, ни API_TOKEN.", 404
             )
-        retry_after = login_retry_after(request)
+        form = await request.form()
+        given = str(form.get("token", ""))
+        # Лимит проверяется после чтения формы и вместе со сверкой: иначе
+        # запросы, придержанные на теле, прошли бы проверку все сразу.
+        level, retry_after = check_token(request, given)
         if retry_after is not None:
-            # Токен при блокировке не сверяется вовсе: иначе ответ выдал бы,
-            # что очередная догадка совпала.
             return PlainTextResponse(
                 "Слишком много неудачных попыток входа. Повторите позже.",
                 status_code=429,
                 headers={"Retry-After": str(retry_after)},
             )
-        form = await request.form()
-        given = str(form.get("token", ""))
-        if same_token(given, _admin_token()):
-            level = LEVEL_ADMIN
-        elif same_token(given, _api_token()):
-            level = LEVEL_READ
-        else:
-            record_login_failure(request)
+        if level is None:
             return PlainTextResponse("Неверный токен.", status_code=403)
 
-        clear_login_failures(request)
         session = _create_session(level)
         response = RedirectResponse(
             "/sources" if level == LEVEL_ADMIN else "/", status_code=303

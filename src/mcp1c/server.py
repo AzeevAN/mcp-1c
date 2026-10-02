@@ -39,7 +39,6 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse, RedirectResponse, Response
 
 from . import __version__, tools
-from .auth import same_token
 from .capabilities import (
     CapabilityConfigurationError,
     CapabilityContractError,
@@ -50,7 +49,13 @@ from .capabilities import (
     resolve_capability_settings,
     validate_capability_tool,
 )
-from .dashboard_backend import MAX_UPLOAD, can_read
+from .dashboard_backend import (
+    LEVEL_ADMIN,
+    MAX_UPLOAD,
+    can_read,
+    check_token,
+    header_token_check,
+)
 from .dashboard_runtime import routes as dashboard_routes
 from .intake_v2_transport import MAX_BROWSER_UPLOAD_BYTES
 from .module_download import (
@@ -1473,7 +1478,16 @@ def _add_http_routes(
                 {"error": "Перезагрузка выключена: не задан ADMIN_TOKEN."},
                 status_code=404,
             )
-        if not same_token(request.headers.get("x-admin-token", ""), token):
+        level, retry_after = check_token(
+            request, request.headers.get("x-admin-token", "")
+        )
+        if retry_after is not None:
+            return JSONResponse(
+                {"error": "Слишком много неудачных попыток. Повторите позже."},
+                status_code=429,
+                headers={"Retry-After": str(retry_after)},
+            )
+        if level != LEVEL_ADMIN:
             return JSONResponse({"error": "Неверный токен."}, status_code=403)
 
         # Восстановление обычных источников и подъём валидного кэша остаются
@@ -1481,7 +1495,7 @@ def _add_http_routes(
         # на это время останавливает и `/health`, и MCP-запросы. Холодная
         # сборка индексов модулей внутри `startup()` уже запускается фоном.
         messages = await run_in_threadpool(registry.startup)
-        await server.refresh_role_tools()
+        await refresh_after_source_change()
         # Состав источников называется тем же способом, что в `/health`:
         # иначе два ответа про одно и то же расходятся, и первым же
         # расхождением стала пустая строка вместо «справки платформы нет».
@@ -1495,17 +1509,33 @@ def _add_http_routes(
         return JSONResponse(await run_in_threadpool(summary))
 
     compressed_sources = CompressedModuleCache()
+    server.compressed_module_cache = compressed_sources
+
+    def prune_download_cache_sync() -> None:
+        compressed_sources.prune(
+            lambda marker: marker is not None and registry.snapshot_is_current(marker)
+        )
+
+    async def refresh_after_source_change() -> bool:
+        # Удаление и публикация источника уже вызывают обновление ролевых
+        # инструментов; тот же момент снимает gzip удалённого кода из памяти.
+        await run_in_threadpool(prune_download_cache_sync)
+        return await server.refresh_role_tools()
 
     async def download_module_source(request: Request) -> Response:
         try:
             claims = download_tickets.verify(request.headers.get(TICKET_HEADER, ""))
         except DownloadTicketError:
             return JSONResponse({"error": "Билет скачивания недействителен."}, status_code=401)
-        try:
-            source = await run_in_threadpool(
-                tools.get_module_source_file,
+        def read_source():
+            prune_download_cache_sync()
+            snapshot = registry.snapshot()
+            return snapshot, tools.get_module_source_file(
                 registry, claims["address"], claims["config"], claims["extension"],
             )
+
+        try:
+            snapshot, source = await run_in_threadpool(read_source)
         except RegistryError:
             return JSONResponse({"error": "Снимок модуля больше недоступен."}, status_code=409)
         if (
@@ -1523,7 +1553,7 @@ def _add_http_routes(
             compressed = await run_in_threadpool(
                 gzip.compress, source.content, compresslevel=6, mtime=0
             )
-            compressed_sources.put(cache_key, compressed)
+            compressed_sources.put(cache_key, compressed, snapshot)
         return Response(
             compressed,
             media_type="application/gzip",
@@ -1548,7 +1578,7 @@ def _add_http_routes(
         reference=reference,
         restart=restart,
         capabilities=capabilities,
-        role_tools_refresh=server.refresh_role_tools,
+        role_tools_refresh=refresh_after_source_change,
     ):
         server.custom_route(
             route.path,
@@ -1587,6 +1617,15 @@ def mcp_guard(app):
         request = Request(scope)
         if can_read(request):
             await app(scope, receive, send)
+            return
+        retry_after = header_token_check(request)[1]
+        if retry_after is not None:
+            response = JSONResponse(
+                {"error": "Слишком много неудачных попыток. Повторите позже."},
+                status_code=429,
+                headers={"Retry-After": str(retry_after)},
+            )
+            await response(scope, receive, send)
             return
 
         # Отказ выглядит по-разному для клиента и для человека. Браузеру JSON
@@ -1705,7 +1744,9 @@ def trusted_host_guard(app, hosts: tuple[str, ...] | None):
             and not _origin_allowed(origin, hosts)
         ):
             response = PlainTextResponse(
-                "Запрос с чужого origin отклонён.", status_code=403
+                "Запрос с чужого origin отклонён. Если это origin самого "
+                "сервера, добавьте его имя в MCP1C_ALLOWED_HOSTS.",
+                status_code=403,
             )
             await response(scope, receive, send)
             return

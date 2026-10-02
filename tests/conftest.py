@@ -499,7 +499,11 @@ def чистый_журнал_загрузок():
     dashboard._JOBS.clear()
     dashboard._SESSIONS.clear()
     dashboard._LOGIN_FAILURES.clear()
+    dashboard._GLOBAL_FAILURES.clear()
+    dashboard._KNOWN_GOOD_CLIENTS.clear()
     yield
     dashboard._JOBS.clear()
     dashboard._SESSIONS.clear()
     dashboard._LOGIN_FAILURES.clear()
+    dashboard._GLOBAL_FAILURES.clear()
+    dashboard._KNOWN_GOOD_CLIENTS.clear()

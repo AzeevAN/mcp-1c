@@ -1,6 +1,7 @@
 """Публичный поиск процедур работает поверх боевого Registry.
 
-Архивы кода и реестр собирают фикстуры `conftest.py`: прямой подстановки
+Выгрузки в файлы и реестр собирают фикстуры `conftest.py` (native-поколение
+B_FULL через `native_export`): прямой подстановки
 `LoadedModules` или придуманных обходных методов здесь нет.
 """
 
@@ -19,6 +20,7 @@ from mcp1c.registry import STATUS_ERROR, Registry, RegistryError
 
 from conftest import build_configuration, write_export, write_syntax
 from module_samples import v8_container_bytes
+from native_export import загрузить_код
 
 
 def _добавить_одноимённые(корень, *, имя="Одинаковая", экспорт=False, количество=1):
@@ -128,23 +130,17 @@ def test_warm_cache_сохраняет_scope_вызовы_и_неразреше�
     assert "есть аннотация расширения" in tools.search_procedures(
         registry, "Рассчитать", config="Пример"
     )
-    registry.save()
-
     warm = Registry(registry.data_dir)
     assert warm.startup() == []
-    loaded = warm.resolve("Пример", diagnostic=True).modules
+    loaded = warm.resolve("Пример").modules
     assert loaded.готов is True
     assert "Документ.Объект.Форма.Основная" in loaded.оглавление.модули
-
-    assert "RELOAD_REQUIRED" in tools.list_configurations(warm)
-    for call in (
-        lambda: tools.search_procedures(warm, "Обработать", config="Пример"),
-        lambda: tools.get_callers(
-            warm, "ОбщийМодуль.Цель::Рассчитать", config="Пример"
-        ),
-    ):
-        with pytest.raises(RegistryError, match="reload_required"):
-            call()
+    assert tools.get_callers(
+        warm, "ОбщийМодуль.Цель::Рассчитать", config="Пример"
+    ) == callers
+    assert "Документ.Объект.Форма.Основная::Обработать" in tools.search_procedures(
+        warm, "Обработать", config="Пример", scope="Документ.Объект"
+    )
 
 
 def test_смена_поколения_container_повторяет_чтение_по_новому_локатору(
@@ -180,7 +176,7 @@ def test_смена_поколения_container_повторяет_чтение
 
     def задержать(root, address, locator):
         nonlocal первый
-        if первый and locator.kind == "container":
+        if первый and address == "ОбщаяФорма.Гонка":
             первый = False
             чтение_начато.set()
             отпустить.wait(timeout=3)
@@ -196,7 +192,7 @@ def test_смена_поколения_container_повторяет_чтение
     поток.start()
     try:
         assert чтение_начато.wait(timeout=1)
-        registry.add_modules(новый, configuration="Пример")
+        загрузить_код(registry, новый, configuration="Пример")
     finally:
         отпустить.set()
         поток.join(timeout=3)
@@ -252,7 +248,7 @@ def test_get_procedure_не_возвращает_устаревший_прома
     поток.start()
     try:
         assert промах_начат.wait(timeout=1)
-        registry.add_modules(новый, configuration="Пример")
+        загрузить_код(registry, новый, configuration="Пример")
     finally:
         отпустить.set()
         поток.join(timeout=3)
@@ -310,7 +306,7 @@ def test_search_scope_miss_старого_поколения_повторяет�
     поток.start()
     try:
         assert scope_начат.wait(timeout=1)
-        registry.add_modules(новый, configuration="Пример")
+        загрузить_код(registry, новый, configuration="Пример")
     finally:
         отпустить.set()
         поток.join(timeout=3)
@@ -320,16 +316,18 @@ def test_search_scope_miss_старого_поколения_повторяет�
 
 
 def test_точное_имя_находит_неэкспортную_и_читает_сигнатуру_с_диска(
-    реестр_с_кодом,
+    реестр_с_кодом, monkeypatch
 ):
-    загружено = реестр_с_кодом.resolve("Пример").modules
-    путь = загружено.корень / путь_модуля("ОбщийМодуль.ОбщийПример")
-    путь.write_text(
-        путь.read_text(encoding="utf-8").replace(
+    настоящее_чтение = tools.read_bsl
+
+    def прочитать(root, address, locator):
+        # Подмена текста на чтении доказывает, что сигнатура берётся из
+        # исходника поколения, а не из индекса.
+        return настоящее_чтение(root, address, locator).replace(
             "Процедура Внутренняя()", "Процедура Внутренняя(НовоеЗначение)"
-        ),
-        encoding="utf-8",
-    )
+        )
+
+    monkeypatch.setattr(tools, "read_bsl", прочитать)
 
     ответ = tools.search_procedures(
         реестр_с_кодом, "Внутренняя", config="Пример"
@@ -400,18 +398,26 @@ def test_скомпилированный_модуль_виден_но_проц�
     assert "исходный текст недоступен" in вызовы
     assert "процедур не найдено" not in поиск
 
-    реестр.save()
     восстановленный = Registry(реестр.data_dir)
-    восстановленный.startup()
-    assert "RELOAD_REQUIRED" in tools.list_configurations(восстановленный)
-    with pytest.raises(RegistryError, match="reload_required"):
-        восстановленный.resolve("Пример")
+    assert восстановленный.startup() == []
+    assert tools.get_procedure(
+        восстановленный, "ОбщийМодуль.Закрытый::Найти", config="Пример"
+    ) == процедура
 
 
 def test_list_configurations_сохраняет_сведения_здоровой_рядом_с_заблокированной(
     tmp_path, корень_кода, реестр_из_кода
 ):
-    реестр = реестр_из_кода(корень_кода, name="Blocked")
+    from native_export import опубликовать_код
+
+    реестр = Registry(tmp_path / "data")
+    опубликовать_код(
+        реестр,
+        корень_кода,
+        configuration=build_configuration(name="Blocked"),
+        рабочий=tmp_path / "blocked",
+        activation=False,
+    )
     здоровая = tmp_path / "healthy"
     здоровая.mkdir()
     реестр.add_configuration(
@@ -447,8 +453,10 @@ def test_скомпилированный_модуль_расширения_ос
     )
 
     assert "исходный текст недоступен" in ответ
-    assert "Пример:modules" not in реестр.sources
-    assert "Пример:ext:Доп" in реестр.sources
+    assert "Пример:ext:Доп" in реестр.modules
+    assert "ОбщийМодуль.ЗакрытыйДоп" not in (
+        реестр.modules["Пример:modules"].оглавление.модули
+    )
 
 
 def test_смешанный_корпус_предупреждает_над_оглавлением_и_обратными_вызовами(
@@ -490,20 +498,12 @@ def test_скомпилированная_часть_расширения_дел
     )
     расширение = tmp_path / "extension-partial"
     _код_расширения(расширение, variant="related")
-    реестр.add_modules(
-        архив_кода(расширение, extension="Доп"), configuration="Пример"
-    )
-    loaded = реестр.resolve("Пример", extension="Доп").extension
-    compiled = loaded.корень / "CommonModules" / "ЗакрытыйДоп.Module"
+    compiled = расширение / "CommonModules" / "ЗакрытыйДоп.Module"
     compiled.parent.mkdir(parents=True, exist_ok=True)
     compiled.write_bytes(b"compiled")
-    индексы = реестр._построить_индекс_кода(
-        "mixed-extension", loaded.корень, loaded.каталог.identity
+    загрузить_код(реестр, 
+        архив_кода(расширение, extension="Доп"), configuration="Пример"
     )
-    with реестр._lock:
-        реестр.modules[loaded.source.id] = реестр._готовые_модули(
-            loaded.source, loaded.корень, индексы
-        )
 
     список = tools.list_configurations(реестр)
     связи = tools.get_related(реестр, "Документ.Пример", config="Пример")
@@ -779,18 +779,18 @@ def test_смена_поколения_во_время_чтения_сигнат
 
     чтение_начато = threading.Event()
     отпустить = threading.Event()
-    настоящее_чтение = tools.прочитать_модуль
+    настоящее_чтение = tools.read_bsl
     первый = True
 
-    def задержать(путь):
+    def задержать(root, address, locator):
         nonlocal первый
-        if первый and путь.name == "Module.bsl" and "Гонка" in путь.parts:
+        if первый and address == "ОбщийМодуль.Гонка":
             первый = False
             чтение_начато.set()
             отпустить.wait(timeout=3)
-        return настоящее_чтение(путь)
+        return настоящее_чтение(root, address, locator)
 
-    monkeypatch.setattr(tools, "прочитать_модуль", задержать)
+    monkeypatch.setattr(tools, "read_bsl", задержать)
     ответы: list[str] = []
     ошибки: list[BaseException] = []
 
@@ -813,7 +813,7 @@ def test_смена_поколения_во_время_чтения_сигнат
         assert чтение_начато.wait(timeout=1)
         source_id = "Пример:ext:Доп" if extension else "Пример:modules"
         if action == "reparse":
-            реестр.add_modules(новый, configuration="Пример")
+            загрузить_код(реестр, новый, configuration="Пример")
         else:
             реестр.remove(source_id)
     finally:
@@ -856,19 +856,19 @@ def test_две_смены_поколения_дают_стабильную_ош
 
     начаты = [threading.Event(), threading.Event()]
     отпустить = [threading.Event(), threading.Event()]
-    настоящее_чтение = tools.прочитать_модуль
+    настоящее_чтение = tools.read_bsl
     номер_чтения = 0
 
-    def задержать(путь):
+    def задержать(root, address, locator):
         nonlocal номер_чтения
-        if путь.name == "Module.bsl" and "Гонка" in путь.parts and номер_чтения < 2:
+        if address == "ОбщийМодуль.Гонка" and номер_чтения < 2:
             номер = номер_чтения
             номер_чтения += 1
             начаты[номер].set()
             отпустить[номер].wait(timeout=3)
-        return настоящее_чтение(путь)
+        return настоящее_чтение(root, address, locator)
 
-    monkeypatch.setattr(tools, "прочитать_модуль", задержать)
+    monkeypatch.setattr(tools, "read_bsl", задержать)
     ошибки: list[BaseException] = []
 
     def искать():
@@ -881,7 +881,7 @@ def test_две_смены_поколения_дают_стабильную_ош
     поток.start()
     for номер, архив in enumerate(архивы):
         assert начаты[номер].wait(timeout=1)
-        реестр.add_modules(архив, configuration="Пример")
+        загрузить_код(реестр, архив, configuration="Пример")
         отпустить[номер].set()
     поток.join(timeout=3)
 
@@ -896,10 +896,10 @@ def test_две_смены_поколения_дают_стабильную_ош
 def test_текущая_ошибка_чтения_не_раскрывает_путь(
     реестр_с_кодом, monkeypatch
 ):
-    def отказ(_):
+    def отказ(*_):
         raise PermissionError(13, "секретная причина", "/private/секрет/Module.bsl")
 
-    monkeypatch.setattr(tools, "прочитать_модуль", отказ)
+    monkeypatch.setattr(tools, "read_bsl", отказ)
 
     with pytest.raises(RegistryError) as информация:
         tools.search_procedures(
@@ -1137,7 +1137,7 @@ def test_extension_выбирает_отдельный_корпус(
         "Процедура ТолькоВРасширении() Экспорт\nКонецПроцедуры\n",
         encoding="utf-8",
     )
-    реестр_с_кодом.add_modules(
+    загрузить_код(реестр_с_кодом, 
         архив_кода(корень_кода, extension="Доп"), configuration="Пример"
     )
 
@@ -1170,11 +1170,14 @@ def test_без_кода_отвечает_честной_причиной(tmp_pa
 
 
 def test_строящийся_индекс_показывает_этап_и_фактический_прогресс(
-    реестр_с_кодом, monkeypatch
+    tmp_path, корень_кода, monkeypatch
 ):
-    реестр_с_кодом.save()
-    for вид in реестр_с_кодом.CACHE_KINDS["modules"]:
-        реестр_с_кодом._cache_path("Пример:modules", вид).unlink(missing_ok=True)
+    # Фоновая сборка осталась только у строк кода прежней версии.
+    from native_export import старый_реестр
+
+    data_dir = старый_реестр(
+        tmp_path / "old", корень_кода, configuration=build_configuration(name="Пример")
+    )
 
     второй_файл = threading.Event()
     отпустить = threading.Event()
@@ -1190,7 +1193,7 @@ def test_строящийся_индекс_показывает_этап_и_фа
         return настоящее_чтение(корень, адрес, локатор)
 
     monkeypatch.setattr(modules_index, "read_bsl", прочитать)
-    заново = Registry(реестр_с_кодом.data_dir)
+    заново = Registry(data_dir)
     try:
         assert not заново.startup()
         assert второй_файл.wait(timeout=1)
@@ -1647,17 +1650,16 @@ def test_get_procedure_промах_предлагает_похожий_адре
     assert "ОбщийМодуль.ОбщийПример::Сложить" in ответ
 
 
-def test_get_procedure_частичный_разбор_и_расхождение_версий_над_телом(
+def test_get_procedure_частичный_разбор_над_телом(
     корень_кода, реестр_из_кода
 ):
+    # Версия кода и структуры в одной выгрузке в файлы совпадает всегда:
+    # расхождение было только у кода, загруженного отдельно от структуры.
     файл = корень_кода / "CommonModules" / "ОбщийПример" / "Ext" / "Module.bsl"
     файл.write_text(
         "Процедура Оборванная()\n    МаркерТела = 1;\n", encoding="utf-8"
     )
-    configuration = build_configuration(name="Пример", version="2.0")
-    реестр = реестр_из_кода(
-        корень_кода, configuration=configuration, code_version="1.0"
-    )
+    реестр = реестр_из_кода(корень_кода)
 
     ответ = tools.get_procedure(
         реестр,
@@ -1667,8 +1669,6 @@ def test_get_procedure_частичный_разбор_и_расхождение
 
     позиция_тела = ответ.index("МаркерТела")
     assert ответ.index("разобран не до конца") < позиция_тела
-    assert ответ.index("версии 1.0") < позиция_тела
-    assert "версии 2.0" in ответ
 
 
 @pytest.mark.parametrize("state", ["missing", "building", "error"])
@@ -1749,7 +1749,7 @@ def test_get_procedure_четыре_семантики_аннотаций_рас
             "КонецПроцедуры\n"
         )
     файл.write_text(extension_text, encoding="utf-8")
-    реестр.add_modules(
+    загрузить_код(реестр, 
         архив_кода(корень_кода, extension="Доп"), configuration="Пример"
     )
 
@@ -1790,7 +1790,7 @@ def test_get_procedure_чужое_расширение_предупреждае�
             f"    СекретноеТело{extension} = 1;\nКонецПроцедуры\n",
             encoding="utf-8",
         )
-        реестр.add_modules(
+        загрузить_код(реестр, 
             архив_кода(корень_кода, extension=extension),
             configuration="Пример",
         )
@@ -1824,7 +1824,7 @@ def test_get_procedure_чужое_изменение_и_контроль_не_н
         "КонецПроцедуры\n",
         encoding="utf-8",
     )
-    реестр.add_modules(
+    загрузить_код(реестр, 
         архив_кода(корень_кода, extension="Доп"), configuration="Пример"
     )
 
@@ -1863,18 +1863,18 @@ def test_get_procedure_смена_поколения_не_смешивает_т�
     новый = архив_кода(корень_кода, extension=extension)
     начато = threading.Event()
     отпустить = threading.Event()
-    настоящее_чтение = tools.прочитать_модуль
+    настоящее_чтение = tools.read_bsl
     первый = True
 
-    def задержать(путь):
+    def задержать(root, address, locator):
         nonlocal первый
-        if первый and "ГонкаКарточки" in путь.parts:
+        if первый and address == "ОбщийМодуль.ГонкаКарточки":
             первый = False
             начато.set()
             отпустить.wait(timeout=3)
-        return настоящее_чтение(путь)
+        return настоящее_чтение(root, address, locator)
 
-    monkeypatch.setattr(tools, "прочитать_модуль", задержать)
+    monkeypatch.setattr(tools, "read_bsl", задержать)
     ответы: list[str] = []
     ошибки: list[BaseException] = []
 
@@ -1897,7 +1897,7 @@ def test_get_procedure_смена_поколения_не_смешивает_т�
         assert начато.wait(timeout=1)
         source_id = "Пример:ext:Доп" if extension else "Пример:modules"
         if action == "reparse":
-            реестр.add_modules(новый, configuration="Пример")
+            загрузить_код(реестр, новый, configuration="Пример")
         else:
             реестр.remove(source_id)
     finally:
@@ -1919,10 +1919,10 @@ def test_get_procedure_не_раскрывает_путь_при_ошибке_т
 ):
     реестр = реестр_из_кода(корень_кода, extension=extension)
 
-    def отказ(_путь):
+    def отказ(*_):
         raise PermissionError(13, "Permission denied", "/private/secret/Module.bsl")
 
-    monkeypatch.setattr(tools, "прочитать_модуль", отказ)
+    monkeypatch.setattr(tools, "read_bsl", отказ)
 
     with pytest.raises(RegistryError) as ошибка:
         tools.get_procedure(
@@ -1962,7 +1962,7 @@ def test_get_procedure_все_части_двух_корпусов_проход�
         "КонецПроцедуры\n",
         encoding="utf-8",
     )
-    реестр.add_modules(
+    загрузить_код(реестр, 
         архив_кода(корень_кода, extension="Доп"), configuration="Пример"
     )
 
@@ -2020,7 +2020,7 @@ def test_get_procedure_все_части_двух_корпусов_проход�
     поток.start()
     try:
         assert дошли_до_cas.wait(timeout=1)
-        реестр.add_modules(новый, configuration="Пример")
+        загрузить_код(реестр, новый, configuration="Пример")
     finally:
         отпустить.set()
         поток.join(timeout=3)
@@ -2215,7 +2215,7 @@ def test_list_configurations_даёт_полную_сводку_расширен
     )
     расширение = tmp_path / "extension"
     _код_расширения(расширение)
-    реестр.add_modules(
+    загрузить_код(реестр, 
         архив_кода(расширение, extension="Доп"), configuration="Пример"
     )
 
@@ -2236,7 +2236,7 @@ def test_расширения_в_сводке_упорядочены_стаби�
     for имя in ("Бета", "Альфа"):
         корень = tmp_path / имя
         _код_расширения(корень, variant="new")
-        реестр.add_modules(
+        загрузить_код(реестр, 
             архив_кода(корень, extension=имя), configuration="Пример"
         )
 
@@ -2255,7 +2255,7 @@ def test_list_configurations_показывает_состояние_расши�
     реестр = реестр_из_кода(корень_кода)
     расширение = tmp_path / "extension"
     _код_расширения(расширение, variant="new")
-    реестр.add_modules(
+    загрузить_код(реестр, 
         архив_кода(расширение, extension="Доп"), configuration="Пример"
     )
     loaded = реестр.resolve("Пример", extension="Доп").extension
@@ -2283,7 +2283,7 @@ def test_сводка_расширения_не_материализует_вс�
     реестр = реестр_из_кода(корень_кода)
     расширение = tmp_path / "extension"
     _код_расширения(расширение, variant="full")
-    реестр.add_modules(
+    загрузить_код(реестр, 
         архив_кода(расширение, extension="Доп"), configuration="Пример"
     )
     monkeypatch.setattr(
@@ -2315,7 +2315,9 @@ def test_get_object_показывает_код_по_уровню_детализ
     assert "Код объекта" not in brief and "Модули объекта" not in brief
     строки = [line for line in fields.splitlines() if line.startswith("Код объекта:")]
     assert строки == ["Код объекта: модулей 1, форм 2."]
-    assert "МодульОбъекта" not in fields and "Форма.Основная" not in fields
+    # Структурный раздел «Формы» приходит из выгрузки в файлы; адресов кода
+    # уровень fields по-прежнему не перечисляет.
+    assert "МодульОбъекта" not in fields and "## Формы объекта" not in fields
     assert "## Модули объекта" in full and "Документ.Пример.МодульОбъекта" in full
     assert "## Формы объекта" in full and "Документ.Пример.Форма.Основная" in full
     assert "Документ.Пример.Форма.БезКода" in full
@@ -2391,12 +2393,12 @@ def test_get_related_помечает_перекрытый_объект_расш
     )
     расширение = tmp_path / "extension"
     _код_расширения(расширение, variant="related")
-    реестр.add_modules(
+    загрузить_код(реестр, 
         архив_кода(расширение, extension="Доп"), configuration="Пример"
     )
     второе = tmp_path / "second-extension"
     _код_расширения(второе, variant="related")
-    реестр.add_modules(
+    загрузить_код(реестр, 
         архив_кода(второе, extension="Второе"), configuration="Пример"
     )
     своё = tmp_path / "own-extension"
@@ -2405,7 +2407,7 @@ def test_get_related_помечает_перекрытый_объект_расш
     (каталог / "ManagerModule.bsl").write_text(
         "Процедура Собственная()\nКонецПроцедуры\n", encoding="utf-8"
     )
-    реестр.add_modules(
+    загрузить_код(реестр, 
         архив_кода(своё, extension="ТолькоСвоя"), configuration="Пример"
     )
 
@@ -2426,12 +2428,12 @@ def test_существующие_блоки_не_читают_тела_с_ди�
     )
     расширение = tmp_path / "extension"
     _код_расширения(расширение, variant="related")
-    реестр.add_modules(
+    загрузить_код(реестр, 
         архив_кода(расширение, extension="Доп"), configuration="Пример"
     )
     monkeypatch.setattr(
         tools,
-        "прочитать_модуль",
+        "read_bsl",
         lambda *_: pytest.fail("тело модуля не должно читаться"),
     )
 
@@ -2483,7 +2485,7 @@ def test_get_object_не_смешивает_поколения_модулей(
     try:
         assert начато.wait(timeout=1)
         if action == "reparse":
-            реестр.add_modules(новый_архив, configuration="Пример")
+            загрузить_код(реестр, новый_архив, configuration="Пример")
         else:
             реестр.remove("Пример:modules")
     finally:
@@ -2511,7 +2513,7 @@ def test_list_configurations_не_смешивает_поколения_расш
     )
     старый = tmp_path / "old-extension"
     _код_расширения(старый, variant="full")
-    реестр.add_modules(
+    загрузить_код(реестр, 
         архив_кода(старый, extension="Доп"), configuration="Пример"
     )
     новый = tmp_path / "new-extension"
@@ -2544,7 +2546,7 @@ def test_list_configurations_не_смешивает_поколения_расш
     try:
         assert начато.wait(timeout=1)
         if action == "reparse":
-            реестр.add_modules(новый_архив, configuration="Пример")
+            загрузить_код(реестр, новый_архив, configuration="Пример")
         else:
             реестр.remove("Пример:ext:Доп")
     finally:
@@ -2570,7 +2572,7 @@ def test_get_related_не_показывает_устаревшее_перекр
     )
     старое = tmp_path / "old-extension"
     _код_расширения(старое, variant="related")
-    реестр.add_modules(
+    загрузить_код(реестр, 
         архив_кода(старое, extension="Доп"), configuration="Пример"
     )
     новое = tmp_path / "new-extension"
@@ -2607,7 +2609,7 @@ def test_get_related_не_показывает_устаревшее_перекр
     try:
         assert начато.wait(timeout=1)
         if action == "reparse":
-            реестр.add_modules(новый_архив, configuration="Пример")
+            загрузить_код(реестр, новый_архив, configuration="Пример")
         else:
             реестр.remove("Пример:ext:Доп")
     finally:
@@ -2801,46 +2803,6 @@ def test_list_configurations_не_перечитывает_удалённую_с
     ]
 
 
-def test_get_object_ставит_расхождение_версий_только_над_блоком_кода(
-    tmp_path, реестр_из_кода
-):
-    корень = tmp_path / "code"
-    _код_объекта(корень)
-    конфигурация = _конфигурация_для_блоков()
-    конфигурация.version = "2.0"
-    реестр = реестр_из_кода(
-        корень, configuration=конфигурация, code_version="1.0"
-    )
-    with реестр._lock:
-        реестр.configurations["Пример"].config.warnings.append(
-            "Обычная оговорка метаданных."
-        )
-
-    brief = tools.get_object(
-        реестр, "Документ.Пример", config="Пример", detail="brief"
-    )
-    fields = tools.get_object(
-        реестр, "Документ.Пример", config="Пример", detail="fields"
-    )
-    full = tools.get_object(
-        реестр, "Документ.Пример", config="Пример", detail="full"
-    )
-
-    assert "Обычная оговорка метаданных" in brief
-    assert "Код модулей выгружен для версии" not in brief
-    assert fields.index("Код модулей выгружен для версии") < fields.index(
-        "Код объекта:"
-    )
-    assert full.index("Код модулей выгружен для версии") < full.index(
-        "## Модули объекта"
-    )
-    for ответ in (fields, full):
-        assert ответ.count("Код модулей выгружен для версии") == 1
-        assert ответ.index("Обычная оговорка метаданных") > ответ.index(
-            "Код объекта" if ответ is fields else "## Модули объекта"
-        )
-
-
 def _модуль_формы(корень, *, object_name, form_name, common=False):
     if common:
         каталог = корень / "CommonForms" / object_name / "Ext" / "Form"
@@ -2878,9 +2840,8 @@ def test_get_object_объединяет_формы_из_оглавления_и
         for name in ("Документ.А", "Документ.АБ")
     }
     реестр = реестр_из_кода(корень, configuration=конфигурация)
-    реестр.save()
     заново = Registry(реестр.data_dir)
-    заново.startup()
+    assert заново.startup() == []
 
     ответ = tools.get_object(
         реестр, "Документ.А", config="Пример", detail="full"
@@ -2893,8 +2854,9 @@ def test_get_object_объединяет_формы_из_оглавления_и
         "## Формы объекта", 1
     )[0]
     assert "ТолькоМодуль" not in блок_модулей
-    with pytest.raises(RegistryError, match="reload_required"):
-        tools.get_object(заново, "Документ.А", config="Пример", detail="full")
+    assert tools.get_object(
+        заново, "Документ.А", config="Пример", detail="full"
+    ) == ответ
 
 
 def test_get_object_считает_модуль_общей_формы_формой(tmp_path, реестр_из_кода):

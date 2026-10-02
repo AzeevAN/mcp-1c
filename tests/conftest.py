@@ -287,8 +287,7 @@ def write_export(directory: Path, config: Configuration) -> Path:
     return target
 
 
-# Пространство имён Configuration.xml выгрузки в файлы — то же, что в
-# registry._NS_MDCLASSES.
+# Пространство имён Configuration.xml выгрузки в файлы (MDClasses).
 _NS_MDCLASSES = "http://v8.1c.ru/8.3/MDClasses"
 
 
@@ -301,7 +300,7 @@ def modules_configuration_xml(
     """`Configuration.xml` минимальной выгрузки в файлы — с непустым
     `CompatibilityMode`.
 
-    `registry._сведения_о_выгрузке` распознаёт выгрузку в файлы положительным
+    Приём (`intake_v2_probe`) распознаёт выгрузку в файлы положительным
     правилом: конфигурация — только если `CompatibilityMode` непустой, а не
     «не похоже на расширение, значит конфигурация». Заготовка `<x/>` без
     единого тега MDClasses раньше проходила как конфигурация по умолчанию;
@@ -323,21 +322,15 @@ def modules_configuration_xml(
     )
 
 
-def extension_configuration_xml(name: str = "Доп") -> str:
-    """`Configuration.xml` минимального расширения для боевого `add_modules`."""
-    return (
-        f'<MetaDataObject xmlns="{_NS_MDCLASSES}">'
-        '<Configuration uuid="00000000-0000-0000-0000-000000000000">'
-        f"<Properties><Name>{name}</Name><NamePrefix>{name}_</NamePrefix>"
-        "<ObjectBelonging>Adopted</ObjectBelonging>"
-        "<ConfigurationExtensionPurpose>AddOn</ConfigurationExtensionPurpose>"
-        "</Properties></Configuration></MetaDataObject>"
-    )
-
-
 @pytest.fixture
 def архив_кода(tmp_path_factory):
-    """Пакует синтетическое дерево тем же форматом, что принимает Registry."""
+    """Снимок синтетического дерева кода для повторной публикации.
+
+    Возвращает `native_export.КодВыгрузки`; публикует его
+    `native_export.загрузить_код` новым полным поколением.
+    """
+    from native_export import снимок_кода
+
     счётчик = 0
 
     def собрать(
@@ -345,29 +338,25 @@ def архив_кода(tmp_path_factory):
         *,
         version: str = "",
         extension: str | None = None,
-    ) -> Path:
+    ):
         nonlocal счётчик
         счётчик += 1
         каталог = tmp_path_factory.mktemp(f"архив-кода-{счётчик}")
-        путь = каталог / ("расширение.zip" if extension else "модули.zip")
-        файлы = [файл for файл in sorted(корень.rglob("*")) if файл.is_file()]
-        with zipfile.ZipFile(путь, "w") as zf:
-            разметка = (
-                extension_configuration_xml(extension)
-                if extension
-                else modules_configuration_xml(version=version)
-            )
-            zf.writestr("Configuration.xml", разметка)
-            for файл in файлы:
-                zf.write(файл, файл.relative_to(корень).as_posix())
-        return путь
+        return снимок_кода(корень, каталог, version=version, extension=extension)
 
     return собрать
 
 
 @pytest.fixture
-def реестр_из_кода(tmp_path_factory, архив_кода):
-    """Создаёт реестр только публичными путями загрузки конфигурации и кода."""
+def реестр_из_кода(tmp_path_factory):
+    """Реестр с активным native-поколением B_FULL из дерева кода.
+
+    Выгрузка в файлы собирается из модели конфигурации и дерева модулей и
+    публикуется тем же путём, что intake и дашборд (`native_export`).
+    Расширение публикуется вторым поколением поверх своей конфигурации.
+    """
+    from native_export import опубликовать_код
+
     счётчик = 0
 
     def собрать(
@@ -381,19 +370,28 @@ def реестр_из_кода(tmp_path_factory, архив_кода):
         nonlocal счётчик
         счётчик += 1
         рабочий = tmp_path_factory.mktemp(f"tools-modules-{счётчик}")
-        входящее = рабочий / "incoming"
-        входящее.mkdir()
         реестр = Registry(рабочий / "data")
         configuration = configuration or build_configuration(name=name)
-        реестр.add_configuration(
-            write_export(входящее, configuration)
-        )
-        реестр.add_modules(
-            архив_кода(
-                корень, version=code_version, extension=extension
-            ),
-            configuration=configuration.name,
-        )
+        if extension is None:
+            опубликовать_код(
+                реестр,
+                корень,
+                configuration=configuration,
+                code_version=code_version,
+                рабочий=рабочий,
+            )
+        else:
+            опубликовать_код(
+                реестр, None, configuration=configuration, рабочий=рабочий
+            )
+            опубликовать_код(
+                реестр,
+                корень,
+                configuration=configuration,
+                extension=extension,
+                code_version=code_version,
+                рабочий=рабочий,
+            )
         return реестр
 
     return собрать

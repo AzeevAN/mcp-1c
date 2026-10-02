@@ -1,13 +1,12 @@
 """Шесть состояний файла и кэш хеша."""
 import json
 import shutil
-import zipfile
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from conftest import build_configuration, modules_configuration_xml, состарить, write_export
+from conftest import build_configuration, состарить, write_export
 from mcp1c.incoming import (
     STATE_FAILED,
     STATE_NEW,
@@ -18,6 +17,7 @@ from mcp1c.incoming import (
 )
 from mcp1c.intake import SELECTION_VERSION
 from mcp1c.registry import KIND_MODULES, Registry, Source
+from native_export import записать_старый_код
 
 
 def _реестр(tmp_path) -> Registry:
@@ -31,6 +31,66 @@ def _архив(registry: Registry, имя: str, содержимое: bytes = b
     путь = registry.incoming_dir / имя
     путь.write_bytes(содержимое or b"PK\x05\x06" + b"\0" * 18)
     return путь
+
+
+def _старый_код(tmp_path: Path, процедура: str = "А") -> Path:
+    корень = tmp_path / f"код-{процедура}"
+    модуль = корень / "Catalogs" / "Т" / "Ext" / "ObjectModule.bsl"
+    модуль.parent.mkdir(parents=True)
+    модуль.write_text(f"Процедура {процедура}() КонецПроцедуры", encoding="utf-8")
+    return корень
+
+
+def _реестр_прежней_версии(tmp_path: Path, **код) -> tuple[Registry, Source]:
+    """schema v1 «Розница» и её код строкой прежней версии (без startup)."""
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    registry = Registry(tmp_path / "data")
+    registry.add_configuration(
+        write_export(input_dir, build_configuration(name="Розница"))
+    )
+    registry.save()
+    source = записать_старый_код(
+        registry,
+        _старый_код(tmp_path, код.pop("процедура", "А")),
+        configuration="Розница",
+        **код,
+    )
+    return registry, source
+
+
+def _оборванная_рокировка(
+    registry: Registry, source: Source, *, новый_текст: str, selection_version: int
+) -> tuple[Path, Path, Source]:
+    """Состояние после SIGKILL прежней версии между rename и уборкой.
+
+    Прежний приём кода писал журнал `.modules-swap.json`, затем отставлял
+    canonical root в `.<имя>.old-<token>` и ставил на его место распакованный
+    `.<имя>.tmp-<token>`. Здесь собрано ровно это состояние на диске.
+    """
+    root = registry._modules_root("Розница")
+    temporary = root.parent / f".{root.name}.tmp-crash"
+    detached = root.parent / f".{root.name}.old-crash"
+    new = replace(source, selection_version=selection_version, sha256="b" * 64)
+    registry._write_json_durably(
+        registry._module_swap_path,
+        {
+            "version": 1,
+            "source_id": new.id,
+            "new_sha256": new.sha256,
+            "new_selection_version": new.selection_version,
+            "root": registry._relative(root),
+            "temporary": registry._relative(temporary),
+            "detached": registry._relative(detached),
+        },
+    )
+    shutil.copytree(root, temporary)
+    (temporary / "Catalogs/Т/Ext/ObjectModule.bsl").write_text(
+        новый_текст, encoding="utf-8"
+    )
+    root.rename(detached)
+    temporary.rename(root)
+    return root, detached, new
 
 
 def test_незнакомый_файл_не_разобран(tmp_path):
@@ -103,245 +163,85 @@ def test_предыдущее_правило_отбора_помечено_ус�
     assert строки[0]["state"] == STATE_STALE
 
 
-def test_startup_не_переразбирает_selection_v3_из_incoming_автоматически(
-    tmp_path, monkeypatch
-):
-    input_dir = tmp_path / "input"
-    input_dir.mkdir()
-    data_dir = tmp_path / "data"
-    registry = Registry(data_dir)
-    registry.add_configuration(
-        write_export(input_dir, build_configuration(name="Розница"))
+def test_startup_не_переразбирает_selection_v3_из_incoming_автоматически(tmp_path):
+    archive = tmp_path / "modules.zip"
+    archive.write_bytes(b"PK\x05\x06" + b"\0" * 18)
+    registry, _source = _реестр_прежней_версии(
+        tmp_path,
+        origin="modules.zip",
+        sha256=IncomingScanner(Registry(tmp_path / "scan")).digest(archive),
     )
-    archive = input_dir / "modules.zip"
-    with zipfile.ZipFile(archive, "w") as opened:
-        opened.writestr("Configuration.xml", modules_configuration_xml())
-        opened.writestr(
-            "Catalogs/Т/Ext/ObjectModule.bsl",
-            "Процедура А() КонецПроцедуры",
-        )
-    registry.add_modules(archive, configuration="Розница")
-    registry.save()
-
     raw = json.loads(registry.registry_path.read_text(encoding="utf-8"))
     for source in raw["sources"]:
         if source["id"] == "Розница:modules":
             source["selection_version"] = 3
     registry.registry_path.write_text(json.dumps(raw), encoding="utf-8")
-    incoming = data_dir / "incoming"
+    incoming = registry.data_dir / "incoming"
     incoming.mkdir(exist_ok=True)
     copied = incoming / archive.name
     copied.write_bytes(archive.read_bytes())
     состарить(copied)
 
-    restored = Registry(data_dir)
-    calls = []
-    monkeypatch.setattr(
-        restored,
-        "add_modules",
-        lambda *_args, **_kwargs: calls.append(True),
-    )
-
+    restored = Registry(registry.data_dir)
     restored.startup()
+    assert restored.wait_for_module_builds(timeout=10)
 
-    assert calls == []
     assert restored.sources["Розница:modules"].selection_version == 3
     assert IncomingScanner(restored).scan()[0]["state"] == STATE_STALE
 
 
-def test_явный_reparse_публикует_текущую_версию_отбора(tmp_path):
-    input_dir = tmp_path / "input"
-    input_dir.mkdir()
-    registry = Registry(tmp_path / "data")
-    registry.add_configuration(
-        write_export(input_dir, build_configuration(name="Розница"))
-    )
-    old_archive = input_dir / "old.zip"
-    with zipfile.ZipFile(old_archive, "w") as opened:
-        opened.writestr("Configuration.xml", modules_configuration_xml())
-        opened.writestr(
-            "Catalogs/Т/Ext/ObjectModule.bsl",
-            "Процедура Старая() КонецПроцедуры",
-        )
-    registry.add_modules(old_archive, configuration="Розница")
-    registry.save()
-    root = registry.modules["Розница:modules"].корень
-
-    new_archive = input_dir / "new.zip"
-    with zipfile.ZipFile(new_archive, "w") as opened:
-        opened.writestr("Configuration.xml", modules_configuration_xml())
-        opened.writestr(
-            "Catalogs/Т/Ext/ObjectModule.bsl",
-            "Процедура Новая() КонецПроцедуры",
-        )
-        opened.writestr("Catalogs/Т/Forms/Основная.xml", "descriptor")
-        opened.writestr("Catalogs/Т/Forms/Основная/Ext/Form.bin", b"container")
-
-    source = registry.add_modules(new_archive, configuration="Розница")
-
-    assert source.selection_version == 7
-    assert (root / "Catalogs/Т/Forms/Основная.xml").read_text() == "descriptor"
-    assert (root / "Catalogs/Т/Forms/Основная/Ext/Form.bin").read_bytes() == b"container"
-    assert "Новая" in (root / "Catalogs/Т/Ext/ObjectModule.bsl").read_text()
-    persisted = json.loads(registry.registry_path.read_text(encoding="utf-8"))
-    persisted_source = next(
-        item for item in persisted["sources"] if item["id"] == "Розница:modules"
-    )
-    assert persisted_source["sha256"] == source.sha256
-    assert persisted_source["origin"] == "new.zip"
-    assert persisted_source["selection_version"] == 7
-
-    restarted = Registry(registry.data_dir)
-    assert restarted.restore() == []
-    assert restarted.sources["Розница:modules"].sha256 == source.sha256
-
-
-def test_отказ_save_при_reparse_возвращает_старый_корень_и_source(
-    tmp_path, monkeypatch
-):
-    input_dir = tmp_path / "input"
-    input_dir.mkdir()
-    registry = Registry(tmp_path / "data")
-    registry.add_configuration(
-        write_export(input_dir, build_configuration(name="Розница"))
-    )
-
-    def archive(path: Path, procedure: str) -> Path:
-        with zipfile.ZipFile(path, "w") as opened:
-            opened.writestr("Configuration.xml", modules_configuration_xml())
-            opened.writestr(
-                "Catalogs/Т/Ext/ObjectModule.bsl",
-                f"Процедура {procedure}() КонецПроцедуры",
-            )
-        return path
-
-    old = registry.add_modules(
-        archive(input_dir / "old.zip", "Старая"), configuration="Розница"
-    )
-    registry.save()
-    root = registry.modules[old.id].корень
-    persisted_before = registry.registry_path.read_bytes()
-    monkeypatch.setattr(registry, "save", lambda: (_ for _ in ()).throw(OSError("disk")))
-
-    with pytest.raises(Exception):
-        registry.add_modules(
-            archive(input_dir / "new.zip", "Новая"), configuration="Розница"
-        )
-
-    assert registry.sources[old.id] is old
-    assert registry.modules[old.id].source is old
-    assert "Старая" in (root / "Catalogs/Т/Ext/ObjectModule.bsl").read_text()
-    assert registry.registry_path.read_bytes() == persisted_before
-
-
-def test_отказ_публикации_расходного_кэша_не_маскирует_успешный_reparse(
-    tmp_path, monkeypatch
-):
-    input_dir = tmp_path / "input"
-    input_dir.mkdir()
-    registry = Registry(tmp_path / "data")
-    registry.add_configuration(
-        write_export(input_dir, build_configuration(name="Розница"))
-    )
-    archive = input_dir / "modules.zip"
-    with zipfile.ZipFile(archive, "w") as opened:
-        opened.writestr("Configuration.xml", modules_configuration_xml())
-        opened.writestr(
-            "Catalogs/Т/Ext/ObjectModule.bsl",
-            "Процедура Новая() КонецПроцедуры",
-        )
-
-    original_iterdir = Path.iterdir
-
-    def iterdir(path):
-        if path.name.startswith(".modules-cache.tmp-"):
-            raise OSError("cache unavailable")
-        return original_iterdir(path)
-
-    monkeypatch.setattr(Path, "iterdir", iterdir)
-
-    source = registry.add_modules(archive, configuration="Розница")
-
-    assert registry.sources[source.id] is source
-    persisted = json.loads(registry.registry_path.read_text(encoding="utf-8"))
-    assert any(item["sha256"] == source.sha256 for item in persisted["sources"])
-
 
 def test_startup_откатывает_рокировку_оборванную_до_registry_json(tmp_path):
-    input_dir = tmp_path / "input"
-    input_dir.mkdir()
-    registry = Registry(tmp_path / "data")
-    registry.add_configuration(
-        write_export(input_dir, build_configuration(name="Розница"))
+    registry, old = _реестр_прежней_версии(tmp_path, процедура="Старая")
+    raw = json.loads(registry.registry_path.read_text(encoding="utf-8"))
+    for row in raw["sources"]:
+        if row["id"] == old.id:
+            row["selection_version"] = 3
+    registry.registry_path.write_text(json.dumps(raw), encoding="utf-8")
+    root, detached, _new = _оборванная_рокировка(
+        registry,
+        old,
+        новый_текст="Процедура Новая() КонецПроцедуры",
+        selection_version=4,
     )
-    archive = input_dir / "modules.zip"
-    with zipfile.ZipFile(archive, "w") as opened:
-        opened.writestr("Configuration.xml", modules_configuration_xml())
-        opened.writestr(
-            "Catalogs/Т/Ext/ObjectModule.bsl",
-            "Процедура Старая() КонецПроцедуры",
-        )
-    old = registry.add_modules(archive, configuration="Розница")
-    old.selection_version = 3
-    registry.save()
-    root = registry.modules[old.id].корень
-    temporary = root.parent / f".{root.name}.tmp-crash"
-    shutil.copytree(root, temporary)
-    module = temporary / "Catalogs/Т/Ext/ObjectModule.bsl"
-    module.write_text("Процедура Новая() КонецПроцедуры", encoding="utf-8")
-    new = replace(old, selection_version=4)
-
-    registry._начать_рокировку_кода(new, root, temporary)
-    registry._swap_code(archive, root, temporary)
     # Имитируем SIGKILL: registry.json остался v3, finally не выполнялся.
 
     restarted = Registry(registry.data_dir)
     restarted.startup()
+    assert restarted.wait_for_module_builds(timeout=10)
 
     assert "Старая" in (root / "Catalogs/Т/Ext/ObjectModule.bsl").read_text()
+    assert not detached.exists()
     assert restarted.sources[old.id].selection_version == 3
     assert not restarted._module_swap_path.exists()
 
 
-def test_startup_завершает_рокировку_если_registry_json_уже_новый(tmp_path):
-    input_dir = tmp_path / "input"
-    input_dir.mkdir()
-    registry = Registry(tmp_path / "data")
-    registry.add_configuration(
-        write_export(input_dir, build_configuration(name="Розница"))
-    )
-    archive = input_dir / "modules.zip"
-    with zipfile.ZipFile(archive, "w") as opened:
-        opened.writestr("Configuration.xml", modules_configuration_xml())
-        opened.writestr(
-            "Catalogs/Т/Ext/ObjectModule.bsl",
-            "Процедура Старая() КонецПроцедуры",
-        )
-    old = registry.add_modules(archive, configuration="Розница")
-    old.selection_version = 3
-    registry.save()
-    root = registry.modules[old.id].корень
-    temporary = root.parent / f".{root.name}.tmp-crash"
-    shutil.copytree(root, temporary)
-    (temporary / "Catalogs/Т/Ext/ObjectModule.bsl").write_text(
-        "Процедура Новая() КонецПроцедуры", encoding="utf-8"
-    )
-    new = replace(old, selection_version=4)
 
-    registry._начать_рокировку_кода(new, root, temporary)
-    detached = registry._swap_code(archive, root, temporary)
-    registry.sources[new.id] = new
-    registry.save()
-    assert detached is not None and detached.exists()
+def test_startup_завершает_рокировку_если_registry_json_уже_новый(tmp_path):
+    registry, old = _реестр_прежней_версии(tmp_path, процедура="Старая")
+    root, detached, new = _оборванная_рокировка(
+        registry,
+        old,
+        новый_текст="Процедура Новая() КонецПроцедуры",
+        selection_version=4,
+    )
+    raw = json.loads(registry.registry_path.read_text(encoding="utf-8"))
+    raw["sources"] = [
+        new.to_dict() if row["id"] == new.id else row for row in raw["sources"]
+    ]
+    registry.registry_path.write_text(json.dumps(raw), encoding="utf-8")
+    assert detached.exists()
     # Имитируем SIGKILL после registry.json, но до удаления journal/.old.
 
     restarted = Registry(registry.data_dir)
     restarted.startup()
+    assert restarted.wait_for_module_builds(timeout=10)
 
     assert "Новая" in (root / "Catalogs/Т/Ext/ObjectModule.bsl").read_text()
     assert restarted.sources[new.id].selection_version == 4
     assert not detached.exists()
     assert not restarted._module_swap_path.exists()
+
 
 
 def test_startup_подметает_staging_каталог_кэша_после_sigkill(tmp_path):
@@ -414,20 +314,10 @@ def test_битый_wal_не_удаляет_чужие_каталоги(marker, 
 
 
 def test_неисправимый_wal_блокирует_все_источники_кода_на_startup(tmp_path):
-    input_dir = tmp_path / "input"
-    input_dir.mkdir()
-    registry = Registry(tmp_path / "data")
-    registry.add_configuration(
-        write_export(input_dir, build_configuration(name="Розница"))
-    )
-    archive = input_dir / "modules.zip"
-    with zipfile.ZipFile(archive, "w") as opened:
-        opened.writestr("Configuration.xml", modules_configuration_xml())
-        opened.writestr(
-            "Catalogs/Т/Ext/ObjectModule.bsl",
-            "Процедура Старая() КонецПроцедуры",
-        )
-    source = registry.add_modules(archive, configuration="Розница")
+    registry, source = _реестр_прежней_версии(tmp_path, процедура="Старая")
+    warm = Registry(registry.data_dir)
+    assert warm.startup() == []
+    assert warm.wait_for_module_builds(timeout=10)
     registry._module_swap_path.write_text("[]", encoding="utf-8")
     registry_before = registry.registry_path.read_bytes()
     cache_before = {
@@ -455,6 +345,7 @@ def test_неисправимый_wal_блокирует_все_источник
     assert source.id in recovered.sources
 
 
+
 def test_запись_без_selection_version_из_registry_json_после_restore_устарела(
     tmp_path,
 ):
@@ -466,17 +357,13 @@ def test_запись_без_selection_version_из_registry_json_после_res
     не известно, означало бы, что человек никогда не увидит «переразобрать»
     для кода, который никогда не проходил через нынешнее правило отбора.
     """
-    входящее = tmp_path / "in"
-    входящее.mkdir()
-    данные = tmp_path / "data"
-    registry = Registry(данные)
-    registry.add_configuration(write_export(входящее, build_configuration(name="Розница")))
     архив = tmp_path / "модули.zip"
-    with zipfile.ZipFile(архив, "w") as zf:
-        zf.writestr("Configuration.xml", modules_configuration_xml())
-        zf.writestr("Catalogs/Т/Ext/ObjectModule.bsl", "Процедура А() КонецПроцедуры")
-    registry.add_modules(архив, configuration="Розница")
-    registry.save()
+    архив.write_bytes(b"PK\x05\x06" + b"\0" * 18)
+    registry, _source = _реестр_прежней_версии(
+        tmp_path,
+        origin="модули.zip",
+        sha256=IncomingScanner(Registry(tmp_path / "scan")).digest(архив),
+    )
 
     # Имитируем старую запись: убираем ключ selection_version из sources —
     # так выглядит registry.json, сделанный до появления этого поля.
@@ -487,8 +374,9 @@ def test_запись_без_selection_version_из_registry_json_после_res
             del источник["selection_version"]
     registry.registry_path.write_text(json.dumps(сырое), encoding="utf-8")
 
-    заново = Registry(данные)
+    заново = Registry(registry.data_dir)
     assert заново.restore() == []
+    assert заново.wait_for_module_builds(timeout=10)
     assert заново.sources["Розница:modules"].selection_version == 0
 
     заново.incoming_dir.mkdir(parents=True, exist_ok=True)
@@ -499,6 +387,7 @@ def test_запись_без_selection_version_из_registry_json_после_res
     строки = IncomingScanner(заново).scan()
 
     assert строки[0]["state"] == STATE_STALE
+
 
 
 def test_то_же_имя_другой_хеш_даёт_обновлённую(tmp_path):

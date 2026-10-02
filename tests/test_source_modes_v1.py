@@ -15,9 +15,9 @@ from mcp1c.intake_v2 import ExportIdentity
 from mcp1c.intake_v2_registry import GenerationPointer, _identity_digest
 from mcp1c.registry import Registry, RegistryError
 from conftest import build_configuration, write_export
-from test_registry_modules import _выгрузка_в_файлы
 from test_intake_v2_extensions import _materialized
 from mcp1c import tools
+from native_export import записать_старый_код
 
 
 def _manifest(**overrides):
@@ -129,15 +129,6 @@ def test_reload_required_blocks_configuration_resolution(tmp_path):
         registry.resolve("Розница")
 
 
-@pytest.mark.parametrize("activation", [None, _manifest()])
-def test_native_generation_blocks_legacy_code_writer(tmp_path, activation):
-    registry = _registry_with_pointer(tmp_path, activation)
-    archive = _выгрузка_в_файлы(tmp_path)
-    with pytest.raises(RegistryError, match="(update_full|reload_required)"):
-        registry.add_modules(archive, configuration="Розница")
-    assert "Розница:modules" not in registry.sources
-
-
 def test_restored_native_without_activation_is_diagnostic_only(tmp_path):
     _collection, materialized = _materialized(tmp_path, "old-native")
     registry = Registry(tmp_path / "data")
@@ -153,15 +144,18 @@ def test_restored_native_without_activation_is_diagnostic_only(tmp_path):
         restored.resolve("DemoConfiguration")
 
 
-def test_restored_legacy_a_plus_separate_code_requires_full_reload(tmp_path):
+def test_restored_legacy_a_plus_separate_code_requires_full_reload(
+    tmp_path, корень_кода
+):
     incoming = tmp_path / "in"
     incoming.mkdir()
     registry = Registry(tmp_path / "data")
     registry.add_configuration(
         write_export(incoming, build_configuration(name="Розница"))
     )
-    registry.add_modules(_выгрузка_в_файлы(tmp_path), configuration="Розница")
     registry.save()
+    # Код отдельно от структуры оставляет только data/ прежней версии.
+    записать_старый_код(registry, корень_кода, configuration="Розница")
 
     restored = Registry(registry.data_dir)
     assert restored.restore() == []

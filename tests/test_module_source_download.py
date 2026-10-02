@@ -14,6 +14,7 @@ from conftest import живой_клиент
 from mcp1c.capabilities import CapabilityRuntime, CapabilitySettingsStore
 from mcp1c.server import build_server, mcp_guard
 from module_samples import v8_container_bytes
+from native_export import загрузить_код
 
 
 pytestmark = pytest.mark.anyio
@@ -285,7 +286,7 @@ async def test_после_смены_поколения_старый_билет_
     старый = await _ссылка(сервер, адрес)
     исходник = корень_кода / "CommonModules" / "ОбщийПример" / "Ext" / "Module.bsl"
     исходник.write_text("Процедура Новая()\nКонецПроцедуры\n", encoding="utf-8")
-    реестр.add_modules(архив_кода(корень_кода), configuration="Пример")
+    загрузить_код(реестр, архив_кода(корень_кода), configuration="Пример")
 
     отказ = _скачать(клиент, старый)
     новый = await _ссылка(сервер, адрес)
@@ -400,7 +401,7 @@ async def test_кэш_gzip_не_держит_код_сменившегося_и�
 
     исходник = корень_кода / "CommonModules" / "ОбщийПример" / "Ext" / "Module.bsl"
     исходник.write_text("Процедура Новая()\nКонецПроцедуры\n", encoding="utf-8")
-    реестр.add_modules(архив_кода(корень_кода), configuration="Пример")
+    загрузить_код(реестр, архив_кода(корень_кода), configuration="Пример")
 
     # Следующее скачивание любого модуля вычищает записи прежнего снимка.
     другой = await _ссылка(сервер, "Документ.Пример.Форма.Двоичная")

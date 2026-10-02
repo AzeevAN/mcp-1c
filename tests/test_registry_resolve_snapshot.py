@@ -9,7 +9,8 @@ import pytest
 from mcp1c.registry import RegistryError
 from mcp1c.store import save_syntax
 
-from conftest import build_configuration, build_syntax, write_export
+from conftest import build_configuration, build_syntax
+from native_export import опубликовать_код
 
 
 def _модуль(корень, маркер: str):
@@ -36,9 +37,6 @@ def test_resolve_не_смешивает_старую_конфигурацию_�
     )
 
     новая = build_configuration(name="Пример", version="2.0")
-    каталог_метаданных = tmp_path / "new-config"
-    каталог_метаданных.mkdir()
-    новый_config = write_export(каталог_метаданных, новая)
     _модуль(корень_кода, "НовыйКод")
     новый_код = архив_кода(корень_кода, extension=extension)
 
@@ -70,8 +68,17 @@ def test_resolve_не_смешивает_старую_конфигурацию_�
     try:
         assert начато.wait(timeout=1)
         реестр.remove("Пример")
-        реестр.add_configuration(новый_config)
-        реестр.add_modules(новый_код, configuration="Пример")
+        if extension:
+            опубликовать_код(
+                реестр, None, configuration=новая, рабочий=tmp_path / "new"
+            )
+        опубликовать_код(
+            реестр,
+            новый_код.корень,
+            configuration=новая,
+            extension=extension,
+            рабочий=tmp_path / "new-code",
+        )
     finally:
         отпустить.set()
         поток.join(timeout=3)
@@ -83,7 +90,7 @@ def test_resolve_не_смешивает_старую_конфигурацию_�
     selected = context.extension if extension else context.modules
     source_id = "Пример:ext:Доп" if extension else "Пример:modules"
     assert selected is реестр.modules[source_id]
-    assert selected.source is реестр.sources[source_id]
+    assert selected.source.id == source_id
 
 
 def test_resolve_не_смешивает_старое_отношение_с_новой_справкой(
@@ -126,7 +133,9 @@ def test_resolve_не_смешивает_старое_отношение_с_но
     context = контексты[0]
     assert context.syntax is реестр.syntax
     assert (context.syntax_relation, context.syntax_hidden) == реестр._compute_relation(
-        context.configuration, context.syntax
+        context.configuration,
+        context.syntax,
+        реестр.platform_declaration("Пример").version,
     )
 
 
@@ -135,22 +144,20 @@ def test_resolve_две_последовательные_смены_дают_с�
 ):
     реестр = реестр_из_кода(корень_кода)
     настоящее = реестр._compute_relation
-    замены = []
-    for номер in (2, 3):
-        каталог = tmp_path / f"config-{номер}"
-        каталог.mkdir()
-        замены.append(
-            write_export(
-                каталог, build_configuration(name="Пример", version=f"{номер}.0")
-            )
-        )
     вызовов = 0
 
     def менять(*args):
         nonlocal вызовов
         результат = настоящее(*args)
-        реестр.add_configuration(замены[вызовов])
         вызовов += 1
+        опубликовать_код(
+            реестр,
+            корень_кода,
+            configuration=build_configuration(
+                name="Пример", version=f"{вызовов + 1}.0"
+            ),
+            рабочий=tmp_path / f"config-{вызовов}",
+        )
         return результат
 
     monkeypatch.setattr(реестр, "_compute_relation", менять)

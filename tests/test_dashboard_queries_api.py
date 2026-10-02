@@ -12,6 +12,7 @@ from mcp1c.registry import Registry
 from mcp1c.search import MAX_QUERY_CHARS
 
 from conftest import build_configuration, write_export, write_syntax
+from native_export import загрузить_код
 
 
 def _client(registry: Registry, tmp_path) -> TestClient:
@@ -127,18 +128,24 @@ def test_повторная_загрузка_runtime_в_ту_же_секунду
 def test_повторная_загрузка_модулей_повышает_ревизию_жизненного_цикла(tmp_path, monkeypatch):
     from mcp1c import registry as registry_module
     from mcp1c.dashboard_runtime import _queries_setup_payload
-    from test_registry_modules import _выгрузка_в_файлы
+    from native_export import снимок_кода
 
     monkeypatch.setattr(registry_module, "_now", lambda: "2026-09-30T00:00:00+00:00")
     incoming = tmp_path / "incoming"
     incoming.mkdir()
     registry = Registry(tmp_path / "data")
     registry.add_configuration(write_export(incoming, build_configuration(name="Розница")))
-    path = _выгрузка_в_файлы(tmp_path)
-    registry.add_modules(path, configuration="Розница")
+    code = tmp_path / "code"
+    module = code / "Catalogs" / "Т" / "Ext" / "ObjectModule.bsl"
+    module.parent.mkdir(parents=True)
+    module.write_text("Процедура А() КонецПроцедуры", encoding="utf-8")
+    snapshot_dir = tmp_path / "snapshot"
+    snapshot_dir.mkdir()
+    path = снимок_кода(code, snapshot_dir)
+    загрузить_код(registry, path, configuration="Розница")
     before = _queries_setup_payload(registry)["sources_revision"]
     before_token = registry.snapshot().source_lifecycle_token
-    registry.add_modules(path, configuration="Розница")
+    загрузить_код(registry, path, configuration="Розница")
     assert registry.snapshot().source_lifecycle_token != before_token
     assert _queries_setup_payload(registry)["sources_revision"] != before
 

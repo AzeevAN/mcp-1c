@@ -12,6 +12,7 @@ from mcp1c import modules_index
 from conftest import build_configuration, write_export
 from mcp1c.registry import Registry, RegistryError
 from mcp1c.search import SearchIndex
+from native_export import загрузить_код
 
 
 def _набор(path: Path, cases: list[dict]) -> Path:
@@ -286,13 +287,10 @@ def test_cli_сначала_проверяет_все_наборы_и_не_пе�
         ],
     )
     save = tmp_path / "report.json"
-    # Ошибка набора проверяется на действующем legacy-снимке; после
-    # восстановления его смешанное происхождение требует полной загрузки.
     with pytest.raises(ValueError, match="НетТакойПроцедуры.*не найден"):
         bench.run_procedures(
             реестр_с_кодом, queries / "procedures.json", config="Пример"
         )
-    реестр_с_кодом.save()
     monkeypatch.setattr(bench, "QUERIES_DIR", queries)
 
     code = bench.main(
@@ -310,7 +308,7 @@ def test_cli_сначала_проверяет_все_наборы_и_не_пе�
 
     output = capsys.readouterr().out
     assert code == 2
-    assert "reload_required" in output
+    assert "НетТакойПроцедуры" in output and "не найден" in output
     assert "=== metadata ===" not in output
     assert not save.exists()
 
@@ -341,7 +339,6 @@ def test_cli_extension_меряет_выбранный_корпус(
     )
     assert report.hit1 == 1
     assert report.results[0].got[0].startswith("ОбщийМодуль.СтендДоп::")
-    registry.save()
 
     code = bench.main(
         [
@@ -357,9 +354,8 @@ def test_cli_extension_меряет_выбранный_корпус(
     )
 
     output = capsys.readouterr().out
-    assert code == 2
-    assert "reload_required" in output
-    assert "=== procedures ===" not in output
+    assert code == 0, output
+    assert "=== procedures ===" in output
 
 
 def test_cli_без_индекса_кода_завершается_ошибкой_без_нулевого_замера(
@@ -509,7 +505,7 @@ def test_cli_не_подменяет_отсутствующее_расширен
 
     output = capsys.readouterr().out
     assert code == 2
-    assert "reload_required" in output
+    assert "НетТакого не загружен" in output
     assert "=== procedures ===" not in output
 
 
@@ -776,7 +772,7 @@ def test_смена_поколения_повторяет_весь_набор_н
     def search(index, query, *args, **kwargs):
         calls.append((id(index), query))
         if len(calls) == 1:
-            registry.add_modules(новый, configuration="Пример")
+            загрузить_код(registry, новый, configuration="Пример")
         return real_search(index, query, *args, **kwargs)
 
     monkeypatch.setattr(SearchIndex, "search", search)
@@ -798,16 +794,14 @@ def test_смена_поколения_повторяет_весь_набор_н
     assert len({index_id for index_id, _ in calls}) == 2
 
 
-def test_смена_identity_конфигурации_повторяет_набор(tmp_path, реестр_с_кодом, monkeypatch):
+def test_смена_identity_конфигурации_повторяет_набор(
+    tmp_path, корень_кода, реестр_с_кодом, monkeypatch
+):
+    from native_export import опубликовать_код
+
     path = _набор(
         tmp_path / "configuration-race.json",
         [{"query": "Сложить", "expected": ["Сложить"]}],
-    )
-    replacement = tmp_path / "replacement"
-    replacement.mkdir()
-    export = write_export(
-        replacement,
-        build_configuration(name="Пример", version="2.0"),
     )
     real_search = SearchIndex.search
     calls = 0
@@ -816,7 +810,12 @@ def test_смена_identity_конфигурации_повторяет_наб�
         nonlocal calls
         calls += 1
         if calls == 1:
-            реестр_с_кодом.add_configuration(export)
+            опубликовать_код(
+                реестр_с_кодом,
+                корень_кода,
+                configuration=build_configuration(name="Пример", version="2.0"),
+                рабочий=tmp_path / "replacement",
+            )
         return real_search(index, query, *args, **kwargs)
 
     monkeypatch.setattr(SearchIndex, "search", search)
@@ -888,7 +887,7 @@ def test_две_смены_поколения_дают_стабильную_ош
         nonlocal calls
         calls += 1
         if calls in (1, 3):
-            registry.add_modules(archives[0 if calls == 1 else 1], configuration="Пример")
+            загрузить_код(registry, archives[0 if calls == 1 else 1], configuration="Пример")
         return real_search(index, query, *args, **kwargs)
 
     monkeypatch.setattr(SearchIndex, "search", search)

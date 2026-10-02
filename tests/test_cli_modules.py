@@ -15,6 +15,7 @@ from mcp1c.registry import (
     STATUS_LOADING,
     Registry,
 )
+from native_export import загрузить_код
 
 
 @pytest.mark.parametrize(
@@ -283,8 +284,8 @@ def test_one_shot_cli_холодно_строит_четыре_кэша_и_те�
         check=False,
     )
 
-    assert cold.returncode == 2
-    assert "reload_required" in cold.stderr
+    assert cold.returncode == 0, cold.stderr
+    assert "ОбщийМодуль.ОбщийПример::Сложить" in cold.stdout
     prefix = index_cache.safe_name("Пример:modules")
     cache = sorted(registry.cache_dir.glob(f"{prefix}.*"))
     assert len(cache) == 4
@@ -300,8 +301,8 @@ def test_one_shot_cli_холодно_строит_четыре_кэша_и_те�
         check=False,
     )
 
-    assert warm.returncode == 2
-    assert "reload_required" in warm.stderr
+    assert warm.returncode == 0, warm.stderr
+    assert warm.stdout == cold.stdout
     assert {path.name: path.stat().st_mtime_ns for path in cache} == timestamps
 
 
@@ -314,7 +315,8 @@ def test_reg_list_использует_общие_состояния_основ�
     assert cli.main(["reg-list"]) == 0
 
     output = capsys.readouterr().out
-    assert "модули     : не загружен" in output
+    # У выгрузки в файлы основной корпус есть всегда, пусть и без модулей.
+    assert "модули     : готов — модулей 0" in output
     assert "расширение Доп: готов — модулей" in output
 
 
@@ -353,15 +355,9 @@ def test_reg_list_не_смешивает_metadata_и_код_при_remove_readd
     monkeypatch,
     capsys,
 ):
-    from conftest import build_configuration, write_export
+    from conftest import build_configuration
+    from native_export import опубликовать_код
 
-    incoming = tmp_path / "incoming-v2"
-    incoming.mkdir()
-    export = write_export(
-        incoming,
-        build_configuration(name="Пример", version="2.0"),
-    )
-    archive = архив_кода(корень_кода)
     real = tools._summarize_code
     changed = False
 
@@ -370,8 +366,12 @@ def test_reg_list_не_смешивает_metadata_и_код_при_remove_readd
         if not changed:
             changed = True
             реестр_с_кодом.remove("Пример")
-            реестр_с_кодом.add_configuration(export)
-            реестр_с_кодом.add_modules(archive, configuration="Пример")
+            опубликовать_код(
+                реестр_с_кодом,
+                корень_кода,
+                configuration=build_configuration(name="Пример", version="2.0"),
+                рабочий=tmp_path / "incoming-v2",
+            )
         return real(loaded)
 
     monkeypatch.setattr(tools, "_summarize_code", summarize)
@@ -395,7 +395,7 @@ def test_reg_list_после_двух_смен_возвращает_стабил
     real = tools._summarize_code
 
     def summarize(loaded):
-        реестр_с_кодом.add_modules(archive, configuration="Пример")
+        загрузить_код(реестр_с_кодом, archive, configuration="Пример")
         return real(loaded)
 
     monkeypatch.setattr(tools, "_summarize_code", summarize)

@@ -9,6 +9,7 @@ import subprocess
 import sys
 
 from tools.lab.measure_object_snapshot import measure_registry
+from native_export import загрузить_код
 
 
 def test_замер_сравнивает_ноль_одно_и_три_расширения(
@@ -16,7 +17,7 @@ def test_замер_сравнивает_ноль_одно_и_три_расши�
 ):
     registry = реестр_из_кода(корень_кода)
     for name in ("ДопОдин", "ДопДва", "ДопТри"):
-        registry.add_modules(
+        загрузить_код(registry, 
             архив_кода(корень_кода, extension=name),
             configuration="Пример",
         )
@@ -42,7 +43,7 @@ def test_замер_возвращает_карты_реестра_после_р
 ):
     registry = реестр_из_кода(корень_кода)
     for name in ("Первое", "Второе", "Третье"):
-        registry.add_modules(
+        загрузить_код(registry, 
             архив_кода(корень_кода, extension=name),
             configuration="Пример",
         )
@@ -65,7 +66,7 @@ def test_cli_печатает_только_обезличенные_агрега
     registry = реестр_из_кода(корень_кода)
     private_names = ("СкрытоеПервое", "СкрытоеВторое", "СкрытоеТретье")
     for name in private_names:
-        registry.add_modules(
+        загрузить_код(registry, 
             архив_кода(корень_кода, extension=name),
             configuration="Пример",
         )
@@ -92,13 +93,12 @@ def test_cli_печатает_только_обезличенные_агрега
         timeout=30,
     )
 
-    assert result.returncode == 2
-    assert json.loads(result.stdout) == {
-        "completed": False,
-        "error": "замер не завершён",
-        "schema": "object-snapshot-v1",
-    }
+    assert result.returncode == 0, result.stdout
+    report = json.loads(result.stdout)
+    assert report["completed"] is True
+    assert report["corpus"]["available_extensions"] == 3
     assert result.stderr == ""
-    assert "Пример" not in result.stdout
+    for private in ("Пример", *private_names):
+        assert private not in result.stdout
     assert str(registry.data_dir) not in result.stdout
     assert all(name not in result.stdout for name in private_names)

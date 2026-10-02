@@ -378,14 +378,19 @@ def test_чтение_cli_при_сервере_без_подсказки_про
 
 
 def test_remove_сверяет_штамп_до_сноса_каталогов(
-    tmp_path, архив_кода, корень_кода, monkeypatch
+    tmp_path, корень_кода, monkeypatch
 ):
+    from native_export import старый_реестр
+
     incoming = tmp_path / "input"
     incoming.mkdir()
-    server = Registry(tmp_path / "data")
+    # Каталог кода снимает только строка кода прежней версии.
+    data_dir = старый_реестр(
+        tmp_path / "old", корень_кода, configuration=build_configuration(name="Пример")
+    )
+    server = Registry(data_dir)
     server.startup()
-    server.add_configuration(write_export(incoming, build_configuration(name="Пример")))
-    server.add_modules(архив_кода(корень_кода), configuration="Пример")
+    assert server.wait_for_module_builds(timeout=10)
     other = Registry(server.data_dir)
     other.restore()
     other.add_configuration(write_export(incoming, build_configuration(name="Другая")))

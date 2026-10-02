@@ -10,6 +10,7 @@ from mcp1c import registry as registry_module
 from mcp1c.registry import Registry
 
 from conftest import build_configuration, write_export
+from native_export import загрузить_код
 
 
 def _registry(tmp_path):
@@ -113,7 +114,7 @@ def test_свежесобранный_поиск_процедур_видит_л�
     registry = Registry(data)
     configuration = build_configuration(name="Пример")
     registry.add_configuration(write_export(incoming, configuration))
-    registry.add_modules(архив_кода(корень_кода), configuration="Пример")
+    загрузить_код(registry, архив_кода(корень_кода), configuration="Пример")
 
     ответ = tools.search_procedures(registry, "суммирует", config="Пример")
     assert "ОбщийМодуль.ОбщийПример::Сложить" in ответ

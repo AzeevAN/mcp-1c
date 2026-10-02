@@ -5,8 +5,19 @@ from __future__ import annotations
 import zipfile
 
 from module_samples import ModulesArchiveBuilder
-from mcp1c.registry import _сведения_о_выгрузке
+from mcp1c.intake_v2 import SourceKind
+from mcp1c.intake_v2_probe import _identity_from_properties, _properties
 from mcp1c.v8container import V8Container
+
+
+def _вид_выгрузки(path):
+    """Вид и имя выгрузки по тому же правилу `Configuration.xml`, что у intake.
+
+    Транспорт intake отверг бы граничные архивы с дублями членов ещё до
+    чтения манифеста, поэтому правило вызывается напрямую.
+    """
+    with zipfile.ZipFile(path) as archive:
+        return _identity_from_properties(_properties(archive.read("Configuration.xml")))
 
 
 def test_конструктор_создаёт_обе_раскладки_и_боевые_контейнеры(tmp_path):
@@ -89,7 +100,7 @@ def test_конструктор_умеет_граничные_случаи(tmp_p
             assert partial.read("module") == b"\xff"
             assert partial.read("form").decode("utf-8") == "{25,\"читабельно\"}"
 
-    assert _сведения_о_выгрузке(path)[:2] == (True, "СинтетическаяКонфигурация")
+    assert _вид_выгрузки(path) == (SourceKind.EXTENSION, "СинтетическаяКонфигурация")
 
 
 def test_одинаковый_дубль_и_расширение_строятся_тем_же_api(tmp_path):
@@ -102,4 +113,4 @@ def test_одинаковый_дубль_и_расширение_строятс�
         assert opened.namelist().count("CommonModule.Одинаковый.Module.txt") == 2
         assert opened.read("CommonModule.Одинаковый.Module.txt") == source
 
-    assert _сведения_о_выгрузке(path)[:2] == (True, "СинтетическаяКонфигурация")
+    assert _вид_выгрузки(path) == (SourceKind.EXTENSION, "СинтетическаяКонфигурация")

@@ -130,9 +130,11 @@ def _target(registry: Registry):
     available, name, extension_ids = max(
         candidates, key=lambda row: (row[0], row[1])
     )
+    # Размер корпуса берётся у пакета кода: native-расширение не
+    # дублируется строкой `registry.sources`.
     extension_ids.sort(
         key=lambda source_id: (
-            -registry.sources[source_id].items_total,
+            -registry.modules[source_id].source.items_total,
             source_id,
         )
     )
@@ -181,6 +183,7 @@ def measure_registry(
                     **{
                         source_id: original_sources[source_id]
                         for source_id in selected
+                        if source_id in original_sources
                     },
                 }
                 registry.modules = {
@@ -205,7 +208,7 @@ def measure_registry(
                 {
                     "extensions": count,
                     "extension_items_total": sum(
-                        original_sources[source_id].items_total
+                        original_modules[source_id].source.items_total
                         for source_id in selected
                     ),
                     **rows,
@@ -229,7 +232,7 @@ def measure_registry(
         "corpus": {
             "available_extensions": available,
             "object_kind": obj.kind,
-            "base_items_total": original_sources[base_id].items_total,
+            "base_items_total": original_modules[base_id].source.items_total,
         },
         "iterations": iterations,
         "allocation_runs": allocation_runs,

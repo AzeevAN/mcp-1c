@@ -8,61 +8,67 @@
 четырёх были бы для `sweep` чужими и исчезали бы на первом же старте,
 молча, каждый раз заново.
 
-`tests/test_registry_extensions.py:218` уже проверяет, что `KIND_EXTENSION`
+`tests/test_registry_extensions.py::test_sweep_не_сносит_кэш_нового_вида` проверяет, что `KIND_EXTENSION`
 вообще есть в `CACHE_KINDS`, но делает это на одном виде кэша — на сломанном
 варианте (одно общее имя вместо четырёх) тот тест прошёл бы. Здесь — тест,
 которому для прохода нужны все четыре.
 
-Уровень — единица, без сборки провайдера целиком: `add_modules` регистрирует
-источник модулей (боевой путь, `Registry(tmp_path / "data")` +
-`add_modules(zip, configuration=...)`, как в `test_registry_extensions.py`),
-а `сохранить_индексы`/`поднять_индексы` вызываются напрямую поверх кода,
-который `add_modules` уже положил на диск. В этом низкоуровневом тесте
-`сохранить_индексы` вызывается напрямую; сквозная сборка при загрузке покрыта
-тестами реестра.
+Уровень — единица, без сборки провайдера целиком: корпус публикуется боевым
+путём native-поколения (`native_export.опубликовать_код`), а
+`сохранить_индексы`/`поднять_индексы` вызываются напрямую с identity его
+Source: native Source не дублируется строкой `registry.sources`, поэтому
+sha, версия отбора и поколение локаторов передаются явно — так же, как это
+делает сам Registry. Сквозная сборка при загрузке покрыта тестами реестра.
 """
 
 from __future__ import annotations
 
-import zipfile
 from array import array
 from pathlib import Path
 
 import pytest
 
-from conftest import build_configuration, modules_configuration_xml, write_export
+from conftest import build_configuration
 from module_samples import v8_container_bytes
 from mcp1c import index_cache, modules_index, tools
-from mcp1c.registry import Registry, RegistryError
-
-
-def _корень_кода_в_zip(корень: Path, файл_zip: Path) -> Path:
-    """Пакует дерево `корень_кода` в архив для `add_modules`.
-
-    Список файлов снимается ДО открытия `zipfile.ZipFile` на запись: `корень`
-    в тестах этого файла — сам `tmp_path` (фикстура `корень_кода` пишет
-    дерево прямо в него), и если положить архив внутрь того же каталога и
-    обойти дерево уже ПОСЛЕ его создания, `rglob` подхватит недописанный
-    `.zip` как ещё один файл выгрузки.
-    """
-    файлы = [путь for путь in sorted(корень.rglob("*")) if путь.is_file()]
-    with zipfile.ZipFile(файл_zip, "w") as zf:
-        zf.writestr("Configuration.xml", modules_configuration_xml())
-        for путь in файлы:
-            zf.write(путь, путь.relative_to(корень).as_posix())
-    return файл_zip
+from mcp1c.registry import Registry
+from native_export import опубликовать_код
 
 
 def _реестр_с_модулями(tmp_path: Path, корень_кода: Path, *, name: str = "Пример"):
-    """Реестр с конфигурацией и загруженными модулями — боевым путём
-    `add_modules`, а не выдуманным приёмом (см. докстроку модуля)."""
-    входящее = tmp_path / "in"
-    входящее.mkdir(exist_ok=True)
+    """Реестр с native-поколением конфигурации и её кода."""
     реестр = Registry(tmp_path / "data")
-    реестр.add_configuration(write_export(входящее, build_configuration(name=name)))
-    архив = _корень_кода_в_zip(корень_кода, tmp_path / "модули.zip")
-    источник = реестр.add_modules(архив, configuration=name)
-    return реестр, источник
+    опубликовать_код(
+        реестр,
+        корень_кода,
+        configuration=build_configuration(name=name),
+        рабочий=tmp_path / "export",
+    )
+    return реестр, реестр.modules[f"{name}:modules"].source
+
+
+def _поднять(реестр: Registry, источник, **identity):
+    return modules_index.поднять_индексы(
+        реестр,
+        источник.id,
+        source_sha256=identity.get("source_sha256", источник.sha256),
+        selection_version=identity.get(
+            "selection_version", источник.selection_version
+        ),
+        locator_generation=источник.locator_generation,
+    )
+
+
+def _сохранить(реестр: Registry, источник, индексы, **identity):
+    modules_index.сохранить_индексы(
+        реестр,
+        источник.id,
+        индексы,
+        source_sha256=источник.sha256,
+        selection_version=identity.get(
+            "selection_version", источник.selection_version
+        ),
+    )
 
 
 def _построить_индексы(корень: Path) -> modules_index.Индексы:
@@ -162,9 +168,8 @@ def _подменить_цель_вызова_на_недоказанный_self
 def test_sweep_не_сносит_ни_один_индекс_модулей(tmp_path, корень_кода):
     """Один вид кэша на четыре структуры — три сносятся молча."""
     реестр, источник = _реестр_с_модулями(tmp_path, корень_кода)
-    код_на_диске = реестр.modules_dir / "Пример"
 
-    modules_index.сохранить_индексы(реестр, источник.id, _построить_индексы(код_на_диске))
+    _сохранить(реестр, источник, _построить_индексы(корень_кода))
 
     # Префикс — по идентификатору ИСТОЧНИКА МОДУЛЕЙ, не по имени
     # конфигурации: у конфигурации есть свои файлы кэша («Пример.objects»,
@@ -188,15 +193,12 @@ def test_selection_version_входит_в_штамп_кэша_при_том_ж�
 ):
     """Тот же ZIP после v3 -> v4 содержит новый набор отобранных файлов."""
     реестр, источник = _реестр_с_модулями(tmp_path, корень_кода)
-    код_на_диске = реестр.modules_dir / "Пример"
-    источник.selection_version = 3
-    modules_index.сохранить_индексы(
-        реестр, источник.id, _построить_индексы(код_на_диске)
+    _сохранить(
+        реестр, источник, _построить_индексы(корень_кода), selection_version=3
     )
 
-    источник.selection_version = 4
-
-    assert modules_index.поднять_индексы(реестр, источник.id) is None
+    assert _поднять(реестр, источник, selection_version=3) is not None
+    assert _поднять(реестр, источник, selection_version=4) is None
 
 
 def test_каталог_локаторов_переживает_warm_roundtrip_того_же_поколения(
@@ -205,7 +207,7 @@ def test_каталог_локаторов_переживает_warm_roundtrip_�
     реестр, источник = _реестр_с_модулями(tmp_path, корень_кода)
     исходный = реестр.modules[источник.id].каталог
 
-    поднятые = modules_index.поднять_индексы(реестр, источник.id)
+    поднятые = _поднять(реестр, источник)
 
     assert исходный is not None
     assert поднятые is not None and поднятые.каталог is not None
@@ -215,49 +217,6 @@ def test_каталог_локаторов_переживает_warm_roundtrip_�
     assert all(
         entry.locator is None or not hasattr(entry.locator, "body")
         for entry in поднятые.каталог.entries.values()
-    )
-
-
-def test_warm_restart_после_reparse_принимает_сохраненное_поколение(
-    tmp_path, корень_кода, monkeypatch
-):
-    реестр, источник = _реестр_с_модулями(tmp_path, корень_кода)
-    архив = tmp_path / "модули.zip"
-
-    источник = реестр.add_modules(архив, configuration="Пример")
-    assert источник.locator_generation > 1
-    сохраненное_поколение = источник.locator_generation
-    реестр.save()
-
-    заново = Registry(реестр.data_dir)
-    настоящая_сборка = заново._построить_индекс_кода
-
-    def нельзя_перестраивать(*_args, **_kwargs):
-        raise AssertionError("warm-кэш не должен перестраиваться")
-
-    monkeypatch.setattr(заново, "_построить_индекс_кода", нельзя_перестраивать)
-    проблемы = заново.startup()
-
-    assert проблемы == []
-    loaded = заново.modules[источник.id]
-    assert loaded.готов
-    assert loaded.каталог is not None
-    assert loaded.каталог.identity.generation == сохраненное_поколение
-
-    monkeypatch.setattr(заново, "_построить_индекс_кода", настоящая_сборка)
-    следующий = заново.add_modules(архив, configuration="Пример")
-    assert следующий.sha256 == источник.sha256
-    assert следующий.locator_generation > сохраненное_поколение
-    заново.save()
-
-    финальный = Registry(реестр.data_dir)
-    monkeypatch.setattr(
-        финальный, "_построить_индекс_кода", нельзя_перестраивать
-    )
-    assert финальный.startup() == []
-    assert (
-        финальный.modules[источник.id].каталог.identity.generation
-        == следующий.locator_generation
     )
 
 
@@ -298,7 +257,7 @@ def test_семантически_битый_кэш_индекса_станов�
         state, path, source_sha256=signature, kind=kind
     )
 
-    assert modules_index.поднять_индексы(реестр, источник.id) is None
+    assert _поднять(реестр, источник) is None
 
 
 def test_поисковый_кэш_с_неверным_top_level_становится_промахом(
@@ -311,7 +270,7 @@ def test_поисковый_кэш_с_неверным_top_level_станови�
         [], path, source_sha256=signature, kind="modules-search"
     )
 
-    assert modules_index.поднять_индексы(реестр, источник.id) is None
+    assert _поднять(реестр, источник) is None
 
 
 def test_warm_кэш_принимает_квалифицированный_self_вызов_общего_модуля(
@@ -327,7 +286,7 @@ def test_warm_кэш_принимает_квалифицированный_self_
     )
     реестр, источник = _реестр_с_модулями(tmp_path, корень_кода)
 
-    поднятое = modules_index.поднять_индексы(реестр, источник.id)
+    поднятое = _поднять(реестр, источник)
 
     assert поднятое is not None
     места = поднятое.вызовы.места("ПриЗаписи")
@@ -362,7 +321,15 @@ def test_cold_warm_и_пересборка_битого_кэша_сохраня�
     )
     assert len(cached_forms["проблемы"]) == 20
     assert dict(cached_forms["problem_counts"])["form_xml_unreadable"] == 25
-    assert len(cached_forms["object_problems"]) == 25
+    # Native-приём добавляет к каждой форме ещё и descriptor_only.
+    assert (
+        sum(
+            1
+            for row in cached_forms["object_problems"]
+            if row[0] == "form_xml_unreadable"
+        )
+        == 25
+    )
 
     warm = Registry(реестр.data_dir)
 
@@ -371,54 +338,30 @@ def test_cold_warm_и_пересборка_битого_кэша_сохраня�
 
     monkeypatch.setattr(warm, "_построить_индекс_кода", нельзя_строить)
     assert warm.startup() == []
-    assert tools.sources_snapshot(warm).code == ()
-    with pytest.raises(RegistryError, match="reload_required"):
-        warm.resolve("Пример")
-    assert tools._code_coverage(warm.resolve("Пример", diagnostic=True).modules) == ожидаемое[0].coverage
+    assert tools.sources_snapshot(warm).code[0].coverage == ожидаемое[0].coverage
 
     forms_cache = реестр._cache_path(источник.id, "modules-forms")
     forms_cache.write_bytes("повреждено".encode())
     cold = Registry(реестр.data_dir)
     assert cold.startup() == []
-    assert cold.wait_for_module_builds(timeout=10)
-    assert tools.sources_snapshot(cold).code == ()
-    coverage = tools._code_coverage(cold.resolve("Пример", diagnostic=True).modules)
+    coverage = tools.sources_snapshot(cold).code[0].coverage
     assert dict(coverage.problem_categories)["form_xml_unreadable"] == 25
     assert len(coverage.problems) == 20
     assert coverage.problems_omitted == 5
-
-
-def test_кэш_каталога_хранит_агрегат_и_не_больше_двадцати_строк(
-    tmp_path, корень_кода
-):
-    container = v8_container_bytes([("module", b""), ("form", b"{19}")])
-    for index in range(25):
-        (корень_кода / f"Unknown.Форма{index:02d}.Form").write_bytes(container)
-    реестр, источник = _реестр_с_модулями(tmp_path, корень_кода)
-    signature = f"{источник.sha256}:selection={источник.selection_version}"
-
-    toc = index_cache.load_blob(
-        реестр._cache_path(источник.id, "modules-toc"),
-        source_sha256=signature,
-        kind="modules-toc",
-    )
-    catalog = toc["catalog"]
-
-    assert len(catalog["problems"]) == 20
-    assert dict(catalog["problem_counts"])["unknown_address"] == 25
-    assert catalog["object_problems"] == []
 
 
 def test_warm_get_object_видит_все_локальные_причины_за_общим_лимитом(
     tmp_path, корень_кода, monkeypatch
 ):
     container = v8_container_bytes([("module", b""), ("form", b"{,19}")])
+    # Плоская выгрузка целиком: смешанную раскладку приём не принимает.
+    плоская = tmp_path / "flat"
+    плоская.mkdir()
     for index in range(25):
-        (корень_кода / f"Catalog.Контрагенты.Form.Форма{index:02d}.Form").write_bytes(
+        (плоская / f"Catalog.Контрагенты.Form.Форма{index:02d}.Form").write_bytes(
             container
         )
-    реестр, _источник = _реестр_с_модулями(tmp_path, корень_кода)
-    реестр.save()
+    реестр, _источник = _реестр_с_модулями(tmp_path, плоская)
     warm = Registry(реестр.data_dir)
 
     def нельзя_строить(*_args, **_kwargs):
@@ -427,19 +370,18 @@ def test_warm_get_object_видит_все_локальные_причины_з�
     monkeypatch.setattr(warm, "_построить_индекс_кода", нельзя_строить)
     assert warm.startup() == []
 
-    with pytest.raises(RegistryError, match="reload_required"):
-        tools.get_object(
-            warm, "Справочник.Контрагенты", config="Пример", detail="full"
-        )
-    формы = warm.resolve("Пример", diagnostic=True).modules.формы
+    assert "Справочник.Контрагенты.Форма.Форма24" in tools.get_object(
+        warm, "Справочник.Контрагенты", config="Пример", detail="full"
+    )
+    формы = warm.resolve("Пример").modules.формы
     причины = [
         причина
         for адрес, строки in формы.object_problems.items()
         if адрес.startswith("Справочник.Контрагенты.Форма.")
         for причина in строки
     ]
-    assert len(причины) == 25
-    assert all(причина.категория == "invalid_syntax" for причина in причины)
+    синтаксис = [причина for причина in причины if причина.категория == "invalid_syntax"]
+    assert len(синтаксис) == 25
     assert any("Форма24" in причина.адрес for причина in причины)
 
 
@@ -450,18 +392,16 @@ def test_read_only_кэш_не_мешает_холодной_диагности�
     broken.parent.mkdir(parents=True)
     broken.write_text("<Form>", encoding="utf-8")
     реестр, источник = _реестр_с_модулями(tmp_path, корень_кода)
-    реестр.save()
     ожидаемое = tools.sources_snapshot(реестр).code
     for kind in реестр.CACHE_KINDS[источник.kind]:
         реестр._cache_path(источник.id, kind).unlink(missing_ok=True)
 
     monkeypatch.setattr(index_cache, "save_blob", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(index_cache, "save", lambda *_args, **_kwargs: None)
     cold = Registry(реестр.data_dir)
     assert cold.startup() == []
-    assert cold.wait_for_module_builds(timeout=10)
 
-    assert tools.sources_snapshot(cold).code == ()
-    assert tools._code_coverage(cold.resolve("Пример", diagnostic=True).modules) == ожидаемое[0].coverage
+    assert tools.sources_snapshot(cold).code[0].coverage == ожидаемое[0].coverage
     assert not any(
         path.is_file()
         for path in (
@@ -511,33 +451,6 @@ def test_кэш_не_содержит_тела_сигнатуры_или_сыр�
     assert str(корень_кода) not in cached
 
 
-def test_remove_readd_не_повторяет_identity_локаторов(
-    tmp_path, корень_кода
-):
-    реестр, первый = _реестр_с_модулями(tmp_path, корень_кода)
-    первая_identity = реестр.modules[первый.id].каталог.identity
-    архив = tmp_path / "модули.zip"
-    повторный_вход = tmp_path / "readd"
-    повторный_вход.mkdir()
-    структура = write_export(
-        повторный_вход,
-        build_configuration(name="Пример"),
-    )
-    реестр.save()
-
-    после_restart = Registry(реестр.data_dir)
-    assert после_restart.startup() == []
-
-    после_restart.remove(первый.id)
-    после_restart.add_configuration(структура)
-    второй = после_restart.add_modules(архив, configuration="Пример")
-    вторая_identity = после_restart.modules[второй.id].каталог.identity
-
-    assert второй.sha256 == первый.sha256
-    assert вторая_identity != первая_identity
-    assert вторая_identity.generation > первая_identity.generation
-
-
 def test_поднятые_индексы_отвечают_как_построенные(tmp_path, корень_кода):
     """Круг «построить -> сохранить -> поднять» не должен терять данные.
 
@@ -564,10 +477,9 @@ def test_поднятые_индексы_отвечают_как_построе�
         encoding="utf-8",
     )
     реестр, источник = _реестр_с_модулями(tmp_path, корень_кода)
-    код_на_диске = реестр.modules_dir / "Пример"
-    modules_index.сохранить_индексы(реестр, источник.id, _построить_индексы(код_на_диске))
+    _сохранить(реестр, источник, _построить_индексы(корень_кода))
 
-    поднятое = modules_index.поднять_индексы(реестр, источник.id)
+    поднятое = _поднять(реестр, источник)
 
     assert поднятое is not None
     assert sorted(з.имя for з in поднятое.оглавление.все()) == [

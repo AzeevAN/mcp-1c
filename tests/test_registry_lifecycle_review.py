@@ -143,15 +143,18 @@ def test_публикация_b_во_время_native_фазы_не_откат�
 
 
 def test_прежний_вердикт_блокировки_держится_до_конца_restore(
-    tmp_path, архив_кода, корень_кода, monkeypatch
+    tmp_path, корень_кода, monkeypatch
 ):
-    incoming = tmp_path / "input"
-    incoming.mkdir()
-    original = Registry(tmp_path / "data")
-    original.add_configuration(
-        write_export(incoming, build_configuration(name="Пример"))
+    from native_export import старый_реестр
+
+    # Журнал рокировки и строку кода оставляет только прежняя версия.
+    original = Registry(
+        старый_реестр(
+            tmp_path / "old",
+            корень_кода,
+            configuration=build_configuration(name="Пример"),
+        )
     )
-    original.add_modules(архив_кода(корень_кода), configuration="Пример")
     original._module_swap_path.write_text("[]", encoding="utf-8")
     before = original.registry_path.read_bytes()
 

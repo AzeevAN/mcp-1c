@@ -20,6 +20,7 @@ from mcp1c.source_modes import ActivationMode
 from test_intake_v2_extensions import _stage_active_base
 from test_intake_v2_legacy_cleanup import _native_generation
 from test_intake_v2_registry import _manifest
+from native_export import записать_старый_код, старый_реестр
 
 
 def _mode(registry: Registry, name: str = "DemoConfiguration"):
@@ -115,60 +116,38 @@ def test_битый_wal_поколения_закрывает_запись_до_
     restarted.save()
 
 
-def test_битый_журнал_рокировки_закрывает_запись(
-    tmp_path, архив_кода, корень_кода
-):
-    incoming = tmp_path / "input"
-    incoming.mkdir()
-    registry = Registry(tmp_path / "data")
-    registry.add_configuration(
-        write_export(incoming, build_configuration(name="Пример"))
+def test_битый_журнал_рокировки_закрывает_запись(tmp_path, корень_кода):
+    # Журнал рокировки и строку кода оставляет только прежняя версия.
+    registry = Registry(
+        старый_реестр(
+            tmp_path / "old",
+            корень_кода,
+            configuration=build_configuration(name="Пример"),
+        )
     )
-    source = registry.add_modules(архив_кода(корень_кода), configuration="Пример")
+    source_id = "Пример:modules"
     registry._module_swap_path.write_text("[]", encoding="utf-8")
     registry_before = registry.registry_path.read_bytes()
 
     restarted = Registry(registry.data_dir)
     assert restarted.startup()
-    assert source.id not in restarted.sources
+    assert source_id not in restarted.sources
 
     with pytest.raises(RegistryRecoveryBlocked, match="журнал рокировки"):
         restarted.add_syntax(write_syntax(tmp_path / "incoming-syntax"))
     with pytest.raises(RegistryRecoveryBlocked):
         restarted.save()
     with pytest.raises(RegistryRecoveryBlocked):
-        restarted.add_modules(архив_кода(корень_кода), configuration="Пример")
+        restarted.remove("Пример")
 
     assert restarted.registry_path.read_bytes() == registry_before
     assert restarted._module_swap_path.read_text(encoding="utf-8") == "[]"
 
     restarted._module_swap_path.unlink()
     assert restarted.startup() == []
-    assert source.id in restarted.sources
+    assert source_id in restarted.sources
+    assert restarted.wait_for_module_builds(timeout=10)
     restarted.save()
-
-
-def test_журнал_рокировки_пишется_durable_writer(
-    tmp_path, архив_кода, корень_кода, monkeypatch
-):
-    incoming = tmp_path / "input"
-    incoming.mkdir()
-    registry = Registry(tmp_path / "data")
-    registry.add_configuration(
-        write_export(incoming, build_configuration(name="Пример"))
-    )
-    записанные = []
-    durable = registry._write_json_durably
-
-    def spy(target, payload, **kwargs):
-        записанные.append(target)
-        return durable(target, payload, **kwargs)
-
-    monkeypatch.setattr(registry, "_write_json_durably", spy)
-    registry.add_modules(архив_кода(корень_кода), configuration="Пример")
-
-    assert registry._module_swap_path in записанные
-    assert not registry._module_swap_path.exists()
 
 
 def _rows(registry: Registry) -> dict[str, dict]:
@@ -177,7 +156,7 @@ def _rows(registry: Registry) -> dict[str, dict]:
 
 
 def test_временный_сбой_restore_не_стирает_строки_registry(
-    tmp_path, архив_кода, корень_кода, monkeypatch
+    tmp_path, корень_кода, monkeypatch
 ):
     import mcp1c.registry as registry_module
 
@@ -190,7 +169,9 @@ def test_временный_сбой_restore_не_стирает_строки_re
     registry.add_configuration(
         write_export(incoming, build_configuration(name="Пример"))
     )
-    modules = registry.add_modules(архив_кода(корень_кода), configuration="Пример")
+    registry.save()
+    # Строка кода рядом со schema v1 — data/ прежней версии.
+    modules = записать_старый_код(registry, корень_кода, configuration="Пример")
     before = _rows(registry)
     недоступный = registry._absolute(before["Пример"]["stored_path"])
     подлинный = registry_module._sha256
@@ -308,83 +289,23 @@ def test_reload_ждёт_публикацию_поколения_и_не_отк�
     restarted._generation_store.verify(pointer)
 
 
-def _холодный_реестр_с_кодом(tmp_path, архив_кода, корень_кода):
-    incoming = tmp_path / "input"
-    incoming.mkdir()
-    registry = Registry(tmp_path / "data")
-    registry.add_configuration(
-        write_export(incoming, build_configuration(name="Пример"))
+def _холодный_реестр_с_кодом(tmp_path, корень_кода):
+    # Фоновая сборка осталась только у строк кода прежней версии; кэша их
+    # индексов в таком data/ ещё нет, startup строит его фоном.
+    registry = Registry(
+        старый_реестр(
+            tmp_path / "old",
+            корень_кода,
+            configuration=build_configuration(name="Пример"),
+        )
     )
-    source = registry.add_modules(архив_кода(корень_кода), configuration="Пример")
-    # Без кэша startup строит индекс кода фоном, источник в `loading`.
-    for path in registry.cache_dir.glob("*modules*"):
-        path.unlink()
-    return registry, source
-
-
-def _задержать_фоновую_сборку(registry, monkeypatch):
-    начата = threading.Event()
-    отпустить = threading.Event()
-    подлинная = registry._построить_индекс_кода
-    счёт = {"идёт": 0, "максимум": 0}
-    замок = threading.Lock()
-
-    def сборка(*args, **kwargs):
-        фоновая = threading.current_thread().name.startswith("modules:")
-        if фоновая:
-            with замок:
-                счёт["идёт"] += 1
-                счёт["максимум"] = max(счёт["максимум"], счёт["идёт"])
-        try:
-            if фоновая and not начата.is_set():
-                начата.set()
-                assert отпустить.wait(10)
-            return подлинная(*args, **kwargs)
-        finally:
-            if фоновая:
-                with замок:
-                    счёт["идёт"] -= 1
-
-    monkeypatch.setattr(registry, "_построить_индекс_кода", сборка)
-    return начата, отпустить, счёт
-
-
-def test_провал_reparse_во_время_холодной_сборки_не_оставляет_loading(
-    tmp_path, архив_кода, корень_кода, monkeypatch
-):
-    registry, source = _холодный_реестр_с_кодом(
-        tmp_path, архив_кода, корень_кода
-    )
-    restarted = Registry(registry.data_dir)
-    начата, отпустить, счёт = _задержать_фоновую_сборку(restarted, monkeypatch)
-    try:
-        restarted.startup()
-        assert начата.wait(10)
-        assert not restarted.modules[source.id].готов
-
-        def сбой_распаковки(*_args, **_kwargs):
-            raise OSError(errno.EIO, "синтетический сбой распаковки")
-
-        monkeypatch.setattr(restarted, "_extract_to_temp", сбой_распаковки)
-        with pytest.raises(RegistryError, match="прежний разбор сохранён"):
-            restarted.add_modules(архив_кода(корень_кода), configuration="Пример")
-    finally:
-        отпустить.set()
-    assert restarted.wait_for_module_builds(timeout=30)
-
-    # Отменённая reparse-ом холодная сборка перезапущена: источник готов.
-    assert restarted.modules[source.id].готов
-    assert restarted.sources[source.id].status == "ready"
-    # Перезапуск дождался отменённой сборки, а не строил корпус параллельно.
-    assert счёт["максимум"] == 1
+    return registry, "Пример:modules"
 
 
 def test_reload_пересобирает_застрявший_неготовый_код(
-    tmp_path, архив_кода, корень_кода, monkeypatch
+    tmp_path, корень_кода, monkeypatch
 ):
-    registry, source = _холодный_реестр_с_кодом(
-        tmp_path, архив_кода, корень_кода
-    )
+    registry, source_id = _холодный_реестр_с_кодом(tmp_path, корень_кода)
     restarted = Registry(registry.data_dir)
     подлинная = restarted._построить_индекс_кода
     отказов = {"осталось": 1}
@@ -401,12 +322,12 @@ def test_reload_пересобирает_застрявший_неготовый
     monkeypatch.setattr(restarted, "_построить_индекс_кода", сборка)
     restarted.startup()
     assert restarted.wait_for_module_builds(timeout=30)
-    assert not restarted.modules[source.id].готов
-    assert restarted.sources[source.id].status == "error"
+    assert not restarted.modules[source_id].готов
+    assert restarted.sources[source_id].status == "error"
 
     restarted.startup()
     assert restarted.wait_for_module_builds(timeout=30)
-    assert restarted.modules[source.id].готов
+    assert restarted.modules[source_id].готов
 
 
 def test_cli_reg_add_проходит_страховку_startup(tmp_path, capsys):
@@ -459,35 +380,6 @@ def test_отказ_открыть_исходник_не_оставляет_де
             )
     assert _открытых_дескрипторов() == before
     assert not list((registry.sources_dir / "configurations").glob(".*.tmp"))
-
-
-def test_снос_старого_кода_не_стирает_чужой_журнал_рокировки(
-    tmp_path, архив_кода, корень_кода, monkeypatch
-):
-    incoming = tmp_path / "input"
-    incoming.mkdir()
-    registry = Registry(tmp_path / "data")
-    registry.add_configuration(
-        write_export(incoming, build_configuration(name="Пример"))
-    )
-    registry.add_modules(архив_кода(корень_кода), configuration="Пример")
-    чужой = {"version": 1, "source_id": "Другая:modules", "temporary": "x"}
-    подлинный_снос = registry._drop_modules_root
-
-    def снос_с_чужой_операцией(корень):
-        # Пока старый каталог сносится вне замков, другая операция кода
-        # успевает записать свой журнал перед собственной рокировкой.
-        registry._module_swap_path.write_text(
-            json.dumps(чужой), encoding="utf-8"
-        )
-        return подлинный_снос(корень)
-
-    monkeypatch.setattr(registry, "_drop_modules_root", снос_с_чужой_операцией)
-    registry.add_modules(архив_кода(корень_кода), configuration="Пример")
-
-    assert json.loads(
-        registry._module_swap_path.read_text(encoding="utf-8")
-    ) == чужой
 
 
 def test_registry_другой_версии_не_затирается(tmp_path):

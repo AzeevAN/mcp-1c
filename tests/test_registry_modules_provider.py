@@ -1,102 +1,69 @@
-"""Источник модулей в реестре — второе измерение `ResolvedContext`.
+"""Код прежней версии в реестре — второе измерение `ResolvedContext`.
 
-Готовые индексы из `modules_index.py` подключены к `Registry`:
-`add_modules`/`_add_extension` строят их при разборе, кладут в
-кэш проекта и делают доступными инструментам через `ResolvedContext.modules`/
-`ResolvedContext.extension`. `restore()` после рестарта поднимает их снова —
-из кэша, если штамп сошёлся, иначе строит заново прямо по коду на диске.
-Восстановленная пара старых Source A и отдельно загруженных модулей остаётся
-доступна только диагностике: публичный `resolve()` требует перезагрузки.
+Приём кода отдельно от структуры (`add_modules`) удалён: код приходит только
+native-поколением. Строки `<Имя>:modules`/`<Имя>:ext:*` и каталоги
+`data/modules`/`data/extensions`, которые оставила прежняя версия, `restore()`
+ещё поднимает в окне совместимости: из кэша, если штамп сошёлся, иначе строит
+индекс фоном прямо по коду на диске. Восстановленная пара старой Source A и
+отдельного кода доступна только диагностике: публичный `resolve()` требует
+перезагрузки. Здесь проверяются именно эта фоновая сборка, каскад `remove` и
+устойчивость restore к гонкам.
 
-Три правила порядка зафиксированы в `docs/modules-provider-design.md`,
-раздел 9:
-
-1. **Индекс строится из временного каталога до рокировки.** Собери его
-   ПОСЛЕ — и всё время сборки на диске уже новый код, а в памяти ещё старое
-   оглавление: `get_procedure` отдавал бы куски чужих процедур по старым
-   номерам строк, без единой пометки.
-2. **Отказ сборки — `STATUS_ERROR` (или отсутствующая запись), а не
-   молчаливое расхождение реестра с диском.**
-3. **Снятие конфигурации снимает и её код** — каскад на `<Имя>:modules` и
-   `<Имя>:ext:*`.
-
-Реестр строится боевым путём — `Registry(рабочий / "data")` +
-`add_configuration`/`add_modules` — как в `tests/test_registry_extensions.py`
-и `tests/test_index_cache_modules.py`. Фикстур `живой_реестр`/
-`add_modules_from_dir` в проекте нет, и здесь они не заводятся — только
-реальные вызовы.
+Данные прежней версии собираются `native_export.записать_старый_код`: строка
+registry.json и каталог кода такие же, какие писал удалённый приём.
 
 `рабочий` — отдельный от `корень_кода` временный каталог (`tmp_path_factory`,
 не `tmp_path`): `корень_кода` — фикстура conftest.py, она пишет дерево модулей
-прямо в свой `tmp_path`, и если туда же класть `data/` реестра и архивы, то
-после первой же загрузки `корень_кода.rglob("*")` подхватит уже РАЗОБРАННЫЙ
-код (`data/modules/Пример/...bsl`) как ещё один модуль выгрузки — с путём вида
-`data/modules/...`, непонятным `module_address`. Этот конфликт путей
-воспроизводит отдельный регрессионный тест.
+прямо в свой `tmp_path`.
 """
 from __future__ import annotations
 
 import json
 import threading
 import time
-import zipfile
 from pathlib import Path
 
 import pytest
 from starlette.applications import Starlette
 
-from conftest import (
-    build_configuration,
-    живой_клиент,
-    modules_configuration_xml,
-    write_export,
-)
-from mcp1c import coverage_log, index_cache, intake, modules_index, search
+from conftest import build_configuration, живой_клиент, write_export
+from mcp1c import coverage_log, index_cache, modules_index, search
 from mcp1c.registry import (
-    KIND_EXTENSION,
     KIND_MODULES,
     STATUS_ERROR,
     Registry,
     RegistryError,
 )
 from mcp1c.server import build_server
+from native_export import записать_старый_код, опубликовать_код
 
 
-def _архив_кода(корень: Path, файл_zip: Path, *, version: str = "") -> Path:
-    """Пакует дерево `корень` в архив выгрузки в файлы для `add_modules`.
+def _старый_код(
+    реестр: Registry,
+    корень: Path,
+    *,
+    extension: bool = False,
+    version: str = "",
+):
+    """Строка кода прежней версии (или её расширения «Доп») в registry.json."""
+    if not реестр.registry_path.exists():
+        реестр.save()
+    return записать_старый_код(
+        реестр,
+        корень,
+        configuration="Пример",
+        extension="Доп" if extension else None,
+        version=version,
+        origin="extension.zip" if extension else "modules.zip",
+    )
 
-    Список файлов снимается ДО открытия `zipfile.ZipFile` на запись: обход
-    дерева ПОСЛЕ создания архива подхватил бы недописанный `.zip` как ещё
-    один файл выгрузки (тот же приём, что в `tests/test_index_cache_modules.
-    py`). `файл_zip` пишется ВНЕ `корень` (см. докстроку модуля про `рабочий`
-    != `корень_кода`) — иначе он попал бы в собственный же список файлов.
-    """
-    файлы = [путь for путь in sorted(корень.rglob("*")) if путь.is_file()]
-    with zipfile.ZipFile(файл_zip, "w") as zf:
-        zf.writestr("Configuration.xml", modules_configuration_xml(version=version))
-        for путь in файлы:
-            zf.write(путь, путь.relative_to(корень).as_posix())
-    return файл_zip
 
-
-def _архив_расширения(корень: Path, файл_zip: Path) -> Path:
-    файлы = [путь for путь in sorted(корень.rglob("*")) if путь.is_file()]
-    with zipfile.ZipFile(файл_zip, "w") as zf:
-        zf.writestr(
-            "Configuration.xml",
-            (
-                '<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">'
-                '<Configuration uuid="00000000-0000-0000-0000-000000000000">'
-                "<Properties><Name>Доп</Name><NamePrefix>zzд_</NamePrefix>"
-                "<ObjectBelonging>Adopted</ObjectBelonging>"
-                "<ConfigurationExtensionPurpose>Customization"
-                "</ConfigurationExtensionPurpose></Properties>"
-                "</Configuration></MetaDataObject>"
-            ),
-        )
-        for путь in файлы:
-            zf.write(путь, путь.relative_to(корень).as_posix())
-    return файл_zip
+def _поднятый(реестр: Registry) -> Registry:
+    """Перезапуск над data/ прежней версии с дождавшейся фоновой сборкой."""
+    заново = Registry(реестр.data_dir)
+    assert заново.startup() == []
+    assert заново.wait_for_module_builds(timeout=10)
+    return заново
 
 
 def _реестр_с_конфигурацией(
@@ -139,20 +106,15 @@ def _вызвать_с_ошибкой(ошибки: list[Exception], функц�
         ошибки.append(error)
 
 
-def _архив_с_новой_процедурой(корень: Path, файл_zip: Path) -> Path:
-    """Меняет общий модуль так, чтобы поколения различались содержимым."""
-    модуль = корень / "CommonModules" / "ОбщийПример" / "Ext" / "Module.bsl"
-    модуль.write_text(
-        "Процедура Новая() Экспорт\nКонецПроцедуры\n", encoding="utf-8"
-    )
-    return _архив_кода(корень, файл_zip, version="2.0.0")
-
-
 def test_модули_попадают_в_контекст(tmp_path_factory, корень_кода):
     рабочий = tmp_path_factory.mktemp("реестр")
-    реестр = _реестр_с_конфигурацией(рабочий)
-    архив = _архив_кода(корень_кода, рабочий / "модули.zip")
-    реестр.add_modules(архив, configuration="Пример")
+    реестр = Registry(рабочий / "data")
+    опубликовать_код(
+        реестр,
+        корень_кода,
+        configuration=build_configuration(name="Пример"),
+        рабочий=рабочий,
+    )
 
     контекст = реестр.resolve("Пример")
 
@@ -163,8 +125,8 @@ def test_модули_попадают_в_контекст(tmp_path_factory, к�
 def test_снятие_конфигурации_снимает_код(tmp_path_factory, корень_кода):
     рабочий = tmp_path_factory.mktemp("реестр")
     реестр = _реестр_с_конфигурацией(рабочий)
-    архив = _архив_кода(корень_кода, рабочий / "модули.zip")
-    реестр.add_modules(архив, configuration="Пример")
+    _старый_код(реестр, корень_кода)
+    реестр = _поднятый(реестр)
     корень = реестр._modules_root("Пример")
     assert корень.exists()
 
@@ -181,10 +143,8 @@ def test_снятие_конфигурации_снимает_код_расши�
     """Тот же каскад, что и для модулей конфигурации — на `<Имя>:ext:*`."""
     рабочий = tmp_path_factory.mktemp("реестр")
     реестр = _реестр_с_конфигурацией(рабочий)
-    выгрузка_расширения = _архив_расширения(
-        корень_кода, рабочий / "расширение.zip"
-    )
-    реестр.add_modules(выгрузка_расширения, configuration="Пример")
+    _старый_код(реестр, корень_кода, extension=True)
+    реестр = _поднятый(реестр)
     корень_расширения = реестр._extension_root("Пример", "Доп")
     корень_конфигурации = корень_расширения.parent
     assert корень_расширения.exists()
@@ -198,151 +158,6 @@ def test_снятие_конфигурации_снимает_код_расши�
     assert not корень_конфигурации.exists()
 
 
-def test_отказ_сборки_оставляет_источник_в_ошибке(
-    tmp_path_factory, корень_кода, monkeypatch
-):
-    рабочий = tmp_path_factory.mktemp("реестр")
-    реестр = _реестр_с_конфигурацией(рабочий)
-    архив = _архив_кода(корень_кода, рабочий / "модули.zip")
-
-    настоящее_построить = modules_index.Оглавление.построить
-
-    def падает(*_, **__):
-        raise MemoryError("не влезло")
-
-    monkeypatch.setattr(modules_index.Оглавление, "построить", staticmethod(падает))
-
-    with pytest.raises(RegistryError):
-        реестр.add_modules(архив, configuration="Пример")
-
-    источник = реестр.sources.get("Пример:modules")
-    assert источник is None or источник.status == STATUS_ERROR
-    # Ни каталога кода, ни записи в индексе — отказ сборки не должен оставить
-    # реестр и диск в разных состояниях.
-    assert not реестр._modules_root("Пример").exists()
-    assert "Пример:modules" not in реестр.modules
-    assert not list(
-        реестр.modules_dir.glob(".Пример.tmp-*")
-    )
-    # Отказ освобождает lifecycle-lock: следующая попытка не
-    # висит и публикует готовый комплект.
-    monkeypatch.setattr(
-        modules_index.Оглавление,
-        "построить",
-        staticmethod(настоящее_построить),
-    )
-    источник = реестр.add_modules(архив, configuration="Пример")
-    assert источник.status == "ready"
-
-
-def test_ошибка_fs_актуального_reparse_санитизирована_и_сохраняет_cause(
-    tmp_path_factory, корень_кода, monkeypatch
-):
-    рабочий = tmp_path_factory.mktemp("реестр")
-    реестр = _реестр_с_конфигурацией(рабочий)
-    архив = _архив_кода(корень_кода, рабочий / "модули.zip")
-    настоящее_extract = intake.extract
-
-    def падает(*_, **__):
-        raise OSError("нет места")
-
-    monkeypatch.setattr(intake, "extract", падает)
-    with pytest.raises(RegistryError) as ошибка:
-        реестр.add_modules(архив, configuration="Пример")
-
-    assert "нет места" not in str(ошибка.value)
-    assert isinstance(ошибка.value.__cause__, OSError)
-    assert not list(реестр.modules_dir.glob(".Пример.tmp-*"))
-
-    # Ошибка актуальной операции не превращается в отмену и не оставляет
-    # source-lock занятым: повторная попытка может завершиться.
-    monkeypatch.setattr(intake, "extract", настоящее_extract)
-    источник = реестр.add_modules(архив, configuration="Пример")
-    assert источник.status == "ready"
-
-
-def test_расхождение_версий_называется(tmp_path_factory, корень_кода):
-    рабочий = tmp_path_factory.mktemp("реестр")
-    реестр = _реестр_с_конфигурацией(рабочий, version="2.0.0")
-    архив = _архив_кода(корень_кода, рабочий / "модули.zip", version="1.0.0")
-
-    реестр.add_modules(архив, configuration="Пример")
-
-    оговорки = реестр.resolve("Пример").notes()
-    assert any("1.0.0" in о and "2.0.0" in о for о in оговорки)
-
-
-def test_совпадающие_версии_молчат(tmp_path_factory, корень_кода):
-    """Оговорка появляется только при расхождении — не на каждой загрузке."""
-    рабочий = tmp_path_factory.mktemp("реестр")
-    реестр = _реестр_с_конфигурацией(рабочий, version="2.0.0")
-    архив = _архив_кода(корень_кода, рабочий / "модули.zip", version="2.0.0")
-
-    реестр.add_modules(архив, configuration="Пример")
-
-    оговорки = реестр.resolve("Пример").notes()
-    assert not any("разошлись" in о for о in оговорки)
-
-
-def test_индекс_строится_из_временного_каталога_до_рокировки(
-    tmp_path_factory, корень_кода, monkeypatch
-):
-    """Прямое доказательство безопасного порядка публикации:
-    пока строится индекс, `корень` на диске ещё несёт СТАРЫЙ код.
-
-    Первая загрузка кладёт код на `корень`. Вторая — с ДОБАВЛЕННЫМ модулем —
-    перехватывает момент сборки индекса и проверяет диск в этот момент:
-    новый модуль там появиться ещё не должен, а старый — обязан быть на
-    месте. Мутация, которая переставит сборку индекса ПОСЛЕ рокировки,
-    роняет этот тест: на диске в момент сборки будет уже новый файл.
-    """
-    рабочий = tmp_path_factory.mktemp("реестр")
-    реестр = _реестр_с_конфигурацией(рабочий)
-    первый_архив = _архив_кода(корень_кода, рабочий / "модули-1.zip")
-    реестр.add_modules(первый_архив, configuration="Пример")
-    корень = реестр._modules_root("Пример")
-
-    # Новый ОБЩИЙ модуль — не переименованный файл: `module_address` знает
-    # только фиксированные имена файлов («Module.bsl», «ObjectModule.bsl»
-    # и т.п.), «Module2.bsl» в таблице соответствия нет вовсе.
-    новый_модуль = корень_кода / "CommonModules" / "ОбщийНовый" / "Ext" / "Module.bsl"
-    новый_модуль.parent.mkdir(parents=True)
-    новый_модуль.write_text(
-        "Процедура НоваяПроцедура() Экспорт\nКонецПроцедуры\n", encoding="utf-8"
-    )
-    второй_архив = _архив_кода(корень_кода, рабочий / "модули-2.zip")
-
-    исходное_построить = modules_index.Оглавление.построить
-    снимок: dict[str, object] = {}
-
-    def перехват(путь_сборки: Path, **kwargs):
-        # `путь_сборки` — временный каталог `_extract_to_temp`, а не `корень`:
-        # если бы сборка шла ПОСЛЕ рокировки, оба пути совпали бы.
-        снимок["путь_сборки_это_не_корень"] = путь_сборки != корень
-        снимок["на_корне_ещё_нет_нового_модуля"] = not (
-            корень / "CommonModules" / "ОбщийНовый" / "Ext" / "Module.bsl"
-        ).exists()
-        снимок["на_корне_есть_старый_код"] = (
-            корень / "CommonModules" / "ОбщийПример" / "Ext" / "Module.bsl"
-        ).exists()
-        return исходное_построить(путь_сборки, **kwargs)
-
-    monkeypatch.setattr(modules_index.Оглавление, "построить", staticmethod(перехват))
-
-    реестр.add_modules(второй_архив, configuration="Пример")
-
-    assert снимок == {
-        "путь_сборки_это_не_корень": True,
-        "на_корне_ещё_нет_нового_модуля": True,
-        "на_корне_есть_старый_код": True,
-    }
-    # После рокировки новый модуль на месте — доказывает, что перехват вообще
-    # застал реальную последовательность, а не сборку, которая тихо не удалась.
-    assert (
-        корень / "CommonModules" / "ОбщийНовый" / "Ext" / "Module.bsl"
-    ).exists()
-
-
 def test_рестарт_поднимает_индекс_из_кэша(tmp_path_factory, корень_кода):
     """`restore()` поднимает индекс из кэша, а не молчит про него.
 
@@ -352,9 +167,9 @@ def test_рестарт_поднимает_индекс_из_кэша(tmp_path_f
     """
     рабочий = tmp_path_factory.mktemp("реестр")
     реестр = _реестр_с_конфигурацией(рабочий)
-    архив = _архив_кода(корень_кода, рабочий / "модули.zip", version="1.0.0")
-    реестр.add_modules(архив, configuration="Пример")
-    реестр.save()
+    _старый_код(реестр, корень_кода, version="1.0.0")
+    # Первый запуск строит индекс фоном и кладёт его в кэш.
+    _поднятый(реестр)
 
     заново = Registry(реестр.data_dir)
     problems = заново.restore()
@@ -374,9 +189,7 @@ def test_старт_не_ждёт_холодной_сборки(
     """Промах кэша публикует состояние и отдаёт управление серверу сразу."""
     рабочий = tmp_path_factory.mktemp("реестр")
     реестр = _реестр_с_конфигурацией(рабочий)
-    архив = _архив_кода(корень_кода, рабочий / "модули.zip")
-    реестр.add_modules(архив, configuration="Пример")
-    реестр.save()
+    _старый_код(реестр, корень_кода)
     _снести_кэш_модулей(реестр)
 
     строит = threading.Event()
@@ -417,9 +230,7 @@ def test_четыре_индекса_появляются_только_гото�
     """Даже на последней фазе наружу не торчат три готовых индекса из четырёх."""
     рабочий = tmp_path_factory.mktemp("реестр")
     реестр = _реестр_с_конфигурацией(рабочий)
-    архив = _архив_кода(корень_кода, рабочий / "модули.zip")
-    реестр.add_modules(архив, configuration="Пример")
-    реестр.save()
+    _старый_код(реестр, корень_кода)
     _снести_кэш_модулей(реестр)
 
     строит_поиск = threading.Event()
@@ -467,9 +278,7 @@ def test_прогресс_показывает_фактический_прохо
     """N/M — реально обработанные файлы, отдельно от номера этапа X/4."""
     рабочий = tmp_path_factory.mktemp("реестр")
     реестр = _реестр_с_конфигурацией(рабочий)
-    архив = _архив_кода(корень_кода, рабочий / "модули.zip")
-    реестр.add_modules(архив, configuration="Пример")
-    реестр.save()
+    _старый_код(реестр, корень_кода)
     _снести_кэш_модулей(реестр)
 
     второй_файл = threading.Event()
@@ -515,15 +324,13 @@ def test_холодный_старт_считает_скомпилированн
     compiled.parent.mkdir(parents=True, exist_ok=True)
     compiled.write_bytes(b"compiled")
     реестр = _реестр_с_конфигурацией(рабочий)
-    реестр.add_modules(_архив_кода(корень, рабочий / "modules.zip"), configuration="Пример")
+    _старый_код(реестр, корень)
     # Холодный builder обязан считать фактический canonical root. Добавляем
-    # исходный модуль уже туда: отбор архива выбирает один формат, тогда как
-    # этот regression проверяет именно mixed root, оставшийся после обновления.
+    # исходный модуль уже туда: этот regression проверяет именно mixed root,
+    # оставшийся после обновления.
     обычный = реестр.modules_dir / "Пример/CommonModules/Открытый/Ext/Module.bsl"
     обычный.parent.mkdir(parents=True)
     обычный.write_text("Процедура А() Экспорт\nКонецПроцедуры\n", encoding="utf-8")
-    реестр.save()
-    _снести_кэш_модулей(реестр)
 
     started = threading.Event()
     release = threading.Event()
@@ -560,9 +367,7 @@ def test_отказ_фоновой_сборки_не_остаётся_вечны
 ):
     рабочий = tmp_path_factory.mktemp("реестр")
     реестр = _реестр_с_конфигурацией(рабочий)
-    архив = _архив_кода(корень_кода, рабочий / "модули.zip")
-    реестр.add_modules(архив, configuration="Пример")
-    реестр.save()
+    _старый_код(реестр, корень_кода)
     _снести_кэш_модулей(реестр)
 
     def падает(*_, **__):
@@ -588,22 +393,10 @@ def test_параллельные_cold_miss_восстанавливают_вс�
 ):
     рабочий = tmp_path_factory.mktemp("параллельный-cold")
     реестр = _реестр_с_конфигурацией(рабочий)
-    реестр.add_modules(
-        _архив_кода(корень_кода, рабочий / "base.zip"),
-        configuration="Пример",
-    )
-    реестр.add_modules(
-        _архив_расширения(корень_кода, рабочий / "extension.zip"),
-        configuration="Пример",
-    )
-    реестр.save()
     источники = (
-        реестр.sources["Пример:modules"],
-        реестр.sources["Пример:ext:Доп"],
+        _старый_код(реестр, корень_кода),
+        _старый_код(реестр, корень_кода, extension=True),
     )
-    for источник in источники:
-        for вид in реестр.CACHE_KINDS[источник.kind]:
-            реестр._cache_path(источник.id, вид).unlink(missing_ok=True)
 
     class ГоночныйОбщийСтеммер:
         def __init__(self):
@@ -680,9 +473,7 @@ def test_повторный_startup_не_запускает_вторую_сбо�
 ):
     рабочий = tmp_path_factory.mktemp("реестр")
     реестр = _реестр_с_конфигурацией(рабочий)
-    архив = _архив_кода(корень_кода, рабочий / "модули.zip")
-    реестр.add_modules(архив, configuration="Пример")
-    реестр.save()
+    _старый_код(реестр, корень_кода)
     _снести_кэш_модулей(реестр)
 
     начата = threading.Event()
@@ -715,9 +506,7 @@ def test_снятие_источника_во_время_сборки_не_во�
 ):
     рабочий = tmp_path_factory.mktemp("реестр")
     реестр = _реестр_с_конфигурацией(рабочий)
-    архив = _архив_кода(корень_кода, рабочий / "модули.zip")
-    реестр.add_modules(архив, configuration="Пример")
-    реестр.save()
+    _старый_код(реестр, корень_кода)
     _снести_кэш_модулей(реестр)
 
     начата = threading.Event()
@@ -786,9 +575,7 @@ def test_два_параллельных_startup_запускают_одну_с�
     """Проверка и резервирование source_id обязаны быть одной операцией."""
     рабочий = tmp_path_factory.mktemp("реестр")
     реестр = _реестр_с_конфигурацией(рабочий)
-    архив = _архив_кода(корень_кода, рабочий / "модули.zip")
-    реестр.add_modules(архив, configuration="Пример")
-    реестр.save()
+    _старый_код(реестр, корень_кода)
     _снести_кэш_модулей(реестр)
 
     первый_load = threading.Event()
@@ -861,22 +648,9 @@ def test_фон_не_сохраняет_частичный_registry_во_вре�
     """Фоновый save ждёт полного restore, включая следующий code-source."""
     рабочий = tmp_path_factory.mktemp("реестр")
     исходный = _реестр_с_конфигурацией(рабочий)
-    исходный.add_modules(
-        _архив_кода(корень_кода, рабочий / "modules.zip"),
-        configuration="Пример",
-    )
-    исходный.add_modules(
-        _архив_расширения(корень_кода, рабочий / "extension.zip"),
-        configuration="Пример",
-    )
-    исходный.save()
+    _старый_код(исходный, корень_кода)
+    _старый_код(исходный, корень_кода, extension=True)
     ожидаемые_id = {"Пример", "Пример:modules", "Пример:ext:Доп"}
-    for source_id, kind in (
-        ("Пример:modules", KIND_MODULES),
-        ("Пример:ext:Доп", KIND_EXTENSION),
-    ):
-        for вид in исходный.CACHE_KINDS[kind]:
-            исходный._cache_path(source_id, вид).unlink(missing_ok=True)
 
     заново = Registry(исходный.data_dir)
     первая_строка_кода = threading.Event()
@@ -972,22 +746,9 @@ def test_ошибка_startup_освобождает_фоновый_save(
     """После partial restore фон выходит, но не заменяет полный снимок."""
     рабочий = tmp_path_factory.mktemp("реестр")
     исходный = _реестр_с_конфигурацией(рабочий)
-    исходный.add_modules(
-        _архив_кода(корень_кода, рабочий / "modules.zip"),
-        configuration="Пример",
-    )
-    исходный.add_modules(
-        _архив_расширения(корень_кода, рабочий / "extension.zip"),
-        configuration="Пример",
-    )
-    исходный.save()
+    _старый_код(исходный, корень_кода)
+    _старый_код(исходный, корень_кода, extension=True)
     ожидаемые_id = {"Пример", "Пример:modules", "Пример:ext:Доп"}
-    for source_id, kind in (
-        ("Пример:modules", KIND_MODULES),
-        ("Пример:ext:Доп", KIND_EXTENSION),
-    ):
-        for вид in исходный.CACHE_KINDS[kind]:
-            исходный._cache_path(source_id, вид).unlink(missing_ok=True)
 
     заново = Registry(исходный.data_dir)
     сборка_начата = threading.Event()
@@ -1049,112 +810,12 @@ def test_ошибка_startup_освобождает_фоновый_save(
     assert all(row["status"] == "ready" for row in строки.values())
 
 
-def test_старый_фоновый_writer_не_портит_кэш_нового_разбора(
-    tmp_path_factory, корень_кода, monkeypatch
-):
-    рабочий = tmp_path_factory.mktemp("реестр")
-    реестр = _реестр_с_конфигурацией(рабочий)
-    старый = _архив_кода(корень_кода, рабочий / "old.zip", version="1.0.0")
-    реестр.add_modules(старый, configuration="Пример")
-    реестр.save()
-    _снести_кэш_модулей(реестр)
-    новый = _архив_с_новой_процедурой(корень_кода, рабочий / "new.zip")
-
-    старый_writer = threading.Event()
-    отпустить_writer = threading.Event()
-    save_calls = 0
-    настоящее_сохранить = modules_index.сохранить_индексы
-
-    def сохранить(*args, **kwargs):
-        nonlocal save_calls
-        save_calls += 1
-        if save_calls == 1:
-            старый_writer.set()
-            отпустить_writer.wait(timeout=3)
-        return настоящее_сохранить(*args, **kwargs)
-
-    monkeypatch.setattr(modules_index, "сохранить_индексы", сохранить)
-    заново = Registry(реестр.data_dir)
-    reparse_errors: list[Exception] = []
-
-    def переразобрать():
-        try:
-            заново.add_modules(новый, configuration="Пример")
-        except Exception as error:
-            reparse_errors.append(error)
-
-    reparse = threading.Thread(target=переразобрать)
-    try:
-        assert not заново.startup()
-        assert старый_writer.wait(timeout=1)
-        reparse.start()
-    finally:
-        отпустить_writer.set()
-        reparse.join(timeout=3)
-
-    assert not reparse.is_alive()
-    assert not reparse_errors
-    _дождаться(lambda: "Пример:modules" not in заново._module_builds)
-    в_памяти = _диагностический_контекст(заново).modules.оглавление
-    assert в_памяти.по_имени("Новая")
-    assert not в_памяти.по_имени("Сложить")
-    заново.save()
-
-    после_рестарта = Registry(реестр.data_dir)
-    assert not после_рестарта.restore()
-    поднято = _диагностический_контекст(после_рестарта).modules
-    assert поднято.готов is True
-    assert поднято.оглавление.по_имени("Новая")
-    assert not поднято.оглавление.по_имени("Сложить")
-
-
-def test_заблокированный_warm_load_не_перетирает_reparse(
-    tmp_path_factory, корень_кода, monkeypatch
-):
-    рабочий = tmp_path_factory.mktemp("реестр")
-    реестр = _реестр_с_конфигурацией(рабочий)
-    старый = _архив_кода(корень_кода, рабочий / "old.zip", version="1.0.0")
-    реестр.add_modules(старый, configuration="Пример")
-    реестр.save()
-    новый = _архив_с_новой_процедурой(корень_кода, рабочий / "new.zip")
-
-    кэш_прочитан = threading.Event()
-    отпустить = threading.Event()
-    настоящее_поднять = modules_index.поднять_индексы
-
-    def поднять(*args, **kwargs):
-        result = настоящее_поднять(*args, **kwargs)
-        кэш_прочитан.set()
-        отпустить.wait(timeout=3)
-        return result
-
-    monkeypatch.setattr(modules_index, "поднять_индексы", поднять)
-    заново = Registry(реестр.data_dir)
-    поток = threading.Thread(target=заново.startup)
-    поток.start()
-    try:
-        assert кэш_прочитан.wait(timeout=1)
-        заново.add_modules(новый, configuration="Пример")
-    finally:
-        отпустить.set()
-        поток.join(timeout=3)
-
-    assert not поток.is_alive()
-    модули = _диагностический_контекст(заново).modules
-    assert модули.source is заново.sources["Пример:modules"]
-    assert модули.source.origin == "new.zip"
-    assert модули.оглавление.по_имени("Новая")
-    assert not модули.оглавление.по_имени("Сложить")
-
-
 def test_заблокированный_warm_load_не_воскрешает_remove(
     tmp_path_factory, корень_кода, monkeypatch
 ):
     рабочий = tmp_path_factory.mktemp("реестр")
     реестр = _реестр_с_конфигурацией(рабочий)
-    старый = _архив_кода(корень_кода, рабочий / "old.zip", version="1.0.0")
-    реестр.add_modules(старый, configuration="Пример")
-    реестр.save()
+    _старый_код(реестр, корень_кода, version="1.0.0")
 
     кэш_прочитан = threading.Event()
     отпустить = threading.Event()
@@ -1183,272 +844,15 @@ def test_заблокированный_warm_load_не_воскрешает_remo
     assert "Пример:modules" not in заново.modules
 
 
-def test_foreground_reparse_не_воскрешает_код_после_remove(
-    tmp_path_factory, корень_кода, monkeypatch
-):
-    """Remove инвалидирует reparse ещё до его долгой сборки."""
-    рабочий = tmp_path_factory.mktemp("реестр")
-    реестр = _реестр_с_конфигурацией(рабочий)
-    старый = _архив_кода(корень_кода, рабочий / "old.zip")
-    реестр.add_modules(старый, configuration="Пример")
-    реестр.save()
-    новый = _архив_с_новой_процедурой(корень_кода, рабочий / "new.zip")
-
-    сборка_начата = threading.Event()
-    отпустить = threading.Event()
-    настоящее_построить = modules_index.Оглавление.построить
-
-    def построить(корень, **kwargs):
-        сборка_начата.set()
-        отпустить.wait(timeout=3)
-        return настоящее_построить(корень, **kwargs)
-
-    monkeypatch.setattr(
-        modules_index.Оглавление, "построить", staticmethod(построить)
-    )
-    ошибки: list[Exception] = []
-
-    def переразобрать():
-        try:
-            реестр.add_modules(новый, configuration="Пример")
-        except Exception as error:
-            ошибки.append(error)
-
-    поток = threading.Thread(target=переразобрать)
-    поток.start()
-    try:
-        assert сборка_начата.wait(timeout=1)
-        реестр.remove("Пример")
-    finally:
-        отпустить.set()
-        поток.join(timeout=3)
-
-    assert not поток.is_alive()
-    assert ошибки
-    assert not реестр.configurations
-    assert "Пример:modules" not in реестр.sources
-    assert "Пример:modules" not in реестр.modules
-    assert not реестр._modules_root("Пример").exists()
-
-    реестр.save()
-    payload = json.loads(реестр.registry_path.read_text(encoding="utf-8"))
-    assert payload["sources"] == []
-    после_рестарта = Registry(реестр.data_dir)
-    # Копия выгрузки метаданных остаётся orphan source по
-    # общему контракту remove; важно, что реестр пуст.
-    после_рестарта.startup()
-    assert not после_рестарта.configurations
-    assert "Пример:modules" not in после_рестарта.sources
-
-
-def test_startup_не_подменяет_swapped_reparse_старым_registry(
-    tmp_path_factory, корень_кода, monkeypatch
-):
-    """Active token защищает new root до завершения cache writer."""
-    рабочий = tmp_path_factory.mktemp("реестр")
-    реестр = _реестр_с_конфигурацией(рабочий)
-    старый = _архив_кода(корень_кода, рабочий / "old.zip", version="1")
-    реестр.add_modules(старый, configuration="Пример")
-    реестр.save()
-    новый = _архив_с_новой_процедурой(корень_кода, рабочий / "new.zip")
-
-    writer_начат = threading.Event()
-    отпустить = threading.Event()
-    настоящее_сохранить = modules_index.сохранить_индексы
-
-    def сохранить(*args, **kwargs):
-        writer_начат.set()
-        отпустить.wait(timeout=3)
-        return настоящее_сохранить(*args, **kwargs)
-
-    monkeypatch.setattr(modules_index, "сохранить_индексы", сохранить)
-    reparse = threading.Thread(
-        target=lambda: реестр.add_modules(новый, configuration="Пример")
-    )
-    startup = threading.Thread(target=реестр.startup)
-    reparse.start()
-    try:
-        assert writer_начат.wait(timeout=1)
-        startup.start()
-        startup.join(timeout=2)
-        assert not startup.is_alive()
-    finally:
-        отпустить.set()
-        reparse.join(timeout=3)
-        startup.join(timeout=3)
-
-    assert not reparse.is_alive()
-    source = реестр.sources["Пример:modules"]
-    loaded = _диагностический_контекст(реестр).modules
-    assert source.origin == "new.zip"
-    assert loaded.source is source
-    assert loaded.оглавление.по_имени("Новая")
-    assert not loaded.оглавление.по_имени("Сложить")
-
-    после_рестарта = Registry(реестр.data_dir)
-    assert not после_рестарта.restore()
-    поднято = _диагностический_контекст(после_рестарта).modules
-    assert поднято.готов is True
-    assert поднято.source.origin == "new.zip"
-    assert поднято.оглавление.по_имени("Новая")
-    assert not поднято.оглавление.по_имени("Сложить")
-
-
-def test_foreground_reparse_расширения_тоже_инвалидируется_remove(
-    tmp_path_factory, корень_кода, monkeypatch
-):
-    """Extension и modules используют одну reservation/CAS границу."""
-    рабочий = tmp_path_factory.mktemp("реестр")
-    реестр = _реестр_с_конфигурацией(рабочий)
-    старый = _архив_расширения(корень_кода, рабочий / "old-ext.zip")
-    реестр.add_modules(старый, configuration="Пример")
-    модуль = корень_кода / "CommonModules" / "ОбщийПример" / "Ext" / "Module.bsl"
-    модуль.write_text("Процедура Новая() Экспорт\nКонецПроцедуры\n", encoding="utf-8")
-    новый = _архив_расширения(корень_кода, рабочий / "new-ext.zip")
-
-    начата = threading.Event()
-    отпустить = threading.Event()
-    настоящее_построить = modules_index.Оглавление.построить
-
-    def построить(корень, **kwargs):
-        начата.set()
-        отпустить.wait(timeout=3)
-        return настоящее_построить(корень, **kwargs)
-
-    monkeypatch.setattr(
-        modules_index.Оглавление, "построить", staticmethod(построить)
-    )
-    ошибки: list[Exception] = []
-    поток = threading.Thread(
-        target=lambda: _вызвать_с_ошибкой(
-            ошибки, реестр.add_modules, новый, configuration="Пример"
-        )
-    )
-    поток.start()
-    try:
-        assert начата.wait(timeout=1)
-        реестр.remove("Пример")
-    finally:
-        отпустить.set()
-        поток.join(timeout=3)
-
-    assert not поток.is_alive()
-    assert ошибки
-    assert not реестр.configurations
-    assert "Пример:ext:Доп" not in реестр.sources
-    assert not реестр._extension_root("Пример", "Доп").exists()
-
-
-@pytest.mark.parametrize("расширение", [False, True], ids=["modules", "extension"])
-def test_старый_remove_не_удаляет_новый_canonical_root(
-    tmp_path_factory, корень_кода, monkeypatch, расширение
-):
-    """Deferred rmtree может удалять только detached old generation."""
-    рабочий = tmp_path_factory.mktemp("реестр")
-    реестр = _реестр_с_конфигурацией(рабочий)
-    if расширение:
-        старый = _архив_расширения(корень_кода, рабочий / "old-ext.zip")
-        source_id = "Пример:ext:Доп"
-        корень = реестр._extension_root("Пример", "Доп")
-        имя_drop = "_drop_extension_root"
-    else:
-        старый = _архив_кода(корень_кода, рабочий / "old.zip")
-        source_id = "Пример:modules"
-        корень = реестр._modules_root("Пример")
-        имя_drop = "_drop_modules_root"
-    реестр.add_modules(старый, configuration="Пример")
-    реестр.save()
-
-    модуль = корень_кода / "CommonModules" / "ОбщийПример" / "Ext" / "Module.bsl"
-    модуль.write_text("Процедура Новая() Экспорт\nКонецПроцедуры\n", encoding="utf-8")
-    новый = (
-        _архив_расширения(корень_кода, рабочий / "new-ext.zip")
-        if расширение
-        else _архив_кода(корень_кода, рабочий / "new.zip")
-    )
-
-    старый_remove_дошёл_до_rmtree = threading.Event()
-    отпустить_старый_remove = threading.Event()
-    настоящий_drop = getattr(реестр, имя_drop)
-    вызовов = 0
-    удаляемые: list[Path] = []
-    счётчик_lock = threading.Lock()
-
-    def задержать_первый_drop(путь):
-        nonlocal вызовов
-        with счётчик_lock:
-            вызовов += 1
-            первый = вызовов == 1
-            удаляемые.append(Path(путь))
-        if первый:
-            старый_remove_дошёл_до_rmtree.set()
-            отпустить_старый_remove.wait(timeout=3)
-        настоящий_drop(путь)
-
-    monkeypatch.setattr(реестр, имя_drop, задержать_первый_drop)
-    ошибки_remove: list[Exception] = []
-    remover = threading.Thread(
-        target=lambda: _вызвать_с_ошибкой(ошибки_remove, реестр.remove, "Пример")
-    )
-    remover.start()
-    try:
-        assert старый_remove_дошёл_до_rmtree.wait(timeout=1)
-        входящее = рабочий / "again"
-        входящее.mkdir()
-        реестр.add_configuration(
-            write_export(входящее, build_configuration(name="Пример"))
-        )
-        реестр.add_modules(новый, configuration="Пример")
-        реестр.save()
-    finally:
-        отпустить_старый_remove.set()
-        remover.join(timeout=3)
-
-    assert not remover.is_alive()
-    assert not ошибки_remove
-    assert корень.exists()
-    assert удаляемые[0] != корень
-    source = реестр.sources[source_id]
-    assert source.origin == новый.name
-    loaded = (
-        реестр.resolve("Пример", extension="Доп").extension
-        if расширение
-        else реестр.resolve("Пример").modules
-    )
-    assert loaded.оглавление.по_имени("Новая")
-    assert not loaded.оглавление.по_имени("Сложить")
-    assert not [
-        путь
-        for путь in корень.parent.iterdir()
-        if путь.name.startswith(f".{корень.name}.")
-    ]
-
-    после_рестарта = Registry(реестр.data_dir)
-    assert not после_рестарта.restore()
-    поднято = (
-        _диагностический_контекст(после_рестарта, extension="Доп").extension
-        if расширение
-        else _диагностический_контекст(после_рестарта).modules
-    )
-    assert поднято.готов is True
-    assert поднято.source.origin == новый.name
-    assert поднято.оглавление.по_имени("Новая")
-
-
 def test_remove_откатывает_detach_если_следующий_rename_не_удался(
     tmp_path_factory, корень_кода, monkeypatch
 ):
     """До изменения registry все уже detached roots можно вернуть."""
     рабочий = tmp_path_factory.mktemp("реестр")
     реестр = _реестр_с_конфигурацией(рабочий)
-    реестр.add_modules(
-        _архив_кода(корень_кода, рабочий / "modules.zip"),
-        configuration="Пример",
-    )
-    реестр.add_modules(
-        _архив_расширения(корень_кода, рабочий / "extension.zip"),
-        configuration="Пример",
-    )
+    _старый_код(реестр, корень_кода)
+    _старый_код(реестр, корень_кода, extension=True)
+    реестр = _поднятый(реестр)
     корень_модулей = реестр._modules_root("Пример")
     корень_расширения = реестр._extension_root("Пример", "Доп")
     настоящий_rename = Path.rename
@@ -1479,10 +883,8 @@ def test_remove_не_падает_если_расходный_кэш_не_уда
     """Read-only cache не оставляет registry между поколениями."""
     рабочий = tmp_path_factory.mktemp("реестр")
     реестр = _реестр_с_конфигурацией(рабочий)
-    реестр.add_modules(
-        _архив_кода(корень_кода, рабочий / "modules.zip"),
-        configuration="Пример",
-    )
+    _старый_код(реестр, корень_кода)
+    реестр = _поднятый(реестр)
     корень = реестр._modules_root("Пример")
     кэши_модулей = [
         реестр._cache_path("Пример:modules", вид)
@@ -1534,13 +936,7 @@ def test_restore_не_привязывает_старый_код_после_remo
     """Restore row кода принадлежит identity своей config row."""
     рабочий = tmp_path_factory.mktemp("реестр")
     исходный = _реестр_с_конфигурацией(рабочий)
-    архив = (
-        _архив_расширения(корень_кода, рабочий / "extension.zip")
-        if расширение
-        else _архив_кода(корень_кода, рабочий / "modules.zip")
-    )
-    исходный.add_modules(архив, configuration="Пример")
-    исходный.save()
+    _старый_код(исходный, корень_кода, extension=расширение)
     source_id = "Пример:ext:Доп" if расширение else "Пример:modules"
     путь_конфигурации = исходный._absolute(
         исходный.sources["Пример"].stored_path
@@ -1617,13 +1013,7 @@ def test_restore_кода_не_зависит_от_порядка_строк_и_
     """Code rows отложены, а orphan row честно отклоняется."""
     рабочий = tmp_path_factory.mktemp("реестр")
     исходный = _реестр_с_конфигурацией(рабочий)
-    архив = (
-        _архив_расширения(корень_кода, рабочий / "extension.zip")
-        if расширение
-        else _архив_кода(корень_кода, рабочий / "modules.zip")
-    )
-    исходный.add_modules(архив, configuration="Пример")
-    исходный.save()
+    _старый_код(исходный, корень_кода, extension=расширение)
     source_id = "Пример:ext:Доп" if расширение else "Пример:modules"
     payload = json.loads(исходный.registry_path.read_text(encoding="utf-8"))
     строка_кода = next(
@@ -1645,6 +1035,7 @@ def test_restore_кода_не_зависит_от_порядка_строк_и_
     сообщения = восстановленный.startup()
 
     if сценарий == "код-первым":
+        assert восстановленный.wait_for_module_builds(timeout=10)
         assert "Пример" in восстановленный.configurations
         assert source_id in восстановленный.sources
         assert восстановленный.modules[source_id].готов is True
@@ -1658,346 +1049,3 @@ def test_restore_кода_не_зависит_от_порядка_строк_и_
         assert source_id not in после_рестарта.modules
 
 
-@pytest.mark.parametrize("расширение", [False, True], ids=["modules", "extension"])
-def test_restore_не_откатывает_завершённый_reparse_к_старой_строке(
-    tmp_path_factory, корень_кода, monkeypatch, расширение
-):
-    """Generation tombstone живёт дольше active operation token."""
-    рабочий = tmp_path_factory.mktemp("реестр")
-    исходный = _реестр_с_конфигурацией(рабочий)
-    старый = (
-        _архив_расширения(корень_кода, рабочий / "old-ext.zip")
-        if расширение
-        else _архив_кода(корень_кода, рабочий / "old.zip")
-    )
-    исходный.add_modules(старый, configuration="Пример")
-    исходный.save()
-    модуль = (
-        корень_кода / "CommonModules" / "ОбщийПример" / "Ext" / "Module.bsl"
-    )
-    модуль.write_text(
-        "Процедура Новая() Экспорт\nКонецПроцедуры\n", encoding="utf-8"
-    )
-    новый = (
-        _архив_расширения(корень_кода, рабочий / "new-ext.zip")
-        if расширение
-        else _архив_кода(корень_кода, рабочий / "new.zip")
-    )
-    source_id = "Пример:ext:Доп" if расширение else "Пример:modules"
-
-    восстановленный = Registry(исходный.data_dir)
-    конфигурация_опубликована = threading.Event()
-    отпустить_restore = threading.Event()
-    настоящий_add_configuration = восстановленный.add_configuration
-
-    def опубликовать_и_задержать(*args, **kwargs):
-        source = настоящий_add_configuration(*args, **kwargs)
-        конфигурация_опубликована.set()
-        отпустить_restore.wait(timeout=3)
-        return source
-
-    monkeypatch.setattr(
-        восстановленный,
-        "add_configuration",
-        опубликовать_и_задержать,
-    )
-    ошибки: list[Exception] = []
-    поток = threading.Thread(
-        target=lambda: _вызвать_с_ошибкой(ошибки, восстановленный.startup)
-    )
-    поток.start()
-    try:
-        assert конфигурация_опубликована.wait(timeout=1)
-        восстановленный.add_modules(новый, configuration="Пример")
-    finally:
-        отпустить_restore.set()
-        поток.join(timeout=3)
-
-    assert not поток.is_alive()
-    assert not ошибки
-    source = восстановленный.sources[source_id]
-    loaded = восстановленный.modules[source_id]
-    assert source.origin == новый.name
-    assert loaded.source is source
-    assert loaded.оглавление.по_имени("Новая")
-    assert not loaded.оглавление.по_имени("Сложить")
-
-    после_рестарта = Registry(исходный.data_dir)
-    после_рестарта.startup()
-    поднято = после_рестарта.modules[source_id]
-    assert поднято.source.origin == новый.name
-    assert поднято.оглавление.по_имени("Новая")
-
-
-@pytest.mark.parametrize("расширение", [False, True], ids=["modules", "extension"])
-def test_параллельные_reparse_не_удаляют_чужой_активный_tmp(
-    tmp_path_factory, корень_кода, monkeypatch, расширение
-):
-    """Lifecycle source_id охватывает sweep, extract, build и publish."""
-    рабочий = tmp_path_factory.mktemp("реестр")
-    реестр = _реестр_с_конфигурацией(рабочий)
-
-    def архив(имя: str) -> Path:
-        return (
-            _архив_расширения(корень_кода, рабочий / имя)
-            if расширение
-            else _архив_кода(корень_кода, рабочий / имя)
-        )
-
-    реестр.add_modules(архив("old.zip"), configuration="Пример")
-    модуль = (
-        корень_кода / "CommonModules" / "ОбщийПример" / "Ext" / "Module.bsl"
-    )
-    модуль.write_text(
-        "Процедура Первая() Экспорт\nКонецПроцедуры\n", encoding="utf-8"
-    )
-    первый_архив = архив("first.zip")
-    модуль.write_text(
-        "Процедура Вторая() Экспорт\nКонецПроцедуры\n", encoding="utf-8"
-    )
-    второй_архив = архив("second.zip")
-    source_id = "Пример:ext:Доп" if расширение else "Пример:modules"
-    корень = (
-        реестр._extension_root("Пример", "Доп")
-        if расширение
-        else реестр._modules_root("Пример")
-    )
-
-    первый_extract = threading.Event()
-    второй_extract = threading.Event()
-    отпустить_первый = threading.Event()
-    второй_зарезервирован = threading.Event()
-    настоящий_extract = intake.extract
-    настоящая_резервация = реестр._зарезервировать_операцию_модулей
-    вызовов_резервации = 0
-
-    def извлечь(входной, временный):
-        if входной == первый_архив:
-            маркер = временный / "active-owner"
-            маркер.mkdir()
-            первый_extract.set()
-            отпустить_первый.wait(timeout=3)
-            if not маркер.is_dir():
-                raise FileNotFoundError("чужой active tmp удалён")
-        elif входной == второй_архив:
-            второй_extract.set()
-        return настоящий_extract(входной, временный)
-
-    def зарезервировать(*args, **kwargs):
-        nonlocal вызовов_резервации
-        операция = настоящая_резервация(*args, **kwargs)
-        вызовов_резервации += 1
-        if вызовов_резервации == 2:
-            второй_зарезервирован.set()
-        return операция
-
-    monkeypatch.setattr(intake, "extract", извлечь)
-    monkeypatch.setattr(
-        реестр,
-        "_зарезервировать_операцию_модулей",
-        зарезервировать,
-    )
-    ошибки_первого: list[Exception] = []
-    ошибки_второго: list[Exception] = []
-    первый = threading.Thread(
-        target=lambda: _вызвать_с_ошибкой(
-            ошибки_первого,
-            реестр.add_modules,
-            первый_архив,
-            configuration="Пример",
-        )
-    )
-    второй = threading.Thread(
-        target=lambda: _вызвать_с_ошибкой(
-            ошибки_второго,
-            реестр.add_modules,
-            второй_архив,
-            configuration="Пример",
-        )
-    )
-    первый.start()
-    assert первый_extract.wait(timeout=1)
-    второй.start()
-    try:
-        assert второй_зарезервирован.wait(timeout=1)
-        # До lifecycle-lock вторая операция успевает войти в
-        # extract и снести первый tmp. После исправления она здесь
-        # ждёт source-lock, поэтому короткое ожидание закончивается без
-        # события и разблокирует первую.
-        второй_extract.wait(timeout=0.2)
-    finally:
-        отпустить_первый.set()
-        первый.join(timeout=3)
-        второй.join(timeout=3)
-
-    assert not первый.is_alive()
-    assert not второй.is_alive()
-    assert len(ошибки_первого) == 1
-    assert isinstance(ошибки_первого[0], RegistryError)
-    assert "отмен" in str(ошибки_первого[0])
-    assert not ошибки_второго
-    source = реестр.sources[source_id]
-    loaded = реестр.modules[source_id]
-    assert source.origin == второй_архив.name
-    assert loaded.source is source
-    assert loaded.оглавление.по_имени("Вторая")
-    assert not loaded.оглавление.по_имени("Первая")
-    assert not list(корень.parent.glob(f".{корень.name}.tmp-*"))
-
-
-def test_remove_инвалидирует_ожидающий_reparse_до_extract(
-    tmp_path_factory, корень_кода, monkeypatch
-):
-    рабочий = tmp_path_factory.mktemp("реестр")
-    реестр = _реестр_с_конфигурацией(рабочий)
-    старый = _архив_кода(корень_кода, рабочий / "old.zip")
-    реестр.add_modules(старый, configuration="Пример")
-    новый = _архив_с_новой_процедурой(корень_кода, рабочий / "new.zip")
-    source_id = "Пример:modules"
-    lifecycle_lock = реестр._module_operation_locks[source_id]
-    lifecycle_lock.acquire()
-    зарезервирован = threading.Event()
-    настоящая_резервация = реестр._зарезервировать_операцию_модулей
-    настоящий_extract = intake.extract
-    extract_calls = 0
-    space_calls = 0
-
-    def зарезервировать(*args, **kwargs):
-        операция = настоящая_резервация(*args, **kwargs)
-        зарезервирован.set()
-        return операция
-
-    def считать_extract(*args, **kwargs):
-        nonlocal extract_calls
-        extract_calls += 1
-        return настоящий_extract(*args, **kwargs)
-
-    def считать_место(нужно, каталог):
-        nonlocal space_calls
-        space_calls += 1
-        return True, нужно
-
-    monkeypatch.setattr(
-        реестр,
-        "_зарезервировать_операцию_модулей",
-        зарезервировать,
-    )
-    monkeypatch.setattr(intake, "extract", считать_extract)
-    monkeypatch.setattr(intake, "enough_space", считать_место)
-    ошибки: list[Exception] = []
-    поток = threading.Thread(
-        target=lambda: _вызвать_с_ошибкой(
-            ошибки,
-            реестр.add_modules,
-            новый,
-            configuration="Пример",
-        )
-    )
-    поток.start()
-    try:
-        assert зарезервирован.wait(timeout=1)
-        реестр.remove("Пример")
-    finally:
-        lifecycle_lock.release()
-        поток.join(timeout=3)
-
-    assert not поток.is_alive()
-    assert len(ошибки) == 1
-    assert isinstance(ошибки[0], RegistryError)
-    assert "отмен" in str(ошибки[0])
-    assert extract_calls == 0
-    assert space_calls == 0
-    assert not реестр.sources
-    assert not реестр.modules
-    assert not list(реестр.modules_dir.glob(".Пример.tmp-*"))
-
-
-def test_из_трёх_ожидающих_reparse_извлекается_только_последний(
-    tmp_path_factory, корень_кода, monkeypatch
-):
-    рабочий = tmp_path_factory.mktemp("реестр")
-    реестр = _реестр_с_конфигурацией(рабочий)
-    реестр.add_modules(
-        _архив_кода(корень_кода, рабочий / "old.zip"),
-        configuration="Пример",
-    )
-    модуль = (
-        корень_кода / "CommonModules" / "ОбщийПример" / "Ext" / "Module.bsl"
-    )
-    архивы: list[Path] = []
-    for номер, имя in enumerate(("Первая", "Вторая", "Третья"), 1):
-        модуль.write_text(
-            f"Процедура {имя}() Экспорт\nКонецПроцедуры\n",
-            encoding="utf-8",
-        )
-        архивы.append(
-            _архив_кода(корень_кода, рабочий / f"{номер}.zip")
-        )
-
-    source_id = "Пример:modules"
-    lifecycle_lock = реестр._module_operation_locks[source_id]
-    lifecycle_lock.acquire()
-    резервации = [threading.Event() for _ in архивы]
-    настоящая_резервация = реестр._зарезервировать_операцию_модулей
-    вызовов_резервации = 0
-    настоящий_extract = intake.extract
-    extract_calls = 0
-    space_calls = 0
-
-    def зарезервировать(*args, **kwargs):
-        nonlocal вызовов_резервации
-        операция = настоящая_резервация(*args, **kwargs)
-        резервации[вызовов_резервации].set()
-        вызовов_резервации += 1
-        return операция
-
-    def извлечь(*args, **kwargs):
-        nonlocal extract_calls
-        extract_calls += 1
-        return настоящий_extract(*args, **kwargs)
-
-    def проверить_место(нужно, каталог):
-        nonlocal space_calls
-        space_calls += 1
-        return True, нужно
-
-    monkeypatch.setattr(
-        реестр,
-        "_зарезервировать_операцию_модулей",
-        зарезервировать,
-    )
-    monkeypatch.setattr(intake, "extract", извлечь)
-    monkeypatch.setattr(intake, "enough_space", проверить_место)
-    ошибки = [[], [], []]
-    потоки = [
-        threading.Thread(
-            target=lambda i=i: _вызвать_с_ошибкой(
-                ошибки[i],
-                реестр.add_modules,
-                архивы[i],
-                configuration="Пример",
-            )
-        )
-        for i in range(3)
-    ]
-    try:
-        for i, поток in enumerate(потоки):
-            поток.start()
-            assert резервации[i].wait(timeout=1)
-    finally:
-        lifecycle_lock.release()
-        for поток in потоки:
-            поток.join(timeout=3)
-
-    assert not any(поток.is_alive() for поток in потоки)
-    assert all(
-        len(список) == 1 and isinstance(список[0], RegistryError)
-        for список in ошибки[:2]
-    )
-    assert not ошибки[2]
-    assert extract_calls == 1
-    assert space_calls == 1
-    source = реестр.sources[source_id]
-    assert source.origin == архивы[2].name
-    assert реестр.modules[source_id].оглавление.по_имени("Третья")
-    assert not list(реестр.modules_dir.glob(".Пример.tmp-*"))

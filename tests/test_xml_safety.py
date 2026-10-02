@@ -273,14 +273,3 @@ def test_xdto_отвергает_package_с_dtd():
     assert semantic_package_bytes(package)
     with pytest.raises(XDTOReadError):
         semantic_package_bytes(_with_dtd(package))
-
-
-def test_registry_отвергает_configuration_xml_с_dtd(tmp_path):
-    from mcp1c.registry import RegistryError, _сведения_о_выгрузке
-    from test_intake_v2_collector import _configuration
-
-    archive = _zip(
-        tmp_path / "bomb.zip", {"Configuration.xml": _with_dtd(_configuration())}
-    )
-    with pytest.raises(RegistryError, match="DOCTYPE"):
-        _сведения_о_выгрузке(archive)

@@ -11,6 +11,7 @@ from module_samples import v8_container_bytes
 from mcp1c import cli, tools
 from mcp1c.form_reader import MAX_BYTES
 from mcp1c.registry import STATUS_ERROR
+from native_export import загрузить_код
 
 
 def _write(root: Path, relative: str, payload: bytes | str) -> None:
@@ -26,27 +27,10 @@ def _container(*, module: bytes = b"", form: bytes = b"{19}") -> bytes:
 def _corpus(root: Path, variant: str) -> None:
     if variant == "unknown_marker":
         _write(root, "CommonForm.Ограниченная.Form", _container(form=b"{99}"))
-    elif variant == "broken_container":
-        _write(root, "CommonForm.Ограниченная.Form", b"broken")
-    elif variant == "unsupported_name":
-        _write(root, "Unknown.Ограниченная.Form", _container())
     elif variant == "budget_exceeded":
         form = b"{19}" + b" " * (MAX_BYTES - 3)
         assert len(form) == MAX_BYTES + 1
         _write(root, "CommonForm.Ограниченная.Form", _container(form=form))
-    elif variant == "conflict":
-        _write(
-            root,
-            "CommonForm.Ограниченная.Form.Module.txt",
-            "Процедура ИзФайла()\nКонецПроцедуры",
-        )
-        _write(
-            root,
-            "CommonForm.Ограниченная.Form",
-            _container(
-                module="Процедура ИзКонтейнера()\nКонецПроцедуры".encode(),
-            ),
-        )
     else:  # pragma: no cover — ошибка самого параметризованного теста
         raise AssertionError(variant)
 
@@ -54,11 +38,11 @@ def _corpus(root: Path, variant: str) -> None:
 @pytest.mark.parametrize("extension", [None, "Доп"])
 @pytest.mark.parametrize(
     ("variant", "field", "category"),
+    # Битый контейнер, неадресуемое имя и конфликт тел учитывал прежний
+    # приём кода; приём выгрузки в файлы классифицирует их сам (форма без
+    # структуры, пропуск, отказ всей выгрузки) и проверяется в intake_v2.
     [
-        ("broken_container", "broken_containers", "broken_container"),
-        ("unsupported_name", "unsupported_addresses", "unknown_address"),
         ("budget_exceeded", "budget_exceeded", "budget_exceeded"),
-        ("conflict", "body_conflicts", "conflict"),
     ],
 )
 def test_ограничения_имеют_точный_агрегат_в_обоих_корпусах(
@@ -83,16 +67,10 @@ def test_ограничения_имеют_точный_агрегат_в_обо
     assert coverage.problems_omitted == max(
         0, coverage.problems_total - len(coverage.problems)
     )
-    if variant == "unsupported_name":
-        problem = next(item for item in coverage.problems if item.category == category)
-        assert problem.address is None
-        assert problem.ordinal > 0
-        assert "Unknown" not in problem.reason
-    else:
-        assert any(
-            problem.address == "ОбщаяФорма.Ограниченная"
-            for problem in coverage.problems
-        )
+    assert any(
+        problem.address == "ОбщаяФорма.Ограниченная"
+        for problem in coverage.problems
+    )
 
 
 @pytest.mark.parametrize("extension", [None, "Доп"])
@@ -225,30 +203,14 @@ def test_get_object_показывает_форму_и_её_ограничени
         registry, "Справочник.Контрагенты", config="Пример", detail=detail
     )
 
+    # Структурный раздел «Формы» приходит из выгрузки и идёт выше блока
+    # кода; предупреждение стоит над списком форм корпуса кода.
     warning = answer.index("Покрытие форм объекта неполно")
-    form = answer.index("Справочник.Контрагенты.Форма.Ограниченная")
-    assert warning < form
+    assert "Справочник.Контрагенты.Форма.Ограниченная" in answer
+    if detail == "full":
+        assert warning < answer.index("## Формы объекта")
     assert "invalid_syntax" in answer
     assert "Форм нет" not in answer
-
-
-def test_get_object_не_выдаёт_ноль_форм_за_доказанное_отсутствие(
-    tmp_path, реестр_из_кода
-):
-    root = tmp_path / "code"
-    root.mkdir()
-    _write(root, "Unknown.Неадресуемая.Form", _container())
-    registry = реестр_из_кода(root)
-
-    answer = tools.get_object(
-        registry, "Справочник.Контрагенты", config="Пример", detail="full"
-    )
-
-    assert "неподдержанных адресов: 1" in answer
-    assert answer.index("Список форм объекта может быть неполон") < answer.index(
-        "Форм нет"
-    )
-    assert "Unknown.Неадресуемая.Form" not in answer
 
 
 @pytest.mark.parametrize("extension", [None, "Доп"])
@@ -328,7 +290,7 @@ def test_инструменты_кода_называют_точную_кате�
 
     for answer in answers:
         assert "invalid_syntax=1" in answer
-        assert "структуры форм: полностью 0, семантика отложена 0, не прочитано 1" in answer
+        assert "структуры форм: полностью 0, семантика отложена 1, не прочитано 0" in answer
         assert answer.index("invalid_syntax=1") < answer.index(
             "ОбщаяФорма.Ограниченная"
         )
@@ -366,7 +328,7 @@ def test_get_related_называет_точную_категорию_битой
 
     assert "Покрытие кода расширения `Доп` неполно" in answer
     assert "invalid_syntax=1" in answer
-    assert "структуры форм: полностью 0, семантика отложена 0, не прочитано 1" in answer
+    assert "структуры форм: полностью 0, семантика отложена 1, не прочитано 0" in answer
 
 
 @pytest.mark.parametrize("action", ["reparse", "remove"])
@@ -379,7 +341,7 @@ def test_публичный_снимок_не_смешивает_проблем�
     registry = реестр_из_кода(old_root)
     new_root = tmp_path / "new"
     new_root.mkdir()
-    _corpus(new_root, "unsupported_name")
+    _corpus(new_root, "budget_exceeded")
     new_archive = архив_кода(new_root)
     real = tools._summarize_code
     changed = False
@@ -390,7 +352,7 @@ def test_публичный_снимок_не_смешивает_проблем�
         if not changed:
             changed = True
             if action == "reparse":
-                registry.add_modules(new_archive, configuration="Пример")
+                загрузить_код(registry, new_archive, configuration="Пример")
             else:
                 registry.remove("Пример:modules")
         return result
@@ -403,9 +365,9 @@ def test_публичный_снимок_не_смешивает_проблем�
         row = snapshot.code[0]
         assert row.coverage is not None
         assert row.coverage.unknown_markers == 0
-        assert row.coverage.unsupported_addresses == 1
+        assert row.coverage.budget_exceeded == 1
         assert {item.category for item in row.coverage.problems} == {
-            "unknown_address"
+            "budget_exceeded"
         }
     else:
         assert snapshot.code == ()
@@ -529,7 +491,7 @@ def test_агрегаты_кода_считаются_один_раз_на_по�
         "CommonModules/ОбщийПример/Ext/Module.bsl",
         "Функция Вычесть(А, Б) Экспорт\n\tВозврат А - Б;\nКонецФункции\n",
     )
-    registry.add_modules(архив_кода(новый), configuration="Пример")
+    загрузить_код(registry, архив_кода(новый), configuration="Пример")
 
     ответ = tools.get_procedure(
         registry, "ОбщийМодуль.ОбщийПример", config="Пример"

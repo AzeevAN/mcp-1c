@@ -1,6 +1,7 @@
 """Согласованность снимка источников и файловых обходов backend."""
 
 from mcp1c import dashboard_backend as dashboard, tools
+from native_export import загрузить_код
 
 
 def test_единый_снимок_sources_после_remove_readd_не_смешивает_поколения(
@@ -10,20 +11,17 @@ def test_единый_снимок_sources_после_remove_readd_не_смеш
     tmp_path,
     monkeypatch,
 ):
-    from conftest import build_configuration, write_export
+    from conftest import build_configuration
+    from native_export import опубликовать_код
 
-    old_source = реестр_с_кодом.sources["Пример"]
-    old_source.warnings.append("старое поколение")
+    # Поколения различаются версией: native Source не дублируется строкой
+    # учёта, его видно в строке конфигурации.
     module = корень_кода / "CommonModules" / "ОбщийПример" / "Ext" / "Module.bsl"
     module.write_text(
         module.read_text(encoding="utf-8")
         + "\nПроцедура НовоеПоколение() Экспорт\nКонецПроцедуры\n",
         encoding="utf-8",
     )
-    archive = архив_кода(корень_кода)
-    incoming = tmp_path / "incoming"
-    incoming.mkdir()
-    export = write_export(incoming, build_configuration(name="Пример"))
     real = tools._summarize_code
     changed = False
 
@@ -32,17 +30,19 @@ def test_единый_снимок_sources_после_remove_readd_не_смеш
         if not changed:
             changed = True
             реестр_с_кодом.remove("Пример")
-            new_source = реестр_с_кодом.add_configuration(export)
-            new_source.warnings.append("новое поколение")
-            реестр_с_кодом.add_modules(archive, configuration="Пример")
+            опубликовать_код(
+                реестр_с_кодом,
+                корень_кода,
+                configuration=build_configuration(name="Пример", version="2.0"),
+                рабочий=tmp_path / "incoming",
+            )
         return real(loaded)
 
     monkeypatch.setattr(tools, "_summarize_code", summarize)
 
     snapshot = tools.sources_snapshot(реестр_с_кодом)
 
-    assert any("новое поколение" in row.warnings for row in snapshot.sources)
-    assert all("старое поколение" not in row.warnings for row in snapshot.sources)
+    assert [row.version for row in snapshot.configurations] == ["2.0"]
     total = len(реестр_с_кодом.resolve("Пример").modules.оглавление.имена)
     assert any(f"процедур {total}" in row.state for row in snapshot.code)
 
@@ -54,16 +54,9 @@ def test_prepare_sources_повторяет_дисковый_обход_посл
     tmp_path,
     monkeypatch,
 ):
-    from conftest import build_configuration, write_export
+    from conftest import build_configuration
+    from native_export import опубликовать_код
 
-    реестр_с_кодом.sources["Пример"].warnings.append("старое поколение")
-    incoming = tmp_path / "incoming-readd"
-    incoming.mkdir()
-    export = write_export(
-        incoming,
-        build_configuration(name="Пример", version="2.0"),
-    )
-    archive = архив_кода(корень_кода)
     real = реестр_с_кодом.orphan_sources
     calls = 0
 
@@ -73,9 +66,12 @@ def test_prepare_sources_повторяет_дисковый_обход_посл
         result = real()
         if calls == 1:
             реестр_с_кодом.remove("Пример")
-            source = реестр_с_кодом.add_configuration(export)
-            source.warnings.append("новое поколение")
-            реестр_с_кодом.add_modules(archive, configuration="Пример")
+            опубликовать_код(
+                реестр_с_кодом,
+                корень_кода,
+                configuration=build_configuration(name="Пример", version="2.0"),
+                рабочий=tmp_path / "incoming-readd",
+            )
         return result
 
     monkeypatch.setattr(реестр_с_кодом, "orphan_sources", scan_and_replace)
@@ -85,9 +81,7 @@ def test_prepare_sources_повторяет_дисковый_обход_посл
     )
 
     assert calls == 2
-    warnings = [warning for row in prepared.sources.sources for warning in row.warnings]
-    assert "новое поколение" in warnings
-    assert "старое поколение" not in warnings
+    assert [row.version for row in prepared.sources.configurations] == ["2.0"]
 
 
 def test_prepare_sources_после_двух_смен_возвращает_страницу_с_ошибкой(
@@ -101,7 +95,7 @@ def test_prepare_sources_после_двух_смен_возвращает_ст�
         nonlocal calls
         calls += 1
         result = real()
-        реестр_с_кодом.add_modules(archive, configuration="Пример")
+        загрузить_код(реестр_с_кодом, archive, configuration="Пример")
         return result
 
     monkeypatch.setattr(реестр_с_кодом, "orphan_sources", scan_and_reparse)

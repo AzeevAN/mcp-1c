@@ -14,6 +14,7 @@ from mcp1c.registry import Registry, RegistryError
 from mcp1c.server import build_server
 from mcp1c.tools import compare_configurations
 from conftest import write_export
+from native_export import записать_старый_код
 
 
 OBJECT = "Справочник.Пример"
@@ -96,7 +97,7 @@ def test_смена_поколения_при_сравнении_не_публи
         compare_configurations(registry, OBJECT, ["А", "Б"])
 
 
-def test_после_restore_смешанная_сторона_блокирует_сравнение(tmp_path, архив_кода):
+def test_после_restore_смешанная_сторона_блокирует_сравнение(tmp_path):
     registry = Registry(tmp_path / "data")
     for name in ("А", "Б"):
         folder = tmp_path / name
@@ -107,8 +108,9 @@ def test_после_restore_смешанная_сторона_блокирует
     module = module_root / "CommonModules" / "Example" / "Ext" / "Module.bsl"
     module.parent.mkdir(parents=True)
     module.write_text("Процедура Тест()\nКонецПроцедуры\n", encoding="utf-8")
-    registry.add_modules(архив_кода(module_root), configuration="А")
     registry.save()
+    # Код отдельно от структуры остался только в data/ прежней версии.
+    записать_старый_код(registry, module_root, configuration="А")
     restored = Registry(registry.data_dir)
     restored.startup()
     with pytest.raises(RegistryError, match="reload_required"):

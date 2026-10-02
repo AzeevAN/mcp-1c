@@ -6,12 +6,11 @@ import json
 import threading
 from pathlib import Path
 
-import pytest
-
 from conftest import build_configuration, write_export
 from mcp1c import coverage_log, tools
-from mcp1c.registry import KIND_EXTENSION, KIND_MODULES, Registry, RegistryError
+from mcp1c.registry import KIND_EXTENSION, KIND_MODULES, Registry
 from module_samples import v8_container_bytes
+from native_export import загрузить_код
 
 
 def _write(root: Path, relative: str, text: str) -> None:
@@ -33,7 +32,10 @@ def _registry(tmp_path: Path) -> tuple[Registry, Path]:
 
 
 def _source(registry: Registry, kind: str):
-    return next(source for source in registry.sources.values() if source.kind == kind)
+    # Native Source корпуса живёт в пакете кода, а не в строках учёта.
+    return next(
+        loaded.source for loaded in registry.modules.values() if loaded.source.kind == kind
+    )
 
 
 def test_json_schema_v1_содержит_identity_таблицы_и_полные_проблемы(
@@ -52,7 +54,7 @@ def test_json_schema_v1_содержит_identity_таблицы_и_полные
     )
     _write(root, "CommonModules/Пустой/Ext/Module.bsl", "")
 
-    source = registry.add_modules(архив_кода(root), configuration="Пример")
+    source = загрузить_код(registry, архив_кода(root), configuration="Пример")
     payload = coverage_log.load_current(registry.data_dir, source)
 
     assert payload is not None
@@ -104,7 +106,7 @@ def test_у_основного_корпуса_и_расширения_разны
 ):
     registry, root = _registry(tmp_path)
     _write(root, "CommonModules/База/Ext/Module.bsl", "Процедура База()\nКонецПроцедуры")
-    base = registry.add_modules(архив_кода(root), configuration="Пример")
+    base = загрузить_код(registry, архив_кода(root), configuration="Пример")
 
     extension_root = tmp_path / "extension"
     extension_root.mkdir()
@@ -113,7 +115,7 @@ def test_у_основного_корпуса_и_расширения_разны
         "CommonModules/Доп/Ext/Module.bsl",
         "Процедура Доп()\nКонецПроцедуры",
     )
-    extension = registry.add_modules(
+    extension = загрузить_код(registry, 
         архив_кода(extension_root, extension="Доп"), configuration="Пример"
     )
 
@@ -130,7 +132,7 @@ def test_у_основного_корпуса_и_расширения_разны
 def test_reparse_заменяет_тот_же_файл_новым_поколением(tmp_path, архив_кода):
     registry, root = _registry(tmp_path)
     _write(root, "CommonModules/Первый/Ext/Module.bsl", "Процедура Первый()\nКонецПроцедуры")
-    first = registry.add_modules(архив_кода(root), configuration="Пример")
+    first = загрузить_код(registry, архив_кода(root), configuration="Пример")
     path = coverage_log.log_path(registry.data_dir, first.id)
     first_payload = json.loads(path.read_text(encoding="utf-8"))
 
@@ -141,7 +143,7 @@ def test_reparse_заменяет_тот_же_файл_новым_поколен
         "CommonModules/Второй/Ext/Module.bsl",
         "Процедура Второй()\nКонецПроцедуры",
     )
-    second = registry.add_modules(архив_кода(replacement), configuration="Пример")
+    second = загрузить_код(registry, архив_кода(replacement), configuration="Пример")
     second_payload = json.loads(path.read_text(encoding="utf-8"))
 
     assert coverage_log.log_path(registry.data_dir, second.id) == path
@@ -155,11 +157,11 @@ def test_reparse_заменяет_тот_же_файл_новым_поколен
 def test_remove_удаляет_только_журнал_своего_корпуса(tmp_path, архив_кода):
     registry, root = _registry(tmp_path)
     _write(root, "CommonModules/База/Ext/Module.bsl", "Процедура База()\nКонецПроцедуры")
-    base = registry.add_modules(архив_кода(root), configuration="Пример")
+    base = загрузить_код(registry, архив_кода(root), configuration="Пример")
     extension_root = tmp_path / "extension"
     extension_root.mkdir()
     _write(extension_root, "CommonModules/Доп/Ext/Module.bsl", "Процедура Доп()\nКонецПроцедуры")
-    extension = registry.add_modules(
+    extension = загрузить_код(registry, 
         архив_кода(extension_root, extension="Доп"), configuration="Пример"
     )
     base_log = coverage_log.log_path(registry.data_dir, base.id)
@@ -193,7 +195,7 @@ def test_remove_не_оставляет_журнал_при_гонке_с_его
 
     def add() -> None:
         try:
-            registry.add_modules(archive, configuration="Пример")
+            загрузить_код(registry, archive, configuration="Пример")
         except BaseException as error:  # pragma: no cover — попадёт в assert ниже
             errors.append(error)
 
@@ -226,7 +228,7 @@ def test_отказ_журнала_не_отклоняет_корпус(tmp_path
         raise OSError("/private/secret")
 
     monkeypatch.setattr(coverage_log, "write", fail)
-    source = registry.add_modules(архив_кода(root), configuration="Пример")
+    source = загрузить_код(registry, архив_кода(root), configuration="Пример")
 
     assert source.status == "ready"
     assert any("Журнал покрытия не записан" in warning for warning in source.warnings)
@@ -242,7 +244,7 @@ def test_symlink_каталога_логов_не_ведёт_запись_нар
     logs.symlink_to(outside, target_is_directory=True)
     _write(root, "CommonModules/База/Ext/Module.bsl", "Процедура База()\nКонецПроцедуры")
 
-    source = registry.add_modules(архив_кода(root), configuration="Пример")
+    source = загрузить_код(registry, архив_кода(root), configuration="Пример")
 
     assert source.status == "ready"
     assert not tuple(outside.iterdir())
@@ -257,7 +259,7 @@ def test_warm_restart_пересобирает_битый_журнал_с_пол
     for index in range(25):
         path = root / f"CommonForm.Форма{index:02d}.Form"
         path.write_bytes(container)
-    source = registry.add_modules(архив_кода(root), configuration="Пример")
+    source = загрузить_код(registry, архив_кода(root), configuration="Пример")
     path = coverage_log.log_path(registry.data_dir, source.id)
     path.write_text('{"schema_version":1}', encoding="utf-8")
 
@@ -278,7 +280,7 @@ def test_warm_restart_пересобирает_битый_журнал_с_пол
 def test_incomplete_журнал_не_считается_актуальным(tmp_path, архив_кода):
     registry, root = _registry(tmp_path)
     _write(root, "CommonModules/База/Ext/Module.bsl", "Процедура База()\nКонецПроцедуры")
-    source = registry.add_modules(архив_кода(root), configuration="Пример")
+    source = загрузить_код(registry, архив_кода(root), configuration="Пример")
     path = coverage_log.log_path(registry.data_dir, source.id)
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload.pop("problems")
@@ -296,7 +298,7 @@ def test_warm_restart_заменяет_валидный_но_содержате�
         "CommonModules/База/Ext/Module.bsl",
         "Процедура База()\nКонецПроцедуры",
     )
-    source = registry.add_modules(архив_кода(root), configuration="Пример")
+    source = загрузить_код(registry, архив_кода(root), configuration="Пример")
     path = coverage_log.log_path(registry.data_dir, source.id)
     payload = json.loads(path.read_text(encoding="utf-8"))
     modules = payload["coverage"]["modules"]
@@ -326,7 +328,7 @@ def test_stale_журнал_не_публикуется_если_его_нель
         "CommonModules/База/Ext/Module.bsl",
         "Процедура База()\nКонецПроцедуры",
     )
-    source = registry.add_modules(архив_кода(root), configuration="Пример")
+    source = загрузить_код(registry, архив_кода(root), configuration="Пример")
     path = coverage_log.log_path(registry.data_dir, source.id)
     payload = json.loads(path.read_text(encoding="utf-8"))
     modules = payload["coverage"]["modules"]
@@ -344,7 +346,6 @@ def test_stale_журнал_не_публикуется_если_его_нель
     assert restored.wait_for_module_builds()
     current = _source(restored, KIND_MODULES)
     assert coverage_log.WRITE_WARNING in current.warnings
-    assert tools.sources_snapshot(restored).code == ()
-    with pytest.raises(RegistryError, match="reload_required"):
-        restored.resolve("Пример")
+    # Корпус обслуживается, но устаревший журнал наружу не показан.
+    assert [row.journal for row in tools.sources_snapshot(restored).code] == [""]
     assert restored.resolve("Пример", diagnostic=True).modules.source is current

@@ -650,13 +650,20 @@ def test_remove_снимает_native_generation_расширения_без_leg
 def test_remove_снимает_legacy_source_и_native_generation_одного_расширения(
     tmp_path,
     корень_кода,
-    реестр_из_кода,
 ):
-    registry = реестр_из_кода(
+    from conftest import build_configuration
+    from native_export import старый_реестр
+
+    # Строка расширения прежней версии рядом с native-поколением того же имени.
+    data_dir = старый_реестр(
+        tmp_path / "old",
         корень_кода,
-        name="DemoConfiguration",
+        configuration=build_configuration(name="DemoConfiguration"),
         extension="DemoExtension",
     )
+    registry = Registry(data_dir)
+    assert registry.startup() == []
+    assert registry.wait_for_module_builds(timeout=10)
     _base_collection, base = _materialized(tmp_path, "base-remove-over-legacy")
     registry.publish_generation(_stage_active_base(registry, base))
     _collection_value, extension = _materialized(

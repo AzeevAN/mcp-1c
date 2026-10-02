@@ -2744,6 +2744,14 @@ class Registry:
                 "публикации; проверьте каталог данных вручную."
             ) from error
 
+    def _с_локальными_синонимами(
+        self, индексы: modules_index.Индексы
+    ) -> modules_index.Индексы:
+        """Свежая сборка иначе знала бы только встроенные синонимы: локальный
+        словарь поиск процедур получал лишь при подъёме из кэша."""
+        индексы.поиск.synonyms = self.dictionary.synonyms()
+        return индексы
+
     @staticmethod
     def _построить_индекс_кода(
         метка: str,
@@ -3386,7 +3394,7 @@ class Registry:
                         сырая_структура, digest, каталог_базы
                     )
                 structure_origin.save(временный, структура)
-                индексы = self._построить_индекс_кода(
+                индексы = self._с_локальными_синонимами(self._построить_индекс_кода(
                     архив.name,
                     временный,
                     LocatorIdentity(
@@ -3394,7 +3402,7 @@ class Registry:
                         digest,
                         операция.locator_generation,
                     ),
-                )
+                ))
             except BaseException as error:
                 shutil.rmtree(временный, ignore_errors=True)
                 if isinstance(error, RegistryError):
@@ -3499,7 +3507,7 @@ class Registry:
                     строится.прогресс = (обработано, всего)
 
         try:
-            индексы = self._построить_индекс_кода(
+            индексы = self._с_локальными_синонимами(self._построить_индекс_кода(
                 source.origin,
                 корень,
                 LocatorIdentity(
@@ -3507,7 +3515,7 @@ class Registry:
                 ),
                 отметить,
                 файлы_каталога,
-            )
+            ))
             готовые = self._готовые_модули(source, корень, индексы)
             # Writer и смена поколения сериализованы одним mutex. CAS
             # проверяется внутри него до записи, поэтому после проверки новый
@@ -5525,12 +5533,12 @@ class Registry:
                 locator_generation=module_source.locator_generation,
             )
             if module_indices is None:
-                module_indices = self._построить_индекс_кода(
+                module_indices = self._с_локальными_синонимами(self._построить_индекс_кода(
                     manifest.origin_name,
                     root,
                     identity=runtime.catalog.identity,
                     каталог=runtime.catalog,
-                )
+                ))
         return _PreparedNativeRuntime(
             runtime,
             loaded_configuration,
@@ -6126,6 +6134,11 @@ class Registry:
                 loaded.index.synonyms = synonyms
                 loaded.index.aliases = dictionary.aliases_for(name)
                 loaded.field_index.synonyms = synonyms
+            # Поиск процедур получает синонимы при подъёме из кэша; без этой
+            # подмены правка словаря доходила до него только после рестарта.
+            for modules in self.modules.values():
+                if modules.поиск is not None:
+                    modules.поиск.synonyms = synonyms
 
     def restore(self) -> list[str]:
         """Поднять источники, записанные в registry.json."""

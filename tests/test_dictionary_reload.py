@@ -71,3 +71,49 @@ def test_новый_синоним_действует_после_перечит�
 
     hits = registry.configurations["ТестоваяКонфигурация"].index.search("поставщик")
     assert "Справочник.Контрагенты" in [h.doc.id for h in hits]
+
+
+def test_локальный_синоним_доходит_до_поиска_процедур_без_рестарта(реестр_с_кодом):
+    from mcp1c import tools
+
+    registry = реестр_с_кодом
+
+    def найдено() -> bool:
+        ответ = tools.search_procedures(registry, "суммирует", config="Пример")
+        return "ОбщийМодуль.ОбщийПример::Сложить" in ответ
+
+    assert not найдено()
+
+    registry.mutate_dictionary(
+        lambda dictionary: dictionary.add_synonyms(["складывает", "суммирует"])
+    )
+    assert найдено()
+
+    registry.mutate_dictionary(
+        lambda dictionary: dictionary.remove_synonyms(["складывает", "суммирует"])
+    )
+    assert not найдено()
+
+
+def test_свежесобранный_поиск_процедур_видит_локальные_синонимы(
+    tmp_path, корень_кода, архив_кода
+):
+    from mcp1c import tools
+    from mcp1c.dictionary import Dictionary
+
+    # Словарь задан до загрузки кода: свежая сборка (не подъём из кэша)
+    # раньше получала только встроенные синонимы.
+    data = tmp_path / "data"
+    data.mkdir()
+    Dictionary(synonym_groups=[["складывает", "суммирует"]]).save(
+        data / "dictionary.json"
+    )
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    registry = Registry(data)
+    configuration = build_configuration(name="Пример")
+    registry.add_configuration(write_export(incoming, configuration))
+    registry.add_modules(архив_кода(корень_кода), configuration="Пример")
+
+    ответ = tools.search_procedures(registry, "суммирует", config="Пример")
+    assert "ОбщийМодуль.ОбщийПример::Сложить" in ответ

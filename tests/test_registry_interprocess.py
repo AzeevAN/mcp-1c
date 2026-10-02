@@ -167,10 +167,78 @@ def test_смена_файла_во_время_операции_повторяе
         return подлинный(*args, **kwargs)
 
     monkeypatch.setattr(server, "_registry_payload", payload_с_гонкой)
-    server.save()
+    # Операция с собственной записью повторяется после reload целиком.
+    server.set_platform_version("Пример", "8.3.27.2130")
 
     payload = json.loads(server.registry_path.read_text(encoding="utf-8"))
     assert {"Пример", "Другая"} <= {raw["id"] for raw in payload["sources"]}
+    assert payload["platform_declarations"]["Пример"]["version"] == "8.3.27.2130"
+
+
+def test_save_не_перечитывает_и_не_откатывает_новую_память(tmp_path):
+    incoming = tmp_path / "input"
+    incoming.mkdir()
+    server = Registry(tmp_path / "data")
+    server.startup()
+    old = server.add_configuration(
+        write_export(incoming, build_configuration(name="Пример", version="1.0"))
+    )
+    server.save()
+    other = Registry(server.data_dir)
+    other.restore()
+    # Двухфазная загрузка дашборда: память уже новая, save ещё впереди.
+    new = server.add_configuration(
+        write_export(incoming, build_configuration(name="Пример", version="2.0"))
+    )
+    other.add_configuration(write_export(incoming, build_configuration(name="Другая")))
+    other.save()
+
+    with pytest.raises(RegistryChangedExternally):
+        server.save()
+    assert server.configurations["Пример"].source is new
+    assert new.sha256 != old.sha256
+
+
+def test_загрузка_дашборда_повторяется_целиком_после_чужой_записи(
+    tmp_path, monkeypatch
+):
+    from mcp1c import dashboard_backend
+
+    incoming = tmp_path / "input"
+    incoming.mkdir()
+    server = Registry(tmp_path / "data")
+    server.startup()
+    server.add_configuration(
+        write_export(incoming, build_configuration(name="Пример", version="1.0"))
+    )
+    server.save()
+    other = Registry(server.data_dir)
+    other.restore()
+    (tmp_path / "upload").mkdir()
+    upload = write_export(
+        tmp_path / "upload", build_configuration(name="Пример", version="2.0")
+    )
+    подлинный_save = server.save
+    вызовов = {"n": 0}
+
+    def save_с_гонкой():
+        вызовов["n"] += 1
+        if вызовов["n"] == 1:
+            other.add_configuration(
+                write_export(incoming, build_configuration(name="Другая"))
+            )
+            other.save()
+        return подлинный_save()
+
+    monkeypatch.setattr(server, "save", save_с_гонкой)
+    dashboard_backend._index_source(server, upload, ".zip")
+
+    payload = json.loads(server.registry_path.read_text(encoding="utf-8"))
+    rows = {raw["id"]: raw for raw in payload["sources"]}
+    assert "Другая" in rows
+    # Загруженная версия не откатилась строкой из файла.
+    assert server.configurations["Пример"].config.version == "2.0"
+    assert rows["Пример"]["sha256"] == server.configurations["Пример"].source.sha256
 
 
 def test_старт_не_падает_если_гость_записал_registry_во_время_старта(
@@ -223,6 +291,90 @@ def test_параллельная_запись_json_не_теряет_време
     assert ошибки == []
     assert json.loads(target.read_text(encoding="utf-8"))["step"] == 149
     assert not list(registry.data_dir.glob("*.tmp"))
+
+
+def test_прочие_ошибки_flock_не_дают_владения(tmp_path, monkeypatch):
+    import errno
+
+    import mcp1c.registry as registry_module
+
+    подлинный = registry_module.fcntl.flock
+    вызовов = {"n": 0}
+
+    def ebadf(descriptor, operation):
+        # Первый flock — замок владельца; короткие замки записи работают.
+        вызовов["n"] += 1
+        if вызовов["n"] == 1:
+            raise OSError(errno.EBADF, "flock по дескриптору только для чтения")
+        return подлинный(descriptor, operation)
+
+    monkeypatch.setattr(registry_module.fcntl, "flock", ebadf)
+    registry = Registry(tmp_path / "data")
+    registry.startup()
+    # Два процесса «без замка» оба сочли бы себя владельцами.
+    assert registry.role == "guest"
+
+
+def test_неоткрываемый_замок_не_даёт_владения(tmp_path):
+    data = tmp_path / "data"
+    (data / ".registry.owner.lock").mkdir(parents=True)
+    registry = Registry(data)
+    registry.startup()
+    assert registry.role == "guest"
+
+
+def test_неоткрываемый_замок_записи_отклоняет_save(tmp_path):
+    from mcp1c.registry import RegistryError
+
+    registry = Registry(tmp_path / "data")
+    registry.startup()
+    (registry.data_dir / ".registry.lock").unlink()
+    (registry.data_dir / ".registry.lock").mkdir()
+    with pytest.raises(RegistryError, match="замок записи"):
+        registry.save()
+
+
+def test_файл_замка_доступен_другим_при_строгом_umask(tmp_path):
+    previous = os.umask(0o077)
+    try:
+        registry = Registry(tmp_path / "data")
+        registry.startup()
+        registry.save()
+    finally:
+        os.umask(previous)
+    for name in (".registry.owner.lock", ".registry.lock"):
+        assert (registry.data_dir / name).stat().st_mode & 0o777 == 0o644
+
+
+def test_своя_запись_соседнего_потока_не_вызывает_reload(tmp_path, monkeypatch):
+    incoming = tmp_path / "input"
+    incoming.mkdir()
+    server = Registry(tmp_path / "data")
+    server.startup()
+    server.add_configuration(write_export(incoming, build_configuration()))
+    server.save()
+    reloads: list = []
+    подлинный_startup = server.startup
+    monkeypatch.setattr(
+        server, "startup", lambda: reloads.append(1) or подлинный_startup()
+    )
+    подлинная_запись = server._write_json_durably
+    проверки: list[threading.Thread] = []
+
+    def запись(target, payload, **kwargs):
+        подлинная_запись(target, payload, **kwargs)
+        if target == server.registry_path:
+            # Окно между replace и обновлением штампа: сосед сверяет файл.
+            поток = threading.Thread(target=server._refresh_if_changed_externally)
+            поток.start()
+            поток.join(0.3)
+            проверки.append(поток)
+
+    monkeypatch.setattr(server, "_write_json_durably", запись)
+    server.set_platform_version(next(iter(server.configurations)), "8.3.27.2130")
+    for поток in проверки:
+        поток.join(5)
+    assert проверки and reloads == []
 
 
 def test_flock_без_поддержки_тома_не_делает_сервер_гостем(tmp_path, monkeypatch):
@@ -413,3 +565,35 @@ def test_remove_сверяет_штамп_до_сноса_каталогов(
     payload = json.loads(server.registry_path.read_text(encoding="utf-8"))
     ids = {raw["id"] for raw in payload["sources"]}
     assert "Другая" in ids and "Пример" not in ids
+
+
+def test_отказ_записи_журнала_покрытия_не_повторяет_загрузку_кода(
+    tmp_path, архив_кода, корень_кода, monkeypatch
+):
+    incoming = tmp_path / "input"
+    incoming.mkdir()
+    server = Registry(tmp_path / "data")
+    server.startup()
+    server.add_configuration(write_export(incoming, build_configuration(name="Пример")))
+    подлинный_save = server.save
+    подлинная_распаковка = server._extract_to_temp
+    сохранений = {"n": 0}
+    распаковок = {"n": 0}
+
+    def save():
+        сохранений["n"] += 1
+        if сохранений["n"] == 2:
+            # Запись пути журнала покрытия после уже опубликованного кода.
+            raise RegistryChangedExternally("синтетическая чужая запись")
+        return подлинный_save()
+
+    def распаковать(*args, **kwargs):
+        распаковок["n"] += 1
+        return подлинная_распаковка(*args, **kwargs)
+
+    monkeypatch.setattr(server, "save", save)
+    monkeypatch.setattr(server, "_extract_to_temp", распаковать)
+    source = server.add_modules(архив_кода(корень_кода), configuration="Пример")
+
+    assert распаковок["n"] == 1
+    assert server.modules[source.id].готов

@@ -35,6 +35,7 @@ from .registry import (
     KIND_EXTENSION_RUNTIME,
     KIND_MODULES,
     Registry,
+    RegistryChangedExternally,
     RegistryError,
 )
 from .search import FIELD_KIND_TITLES, MAX_QUERY_CHARS
@@ -476,17 +477,27 @@ def _index_source(
     registry: Registry, path: Path, suffix: str, *, allow_truncated: bool = False
 ) -> None:
     """Выполняется в отдельном потоке: разбор .hbk занимает около 4 секунд."""
-    if suffix == ".hbk":
-        registry.add_syntax(path)
-    elif suffix == ".json":
-        registry.add_extension_runtime(path)
-    else:
-        registry.add_configuration(
-            path,
-            allow_truncated=allow_truncated,
-            source_transport=CandidateTransport.BROWSER,
-        )
-    registry.save()
+    for попытка in range(2):
+        if suffix == ".hbk":
+            registry.add_syntax(path)
+        elif suffix == ".json":
+            registry.add_extension_runtime(path)
+        else:
+            registry.add_configuration(
+                path,
+                allow_truncated=allow_truncated,
+                source_transport=CandidateTransport.BROWSER,
+            )
+        try:
+            registry.save()
+            return
+        except RegistryChangedExternally:
+            # Второй процесс (CLI) записал registry.json между публикацией в
+            # памяти и сохранением. Reload вернул бы его строку поверх новой,
+            # поэтому после него загрузка повторяется целиком: add + save.
+            if попытка:
+                raise
+            registry.reload_if_changed()
 
 def _run_job(
     registry: Registry,

@@ -149,13 +149,39 @@ _OWNERSHIP: dict[Path, list[int]] = {}
 
 
 def _open_lock_file(path: Path) -> int:
-    """Открыть файл замка только на чтение.
+    """Открыть файл замка: сначала на запись, при чужом файле — на чтение.
 
-    flock не требует права записи: файл, созданный root с 0644, сервер под
-    uid 10001 всё равно открывает и блокирует. Создаётся тоже 0644, чтобы
-    обратная ситуация не заперла CLI, запущенный от root.
+    На NFS flock(LOCK_EX) по дескриптору только для чтения даёт EBADF, поэтому
+    основной путь — O_RDWR. Файл, созданный root с 0644, сервер под uid 10001
+    открыть на запись не может: тогда O_RDONLY, локально flock это допускает.
+    Права выставляются fchmod после создания: umask 077 иначе запер бы файл
+    для процесса другого пользователя.
     """
-    return os.open(path, os.O_RDONLY | os.O_CREAT, 0o644)
+    try:
+        descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    except PermissionError:
+        return os.open(path, os.O_RDONLY)
+    try:
+        os.fchmod(descriptor, 0o644)
+    except OSError:
+        # Чужой файл: права не наши, сам замок от этого не зависит.
+        pass
+    return descriptor
+
+
+# Ошибки, по которым flock на томе не работает вовсе (NFS без lockd, SMB,
+# FUSE): тогда остаётся только предупредить. Любая другая ошибка — повод
+# не считать себя владельцем, а не «работать без замка» вдвоём.
+_LOCK_UNSUPPORTED_ERRNOS = frozenset(
+    code
+    for code in (
+        getattr(errno, "ENOLCK", None),
+        getattr(errno, "EOPNOTSUPP", None),
+        getattr(errno, "ENOTSUP", None),
+        getattr(errno, "ENOSYS", None),
+    )
+    if code is not None
+)
 
 
 def _lock_unsupported(error: OSError, path: Path) -> None:
@@ -168,11 +194,13 @@ def _lock_unsupported(error: OSError, path: Path) -> None:
 
 
 def _acquire_ownership(data_dir: Path) -> bool:
-    """Взять эксклюзивный flock каталога; False — им владеет другой процесс.
+    """Взять эксклюзивный flock каталога; False — владельцем быть нельзя.
 
-    Только ``BlockingIOError`` означает «замок занят». ENOLCK, EOPNOTSUPP и
-    ENOSYS на NFS/SMB/FUSE говорят лишь, что flock здесь не работает:
-    единственный сервер на таком томе не должен из-за этого стать гостем.
+    ``BlockingIOError`` означает «замок занят». ENOLCK, EOPNOTSUPP и ENOSYS
+    говорят, что flock здесь не работает: единственный сервер на таком томе
+    не должен из-за этого стать гостем. Отказ открыть файл замка и прочие
+    ошибки (EBADF, EACCES) владения не дают: иначе два процесса сочли бы
+    себя владельцами «без замка».
     """
     if fcntl is None:
         return True
@@ -187,9 +215,13 @@ def _acquire_ownership(data_dir: Path) -> bool:
         try:
             descriptor = _open_lock_file(path)
         except OSError as error:
-            _lock_unsupported(error, path)
-            _OWNERSHIP[key] = [None, 1]
-            return True
+            logger.warning(
+                "Не удалось открыть замок каталога данных %s (%s): процесс "
+                "работает без права владельца.",
+                path,
+                error,
+            )
+            return False
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -197,9 +229,17 @@ def _acquire_ownership(data_dir: Path) -> bool:
             return False
         except OSError as error:
             os.close(descriptor)
-            _lock_unsupported(error, path)
-            _OWNERSHIP[key] = [None, 1]
-            return True
+            if error.errno in _LOCK_UNSUPPORTED_ERRNOS:
+                _lock_unsupported(error, path)
+                _OWNERSHIP[key] = [None, 1]
+                return True
+            logger.warning(
+                "flock замка каталога данных %s отказал (%s): процесс "
+                "работает без права владельца.",
+                path,
+                error,
+            )
+            return False
         _OWNERSHIP[key] = [descriptor, 1]
         return True
 
@@ -2624,10 +2664,12 @@ class Registry:
             if persist:
                 try:
                     self.save()
-                except OSError:
+                except (OSError, RegistryError):
                     # Сам корпус уже опубликован предыдущей атомарной записью
                     # registry.json. Потеря нового предупреждения или пути до
                     # следующего старта не превращает кэш/журнал в источник.
+                    # RegistryChangedExternally здесь тоже не повод повторять
+                    # всю загрузку кода: второй extract и рокировка лишние.
                     pass
             return записан
 
@@ -3299,6 +3341,10 @@ class Registry:
         # уже снятую identity новым поколением.
         with self._generation_mutation_lock:
             self._remove_serialized(source_id)
+            # Снятие сохраняется самой операцией: при отдельном save()
+            # вызывающего чужая запись между ними оставила бы память без
+            # источника, а файл и каталоги — расходящимися.
+            self._save_unrefreshed()
 
     def _remove_serialized(self, source_id: str) -> None:
         """Снять источник; для конфигурации — весь связанный агрегат.
@@ -4058,9 +4104,10 @@ class Registry:
         try:
             descriptor = _open_lock_file(path)
         except OSError as error:
-            self._warn_file_lock(error, path)
-            yield
-            return
+            raise RegistryError(
+                "Не удалось открыть замок записи registry.json: проверьте права "
+                "на каталог данных."
+            ) from error
         try:
             deadline = time.monotonic() + _REGISTRY_FILE_LOCK_TIMEOUT
             while True:
@@ -4076,6 +4123,11 @@ class Registry:
                         ) from None
                     time.sleep(0.01)
                 except OSError as error:
+                    if error.errno not in _LOCK_UNSUPPORTED_ERRNOS:
+                        raise RegistryError(
+                            "Замок записи registry.json недоступен; запись "
+                            "отклонена, чтобы не писать без защиты."
+                        ) from error
                     self._warn_file_lock(error, path)
                     break
             yield
@@ -5237,8 +5289,11 @@ class Registry:
                 "журнал и выполните перезагрузку."
             )
 
-    @_refresh_on_external_change()
     def save(self) -> None:
+        # Без reload: двухфазные вызовы (add_*() затем save()) при reload
+        # здесь получили бы старую строку файла поверх новой памяти. Внешняя
+        # смена доходит до вызывающего как RegistryChangedExternally;
+        # перечитывание — только в начале операций, до мутации памяти.
         self._save_unrefreshed()
 
     def _save_unrefreshed(self) -> None:
@@ -6058,6 +6113,14 @@ class Registry:
             return "owner"
         return "guest" if self._guest else "unknown"
 
+    def reload_if_changed(self) -> bool:
+        """Перечитать registry.json, если его сменил другой процесс."""
+        if not self._may_refresh():
+            return False
+        before = self._registry_stamp
+        self._refresh_if_changed_externally()
+        return self._registry_stamp != before
+
     def _may_refresh(self) -> bool:
         return (
             self._owns_data_dir
@@ -6071,7 +6134,11 @@ class Registry:
         """Выполнить reload, если registry.json сменил другой процесс."""
         if self._registry_stamp is _REGISTRY_STAMP_UNSEEN:
             return
-        if self._registry_file_stamp() == self._registry_stamp:
+        # Под тем же замком, под которым writer обновляет штамп после replace:
+        # иначе собственная запись соседнего потока выглядела бы чужой.
+        with self._registry_file_lock():
+            unchanged = self._registry_file_stamp() == self._registry_stamp
+        if unchanged:
             return
         logger.info("registry.json изменён другим процессом: перечитываем")
         for message in self.startup():

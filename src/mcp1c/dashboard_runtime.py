@@ -737,6 +737,117 @@ def _mutation_denied(request: Request, *, action: str) -> JSONResponse | None:
     return None
 
 
+# Проверка доступа — первым шагом обработчика, до чтения тела и параметров.
+# Раньше она копировалась в каждый обработчик, и новый маршрут без копии
+# оказывался открытым молча; декоратор делает проверку видимой в объявлении.
+# Порядок важен: токен проверяется до любой работы, поэтому общий лимит
+# неудачных попыток (`check_token`) считает и эти запросы.
+def read_endpoint(endpoint):
+    """Обработчик JSON API, доступный с токеном чтения (или без него, если
+    `API_TOKEN` не задан)."""
+
+    @wraps(endpoint)
+    async def guarded(request: Request, *args, **kwargs):
+        if not can_read(request):
+            return _json_error("Нужен токен чтения.", 401)
+        return await endpoint(request, *args, **kwargs)
+
+    return guarded
+
+
+def admin_endpoint(action: str, *, mutation: bool = False):
+    """Обработчик, требующий входа администратора.
+
+    `action` попадает в ответ, когда `ADMIN_TOKEN` не задан. `mutation=True`
+    добавляет проверку источника запроса (CSRF) — для всего, что меняет
+    состояние.
+    """
+
+    check = _mutation_denied if mutation else _admin_denied
+
+    def decorate(endpoint):
+        @wraps(endpoint)
+        async def guarded(request: Request, *args, **kwargs):
+            denied = check(request, action=action)
+            if denied is not None:
+                return denied
+            return await endpoint(request, *args, **kwargs)
+
+        return guarded
+
+    return decorate
+
+
+# Ответы intake-обработчиков на ошибки сервиса: (статус, типы) по порядку,
+# первое совпадение выигрывает — как цепочка `except`. Таблицы собраны в
+# одном месте, чтобы расхождения между обработчиками были видны рядом, а не
+# прятались в четырёх копиях. Расхождения намеренно сохранены: это
+# наблюдаемый HTTP-контракт, а исключение, которого нет в таблице,
+# по-прежнему уходит наружу как 500.
+_IntakeErrorTable = tuple[tuple[int, tuple[type[BaseException], ...]], ...]
+
+_INTAKE_READ_ERRORS: _IntakeErrorTable = (
+    (
+        409,
+        (
+            IntakeApiError,
+            LifecycleError,
+            OperationError,
+            RegistryError,
+            CandidateStoreError,
+        ),
+    ),
+)
+_INTAKE_START_ERRORS: _IntakeErrorTable = (
+    (404, (IntakeApiNotFound,)),
+    (409, (IntakeApiConflict, LifecycleError, CandidateStoreError)),
+    (422, (IntakeApiError, IntakeV2ContractError)),
+)
+_INTAKE_JOB_ERRORS: _IntakeErrorTable = (
+    (404, (IntakeApiNotFound,)),
+    (422, (IntakeApiInvalid, IntakeV2ContractError)),
+    (
+        409,
+        (IntakeApiError, LifecycleError, OperationError, CandidateStoreError),
+    ),
+)
+_INTAKE_CONFIRM_ERRORS: _IntakeErrorTable = (
+    (404, (IntakeApiNotFound,)),
+    (409, (IntakeApiConflict, OperationConflict, CandidateStoreError)),
+    (
+        422,
+        (IntakeApiError, LifecycleError, OperationError, IntakeV2ContractError),
+    ),
+)
+_INTAKE_DISCARD_ERRORS: _IntakeErrorTable = (
+    (404, (IntakeApiNotFound,)),
+    (409, (IntakeApiConflict, CandidateStoreError)),
+    (
+        422,
+        (IntakeApiError, LifecycleError, OperationError, IntakeV2ContractError),
+    ),
+)
+_INTAKE_DELETE_CANDIDATE_ERRORS: _IntakeErrorTable = (
+    (404, (IntakeApiNotFound,)),
+    (409, (IntakeApiConflict, CandidateStoreError)),
+    (422, (IntakeApiError, LifecycleError, OperationError)),
+)
+
+
+def _intake_error_response(
+    error: Exception, table: _IntakeErrorTable
+) -> JSONResponse:
+    """JSON-ответ по таблице; неизвестную ошибку пробрасывает дальше.
+
+    Вызывается внутри `except`; повторный `raise` того же объекта сохраняет
+    его traceback, так что необработанная ошибка выглядит как раньше.
+    """
+    for status, types in table:
+        if isinstance(error, types):
+            return _json_error(str(error), status)
+    raise error
+
+
 async def _json_body(request: Request) -> dict:
     try:
         payload = await request.json()
@@ -840,12 +951,8 @@ def _spa_routes(
             # Application service уже сохранил bounded error в durable job.
             return
 
+    @read_endpoint
     async def bootstrap(request: Request) -> JSONResponse:
-        if not can_read(request):
-            return JSONResponse(
-                {"error": "Нужен токен чтения."},
-                status_code=401,
-            )
         def counts() -> tuple[int, int, int, int]:
             # `snapshot()` ждёт `_lock` Registry, который публикация держит и
             # на fsync, — поэтому в потоке, а не в event loop.
@@ -889,9 +996,8 @@ def _spa_routes(
             }
         )
 
+    @read_endpoint
     async def sources_api(request: Request) -> JSONResponse:
-        if not can_read(request):
-            return JSONResponse({"error": "Нужен токен чтения."}, status_code=401)
         try:
             snapshot = await run_in_threadpool(tools.sources_snapshot, registry)
         except SourcesChanged as error:
@@ -939,15 +1045,13 @@ def _spa_routes(
             return _json_error(str(error), 422)
         return JSONResponse({"configuration": configuration, "status": "unknown"})
 
+    @read_endpoint
     async def queries_setup_api(request: Request) -> JSONResponse:
-        if not can_read(request):
-            return _json_error("Нужен токен чтения.", 401)
         payload = await run_in_threadpool(_queries_setup_payload, registry)
         return JSONResponse(payload)
 
+    @read_endpoint
     async def queries_run_api(request: Request) -> JSONResponse:
-        if not can_read(request):
-            return _json_error("Нужен токен чтения.", 401)
         payload = await _json_body(request)
         config = payload.get("config", "")
         scope = payload.get("scope", "")
@@ -992,9 +1096,8 @@ def _spa_routes(
             return _json_error(str(error), 422)
         return JSONResponse(result)
 
+    @read_endpoint
     async def card_api(request: Request, *, kind: str) -> JSONResponse:
-        if not can_read(request):
-            return _json_error("Нужен токен чтения.", 401)
         config = request.query_params.get("config", "")
         name = request.query_params.get("name", "")
         detail = request.query_params.get("detail", "fields")
@@ -1027,9 +1130,8 @@ def _spa_routes(
     async def syntax_card_api(request: Request) -> JSONResponse:
         return await card_api(request, kind="syntax")
 
+    @read_endpoint
     async def graph_api(request: Request) -> JSONResponse:
-        if not can_read(request):
-            return _json_error("Нужен токен чтения.", 401)
         params = request.query_params
         try:
             raw_limit = int(params.get("limit") or 0)
@@ -1052,9 +1154,8 @@ def _spa_routes(
             return _json_error(str(error), 409)
         return JSONResponse(payload)
 
+    @read_endpoint
     async def dictionary_api(request: Request) -> JSONResponse:
-        if not can_read(request):
-            return _json_error("Нужен токен чтения.", 401)
         payload = await run_in_threadpool(
             _dictionary_payload,
             registry,
@@ -1063,10 +1164,8 @@ def _spa_routes(
         )
         return JSONResponse(payload)
 
+    @admin_endpoint("Правка словаря", mutation=True)
     async def dictionary_alias_add_api(request: Request) -> JSONResponse:
-        denied = _mutation_denied(request, action="Правка словаря")
-        if denied is not None:
-            return denied
         payload = await _json_body(request)
         phrase = payload.get("phrase")
         config = payload.get("config", "")
@@ -1105,10 +1204,8 @@ def _spa_routes(
             }
         )
 
+    @admin_endpoint("Правка словаря", mutation=True)
     async def dictionary_alias_remove_api(request: Request) -> JSONResponse:
-        denied = _mutation_denied(request, action="Правка словаря")
-        if denied is not None:
-            return denied
         payload = await _json_body(request)
         phrase = payload.get("phrase")
         scope = payload.get("scope")
@@ -1137,10 +1234,8 @@ def _spa_routes(
             return _json_error("Такого локального псевдонима нет.", 404)
         return JSONResponse({"changed": {"phrase": phrase, "scope": scope}})
 
+    @admin_endpoint("Правка словаря", mutation=True)
     async def dictionary_synonyms_add_api(request: Request) -> JSONResponse:
-        denied = _mutation_denied(request, action="Правка словаря")
-        if denied is not None:
-            return denied
         payload = await _json_body(request)
         words = payload.get("words")
         if not isinstance(words, list) or not all(
@@ -1164,10 +1259,8 @@ def _spa_routes(
             )
         return JSONResponse({"changed": {"words": group}})
 
+    @admin_endpoint("Правка словаря", mutation=True)
     async def dictionary_synonyms_remove_api(request: Request) -> JSONResponse:
-        denied = _mutation_denied(request, action="Правка словаря")
-        if denied is not None:
-            return denied
         payload = await _json_body(request)
         words = payload.get("words")
         if not isinstance(words, list) or not all(
@@ -1195,9 +1288,8 @@ def _spa_routes(
             )
         return JSONResponse({"changed": {"words": words}})
 
+    @read_endpoint
     async def coverage_api(request: Request) -> JSONResponse:
-        if not can_read(request):
-            return JSONResponse({"error": "Нужен токен чтения."}, status_code=401)
         source_id = request.query_params.get("source_id", "")
         if not source_id:
             return JSONResponse(
@@ -1281,9 +1373,8 @@ def _spa_routes(
             return True
         raise RoleAccessQueryError(f"Параметр {name} должен быть 0 или 1.")
 
+    @read_endpoint
     async def roles_catalog_api(request: Request) -> JSONResponse:
-        if not can_read(request):
-            return _json_error("Нужен токен чтения.", 401)
         try:
             payload = await run_in_threadpool(
                 roles_catalog_payload,
@@ -1307,9 +1398,8 @@ def _spa_routes(
             return _json_error(str(error), 400)
         return JSONResponse(payload, status_code=role_http_status(payload))
 
+    @read_endpoint
     async def role_objects_api(request: Request) -> JSONResponse:
-        if not can_read(request):
-            return _json_error("Нужен токен чтения.", 401)
         try:
             role = role_param(request, "role", maximum=512)
             if not role:
@@ -1338,9 +1428,8 @@ def _spa_routes(
             return _json_error(str(error), 400)
         return JSONResponse(payload, status_code=role_http_status(payload))
 
+    @read_endpoint
     async def roles_find_api(request: Request) -> JSONResponse:
-        if not can_read(request):
-            return _json_error("Нужен токен чтения.", 401)
         try:
             full_name = role_param(request, "full_name", maximum=1024)
             if not full_name:
@@ -1373,9 +1462,8 @@ def _spa_routes(
             return _json_error(str(error), 400)
         return JSONResponse(payload, status_code=role_http_status(payload))
 
+    @read_endpoint
     async def roles_access_api(request: Request) -> JSONResponse:
-        if not can_read(request):
-            return _json_error("Нужен токен чтения.", 401)
         try:
             role = role_param(request, "role", maximum=512)
             if not role:
@@ -1400,9 +1488,8 @@ def _spa_routes(
             return _json_error(str(error), 400)
         return JSONResponse(payload, status_code=role_http_status(payload))
 
+    @read_endpoint
     async def roles_restriction_api(request: Request) -> JSONResponse:
-        if not can_read(request):
-            return _json_error("Нужен токен чтения.", 401)
         try:
             role = role_param(request, "role", maximum=512)
             restriction_ref = role_param(
@@ -1435,10 +1522,8 @@ def _spa_routes(
             return _json_error(str(error), 400)
         return JSONResponse(payload, status_code=role_http_status(payload))
 
+    @admin_endpoint("Управление источниками")
     async def admin_sources_api(request: Request) -> JSONResponse:
-        denied = _admin_denied(request, action="Управление источниками")
-        if denied is not None:
-            return denied
         prepared = await run_in_threadpool(
             dashboard_backend._prepare_sources_page,
             registry,
@@ -1449,10 +1534,8 @@ def _spa_routes(
         payload["runtime"] = {"self_restart": restart.enabled}
         return JSONResponse(payload)
 
+    @admin_endpoint("Просмотр настроек модулей")
     async def capabilities_api(request: Request) -> JSONResponse:
-        denied = _admin_denied(request, action="Просмотр настроек модулей")
-        if denied is not None:
-            return denied
         try:
             payload = await run_in_threadpool(capabilities.payload)
             payload["runtime"] = {"self_restart": restart.enabled}
@@ -1460,10 +1543,8 @@ def _spa_routes(
         except CapabilityConfigurationError as error:
             return _json_error(str(error), 409)
 
+    @admin_endpoint("Изменение настроек модулей", mutation=True)
     async def capabilities_update_api(request: Request) -> JSONResponse:
-        denied = _mutation_denied(request, action="Изменение настроек модулей")
-        if denied is not None:
-            return denied
         payload = await _strict_json_body(request)
         if payload is None:
             return _json_error(
@@ -1494,20 +1575,16 @@ def _spa_routes(
         result["runtime"] = {"self_restart": restart.enabled}
         return JSONResponse(result)
 
+    @admin_endpoint("Просмотр подключённых каталогов")
     async def directory_sources_api(request: Request) -> JSONResponse:
-        denied = _admin_denied(request, action="Просмотр подключённых каталогов")
-        if denied is not None:
-            return denied
         try:
             return JSONResponse(await run_in_threadpool((await intake_service()).directory_sources))
         except IntakeApiError as error:
             return _json_error(str(error), 409)
 
     @heavy_endpoint
+    @admin_endpoint("Управление подключёнными каталогами", mutation=True)
     async def directory_change_api(request: Request) -> JSONResponse:
-        denied = _mutation_denied(request, action="Управление подключёнными каталогами")
-        if denied is not None:
-            return denied
         operation = request.path_params["operation"]
         if operation not in {"bind", "unbind", "refresh"}:
             return _json_error("Неизвестная операция с каталогом.", 404)
@@ -1528,27 +1605,17 @@ def _spa_routes(
             return _json_error(str(error), 409)
         return JSONResponse(result)
 
+    @admin_endpoint("Просмотр кандидатов")
     async def intake_snapshot_api(request: Request) -> JSONResponse:
-        denied = _admin_denied(request, action="Просмотр кандидатов")
-        if denied is not None:
-            return denied
         try:
             payload = await run_in_threadpool((await intake_service()).snapshot)
-        except (
-            IntakeApiError,
-            LifecycleError,
-            OperationError,
-            RegistryError,
-            CandidateStoreError,
-        ) as error:
-            return _json_error(str(error), 409)
+        except Exception as error:
+            return _intake_error_response(error, _INTAKE_READ_ERRORS)
         return JSONResponse(payload)
 
     @heavy_endpoint
+    @admin_endpoint("Загрузка кандидата", mutation=True)
     async def intake_upload_api(request: Request) -> JSONResponse:
-        denied = _mutation_denied(request, action="Загрузка кандидата")
-        if denied is not None:
-            return denied
         service = (await intake_service())
         try:
             form = await dashboard_backend._limited_upload_form(
@@ -1591,10 +1658,8 @@ def _spa_routes(
         return JSONResponse({"candidate": candidate}, status_code=201)
 
     @heavy_endpoint
+    @admin_endpoint("Запуск разбора", mutation=True)
     async def intake_start_api(request: Request) -> JSONResponse:
-        denied = _mutation_denied(request, action="Запуск разбора")
-        if denied is not None:
-            return denied
         payload = await _json_body(request)
         allowed = {"candidate_id", "action", "job_id", "parent_configuration"}
         if set(payload) - allowed:
@@ -1623,12 +1688,8 @@ def _spa_routes(
                     job_id=job_id,
                     parent_configuration=parent,
                 )
-            except IntakeApiNotFound as error:
-                return _json_error(str(error), 404)
-            except (IntakeApiConflict, LifecycleError, CandidateStoreError) as error:
-                return _json_error(str(error), 409)
-            except (IntakeApiError, IntakeV2ContractError) as error:
-                return _json_error(str(error), 422)
+            except Exception as error:
+                return _intake_error_response(error, _INTAKE_START_ERRORS)
             task = heavy.spawn(run_intake_work(service, work))
             intake_tasks.add(task)
             task.add_done_callback(intake_task_done)
@@ -1637,48 +1698,27 @@ def _spa_routes(
             status_code=202,
         )
 
+    @admin_endpoint("Просмотр сохранённых операций")
     async def intake_jobs_api(request: Request) -> JSONResponse:
-        denied = _admin_denied(request, action="Просмотр сохранённых операций")
-        if denied is not None:
-            return denied
         try:
             return JSONResponse(await run_in_threadpool((await intake_service()).jobs_snapshot))
-        except (
-            IntakeApiError,
-            LifecycleError,
-            OperationError,
-            RegistryError,
-            CandidateStoreError,
-        ) as error:
-            return _json_error(str(error), 409)
+        except Exception as error:
+            return _intake_error_response(error, _INTAKE_READ_ERRORS)
 
+    @admin_endpoint("Просмотр операции")
     async def intake_job_api(request: Request) -> JSONResponse:
-        denied = _admin_denied(request, action="Просмотр операции")
-        if denied is not None:
-            return denied
         try:
             payload = await run_in_threadpool(
                 (await intake_service()).job_payload,
                 request.path_params.get("job_id", ""),
             )
-        except IntakeApiNotFound as error:
-            return _json_error(str(error), 404)
-        except (IntakeApiInvalid, IntakeV2ContractError) as error:
-            return _json_error(str(error), 422)
-        except (
-            IntakeApiError,
-            LifecycleError,
-            OperationError,
-            CandidateStoreError,
-        ) as error:
-            return _json_error(str(error), 409)
+        except Exception as error:
+            return _intake_error_response(error, _INTAKE_JOB_ERRORS)
         return JSONResponse({"job": payload})
 
     @heavy_endpoint
+    @admin_endpoint("Публикация preview", mutation=True)
     async def intake_confirm_api(request: Request) -> JSONResponse:
-        denied = _mutation_denied(request, action="Публикация preview")
-        if denied is not None:
-            return denied
         payload = await _json_body(request)
         if set(payload) != {"job_id"} or not isinstance(
             payload.get("job_id"), str
@@ -1695,21 +1735,10 @@ def _spa_routes(
                 try:
                     job = await heavy.run(service.confirm, payload["job_id"])
                     response: JSONResponse = JSONResponse({"job": job})
-                except IntakeApiNotFound as error:
-                    response = _json_error(str(error), 404)
-                except (
-                    IntakeApiConflict,
-                    OperationConflict,
-                    CandidateStoreError,
-                ) as error:
-                    response = _json_error(str(error), 409)
-                except (
-                    IntakeApiError,
-                    LifecycleError,
-                    OperationError,
-                    IntakeV2ContractError,
-                ) as error:
-                    response = _json_error(str(error), 422)
+                except Exception as error:
+                    response = _intake_error_response(
+                        error, _INTAKE_CONFIRM_ERRORS
+                    )
             finally:
                 # Публикация и последующая очистка (browser ZIP, payload
                 # ответа) — разные шаги, и упасть может любой, в том числе
@@ -1721,10 +1750,8 @@ def _spa_routes(
         return response
 
     @heavy_endpoint
+    @admin_endpoint("Отмена preview", mutation=True)
     async def intake_discard_api(request: Request) -> JSONResponse:
-        denied = _mutation_denied(request, action="Отмена preview")
-        if denied is not None:
-            return denied
         payload = await _json_body(request)
         if set(payload) != {"job_id"} or not isinstance(
             payload.get("job_id"), str
@@ -1741,24 +1768,13 @@ def _spa_routes(
                     (await intake_service()).discard,
                     payload["job_id"],
                 )
-            except IntakeApiNotFound as error:
-                return _json_error(str(error), 404)
-            except (IntakeApiConflict, CandidateStoreError) as error:
-                return _json_error(str(error), 409)
-            except (
-                IntakeApiError,
-                LifecycleError,
-                OperationError,
-                IntakeV2ContractError,
-            ) as error:
-                return _json_error(str(error), 422)
+            except Exception as error:
+                return _intake_error_response(error, _INTAKE_DISCARD_ERRORS)
         return JSONResponse(result)
 
     @heavy_endpoint
+    @admin_endpoint("Удаление браузерного ZIP", mutation=True)
     async def intake_delete_candidate_api(request: Request) -> JSONResponse:
-        denied = _mutation_denied(request, action="Удаление браузерного ZIP")
-        if denied is not None:
-            return denied
         payload = await _json_body(request)
         if set(payload) != {"candidate_id"} or not isinstance(
             payload.get("candidate_id"), str
@@ -1774,19 +1790,15 @@ def _spa_routes(
                     (await intake_service()).remove_browser_candidate,
                     payload["candidate_id"],
                 )
-            except IntakeApiNotFound as error:
-                return _json_error(str(error), 404)
-            except (IntakeApiConflict, CandidateStoreError) as error:
-                return _json_error(str(error), 409)
-            except (IntakeApiError, LifecycleError, OperationError) as error:
-                return _json_error(str(error), 422)
+            except Exception as error:
+                return _intake_error_response(
+                    error, _INTAKE_DELETE_CANDIDATE_ERRORS
+                )
         return JSONResponse(result)
 
     @heavy_endpoint
+    @admin_endpoint("Загрузка", mutation=True)
     async def upload_source_api(request: Request) -> JSONResponse:
-        denied = _mutation_denied(request, action="Загрузка")
-        if denied is not None:
-            return denied
         try:
             form = await dashboard_backend._limited_upload_form(request)
         except dashboard_backend._UploadTooLarge:
@@ -1861,19 +1873,15 @@ def _spa_routes(
             uploaded.file.close()
 
     @heavy_endpoint
+    @admin_endpoint("Разбор", mutation=True)
     async def parse_incoming_api(request: Request) -> JSONResponse:
-        denied = _mutation_denied(request, action="Разбор")
-        if denied is not None:
-            return denied
         return _json_error(
             "Частичная загрузка Source B отключена; используйте полный intake update_full.",
             410,
         )
 
+    @admin_endpoint("Очистка журнала", mutation=True)
     async def clear_jobs_api(request: Request) -> JSONResponse:
-        denied = _mutation_denied(request, action="Очистка журнала")
-        if denied is not None:
-            return denied
         completed = [
             job
             for job in dashboard_backend._JOBS
@@ -1884,10 +1892,8 @@ def _spa_routes(
             dashboard_backend._JOBS.remove(job)
         return JSONResponse({"cleared": len(completed)})
 
+    @admin_endpoint("Удаление", mutation=True)
     async def remove_source_api(request: Request) -> JSONResponse:
-        denied = _mutation_denied(request, action="Удаление")
-        if denied is not None:
-            return denied
         payload = await _json_body(request)
         source_id = str(payload.get("id", ""))
         if not source_id or payload.get("confirmation") != source_id:
@@ -1949,10 +1955,8 @@ def _spa_routes(
             await role_tools_refresh()
         return JSONResponse({"removed": source_id})
 
+    @admin_endpoint("Удаление файла", mutation=True)
     async def forget_source_api(request: Request) -> JSONResponse:
-        denied = _mutation_denied(request, action="Удаление файла")
-        if denied is not None:
-            return denied
         payload = await _json_body(request)
         given = str(payload.get("path", ""))
         if not given or payload.get("confirmation") != given:
@@ -2354,9 +2358,8 @@ def _reference_routes(
             status_code=409,
         )
 
+    @read_endpoint
     async def reference_search_api(request: Request) -> JSONResponse:
-        if not can_read(request):
-            return _json_error("Нужен токен чтения.", 401)
         if reference.provider is None:
             return unavailable()
         try:
@@ -2385,9 +2388,8 @@ def _reference_routes(
             return _json_error(str(error), 400)
         return JSONResponse(result)
 
+    @read_endpoint
     async def reference_item_api(request: Request) -> JSONResponse:
-        if not can_read(request):
-            return _json_error("Нужен токен чтения.", 401)
         if reference.provider is None:
             return unavailable()
         try:
@@ -2417,9 +2419,8 @@ def _reference_routes(
             return _json_error(str(error), 400)
         return JSONResponse(result)
 
+    @read_endpoint
     async def reference_status_api(request: Request) -> JSONResponse:
-        if not can_read(request):
-            return _json_error("Нужен токен чтения.", 401)
         return JSONResponse(reference.payload(detailed=_authorized(request)))
 
     return [
@@ -2452,10 +2453,8 @@ def _server_routes(
 ) -> list[Route]:
     """Общие process-level маршруты, не принадлежащие одному провайдеру."""
 
+    @admin_endpoint("Перезапуск сервера", mutation=True)
     async def restart_api(request: Request):
-        denied = _mutation_denied(request, action="Перезапуск сервера")
-        if denied is not None:
-            return denied
         if not restart.enabled:
             return _json_error(
                 "Перезапуск из дашборда выключен оператором.", 404

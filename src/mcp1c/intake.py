@@ -357,7 +357,10 @@ def extract(архив: Path, корень: Path) -> tuple[int, int]:
         записи, _формат = _отобранные_записи(zf)
         for имя, info in записи.items():
             цель = safe_target(имя, корень)
-            assert цель is not None  # `_отобранные_записи` уже проверила путь.
+            if цель is None:
+                # `_отобранные_записи` уже отсекла такие пути. Явная ошибка, а
+                # не `assert`: под `python -O` страховка не должна исчезать.
+                raise ValueError(f"Член архива ведёт вне каталога модулей: {имя}")
             цель.parent.mkdir(parents=True, exist_ok=True)
             with zf.open(info) as входящий, цель.open("wb") as исходящий:
                 shutil.copyfileobj(входящий, исходящий, length=1 << 20)

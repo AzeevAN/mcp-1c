@@ -119,6 +119,14 @@ same-origin проверку `Origin`/`Referer`; явный заголовок �
 5 минут с одного адреса `/login` отвечает `429` с `Retry-After`, не сверяя токен.
 За proxy адрес клиента верен, только когда настроено доверие к `X-Forwarded-For`.
 
+Каждый ответ сервера несёт `X-Content-Type-Options: nosniff`,
+`X-Frame-Options: DENY` и `Referrer-Policy: same-origin`. `index.html` SPA
+отдаётся с `Content-Security-Policy`: скрипты только с того же origin плюс
+встроенный скрипт выбора темы по SHA-256, посчитанному по файлу сборки при
+отдаче, `frame-ancestors 'none'`; стили допускают `'unsafe-inline'` ради
+атрибутов `style` React. Новый встроенный скрипт в `index.html` разрешается
+автоматически, внешний домен для скриптов, стилей или `fetch` — нет.
+
 ## Два вида ZIP
 
 `СтруктураКонфигурации_*.zip` — компактная schema v1 из обработки проекта; её

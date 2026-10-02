@@ -1614,6 +1614,41 @@ def mcp_guard(app):
 
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
+# Защитные заголовки для всех ответов: SPA и API отдаёт один процесс, и
+# встроить дашборд в чужой фрейм или угадать тип JSON-ответа как HTML
+# не должно быть возможно ни на одном маршруте. `same-origin` сохраняет
+# Referer для собственной CSRF-проверки и не отдаёт адреса страниц наружу.
+_SECURITY_HEADERS = (
+    (b"x-content-type-options", b"nosniff"),
+    (b"x-frame-options", b"DENY"),
+    (b"referrer-policy", b"same-origin"),
+)
+
+
+def security_headers(app):
+    """Добавить защитные заголовки, не перекрывая уже выставленные маршрутом."""
+
+    async def wrapped(scope, receive, send):
+        if scope["type"] != "http":
+            await app(scope, receive, send)
+            return
+
+        async def send_with_headers(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", ()))
+                present = {name.lower() for name, _ in headers}
+                headers.extend(
+                    (name, value)
+                    for name, value in _SECURITY_HEADERS
+                    if name not in present
+                )
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await app(scope, receive, send_with_headers)
+
+    return wrapped
+
 
 def _host_allowed(value: str, hosts: tuple[str, ...]) -> bool:
     split = split_host(value)
@@ -1726,7 +1761,7 @@ def _run_streamable_http(
         host=host, transport_security=_transport_security(allowed_hosts)
     )
     uvicorn.run(
-        trusted_host_guard(mcp_guard(app), allowed_hosts),
+        security_headers(trusted_host_guard(mcp_guard(app), allowed_hosts)),
         host=host,
         port=port,
         log_level="info",

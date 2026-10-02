@@ -59,7 +59,7 @@ def test_docker_кладёт_тот_же_dist_в_python_package() -> None:
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
 
     assert (
-        "COPY --from=dashboard-build --chown=10001:10001 /dashboard/dist "
+        "COPY --from=dashboard-build /dashboard/dist "
         "/app/src/mcp1c/dashboard_dist"
     ) in dockerfile
     runtime = dockerfile.split("FROM runtime-base AS runtime", 1)[1]

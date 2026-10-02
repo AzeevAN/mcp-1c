@@ -453,3 +453,45 @@ def test_https_proxy_ставит_secure_даже_при_http_схеме(tmp_pat
     )
 
     assert "; Secure" in response.headers["set-cookie"]
+
+
+def test_spa_получает_csp_с_хешем_встроенного_скрипта(tmp_path, monkeypatch):
+    import base64
+    import hashlib
+
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    client, _ = client_for(tmp_path)
+    inline = "document.documentElement.dataset.theme = 'light';"
+    (tmp_path / "dist" / "index.html").write_text(
+        f"<!doctype html><script>{inline}</script>"
+        '<script type="module" src="/assets/app.js"></script>',
+        encoding="utf-8",
+    )
+
+    response = client.get("/")
+    csp = response.headers["content-security-policy"]
+    digest = base64.b64encode(hashlib.sha256(inline.encode()).digest()).decode()
+
+    assert response.status_code == 200
+    assert f"'sha256-{digest}'" in csp
+    assert "script-src 'self'" in csp
+    assert "'unsafe-inline'" not in csp.split("script-src", 1)[1].split(";", 1)[0]
+    assert "frame-ancestors 'none'" in csp
+    assert "object-src 'none'" in csp
+
+
+def test_все_ответы_получают_защитные_заголовки():
+    from starlette.responses import PlainTextResponse
+    from starlette.routing import Route
+
+    from mcp1c.server import security_headers
+
+    async def page(request):
+        return PlainTextResponse("ok")
+
+    client = TestClient(security_headers(Starlette(routes=[Route("/", page)])))
+    headers = client.get("/").headers
+
+    assert headers["x-content-type-options"] == "nosniff"
+    assert headers["x-frame-options"] == "DENY"
+    assert headers["referrer-policy"] == "same-origin"

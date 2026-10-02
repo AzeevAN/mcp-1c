@@ -135,3 +135,12 @@ def test_compose_передаёт_список_хостов_и_proxy_без_об
     assert forwarded_allow_ips(False, tokens) is None
     assert forwarded_allow_ips(True, tokens) == "*"
     assert host_check_required("0.0.0.0", tokens) is False
+
+
+def test_код_приложения_не_принадлежит_runtime_пользователю():
+    dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+
+    assert "chown -R mcp1c /data\n" in dockerfile
+    assert "chown -R mcp1c /data /app" not in dockerfile
+    assert "--chown=10001" not in dockerfile
+    assert "PYTHONDONTWRITEBYTECODE=1" in dockerfile

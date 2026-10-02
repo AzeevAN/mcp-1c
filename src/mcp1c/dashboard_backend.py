@@ -124,6 +124,18 @@ def _token_from_headers(request: Request) -> str:
     prefix = "bearer "
     return auth[len(prefix):] if auth.lower().startswith(prefix) else ""
 
+def storage_error_text(action: str, error: OSError) -> str:
+    """Сообщение об отказе диска без путей: они уходят только в журнал.
+
+    Текст `OSError` содержит абсолютный путь внутри контейнера или хоста.
+    Оператору он нужен в журнале процесса, а в JSON браузеру достаточно
+    кода ошибки — по нему видно, кончилось ли место или нет прав.
+    """
+    traceback.print_exception(error)
+    code = errno.errorcode.get(error.errno or 0, "")
+    suffix = f" ({code})" if code else ""
+    return f"{action}{suffix}; подробности в журнале сервера."
+
 def _drop_expired_sessions_locked(now: float) -> None:
     for session, (_, expires_at) in list(_SESSIONS.items()):
         if now >= expires_at:
@@ -423,7 +435,9 @@ def _run_job(
         job["error"] = str(error)
     except Exception as error:  # фоновая задача не должна ронять процесс молча
         job["state"] = JOB_FAILED
-        job["error"] = f"{type(error).__name__}: {error}"
+        # Текст неожиданного исключения может содержать пути и фрагменты
+        # данных; в задание идёт только класс, полный стек — в журнал.
+        job["error"] = f"{type(error).__name__}; подробности в журнале сервера."
         # На странице остаётся одна строка — больше туда не влезет. Но без
         # стека неожиданную ошибку разбирать не по чему: имя класса и текст
         # не говорят, где именно упало. Один раз это уже стоило отдельного

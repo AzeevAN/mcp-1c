@@ -75,7 +75,7 @@ def test_dockerfile_копирует_только_разрешённые_дер�
         "COPY requirements-lock.txt .",
         "COPY src/ ./src/",
         "COPY release-assets/reference/reference.mcp1cref /app/reference/reference.mcp1cref",
-        "COPY --from=dashboard-build --chown=10001:10001 /dashboard/dist /app/src/mcp1c/dashboard_dist",
+        "COPY --from=dashboard-build /dashboard/dist /app/src/mcp1c/dashboard_dist",
     ]
     assert "COPY ." not in dockerfile
     assert "ADD " not in dockerfile

@@ -34,7 +34,11 @@ RUN mkdir -p /data/bootstrap /data/index /data/sources \
     && groupadd --gid 10001 mcp1c \
     && useradd --uid 10001 --gid 10001 --no-create-home \
        --shell /usr/sbin/nologin mcp1c \
-    && chown -R mcp1c /data /app
+    && chown -R mcp1c /data
+# Код и справка в /app остаются root:root и только читаются runtime-
+# пользователем: исполнение кода в процессе не должно давать права подменить
+# сам код. Байткод не пишется (`PYTHONDONTWRITEBYTECODE`), всё изменяемое
+# живёт в /data, временные файлы загрузок — в /tmp.
 USER 10001:10001
 
 VOLUME ["/data"]
@@ -49,7 +53,7 @@ CMD ["--host", "0.0.0.0", "--port", "8000", "--data", "/data", "--require-writab
 # Единственный runtime содержит готовую SPA-статику, но регистрирует UI только
 # при MCP1C_DASHBOARD=on. Node и node_modules в этот слой не переходят.
 FROM runtime-base AS runtime
-COPY --from=dashboard-build --chown=10001:10001 /dashboard/dist /app/src/mcp1c/dashboard_dist
+COPY --from=dashboard-build /dashboard/dist /app/src/mcp1c/dashboard_dist
 ENV MCP1C_DASHBOARD=on \
     MCP1C_ACCESS=local
 CMD ["--host", "0.0.0.0", "--port", "8000", "--data", "/data", "--require-writable-data", "--require-tokens"]

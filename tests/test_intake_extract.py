@@ -211,3 +211,18 @@ def test_опасный_и_finder_мусор_не_переключают_фор�
     assert нужно == 12
     assert (корень / "Catalogs/Т/Ext/ObjectModule.bsl").read_text() == "A" * 10
     assert not (корень / "Обёртка").exists()
+
+
+def test_отвергнутый_путь_после_отбора_даёт_ошибку_и_под_python_O(tmp_path, monkeypatch):
+    """Страховка не должна исчезать с `assert` под `python -O`."""
+    import pytest
+
+    from mcp1c import intake
+
+    архив = tmp_path / "в.zip"
+    with zipfile.ZipFile(архив, "w") as zf:
+        zf.writestr("Catalogs/Т/Ext/ObjectModule.bsl", "A")
+    monkeypatch.setattr(intake, "safe_target", lambda name, root: None)
+
+    with pytest.raises(ValueError, match="вне каталога"):
+        extract(архив, tmp_path / "modules")

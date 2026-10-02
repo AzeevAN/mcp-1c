@@ -7,9 +7,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import os
+import re
 import secrets
 import shutil
 import tempfile
@@ -310,6 +312,53 @@ def _json_error(message: str, status_code: int) -> JSONResponse:
 
 
 _REVISION_SALT = secrets.token_hex(16)
+
+
+_INLINE_SCRIPT_RE = re.compile(
+    r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", re.IGNORECASE | re.DOTALL
+)
+_CSP_CACHE: dict[tuple[str, int, int], str] = {}
+
+
+def _spa_csp(index: Path) -> str:
+    """CSP для собранной SPA с хешами её встроенных скриптов.
+
+    `index.html` содержит встроенный скрипт выбора темы до загрузки React;
+    `'unsafe-inline'` для скриптов перечеркнул бы смысл политики, поэтому
+    разрешается ровно этот текст по SHA-256. Хеши считаются по файлу при
+    отдаче: новая сборка дашборда не требует правки сервера. Стили остаются
+    `'unsafe-inline'`: React задаёт атрибуты `style`, а XSS через стиль без
+    скрипта здесь не даёт доступа к данным.
+    """
+    stat = index.stat()
+    key = (str(index), stat.st_mtime_ns, stat.st_size)
+    cached = _CSP_CACHE.get(key)
+    if cached is not None:
+        return cached
+    html = index.read_text(encoding="utf-8")
+    hashes = " ".join(
+        "'sha256-"
+        + base64.b64encode(hashlib.sha256(body.encode("utf-8")).digest()).decode()
+        + "'"
+        for body in _INLINE_SCRIPT_RE.findall(html)
+    )
+    policy = "; ".join(
+        (
+            "default-src 'self'",
+            f"script-src 'self' {hashes}".rstrip(),
+            "style-src 'self' 'unsafe-inline'",
+            "img-src 'self' data:",
+            "font-src 'self' data:",
+            "connect-src 'self'",
+            "object-src 'none'",
+            "base-uri 'none'",
+            "form-action 'self'",
+            "frame-ancestors 'none'",
+        )
+    )
+    _CSP_CACHE.clear()
+    _CSP_CACHE[key] = policy
+    return policy
 
 
 def _copy_upload(source, target: Path, job: dict) -> int:
@@ -1031,7 +1080,10 @@ def _spa_routes(
         except ValueError as error:
             return _json_error(str(error), 422)
         except OSError as error:
-            return _json_error(f"Не удалось сохранить словарь: {error}", 409)
+            return _json_error(
+                dashboard_backend.storage_error_text("Не удалось сохранить словарь", error),
+                409,
+            )
         return JSONResponse(
             {
                 "changed": {
@@ -1064,7 +1116,10 @@ def _spa_routes(
                 ),
             )
         except OSError as error:
-            return _json_error(f"Не удалось сохранить словарь: {error}", 409)
+            return _json_error(
+                dashboard_backend.storage_error_text("Не удалось сохранить словарь", error),
+                409,
+            )
         if not removed:
             return _json_error("Такого локального псевдонима нет.", 404)
         return JSONResponse({"changed": {"phrase": phrase, "scope": scope}})
@@ -1088,7 +1143,10 @@ def _spa_routes(
         except ValueError as error:
             return _json_error(str(error), 422)
         except OSError as error:
-            return _json_error(f"Не удалось сохранить словарь: {error}", 409)
+            return _json_error(
+                dashboard_backend.storage_error_text("Не удалось сохранить словарь", error),
+                409,
+            )
         return JSONResponse({"changed": {"words": group}})
 
     async def dictionary_synonyms_remove_api(request: Request) -> JSONResponse:
@@ -1108,7 +1166,10 @@ def _spa_routes(
                 lambda dictionary: dictionary.remove_synonyms(words),
             )
         except OSError as error:
-            return _json_error(f"Не удалось сохранить словарь: {error}", 409)
+            return _json_error(
+                dashboard_backend.storage_error_text("Не удалось сохранить словарь", error),
+                409,
+            )
         if not removed:
             return _json_error(
                 "Такой локальной группы нет. Встроенные группы снимаются "
@@ -1764,7 +1825,10 @@ def _spa_routes(
                 413,
             )
         except OSError as error:
-            return _json_error(f"Не удалось принять файл: {error}", 500)
+            return _json_error(
+                dashboard_backend.storage_error_text("Не удалось принять файл", error),
+                500,
+            )
         finally:
             # До handoff каталог принадлежит запросу, после — worker. Отмена
             # чтения не должна оставить ни частичный файл, ни вечную job.
@@ -1873,8 +1937,13 @@ def _spa_routes(
             return _json_error(str(error), 409)
         except FileNotFoundError:
             return _json_error("Такого неиспользуемого файла нет.", 404)
-        except (RegistryError, OSError) as error:
+        except RegistryError as error:
             return _json_error(str(error), 400)
+        except OSError as error:
+            return _json_error(
+                dashboard_backend.storage_error_text("Не удалось удалить файл", error),
+                400,
+            )
         return JSONResponse({"forgotten": given})
 
     async def spa_page(request: Request):
@@ -1892,7 +1961,9 @@ def _spa_routes(
                 "React-дашборд не собран. Выполните npm run build в dashboard/.",
                 status_code=503,
             )
-        return FileResponse(index)
+        return FileResponse(
+            index, headers={"Content-Security-Policy": _spa_csp(index)}
+        )
 
     async def asset(request: Request):
         relative = request.path_params.get("path", "")

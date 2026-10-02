@@ -188,6 +188,10 @@ class _ModuleOperationCancelled(RegistryError):
     """Устаревший foreground add/reparse отменён новым поколением."""
 
 
+class RegistryRecoveryBlocked(RegistryError):
+    """Журнал незавершённой операции не восстановлен; запись в data/ закрыта."""
+
+
 class _NativeGenerationActive(RegistryError):
     """Bootstrap не заменяет schema-v1 файлом уже активное native-поколение."""
 
@@ -1063,6 +1067,10 @@ class Registry:
         self._lock = threading.RLock()
         self._source_reservations: Counter[Path] = Counter()
         self._source_scopes = threading.local()
+        # restore() поднимает уже записанные строки теми же add_*, что и
+        # пользовательская загрузка. Fail-closed проверка журналов отличает
+        # их по этому признаку потока, а не по параметрам вызова.
+        self._restore_scope = threading.local()
         # Staging разных кандидатов может идти параллельно, но pointer и общий
         # WAL переключаются только одним publisher за раз.
         self._generation_mutation_lock = threading.Lock()
@@ -1140,6 +1148,11 @@ class Registry:
         # Множество также страхует повторный путь публикации от дубля строки.
         self._logged_module_limitations: set[tuple[str, int, str]] = set()
         self._module_recovery_blocked = False
+        # Строки registry.json, которые restore не поднял из-за временного
+        # сбоя (OSError, нехватка памяти). Они не видны в памяти, но
+        # переносятся в каждую запись реестра дословно: иначе первый же
+        # save() после неудачного старта навсегда снял бы источник с учёта.
+        self._carried_source_rows: dict[str, dict] = {}
         # Один постоянный lock на source_id защищает весь foreground
         # lifecycle: sweep -> extract -> build -> publish/cleanup. Записи не
         # удаляются: удаление и новый setdefault между двумя waiter
@@ -1710,6 +1723,7 @@ class Registry:
         source_transport: CandidateTransport = CandidateTransport.LOCAL_FILE,
         replace_native: bool = True,
     ) -> Source:
+        self._ensure_not_blocked(allow_restore=True)
         source_path = Path(path)
         # При restore сохранённая строка registry.json — ожидание, а не
         # доверенный факт. Файл мог быть подменён или повреждён после save;
@@ -1987,6 +2001,7 @@ class Registry:
         expected_id: str = "",
         known_origin: str = "",
     ) -> Source:
+        self._ensure_not_blocked(allow_restore=True)
         """Опубликовать отдельный снимок текущего сеанса расширений.
 
         Сам JSON мал и сохраняется как исходник. Он привязан к уже загруженной
@@ -2381,13 +2396,9 @@ class Registry:
                 self._relative(отставленный) if отставленный is not None else None
             ),
         }
+        self._ensure_not_blocked()
         try:
-            self.data_dir.mkdir(parents=True, exist_ok=True)
-            tmp = self._module_swap_path.with_suffix(".tmp")
-            tmp.write_text(
-                json.dumps(payload, ensure_ascii=False), encoding="utf-8"
-            )
-            tmp.replace(self._module_swap_path)
+            self._write_json_durably(self._module_swap_path, payload)
         except OSError as error:
             raise RegistryError(
                 "Не удалось записать журнал рокировки кода; прежний "
@@ -3327,6 +3338,8 @@ class Registry:
             if (
                 self._last_successful_startup_generation
                 != self._startup_generation
+                or self._generation_recovery_blocked
+                or self._module_recovery_blocked
             ):
                 return False
             self.save()
@@ -3483,6 +3496,7 @@ class Registry:
         метаданные, и присвоение по тому же ключу вытеснило бы их из
         `self.sources`, а `save()` записал бы реестр уже без них.
         """
+        self._ensure_not_blocked()
         архив = Path(path)
         with self._lock:
             if ExportIdentity.configuration(configuration).grouping_key in self._generation_pointers:
@@ -3633,6 +3647,7 @@ class Registry:
         rebuild: bool = True,
     ) -> Source:
         """Принять версионную справку платформы."""
+        self._ensure_not_blocked(allow_restore=True)
         source_path = Path(path)
         digest = known_sha256 or _sha256(source_path)
         platform = platform or _platform_from_path(source_path)
@@ -3912,6 +3927,9 @@ class Registry:
 
     def remove(self, source_id: str) -> None:
         """Снять источник; A/B основной конфигурации удаляются агрегатом."""
+        # Снятие удаляет каталоги и кэш: в fail-closed режиме это стёрло бы
+        # данные, которые ещё нужны для ручного разбора журнала.
+        self._ensure_not_blocked()
         if source_id.endswith(":modules"):
             configuration = source_id.removesuffix(":modules")
             identity = ExportIdentity.configuration(configuration)
@@ -3995,6 +4013,25 @@ class Registry:
                 native = [native_extension]
             else:
                 native = []
+            if (
+                source is None
+                and not native
+                and source_id in self._carried_source_rows
+            ):
+                # Строку, не поднятую временным сбоем, снимают с учёта так же
+                # явно, как живую: вместе с перенесёнными строками её кода.
+                прежние_перенесённые = self._carried_source_rows
+                self._carried_source_rows = {
+                    sid: raw
+                    for sid, raw in прежние_перенесённые.items()
+                    if sid != source_id and not sid.startswith(f"{source_id}:")
+                }
+                try:
+                    self.save()
+                except BaseException:
+                    self._carried_source_rows = прежние_перенесённые
+                    raise
+                return
             if source is None and not native:
                 raise RegistryError(f"Источник не зарегистрирован: {source_id}")
 
@@ -4533,10 +4570,16 @@ class Registry:
             if platform_declarations is None
             else platform_declarations
         )
+        rows = [source.to_dict() for source in source_rows.values()]
+        rows += [
+            dict(raw)
+            for source_id, raw in self._carried_source_rows.items()
+            if source_id not in source_rows
+        ]
         payload: dict[str, object] = {
             "registry_version": REGISTRY_VERSION,
             "saved_at": _now(),
-            "sources": [source.to_dict() for source in source_rows.values()],
+            "sources": rows,
         }
         if pointers:
             payload["generation_manifests"] = [
@@ -4555,6 +4598,7 @@ class Registry:
             return self._platform_declarations.get(configuration)
 
     def set_platform_version(self, configuration: str, version: str) -> PlatformDeclaration:
+        self._ensure_not_blocked()
         declaration = PlatformDeclaration(version)
         identity = ExportIdentity.configuration(configuration)
         with self._lock:
@@ -4572,6 +4616,7 @@ class Registry:
         return declaration
 
     def clear_platform_version(self, configuration: str) -> None:
+        self._ensure_not_blocked()
         identity = ExportIdentity.configuration(configuration)
         with self._lock:
             if (
@@ -4588,16 +4633,33 @@ class Registry:
 
     def _write_registry_payload(self, payload: Mapping[str, object]) -> None:
         """Durable atomic replace общего Registry pointer."""
+        self._ensure_not_blocked()
+        self._write_json_durably(self.registry_path, payload, indent=1)
+
+    def _write_json_durably(
+        self,
+        target: Path,
+        payload: object,
+        *,
+        indent: int | None = None,
+    ) -> None:
+        """Записать JSON через tmp + fsync файла + replace + fsync каталога.
+
+        Без fsync после сбоя питания rename может оказаться на диске раньше
+        содержимого: вместо прежнего файла остаётся пустой или обрезанный.
+        Для журналов восстановления это хуже отсутствия файла — битый журнал
+        переводит реестр в fail-closed режим.
+        """
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        temporary = self.registry_path.with_suffix(".tmp")
+        temporary = target.with_suffix(".tmp")
         try:
             with temporary.open("w", encoding="utf-8") as stream:
-                json.dump(payload, stream, ensure_ascii=False, indent=1)
+                json.dump(payload, stream, ensure_ascii=False, indent=indent)
                 stream.flush()
                 os.fsync(stream.fileno())
-            temporary.replace(self.registry_path)
+            temporary.replace(target)
             descriptor = os.open(
-                self.data_dir,
+                target.parent,
                 os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
             )
             try:
@@ -5269,6 +5331,8 @@ class Registry:
         ),
     ) -> GenerationPointer:
         """Переключить active manifest и убрать только detached поколение."""
+        # Новый WAL перезаписал бы неразобранный журнал прежней публикации.
+        self._ensure_not_blocked()
         if expected_previous is not _EXPECTED_GENERATION_UNSET and (
             expected_previous is not None
             and not isinstance(expected_previous, GenerationPointer)
@@ -5640,6 +5704,33 @@ class Registry:
                 code_items_total=code_source.items_total if code_source else 0,
             )
 
+    def _ensure_not_blocked(self, *, allow_restore: bool = False) -> None:
+        """Отказать в записи, пока журнал прерванной операции не разобран.
+
+        При неоднозначном WAL память заведомо неполна: startup вышел до
+        restore() либо выкинул строки кода. Любая запись registry.json,
+        нового WAL или удаление файлов источников затёрли бы единственное
+        свидетельство сбоя и прежнее готовое состояние. ``allow_restore``
+        пропускает только собственные add_* вызовы restore(): они поднимают
+        уже записанные строки в память и сами ничего не сохраняют.
+        """
+        if allow_restore and getattr(self._restore_scope, "active", False):
+            return
+        if self._generation_recovery_blocked:
+            raise RegistryRecoveryBlocked(
+                "Реестр открыт только для чтения: журнал публикации поколения "
+                f"({self._relative(self.generation_recovery_path)}) не удалось "
+                "восстановить. Проверьте каталог данных, исправьте или уберите "
+                "журнал и выполните перезагрузку."
+            )
+        if self._module_recovery_blocked:
+            raise RegistryRecoveryBlocked(
+                "Реестр открыт только для чтения: журнал рокировки кода "
+                f"({self._relative(self._module_swap_path)}) не удалось "
+                "восстановить. Проверьте каталог данных, исправьте или уберите "
+                "журнал и выполните перезагрузку."
+            )
+
     def save(self) -> None:
         with self._lock:
             self._write_registry_payload(self._registry_payload())
@@ -5675,6 +5766,14 @@ class Registry:
 
     def restore(self) -> list[str]:
         """Поднять источники, записанные в registry.json."""
+        previous = getattr(self._restore_scope, "active", False)
+        self._restore_scope.active = True
+        try:
+            return self._restore_rows()
+        finally:
+            self._restore_scope.active = previous
+
+    def _restore_rows(self) -> list[str]:
         with self._lock:
             self._restored_for_serving = True
         problems: list[str] = []
@@ -5759,9 +5858,32 @@ class Registry:
             for manifest in manifests.values()
             if manifest.identity.source_kind is SourceKind.CONFIGURATION
         }
-        все_источники = [
-            Source.from_dict(raw) for raw in (payload.get("sources") or [])
-        ]
+        сырые_строки = payload.get("sources") or []
+        все_источники = [Source.from_dict(raw) for raw in сырые_строки]
+        строка_по_id = {
+            raw.get("id"): raw for raw in сырые_строки if isinstance(raw, dict)
+        }
+        with self._lock:
+            # Перенесённые прошлым restore строки снова лежат в registry.json
+            # и повторяются этим проходом наравне с остальными.
+            self._carried_source_rows = {}
+
+        def перенести(source: Source, error: BaseException) -> str:
+            """Сохранить строку при временном сбое; вернуть пояснение."""
+            if not (
+                isinstance(error, MemoryError)
+                or _ошибка_файловой_системы(error) is not None
+            ):
+                return ""
+            raw = строка_по_id.get(source.id)
+            if raw is None:
+                return ""
+            with self._lock:
+                self._carried_source_rows[source.id] = raw
+            return (
+                " (временный сбой: запись сохранена в registry.json и будет "
+                "повторена при следующем восстановлении)"
+            )
         конфигурации_этого_restore: dict[str, Source] = {}
         legacy_родители_расширений = {
             manifest.identity.parent_configuration
@@ -5792,7 +5914,7 @@ class Registry:
                     allow_truncated=source.incomplete,
                 )
             except Exception as error:
-                problems.append(f"{source.id}: {error}")
+                problems.append(f"{source.id}: {error}{перенести(source, error)}")
 
         for key, manifest in manifests.items():
             if manifest.identity.source_kind is not SourceKind.EXTENSION:
@@ -5908,7 +6030,7 @@ class Registry:
                         "не поддерживается и снят с учёта."
                     )
             except Exception as error:  # источник не должен ронять запуск
-                problems.append(f"{source.id}: {error}")
+                problems.append(f"{source.id}: {error}{перенести(source, error)}")
 
         for source in отложенный_runtime:
             stored = self._absolute(source.stored_path)
@@ -5924,7 +6046,7 @@ class Registry:
                     known_origin=source.origin,
                 )
             except Exception as error:
-                problems.append(f"{source.id}: {error}")
+                problems.append(f"{source.id}: {error}{перенести(source, error)}")
 
         for source, expected_generation in отложенный_код:
             configuration = self._владелец_источника_кода(source)
@@ -5951,9 +6073,23 @@ class Registry:
                         else None
                     )
             if configuration is None or expected is None:
+                with self._lock:
+                    владелец_перенесён = (
+                        configuration in self._carried_source_rows
+                    )
+                    raw = строка_по_id.get(source.id)
+                    if владелец_перенесён and raw is not None:
+                        # Код без своей конфигурации не публикуется, но и
+                        # не теряется вместе с временно не поднятым владельцем.
+                        self._carried_source_rows[source.id] = raw
                 problems.append(
                     f"{source.id}: индекс кода не поднят — "
                     "в этом восстановлении нет его конфигурации."
+                    + (
+                        " Запись сохранена до следующего восстановления."
+                        if владелец_перенесён
+                        else ""
+                    )
                 )
                 continue
             # Код уже лежит на диске; архив могли убрать. Source
@@ -6055,6 +6191,10 @@ class Registry:
         """
         with self._lock:
             known = {source.sha256 for source in self.sources.values()}
+            known.update(
+                str(raw.get("sha256") or "")
+                for raw in self._carried_source_rows.values()
+            )
             for manifest in self._generation_manifests.values():
                 known.add(manifest.raw_sha256)
                 for layer in manifest.layers:
@@ -6107,6 +6247,9 @@ class Registry:
 
     def forget_source(self, stored_path: str) -> None:
         """Удалить только текущий orphan, не доверяя прежнему снимку SPA."""
+        # Без восстановленных строк каждый сохранённый исходник выглядит
+        # orphan: удаление по такому списку стёрло бы живые источники.
+        self._ensure_not_blocked()
         relative = Path(stored_path)
         if (
             relative.is_absolute()
@@ -6259,6 +6402,9 @@ class Registry:
         except RecoveryBlocked as error:
             self._generation_recovery_blocked = True
             return [str(error)]
+        # Флаг снимается только доказанным восстановлением: пока он стоит,
+        # все записи в data/ отклоняются (`_ensure_not_blocked`).
+        self._generation_recovery_blocked = False
         # Foreground-публикация держит тот же lock от staging кэша до
         # registry.json. Startup либо ждёт её завершения в живом процессе,
         # либо восстанавливает journal, оставшийся после SIGKILL.
@@ -6272,8 +6418,9 @@ class Registry:
                 self._подмести_временный_кэш_модулей()
             finally:
                 self._modules_cache_lock.release()
+            # Без попытки восстановления прежний вердикт не меняется.
+            self._module_recovery_blocked = bool(module_messages)
         messages += module_messages
-        self._module_recovery_blocked = bool(module_messages)
         if self._module_recovery_blocked:
             self._заблокировать_источники_кода_после_ошибки_рокировки()
         messages += self.restore()

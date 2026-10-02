@@ -356,7 +356,7 @@ def _to_object(raw: dict[str, Any]) -> MetadataObject:
         if key in _KNOWN_SECTIONS or key in _OBJECT_HEAD:
             continue
         normalized = _coerce(key, value)
-        if key == "handler" and isinstance(normalized, str):
+        if key in ("handler", "method") and isinstance(normalized, str):
             normalized = normalize_common_module_binding(normalized)
         obj.props[key] = normalized
 

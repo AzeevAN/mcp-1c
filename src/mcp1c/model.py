@@ -39,21 +39,25 @@ KIND_TO_MANAGER = {
     "Обработка": "Обработки",
 }
 
-_COMMON_MODULE_PREFIX = "ОбщийМодуль."
+# Русский префикс — историческая запись публичной schema v1, английский —
+# native-выгрузка конфигуратора (`<Handler>CommonModule.Модуль.Процедура`).
+_COMMON_MODULE_PREFIXES = ("ОбщийМодуль.", "CommonModule.")
 
 
 def normalize_common_module_binding(value: str) -> str:
     """Привести привязку процедуры общего модуля к `Модуль.Процедура`.
 
     Exporter всегда писал короткую форму. Публичная schema раньше ошибочно
-    добавляла префикс вида метаданных, поэтому принимаем и эту историческую
-    запись. Проверка точки сохраняет корректное короткое значение для модуля,
-    который сам называется `ОбщийМодуль`.
+    добавляла русский префикс вида метаданных, а native-выгрузка пишет
+    английский `CommonModule.`; принимаем обе записи. Проверка точки
+    сохраняет корректное короткое значение для модуля, который сам
+    называется `ОбщийМодуль` или `CommonModule`.
     """
-    if value.startswith(_COMMON_MODULE_PREFIX):
-        without_prefix = value.removeprefix(_COMMON_MODULE_PREFIX)
-        if "." in without_prefix:
-            return without_prefix
+    for prefix in _COMMON_MODULE_PREFIXES:
+        if value.startswith(prefix):
+            without_prefix = value.removeprefix(prefix)
+            if "." in without_prefix:
+                return without_prefix
     return value
 
 

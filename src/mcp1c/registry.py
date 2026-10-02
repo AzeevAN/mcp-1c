@@ -47,6 +47,7 @@ try:  # pragma: no cover - на Windows межпроцессного flock не�
 except ImportError:  # pragma: no cover
     fcntl = None
 
+from . import xml_safety
 from . import coverage_log, index_cache, modules_index, structure_origin
 from .dictionary import Dictionary, DictionaryError
 from .extension_runtime import (
@@ -539,7 +540,7 @@ def _сведения_о_выгрузке(path: Path) -> tuple[bool, str, str]:
         ) from ошибка
 
     try:
-        корень = ET.fromstring(содержимое)
+        корень = xml_safety.fromstring(содержимое)
     except ET.ParseError as ошибка:
         raise отказ(f"Configuration.xml не разбирается как XML ({ошибка}).") from ошибка
 

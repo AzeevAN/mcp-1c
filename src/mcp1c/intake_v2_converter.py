@@ -17,6 +17,7 @@ from pathlib import PurePosixPath
 from types import MappingProxyType
 from typing import Iterable, Mapping
 
+from . import xml_safety
 from .bsl_lex import нормализовать, разобрать
 from .form_reader import FormReadError, read_form
 from .module_address import разобрать_плоскую_xml_форму
@@ -2526,7 +2527,7 @@ def _parse_xml(
     try:
         with open_collection_member(collection.root, artifact.relative_path) as source:
             reader = _DigestReader(source)
-            root = ET.parse(reader).getroot()
+            root = xml_safety.parse(reader).getroot()
     except ET.ParseError as error:
         raise invalid_xml(
             f"{artifact.source_path}: XML не разбирается"
@@ -3398,7 +3399,7 @@ def _xdto_package(
         _child(properties, "Namespace"), f"{descriptor_path}.Namespace"
     )
     try:
-        package_root = ET.fromstring(package_payload)
+        package_root = xml_safety.fromstring(package_payload)
     except ET.ParseError as error:
         raise ConversionError(f"{payload_path}: Package.bin не является XML") from error
     if _namespace(package_root) != _NS_XDTO or _tag(package_root) != "package":

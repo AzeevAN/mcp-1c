@@ -21,6 +21,7 @@ from enum import Enum
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Iterable, Mapping
 
+from . import xml_safety
 from . import module_address
 from . import intake_v2_fsio as fsio
 from .intake_v2 import (
@@ -1009,7 +1010,7 @@ def _canonicalize_role(
                 mtime=0,
             ) as compressed:
                 writer = _CanonicalWriter(compressed)
-                ET.canonicalize(
+                xml_safety.canonicalize(
                     from_file=source,
                     out=writer,
                     with_comments=False,

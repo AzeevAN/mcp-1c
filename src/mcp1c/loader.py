@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any, Iterator
 
+from . import xml_safety
 from .model import (
     Configuration,
     Field,
@@ -182,7 +183,7 @@ def _read_objects_xml(
 ) -> Iterator[dict[str, Any]]:
     """Проверить XML-envelope и потоково читать по одному объекту."""
     root: ET.Element | None = None
-    for event, element in ET.iterparse(stream, events=("start", "end")):
+    for event, element in xml_safety.iterparse(stream, events=("start", "end")):
         if root is None:
             root = element
             if event != "start" or root.tag != "objects":
@@ -198,7 +199,7 @@ def _read_objects_xml(
 
 
 def _read_manifest_xml(stream: IO[bytes]) -> dict[str, Any]:
-    root = ET.parse(stream).getroot()
+    root = xml_safety.parse(stream).getroot()
     if root.tag != "manifest":
         raise ExportError("Корень manifest.xml должен быть <manifest>.")
     manifest = _xml_dict(root)

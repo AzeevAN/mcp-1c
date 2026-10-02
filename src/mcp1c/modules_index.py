@@ -51,6 +51,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from . import xml_safety
 from . import index_cache
 from .bsl_lex import разобрать
 from .form_reader import FormReadError, read_form
@@ -1216,7 +1217,7 @@ class Формы:
             )
             if descriptor is not None:
                 try:
-                    descriptor_root = ET.fromstring(
+                    descriptor_root = xml_safety.fromstring(
                         read_content_bytes(корень, адрес, descriptor.locator)
                     )
                 except (ET.ParseError, ContentReadError):
@@ -1249,7 +1250,7 @@ class Формы:
                 form_xml = None
             try:
                 корень_xml = (
-                    ET.fromstring(
+                    xml_safety.fromstring(
                         read_content_bytes(корень, адрес, form_xml.locator)
                     )
                     if form_xml is not None

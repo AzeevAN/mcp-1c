@@ -16,6 +16,7 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import xml_safety
 from .intake import карта_архива
 from .model import Configuration
 
@@ -122,7 +123,7 @@ def _descriptor(
     field_names: set[str] = set()
     stack: list[str] = []
     with zf.open(info) as stream:
-        for event, element in ET.iterparse(stream, events=("start", "end")):
+        for event, element in xml_safety.iterparse(stream, events=("start", "end")):
             tag = _tag(element)
             if event == "start":
                 stack.append(tag)
@@ -163,7 +164,7 @@ def _manifest(
     expected: list[tuple[str, str]] = []
     stack: list[str] = []
     with zf.open(info) as stream:
-        for event, element in ET.iterparse(stream, events=("start", "end")):
+        for event, element in xml_safety.iterparse(stream, events=("start", "end")):
             tag = _tag(element)
             if event == "start":
                 stack.append(tag)

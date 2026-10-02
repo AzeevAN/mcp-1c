@@ -10,6 +10,7 @@ from pathlib import PurePosixPath
 from types import MappingProxyType
 from typing import Iterable, Mapping
 
+from . import xml_safety
 from .intake_v2 import (
     CandidateTransport,
     ExportIdentity,
@@ -283,7 +284,7 @@ def _layout(paths: tuple[str, ...], wrapper: str) -> ExportLayout:
 
 def _properties(payload: bytes) -> dict[str, str]:
     try:
-        root = ET.fromstring(payload)
+        root = xml_safety.fromstring(payload)
     except ET.ParseError as error:
         raise ProbeError("Configuration.xml не разбирается как XML") from error
     properties = root.find(

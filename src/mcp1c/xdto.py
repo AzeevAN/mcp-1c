@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 
+from . import xml_safety
 from .intake_v2_collector import CollectionError, open_collection_member
 from .model import Configuration, MetadataObject
 
@@ -128,7 +129,7 @@ def _parse_with_namespaces(
     elements = 0
     declarations = 0
     try:
-        events = ET.iterparse(
+        events = xml_safety.iterparse(
             io.BytesIO(payload), events=("start", "end", "start-ns", "end-ns")
         )
         for event, value in events:

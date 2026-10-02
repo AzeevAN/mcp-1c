@@ -22,6 +22,7 @@ from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Iterable, Mapping
 from urllib.parse import quote
+from . import xml_safety
 from .package_digest import package_digest
 
 from .intake_v2 import GenerationManifest, LayerKind, LayerManifest, LayerState
@@ -363,7 +364,7 @@ def _bool(element: ET.Element, label: str) -> bool:
 
 def _parse_descriptor(stream: BinaryIO, expected_name: str) -> _ParsedDescriptor:
     try:
-        root = ET.parse(stream).getroot()
+        root = xml_safety.parse(stream).getroot()
     except ET.ParseError as error:
         raise RoleAccessError("descriptor роли содержит неверный XML") from error
     if _local(root.tag) != "MetaDataObject":
@@ -725,7 +726,7 @@ def _parse_rights(
     flags: dict[str, bool] = {}
     root: ET.Element | None = None
     try:
-        for event, element in ET.iterparse(stream, events=("start", "end")):
+        for event, element in xml_safety.iterparse(stream, events=("start", "end")):
             name = _local(element.tag)
             if event == "start":
                 if root is None:

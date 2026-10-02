@@ -634,6 +634,18 @@
   `get_related`, `search_objects`, `search_procedures`, `get_procedure`,
   `get_callers` на копии `data/`, SHA-256 снимка
   `624824bb…adb0a6f1` в обоих прогонах.
+- Пустая машинерия загрузки capability-модулей: `capability_modules/reference.py`
+  и `role_access.py` с `load() → ()`, поле `loader` у `CapabilityDefinition`,
+  `CapabilityTool`/`CapabilityModule`, `load_capability_modules`,
+  `validate_capability_tool` и `MCP1CServer.add_capability_modules` вместе с
+  их тестами на синтетических модулях. Инструменты всех трёх capability и
+  раньше регистрировал `server.py`, загрузчик не добавлял ни одного.
+  `tools/list`, инструкции и маршруты совпали байт в байт с прежними для
+  десяти сочетаний capability и транспорта, `measure_capability_context.py
+  --check` проходит для всех трёх, настройки и API «Дополнительных модулей»
+  не менялись. Неизвестное имя в startup-наборе `build_server` по-прежнему
+  отклоняет `CapabilityConfigurationError`. Манифесты замера остаются в
+  `capability_modules/`.
 
 ## [4.2.0] - 2026-10-01
 

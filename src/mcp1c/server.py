@@ -40,14 +40,12 @@ from starlette.responses import JSONResponse, PlainTextResponse, RedirectRespons
 
 from . import __version__, tools
 from .capabilities import (
+    CAPABILITY_DEFINITIONS,
     CapabilityConfigurationError,
     CapabilityContractError,
-    CapabilityModule,
     CapabilityRuntime,
     CapabilitySettingsStore,
-    load_capability_modules,
     resolve_capability_settings,
-    validate_capability_tool,
 )
 from .dashboard_backend import (
     LEVEL_ADMIN,
@@ -590,81 +588,6 @@ class MCP1CServer(MCPServer):
             await self._role_subscriptions.publish(ToolsListChanged())
         return changed
 
-    def add_capability_modules(
-        self,
-        modules: tuple[CapabilityModule, ...],
-    ) -> None:
-        """Атомарно добавить уже загруженные startup-only модули.
-
-        Проверка выполняется для всего набора до первого изменения SDK. Имена
-        условных core-инструментов тоже зарезервированы: role-tools могут
-        появиться позднее после reload и не должны столкнуться с модулем.
-        """
-        reserved = {
-            "list_configurations",
-            "list_extensions",
-            "search_objects",
-            "search_procedures",
-            "get_procedure",
-            "get_module_source_file",
-            "get_callers",
-            "get_object",
-            "get_related",
-            "compare_configurations",
-            "search_syntax",
-            "get_syntax",
-            "search_reference",
-            "get_reference",
-            "find_roles_for_access",
-            "get_role_access",
-        }
-        proposed: list[tuple[str, object]] = []
-        owners: dict[str, str] = {}
-        module_names: set[str] = set()
-        for module in modules:
-            if module.name in module_names:
-                raise CapabilityContractError(
-                    f"Capability-модуль `{module.name}` загружен повторно."
-                )
-            module_names.add(module.name)
-            for tool in module.tools:
-                validate_capability_tool(module.name, tool)
-                if tool.name in reserved:
-                    raise CapabilityContractError(
-                        f"Имя capability-инструмента `{tool.name}` "
-                        "зарезервировано ядром."
-                    )
-                previous = owners.get(tool.name)
-                if previous is not None:
-                    raise CapabilityContractError(
-                        f"Capability-модули `{previous}` и `{module.name}` "
-                        f"объявили одно имя `{tool.name}`."
-                    )
-                owners[tool.name] = module.name
-                proposed.append((module.name, tool))
-
-        with self._role_catalog_lock:
-            existing = {tool.name for tool in self._tool_manager.list_tools()}
-            conflicts = existing.intersection(owners)
-            if conflicts:
-                names = ", ".join(f"`{name}`" for name in sorted(conflicts))
-                raise CapabilityContractError(
-                    f"Capability-инструменты конфликтуют с каталогом: {names}."
-                )
-            added: list[str] = []
-            try:
-                for _module_name, tool in proposed:
-                    super().add_tool(
-                        tool.function,
-                        name=tool.name,
-                        description=tool.description,
-                    )
-                    added.append(tool.name)
-            except Exception:
-                for name in reversed(added):
-                    super().remove_tool(name)
-                raise
-
 
 INSTRUCTIONS = f"""
 Справочник по структуре конфигураций 1С и синтаксису платформы.
@@ -753,6 +676,20 @@ MODULE_DOWNLOAD_INSTRUCTION = (
     "Если нужен контекст всего точного модуля, `get_module_source_file` выдаёт "
     "короткоживущую ссылку на gzip-файл исходника при настроенном публичном адресе."
 )
+
+
+def _check_capability_names(enabled_capabilities: tuple[str, ...]) -> None:
+    """Неизвестное имя в startup-наборе — отказ, а не молчаливый пропуск.
+
+    Набор из `server-settings.json` проверяется при чтении, но `build_server`
+    зовут и напрямую (тесты, замеры), и опечатка в имени не должна выглядеть
+    как выключенный модуль.
+    """
+    for name in enabled_capabilities:
+        if name not in CAPABILITY_DEFINITIONS:
+            raise CapabilityConfigurationError(
+                f"Неизвестный capability-модуль `{name}`."
+            )
 
 
 def _startup_dependencies(
@@ -1499,9 +1436,7 @@ def build_server(
     _register_role_tools(server, registry, enabled_capabilities)
     _register_reference_tools(server, reference, enabled_capabilities)
 
-    server.add_capability_modules(
-        load_capability_modules(enabled_capabilities)
-    )
+    _check_capability_names(enabled_capabilities)
     _add_http_routes(
         server, registry, reference, restart, capability_runtime, download_tickets,
         module_download_available=module_download_available,

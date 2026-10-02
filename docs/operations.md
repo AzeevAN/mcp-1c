@@ -482,9 +482,9 @@ fail-closed останавливают startup до создания Registry. �
 `tools/list` исчезает `get_module_source_file`, а HTTP-маршрут
 `GET /api/v1/modules/source` больше не регистрируется.
 
-Перед добавлением сервер проверяет весь набор имён против ядра, условных
-reference/role-tools и других модулей; частично зарегистрированный набор при
-ошибке откатывается. `GET /api/v1/capabilities` с правом администратора отдаёт
+Инструменты всех трёх capability регистрирует сам сервер при сборке;
+отдельного загрузчика внешних модулей нет, а неизвестное имя в startup-наборе
+останавливает сборку сервера. `GET /api/v1/capabilities` с правом администратора отдаёт
 `available`, фактический startup-набор `active`, сохранённый `desired` и
 `pending_restart`. `PUT /api/v1/capabilities` принимает полный JSON-массив
 `enabled`, требует admin и same-origin для cookie-сессии и атомарно заменяет

@@ -6,14 +6,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
-from importlib import import_module
 import json
 import logging
 import os
 from pathlib import Path
-import re
 import stat
 import threading
 import uuid
@@ -22,7 +20,6 @@ import uuid
 SERVER_SETTINGS_NAME = "server-settings.json"
 SERVER_SETTINGS_VERSION = 2
 MAX_SERVER_SETTINGS_BYTES = 64 * 1024
-_NAME_PATTERN = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 logger = logging.getLogger(__name__)
 _RETIRED_CAPABILITIES = frozenset({"forms", "metadata_authoring"})
 
@@ -32,15 +29,19 @@ class CapabilityConfigurationError(ValueError):
 
 
 class CapabilityContractError(RuntimeError):
-    """Внутренний модуль нарушил контракт загрузки или имён инструментов."""
+    """Startup-набор capability противоречит сборке сервера."""
 
 
 @dataclass(frozen=True)
 class CapabilityDefinition:
-    """Имя настройки и закрытый import path фабрики внутреннего модуля."""
+    """Имя настройки и её описание для панели «Дополнительные модули».
+
+    Инструменты всех трёх capability регистрирует `server.py`: им нужны
+    Registry, подписанный пакет справки или HTTP-маршрут, то есть то, что
+    есть только у сборки сервера. Отдельного загрузчика модулей нет.
+    """
 
     name: str
-    loader: str | None
     display_name: str = ""
     description: str = ""
     tool_count: int | None = None
@@ -51,27 +52,9 @@ class CapabilityDefinition:
     default_enabled: bool = False
 
 
-@dataclass(frozen=True)
-class CapabilityTool:
-    """Один инструмент, который модуль предлагает основному MCP-серверу."""
-
-    name: str
-    function: Callable
-    description: str
-
-
-@dataclass(frozen=True)
-class CapabilityModule:
-    """Полностью загруженный набор инструментов одного внутреннего модуля."""
-
-    name: str
-    tools: tuple[CapabilityTool, ...]
-
-
 CAPABILITY_DEFINITIONS: Mapping[str, CapabilityDefinition] = {
     "module_source_download": CapabilityDefinition(
         "module_source_download",
-        None,
         "Скачивание полного модуля",
         "Добавляет инструмент для получения полного исходника точного модуля BSL через краткоживущий билет и HTTP-ссылку.",
         1, 514, "o200k_base", "2026-10-02",
@@ -80,7 +63,6 @@ CAPABILITY_DEFINITIONS: Mapping[str, CapabilityDefinition] = {
     ),
     "reference": CapabilityDefinition(
         "reference",
-        "mcp1c.capability_modules.reference:load",
         "Общая справка",
         "Добавляет 2 инструмента для поиска и чтения встроенного подписанного пакета общей справки по BSL, языку запросов, СКД и Конфигуратору.",
         2, 1070, "o200k_base", "2026-09-21",
@@ -88,7 +70,6 @@ CAPABILITY_DEFINITIONS: Mapping[str, CapabilityDefinition] = {
     ),
     "role_access": CapabilityDefinition(
         "role_access",
-        "mcp1c.capability_modules.role_access:load",
         "Доступ ролей",
         "Поиск ролей и чтение объявленных прав с ограниченной детализацией.",
         2, 1245, "o200k_base", "2026-09-22",
@@ -400,82 +381,3 @@ def resolve_capability_settings(
         definitions=definitions,
     )
     return stored, stored.load()
-
-
-def _load_factory(definition: CapabilityDefinition) -> Callable[[], object]:
-    module_name, separator, attribute = definition.loader.partition(":")
-    if not separator or not module_name or not attribute:
-        raise CapabilityContractError(
-            f"Capability-модуль `{definition.name}` имеет некорректный loader."
-        )
-    try:
-        module = import_module(module_name)
-        factory = getattr(module, attribute)
-    except Exception as error:
-        raise CapabilityContractError(
-            f"Capability-модуль `{definition.name}` не удалось загрузить."
-        ) from error
-    if not callable(factory):
-        raise CapabilityContractError(
-            f"Loader capability-модуля `{definition.name}` не является функцией."
-        )
-    return factory
-
-
-def load_capability_modules(
-    names: tuple[str, ...],
-    *,
-    definitions: Mapping[str, CapabilityDefinition] = CAPABILITY_DEFINITIONS,
-    dependencies: Mapping[str, object] | None = None,
-) -> tuple[CapabilityModule, ...]:
-    """Лениво импортировать и инициализировать только выбранные модули."""
-    dependencies = dependencies or {}
-    loaded: list[CapabilityModule] = []
-    for name in names:
-        definition = definitions.get(name)
-        if definition is None:
-            raise CapabilityConfigurationError(
-                f"Неизвестный capability-модуль `{name}`."
-            )
-        if definition.loader is None:
-            # Встроенная функция регистрирует инструмент и HTTP-маршрут
-            # вместе в server.py, но участвует в общем выборе dashboard.
-            continue
-        factory = _load_factory(definition)
-        try:
-            raw_tools = (
-                factory(dependencies[name])
-                if name in dependencies
-                else factory()
-            )
-            tools = tuple(raw_tools)
-        except Exception as error:
-            raise CapabilityContractError(
-                f"Capability-модуль `{name}` не удалось инициализировать."
-            ) from error
-        if any(not isinstance(tool, CapabilityTool) for tool in tools):
-            raise CapabilityContractError(
-                f"Capability-модуль `{name}` вернул объект вне контракта."
-            )
-        loaded.append(CapabilityModule(name, tools))
-    return tuple(loaded)
-
-
-def validate_capability_tool(module: str, tool: CapabilityTool) -> None:
-    """Проверить локальную часть контракта до изменения каталога SDK."""
-    if not isinstance(module, str) or not _NAME_PATTERN.fullmatch(module):
-        raise CapabilityContractError(
-            f"Некорректное имя capability-модуля `{module}`."
-        )
-    if not isinstance(tool.name, str) or not _NAME_PATTERN.fullmatch(tool.name):
-        raise CapabilityContractError(
-            f"Capability-модуль `{module}` объявил некорректное имя `{tool.name}`."
-        )
-    if (
-        not callable(tool.function)
-        or not isinstance(tool.description, str)
-        or not tool.description.strip()
-    ):
-        raise CapabilityContractError(
-            f"Capability-инструмент `{tool.name}` не имеет функции или описания."
-        )

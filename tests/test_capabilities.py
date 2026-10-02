@@ -21,11 +21,6 @@ from mcp1c.capabilities import (
     CapabilitySettingsStore,
     MAX_SERVER_SETTINGS_BYTES,
     CapabilityConfigurationError,
-    CapabilityContractError,
-    CapabilityDefinition,
-    CapabilityModule,
-    CapabilityTool,
-    load_capability_modules,
     resolve_capability_settings,
 )
 from mcp1c.reference_provider import ReferenceService
@@ -104,87 +99,10 @@ async def test_stdio_не_публикует_инструмент_без_http_м
     assert "get_module_source_file" not in names
 
 
-def test_off_не_импортирует_и_не_инициализирует_синтетический_модуль(
-    tmp_path,
-    monkeypatch,
-):
-    import_marker = tmp_path / "imported"
-    init_marker = tmp_path / "initialized"
-    module_name = "synthetic_capability_canary"
-    (tmp_path / f"{module_name}.py").write_text(
-        "from pathlib import Path\n"
-        f"Path({str(import_marker)!r}).write_text('imported')\n"
-        "def load():\n"
-        f"    Path({str(init_marker)!r}).write_text('initialized')\n"
-        "    return ()\n",
-        encoding="utf-8",
-    )
-    monkeypatch.syspath_prepend(str(tmp_path))
-    definitions = {
-        "canary": CapabilityDefinition("canary", f"{module_name}:load")
-    }
-
-    modules = load_capability_modules((), definitions=definitions)
-
-    assert modules == ()
-    assert module_name not in sys.modules
-    assert not import_marker.exists()
-    assert not init_marker.exists()
-
-
-def test_enabled_импортирует_и_инициализирует_только_выбранный_canary(
-    tmp_path,
-    monkeypatch,
-):
-    import_marker = tmp_path / "imported"
-    init_marker = tmp_path / "initialized"
-    module_name = "synthetic_enabled_capability_canary"
-    (tmp_path / f"{module_name}.py").write_text(
-        "from pathlib import Path\n"
-        f"Path({str(import_marker)!r}).write_text('imported')\n"
-        "def load():\n"
-        f"    Path({str(init_marker)!r}).write_text('initialized')\n"
-        "    return ()\n",
-        encoding="utf-8",
-    )
-    monkeypatch.syspath_prepend(str(tmp_path))
-    definitions = {
-        "canary": CapabilityDefinition("canary", f"{module_name}:load")
-    }
-
-    modules = load_capability_modules(("canary",), definitions=definitions)
-
-    assert modules == (CapabilityModule("canary", ()),)
-    assert import_marker.read_text(encoding="utf-8") == "imported"
-    assert init_marker.read_text(encoding="utf-8") == "initialized"
-
-
-def test_loader_передаёт_модулю_только_его_явную_зависимость(
-    tmp_path,
-    monkeypatch,
-):
-    received = tmp_path / "received"
-    module_name = "synthetic_dependency_capability_canary"
-    (tmp_path / f"{module_name}.py").write_text(
-        "from pathlib import Path\n"
-        "def load(dependency):\n"
-        f"    Path({str(received)!r}).write_text(dependency)\n"
-        "    return ()\n",
-        encoding="utf-8",
-    )
-    monkeypatch.syspath_prepend(str(tmp_path))
-    definitions = {
-        "canary": CapabilityDefinition("canary", f"{module_name}:load")
-    }
-
-    modules = load_capability_modules(
-        ("canary",),
-        definitions=definitions,
-        dependencies={"canary": "registry-view"},
-    )
-
-    assert modules == (CapabilityModule("canary", ()),)
-    assert received.read_text(encoding="utf-8") == "registry-view"
+def test_неизвестное_имя_capability_отклоняется_при_сборке(tmp_path):
+    """Опечатка в startup-наборе — отказ, а не молча выключенный модуль."""
+    with pytest.raises(CapabilityConfigurationError, match="`unknown`"):
+        _server(tmp_path, enabled_capabilities=("unknown",))
 
 
 def test_main_игнорирует_устаревшую_env_переменную(tmp_path, monkeypatch):
@@ -666,93 +584,6 @@ async def test_authoring_не_публикуется_в_mcp_сессии(tmp_pat
     assert names.isdisjoint(REMOVED_AUTHORING_TOOLS)
     assert "get_object" in names
     assert "search_syntax" in names
-
-
-def _noop() -> str:
-    return "ok"
-
-
-@pytest.mark.parametrize(
-    "name",
-        ("list_configurations", "search_reference", "find_roles_for_access"),
-)
-def test_имя_модуля_не_может_конфликтовать_с_ядром(tmp_path, name):
-    server = _server(tmp_path)
-    module = CapabilityModule(
-        "synthetic",
-        (CapabilityTool(name, _noop, "Синтетика."),),
-    )
-
-    with pytest.raises(CapabilityContractError, match=name):
-        server.add_capability_modules((module,))
-
-    assert _names(server) == CORE_TOOLS
-
-
-def test_два_модуля_не_могут_тихо_объявить_одно_имя(tmp_path):
-    server = _server(tmp_path)
-    modules = (
-        CapabilityModule(
-            "first",
-            (CapabilityTool("shared_status", _noop, "Первый."),),
-        ),
-        CapabilityModule(
-            "second",
-            (CapabilityTool("shared_status", _noop, "Второй."),),
-        ),
-    )
-
-    with pytest.raises(CapabilityContractError, match="shared_status"):
-        server.add_capability_modules(modules)
-
-    assert _names(server) == CORE_TOOLS
-
-
-def test_malformed_tool_даёт_контрактный_отказ_без_сырого_traceback(tmp_path):
-    server = _server(tmp_path)
-    malformed = (
-        CapabilityModule(None, (CapabilityTool("valid", _noop, "Описание."),)),
-        CapabilityModule(
-            "synthetic",
-            (CapabilityTool(None, _noop, "Описание."),),
-        ),
-        CapabilityModule(
-            "synthetic",
-            (CapabilityTool("valid", _noop, None),),
-        ),
-    )
-
-    for module in malformed:
-        with pytest.raises(CapabilityContractError):
-            server.add_capability_modules((module,))
-
-    assert _names(server) == CORE_TOOLS
-
-
-def test_ошибка_добавления_откатывает_весь_набор(tmp_path, monkeypatch):
-    server = _server(tmp_path)
-    modules = (
-        CapabilityModule(
-            "synthetic",
-            (
-                CapabilityTool("synthetic_first", _noop, "Первый."),
-                CapabilityTool("synthetic_second", _noop, "Второй."),
-            ),
-        ),
-    )
-    original = server._tool_manager.add_tool
-
-    def fail_second(function, **kwargs):
-        if kwargs.get("name") == "synthetic_second":
-            raise RuntimeError("synthetic failure")
-        return original(function, **kwargs)
-
-    monkeypatch.setattr(server._tool_manager, "add_tool", fail_second)
-
-    with pytest.raises(RuntimeError, match="synthetic failure"):
-        server.add_capability_modules(modules)
-
-    assert _names(server) == CORE_TOOLS
 
 
 def test_public_startup_документирует_settings_без_bootstrap_env():

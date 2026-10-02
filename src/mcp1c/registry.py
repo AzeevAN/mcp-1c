@@ -791,6 +791,10 @@ class _PreparedNativeRuntime:
     module_indices: modules_index.Индексы | None
     parent_configuration: LoadedConfiguration | None = None
     extension_relations: tuple[ExtensionRelation, ...] = ()
+    # Какие кэши поднялись с диска как есть ("objects", "fields",
+    # "modules"). Их не переписывают: reload иначе перезаписывал все файлы
+    # индексов, из которых только что всё поднял.
+    cached_kinds: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1613,6 +1617,7 @@ class Registry:
         *,
         write_cache: bool = True,
         cache_sha256: str = "",
+        cache_hits: set[str] | None = None,
     ) -> SearchIndex:
         path = self._cache_path(source.id, "objects")
         synonyms = self.dictionary.synonyms()
@@ -1628,6 +1633,8 @@ class Registry:
             aliases=aliases,
         )
         if cached is not None:
+            if cache_hits is not None:
+                cache_hits.add("objects")
             return cached
 
         index = index_configuration(config, synonyms=synonyms, aliases=aliases)
@@ -1642,6 +1649,7 @@ class Registry:
         *,
         write_cache: bool = True,
         cache_sha256: str = "",
+        cache_hits: set[str] | None = None,
     ) -> SearchIndex:
         path = self._cache_path(source.id, "fields")
         synonyms = self.dictionary.synonyms()
@@ -1659,6 +1667,8 @@ class Registry:
                 synonyms=synonyms,
             )
             if cached is not None:
+                if cache_hits is not None:
+                    cache_hits.add("fields")
                 return cached
 
         index = index_fields(config, synonyms=synonyms)
@@ -5467,6 +5477,7 @@ class Registry:
 
         config = runtime.configuration
         pointer = GenerationPointer.for_manifest(manifest)
+        cache_hits: set[str] = set()
         loaded_configuration = None
         parent_configuration = None
         extension_relations: tuple[ExtensionRelation, ...] = ()
@@ -5494,12 +5505,14 @@ class Registry:
                     source,
                     write_cache=False,
                     cache_sha256=runtime.structure_sha256,
+                    cache_hits=cache_hits,
                 ),
                 field_index=self._field_index(
                     config,
                     source,
                     write_cache=False,
                     cache_sha256=runtime.structure_sha256,
+                    cache_hits=cache_hits,
                 ),
                 structure_sha256=runtime.structure_sha256,
             )
@@ -5555,7 +5568,9 @@ class Registry:
                 selection_version=module_source.selection_version,
                 locator_generation=module_source.locator_generation,
             )
-            if module_indices is None:
+            if module_indices is not None:
+                cache_hits.add("modules")
+            else:
                 module_indices = self._с_локальными_синонимами(self._построить_индекс_кода(
                     manifest.origin_name,
                     root,
@@ -5569,6 +5584,7 @@ class Registry:
             module_indices,
             parent_configuration,
             extension_relations,
+            frozenset(cache_hits),
         )
 
     def _native_runtime_maps(
@@ -5607,8 +5623,13 @@ class Registry:
             if prepared.configuration is not None
             else None
         )
+        cached = prepared.cached_kinds
         try:
-            if source is not None and prepared.configuration is not None:
+            if (
+                source is not None
+                and prepared.configuration is not None
+                and "objects" not in cached
+            ):
                 index_cache.save(
                     prepared.configuration.index,
                     self._cache_path(source.id, "objects"),
@@ -5618,6 +5639,11 @@ class Registry:
                     ),
                     kind="objects",
                 )
+            if (
+                source is not None
+                and prepared.configuration is not None
+                and "fields" not in cached
+            ):
                 index_cache.save(
                     prepared.configuration.field_index,
                     self._cache_path(source.id, "fields"),
@@ -5630,6 +5656,7 @@ class Registry:
             if (
                 prepared.module_source is not None
                 and prepared.module_indices is not None
+                and "modules" not in cached
             ):
                 modules_index.сохранить_индексы(
                     self,

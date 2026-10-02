@@ -132,9 +132,18 @@ def _looks_predictable(value: str) -> bool:
     folded = value.casefold()
     if any(marker in folded for marker in _PLACEHOLDER_TOKENS if len(marker) >= 6):
         return True
-    # Строка с периодом p < len находится в удвоенной себе раньше позиции len:
-    # проверка периода за линейное время, без перебора всех p.
-    return (value + value).find(value, 1) < len(value)
+    # Минимальный период строки — len минус длина наибольшей собственной
+    # грани (префикс-функция): линейное время и любой период, в том числе не
+    # делящий длину (`0123…f0123…f0123`).
+    border = [0] * len(value)
+    for i in range(1, len(value)):
+        k = border[i - 1]
+        while k and value[i] != value[k]:
+            k = border[k - 1]
+        if value[i] == value[k]:
+            k += 1
+        border[i] = k
+    return len(value) - border[-1] <= len(value) // 2
 
 
 def require_tokens(environ: Mapping[str, str] | None = None) -> None:

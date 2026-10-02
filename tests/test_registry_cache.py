@@ -54,7 +54,12 @@ def test_первая_загрузка_сохраняет_кэш(export):
     registry.add_configuration(zip_path)
 
     files = {p.name for p in (data_dir / "index" / "cache").iterdir()}
-    assert files == {"ТестоваяКонфигурация.objects", "ТестоваяКонфигурация.fields"}
+    # Ключ подписи кэша живёт в том же каталоге и уборке не подлежит.
+    assert files == {
+        "ТестоваяКонфигурация.objects",
+        "ТестоваяКонфигурация.fields",
+        index_cache.KEY_FILE_NAME,
+    }
 
 
 def test_повторная_загрузка_не_строит_индексы_заново(export, spy_build):
@@ -284,7 +289,11 @@ def test_удаление_источника_уносит_его_кэш(export):
 
     registry.remove("ТестоваяКонфигурация")
 
-    assert list((data_dir / "index" / "cache").iterdir()) == []
+    assert [
+        p.name
+        for p in (data_dir / "index" / "cache").iterdir()
+        if p.name != index_cache.KEY_FILE_NAME
+    ] == []
 
 
 def test_старт_убирает_кэш_забытых_источников(export):

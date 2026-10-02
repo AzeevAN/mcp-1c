@@ -24,15 +24,30 @@ JSON проигрывает не из-за разбора, а из-за стру
 **Кэш — расходник.** Не сошёлся штамп, побился файл, обновился Python — молча
 строим как раньше. Неверный ответ получить нельзя: либо годный кэш, либо
 пересборка.
+
+**Подпись — HMAC-SHA256 заголовка и сжатого блоба.** Ключ — 32 случайных
+байта в `.cache-key` того же каталога кэша, права 0600, создаётся при первой
+записи и переживает рестарт: per-process ключ обесценивал бы кэш на каждом
+старте, а тёплый старт — его единственный смысл. `marshal.loads` вызывается
+только после сверки подписи. Честная граница: подпись защищает от порчи и от
+подмены файла тем, кто не может прочитать ключ (кэш другой установки,
+скопированный файл, запись без доступа к `.cache-key`). Тот, кто читает и
+пишет весь `data/`, прочитает и ключ — от него подпись не защищает, как и
+штамп.
 """
 
 from __future__ import annotations
 
 import gzip
 import hashlib
+import hmac
 import json
 import marshal
+import os
+import secrets
+import stat
 import sys
+import threading
 import zlib
 from pathlib import Path
 from typing import Iterable
@@ -55,6 +70,14 @@ _MARSHAL_VERSION = 4
 MAX_CACHE_FILE_BYTES = 256 * 1024 * 1024
 MAX_CACHE_PAYLOAD_BYTES = 512 * 1024 * 1024
 _MAX_HEADER_BYTES = 16 * 1024
+
+KEY_FILE_NAME = ".cache-key"
+_KEY_BYTES = 32
+_MAC_HEX_BYTES = 64
+# Ключ читается с диска один раз на каталог и процесс: тёплый старт поднимает
+# два десятка файлов, и каждый раз открывать ключ незачем.
+_KEYS: dict[Path, bytes] = {}
+_KEYS_LOCK = threading.Lock()
 
 
 class _Miss(Exception):
@@ -122,9 +145,110 @@ def path_for(cache_dir: str | Path, source_id: str, kind: str) -> Path:
     return Path(cache_dir) / f"{safe_name(source_id)}.{kind}"
 
 
+class _KeyUnavailable(Exception):
+    """Ключ нельзя ни прочитать, ни безопасно создать — кэш не используется."""
+
+
+def _key_directory(path: Path) -> Path:
+    """Каталог, ключ которого подписывает файл ``path``.
+
+    Registry собирает кэш модулей во временном `.modules-cache.tmp-*` внутри
+    каталога кэша и затем переносит файлы: подпись обязана остаться верной,
+    поэтому скрытые временные каталоги делят ключ с родителем.
+    """
+    directory = path.parent
+    while directory.name.startswith(".") and directory.parent != directory:
+        directory = directory.parent
+    return directory
+
+
+def _read_key_file(key_path: Path) -> bytes | None:
+    """Прочитать ключ. ``None`` — файла нет или он испорчен (размер не тот)."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(key_path, flags)
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        # ELOOP — на месте ключа символическая ссылка: чужой ключ не берём.
+        raise _KeyUnavailable(str(error)) from error
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise _KeyUnavailable("ключ кэша не является обычным файлом")
+        if info.st_size != _KEY_BYTES:
+            return None
+        key = os.read(descriptor, _KEY_BYTES + 1)
+    except OSError as error:
+        raise _KeyUnavailable(str(error)) from error
+    finally:
+        os.close(descriptor)
+    return key if len(key) == _KEY_BYTES else None
+
+
+def _create_key(directory: Path, *, replace_broken: bool) -> bytes:
+    key_path = directory / KEY_FILE_NAME
+    temporary = directory / f"{KEY_FILE_NAME}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
+    key = secrets.token_bytes(_KEY_BYTES)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(temporary, flags, 0o600)
+        try:
+            os.write(descriptor, key)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        if replace_broken:
+            os.replace(temporary, key_path)
+        else:
+            try:
+                # link, а не replace: два процесса, стартующих одновременно,
+                # не должны перезаписать ключ друг друга — второй берёт первый.
+                os.link(temporary, key_path)
+            except FileExistsError:
+                existing = _read_key_file(key_path)
+                if existing is None:
+                    raise _KeyUnavailable("ключ кэша создаётся другим процессом")
+                key = existing
+    except OSError as error:
+        raise _KeyUnavailable(str(error)) from error
+    finally:
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+    return key
+
+
+def _key_for(path: Path, *, create: bool) -> bytes:
+    directory = _key_directory(path)
+    with _KEYS_LOCK:
+        cached = _KEYS.get(directory)
+        if cached is not None:
+            return cached
+        key_path = directory / KEY_FILE_NAME
+        key = _read_key_file(key_path)
+        if key is None:
+            if not create:
+                raise _KeyUnavailable("ключа кэша нет")
+            broken = key_path.is_symlink() or key_path.exists()
+            key = _create_key(directory, replace_broken=broken)
+        _KEYS[directory] = key
+        return key
+
+
+def _mac(key: bytes, header: bytes, blob: bytes) -> bytes:
+    digest = hmac.new(key, header, hashlib.sha256)
+    digest.update(b"\n")
+    digest.update(blob)
+    return digest.hexdigest().encode("ascii")
+
+
 def _stamp(source_sha256: str, kind: str) -> dict:
     return {
         "cache_version": CACHE_VERSION,
+        # Файлы без подписи прежнего формата промахиваются уже на штампе.
+        "mac": "hmac-sha256",
         "kind": kind,
         "python": f"{sys.version_info.major}.{sys.version_info.minor}",
         "marshal": _MARSHAL_VERSION,
@@ -152,9 +276,12 @@ def save_blob(payload, path: str | Path, *, source_sha256: str, kind: str) -> Pa
 
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
+        mac = _mac(_key_for(target, create=True), header, blob)
         tmp = target.with_suffix(target.suffix + ".tmp")
-        tmp.write_bytes(header + b"\n" + blob)
+        tmp.write_bytes(header + b"\n" + mac + b"\n" + blob)
         tmp.replace(target)
+    except _KeyUnavailable:
+        return None
     except OSError:
         # Том смонтирован только на чтение, кончилось место, каталог занят —
         # ронять из-за кэша нечего: следующий старт просто построит заново.
@@ -193,7 +320,11 @@ def _read_verified(path: Path, source_sha256: str, kind: str) -> dict:
     if separator < 0:
         raise _Miss("нет заголовка")
     head = raw[:separator]
-    blob = raw[separator + 1 :]
+    mac_end = separator + 1 + _MAC_HEX_BYTES
+    if raw[mac_end : mac_end + 1] != b"\n":
+        raise _Miss("нет подписи")
+    mac = raw[separator + 1 : mac_end]
+    blob = raw[mac_end + 1 :]
 
     try:
         stamp = json.loads(head.decode("utf-8"))
@@ -202,6 +333,15 @@ def _read_verified(path: Path, source_sha256: str, kind: str) -> dict:
 
     if stamp != _stamp(source_sha256, kind):
         raise _Miss("штамп не совпал")
+
+    # Подпись сверяется до распаковки и до marshal: подменённый блоб с верным
+    # штампом дальше этой строки не проходит.
+    try:
+        key = _key_for(path, create=False)
+    except _KeyUnavailable as error:
+        raise _Miss(str(error)) from error
+    if not hmac.compare_digest(mac, _mac(key, head, blob)):
+        raise _Miss("подпись не совпала")
 
     try:
         decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
@@ -255,7 +395,8 @@ def sweep(cache_dir: str | Path, keep: Iterable[str]) -> list[str]:
     allowed = set(keep)
     removed: list[str] = []
     for path in sorted(directory.iterdir()):
-        if not path.is_file() or path.name in allowed:
+        # Ключ подписи уборке не подлежит: без него обесценился бы весь кэш.
+        if not path.is_file() or path.name in allowed or path.name == KEY_FILE_NAME:
             continue
         try:
             path.unlink()

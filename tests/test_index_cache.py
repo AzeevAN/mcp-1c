@@ -135,14 +135,18 @@ def test_повторная_запись_перезаписывает_тот_ж�
     index_cache.save(sample_index, path, source_sha256="abc", kind="objects")
     index_cache.save(sample_index, path, source_sha256="def", kind="objects")
 
-    assert len(list(tmp_path.iterdir())) == 1
+    files = [p.name for p in tmp_path.iterdir() if p.name != index_cache.KEY_FILE_NAME]
+    assert files == [path.name]
 
 
 def test_после_записи_не_остаётся_временного_файла(tmp_path, sample_index):
     path = index_cache.path_for(tmp_path, "Розница", "objects")
     index_cache.save(sample_index, path, source_sha256="abc", kind="objects")
 
-    assert [p.name for p in tmp_path.iterdir()] == [path.name]
+    # Рядом остаётся только ключ подписи кэша, временных файлов нет.
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
+        [path.name, index_cache.KEY_FILE_NAME]
+    )
 
 
 def test_уборка_сносит_файлы_исчезнувшего_источника(tmp_path, sample_index):

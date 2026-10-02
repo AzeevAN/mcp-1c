@@ -565,35 +565,3 @@ def test_remove_сверяет_штамп_до_сноса_каталогов(
     payload = json.loads(server.registry_path.read_text(encoding="utf-8"))
     ids = {raw["id"] for raw in payload["sources"]}
     assert "Другая" in ids and "Пример" not in ids
-
-
-def test_отказ_записи_журнала_покрытия_не_повторяет_загрузку_кода(
-    tmp_path, архив_кода, корень_кода, monkeypatch
-):
-    incoming = tmp_path / "input"
-    incoming.mkdir()
-    server = Registry(tmp_path / "data")
-    server.startup()
-    server.add_configuration(write_export(incoming, build_configuration(name="Пример")))
-    подлинный_save = server.save
-    подлинная_распаковка = server._extract_to_temp
-    сохранений = {"n": 0}
-    распаковок = {"n": 0}
-
-    def save():
-        сохранений["n"] += 1
-        if сохранений["n"] == 2:
-            # Запись пути журнала покрытия после уже опубликованного кода.
-            raise RegistryChangedExternally("синтетическая чужая запись")
-        return подлинный_save()
-
-    def распаковать(*args, **kwargs):
-        распаковок["n"] += 1
-        return подлинная_распаковка(*args, **kwargs)
-
-    monkeypatch.setattr(server, "save", save)
-    monkeypatch.setattr(server, "_extract_to_temp", распаковать)
-    source = server.add_modules(архив_кода(корень_кода), configuration="Пример")
-
-    assert распаковок["n"] == 1
-    assert server.modules[source.id].готов

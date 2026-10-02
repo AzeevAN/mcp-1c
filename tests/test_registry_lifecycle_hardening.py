@@ -46,6 +46,8 @@ def test_bootstrap_той_же_a_не_откатывает_native_b_full(tmp_pat
     restarted = Registry(data)
     messages = restarted.startup()
     assert _mode(restarted) is ActivationMode.B_FULL, messages
+    # Пропуск A назван в стартовых сообщениях, а не молчалив.
+    assert any("пропущен" in message for message in messages), messages
     assert restarted.resolve("DemoConfiguration").modules is not None
     again = Registry(data)
     again.startup()
@@ -321,15 +323,27 @@ def _задержать_фоновую_сборку(registry, monkeypatch):
     начата = threading.Event()
     отпустить = threading.Event()
     подлинная = registry._построить_индекс_кода
+    счёт = {"идёт": 0, "максимум": 0}
+    замок = threading.Lock()
 
     def сборка(*args, **kwargs):
-        if threading.current_thread().name.startswith("modules:"):
-            начата.set()
-            assert отпустить.wait(10)
-        return подлинная(*args, **kwargs)
+        фоновая = threading.current_thread().name.startswith("modules:")
+        if фоновая:
+            with замок:
+                счёт["идёт"] += 1
+                счёт["максимум"] = max(счёт["максимум"], счёт["идёт"])
+        try:
+            if фоновая and not начата.is_set():
+                начата.set()
+                assert отпустить.wait(10)
+            return подлинная(*args, **kwargs)
+        finally:
+            if фоновая:
+                with замок:
+                    счёт["идёт"] -= 1
 
     monkeypatch.setattr(registry, "_построить_индекс_кода", сборка)
-    return начата, отпустить
+    return начата, отпустить, счёт
 
 
 def test_провал_reparse_во_время_холодной_сборки_не_оставляет_loading(
@@ -339,7 +353,7 @@ def test_провал_reparse_во_время_холодной_сборки_не
         tmp_path, архив_кода, корень_кода
     )
     restarted = Registry(registry.data_dir)
-    начата, отпустить = _задержать_фоновую_сборку(restarted, monkeypatch)
+    начата, отпустить, счёт = _задержать_фоновую_сборку(restarted, monkeypatch)
     try:
         restarted.startup()
         assert начата.wait(10)
@@ -358,6 +372,8 @@ def test_провал_reparse_во_время_холодной_сборки_не
     # Отменённая reparse-ом холодная сборка перезапущена: источник готов.
     assert restarted.modules[source.id].готов
     assert restarted.sources[source.id].status == "ready"
+    # Перезапуск дождался отменённой сборки, а не строил корпус параллельно.
+    assert счёт["максимум"] == 1
 
 
 def test_reload_пересобирает_застрявший_неготовый_код(

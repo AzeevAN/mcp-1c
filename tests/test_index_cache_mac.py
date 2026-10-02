@@ -250,3 +250,63 @@ def test_без_geteuid_владелец_ключа_не_сверяется(tmp_
     path, _key = _saved_with_key(tmp_path)
     monkeypatch.delattr(index_cache.os, "geteuid")
     assert index_cache.load_blob(path, source_sha256="abc", kind="blob") == {"a": 1}
+
+
+def _пустой_ключ(tmp_path, *, возраст: float = 0.0) -> Path:
+    """Ключ, созданный O_EXCL на месте, но ещё не записанный соперником."""
+    key_path = tmp_path / index_cache.KEY_FILE_NAME
+    descriptor = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    os.close(descriptor)
+    if возраст:
+        прошлое = key_path.stat().st_mtime - возраст
+        os.utime(key_path, (прошлое, прошлое))
+    index_cache._KEYS.clear()
+    return key_path
+
+
+def test_ключ_в_записи_соперником_дожидаются_а_не_заменяют(tmp_path):
+    import threading
+
+    key_path = _пустой_ключ(tmp_path)
+    ключ_соперника = b"r" * index_cache._KEY_BYTES
+
+    def соперник_дописывает():
+        with open(key_path, "r+b") as stream:
+            stream.write(ключ_соперника)
+
+    таймер = threading.Timer(0.05, соперник_дописывает)
+    таймер.start()
+    try:
+        path = tmp_path / "blob"
+        assert (
+            index_cache.save_blob({"a": 1}, path, source_sha256="abc", kind="blob")
+            == path
+        )
+    finally:
+        таймер.join()
+
+    # Ключ победителя не заменён, и наш кэш подписан именно им.
+    assert key_path.read_bytes() == ключ_соперника
+    index_cache._KEYS.clear()
+    assert index_cache.load_blob(path, source_sha256="abc", kind="blob") == {"a": 1}
+
+
+def test_недописанный_свежий_ключ_не_заменяется_кэш_пропускается(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(index_cache, "_KEY_WAIT_SECONDS", 0.05)
+    key_path = _пустой_ключ(tmp_path)
+    inode = key_path.stat().st_ino
+
+    path = tmp_path / "blob"
+    assert index_cache.save_blob({"a": 1}, path, source_sha256="abc", kind="blob") is None
+    assert key_path.stat().st_ino == inode
+    assert key_path.read_bytes() == b""
+
+
+def test_давно_недописанный_ключ_считается_битым_и_заменяется(tmp_path):
+    key_path = _пустой_ключ(tmp_path, возраст=3600)
+
+    path = tmp_path / "blob"
+    assert index_cache.save_blob({"a": 1}, path, source_sha256="abc", kind="blob") == path
+    assert len(key_path.read_bytes()) == index_cache._KEY_BYTES

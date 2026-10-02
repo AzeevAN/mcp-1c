@@ -50,6 +50,7 @@ import secrets
 import stat
 import sys
 import threading
+import time
 import zlib
 from pathlib import Path
 from typing import Iterable
@@ -92,6 +93,14 @@ _NO_HARDLINK = frozenset(
     if code is not None
 )
 _KEY_BYTES = 32
+# Без жёстких ссылок ключ создаётся O_EXCL прямо на месте, и между open и
+# write файл виден пустым. Свежий пустой файл — не «битый», а ключ соперника
+# в записи: его дожидаются, а не заменяют, иначе победитель подписывал бы
+# кэш ключом, которого на диске уже нет. 32 байта уходят одним write, так
+# что непустой короткий файл — порча, а не запись. Пустой старше порога —
+# создатель умер между open и write, файл действительно битый.
+_KEY_WAIT_SECONDS = 1.0
+_KEY_FRESH_SECONDS = 30.0
 _MAC_HEX_BYTES = 64
 # Ключ читается с диска один раз на каталог и процесс: тёплый старт поднимает
 # два десятка файлов, и каждый раз открывать ключ незачем.
@@ -289,8 +298,30 @@ def _create_key(directory: Path, *, replace_broken: bool) -> bytes:
     return key
 
 
+def _key_being_written(key_path: Path) -> bool:
+    """Пустой обычный файл, созданный только что, — запись соперника."""
+    try:
+        info = key_path.lstat()
+    except OSError:
+        return False
+    return (
+        stat.S_ISREG(info.st_mode)
+        and info.st_size == 0
+        and time.time() - info.st_mtime < _KEY_FRESH_SECONDS
+    )
+
+
+def _wait_for_key(key_path: Path) -> bytes | None:
+    deadline = time.monotonic() + _KEY_WAIT_SECONDS
+    while True:
+        key = _read_key_file(key_path)
+        if key is not None or time.monotonic() >= deadline:
+            return key
+        time.sleep(0.01)
+
+
 def _existing_key(key_path: Path) -> bytes:
-    existing = _read_key_file(key_path)
+    existing = _wait_for_key(key_path)
     if existing is None:
         raise _KeyUnavailable("ключ кэша создаётся другим процессом")
     return existing
@@ -307,8 +338,11 @@ def _key_for(path: Path, *, create: bool) -> bytes:
         if key is None:
             if not create:
                 raise _KeyUnavailable("ключа кэша нет")
-            broken = key_path.is_symlink() or key_path.exists()
-            key = _create_key(directory, replace_broken=broken)
+            if _key_being_written(key_path):
+                key = _existing_key(key_path)
+            else:
+                broken = key_path.is_symlink() or key_path.exists()
+                key = _create_key(directory, replace_broken=broken)
         _KEYS[directory] = key
         return key
 

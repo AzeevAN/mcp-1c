@@ -49,6 +49,7 @@ import os
 import secrets
 import stat
 import sys
+import tempfile
 import threading
 import time
 import zlib
@@ -106,6 +107,11 @@ _MAC_HEX_BYTES = 64
 # два десятка файлов, и каждый раз открывать ключ незачем.
 _KEYS: dict[Path, bytes] = {}
 _KEYS_LOCK = threading.Lock()
+# Чтение, создание и ожидание недописанного ключа соперника (до
+# `_KEY_WAIT_SECONDS`) идут под замком своего каталога, а не под общим:
+# иначе секунда ожидания в одном каталоге останавливала бы запись и
+# чтение кэша во всех остальных, ключи которых уже известны.
+_KEY_DIRECTORY_LOCKS: dict[Path, threading.Lock] = {}
 
 
 class _Miss(Exception):
@@ -333,6 +339,15 @@ def _key_for(path: Path, *, create: bool) -> bytes:
         cached = _KEYS.get(directory)
         if cached is not None:
             return cached
+        directory_lock = _KEY_DIRECTORY_LOCKS.setdefault(directory, threading.Lock())
+    # Замок каталога сериализует потоки одного процесса: замена битого ключа
+    # (`replace_broken`) двумя потоками сразу подписала бы кэш ключом,
+    # которого на диске уже нет.
+    with directory_lock:
+        with _KEYS_LOCK:
+            cached = _KEYS.get(directory)
+        if cached is not None:
+            return cached
         key_path = directory / KEY_FILE_NAME
         key = _read_key_file(key_path)
         if key is None:
@@ -343,7 +358,8 @@ def _key_for(path: Path, *, create: bool) -> bytes:
             else:
                 broken = key_path.is_symlink() or key_path.exists()
                 key = _create_key(directory, replace_broken=broken)
-        _KEYS[directory] = key
+        with _KEYS_LOCK:
+            _KEYS[directory] = key
         return key
 
 
@@ -368,7 +384,7 @@ def _stamp(source_sha256: str, kind: str) -> dict:
 
 
 def save_blob(payload, path: str | Path, *, source_sha256: str, kind: str) -> Path | None:
-    """Записать что угодно из примитивов. Атомарно: сначала `.tmp`, потом замена.
+    """Записать что угодно из примитивов. Атомарно: временный файл, потом замена.
 
     Без атомарности прерванная запись оставляет обрезанный файл на месте
     годного, и следующий старт поднимет полуиндекс.
@@ -387,9 +403,22 @@ def save_blob(payload, path: str | Path, *, source_sha256: str, kind: str) -> Pa
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         mac = _mac(_key_for(target, create=True), header, blob)
-        tmp = target.with_suffix(target.suffix + ".tmp")
-        tmp.write_bytes(header + b"\n" + mac + b"\n" + blob)
-        tmp.replace(target)
+        # Уникальное имя через mkstemp (O_EXCL, 0600), а не предсказуемый
+        # `<файл>.tmp`: write_bytes по такому имени шёл бы по подложенному
+        # симлинку и перезаписывал его цель.
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
+        )
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(header + b"\n" + mac + b"\n" + blob)
+            os.replace(temporary, target)
+        except BaseException:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+            raise
     except _KeyUnavailable:
         return None
     except OSError:

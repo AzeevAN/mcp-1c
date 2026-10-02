@@ -137,6 +137,12 @@ DIRECT_XML = re.compile(
     r"|\bimport\s+xml\.etree\.cElementTree\b"
     r"|\bminidom\b|\bexpat\b|\bParserCreate\b|\blxml\b"
     r"|\bimport\s+xml\.etree\.ElementTree(?!\s+as\s+ET\b)"
+    # Разбор без функций разбора по имени: ElementTree(file=...) и второй
+    # позиционный аргумент — это file, ElementTree().parse(...) и XMLID.
+    r"|\bXMLID\("
+    r"|\bElementTree\([^()]*\bfile\s*="
+    r"|\bElementTree\([^(),]*,"
+    r"|\bElementTree\(\s*\)\s*\.\s*parse\("
 )
 
 
@@ -157,6 +163,11 @@ DIRECT_XML = re.compile(
         "from pyexpat import ParserCreate",
         "import xml.sax",
         "from lxml import etree",
+        "tree = ET.ElementTree(file=stream)",
+        "tree = ET.ElementTree(None, stream)",
+        "root, ids = ET.XMLID(data)",
+        "tree = ET.ElementTree().parse(stream)",
+        "ElementTree.XMLID(data)",
     ],
 )
 def test_страж_ловит_каждый_вариант_обхода(line):
@@ -170,6 +181,7 @@ def test_страж_ловит_каждый_вариант_обхода(line):
         "def f(element: ET.Element) -> ET.Element:",
         "ET.canonicalize(xml_data=ET.tostring(root, encoding='unicode'))",
         "root = xml_safety.fromstring(data)",
+        "ET.ElementTree(root).write(stream)",
     ],
 )
 def test_страж_не_трогает_допустимое(line):

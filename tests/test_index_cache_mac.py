@@ -310,3 +310,58 @@ def test_давно_недописанный_ключ_считается_бит�
     path = tmp_path / "blob"
     assert index_cache.save_blob({"a": 1}, path, source_sha256="abc", kind="blob") == path
     assert len(key_path.read_bytes()) == index_cache._KEY_BYTES
+
+
+def test_ожидание_ключа_одного_каталога_не_держит_другие(tmp_path, monkeypatch):
+    """Пока один поток ждёт недописанный ключ соперника, кэш другого каталога
+    с уже известным ключом читается и пишется без задержки."""
+    import threading
+    import time
+
+    monkeypatch.setattr(index_cache, "_KEY_WAIT_SECONDS", 1.5)
+    index_cache._KEYS.clear()
+    ready = tmp_path / "ready"
+    ready.mkdir()
+    assert index_cache.save_blob({"a": 1}, ready / "blob", source_sha256="s", kind="blob")
+    waiting = tmp_path / "waiting"
+    waiting.mkdir()
+    (waiting / index_cache.KEY_FILE_NAME).write_bytes(b"")
+    (waiting / index_cache.KEY_FILE_NAME).chmod(0o600)
+
+    started = threading.Event()
+    real_wait = index_cache._wait_for_key
+
+    def tracked_wait(key_path):
+        started.set()
+        return real_wait(key_path)
+
+    monkeypatch.setattr(index_cache, "_wait_for_key", tracked_wait)
+    worker = threading.Thread(
+        target=index_cache.save_blob,
+        args=({"b": 2}, waiting / "blob"),
+        kwargs={"source_sha256": "s", "kind": "blob"},
+    )
+    worker.start()
+    assert started.wait(2)
+    begin = time.monotonic()
+    assert index_cache.save_blob({"c": 3}, ready / "other", source_sha256="s", kind="blob")
+    elapsed = time.monotonic() - begin
+    worker.join()
+
+    assert elapsed < 0.5
+
+
+def test_запись_блоба_не_следует_по_симлинку_временного_файла(tmp_path):
+    """Предсказуемый `<файл>.tmp` симлинком на чужой файл: запись через
+    write_bytes перезаписала бы цель."""
+    victim = tmp_path / "victim"
+    victim.write_bytes(b"original")
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "blob.tmp").symlink_to(victim)
+
+    assert index_cache.save_blob({"a": 1}, cache / "blob", source_sha256="s", kind="blob")
+    assert victim.read_bytes() == b"original"
+    assert index_cache.load_blob(cache / "blob", source_sha256="s", kind="blob") == {"a": 1}
+    leftovers = sorted(p.name for p in cache.iterdir() if p.name != index_cache.KEY_FILE_NAME)
+    assert leftovers == ["blob", "blob.tmp"]

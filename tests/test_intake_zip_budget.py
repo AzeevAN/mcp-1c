@@ -354,3 +354,28 @@ def test_limited_reader_не_читает_мимо_учёта():
         with pytest.raises(AttributeError):
             getattr(reader, name)
     assert reader.seekable() is False
+
+
+def test_каталог_сверяет_сумму_выбранных_файлов_до_сборки(tmp_path):
+    from mcp1c.intake_v2_transport import DirectoryExportTree
+    from mcp1c.resource_limits import ResourceLimits
+
+    root = tmp_path / "export"
+    (root / "Roles").mkdir(parents=True)
+    (root / "Configuration.xml").write_bytes(_configuration())
+    for index in range(5):
+        (root / "Roles" / f"Part{index}.xml").write_bytes(b"\0" * 1024)
+    limits = ResourceLimits(
+        max_entries=100,
+        max_entry_bytes=4096,
+        max_total_bytes=4096,
+        max_compression_ratio=200,
+    )
+    tree = DirectoryExportTree(root, limits=limits, settle_seconds=0)
+
+    # Каждый файл в пределе, вместе — больше: отказ до первой записи staging.
+    with pytest.raises(TransportLimitError, match="суммарный"):
+        tree.validate_selection(tree.paths())
+    with pytest.raises(CollectorError, match="суммарный"):
+        collect_source_b(tree, probe_export(tree), tmp_path / "collection")
+    assert not (tmp_path / "collection").exists()

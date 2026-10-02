@@ -43,6 +43,7 @@ import gzip
 import hashlib
 import hmac
 import json
+import logging
 import marshal
 import os
 import secrets
@@ -55,6 +56,11 @@ from typing import Iterable
 
 from .search import SearchIndex
 from .package_digest import package_digest
+
+logger = logging.getLogger(__name__)
+# Каталоги, о чужом ключе в которых уже предупредили: отказ повторяется на
+# каждом чтении кэша, а в журнале нужен один раз.
+_WARNED_FOREIGN_KEYS: set[Path] = set()
 
 CACHE_VERSION = 1
 
@@ -76,7 +82,7 @@ KEY_FILE_NAME = ".cache-key"
 # Префикс временного каталога сборки кэша модулей в Registry.
 _MODULES_STAGING_PREFIX = ".modules-cache.tmp-"
 # Ошибки os.link на файловых системах без жёстких ссылок (часть сетевых и
-# FUSE-томов, bind-монтирования Docker Desktop): тогда — rename.
+# FUSE-томов, bind-монтирования Docker Desktop): тогда ключ создаётся O_EXCL на месте.
 _NO_HARDLINK = frozenset(
     code
     for code in (
@@ -193,9 +199,13 @@ def _read_key_file(key_path: Path) -> bytes | None:
             raise _KeyUnavailable("ключ кэша не является обычным файлом")
         # Чужой или доступный другим ключ не берём и не подменяем: его мог
         # подложить кто угодно с записью в каталог, а решать — оператору.
-        if info.st_uid != os.geteuid():
+        # На платформе без geteuid (Windows) владельца сверить нечем.
+        geteuid = getattr(os, "geteuid", None)
+        if geteuid is not None and info.st_uid != geteuid():
+            _warn_foreign_key(key_path, "принадлежит другому пользователю")
             raise _KeyUnavailable("ключ кэша принадлежит другому пользователю")
         if info.st_mode & 0o077:
+            _warn_foreign_key(key_path, "доступен группе или всем")
             raise _KeyUnavailable("ключ кэша доступен группе или всем")
         if info.st_size != _KEY_BYTES:
             return None
@@ -205,6 +215,41 @@ def _read_key_file(key_path: Path) -> bytes | None:
     finally:
         os.close(descriptor)
     return key if len(key) == _KEY_BYTES else None
+
+
+def _warn_foreign_key(key_path: Path, reason: str) -> None:
+    """Сказать оператору один раз: кэш молча перестраивался бы на каждом старте."""
+    directory = key_path.parent
+    if directory in _WARNED_FOREIGN_KEYS:
+        return
+    _WARNED_FOREIGN_KEYS.add(directory)
+    logger.warning(
+        "Ключ кэша индексов %s %s: кэш в этом каталоге не используется. "
+        "Удалите ключ или исправьте владельца и права (0600).",
+        key_path,
+        reason,
+    )
+
+
+def _create_key_in_place(key_path: Path, key: bytes) -> bytes:
+    """Создать ключ эксклюзивно прямо на месте, если жёстких ссылок нет.
+
+    Проверка «нет файла» и rename не атомарны: два процесса могли бы
+    переименовать каждый свой ключ, и первый подписывал бы кэш ключом,
+    которого на диске уже нет. O_EXCL решает «создать, если нет» одной
+    операцией; проигравший читает ключ победителя.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(key_path, flags, 0o600)
+    except FileExistsError:
+        return _existing_key(key_path)
+    try:
+        os.write(descriptor, key)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    return key
 
 
 def _create_key(directory: Path, *, replace_broken: bool) -> bytes:
@@ -231,14 +276,9 @@ def _create_key(directory: Path, *, replace_broken: bool) -> bytes:
             except OSError as error:
                 if error.errno not in _NO_HARDLINK:
                     raise
-                # Без жёстких ссылок атомарного «создать, если нет» нет:
-                # rename только когда ключа ещё нет, а затем повторное чтение —
-                # при гонке все процессы сойдутся на последнем записанном.
-                if key_path.exists() or key_path.is_symlink():
-                    key = _existing_key(key_path)
-                else:
-                    os.rename(temporary, key_path)
-                    key = _existing_key(key_path)
+                # Без жёстких ссылок (FUSE, bind-mount Docker Desktop) ключ
+                # создаётся эксклюзивно прямо на месте.
+                key = _create_key_in_place(key_path, key)
     except OSError as error:
         raise _KeyUnavailable(str(error)) from error
     finally:

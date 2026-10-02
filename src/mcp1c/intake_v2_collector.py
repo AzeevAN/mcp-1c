@@ -1311,7 +1311,18 @@ def collect_source_b(
         raise CollectorError("probe относится к другому снимку virtual tree")
     if tree.transport is not probe.transport or tree.origin_name != probe.origin_name:
         raise CollectorError("provenance virtual tree не совпадает с probe")
-    plan = _plan(tree, probe.wrapper, kind_specs)
+    # Классификация читает пути транспорта и разбирает их правилами видов:
+    # её сбой — такой же отказ сборки, как сбой копирования ниже, а не
+    # необработанное исключение мимо контракта CollectorError.
+    try:
+        plan = _plan(tree, probe.wrapper, kind_specs)
+    except CollectorError:
+        raise
+    except TransportError as error:
+        message = str(error).strip() or "source-B transport недоступен"
+        raise CollectorError(message[:2048]) from error
+    except Exception as error:
+        raise CollectorError("не удалось классифицировать выгрузку source-B") from error
     target = Path(target)
     if _target_exists(target):
         raise CollectorError("target collection уже существует")

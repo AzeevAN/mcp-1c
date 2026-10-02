@@ -14,6 +14,7 @@ import gzip
 import marshal
 import os
 import stat
+from pathlib import Path
 
 import pytest
 
@@ -201,3 +202,51 @@ def test_без_жёстких_ссылок_ключ_создаётся_пере
     index_cache._KEYS.clear()
     assert index_cache.load_blob(path, source_sha256="abc", kind="blob") == {"a": 1}
     assert [p.name for p in tmp_path.iterdir() if p.name.endswith(".tmp")] == []
+
+
+def test_без_жёстких_ссылок_гонка_создания_сходится_на_одном_ключе(
+    tmp_path, monkeypatch
+):
+    def no_link(_source, _target):
+        raise OSError(errno.EXDEV, os.strerror(errno.EXDEV))
+
+    monkeypatch.setattr(index_cache.os, "link", no_link)
+    подлинный_open = index_cache.os.open
+    key_path = tmp_path / index_cache.KEY_FILE_NAME
+    чужой_ключ = b"k" * index_cache._KEY_BYTES
+
+    def open_с_соперником(path, flags, *args, **kwargs):
+        # Соперник успевает создать ключ сразу перед нашим созданием.
+        if Path(path) == key_path and flags & os.O_EXCL and not key_path.exists():
+            descriptor = подлинный_open(key_path, os.O_WRONLY | os.O_CREAT, 0o600)
+            os.write(descriptor, чужой_ключ)
+            os.close(descriptor)
+        return подлинный_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(index_cache.os, "open", open_с_соперником)
+    path = tmp_path / "blob"
+    assert index_cache.save_blob({"a": 1}, path, source_sha256="abc", kind="blob") == path
+
+    # Наш кэш подписан ключом, который действительно лежит на диске.
+    assert key_path.read_bytes() == чужой_ключ
+    index_cache._KEYS.clear()
+    assert index_cache.load_blob(path, source_sha256="abc", kind="blob") == {"a": 1}
+
+
+def test_чужой_ключ_предупреждает_один_раз(tmp_path, monkeypatch, caplog):
+    path, _key = _saved_with_key(tmp_path)
+    index_cache._WARNED_FOREIGN_KEYS.clear()
+    real = os.geteuid()
+    monkeypatch.setattr(index_cache.os, "geteuid", lambda: real + 1)
+
+    with caplog.at_level("WARNING", logger="mcp1c.index_cache"):
+        for _ in range(3):
+            index_cache._KEYS.clear()
+            assert index_cache.load_blob(path, source_sha256="abc", kind="blob") is None
+    assert sum("другому пользователю" in record.message for record in caplog.records) == 1
+
+
+def test_без_geteuid_владелец_ключа_не_сверяется(tmp_path, monkeypatch):
+    path, _key = _saved_with_key(tmp_path)
+    monkeypatch.delattr(index_cache.os, "geteuid")
+    assert index_cache.load_blob(path, source_sha256="abc", kind="blob") == {"a": 1}

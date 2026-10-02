@@ -1198,6 +1198,21 @@ class DirectoryExportTree:
     def paths(self) -> tuple[str, ...]:
         return self._paths
 
+    def validate_selection(self, paths: Iterable[str]) -> None:
+        """Сверить состав читаемых файлов с бюджетом до сборки.
+
+        Сжатия в каталоге нет, поэтому бомбы по коэффициенту не бывает, но
+        суммарный объём и предел файла есть: без этой проверки огромный
+        каталог отвергался бы только посреди сборки, когда часть уже
+        скопирована в staging. Размеры берутся из зафиксированного снимка.
+        """
+        rows = []
+        for path in paths:
+            rows.append((path, self.size(path), self.size(path)))
+        _validate_opened_member_rows(
+            _read_budget(self._limits, "каталог файловой выгрузки"), rows
+        )
+
     def size(self, path: str) -> int:
         path = _requested_path(path)
         try:

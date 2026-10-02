@@ -739,3 +739,18 @@ def test_collector_хранит_members_в_одном_pack_без_дерева_�
     demo = next(item for item in result.code if item.address.endswith(".Demo.МодульОбъекта"))
     with _symbol("open_collection_member")(target, demo.relative_path) as source:
         assert b"procedure Demo" in source.read()
+
+
+def test_collector_неожиданный_сбой_классификации_даёт_collector_error(
+    tmp_path, monkeypatch
+):
+    CollectorError = _symbol("CollectorError")
+    collector = importlib.import_module("mcp1c.intake_v2_collector")
+
+    def сбой(*_args, **_kwargs):
+        raise ValueError("синтетический сбой правила вида")
+
+    monkeypatch.setattr(collector, "_plan_step", сбой)
+    with pytest.raises(CollectorError, match="классифицировать"):
+        _collect(_tree(), tmp_path / "failed")
+    assert not (tmp_path / "failed").exists()

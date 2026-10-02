@@ -179,13 +179,17 @@ def test_страж_не_трогает_допустимое(line):
 def test_все_серверные_парсеры_идут_через_xml_safety():
     """Прямой вызов разборщика ElementTree в обход проверки не допускается."""
     offenders = []
-    for path in sorted(SRC.glob("*.py")):
-        if path.name == "xml_safety.py":
+    # Рекурсивно: парсер в подпакете (capability-модули и т.п.) обходил бы
+    # стража, если смотреть только верхний уровень.
+    files = sorted(SRC.rglob("*.py"))
+    assert any(path.parent != SRC for path in files), "подпакеты не найдены"
+    for path in files:
+        if path == SRC / "xml_safety.py":
             continue
         text = path.read_text(encoding="utf-8")
         for match in DIRECT_XML.finditer(text):
             number = text.count("\n", 0, match.start()) + 1
-            offenders.append(f"{path.name}:{number}")
+            offenders.append(f"{path.relative_to(SRC)}:{number}")
     assert offenders == []
 
 

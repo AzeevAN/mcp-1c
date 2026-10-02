@@ -34,7 +34,7 @@ from starlette.responses import (
 )
 from starlette.routing import Route
 
-from . import __version__, coverage_log, dashboard_backend, tools
+from . import __version__, coverage_log, dashboard_backend, source_ids, tools
 from .capabilities import (
     CapabilityConfigurationError,
     CapabilityRuntime,
@@ -207,7 +207,8 @@ def _sources_payload(
             source = sources_by_id.get(corpus.source_id)
             corpora.append(
                 {
-                    "id": corpus.source_id or f"{configuration.name}:modules",
+                    "id": corpus.source_id
+                    or source_ids.modules_id(configuration.name),
                     "label": corpus.corpus,
                     "kind": corpus.kind,
                     "native_generation": corpus.native_generation,
@@ -244,7 +245,7 @@ def _sources_payload(
                 "source": _source_payload(sources_by_id.get(configuration.name)),
                 "extension_runtime": _source_payload(
                     sources_by_id.get(
-                        f"{configuration.name}:extension-runtime"
+                        source_ids.extension_runtime_id(configuration.name)
                     )
                 ),
                 "corpora": corpora,
@@ -1891,7 +1892,7 @@ def _spa_routes(
         source_id = str(payload.get("id", ""))
         if not source_id or payload.get("confirmation") != source_id:
             return _json_error("Не подтверждено точное имя источника.", 400)
-        configuration = source_id.removesuffix(":modules")
+        configuration = source_ids.configuration_of_modules(source_id)
         async with intake_start_lock:
             if any(not task.done() for task in intake_tasks):
                 return _json_error(

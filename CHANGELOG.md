@@ -130,6 +130,11 @@
   подмены файла на символическую ссылку между проверкой и чтением.
 - Тесты skills перенесены из `tests/capability_modules/{forms,metadata_authoring}`
   в `tests/skills/1c-form-creator` и `tests/skills/1c-metadata-creator`.
+- Формулы идентификаторов источников кода (`<Имя>:modules`,
+  `<Имя>:ext:<Ключ>`, `<Имя>:extension-runtime`) собраны в `source_ids.py`;
+  дашборд, инструменты, intake и lab-замеры строят и разбирают id через него,
+  а не строковыми литералами по месту. Сами id и форматы на диске не
+  менялись.
 
 #### Исправлено
 

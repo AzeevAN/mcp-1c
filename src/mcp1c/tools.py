@@ -26,7 +26,13 @@ from bisect import bisect_right
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import coverage_log, index_cache, replacements, structure_origin
+from . import (
+    coverage_log,
+    index_cache,
+    replacements,
+    source_ids,
+    structure_origin,
+)
 from .bsl_lex import Процедура, прочитать_модуль, разобрать
 from .intake_v2 import ExportIdentity
 from .module_content import ModuleLocator, read_bsl
@@ -742,8 +748,8 @@ def _configuration_code_snapshot(
     источников и скалярные поля прогресса; при reparse/remove весь снимок
     собирается заново, а не смешивает поколения.
     """
-    prefix = f"{name}:ext:"
-    base_id = f"{name}:modules"
+    prefix = source_ids.extension_prefix(name)
+    base_id = source_ids.modules_id(name)
     for _ in range(2):
         snapshot = registry.snapshot()
         context = registry.resolve(name, diagnostic=True)
@@ -3372,7 +3378,7 @@ def _foreign_extension_warnings(
     selected: LoadedModules,
     observed: list[LoadedModules],
 ) -> list[str]:
-    prefix = f"{configuration}:ext:"
+    prefix = source_ids.extension_prefix(configuration)
     snapshot = registry.snapshot()
     кандидаты = sorted(
         (

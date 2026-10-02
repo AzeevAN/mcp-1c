@@ -28,7 +28,7 @@ from typing import Callable, Sequence
 # иначе изменение safe_name разойдётся с измерителем незаметно.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
-from mcp1c import index_cache  # noqa: E402
+from mcp1c import index_cache, source_ids  # noqa: E402
 
 
 CONTAINER = "mcp1c"
@@ -187,10 +187,12 @@ def _binding_id(row: dict) -> str:
     kind = row.get("kind")
     if not isinstance(source_id, str):
         raise MeasurementError("у источника кода неполная идентичность")
-    if kind == "modules" and source_id.endswith(":modules"):
-        return source_id[: -len(":modules")]
+    if kind == "modules" and source_id.endswith(source_ids.MODULES_SUFFIX):
+        return source_ids.configuration_of_modules(source_id)
     if kind == "extension":
-        configuration, separator, extension = source_id.partition(":ext:")
+        configuration, separator, extension = source_id.partition(
+            source_ids.EXTENSION_SEPARATOR
+        )
         if separator and configuration and extension:
             return configuration
     raise MeasurementError("источник кода не привязан к конфигурации")

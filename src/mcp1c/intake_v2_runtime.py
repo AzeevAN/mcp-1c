@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
-from . import index_cache, structure_origin
+from . import index_cache, source_ids, structure_origin
 from .defined_type_contract import resolve_defined_type
 from .module_address import разобрать_плоскую_xml_форму
 from .intake_v2 import (
@@ -1259,11 +1259,11 @@ def build_generation_runtime(
     code = _ready_payload(root, layers, LayerKind.CODE, required=False)
     forms = _ready_payload(root, layers, LayerKind.FORMS, required=False)
     source_id = (
-        f"{configuration.name}:modules"
+        source_ids.modules_id(configuration.name)
         if manifest.identity.source_kind is SourceKind.CONFIGURATION
-        else (
-            f"{manifest.identity.parent_configuration}:ext:"
-            f"{index_cache.safe_name(manifest.identity.extension_name)}"
+        else source_ids.extension_modules_id(
+            manifest.identity.parent_configuration,
+            index_cache.safe_name(manifest.identity.extension_name),
         )
     )
     code_sha256, locator_generation = _code_identity(layers)

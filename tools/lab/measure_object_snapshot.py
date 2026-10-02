@@ -26,7 +26,7 @@ import time
 import tracemalloc
 from pathlib import Path
 
-from mcp1c import tools
+from mcp1c import source_ids, tools
 from mcp1c.registry import (
     KIND_CONFIGURATION,
     KIND_EXTENSION,
@@ -111,15 +111,20 @@ def _target(registry: Registry):
     candidates = []
     for name in snapshot.configuration_names:
         extension_names = snapshot.extension_names(name)
-        base = registry.modules.get(f"{name}:modules")
+        base = registry.modules.get(source_ids.modules_id(name))
         if base is None or not base.готов:
             continue
         ready_extensions = [
-            f"{name}:ext:{extension}"
+            source_ids.extension_modules_id(name, extension)
             for extension in extension_names
             if (
-                registry.modules.get(f"{name}:ext:{extension}") is not None
-                and registry.modules[f"{name}:ext:{extension}"].готов
+                (
+                    loaded := registry.modules.get(
+                        source_ids.extension_modules_id(name, extension)
+                    )
+                )
+                is not None
+                and loaded.готов
             )
         ]
         if len(ready_extensions) >= max(EXTENSION_COUNTS):

@@ -14,6 +14,7 @@ from types import MappingProxyType
 from typing import Callable, Mapping
 
 from .intake import is_intentionally_ignored
+from .source_ids import is_code_source_id
 from .module_address import (
     FlatNameError,
     адрес_модуля,
@@ -384,9 +385,8 @@ class ModuleCatalog:
             }
             for entry in entries.values():
                 generation_entry = entry.module_kind == "generation"
-                if generation_entry and not (
-                    identity.source_id.endswith(":modules")
-                    or ":ext:" in identity.source_id
+                if generation_entry and not is_code_source_id(
+                    identity.source_id
                 ):
                     return None
                 if entry.address_collision and not entry.conflict:

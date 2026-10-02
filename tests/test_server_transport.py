@@ -302,3 +302,22 @@ def test_uvicorn_доверяет_forwarded_headers_только_по_явном
     assert вызовы[0][1]["forwarded_allow_ips"] is None
     assert вызовы[1][1]["proxy_headers"] is True
     assert вызовы[1][1]["forwarded_allow_ips"] == "*"
+
+
+def test_main_отказывает_при_неверном_пределе_распаковки_intake(
+    tmp_path, monkeypatch, capsys
+):
+    """Неверный `MCP1C_INTAKE_MAX_UNPACKED` читался лениво при первом
+    intake-запросе и давал 500 на каждом; теперь это отказ старта."""
+    monkeypatch.setenv("MCP1C_INTAKE_MAX_UNPACKED", "много")
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("до реестра старт доходить не должен")
+
+    monkeypatch.setattr(server_module, "Registry", unexpected)
+
+    with pytest.raises(SystemExit) as ошибка:
+        server_module.main(["--data", str(tmp_path), "--transport", "stdio"])
+
+    assert ошибка.value.code == 2
+    assert "MCP1C_INTAKE_MAX_UNPACKED" in capsys.readouterr().err

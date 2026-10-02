@@ -56,6 +56,7 @@ from .dashboard_backend import (
 )
 from .dashboard_runtime import routes as dashboard_routes
 from .intake_v2_transport import MAX_BROWSER_UPLOAD_BYTES
+from .resource_limits import intake_archive_limits
 from .module_download import (
     DOWNLOAD_PATH, TICKET_HEADER, TICKET_LIFETIME_SECONDS, CompressedModuleCache,
     DownloadTicketError, ModuleDownloadTickets, public_base_url,
@@ -1739,10 +1740,12 @@ def trusted_host_guard(app, hosts: tuple[str, ...] | None):
     SDK проверяет Host и Origin только у `/mcp`, а API дашборда, `/health` и
     служебные маршруты добавлены рядом через `custom_route`. Без внешнего слоя
     страница с чужого сайта после DNS rebinding читает их как свой origin, если
-    чтение не закрыто токеном. Origin сверяется только у изменяющих методов:
-    у браузерного GET он бывает и у законных переходов, а записи с чужого
-    сайта нужны только атакующему. `None` — проверка выключена осознанно
-    (контейнер с обязательными токенами, см. `host_check_required`).
+    чтение не закрыто токеном. Origin сверяется у изменяющих методов и у
+    websocket: у браузерного GET он бывает и у законных переходов, а записи с
+    чужого сайта нужны только атакующему. Websocket браузер открывает с любой
+    страницы без CORS, поэтому чужой Origin там равен записи. `None` —
+    проверка выключена осознанно (контейнер с обязательными токенами, см.
+    `host_check_required`).
     """
     if hosts is None:
         return app
@@ -1754,26 +1757,36 @@ def trusted_host_guard(app, hosts: tuple[str, ...] | None):
         headers = {}
         for name, value in scope.get("headers", ()):
             headers.setdefault(name.lower(), value.decode("latin-1"))
+        websocket = scope["type"] == "websocket"
+
+        async def reject(text: str, status: int) -> None:
+            if websocket:
+                # Отказ до accept: сервер отвечает на рукопожатие 403. Ответ
+                # с телом (`websocket.http.response`) — расширение ASGI,
+                # которое поддерживает не каждый сервер.
+                await receive()
+                await send({"type": "websocket.close", "code": 1008})
+                return
+            await PlainTextResponse(text, status_code=status)(scope, receive, send)
+
         if not _host_allowed(headers.get(b"host", ""), hosts):
-            response = PlainTextResponse(
+            await reject(
                 "Недопустимый заголовок Host. Добавьте имя, по которому "
                 "клиенты обращаются к серверу, в MCP1C_ALLOWED_HOSTS.",
-                status_code=421,
+                421,
             )
-            await response(scope, receive, send)
             return
         origin = headers.get(b"origin")
         if (
             origin is not None
-            and scope.get("method", "GET") not in _SAFE_METHODS
+            and (websocket or scope.get("method", "GET") not in _SAFE_METHODS)
             and not _origin_allowed(origin, hosts)
         ):
-            response = PlainTextResponse(
+            await reject(
                 "Запрос с чужого origin отклонён. Если это origin самого "
                 "сервера, добавьте его имя в MCP1C_ALLOWED_HOSTS.",
-                status_code=403,
+                403,
             )
-            await response(scope, receive, send)
             return
         await app(scope, receive, send)
 
@@ -1890,6 +1903,13 @@ def main(argv: list[str] | None = None) -> int:
         access = access_mode()
         if args.require_tokens:
             require_tokens()
+        # Сам бюджет читается лениво, при первом intake-запросе; неверное
+        # значение там превращалось в 500 на каждом запросе вместо отказа
+        # старта, который оператор увидит сразу.
+        try:
+            intake_archive_limits()
+        except ValueError as error:
+            parser.error(str(error))
         hosts: tuple[str, ...] | None = None
         forwarded: str | None = None
         if args.transport != "stdio":

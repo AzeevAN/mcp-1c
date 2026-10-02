@@ -34,6 +34,7 @@ from .auth import same_token
 from .heavy_operations import _settled
 from .intake_v2 import CandidateTransport
 from .loader import ExportError
+from .runtime_config import split_host, token_is_strong
 from .registry import (
     Registry,
     RegistryChangedExternally,
@@ -62,7 +63,9 @@ LEVEL_ADMIN = "admin"
 # Сессия браузера — бессрочный пропуск, пока жив процесс, если не ограничить
 # её срок: украденная cookie работала бы до рестарта. 12 часов покрывают
 # рабочий день без повторного входа. Предел числа нужен потому, что вход по
-# скрипту иначе растит словарь без конца; вытесняется старейшая сессия.
+# скрипту иначе растит словарь без конца; вытесняется старейшая сессия того же
+# уровня. Предел свой у каждого уровня: держатель токена чтения иначе 256
+# входами выселял бы сессии администратора.
 SESSION_TTL_SECONDS = 12 * 60 * 60
 
 MAX_SESSIONS = 256
@@ -141,7 +144,13 @@ def api_token() -> str:
     return os.environ.get("API_TOKEN", "")
 
 def _token_from_headers(request: Request) -> str:
-    """Токен из заголовка: `X-Api-Token` или `Authorization: Bearer`.
+    """Токен из заголовка: `X-Api-Token`, `Authorization: Bearer` или
+    `X-Admin-Token`.
+
+    `X-Admin-Token` — заголовок, которым документирован `/admin/reload`; без
+    него внешний слой при заданном `API_TOKEN` отвечал бы 401 раньше, чем
+    маршрут сверит токен администратора. Админский токен даёт и чтение, так что
+    этот заголовок годится для чтения так же, как два других.
 
     Заголовки HTTP кодируются latin-1, поэтому кириллический токен сюда
     физически не доходит — через форму входа он работает, через заголовок нет.
@@ -151,7 +160,9 @@ def _token_from_headers(request: Request) -> str:
         return direct
     auth = request.headers.get("authorization", "")
     prefix = "bearer "
-    return auth[len(prefix):] if auth.lower().startswith(prefix) else ""
+    if auth.lower().startswith(prefix):
+        return auth[len(prefix):]
+    return request.headers.get("x-admin-token", "")
 
 def storage_error_text(action: str, error: OSError) -> str:
     """Сообщение об отказе диска без путей: они уходят только в журнал.
@@ -176,8 +187,9 @@ def create_session(level: str) -> str:
     now = time.monotonic()
     with _AUTH_LOCK:
         _drop_expired_sessions_locked(now)
-        while len(_SESSIONS) >= MAX_SESSIONS:
-            del _SESSIONS[next(iter(_SESSIONS))]
+        same_level = [key for key, (owner, _) in _SESSIONS.items() if owner == level]
+        for key in same_level[: max(0, len(same_level) - MAX_SESSIONS + 1)]:
+            del _SESSIONS[key]
         _SESSIONS[session] = (level, now + SESSION_TTL_SECONDS)
     return session
 
@@ -243,8 +255,9 @@ def check_token(request: Request, given: str) -> tuple[str | None, int | None]:
     """Сверить предъявленный токен с учётом ограничения перебора.
 
     Возвращает (уровень, None) при совпадении, (None, None) при неверном или
-    пустом токене и (None, секунды) при исчерпанных попытках — тогда токен не
-    сверяется вовсе, иначе ответ выдал бы, что очередная догадка совпала.
+    пустом токене и (None, секунды) при исчерпанных попытках. Под блокировкой
+    сверяются только стойкие токены (`token_is_strong`): у короткого ответ
+    выдал бы, что очередная догадка совпала.
     Проверка лимита, сверка и учёт неудачи идут под одним замком без `await`:
     параллельные придержанные запросы не получают лишних проб.
     """
@@ -258,6 +271,16 @@ def check_token(request: Request, given: str) -> tuple[str | None, int | None]:
     with _AUTH_LOCK:
         retry_after = _retry_after_locked(client, now)
         if retry_after is not None:
+            # Стойкий токен сверяется и под блокировкой: за NAT Docker все
+            # клиенты приходят с одного адреса, и иначе десять чужих догадок
+            # (в том числе с чужой страницы в браузере) отрезали бы всех.
+            # Короткий токен под блокировкой не сверяется: ответ «совпало»
+            # продолжал бы перебор, ради сдерживания которого блокировка
+            # существует. Неверная догадка здесь не учитывается — окно
+            # истекает само, а не продлевается атакующим.
+            for token, level in ((admin, LEVEL_ADMIN), (api, LEVEL_READ)):
+                if token_is_strong(token) and same_token(given, token):
+                    return level, None
             return None, retry_after
         if same_token(given, admin):
             level = LEVEL_ADMIN
@@ -312,6 +335,32 @@ def _origin_key(value: str, *, allow_path: bool) -> tuple[str, str, int] | None:
     ):
         return None
     return scheme, hostname, port or (443 if scheme == "https" else 80)
+
+def login_from_foreign_site(request: Request) -> bool:
+    """Пришла ли форма входа со страницы другого сайта.
+
+    Проверка не зависит от `host_check_required`: в контейнере проверка Host
+    выключена, а `fetch(..., {mode: "no-cors"})` со страницы атакующего иначе
+    тратил бы попытки общего для NAT-адреса лимита и блокировал вход всем.
+    Без `Sec-Fetch-Site` и `Origin` запрос пропускается: так приходят
+    не-браузерные клиенты, и источник у них не определён.
+    """
+    if request.headers.get("sec-fetch-site", "").strip().lower() == "cross-site":
+        return True
+    origin = request.headers.get("origin")
+    if origin is None:
+        return False
+    actual = _origin_key(origin.strip(), allow_path=False)
+    host = split_host(request.headers.get("host", ""))
+    if actual is None or host is None:
+        return True
+    scheme, hostname, port = actual
+    host_name, host_port = host
+    # Стандартный порт в Host не пишут; схему Host не несёт, поэтому порт
+    # по умолчанию берётся из схемы самого Origin.
+    host_port = host_port or (443 if scheme == "https" else 80)
+    return (hostname, port) != (host_name.strip("[]"), host_port)
+
 
 def _cookie_mutation_is_same_origin(request: Request) -> bool:
     """Не дать браузерной cookie авторизовать запись с соседнего host.

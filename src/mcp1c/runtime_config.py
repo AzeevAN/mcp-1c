@@ -102,6 +102,21 @@ def _validate_token(name: str, value: str) -> None:
         )
 
 
+def token_is_strong(value: str) -> bool:
+    """Выдерживает ли токен онлайн-перебор без блокировки.
+
+    Те же правила, что у `--require-tokens`: 32+ печатных ASCII-символа и не
+    известная заглушка. Такой токен ответ «совпало» не раскрывает — догадаться
+    до него за время жизни процесса нельзя, — поэтому его сверяют и под
+    блокировкой перебора.
+    """
+    try:
+        _validate_token("token", value)
+    except TokenConfigurationError:
+        return False
+    return True
+
+
 def require_tokens(environ: Mapping[str, str] | None = None) -> None:
     """Проверить два независимых секрета, не возвращая и не печатая их."""
     source = os.environ if environ is None else environ

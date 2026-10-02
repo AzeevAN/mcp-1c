@@ -496,3 +496,31 @@ def test_все_ответы_получают_защитные_заголовк�
     assert headers["x-content-type-options"] == "nosniff"
     assert headers["x-frame-options"] == "DENY"
     assert headers["referrer-policy"] == "same-origin"
+
+
+def test_сессии_чтения_не_вытесняют_сессию_администратора(tmp_path, monkeypatch):
+    from mcp1c import dashboard_backend
+
+    monkeypatch.setenv("API_TOKEN", "reader-token")
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-secret")
+    monkeypatch.setattr(dashboard_backend, "MAX_SESSIONS", 3)
+    client, _ = client_for(tmp_path)
+
+    client.post("/login", data={"token": "admin-secret"}, follow_redirects=False)
+    admin_cookie = client.cookies.get("mcp1c_session")
+    client.cookies.clear()
+    for _ in range(10):
+        client.post("/login", data={"token": "reader-token"}, follow_redirects=False)
+        client.cookies.clear()
+
+    levels = [level for level, _ in dashboard_backend._SESSIONS.values()]
+    assert levels.count(dashboard_backend.LEVEL_READ) == 3
+    client.cookies.set("mcp1c_session", admin_cookie)
+    assert dashboard_backend.admin_authorized(
+        dashboard_backend.Request(
+            {
+                "type": "http",
+                "headers": [(b"cookie", f"mcp1c_session={admin_cookie}".encode())],
+            }
+        )
+    )

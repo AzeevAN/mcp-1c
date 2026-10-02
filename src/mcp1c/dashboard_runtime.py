@@ -51,6 +51,7 @@ from .dashboard_backend import (
     can_read,
     check_token,
     create_session,
+    login_from_foreign_site,
     csrf_denied,
     drop_session,
     session_level,
@@ -898,12 +899,12 @@ def _spa_routes(
     intake_start_lock = asyncio.Lock()
     heavy = HeavyOperations()
 
+    # Ставится под `admin_endpoint(..., mutation=True)`: права и CSRF
+    # проверяются снаружи, до захвата допуска, поэтому чужой запрос не
+    # занимает слот тяжёлой операции даже на мгновение.
     def heavy_endpoint(endpoint):
         @wraps(endpoint)
         async def admitted(request):
-            denied = _mutation_denied(request, action="Тяжёлая операция")
-            if denied is not None:
-                return denied
             lease = heavy.acquire()
             if lease is None:
                 return _json_error(
@@ -1583,8 +1584,8 @@ def _spa_routes(
         except IntakeApiError as error:
             return _json_error(str(error), 409)
 
-    @heavy_endpoint
     @admin_endpoint("Управление подключёнными каталогами", mutation=True)
+    @heavy_endpoint
     async def directory_change_api(request: Request) -> JSONResponse:
         operation = request.path_params["operation"]
         if operation not in {"bind", "unbind", "refresh"}:
@@ -1614,8 +1615,8 @@ def _spa_routes(
             return _intake_error_response(error, _INTAKE_READ_ERRORS)
         return JSONResponse(payload)
 
-    @heavy_endpoint
     @admin_endpoint("Загрузка кандидата", mutation=True)
+    @heavy_endpoint
     async def intake_upload_api(request: Request) -> JSONResponse:
         service = (await intake_service())
         try:
@@ -1658,8 +1659,8 @@ def _spa_routes(
             await form.close()
         return JSONResponse({"candidate": candidate}, status_code=201)
 
-    @heavy_endpoint
     @admin_endpoint("Запуск разбора", mutation=True)
+    @heavy_endpoint
     async def intake_start_api(request: Request) -> JSONResponse:
         payload = await _json_body(request)
         allowed = {"candidate_id", "action", "job_id", "parent_configuration"}
@@ -1717,8 +1718,8 @@ def _spa_routes(
             return _intake_error_response(error, _INTAKE_JOB_ERRORS)
         return JSONResponse({"job": payload})
 
-    @heavy_endpoint
     @admin_endpoint("Публикация preview", mutation=True)
+    @heavy_endpoint
     async def intake_confirm_api(request: Request) -> JSONResponse:
         payload = await _json_body(request)
         if set(payload) != {"job_id"} or not isinstance(
@@ -1750,8 +1751,8 @@ def _spa_routes(
                     await role_tools_refresh()
         return response
 
-    @heavy_endpoint
     @admin_endpoint("Отмена preview", mutation=True)
+    @heavy_endpoint
     async def intake_discard_api(request: Request) -> JSONResponse:
         payload = await _json_body(request)
         if set(payload) != {"job_id"} or not isinstance(
@@ -1773,8 +1774,8 @@ def _spa_routes(
                 return _intake_error_response(error, _INTAKE_DISCARD_ERRORS)
         return JSONResponse(result)
 
-    @heavy_endpoint
     @admin_endpoint("Удаление браузерного ZIP", mutation=True)
+    @heavy_endpoint
     async def intake_delete_candidate_api(request: Request) -> JSONResponse:
         payload = await _json_body(request)
         if set(payload) != {"candidate_id"} or not isinstance(
@@ -1797,8 +1798,8 @@ def _spa_routes(
                 )
         return JSONResponse(result)
 
-    @heavy_endpoint
     @admin_endpoint("Загрузка", mutation=True)
+    @heavy_endpoint
     async def upload_source_api(request: Request) -> JSONResponse:
         try:
             form = await dashboard_backend.limited_upload_form(request)
@@ -1873,8 +1874,8 @@ def _spa_routes(
                     dashboard_backend.JOBS.remove(job)
             uploaded.file.close()
 
-    @heavy_endpoint
     @admin_endpoint("Разбор", mutation=True)
+    @heavy_endpoint
     async def parse_incoming_api(request: Request) -> JSONResponse:
         return _json_error(
             "Частичная загрузка Source B отключена; используйте полный intake update_full.",
@@ -2251,6 +2252,12 @@ def _spa_routes(
         if not admin_token() and not api_token():
             return PlainTextResponse(
                 "Вход выключен: не задан ни ADMIN_TOKEN, ни API_TOKEN.", 404
+            )
+        if login_from_foreign_site(request):
+            # До чтения формы и сверки: такая попытка не тратит лимит
+            # перебора, общий у всех клиентов за одним адресом.
+            return PlainTextResponse(
+                "Вход принимается только со страницы этого сервера.", 403
             )
         form = await request.form()
         given = str(form.get("token", ""))

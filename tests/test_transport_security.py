@@ -356,3 +356,49 @@ def test_отказ_по_origin_подсказывает_переменную():
 
     assert response.status_code == 403
     assert "MCP1C_ALLOWED_HOSTS" in response.text
+
+
+def _websocket(headers):
+    called = []
+    sent = []
+
+    async def inner(scope, receive, send):
+        called.append(scope["type"])
+
+    async def receive():
+        return {"type": "websocket.connect"}
+
+    async def send(message):
+        sent.append(message)
+
+    import asyncio
+
+    asyncio.run(
+        server_module.trusted_host_guard(inner, ("localhost",))(
+            {"type": "websocket", "path": "/ws", "headers": headers},
+            receive,
+            send,
+        )
+    )
+    return called, sent
+
+
+def test_websocket_с_чужим_origin_закрывается_до_приложения():
+    called, sent = _websocket(
+        [(b"host", b"localhost"), (b"origin", b"https://evil.example")],
+    )
+    assert called == []
+    assert [message["type"] for message in sent] == ["websocket.close"]
+
+
+def test_websocket_с_чужим_host_закрывается_до_приложения():
+    called, sent = _websocket([(b"host", b"evil.example")])
+    assert called == []
+    assert [message["type"] for message in sent] == ["websocket.close"]
+
+
+def test_websocket_своего_origin_доходит_до_приложения():
+    called, sent = _websocket(
+        [(b"host", b"localhost"), (b"origin", b"http://localhost")],
+    )
+    assert called == ["websocket"]

@@ -82,9 +82,8 @@ def _request_identifier(value: object, label: str) -> str:
     """
     if not fsio.is_safe_identifier(value):
         raise IntakeApiInvalid(
-            f"{label} должен начинаться с латинской буквы или цифры, содержать "
-            "только латинские буквы, цифры, '.', '_' или '-' и быть не длиннее "
-            "128 символов."
+            f"{label} должен содержать только латинские буквы, цифры, '.', '_' "
+            "или '-', не начинаться с '.' и быть не длиннее 128 символов."
         )
     return value  # type: ignore[return-value]
 
@@ -333,7 +332,6 @@ class IntakeApiService:
                 "broken": True,
                 "discardable": discardable,
             }
-        return payload
 
     @staticmethod
     def _unreadable_job_payload(record: UnreadableJob) -> dict[str, object]:

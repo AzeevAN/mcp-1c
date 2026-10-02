@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import stat
 import threading
@@ -427,9 +428,14 @@ class IntakeLifecycle:
                         job.job_id,
                         OperationError(_INTERRUPTED_JOB_ERROR),
                     )
-                except (CandidateStoreError, IntakeV2ContractError, OperationError):
+                except (CandidateStoreError, IntakeV2ContractError, OperationError) as error:
                     # Не смогли записать отказ — job останется незавершённой
-                    # и будет закрыта следующим стартом; intake работает.
+                    # и будет закрыта следующим стартом; intake работает, а
+                    # причина нужна администратору, которому job мешает снять
+                    # конфигурацию.
+                    logging.getLogger(__name__).warning(
+                        "Не удалось закрыть прерванную job %s: %s", job.job_id, error
+                    )
                     continue
 
     @staticmethod

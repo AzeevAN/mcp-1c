@@ -372,3 +372,19 @@ def test_schema_v1_поколение_проходит_verify_после_рес�
     assert pointers
     assert any(p.generation_id.startswith("schema-v1-") for p in pointers)
     assert all(fsio.is_safe_identifier(p.generation_id) for p in pointers)
+
+
+def test_запись_проходит_на_фс_без_chmod_и_не_теряет_дескриптор(tmp_path, monkeypatch):
+    from mcp1c import intake_v2_fsio as fsio
+
+    def refuse(*_args, **_kwargs):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(fsio.os, "fchmod", refuse)
+    before = len(os.listdir("/dev/fd"))
+    target = tmp_path / "record.json"
+    for index in range(20):
+        fsio.write_record_atomic(target, f'{{"n": {index}}}'.encode())
+    assert target.read_bytes() == b'{"n": 19}'
+    assert len(os.listdir("/dev/fd")) == before
+    assert [p.name for p in tmp_path.iterdir()] == ["record.json"]

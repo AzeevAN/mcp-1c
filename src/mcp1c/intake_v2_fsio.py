@@ -78,8 +78,13 @@ def write_record_atomic(path: Path, payload: bytes, *, suffix: str = ".tmp") -> 
             suffix=suffix,
         )
         temporary = Path(raw_path)
-        os.fchmod(descriptor, _record_mode(path))
         with os.fdopen(descriptor, "wb") as stream:
+            # Права — best-effort: на ФС без chmod (exFAT, часть SMB/FUSE)
+            # запись должна пройти с правами mkstemp, а не отказать целиком.
+            try:
+                os.fchmod(stream.fileno(), _record_mode(path))
+            except OSError:
+                pass
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
@@ -132,6 +137,9 @@ def read_record(path: Path, *, limit: int) -> bytes:
             raise RecordTypeError(path.name)
         if info.st_size > limit:
             raise RecordTooLargeError(path.name)
+        # O_NONBLOCK нужен только для открытия; читать обычный файл надо
+        # блокирующе, иначе экзотическая ФС вправе вернуть EAGAIN.
+        os.set_blocking(descriptor, True)
         with os.fdopen(descriptor, "rb") as stream:
             descriptor = None
             payload = stream.read(limit + 1)

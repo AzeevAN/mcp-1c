@@ -8,7 +8,7 @@ description: >-
 
 # Форматирование BSL через bslfmt
 
-Версия skill: `0.2.0`. Последний релиз утилиты: `bslfmt 0.24.0`.
+Версия skill: `0.2.1`. Последний релиз утилиты: `bslfmt 0.27.0`.
 MCP не требуется.
 
 ## Когда применять
@@ -26,36 +26,41 @@ MCP не требуется.
 ## Подготовка утилиты
 
 Утилите нужен Python 3.10+. Проверь установленную версию: `bslfmt --version`.
-На 2026-10-01 последний [релиз GitHub](https://github.com/AzeevAN/bslfmt/releases/tag/v0.24.0)
-— `0.24.0`; [PyPI](https://pypi.org/project/bslfmt/) предлагает `0.23.0`.
-Для последнего релиза устанавливай конкретный тег GitHub:
+На 2026-10-02 последний [релиз GitHub](https://github.com/AzeevAN/bslfmt/releases/tag/v0.27.0)
+и версия на [PyPI](https://pypi.org/project/bslfmt/) — `0.27.0`.
+Устанавливай конкретный тег GitHub:
 
 ```bash
-uv tool install --from 'git+https://github.com/AzeevAN/bslfmt@v0.24.0' bslfmt
+uv tool install --from 'git+https://github.com/AzeevAN/bslfmt@v0.27.0' bslfmt
 bslfmt --version
 ```
 
 Для обновления уже установленного инструмента повтори команду с `--force`:
 
 ```bash
-uv tool install --force --from 'git+https://github.com/AzeevAN/bslfmt@v0.24.0' bslfmt
+uv tool install --force --from 'git+https://github.com/AzeevAN/bslfmt@v0.27.0' bslfmt
 ```
 
 Разовый запуск без постоянной установки:
 
 ```bash
-uvx --from 'git+https://github.com/AzeevAN/bslfmt@v0.24.0' bslfmt --version
+uvx --from 'git+https://github.com/AzeevAN/bslfmt@v0.27.0' bslfmt --version
 ```
 
-Альтернатива — `pipx install 'git+https://github.com/AzeevAN/bslfmt.git@v0.24.0'`
+Альтернатива — `pipx install 'git+https://github.com/AzeevAN/bslfmt.git@v0.27.0'`
 (при переустановке добавь `--force`). Установка из Git требует доступного `git`.
-Для версии из PyPI доступны `uv tool install bslfmt`, `uv tool upgrade bslfmt`
-и `pipx install bslfmt` / `pipx upgrade bslfmt`: они используют последний
-опубликованный пакет этого индекса.
+Та же версия из PyPI: `uv tool install 'bslfmt==0.27.0'` или
+`pipx install 'bslfmt==0.27.0'`. Команды без версии (`uv tool install bslfmt`,
+`uv tool upgrade bslfmt`, `pipx upgrade bslfmt`) ставят последний
+опубликованный пакет индекса, который может быть новее описанного здесь.
 
-В `0.24.0` добавлен перенос длинных инструкций при ширине 120 символов и
-изменены отступы строк продолжения. Поэтому перед применением обновлённого
-форматтера просмотри diff: результат может отличаться от прежних версий.
+Выпуски `0.25.0`–`0.27.0` несовместимо меняют вывод: регистр ключевых слов,
+директив и аннотаций приводится к написанию синтакс-помощника (`ИЛИ` → `Или`,
+`#область` → `#Область`), по ширине 120 раскладываются и инструкции с
+идентификаторами вне кириллицы и латиницы, `ElseIf` больше не ключевое слово
+(в BSL только `ElsIf`), а короткие флаги CLI (`-i`, `-sbc`) принимаются
+только целиком. Поэтому перед применением обновлённого форматтера просмотри
+diff: результат может отличаться от прежних версий.
 
 Загрузка и установка выполняются средствами локального агента в пределах
 разрешений пользователя. Если утилита недоступна и установить её нельзя,
@@ -73,7 +78,7 @@ bslfmt --check Module.bsl
 ```
 
 Если используешь разовый запуск, замени `bslfmt` на
-`uvx --from 'git+https://github.com/AzeevAN/bslfmt@v0.24.0' bslfmt` во всех командах.
+`uvx --from 'git+https://github.com/AzeevAN/bslfmt@v0.27.0' bslfmt` во всех командах.
 Первый `--check` не меняет файл: код выхода `0` означает, что изменений нет,
 `1` — форматирование требуется. Коды `2` и `3` означают отказ или внутреннюю
 ошибку; не продолжай запись после них. При `0` пропусти `-i`. Просмотри diff
@@ -115,5 +120,5 @@ bslfmt --check Module.bsl
 skills. При обновлении замени каталог целиком; для удаления удали установленный
 каталог. Сам skill не устанавливает `bslfmt` и не добавляет MCP-инструментов.
 
-Команды и поведение утилиты: [README релиза 0.24.0](https://github.com/AzeevAN/bslfmt/blob/v0.24.0/README.md).
+Команды и поведение утилиты: [README релиза 0.27.0](https://github.com/AzeevAN/bslfmt/blob/v0.27.0/README.md).
 Установка из Git: [документация uv](https://docs.astral.sh/uv/guides/tools/).

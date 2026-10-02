@@ -1,4 +1,4 @@
-"""Шесть состояний файла и кэш хеша."""
+"""Состояния файла incoming и кэш хеша."""
 import json
 import shutil
 from dataclasses import replace
@@ -91,6 +91,31 @@ def _оборванная_рокировка(
     root.rename(detached)
     temporary.rename(root)
     return root, detached, new
+
+
+def _записать_неудачу(registry: Registry, файл: Path, причина: str) -> None:
+    """Отказ прежнего частичного разбора, как его оставил на диске писатель.
+
+    Писателя больше нет, но записанные им отказы лежат в `incoming-state.json`
+    у существующих установок и обязаны читаться.
+    """
+    import hashlib
+
+    (registry.data_dir / "incoming-state.json").write_text(
+        json.dumps(
+            {
+                "digests": {},
+                "failures": {
+                    файл.name: {
+                        "reason": причина,
+                        "sha256": hashlib.sha256(файл.read_bytes()).hexdigest(),
+                    }
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
 
 
 def test_незнакомый_файл_не_разобран(tmp_path):
@@ -405,7 +430,7 @@ def test_то_же_имя_другой_хеш_даёт_обновлённую(tm
 def test_неудача_переживает_пересоздание_сканера(tmp_path):
     registry = _реестр(tmp_path)
     файл = состарить(_архив(registry, "в.zip"))
-    IncomingScanner(registry).note_failure(файл, "битый архив")
+    _записать_неудачу(registry, файл, "битый архив")
 
     строки = IncomingScanner(registry).scan()
 
@@ -484,8 +509,8 @@ def test_замена_файла_снимает_записанную_неуда�
     """
     registry = _реестр(tmp_path)
     файл = состарить(_архив(registry, "в.zip"))
+    _записать_неудачу(registry, файл, "битый архив")
     сканер = IncomingScanner(registry)
-    сканер.note_failure(файл, "битый архив")
     assert сканер.scan()[0]["state"] == STATE_FAILED
 
     # Кладём под тем же именем другое содержимое — как `cp` поверх.
@@ -548,7 +573,7 @@ def test_метка_в_будущем_не_считается_копирован
 
 
 def test_состояние_пишется_на_диск_под_замком(tmp_path, monkeypatch):
-    """`note_failure` зовётся из потоков пула: два сохранения могут разойтись.
+    """`digest` зовётся из потоков пула: два сохранения могут разойтись.
 
     Если запись файла идёт вне замка, на диск ложится более старый снимок.
     Кэш хеша потерю переживёт, а записанный отказ — нет: он и существует
@@ -580,6 +605,6 @@ def test_состояние_пишется_на_диск_под_замком(tmp
     # Состояние пишется атомарной заменой из общего fsio, а не `write_text`.
     monkeypatch.setattr(intake_v2_fsio, "write_record_atomic", под_наблюдением)
 
-    сканер.note_failure(файл, "битый архив")
+    сканер.digest(файл)
 
     assert занят and all(занят)

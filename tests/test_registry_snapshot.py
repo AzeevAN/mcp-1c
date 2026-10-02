@@ -103,33 +103,6 @@ def test_scanner_не_обходит_живую_карту_одновремен�
     assert not ошибки
 
 
-def test_scanner_атомарно_занимает_единственный_слот(tmp_path):
-    scanner = IncomingScanner(Registry(tmp_path / "data"))
-    барьер = threading.Barrier(3)
-    результаты: list[tuple[str, bool, tuple[str, ...]]] = []
-
-    def start(name: str) -> None:
-        барьер.wait(timeout=2)
-        started, busy = scanner.try_start(name)
-        результаты.append((name, started, busy))
-
-    потоки = [
-        threading.Thread(target=start, args=(name,), daemon=True)
-        for name in ("первая.zip", "вторая.zip")
-    ]
-    for поток in потоки:
-        поток.start()
-    барьер.wait(timeout=2)
-    for поток in потоки:
-        поток.join(timeout=2)
-
-    запущенные = [name for name, started, _ in результаты if started]
-    отклонённые = [busy for _, started, busy in результаты if not started]
-    assert len(запущенные) == 1
-    assert отклонённые == [(запущенные[0],)]
-    assert scanner.running == frozenset(запущенные)
-
-
 def test_отпечаток_snapshot_совпадает_с_cas_после_разных_операций(tmp_path):
     """CAS сравнивает отпечаток снимка с ``_snapshot_fingerprint_locked``.
 

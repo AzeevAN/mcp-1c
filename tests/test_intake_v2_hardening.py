@@ -454,15 +454,20 @@ def test_incoming_state_пишется_атомарно_и_забывает_уд
     }
 
     before = state_path.read_bytes()
-    scanner.note_failure(kept, "сбой")
+    kept.write_bytes(b"zip-changed")
+    os.utime(kept, (time.time() - 30, time.time() - 30))
+    scanner.digest(kept)
+    written = state_path.read_bytes()
 
     def broken_replace(*_args, **_kwargs):
         raise OSError("диск отключён")
 
     monkeypatch.setattr("mcp1c.intake_v2_fsio.os.replace", broken_replace)
-    scanner.note_failure(kept, "другой сбой")
+    kept.write_bytes(b"zip-changed-again")
+    os.utime(kept, (time.time() - 20, time.time() - 20))
+    scanner.digest(kept)
     monkeypatch.undo()
-    stored = json.loads(state_path.read_text(encoding="utf-8"))
-    assert stored["failures"]["kept.zip"]["reason"] == "сбой"
-    assert before != state_path.read_bytes()
+    # Сорванная замена не портит файл: на диске остаётся прежний снимок.
+    assert state_path.read_bytes() == written
+    assert before != written
     assert not [p for p in state_path.parent.iterdir() if p.name.endswith(".tmp")]

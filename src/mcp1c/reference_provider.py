@@ -25,7 +25,7 @@ from typing import Any, Mapping, Protocol
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-from . import index_cache
+from . import cursor as cursor_codec, index_cache
 from .search import Doc, SearchIndex
 
 CANONICAL_SCHEMA_VERSION = "1"
@@ -1247,11 +1247,10 @@ class ReferenceProvider:
 
     @staticmethod
     def _encode_cursor(item_id: str, section_id: str | None, offset: int, digest: str) -> str:
-        raw = json.dumps(
+        return cursor_codec.encode(
             {"item": item_id, "section": section_id, "offset": offset, "sha256": digest},
-            ensure_ascii=False, sort_keys=True, separators=(",", ":"),
-        ).encode("utf-8")
-        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+            ensure_ascii=False, sort_keys=True,
+        )
 
     @staticmethod
     def _decode_cursor(cursor: str) -> dict[str, Any]:

@@ -13,6 +13,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Iterable
 
+from . import cursor as cursor_codec
 from .registry import Registry
 from .intake_v2 import ExportIdentity
 from .source_modes import ActivationMode
@@ -180,13 +181,7 @@ def _bounded(value: str, limit: int) -> tuple[str, bool]:
 
 
 def _token(payload: dict[str, Any]) -> str:
-    raw = json.dumps(
-        payload,
-        ensure_ascii=True,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("ascii")
-    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    return cursor_codec.encode(payload, sort_keys=True)
 
 
 def _untoken(value: str) -> dict[str, Any]:

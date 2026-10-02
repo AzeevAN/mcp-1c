@@ -14,8 +14,6 @@
 
 from __future__ import annotations
 
-import base64
-import binascii
 import difflib
 import hashlib
 import heapq
@@ -28,6 +26,7 @@ from pathlib import Path
 
 from . import (
     coverage_log,
+    cursor as cursor_codec,
     index_cache,
     replacements,
     source_ids,
@@ -1803,15 +1802,7 @@ def _http_service_cursor_digest(
 
 def _decode_http_service_cursor(cursor: str, digest: str) -> tuple[int, int]:
     try:
-        if not isinstance(cursor, str) or not 1 <= len(cursor) <= 2048:
-            raise ValueError
-        state = json.loads(
-            base64.b64decode(
-                cursor + "=" * (-len(cursor) % 4),
-                altchars=b"-_",
-                validate=True,
-            )
-        )
+        state = cursor_codec.decode(cursor)
         if (
             not isinstance(state, dict)
             or set(state) != {"v", "sha256", "template", "method"}
@@ -1825,7 +1816,7 @@ def _decode_http_service_cursor(cursor: str, digest: str) -> tuple[int, int]:
             or (state["template"] == 0 and state["method"] == 0)
         ):
             raise ValueError
-    except (ValueError, TypeError, binascii.Error, RecursionError):
+    except cursor_codec.DECODE_ERRORS:
         raise RegistryError(
             "Некорректный курсор HTTP-сервиса; начните чтение заново."
         ) from None
@@ -1840,16 +1831,14 @@ def _decode_http_service_cursor(cursor: str, digest: str) -> tuple[int, int]:
 def _encode_http_service_cursor(
     digest: str, template_offset: int, method_offset: int
 ) -> str:
-    raw = json.dumps(
+    return cursor_codec.encode(
         {
             "v": 1,
             "sha256": digest,
             "template": template_offset,
             "method": method_offset,
-        },
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+        }
+    )
 
 
 def _subsystem_cursor_digest(context, obj, detail: str) -> str:
@@ -1875,13 +1864,7 @@ def _subsystem_cursor_digest(context, obj, detail: str) -> str:
 
 def _decode_subsystem_cursor(cursor: str, digest: str) -> int:
     try:
-        if not isinstance(cursor, str) or not 1 <= len(cursor) <= 2048:
-            raise ValueError
-        state = json.loads(
-            base64.b64decode(
-                cursor + "=" * (-len(cursor) % 4), altchars=b"-_", validate=True
-            )
-        )
+        state = cursor_codec.decode(cursor)
         if (
             not isinstance(state, dict)
             or set(state) != {"v", "sha256", "offset"}
@@ -1891,7 +1874,7 @@ def _decode_subsystem_cursor(cursor: str, digest: str) -> int:
             or state["offset"] <= 0
         ):
             raise ValueError
-    except (ValueError, TypeError, binascii.Error, RecursionError):
+    except cursor_codec.DECODE_ERRORS:
         raise RegistryError("Некорректный курсор подсистемы; начните чтение заново.") from None
     if state["sha256"] != digest:
         raise RegistryError(
@@ -1902,10 +1885,7 @@ def _decode_subsystem_cursor(cursor: str, digest: str) -> int:
 
 
 def _encode_subsystem_cursor(digest: str, offset: int) -> str:
-    raw = json.dumps(
-        {"v": 1, "sha256": digest, "offset": offset}, separators=(",", ":")
-    ).encode()
-    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    return cursor_codec.encode({"v": 1, "sha256": digest, "offset": offset})
 
 
 def get_object(
@@ -2544,16 +2524,12 @@ def _compare_configurations_snapshot(
     offset = 0
     if cursor is not None:
         try:
-            if not isinstance(cursor, str) or not 1 <= len(cursor) <= 2048:
-                raise ValueError
-            state = json.loads(base64.b64decode(
-                cursor + "=" * (-len(cursor) % 4), altchars=b"-_", validate=True,
-            ))
+            state = cursor_codec.decode(cursor)
             if (not isinstance(state, dict) or set(state) != {"v", "sha256", "offset"}
                     or type(state["v"]) is not int or state["v"] != 1
                     or type(state["offset"]) is not int or state["offset"] <= 0):
                 raise ValueError
-        except (ValueError, TypeError, binascii.Error, RecursionError):
+        except cursor_codec.DECODE_ERRORS:
             raise RegistryError("Некорректный курсор сравнения; начните чтение заново.") from None
         if state["sha256"] != digest:
             raise RegistryError("Курсор относится к другой паре, объекту или изменившемуся сравнению; начните заново.")
@@ -2588,9 +2564,9 @@ def _compare_configurations_snapshot(
             previous_side = side
         out.append(f"- `{name}`")
     if end < len(differences):
-        next_cursor = base64.urlsafe_b64encode(json.dumps(
-            {"v": 1, "sha256": digest, "offset": end}, separators=(",", ":"),
-        ).encode("utf-8")).decode("ascii").rstrip("=")
+        next_cursor = cursor_codec.encode(
+            {"v": 1, "sha256": digest, "offset": end}
+        )
         arguments = json.dumps({"full_name": full_name, "configs": names,
                                 "cursor": next_cursor, "limit": limit}, ensure_ascii=False)
         out.extend(("", "Продолжение (аргументы следующего вызова):",
@@ -2685,12 +2661,10 @@ def get_module_source_file(
     if not isinstance(address, str) or not address.strip() or "::" in address:
         raise RegistryError("address должен быть точным адресом модуля без `::`.")
     address = address.strip()
-    for _ in range(2):
-        try:
-            return _module_source_file_once(registry, address, config, extension)
-        except _StaleModules:
-            continue
-    raise RegistryError("Код изменился во время чтения; повторите запрос.")
+    return _retry_stale_modules(
+        lambda: _module_source_file_once(registry, address, config, extension),
+        "Код изменился во время чтения; повторите запрос.",
+    )
 
 
 def _procedure_limit(limit: int) -> int:
@@ -2859,6 +2833,21 @@ class _SignatureError(Exception):
 
 class _StaleModules(Exception):
     """LoadedModules сменился, пока инструмент читал canonical root."""
+
+
+def _retry_stale_modules(attempt, message: str):
+    """Одна попытка и один полный повтор, если поколение кода сменилось.
+
+    Второй смены подряд не ждём дольше: это идёт загрузка, и честнее
+    сказать агенту повторить позже, чем крутиться. Прочие исключения
+    попытки выходят наружу сразу, с первой же попытки.
+    """
+    for _ in range(2):
+        try:
+            return attempt()
+        except _StaleModules:
+            continue
+    raise RegistryError(message)
 
 
 def _modules_are_current(registry: Registry, loaded: LoadedModules) -> bool:
@@ -3158,16 +3147,12 @@ def search_procedures(
     limit: int = 10,
 ) -> str:
     """Поиск с одним полным повтором при смене поколения кода."""
-    for _ in range(2):
-        try:
-            return _search_procedures_once(
-                registry, query, config, extension, scope, limit
-            )
-        except _StaleModules:
-            continue
-    raise RegistryError(
+    return _retry_stale_modules(
+        lambda: _search_procedures_once(
+            registry, query, config, extension, scope, limit
+        ),
         "Код изменился во время поиска дважды; повторите запрос после "
-        "завершения загрузки."
+        "завершения загрузки.",
     )
 
 
@@ -3621,22 +3606,19 @@ def get_procedure(
     start_line, lines = _procedure_window(start_line, lines)
     if not isinstance(address, str) or not address.strip():
         raise RegistryError("address не может быть пустым.")
-    for _ in range(2):
-        try:
-            return _get_procedure_once(
+    try:
+        return _retry_stale_modules(
+            lambda: _get_procedure_once(
                 registry, address, config, extension, start_line, lines
-            )
-        except _StaleModules:
-            continue
-        except _SignatureError as error:
-            raise RegistryError(
-                "Не удалось сопоставить оглавление с текущим текстом модуля; "
-                "перезагрузите источник кода."
-            ) from error
-    raise RegistryError(
-        "Код изменился во время чтения дважды; повторите запрос после "
-        "завершения загрузки."
-    )
+            ),
+            "Код изменился во время чтения дважды; повторите запрос после "
+            "завершения загрузки.",
+        )
+    except _SignatureError as error:
+        raise RegistryError(
+            "Не удалось сопоставить оглавление с текущим текстом модуля; "
+            "перезагрузите источник кода."
+        ) from error
 
 
 _AMBIGUOUS_OWNER = object()
@@ -3938,14 +3920,10 @@ def get_callers(
     limit = _procedure_limit(limit)
     if not isinstance(address, str) or not address.strip():
         raise RegistryError("address не может быть пустым.")
-    for _ in range(2):
-        try:
-            return _get_callers_once(registry, address, config, extension, limit)
-        except _StaleModules:
-            continue
-    raise RegistryError(
+    return _retry_stale_modules(
+        lambda: _get_callers_once(registry, address, config, extension, limit),
         "Код изменился во время обратного поиска дважды; повторите запрос "
-        "после завершения загрузки."
+        "после завершения загрузки.",
     )
 
 

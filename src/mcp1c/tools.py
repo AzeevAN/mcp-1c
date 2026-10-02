@@ -39,6 +39,7 @@ from .registry import (
     RegistrySnapshot,
     RegistryError,
     SourceSnapshot,
+    SourcesChanged,
 )
 from .render import (
     BRIEF,
@@ -709,7 +710,7 @@ def _configuration_code_snapshot(
             modules=_CodeView(base, base_summary),
             extensions=extension_views,
         )
-    raise RegistryError(
+    raise SourcesChanged(
         "Источники кода изменились дважды; повторите запрос после завершения "
         "загрузки."
     )
@@ -993,7 +994,7 @@ def list_configurations(registry: Registry) -> str:
             if blocked:
                 answer = _blocked_configurations_text(names, blocked) + "\n\n" + answer
             return answer
-    raise RegistryError(
+    raise SourcesChanged(
         "Источники списка конфигураций изменились дважды; повторите запрос "
         "после завершения загрузки."
     )
@@ -1041,7 +1042,7 @@ def list_extensions(registry: Registry, config: str | None = None) -> str:
             runtime,
             code_names,
         )
-    raise RegistryError(
+    raise SourcesChanged(
         "Источники состояния расширений изменились дважды; повторите запрос "
         "после завершения загрузки."
     )
@@ -1346,7 +1347,7 @@ def configurations_snapshot(registry: Registry) -> ConfigurationsSnapshot:
         result = _configurations_result(capture, registry)
         if _list_capture_is_current(registry, capture):
             return result
-    raise RegistryError(
+    raise SourcesChanged(
         "Источники списка конфигураций изменились дважды; повторите запрос "
         "после завершения загрузки."
     )
@@ -1367,7 +1368,7 @@ def sources_snapshot(registry: Registry) -> SourcesSnapshot:
         result, capture = prepared
         if _sources_snapshot_is_current(registry, capture):
             return result
-    raise RegistryError(
+    raise SourcesChanged(
         "Источники изменились дважды; повторите запрос после завершения "
         "загрузки."
     )
@@ -2394,7 +2395,7 @@ def compare_configurations(
         )
         if registry.snapshot_is_current(snapshot):
             return answer
-    raise RegistryError("Поколение конфигураций изменилось дважды; повторите сравнение.")
+    raise SourcesChanged("Поколение конфигураций изменилось дважды; повторите сравнение.")
 
 
 def _compare_configurations_snapshot(

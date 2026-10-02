@@ -83,6 +83,7 @@ from .registry import (
     Registry,
     RegistryError,
     SourceInUseError,
+    SourcesChanged,
 )
 from .source_modes import ActivationStatus
 from .process_restart import RestartController
@@ -892,12 +893,10 @@ def _spa_routes(
             return JSONResponse({"error": "Нужен токен чтения."}, status_code=401)
         try:
             snapshot = await run_in_threadpool(tools.sources_snapshot, registry)
-        except RegistryError as error:
+        except SourcesChanged as error:
             # Публикация нового поколения может дважды обогнать CAS снимка.
             # Это ожидаемый конфликт чтения, а не авария сервера.
-            if str(error).startswith("Источники изменились дважды;"):
-                return _json_error(str(error), 409)
-            raise
+            return _json_error(str(error), 409)
         return JSONResponse(
             _sources_payload(snapshot, admin=_authorized(request))
         )

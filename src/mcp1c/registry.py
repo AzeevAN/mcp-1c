@@ -219,6 +219,29 @@ class SourceInUseError(RegistryError):
     """Файл снова используется или ещё готовится к публикации."""
 
 
+# Потребители выбирают поведение по типу: HTTP-статус дашборда, скрытие
+# имён конфигураций в ответе MCP. Раньше они сравнивали начало текста, и
+# правка формулировки молча меняла контракт API. Тексты остались прежними.
+class ReloadRequired(RegistryError):
+    """Активное поколение требует перезагрузки до обслуживания чтения."""
+
+
+class ConfigurationNotLoaded(RegistryError):
+    """Операции над конфигурацией нужна загруженная конфигурация (код ошибки)."""
+
+
+class UnknownConfiguration(RegistryError):
+    """Запрошенной по имени конфигурации нет; текст называет имена."""
+
+
+class AmbiguousConfiguration(RegistryError):
+    """Конфигурация не указана, а загружено несколько; текст называет имена."""
+
+
+class SourcesChanged(RegistryError):
+    """Снимок источников дважды подряд не прошёл поздний CAS; запрос повторяют."""
+
+
 def _protect_source_operation(method):
     @wraps(method)
     def protected(self, path, *args, **kwargs):
@@ -917,7 +940,7 @@ class RegistrySnapshot:
             return native.view
         loaded = self.configurations.get(configuration)
         if loaded is None:
-            raise RegistryError(f"Конфигурация не загружена: {configuration}.")
+            raise UnknownConfiguration(f"Конфигурация не загружена: {configuration}.")
         base_source = self.sources.get(loaded.source.id)
         if base_source is None:
             raise RegistryError(
@@ -1908,7 +1931,7 @@ class Registry:
                 transport=source_transport,
             )
         if previous is not None:
-            raise RegistryError("reload_required")
+            raise ReloadRequired("reload_required")
 
         try:
             materialize_standard_attributes(config)
@@ -2176,7 +2199,7 @@ class Registry:
             )
         with self._lock:
             if configuration not in self.configurations:
-                raise RegistryError(
+                raise UnknownConfiguration(
                     f"Конфигурация не загружена: {configuration}. Сначала "
                     "добавьте её структурную выгрузку schema v1."
                 )
@@ -2212,7 +2235,7 @@ class Registry:
         loaded = LoadedExtensionRuntime(source=source, snapshot=snapshot)
         with self._lock:
             if configuration not in self.configurations:
-                raise RegistryError(
+                raise UnknownConfiguration(
                     f"Конфигурация не загружена: {configuration}. Она была "
                     "снята во время добавления снимка."
                 )
@@ -4588,7 +4611,7 @@ class Registry:
                 selected_name = requested_name
                 if selected_name is None:
                     if len(names) > 1:
-                        raise RegistryError(
+                        raise AmbiguousConfiguration(
                             "Загружено несколько конфигураций, укажите нужную "
                             "явно: " + ", ".join(names)
                         )
@@ -4596,7 +4619,7 @@ class Registry:
 
                 loaded = self.configurations.get(selected_name)
                 if loaded is None:
-                    raise RegistryError(
+                    raise UnknownConfiguration(
                         f"Конфигурация не загружена: {selected_name}. "
                         f"Доступны: {', '.join(names)}"
                     )
@@ -4612,9 +4635,9 @@ class Registry:
                         activation.status is ActivationStatus.RELOAD_REQUIRED
                         and not diagnostic
                     ):
-                        raise RegistryError("reload_required")
+                        raise ReloadRequired("reload_required")
                 elif self._legacy_mixed_locked(selected_name) and not diagnostic:
-                    raise RegistryError("reload_required")
+                    raise ReloadRequired("reload_required")
                 declaration = self._platform_declarations.get(selected_name)
                 platform_override = declaration.version if declaration else ""
                 modules_key = f"{selected_name}:modules"
@@ -4889,7 +4912,7 @@ class Registry:
                 identity.grouping_key not in self._generation_pointers
                 and configuration not in self.configurations
             ):
-                raise RegistryError("configuration_not_loaded")
+                raise ConfigurationNotLoaded("configuration_not_loaded")
             next_declarations = dict(self._platform_declarations)
             next_declarations[configuration] = declaration
             self._write_registry_payload(
@@ -4906,7 +4929,7 @@ class Registry:
                 identity.grouping_key not in self._generation_pointers
                 and configuration not in self.configurations
             ):
-                raise RegistryError("configuration_not_loaded")
+                raise ConfigurationNotLoaded("configuration_not_loaded")
             next_declarations = dict(self._platform_declarations)
             next_declarations.pop(configuration, None)
             self._write_registry_payload(
@@ -5069,9 +5092,9 @@ class Registry:
         """Fail-closed guard для consumers, которым нужен новый active contract."""
         classification = self.active_activation(identity)
         if classification is None:
-            raise RegistryError("configuration_not_loaded")
+            raise ConfigurationNotLoaded("configuration_not_loaded")
         if classification.status is ActivationStatus.RELOAD_REQUIRED:
-            raise RegistryError("reload_required")
+            raise ReloadRequired("reload_required")
         return classification
 
     def active_generation(
@@ -6027,7 +6050,7 @@ class Registry:
                 )
             loaded = self.configurations.get(configuration)
             if loaded is None:
-                raise RegistryError(f"Конфигурация не загружена: {configuration}.")
+                raise UnknownConfiguration(f"Конфигурация не загружена: {configuration}.")
             modules = self.modules.get(f"{configuration}:modules")
             code_source = (
                 modules.source

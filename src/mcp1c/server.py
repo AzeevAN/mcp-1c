@@ -69,7 +69,12 @@ from .reference_provider import (
     ReferenceQueryError,
     ReferenceService,
 )
-from .registry import Registry, RegistryError
+from .registry import (
+    AmbiguousConfiguration,
+    Registry,
+    RegistryError,
+    UnknownConfiguration,
+)
 from .role_access_service import (
     DEFAULT_PAGE_CHARS as DEFAULT_ROLE_PAGE_CHARS,
     MAX_ACCESS_LIMIT as MAX_ROLE_ACCESS_LIMIT,
@@ -460,9 +465,7 @@ _T = TypeVar("_T")
 def _safe_registry_error_message(error: RegistryError) -> str:
     """Скрыть имена локальных конфигураций в ошибке выбора для MCP."""
     message = str(error)
-    if message.startswith(
-        ("Загружено несколько конфигураций", "Конфигурация не загружена:")
-    ):
+    if isinstance(error, (AmbiguousConfiguration, UnknownConfiguration)):
         return (
             "Конфигурация не выбрана или не найдена. Сначала вызовите "
             "`list_configurations` и передайте точное имя в параметре `config`."

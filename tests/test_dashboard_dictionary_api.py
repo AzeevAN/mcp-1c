@@ -259,3 +259,28 @@ def test_dictionary_api_cookie_правка_отвергает_чужой_origin
 
     assert denied.status_code == 403
     assert registry.dictionary.aliases == {}
+
+
+def test_dictionary_api_не_затирает_нечитаемый_словарь(tmp_path, monkeypatch):
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    data = tmp_path / "data"
+    data.mkdir()
+    target = data / "dictionary.json"
+    target.write_text('{"aliases": {"*": {"склад": ', encoding="utf-8")
+    before = target.read_bytes()
+    registry = Registry(data)
+
+    with _client(registry) as client:
+        _login(client)
+        add = client.post(
+            "/api/v1/dictionary/synonyms", json={"words": ["а", "б"]}
+        )
+        remove = client.post(
+            "/api/v1/dictionary/synonyms/remove", json={"words": ["а", "б"]}
+        )
+
+    for response in (add, remove):
+        assert response.status_code == 409
+        assert "dictionary.json" in response.json()["error"]
+        assert str(data) not in response.json()["error"]
+    assert target.read_bytes() == before

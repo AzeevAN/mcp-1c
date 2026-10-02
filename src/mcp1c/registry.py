@@ -48,7 +48,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 from . import coverage_log, index_cache, modules_index, structure_origin
-from .dictionary import Dictionary
+from .dictionary import Dictionary, DictionaryError
 from .extension_runtime import (
     ExtensionRuntimeError,
     ExtensionRuntimeSnapshot,
@@ -1138,7 +1138,15 @@ class Registry:
         # восстанавливаемой после SIGKILL между rename и registry.json.
         self._module_swap_path = self.data_dir / ".modules-swap.json"
         self.dictionary_path = self.data_dir / "dictionary.json"
-        self.dictionary = Dictionary.load(self.dictionary_path)
+        # Битый словарь не должен останавливать ни сервер, ни CLI: поиск
+        # работает на встроенном слое, причина называется в сообщениях
+        # startup, а запись закрыта, пока человек не исправит файл.
+        self._dictionary_error = ""
+        try:
+            self.dictionary = Dictionary.load(self.dictionary_path)
+        except DictionaryError as error:
+            self.dictionary = Dictionary(path=self.dictionary_path)
+            self._dictionary_error = str(error)
 
         self._lock = threading.RLock()
         self._source_reservations: Counter[Path] = Counter()
@@ -6109,30 +6117,58 @@ class Registry:
         self,
         mutation: Callable[[Dictionary], _DictionaryMutationResult],
     ) -> _DictionaryMutationResult:
-        """Сериализовать изменение, запись и публикацию словаря как одно целое."""
+        """Сериализовать изменение, запись и публикацию словаря как одно целое.
+
+        Правится копия: при отказе записи или исключении в самой правке в
+        памяти не остаётся неподтверждённого изменения, которое молча унесла
+        бы на диск следующая удачная правка.
+        """
         with self._dictionary_mutation_lock:
-            result = mutation(self.dictionary)
-            self.dictionary.save(self.dictionary_path)
-            self.reload_dictionary()
+            if self._dictionary_error:
+                raise DictionaryError(
+                    f"{self._dictionary_error} Правка не записана, чтобы не "
+                    "затереть файл."
+                )
+            candidate = self.dictionary.copy()
+            result = mutation(candidate)
+            candidate.save(self.dictionary_path)
+            self._publish_dictionary(candidate)
             return result
 
-    def reload_dictionary(self) -> None:
+    @property
+    def dictionary_error(self) -> str:
+        """Почему локальный словарь не прочитан; пусто — прочитан."""
+        return self._dictionary_error
+
+    def reload_dictionary(self) -> list[str]:
         """Перечитать словарь. Индексы при этом не перестраиваются.
 
         Ни синонимы, ни псевдонимы не участвуют в построении постингов —
         `SearchIndex.add()` их не читает, они нужны только в момент поиска.
         Пересборка стоила бы секунду на каждую правку словаря и обесценивала
-        бы кэш; достаточно подменить две ссылки.
+        бы кэш; достаточно подменить ссылки.
+
+        Нечитаемый файл не подменяет действующий словарь пустым: остаётся
+        прежний, причина возвращается сообщением, запись закрыта.
         """
         with self._dictionary_mutation_lock:
-            dictionary = Dictionary.load(self.dictionary_path)
-            synonyms = dictionary.synonyms()
-            with self._lock:
-                self.dictionary = dictionary
-                for name, loaded in self.configurations.items():
-                    loaded.index.synonyms = synonyms
-                    loaded.index.aliases = dictionary.aliases_for(name)
-                    loaded.field_index.synonyms = synonyms
+            try:
+                dictionary = Dictionary.load(self.dictionary_path)
+            except DictionaryError as error:
+                self._dictionary_error = str(error)
+                return [self._dictionary_error]
+            self._dictionary_error = ""
+            self._publish_dictionary(dictionary)
+            return []
+
+    def _publish_dictionary(self, dictionary: Dictionary) -> None:
+        synonyms = dictionary.synonyms()
+        with self._lock:
+            self.dictionary = dictionary
+            for name, loaded in self.configurations.items():
+                loaded.index.synonyms = synonyms
+                loaded.index.aliases = dictionary.aliases_for(name)
+                loaded.field_index.synonyms = synonyms
 
     def restore(self) -> list[str]:
         """Поднять источники, записанные в registry.json."""
@@ -6160,8 +6196,10 @@ class Registry:
         problems: list[str] = []
         with self._registry_file_lock():
             stamp = self._registry_file_stamp()
+            # Байты, а не текст: недопустимый UTF-8 разбирается ниже тем же
+            # fail-closed путём, что и битый JSON.
             text = (
-                self.registry_path.read_text(encoding="utf-8")
+                self.registry_path.read_bytes()
                 if stamp is not None
                 else None
             )
@@ -6170,7 +6208,26 @@ class Registry:
             self._registry_version_blocked = ""
             return problems
 
-        payload = json.loads(text)
+        try:
+            payload = json.loads(text)
+        except ValueError as error:
+            payload = error
+        if not isinstance(payload, dict):
+            # Пустой или обрезанный файл после сбоя питания раньше ронял
+            # старт traceback-ом. Пустое состояние поверх него записывать
+            # нельзя: строки ещё можно восстановить руками. Тот же
+            # fail-closed путь, что и для чужой версии формата.
+            причина = (
+                str(payload)
+                if isinstance(payload, ValueError)
+                else "корень не является объектом JSON"
+            )
+            self._registry_version_blocked = (
+                "Реестр открыт только для чтения: registry.json не читается "
+                f"({причина}). Файл не перезаписан; исправьте его или "
+                "перенесите и выполните перезагрузку."
+            )
+            return [self._registry_version_blocked]
         if payload.get("registry_version") != REGISTRY_VERSION:
             # Раньше старт продолжался и итоговый save() записывал пустое
             # состояние поверх чужого формата: откат пакета на старую версию
@@ -6806,12 +6863,12 @@ class Registry:
         Recovery и уборка здесь опасны: WAL идущей публикации сервера выглядит
         как аварийный, а его временные каталоги — как мусор.
         """
-        self.reload_dictionary()
-        messages = [
+        messages = self.reload_dictionary()
+        messages.append(
             "Каталог данных обслуживает работающий сервер: журналы и уборку "
             "выполняет он. Изменения, записанные этой командой, сервер "
             "применит после POST /admin/reload."
-        ]
+        )
         return messages + self.restore()
 
     def _ensure_owner(self, operation: str) -> None:
@@ -6894,7 +6951,7 @@ class Registry:
         self.incoming_dir.mkdir(parents=True, exist_ok=True)
         # Словарь перечитывается первым: правки в нём должны применяться
         # перезагрузкой, без пересборки образа и рестарта контейнера.
-        self.reload_dictionary()
+        dictionary_messages = self.reload_dictionary()
         if (
             self._generation_recovery_blocked
             or self._module_recovery_blocked
@@ -6905,7 +6962,7 @@ class Registry:
                 "сбоя. Повторите операцию после завершения перезагрузки."
             )
         try:
-            return self._startup_held()
+            return dictionary_messages + self._startup_held()
         finally:
             self._restore_hold = ""
 

@@ -56,7 +56,7 @@ from .dashboard_backend import (
     can_read,
     check_token,
 )
-from .dictionary import ANY_CONFIGURATION, SOURCE_BUILTIN
+from .dictionary import ANY_CONFIGURATION, SOURCE_BUILTIN, DictionaryError
 from .graph_view import DEFAULT_LIMIT as DEFAULT_GRAPH_LIMIT
 from .graph_view import bounds as graph_bounds
 from .graph_view import neighbourhood
@@ -1086,6 +1086,8 @@ def _spa_routes(
                     phrase, targets, config or None
                 ),
             )
+        except DictionaryError as error:
+            return _json_error(str(error), 409)
         except ValueError as error:
             return _json_error(str(error), 422)
         except OSError as error:
@@ -1124,6 +1126,8 @@ def _spa_routes(
                     phrase, None if scope == ANY_CONFIGURATION else scope
                 ),
             )
+        except DictionaryError as error:
+            return _json_error(str(error), 409)
         except OSError as error:
             return _json_error(
                 dashboard_backend.storage_error_text("Не удалось сохранить словарь", error),
@@ -1149,6 +1153,8 @@ def _spa_routes(
                 registry,
                 lambda dictionary: dictionary.add_synonyms(words),
             )
+        except DictionaryError as error:
+            return _json_error(str(error), 409)
         except ValueError as error:
             return _json_error(str(error), 422)
         except OSError as error:
@@ -1174,6 +1180,8 @@ def _spa_routes(
                 registry,
                 lambda dictionary: dictionary.remove_synonyms(words),
             )
+        except DictionaryError as error:
+            return _json_error(str(error), 409)
         except OSError as error:
             return _json_error(
                 dashboard_backend.storage_error_text("Не удалось сохранить словарь", error),

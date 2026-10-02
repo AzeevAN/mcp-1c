@@ -84,10 +84,12 @@ def test_lab_повреждённое_локальное_состояние_не
     )
 
     assert result.returncode == 2
+    # Нечитаемый словарь больше не роняет Registry: реестр поднимается на
+    # встроенном слое, и замер честно сообщает, что мерить нечего.
     assert json.loads(result.stdout) == {
         "schema": "modules-acceptance-v2",
         "completed": False,
-        "error": "замер не завершён",
+        "error": "кодовые источники не найдены",
     }
     assert str(data) not in result.stdout
     assert result.stderr == ""

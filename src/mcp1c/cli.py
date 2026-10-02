@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 from . import tools
+from .dictionary import DictionaryError
 from .graph import Graph
 from .loader import ExportError, inspect, load
 from .registry import Registry, RegistryError
@@ -344,6 +345,8 @@ def _cmd_reg_get_callers(args: argparse.Namespace) -> int:
 def _cmd_dict_show(args: argparse.Namespace) -> int:
     registry = Registry(args.data)
     d = registry.dictionary
+    if registry.dictionary_error:
+        print(f"! {registry.dictionary_error}", file=sys.stderr)
 
     for key, value in d.stats().items():
         print(f"{key:32} {value}")
@@ -381,15 +384,17 @@ def _cmd_dict_synonyms(args: argparse.Namespace) -> int:
     if args.remove:
         # Группа опознаётся по составу целиком: номер сдвинется от правки
         # соседей, а состав — то, что видно в `dict-show`.
-        if not registry.dictionary.remove_synonyms(args.words):
+        if not registry.mutate_dictionary(
+            lambda dictionary: dictionary.remove_synonyms(args.words)
+        ):
             print(f"такой группы нет: {' = '.join(args.words)}")
             print("Встроенные группы отсюда не снимаются — они в synonyms.py.")
             return 1
-        registry.dictionary.save(registry.dictionary_path)
         print(f"снята группа: {' = '.join(args.words)}")
     else:
-        group = registry.dictionary.add_synonyms(args.words)
-        registry.dictionary.save(registry.dictionary_path)
+        group = registry.mutate_dictionary(
+            lambda dictionary: dictionary.add_synonyms(args.words)
+        )
         print(f"добавлена группа: {' = '.join(group)}")
 
     print("Изменения подхватятся при перезапуске или POST /admin/reload.")
@@ -400,8 +405,9 @@ def _cmd_dict_alias(args: argparse.Namespace) -> int:
     registry = _registry(args)
 
     if args.remove:
-        removed = registry.dictionary.remove_alias(args.phrase, args.config)
-        registry.dictionary.save(registry.dictionary_path)
+        removed = registry.mutate_dictionary(
+            lambda dictionary: dictionary.remove_alias(args.phrase, args.config)
+        )
         print("удалено" if removed else "такого псевдонима не было")
         return 0 if removed else 1
 
@@ -414,8 +420,11 @@ def _cmd_dict_alias(args: argparse.Namespace) -> int:
             print(f"В конфигурации {args.config} нет: {', '.join(unknown)}", file=sys.stderr)
             return 1
 
-    phrase, targets = registry.dictionary.add_alias(args.phrase, args.targets, args.config)
-    registry.dictionary.save(registry.dictionary_path)
+    phrase, targets = registry.mutate_dictionary(
+        lambda dictionary: dictionary.add_alias(
+            args.phrase, args.targets, args.config
+        )
+    )
     scope = args.config or "все конфигурации"
     print(f"«{phrase}» -> {', '.join(targets)}   ({scope})")
     print("Изменения подхватятся при перезапуске или POST /admin/reload.")
@@ -550,6 +559,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     except ExportError as error:
         print(f"Ошибка выгрузки: {error}", file=sys.stderr)
+        return 2
+    except DictionaryError as error:
+        print(f"Словарь: {error}", file=sys.stderr)
         return 2
     except ValueError as error:
         print(f"Ошибка параметров: {error}", file=sys.stderr)

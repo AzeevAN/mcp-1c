@@ -15,6 +15,7 @@ import re
 import secrets
 import shutil
 import tempfile
+import threading
 from collections.abc import Awaitable, Callable
 from functools import wraps
 from pathlib import Path
@@ -809,11 +810,22 @@ def _spa_routes(
                 lease.release()
         return admitted
 
-    def intake_service() -> IntakeApiService:
+    intake_create_lock = threading.Lock()
+
+    def create_intake_service() -> IntakeApiService:
         nonlocal current_intake
-        if current_intake is None:
-            current_intake = IntakeApiService.for_registry(registry)
-        return current_intake
+        with intake_create_lock:
+            if current_intake is None:
+                current_intake = IntakeApiService.for_registry(registry)
+            return current_intake
+
+    async def intake_service() -> IntakeApiService:
+        # Первое создание сервиса закрывает оборванные job прежнего процесса и
+        # дочищает их work синхронным rmtree; на гигабайтной выгрузке это
+        # секунды, и в event loop они остановили бы все запросы сервера.
+        if current_intake is not None:
+            return current_intake
+        return await run_in_threadpool(create_intake_service)
 
     def intake_task_done(task: asyncio.Task[None]) -> None:
         intake_tasks.discard(task)
@@ -1478,7 +1490,7 @@ def _spa_routes(
         if denied is not None:
             return denied
         try:
-            return JSONResponse(await run_in_threadpool(intake_service().directory_sources))
+            return JSONResponse(await run_in_threadpool((await intake_service()).directory_sources))
         except IntakeApiError as error:
             return _json_error(str(error), 409)
 
@@ -1494,7 +1506,7 @@ def _spa_routes(
         allowed = {"configuration", "source_id"} if operation == "bind" else {"configuration"}
         if set(payload) != allowed or not all(isinstance(v, str) and v for v in payload.values()):
             return _json_error("Нужны строковые поля configuration и, для привязки, source_id.", 422)
-        service = intake_service()
+        service = (await intake_service())
         try:
             async with intake_start_lock:
                 if operation == "bind":
@@ -1512,7 +1524,7 @@ def _spa_routes(
         if denied is not None:
             return denied
         try:
-            payload = await run_in_threadpool(intake_service().snapshot)
+            payload = await run_in_threadpool((await intake_service()).snapshot)
         except (
             IntakeApiError,
             LifecycleError,
@@ -1528,7 +1540,7 @@ def _spa_routes(
         denied = _mutation_denied(request, action="Загрузка кандидата")
         if denied is not None:
             return denied
-        service = intake_service()
+        service = (await intake_service())
         try:
             form = await dashboard_backend._limited_upload_form(
                 request,
@@ -1587,7 +1599,7 @@ def _spa_routes(
             for value in (candidate_id, action, job_id, parent)
         ):
             return _json_error("Поля запроса должны быть строками.", 422)
-        service = intake_service()
+        service = (await intake_service())
         async with intake_start_lock:
             if any(not task.done() for task in intake_tasks):
                 return _json_error(
@@ -1621,7 +1633,7 @@ def _spa_routes(
         if denied is not None:
             return denied
         try:
-            return JSONResponse(await run_in_threadpool(intake_service().jobs_snapshot))
+            return JSONResponse(await run_in_threadpool((await intake_service()).jobs_snapshot))
         except (
             IntakeApiError,
             LifecycleError,
@@ -1637,7 +1649,7 @@ def _spa_routes(
             return denied
         try:
             payload = await run_in_threadpool(
-                intake_service().job_payload,
+                (await intake_service()).job_payload,
                 request.path_params.get("job_id", ""),
             )
         except IntakeApiNotFound as error:
@@ -1663,7 +1675,7 @@ def _spa_routes(
             payload.get("job_id"), str
         ):
             return _json_error("Нужен единственный строковый job_id.", 422)
-        service = intake_service()
+        service = (await intake_service())
         async with intake_start_lock:
             if any(not task.done() for task in intake_tasks):
                 return _json_error(
@@ -1671,32 +1683,32 @@ def _spa_routes(
                     409,
                 )
             try:
-                job = await heavy.run(service.confirm, payload["job_id"])
-                response: JSONResponse = JSONResponse({"job": job})
-            except IntakeApiNotFound as error:
-                response = _json_error(str(error), 404)
-            except (
-                IntakeApiConflict,
-                OperationConflict,
-                CandidateStoreError,
-            ) as error:
-                response = _json_error(str(error), 409)
-            except (
-                IntakeApiError,
-                LifecycleError,
-                OperationError,
-                IntakeV2ContractError,
-            ) as error:
-                response = _json_error(str(error), 422)
-            # Публикация и последующая очистка (browser ZIP, payload ответа)
-            # — разные шаги. Если упала только очистка, поколение уже
-            # опубликовано, и инструменты ролей обязаны его увидеть сразу, а
-            # не после повторного confirm.
-            refresh = response.status_code == 200 or await run_in_threadpool(
-                service.is_committed, payload["job_id"]
-            )
-        if refresh and role_tools_refresh is not None:
-            await role_tools_refresh()
+                try:
+                    job = await heavy.run(service.confirm, payload["job_id"])
+                    response: JSONResponse = JSONResponse({"job": job})
+                except IntakeApiNotFound as error:
+                    response = _json_error(str(error), 404)
+                except (
+                    IntakeApiConflict,
+                    OperationConflict,
+                    CandidateStoreError,
+                ) as error:
+                    response = _json_error(str(error), 409)
+                except (
+                    IntakeApiError,
+                    LifecycleError,
+                    OperationError,
+                    IntakeV2ContractError,
+                ) as error:
+                    response = _json_error(str(error), 422)
+            finally:
+                # Публикация и последующая очистка (browser ZIP, payload
+                # ответа) — разные шаги, и упасть может любой, в том числе
+                # необработанным OSError или RegistryError. Какой бы ни был
+                # исход, поколение могло смениться: каталог инструментов
+                # ролей сверяется всегда. Сверка дешёвая и идемпотентная.
+                if role_tools_refresh is not None:
+                    await role_tools_refresh()
         return response
 
     @heavy_endpoint
@@ -1717,7 +1729,7 @@ def _spa_routes(
                 )
             try:
                 result = await heavy.run(
-                    intake_service().discard,
+                    (await intake_service()).discard,
                     payload["job_id"],
                 )
             except IntakeApiNotFound as error:
@@ -1750,7 +1762,7 @@ def _spa_routes(
                 )
             try:
                 result = await heavy.run(
-                    intake_service().remove_browser_candidate,
+                    (await intake_service()).remove_browser_candidate,
                     payload["candidate_id"],
                 )
             except IntakeApiNotFound as error:
@@ -1884,13 +1896,13 @@ def _spa_routes(
                 or source_id in snapshot.sources
                 or configuration in snapshot.sources
             )
-            service = (
-                intake_service()
-                if current_intake is not None
-                or (registry.data_dir / "intake-v2").exists()
-                else None
-            )
             try:
+                service = (
+                    (await intake_service())
+                    if current_intake is not None
+                    or (registry.data_dir / "intake-v2").exists()
+                    else None
+                )
                 has_intake_jobs = bool(
                     service is not None
                     and await run_in_threadpool(
@@ -1917,7 +1929,12 @@ def _spa_routes(
                     await run_in_threadpool(service.unbind_directory, configuration)
             except RegistryError as error:
                 return _json_error(str(error), 400)
-            except (IntakeApiError, LifecycleError, OperationError) as error:
+            except (
+                IntakeApiError,
+                LifecycleError,
+                OperationError,
+                CandidateStoreError,
+            ) as error:
                 return _json_error(str(error), 409)
         if role_tools_refresh is not None:
             await role_tools_refresh()

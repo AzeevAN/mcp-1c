@@ -23,9 +23,12 @@ from . import intake_v2_fsio as fsio
 from .intake_v2 import (
     CandidateJob,
     CandidateJobState,
+    CandidateStoreError,
     CandidateTransport,
     ExportCandidate,
+    IntakeV2ContractError,
     SourceKind,
+    UnreadableJob,
 )
 from .intake_v2_operations import IntakeCoordinator, IntakePreview, OperationError
 from .intake_v2_planner import IntakeAction
@@ -312,10 +315,6 @@ class CandidateCatalog:
             ) from None
         except fsio.RecordTooLargeError:
             raise LifecycleError("запись candidate catalog превышает предел") from None
-        except fsio.RecordChangedError:
-            raise LifecycleError(
-                "запись candidate catalog изменилась при чтении"
-            ) from None
         except (OSError, UnicodeError, json.JSONDecodeError) as error:
             raise LifecycleError("запись candidate catalog повреждена") from error
         if (
@@ -416,12 +415,22 @@ class IntakeLifecycle:
         не застаёт.
         """
         with self._lock:
-            for job in self.operations.records.list_jobs():
-                if job.state in _UNFINISHED_JOB_STATES:
+            # Нечитаемые записи пропускаются: они не помешают старту, а
+            # снятие конфигурации и удаление ZIP по-прежнему откажут на них
+            # явно (строгий list_jobs), так что молча ничего не потеряется.
+            jobs, _broken = self.operations.records.scan_jobs()
+            for job in jobs:
+                if job.state not in _UNFINISHED_JOB_STATES:
+                    continue
+                try:
                     self.operations.fail(
                         job.job_id,
                         OperationError(_INTERRUPTED_JOB_ERROR),
                     )
+                except (CandidateStoreError, IntakeV2ContractError, OperationError):
+                    # Не смогли записать отказ — job останется незавершённой
+                    # и будет закрыта следующим стартом; intake работает.
+                    continue
 
     @staticmethod
     def _issue(source_id: str, origin_name: str, error: Exception) -> DiscoveryIssue:
@@ -775,10 +784,15 @@ class IntakeLifecycle:
             )
 
     @contextmanager
-    def stable_jobs(self) -> Iterator[tuple[CandidateJob, ...]]:
-        """Не дать discard разорвать чтение списка и payload одной job."""
+    def stable_jobs(
+        self,
+    ) -> Iterator[tuple[tuple[CandidateJob, ...], tuple[UnreadableJob, ...]]]:
+        """Не дать discard разорвать чтение списка и payload одной job.
+
+        Отдаёт и нечитаемые записи: список показывает их, а не падает.
+        """
         with self._lock:
-            yield self.operations.records.list_jobs()
+            yield self.operations.records.scan_jobs()
 
     @staticmethod
     def _expected_candidate(

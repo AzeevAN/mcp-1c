@@ -864,17 +864,21 @@ def test_snapshot_не_падает_если_discard_удалил_перечис
     service.prepare(work)
 
     records = service.lifecycle.operations.records
-    real_list_jobs = records.list_jobs
+    # Список строится по scan_jobs (нечитаемые записи не роняют его); строгий
+    # list_jobs внутри discard тоже идёт через scan_jobs, поэтому блокируется
+    # только первый вызов — тот, что делает snapshot.
+    real_scan_jobs = records.scan_jobs
     jobs_listed = threading.Event()
     continue_snapshot = threading.Event()
 
-    def blocked_list_jobs():
-        jobs = real_list_jobs()
-        jobs_listed.set()
-        assert continue_snapshot.wait(5)
+    def blocked_scan_jobs():
+        jobs = real_scan_jobs()
+        if not jobs_listed.is_set():
+            jobs_listed.set()
+            assert continue_snapshot.wait(5)
         return jobs
 
-    monkeypatch.setattr(records, "list_jobs", blocked_list_jobs)
+    monkeypatch.setattr(records, "scan_jobs", blocked_scan_jobs)
     snapshot_result: list[dict[str, object]] = []
     snapshot_errors: list[Exception] = []
 

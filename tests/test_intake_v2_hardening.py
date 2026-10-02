@@ -69,13 +69,15 @@ def _done_job(client) -> tuple[str, str]:
 
 @pytest.mark.parametrize(
     "value",
-    ["", ".", "..", ".hidden", "-flag", "a b", "кириллица", "a/b", "a" * 129, None],
+    ["", ".", "..", ".hidden", "a b", "кириллица", "a/b", "a" * 129, None],
 )
 def test_общий_идентификатор_отвергает_пути_и_мусор(value):
     assert fsio.is_safe_identifier(value) is False
 
 
-@pytest.mark.parametrize("value", ["job-1", "a", "a.b_c-d", "A" * 128])
+# `_` и `-` первыми допустимы: так названы каталоги /config-sources и их
+# привязки, сохранённые до общего правила.
+@pytest.mark.parametrize("value", ["job-1", "a", "a.b_c-d", "A" * 128, "_erp", "-x"])
 def test_общий_идентификатор_принимает_штатные_id(value):
     assert fsio.is_safe_identifier(value) is True
 
@@ -127,7 +129,7 @@ def test_reset_work_не_выходит_за_каталог_work(tmp_path):
     assert outside.is_file()
 
 
-@pytest.mark.parametrize("job_id", ["a b", "кириллица", "x" * 300, "..", "-x"])
+@pytest.mark.parametrize("job_id", ["a b", "кириллица", "x" * 300, "..", ".hidden"])
 def test_невалидный_job_id_даёт_422_а_не_500(tmp_path, monkeypatch, job_id):
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
     registry = Registry(tmp_path / "data")
@@ -203,7 +205,11 @@ def test_битая_done_job_не_роняет_список_intake(tmp_path, mon
     assert snapshot.status_code == 200
     (job,) = listed.json()["jobs"]
     assert job["job_id"] == broken
-    assert job["state"] == "failed"
+    # Готовая job не выдаётся за упавшую: состояние настоящее, а признак
+    # broken и причина объясняют, почему её нельзя открыть.
+    assert job["state"] == "done"
+    assert job["broken"] is True
+    assert job["discardable"] is True
     assert "preview" in job["error"]
     assert snapshot.json()["jobs"] == listed.json()["jobs"]
 

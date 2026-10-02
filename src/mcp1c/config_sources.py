@@ -6,14 +6,18 @@
 from __future__ import annotations
 
 import json
-import re
 import stat
 from pathlib import Path
 
+from . import intake_v2_fsio as fsio
 from .intake_v2_registry import _write_atomic
 
 CONFIG_SOURCES_ROOT = Path("/config-sources")
-_ROOT_ID = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}\Z")
+# Тот же regexp, что у job и candidate: source_id каталога становится и
+# компонентом пути, и полем locator в записях каталога кандидатов. Два
+# разных правила уже разошлись однажды — каталог был виден в списке, но
+# привязать его было нельзя.
+_ROOT_ID = fsio.IDENTIFIER_RE
 
 
 class ConfigSourceError(RuntimeError):
@@ -38,6 +42,8 @@ class ConfigSourceBindings:
     def __init__(self, path: Path, root: Path):
         self.path = path
         self.root = root
+        # Остаток атомарной записи, оборванной гибелью процесса.
+        fsio.remove_temporary_records(self.path)
 
     def roots(self) -> list[str]:
         # Отсутствие дополнительных mounts — штатный режим без этой функции.

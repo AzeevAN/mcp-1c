@@ -9,6 +9,7 @@ regexp пропускал ``..`` и ``.``, и ``job_id`` становился п
 
 from __future__ import annotations
 
+import errno
 import os
 import re
 import stat
@@ -16,10 +17,13 @@ import tempfile
 from pathlib import Path
 
 
-# Первый символ — буква или цифра: так отсекаются ``.``, ``..``, скрытые имена
-# и имена, похожие на ключи командной строки. Предел длины держит имя файла
-# ``<id>.json`` и временные ``.<id>.*.tmp`` внутри NAME_MAX любой ФС.
-IDENTIFIER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+# Запрещена только точка первым символом: этого достаточно, чтобы отсечь
+# ``.``, ``..`` и скрытые имена (временные файлы хранилищ начинаются с точки).
+# ``_`` и ``-`` первыми допустимы: так уже называются каталоги в
+# /config-sources и их сохранённые привязки, а id нигде не попадает в argv
+# внешних команд, поэтому «похожесть на ключ» опасности не несёт. Предел
+# длины держит ``<id>.json`` и ``.<id>.json.*.tmp`` внутри NAME_MAX любой ФС.
+IDENTIFIER_RE = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}\Z")
 
 
 def is_safe_identifier(value: object) -> bool:
@@ -36,12 +40,34 @@ def sync_directory(directory: Path) -> None:
         os.close(descriptor)
 
 
+# umask читается один раз при импорте: os.umask() меняет его на время вызова
+# для всего процесса, и чтение на каждой записи давало бы гонку с потоками,
+# создающими файлы в тот же момент.
+_UMASK = os.umask(0)
+os.umask(_UMASK)
+_NEW_RECORD_MODE = 0o644 & ~_UMASK
+
+
+def _record_mode(path: Path) -> int:
+    """Права новой версии записи: как у прежней, иначе как у обычного open."""
+    try:
+        info = path.lstat()
+    except OSError:
+        return _NEW_RECORD_MODE
+    if stat.S_ISREG(info.st_mode):
+        return stat.S_IMODE(info.st_mode)
+    return _NEW_RECORD_MODE
+
+
 def write_record_atomic(path: Path, payload: bytes, *, suffix: str = ".tmp") -> None:
     """Атомарно заменить малую запись: temp + fsync + rename + fsync каталога.
 
     Ошибки ввода-вывода пробрасываются как ``OSError``: сообщение для человека
     у каждого хранилища своё. Временный файл скрытый (``.<имя>.*``), чтобы
-    уборка при старте отличала его от настоящей записи.
+    уборка при старте отличала его от настоящей записи. ``mkstemp`` создаёт
+    файл с правами 0600; без ``fchmod`` замена молча сужала бы права
+    записи, которую раньше писали обычным ``open`` и читает не только сервер
+    (резервная копия тома, оператор).
     """
     directory = path.parent
     temporary: Path | None = None
@@ -52,6 +78,7 @@ def write_record_atomic(path: Path, payload: bytes, *, suffix: str = ".tmp") -> 
             suffix=suffix,
         )
         temporary = Path(raw_path)
+        os.fchmod(descriptor, _record_mode(path))
         with os.fdopen(descriptor, "wb") as stream:
             stream.write(payload)
             stream.flush()
@@ -79,34 +106,32 @@ class RecordTooLargeError(RecordReadError):
     """Запись больше предела, который хранилище готово держать в памяти."""
 
 
-class RecordChangedError(RecordReadError):
-    """Файл подменили между проверкой и открытием."""
-
-
-def _identity(info: os.stat_result) -> tuple[int, int, int, int]:
-    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
-
-
 def read_record(path: Path, *, limit: int) -> bytes:
     """Прочитать малую запись без окна подмены на символическую ссылку.
 
-    ``lstat`` отвергает ссылку и чужой тип, ``O_NOFOLLOW`` не даёт открыть
-    подменённую после проверки ссылку, сверка ``fstat`` с ``lstat`` ловит
-    подмену обычным файлом. Отсутствие файла — ``FileNotFoundError``: для
-    хранилищ это штатное «записи нет», а не повреждение.
+    Все проверки делаются по уже открытому дескриптору, а не по пути:
+    ``O_NOFOLLOW`` не открывает ссылку, ``fstat`` проверяет тип и размер
+    именно того файла, который будет прочитан. Прежняя сверка ``lstat`` с
+    ``fstat`` давала ложный отказ на штатной атомарной замене записи (job
+    переписывается во время prepare, а интерфейс опрашивает её каждую
+    секунду). ``O_NONBLOCK`` не даёт зависнуть на FIFO, подложенном вместо
+    записи: открытие проходит сразу, а ``fstat`` его отвергает.
+    Отсутствие файла — ``FileNotFoundError``: для хранилищ это штатное
+    «записи нет», а не повреждение.
     """
-    before = path.lstat()
-    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
-        raise RecordTypeError(path.name)
-    if before.st_size > limit:
-        raise RecordTooLargeError(path.name)
-    descriptor: int | None = os.open(
-        path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    )
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
-        after = os.fstat(descriptor)
-        if _identity(before) != _identity(after):
-            raise RecordChangedError(path.name)
+        descriptor: int | None = os.open(path, flags)
+    except OSError as error:
+        if error.errno == errno.ELOOP:
+            raise RecordTypeError(path.name) from error
+        raise
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise RecordTypeError(path.name)
+        if info.st_size > limit:
+            raise RecordTooLargeError(path.name)
         with os.fdopen(descriptor, "rb") as stream:
             descriptor = None
             payload = stream.read(limit + 1)
@@ -118,14 +143,38 @@ def read_record(path: Path, *, limit: int) -> bytes:
     return payload
 
 
+def remove_temporary_records(path: Path, *, suffix: str = ".tmp") -> None:
+    """Убрать временные файлы ``write_record_atomic`` для одной записи.
+
+    Они остаются, только если процесс погиб между ``mkstemp`` и ``rename``.
+    Вызывается при открытии хранилища; сбой уборки не мешает работе — мусор
+    просто доживёт до следующего старта.
+    """
+    prefix = f".{path.name}."
+    try:
+        candidates = [
+            entry
+            for entry in path.parent.iterdir()
+            if entry.name.startswith(prefix) and entry.name.endswith(suffix)
+        ]
+    except OSError:
+        return
+    for entry in candidates:
+        try:
+            if stat.S_ISREG(entry.lstat().st_mode):
+                entry.unlink()
+        except OSError:
+            continue
+
+
 __all__ = [
     "IDENTIFIER_RE",
-    "RecordChangedError",
     "RecordReadError",
     "RecordTooLargeError",
     "RecordTypeError",
     "is_safe_identifier",
     "read_record",
+    "remove_temporary_records",
     "sync_directory",
     "write_record_atomic",
 ]

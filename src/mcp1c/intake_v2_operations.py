@@ -806,8 +806,6 @@ class IntakeCoordinator:
             raise OperationError(f"{label} должен быть обычным файлом") from None
         except fsio.RecordTooLargeError:
             raise OperationError(f"{label} превышает допустимый размер") from None
-        except fsio.RecordChangedError:
-            raise OperationError(f"{label} изменился во время чтения") from None
         except (OSError, UnicodeError, json.JSONDecodeError) as error:
             raise OperationError(f"{label} повреждён или недоступен") from error
         if (
@@ -967,19 +965,42 @@ class IntakeCoordinator:
         if not only_parent_changed:
             raise OperationError("candidate изменился после сохранённого probe")
         holders = sorted(
-            other.job_id
-            for other in self.records.list_jobs()
-            if other.candidate_id == candidate.candidate_id
-            and other.job_id != job_id
-            and other.state is not CandidateJobState.FAILED
+            (
+                other
+                for other in self.records.list_jobs()
+                if other.candidate_id == candidate.candidate_id
+                and other.job_id != job_id
+                and other.state is not CandidateJobState.FAILED
+            ),
+            key=lambda other: other.job_id,
         )
-        if holders:
+        if not holders:
+            return
+        parent = previous.identity.parent_configuration
+        for holder in holders:
+            if holder.state is not CandidateJobState.DONE:
+                continue
+            try:
+                self.load_commit(holder.job_id)
+            except KeyError:
+                continue
+            except OperationError:
+                # Нечитаемый commit result не доказывает, что публикации не
+                # было; отменять такую job сервер тоже не даст.
+                pass
+            # Опубликованную job не отменить, поэтому совет «отмените
+            # preview» здесь был бы тупиком.
             raise OperationConflict(
-                "Расширение уже привязано к родителю "
-                f"{previous.identity.parent_configuration} операцией {holders[0]}. "
-                "Дождитесь её завершения или отмените preview, затем выберите "
-                "другого родителя."
+                f"Расширение из этого входа уже опубликовано для родителя {parent} "
+                f"операцией {holder.job_id}; опубликованную операцию отменить "
+                "нельзя. Для другого родителя загрузите выгрузку заново "
+                "отдельным файлом."
             )
+        raise OperationConflict(
+            f"Расширение уже привязано к родителю {parent} операцией "
+            f"{holders[0].job_id}. Дождитесь её завершения или отмените preview, "
+            "затем выберите другого родителя."
+        )
 
     def probe(
         self,

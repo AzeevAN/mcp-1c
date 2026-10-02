@@ -535,9 +535,9 @@ class DurableCandidateStore:
                 "запись candidate store должна быть обычным файлом, "
                 "а не символической ссылкой"
             ) from None
-        except fsio.RecordReadError as error:
+        except fsio.RecordTooLargeError as error:
             raise CandidateStoreError(
-                "запись candidate store превышает предел или изменилась при чтении"
+                "запись candidate store превышает допустимый размер"
             ) from error
         except (OSError, UnicodeError, json.JSONDecodeError) as error:
             raise CandidateStoreError("candidate store повреждён или недоступен") from error
@@ -610,32 +610,69 @@ class DurableCandidateStore:
     def remove_job(self, job_id: str) -> None:
         self._remove(self.jobs_dir, job_id)
 
-    def list_jobs(self) -> tuple[CandidateJob, ...]:
-        """Прочитать все durable job в детерминированном порядке."""
+    def scan_jobs(self) -> tuple[tuple[CandidateJob, ...], tuple[UnreadableJob, ...]]:
+        """Прочитать все job, отделив нечитаемые записи от остальных.
+
+        Одна битая или несовместимая запись не должна выключать весь intake:
+        закрытие оборванных job при старте и список в интерфейсе работают по
+        читаемым, а нечитаемые показывают с причиной. Недоступность самого
+        каталога по-прежнему отказ целиком.
+        """
         try:
-            job_ids: list[str] = []
-            for path in self.jobs_dir.iterdir():
-                if path.is_symlink():
-                    raise CandidateStoreError(
-                        "candidate store содержит символическую ссылку"
-                    )
-                # Скрытые имена — временные файлы и записи, созданные до
-                # запрета ``.``/``..`` в job_id; штатный id так не начинается.
-                if (
-                    path.is_file()
-                    and path.suffix == ".json"
-                    and not path.name.startswith(".")
-                ):
-                    job_ids.append(_safe_identifier(path.stem, "job_id"))
-        except CandidateStoreError:
-            raise
-        except IntakeV2ContractError as error:
-            raise CandidateStoreError(
-                "candidate store содержит запись с недопустимым job_id"
-            ) from error
+            paths = sorted(self.jobs_dir.iterdir())
         except OSError as error:
             raise CandidateStoreError("candidate store недоступен") from error
-        return tuple(self.load_job(job_id) for job_id in sorted(job_ids))
+        jobs: list[CandidateJob] = []
+        broken: list[UnreadableJob] = []
+        for path in paths:
+            # Скрытые имена — временные файлы и записи, созданные до запрета
+            # ``.``/``..`` в job_id; штатный id так не начинается.
+            if path.name.startswith("."):
+                continue
+            try:
+                if path.is_symlink():
+                    broken.append(UnreadableJob(path.name, "символическая ссылка"))
+                    continue
+                if not path.is_file() or path.suffix != ".json":
+                    continue
+            except OSError:
+                broken.append(UnreadableJob(path.name, "запись недоступна"))
+                continue
+            if not fsio.is_safe_identifier(path.stem):
+                broken.append(UnreadableJob(path.name, "недопустимый job_id"))
+                continue
+            try:
+                jobs.append(self.load_job(path.stem))
+            except KeyError:
+                # Запись сняли между перечислением и чтением.
+                continue
+            except CandidateStoreError as error:
+                broken.append(UnreadableJob(path.name, str(error)))
+        return tuple(jobs), tuple(broken)
+
+    def list_jobs(self) -> tuple[CandidateJob, ...]:
+        """Прочитать все durable job; нечитаемая запись — отказ целиком.
+
+        Строгий вариант для решений, которые нельзя принимать по неполному
+        списку: снять конфигурацию, удалить ZIP, перепривязать candidate.
+        Пропуск битой записи там означал бы молча снести чужие данные.
+        """
+        jobs, broken = self.scan_jobs()
+        if broken:
+            first = broken[0]
+            raise CandidateStoreError(
+                f"запись job {first.name} нечитаема ({first.error}); "
+                "восстановите или удалите её вручную"
+            )
+        return jobs
+
+
+@dataclass(frozen=True, slots=True)
+class UnreadableJob:
+    """Файл в каталоге job, который нельзя прочитать как CandidateJob."""
+
+    name: str
+    error: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -995,6 +1032,7 @@ __all__ = [
     "RecoveryPhase",
     "RecoveryRecord",
     "SourceKind",
+    "UnreadableJob",
     "VirtualExportTree",
     "decide_recovery",
 ]

@@ -428,9 +428,9 @@ export function ConfigIntakePanel({ configuration }: { configuration?: string } 
     }
   };
 
-  const discard = async () => {
-    if (!activeJobId) return;
-    const discardedJobId = activeJobId;
+  const discard = async (target = activeJobId) => {
+    if (!target) return;
+    const discardedJobId = target;
     setDiscarding(true);
     setDialogError("");
     try {
@@ -451,7 +451,8 @@ export function ConfigIntakePanel({ configuration }: { configuration?: string } 
         text: "Preview отменён; его рабочие данные удалены.",
       });
     } catch (error) {
-      setDialogError(message(error));
+      if (target === activeJobId) setDialogError(message(error));
+      else setFeedback({ tone: "danger", text: message(error) });
     } finally {
       setDiscarding(false);
     }
@@ -511,6 +512,7 @@ export function ConfigIntakePanel({ configuration }: { configuration?: string } 
     if (directorySources.isError) return <span role="alert">Каталоги недоступны: {message(directorySources.error)}</span>;
     const directories = directorySources.data;
     const previews = (storedJobs.data?.jobs ?? []).filter((item) => item.state === "done" && !item.commit
+      && !item.broken
       && item.transport === "local-directory"
       && item.preview?.identity.source_kind === "configuration"
       && item.preview.identity.configuration_name === configuration);
@@ -546,6 +548,10 @@ export function ConfigIntakePanel({ configuration }: { configuration?: string } 
 
   if (!intake.data) return null;
   const commonJobs = intake.data.jobs.filter((item) => item.transport !== "local-directory");
+  // Готовая job, чьи данные не читаются (утрачен preview или commit result),
+  // остаётся в своём настоящем состоянии: открыть её нельзя, но отменить —
+  // можно, если сервер это примет.
+  const brokenJobs = intake.data.jobs.filter((item) => item.broken);
 
   return (
     <section className="admin-card config-intake-card" aria-label="Полная файловая выгрузка">
@@ -631,11 +637,30 @@ export function ConfigIntakePanel({ configuration }: { configuration?: string } 
         </div>
       )}
 
-      {commonJobs.some((item) => item.state === "done" && !item.commit) && (
+      {brokenJobs.length > 0 && (
+        <div className="intake-issues" aria-label="Повреждённые операции">
+          {brokenJobs.map((item) => (
+            <div className="admin-feedback is-danger" key={item.job_id}>
+              <strong>{item.job_id}</strong> · {item.error}
+              {item.discardable && (
+                <>
+                  {" "}
+                  <button className="button-danger-quiet" type="button" disabled={intakeBusy}
+                    onClick={() => void discard(item.job_id)}>
+                    Отменить операцию {item.job_id}
+                  </button>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {commonJobs.some((item) => item.state === "done" && !item.commit && !item.broken) && (
         <div className="intake-resumable">
           <strong>Готовые preview</strong>
           {commonJobs
-            .filter((item) => item.state === "done" && !item.commit)
+            .filter((item) => item.state === "done" && !item.commit && !item.broken)
             .map((item) => {
               const candidate = candidates.get(item.candidate_id);
               const identity = item.preview?.identity;

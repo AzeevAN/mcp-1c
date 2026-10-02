@@ -7,6 +7,7 @@ Starlette остаётся тонкой границей транспорта: �
 
 from __future__ import annotations
 
+import functools
 import secrets
 import threading
 from dataclasses import dataclass
@@ -24,6 +25,7 @@ from .intake_v2 import (
     IntakeV2ContractError,
     LayerManifest,
     SourceKind,
+    UnreadableJob,
 )
 from .intake_v2_composition import CompositionError
 from .intake_v2_lifecycle import (
@@ -85,6 +87,23 @@ def _request_identifier(value: object, label: str) -> str:
             "128 символов."
         )
     return value  # type: ignore[return-value]
+
+
+def _store_conflicts(method):
+    """Повреждённое durable-хранилище — конфликт запроса, а не авария.
+
+    ``CandidateStoreError`` (битая или несовместимая запись job/candidate)
+    иначе доходила до HTTP-слоя необработанной и превращалась в 500.
+    """
+
+    @functools.wraps(method)
+    def wrapped(*args, **kwargs):
+        try:
+            return method(*args, **kwargs)
+        except CandidateStoreError as error:
+            raise IntakeApiConflict(str(error)) from error
+
+    return wrapped
 
 
 @dataclass(frozen=True, slots=True)
@@ -276,7 +295,11 @@ class IntakeApiService:
 
         Иначе одна DONE-job с утраченным preview (оборванный discard, ручная
         правка каталога) отвечала 409 на весь список, и в интерфейсе нельзя
-        было даже увидеть её, чтобы отменить.
+        было даже увидеть её, чтобы отменить. Состояние job остаётся
+        настоящим: готовая job не выдаётся за упавшую, а признак ``broken``
+        и причина говорят, что её данные не читаются. ``discardable``
+        отвечает, примет ли сервер отмену: только неопубликованная готовая
+        job.
         """
         try:
             return self.job_payload(job.job_id)
@@ -288,30 +311,68 @@ class IntakeApiService:
             CandidateStoreError,
             IntakeV2ContractError,
         ) as error:
+            discardable = False
+            if job.state is CandidateJobState.DONE:
+                try:
+                    self.lifecycle.operations.load_commit(job.job_id)
+                except KeyError:
+                    discardable = True
+                except Exception:
+                    # Commit result есть, но не читается: публикация могла
+                    # пройти, и отменять такую job сервер не станет.
+                    discardable = False
             return {
                 "transport": None,
                 "job_id": job.job_id,
                 "candidate_id": job.candidate_id,
-                "state": CandidateJobState.FAILED.value,
-                "stage": CandidateJobStage.FAILED.value,
+                "state": job.state.value,
+                "stage": job.stage.value,
                 "error": str(error) or error.__class__.__name__,
                 "preview": None,
                 "commit": None,
+                "broken": True,
+                "discardable": discardable,
             }
+        return payload
 
+    @staticmethod
+    def _unreadable_job_payload(record: UnreadableJob) -> dict[str, object]:
+        """Строка списка для файла job, который не читается как запись."""
+        name = record.name.removesuffix(".json")
+        return {
+            "transport": None,
+            "job_id": name,
+            # Строка, а не null: интерфейс сопоставляет job с кандидатами по
+            # этому полю, а пустой id не совпадёт ни с одним.
+            "candidate_id": "",
+            "state": CandidateJobState.FAILED.value,
+            "stage": CandidateJobStage.FAILED.value,
+            "error": f"Запись job не читается: {record.error}",
+            "preview": None,
+            "commit": None,
+            "broken": True,
+            "discardable": False,
+        }
+
+    def _listed_jobs(self) -> list[dict[str, object]]:
+        with self.lifecycle.stable_jobs() as (jobs, unreadable):
+            return [self._listed_job_payload(job) for job in jobs] + [
+                self._unreadable_job_payload(record) for record in unreadable
+            ]
+
+    @_store_conflicts
     def jobs_snapshot(self) -> dict[str, object]:
         """Читать сохранённые операции без обнаружения или хеширования входов."""
-        with self.lifecycle.stable_jobs() as jobs:
-            return {"jobs": [self._listed_job_payload(job) for job in jobs]}
+        return {"jobs": self._listed_jobs()}
 
+    @_store_conflicts
     def snapshot(self) -> dict[str, object]:
         refreshed = self.lifecycle.refresh()
         registry_snapshot = self.registry.snapshot()
         # Refresh может читать большие server-side источники и завершается до
         # этой короткой секции. Здесь нужна атомарность только между списком job
         # и их payload: иначе конкурентный discard оставляет ложный HTTP 409.
-        with self.lifecycle.stable_jobs() as jobs:
-            job_payloads = [self._listed_job_payload(job) for job in jobs]
+        job_payloads = self._listed_jobs()
         return {
             "api_version": "v1",
             "directories": self.directory_sources(),
@@ -423,6 +484,7 @@ class IntakeApiService:
             raise IntakeApiConflict(str(error)) from error
         return active
 
+    @_store_conflicts
     def start(
         self,
         candidate_id: str,
@@ -509,21 +571,7 @@ class IntakeApiService:
             self.lifecycle.operations.fail(work.job_id, error)
             raise
 
-    def is_committed(self, job_id: str) -> bool:
-        """Есть ли у job durable commit result — то есть поколение опубликовано.
-
-        HTTP-слой спрашивает это после неудачного confirm: публикация могла
-        пройти, а упасть — только последующая очистка. Ошибки чтения означают
-        «не доказано», а не отказ запроса.
-        """
-        if not fsio.is_safe_identifier(job_id):
-            return False
-        try:
-            self.lifecycle.operations.load_commit(job_id)
-        except Exception:
-            return False
-        return True
-
+    @_store_conflicts
     def confirm(self, job_id: str) -> dict[str, object]:
         _request_identifier(job_id, "job_id")
         try:
@@ -560,6 +608,7 @@ class IntakeApiService:
             raise IntakeApiConflict(str(error)) from error
         return self.job_payload(job_id)
 
+    @_store_conflicts
     def discard(self, job_id: str) -> dict[str, str]:
         _request_identifier(job_id, "job_id")
         try:
@@ -572,6 +621,7 @@ class IntakeApiService:
             raise IntakeApiConflict(str(error)) from error
         return {"discarded": job_id}
 
+    @_store_conflicts
     def remove_browser_candidate(self, candidate_id: str) -> dict[str, str]:
         try:
             self.lifecycle.remove_browser_candidate(candidate_id)
@@ -581,18 +631,21 @@ class IntakeApiService:
             raise IntakeApiConflict(str(error)) from error
         return {"deleted": candidate_id}
 
+    @_store_conflicts
     def ensure_configuration_purgeable(self, configuration: str) -> None:
         try:
             self.lifecycle.ensure_configuration_purgeable(configuration)
         except LifecycleError as error:
             raise IntakeApiConflict(str(error)) from error
 
+    @_store_conflicts
     def has_configuration_jobs(self, configuration: str) -> bool:
         try:
             return bool(self.lifecycle.configuration_jobs(configuration))
         except LifecycleError as error:
             raise IntakeApiConflict(str(error)) from error
 
+    @_store_conflicts
     def purge_configuration(self, configuration: str) -> None:
         try:
             self.lifecycle.purge_configuration(configuration)
@@ -600,6 +653,7 @@ class IntakeApiService:
         except LifecycleError as error:
             raise IntakeApiConflict(str(error)) from error
 
+    @_store_conflicts
     def job_payload(self, job_id: str) -> dict[str, object]:
         _request_identifier(job_id, "job_id")
         try:
@@ -623,6 +677,9 @@ class IntakeApiService:
             "error": job.error,
             "preview": None,
             "commit": None,
+            "broken": False,
+            # Сервер примет discard только у готовой неопубликованной job.
+            "discardable": job.state is CandidateJobState.DONE,
         }
         if job.state is not CandidateJobState.DONE:
             return payload
@@ -632,6 +689,7 @@ class IntakeApiService:
             result = None
         if result is not None:
             payload["commit"] = _commit_payload(result)
+            payload["discardable"] = False
             return payload
         try:
             preview = self.lifecycle.operations.load_preview(job_id)

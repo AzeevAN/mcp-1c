@@ -68,6 +68,10 @@ export type IntakeJob = {
   error: string;
   preview: IntakePreview | null;
   commit: IntakeCommit | null;
+  /** Только в списке: данные job не читаются, причина — в `error`. */
+  broken?: boolean;
+  /** Только в списке: сервер примет `discard` (готовая неопубликованная job). */
+  discardable?: boolean;
 };
 
 export type DirectorySources = {

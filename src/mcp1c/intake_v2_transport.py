@@ -154,10 +154,6 @@ def _read_small_regular_file(path: Path, limit: int) -> bytes:
         ) from None
     except fsio.RecordTooLargeError:
         raise TransportLimitError("запись browser staging превышает предел") from None
-    except fsio.RecordChangedError:
-        raise TransportUnstableError(
-            "запись browser staging изменилась во время чтения"
-        ) from None
     except OSError as error:
         raise TransportError("запись browser staging недоступна") from error
 

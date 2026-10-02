@@ -74,6 +74,8 @@ class IncomingScanner:
     def __init__(self, registry: Registry):
         self.registry = registry
         self._state_path = registry.data_dir / "incoming-state.json"
+        # Остаток атомарной записи, оборванной гибелью процесса.
+        fsio.remove_temporary_records(self._state_path)
         self._state = self._load()
         # Словарь общий у потоков: в него пишет разбор (`note_failure`,
         # `clear_failure`), а сканирование страницы (`digest`) идёт своим
@@ -82,6 +84,12 @@ class IncomingScanner:
         # бы показ страницы, а `_save` ловит только `OSError`.
         self._замок = threading.RLock()
         self._running: set[str] = set()
+        # Показ списка считает хеши всех файлов, и каждый `digest()` раньше
+        # сразу писал файл состояния — два fsync на файл под замком.
+        # Внутри `scan()` запись откладывается до конца прохода, причём только
+        # в его собственном потоке: отказ, который пишет разбор параллельно,
+        # по-прежнему ложится на диск сразу.
+        self._пачка = threading.local()
 
     @property
     def running(self) -> frozenset[str]:
@@ -117,6 +125,9 @@ class IncomingScanner:
         return {"digests": {}, "failures": {}}
 
     def _save(self) -> None:
+        if getattr(self._пачка, "активна", False):
+            self._пачка.изменено = True
+            return
         try:
             # Запись идёт под тем же замком, что и сборка снимка. Иначе два
             # сохранения из разных потоков пула успевают разойтись между
@@ -223,6 +234,16 @@ class IncomingScanner:
             self._save()
 
     def scan(self) -> list[dict]:
+        self._пачка.активна = True
+        self._пачка.изменено = False
+        try:
+            return self._scan()
+        finally:
+            self._пачка.активна = False
+            if self._пачка.изменено:
+                self._save()
+
+    def _scan(self) -> list[dict]:
         каталог = self.registry.incoming_dir
         строки: list[dict] = []
         if not каталог.is_dir():

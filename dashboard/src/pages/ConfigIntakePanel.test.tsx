@@ -632,3 +632,56 @@ it("сохранённое preview каталога видно только у �
   const common = within(screen.getByRole("region", { name: "Полная файловая выгрузка" }));
   expect(common.getAllByRole("button", { name: /Открыть preview:/ })).toHaveLength(1);
 });
+
+it("повреждённую готовую job показывает с причиной и даёт отменить, не открывая preview", async () => {
+  const brokenJob = {
+    job_id: "job-broken-preview",
+    candidate_id: candidate.id,
+    state: "done",
+    stage: "done",
+    error: "Durable preview готовой job недоступен.",
+    preview: null,
+    commit: null,
+    broken: true,
+    discardable: true,
+  };
+  const committedBroken = {
+    ...brokenJob,
+    job_id: "job-broken-commit",
+    error: "commit result повреждён или недоступен",
+    discardable: false,
+  };
+  const requests: Array<{ path: string; body: unknown }> = [];
+  let discarded = false;
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input);
+    const body = init?.body ? JSON.parse(String(init.body)) : null;
+    requests.push({ path, body });
+    if (path === "/api/v1/sources/intake/discard") {
+      discarded = true;
+      return response({ discarded: brokenJob.job_id });
+    }
+    return response({
+      ...snapshot(),
+      jobs: discarded ? [committedBroken] : [brokenJob, committedBroken],
+    });
+  }));
+  renderPanel();
+
+  const list = await screen.findByLabelText("Повреждённые операции");
+  expect(within(list).getByText(/Durable preview готовой job недоступен/)).toBeInTheDocument();
+  expect(within(list).getByText(/commit result повреждён/)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /Открыть preview:/ })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Отменить операцию job-broken-commit" })).toBeNull();
+  // Пока готовая job жива, сервер откажет в удалении ZIP — кнопка не активна.
+  expect(screen.getByRole("button", { name: "Удалить ZIP" })).toBeDisabled();
+
+  fireEvent.click(screen.getByRole("button", { name: "Отменить операцию job-broken-preview" }));
+  await waitFor(() => expect(requests).toContainEqual({
+    path: "/api/v1/sources/intake/discard",
+    body: { job_id: brokenJob.job_id },
+  }));
+  await waitFor(() => {
+    expect(screen.queryByRole("button", { name: "Отменить операцию job-broken-preview" })).toBeNull();
+  });
+});

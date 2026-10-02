@@ -109,6 +109,8 @@ HTTP_BODY_LIMIT_QUERIES = 1024 * 1024
 HTTP_BODY_LIMIT_UPLOAD = MAX_UPLOAD + 1024 * 1024
 HTTP_BODY_LIMIT_INTAKE_UPLOAD = MAX_BROWSER_UPLOAD_BYTES + 1024 * 1024
 HTTP_BODY_LIMIT_DEFAULT = 2 * 1024 * 1024
+# Сколько сервер ждёт владения data/, прежде чем завершиться с ошибкой.
+OWNERSHIP_TIMEOUT = 120.0
 
 WRITABLE_DATA_DIRECTORIES = (
     "bootstrap",
@@ -1468,9 +1470,14 @@ def _add_http_routes(
         # счётчики; с токеном — прежний ответ целиком.
         # `snapshot()` ждёт `_lock`, который публикация держит и на fsync;
         # в event loop это остановило бы вместе с health и MCP-запросы.
+        detailed = can_read(request)
         body = await run_in_threadpool(
-            tools.health, registry, detailed=can_read(request)
+            tools.health, registry, detailed=detailed
         )
+        if detailed:
+            # owner — этот процесс обслуживает data/; guest означал бы, что
+            # журналы и уборку выполняет кто-то другой.
+            body = {**body, "registry_role": registry.role}
         return JSONResponse({**body, "runtime_id": restart.runtime_id})
 
     @server.custom_route("/admin/reload", methods=["POST"])
@@ -1505,6 +1512,7 @@ def _add_http_routes(
         def summary() -> dict:
             return {
                 **tools.health(registry, detailed=True),
+                "registry_role": registry.role,
                 "messages": messages,
                 "dictionary": registry.dictionary.stats(),
             }
@@ -1923,6 +1931,23 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(str(error))
 
     registry = Registry(args.data)
+    # Сервер — единственный владелец data/: гостем он не смог бы ни
+    # публиковать поколения, ни разбирать журналы. Старый контейнер при
+    # обновлении или долгий CLI отпускают замок не сразу, поэтому ждём.
+    if not registry.acquire_ownership(
+        OWNERSHIP_TIMEOUT,
+        on_wait=lambda: print(
+            "Каталог данных занят другим процессом mcp1c; ждём до "
+            f"{OWNERSHIP_TIMEOUT:.0f} с, пока он его освободит.",
+            file=sys.stderr,
+        ),
+    ):
+        print(
+            "Каталог данных так и не освободился: его держит другой процесс "
+            "mcp1c (сервер или CLI). Остановите его и запустите сервер снова.",
+            file=sys.stderr,
+        )
+        return 2
     for message in registry.startup():
         print(f"  {message}", file=sys.stderr)
 

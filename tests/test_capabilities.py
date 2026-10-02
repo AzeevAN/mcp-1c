@@ -197,6 +197,9 @@ def test_main_игнорирует_устаревшую_env_переменную
         def __init__(self, data):
             self.data = data
 
+        def acquire_ownership(self, *_args, **_kwargs):
+            return True
+
         def startup(self):
             return []
 
@@ -609,6 +612,9 @@ def test_main_передаёт_capability_в_оба_транспорта(
 
         def __init__(self, data):
             self.data = data
+
+        def acquire_ownership(self, *_args, **_kwargs):
+            return True
 
         def startup(self):
             return []

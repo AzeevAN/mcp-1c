@@ -150,8 +150,32 @@ _OWNERSHIP_GUARD = threading.Lock()
 _OWNERSHIP: dict[Path, list[int]] = {}
 
 
+def _open_lock_file(path: Path) -> int:
+    """Открыть файл замка только на чтение.
+
+    flock не требует права записи: файл, созданный root с 0644, сервер под
+    uid 10001 всё равно открывает и блокирует. Создаётся тоже 0644, чтобы
+    обратная ситуация не заперла CLI, запущенный от root.
+    """
+    return os.open(path, os.O_RDONLY | os.O_CREAT, 0o644)
+
+
+def _lock_unsupported(error: OSError, path: Path) -> None:
+    logger.warning(
+        "flock недоступен для %s (%s): работаем без межпроцессной защиты "
+        "каталога данных. Не запускайте второй писатель одновременно.",
+        path,
+        error,
+    )
+
+
 def _acquire_ownership(data_dir: Path) -> bool:
-    """Взять эксклюзивный flock каталога; False — им владеет другой процесс."""
+    """Взять эксклюзивный flock каталога; False — им владеет другой процесс.
+
+    Только ``BlockingIOError`` означает «замок занят». ENOLCK, EOPNOTSUPP и
+    ENOSYS на NFS/SMB/FUSE говорят лишь, что flock здесь не работает:
+    единственный сервер на таком томе не должен из-за этого стать гостем.
+    """
     if fcntl is None:
         return True
     key = data_dir.resolve()
@@ -161,12 +185,23 @@ def _acquire_ownership(data_dir: Path) -> bool:
             held[1] += 1
             return True
         key.mkdir(parents=True, exist_ok=True)
-        descriptor = os.open(key / ".registry.owner.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        path = key / ".registry.owner.lock"
+        try:
+            descriptor = _open_lock_file(path)
+        except OSError as error:
+            _lock_unsupported(error, path)
+            _OWNERSHIP[key] = [None, 1]
+            return True
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
+        except BlockingIOError:
             os.close(descriptor)
             return False
+        except OSError as error:
+            os.close(descriptor)
+            _lock_unsupported(error, path)
+            _OWNERSHIP[key] = [None, 1]
+            return True
         _OWNERSHIP[key] = [descriptor, 1]
         return True
 
@@ -179,7 +214,12 @@ def _release_ownership(key: Path) -> None:
         held[1] -= 1
         if held[1] <= 0:
             _OWNERSHIP.pop(key, None)
-            os.close(held[0])
+            if held[0] is not None:
+                os.close(held[0])
+
+
+# Сколько ждать короткий замок записи registry.json, прежде чем отказать.
+_REGISTRY_FILE_LOCK_TIMEOUT = 10.0
 _EXPECTED_GENERATION_VIEW_UNSET = object()
 
 _DictionaryMutationResult = TypeVar("_DictionaryMutationResult")
@@ -248,6 +288,44 @@ def _protect_source_operation(method):
         with self._source_file_operation(Path(path)):
             return method(self, path, *args, **kwargs)
     return protected
+
+
+def _refresh_on_external_change(*, retry: bool = True):
+    """Перечитать registry.json, если его сменил второй процесс (CLI).
+
+    У дашборда нет своей ручки reload: без этого после любой записи гостя
+    все записи сервера отказывали бы до ручного POST /admin/reload. Перед
+    операцией владелец сверяет файл и при расхождении выполняет тот же
+    reload; если файл сменился уже во время операции — reload и один повтор.
+    Публикация поколения не повторяется: её staging к этому моменту откачен.
+    """
+
+    def decorate(method):
+        @wraps(method)
+        def wrapped(self, *args, **kwargs):
+            if not self._may_refresh():
+                return method(self, *args, **kwargs)
+            self._refresh_scope.depth = 1
+            try:
+                self._refresh_if_changed_externally()
+                try:
+                    return method(self, *args, **kwargs)
+                except RegistryChangedExternally:
+                    if not retry:
+                        raise
+                    logger.info(
+                        "registry.json изменён другим процессом во время %s: "
+                        "перечитываем и повторяем",
+                        method.__name__,
+                    )
+                    self.startup()
+                    return method(self, *args, **kwargs)
+            finally:
+                self._refresh_scope.depth = 0
+
+        return wrapped
+
+    return decorate
 
 
 class GenerationPublishConflict(RegistryError, GenerationConflictError):
@@ -1189,6 +1267,11 @@ class Registry:
         self._guest = False
         self._owns_data_dir = False
         self._registry_stamp: object = _REGISTRY_STAMP_UNSEEN
+        # Текст registry.json, от которого гость считает свои изменения.
+        self._registry_read_text: str | None = None
+        self._file_lock_warned = False
+        self._refresh_scope = threading.local()
+        self._startup_scope = threading.local()
         # Staging разных кандидатов может идти параллельно, но pointer и общий
         # WAL переключаются только одним publisher за раз. Startup/reload
         # держит этот же замок целиком: иначе он прочитал бы живой WAL идущей
@@ -1872,6 +1955,7 @@ class Registry:
         )
         self._advance_source_lifecycle_revision()
 
+    @_refresh_on_external_change()
     @_protect_source_operation
     def add_configuration(
         self,
@@ -2071,6 +2155,9 @@ class Registry:
                     "active generation изменилась во время проверки schema-v1 no-op"
                 )
             return loaded.source
+        # Новое поколение публикует только владелец: гость не создаёт
+        # временный каталог и staging, которые сервер счёл бы мусором.
+        self._ensure_owner("Загрузка schema v1 поверх native-поколения")
         # Временный каталог живёт под тем же замком, что и публикация:
         # startup подметает `.schema-v1-base-*`, оставшиеся после SIGKILL,
         # и не должен удалить каталог идущей замены базы в этом процессе.
@@ -2168,6 +2255,7 @@ class Registry:
                         pass
                 shutil.rmtree(temporary, ignore_errors=True)
 
+    @_refresh_on_external_change()
     @_protect_source_operation
     def add_extension_runtime(
         self,
@@ -3559,13 +3647,16 @@ class Registry:
                         source, поколение, строится
                     ):
                         return
-                modules_index.сохранить_индексы(
-                    self,
-                    source_id,
-                    индексы,
-                    source_sha256=source.sha256,
-                    selection_version=source.selection_version,
-                )
+                if not self._guest:
+                    # Кэш принадлежит владельцу data/: гость не пишет его
+                    # поверх файлов, которые читает работающий сервер.
+                    modules_index.сохранить_индексы(
+                        self,
+                        source_id,
+                        индексы,
+                        source_sha256=source.sha256,
+                        selection_version=source.selection_version,
+                    )
                 with self._lock:
                     if self._поколение_актуально(source, поколение, строится):
                         source.status = STATUS_READY
@@ -3612,7 +3703,22 @@ class Registry:
                 or self._guest
             ):
                 return False
-            self.save()
+            # Под `_startup_lock` reload невозможен: перечитывание внутри
+            # save() заклинило бы поток, поэтому оно здесь подавлено.
+            self._refresh_scope.depth = 1
+            try:
+                self.save()
+            except Exception:
+                # Исключение из finally фоновой сборки иначе терялось бы
+                # вместе с потоком. Статус в памяти верен; на диск он попадёт
+                # следующей записью реестра.
+                logger.warning(
+                    "Статус фоновой сборки кода не записан в registry.json.",
+                    exc_info=True,
+                )
+                return False
+            finally:
+                self._refresh_scope.depth = 0
             return True
 
     def _поднять_или_построить_модули(
@@ -3756,6 +3862,10 @@ class Registry:
         source.error = ""
         def собрать() -> None:
             if дождаться is not None:
+                # Между регистрацией потока и start() join() бросил бы
+                # RuntimeError: ждём, пока прежний поток действительно стартует.
+                while дождаться.ident is None:
+                    time.sleep(0.001)
                 дождаться.join()
             self._собрать_индексы_фоном(
                 source, корень, строится, поколение, файлы_каталога
@@ -3790,6 +3900,7 @@ class Registry:
                 return configuration
         return None
 
+    @_refresh_on_external_change()
     def add_modules(self, path: str | Path, *, configuration: str) -> Source:
         """Выгрузка конфигурации в файлы: код на диск, учётная запись в реестр.
 
@@ -3944,6 +4055,7 @@ class Registry:
             отпечаток_архива=отпечаток_архива,
         )
 
+    @_refresh_on_external_change()
     @_protect_source_operation
     def add_syntax(
         self,
@@ -4202,7 +4314,10 @@ class Registry:
             # Том только на чтение — работать это не мешает.
             return
         # Прежние слитые виды больше не нужны: набор справок или код изменились,
-        # и вернуться к ним нельзя. Копить их — растить каталог молча.
+        # и вернуться к ним нельзя. Копить их — растить каталог молча. Гость
+        # не удаляет: «прежний» для него может быть живым видом сервера.
+        if self._guest:
+            return
         for прежний in self._syntax_index_dir().glob("merged-*.json.gz"):
             if прежний != path:
                 прежний.unlink(missing_ok=True)
@@ -4236,6 +4351,7 @@ class Registry:
                 versions = dict(self.syntax_versions)
                 preloaded = None
 
+    @_refresh_on_external_change()
     def remove(self, source_id: str) -> None:
         """Снять источник; A/B основной конфигурации удаляются агрегатом."""
         # Снятие удаляет каталоги и кэш: в fail-closed режиме это стёрло бы
@@ -4281,6 +4397,9 @@ class Registry:
         # Тот же порядок, что у writers: cache -> registry. После CAS старый
         # writer не может записать файл между `_drop_cache` и снятием Source.
         with self._modules_cache_lock, self._lock:
+            # Штамп сверяется до первого rename каталогов: отказ записи
+            # registry.json после сноса оставил бы снятие применённым наполовину.
+            self._check_registry_stamp()
             source = self.sources.get(source_id)
             native_configuration = next(
                 (
@@ -4913,6 +5032,7 @@ class Registry:
         with self._lock:
             return self._platform_declarations.get(configuration)
 
+    @_refresh_on_external_change()
     def set_platform_version(self, configuration: str, version: str) -> PlatformDeclaration:
         self._ensure_not_blocked()
         declaration = PlatformDeclaration(version)
@@ -4931,6 +5051,7 @@ class Registry:
             self._platform_declarations = next_declarations
         return declaration
 
+    @_refresh_on_external_change()
     def clear_platform_version(self, configuration: str) -> None:
         self._ensure_not_blocked()
         identity = ExportIdentity.configuration(configuration)
@@ -4951,44 +5072,115 @@ class Registry:
         """Durable atomic replace общего Registry pointer."""
         self._ensure_not_blocked()
         with self._registry_file_lock():
-            current = self._registry_file_stamp()
-            if (
-                self._registry_stamp is not _REGISTRY_STAMP_UNSEEN
-                and current != self._registry_stamp
-            ):
-                # Память этого процесса не знает строк, записанных другим
-                # (например, `mcp1c.cli reg-add`). Запись поверх стёрла бы их
-                # до /admin/reload, который как раз должен их поднять.
-                raise RegistryChangedExternally(
-                    "registry.json изменён другим процессом после чтения. "
-                    "Выполните POST /admin/reload и повторите операцию."
-                )
+            if self._guest:
+                # Гость дописывает свои строки в текущий файл, а не снимок
+                # своей памяти: сервер мог записать своё после чтения гостем.
+                payload = self._guest_patch_locked(payload)
+            else:
+                self._check_registry_stamp()
             self._write_json_durably(self.registry_path, payload, indent=1)
             self._registry_stamp = self._registry_file_stamp()
+            if self._guest:
+                self._registry_read_text = json.dumps(payload, ensure_ascii=False)
+
+    def _check_registry_stamp(self) -> None:
+        """Отказать, если registry.json сменил другой процесс после чтения."""
+        if self._guest or self._registry_stamp is _REGISTRY_STAMP_UNSEEN:
+            return
+        if self._registry_file_stamp() != self._registry_stamp:
+            # Память этого процесса не знает строк, записанных другим
+            # (например, `mcp1c.cli reg-add`). Запись поверх стёрла бы их.
+            raise RegistryChangedExternally(
+                "registry.json изменён другим процессом во время операции. "
+                "Повторите её: перед следующей попыткой реестр перечитает файл."
+            )
+
+    def _guest_patch_locked(self, payload: Mapping[str, object]) -> dict:
+        """Наложить изменённые гостем строки на текущий registry.json."""
+        base = json.loads(self._registry_read_text or "{}")
+        base_rows = {
+            raw.get("id"): raw
+            for raw in base.get("sources") or []
+            if isinstance(raw, dict)
+        }
+        current: dict = (
+            json.loads(self.registry_path.read_text(encoding="utf-8"))
+            if self.registry_path.exists()
+            else {"registry_version": REGISTRY_VERSION, "sources": []}
+        )
+        rows = [raw for raw in current.get("sources") or [] if isinstance(raw, dict)]
+        positions = {raw.get("id"): index for index, raw in enumerate(rows)}
+        for raw in payload.get("sources") or []:
+            if base_rows.get(raw.get("id")) == raw:
+                continue
+            index = positions.get(raw.get("id"))
+            if index is None:
+                positions[raw.get("id")] = len(rows)
+                rows.append(raw)
+            else:
+                rows[index] = raw
+        current["sources"] = rows
+        current["saved_at"] = payload.get("saved_at", _now())
+        base_declarations = base.get("platform_declarations") or {}
+        declarations = dict(current.get("platform_declarations") or {})
+        for name, raw in (payload.get("platform_declarations") or {}).items():
+            if base_declarations.get(name) != raw:
+                declarations[name] = raw
+        if declarations:
+            current["platform_declarations"] = declarations
+        return current
 
     @contextmanager
     def _registry_file_lock(self):
-        """Короткий межпроцессный замок «прочитать или заменить registry.json»."""
+        """Короткий межпроцессный замок «прочитать или заменить registry.json».
+
+        Ждёт не дольше ``_REGISTRY_FILE_LOCK_TIMEOUT``: зависший второй
+        процесс не должен бесконечно держать запросы сервера. Том без flock
+        работает без замка с предупреждением, а не падает на каждом save().
+        """
         if fcntl is None:
             yield
             return
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        descriptor = os.open(
-            self.data_dir / ".registry.lock", os.O_RDWR | os.O_CREAT, 0o600
-        )
+        path = self.data_dir / ".registry.lock"
         try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            descriptor = _open_lock_file(path)
+        except OSError as error:
+            self._warn_file_lock(error, path)
+            yield
+            return
+        try:
+            deadline = time.monotonic() + _REGISTRY_FILE_LOCK_TIMEOUT
+            while True:
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise RegistryError(
+                            "registry.json дольше "
+                            f"{_REGISTRY_FILE_LOCK_TIMEOUT:.0f} с занят другим "
+                            "процессом; повторите операцию."
+                        ) from None
+                    time.sleep(0.01)
+                except OSError as error:
+                    self._warn_file_lock(error, path)
+                    break
             yield
         finally:
             os.close(descriptor)
 
-    def _registry_file_stamp(self) -> tuple[int, int, int] | None:
-        """Личность файла: replace всегда создаёт новый inode."""
+    def _warn_file_lock(self, error: OSError, path: Path) -> None:
+        if not self._file_lock_warned:
+            self._file_lock_warned = True
+            _lock_unsupported(error, path)
+
+    def _registry_file_stamp(self) -> str | None:
+        """sha256 содержимого: не зависит от точности mtime и повтора inode."""
         try:
-            info = self.registry_path.stat()
+            return hashlib.sha256(self.registry_path.read_bytes()).hexdigest()
         except FileNotFoundError:
             return None
-        return (info.st_ino, info.st_mtime_ns, info.st_size)
 
     def _write_json_durably(
         self,
@@ -5692,6 +5884,7 @@ class Registry:
             persist=False,
         )
 
+    @_refresh_on_external_change(retry=False)
     def publish_generation(
         self,
         staged: StagedGeneration,
@@ -6124,7 +6317,12 @@ class Registry:
                 "журнал и выполните перезагрузку."
             )
 
+    @_refresh_on_external_change()
     def save(self) -> None:
+        self._save_unrefreshed()
+
+    def _save_unrefreshed(self) -> None:
+        """Запись без reload: для путей, которые уже держат замки startup."""
         with self._lock:
             self._write_registry_payload(self._registry_payload())
 
@@ -6224,6 +6422,7 @@ class Registry:
                 else None
             )
         self._registry_stamp = stamp
+        self._registry_read_text = text
         if text is None:
             self._registry_version_blocked = ""
             return problems
@@ -6260,6 +6459,10 @@ class Registry:
                 "выполните перезагрузку."
             )
             return [self._registry_version_blocked]
+        # Версия прочитанного файла подходит: собственные записи restore
+        # (legacy cleanup) уже не должны упираться в прежний отказ. Другие
+        # потоки до конца restore держит `_restore_hold`.
+        self._registry_version_blocked = ""
 
         pointers = self._generation_pointers_from_payload(payload)
         raw_declarations = payload.get("platform_declarations", {})
@@ -6768,6 +6971,7 @@ class Registry:
             removed.append(path.name)
         return removed
 
+    @_refresh_on_external_change()
     def forget_source(self, stored_path: str) -> None:
         """Удалить только текущий orphan, не доверяя прежнему снимку SPA."""
         # Без восстановленных строк каждый сохранённый исходник выглядит
@@ -6860,22 +7064,85 @@ class Registry:
 
     def startup(self) -> list[str]:
         """Восстановить реестр один раз, не мешая параллельным `resolve()`."""
-        with self._startup_lock:
-            if not self._owns_data_dir and not self._guest:
-                if _acquire_ownership(self.data_dir):
-                    self._owns_data_dir = True
-                    weakref.finalize(
-                        self, _release_ownership, self.data_dir.resolve()
-                    )
-                else:
-                    self._guest = True
-            self._startup_generation += 1
-            поколение = self._startup_generation
-            результат = (
-                self._startup_guest() if self._guest else self._startup_once()
-            )
-            self._last_successful_startup_generation = поколение
-            return результат
+        previous = getattr(self._startup_scope, "active", False)
+        self._startup_scope.active = True
+        try:
+            with self._startup_lock:
+                # Каждый startup/reload снова пробует стать владельцем:
+                # гость, стартовавший при чужом замке (долгий CLI, старый
+                # контейнер при обновлении), не должен остаться им навсегда.
+                self._try_take_ownership()
+                self._startup_generation += 1
+                поколение = self._startup_generation
+                результат = (
+                    self._startup_guest() if self._guest else self._startup_once()
+                )
+                self._last_successful_startup_generation = поколение
+                return результат
+        finally:
+            self._startup_scope.active = previous
+
+    def _try_take_ownership(self) -> bool:
+        if self._owns_data_dir:
+            return True
+        if _acquire_ownership(self.data_dir):
+            self._owns_data_dir = True
+            self._guest = False
+            weakref.finalize(self, _release_ownership, self.data_dir.resolve())
+            return True
+        self._guest = True
+        return False
+
+    def acquire_ownership(
+        self,
+        timeout: float = 0.0,
+        *,
+        on_wait: Callable[[], None] | None = None,
+    ) -> bool:
+        """Дождаться владения data/ не дольше ``timeout`` секунд.
+
+        Сервер не должен работать урезанным гостем: при обновлении контейнера
+        старый процесс ещё может держать замок, а долгий CLI — дописывать
+        строку. ``on_wait`` вызывается один раз, когда ждать всё же пришлось.
+        """
+        deadline = time.monotonic() + max(0.0, timeout)
+        waited = False
+        while True:
+            with self._startup_lock:
+                if self._try_take_ownership():
+                    return True
+            if time.monotonic() >= deadline:
+                return False
+            if not waited and on_wait is not None:
+                on_wait()
+            waited = True
+            time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
+
+    @property
+    def role(self) -> str:
+        """``owner`` — этот процесс обслуживает data/, ``guest`` — другой."""
+        if self._owns_data_dir:
+            return "owner"
+        return "guest" if self._guest else "unknown"
+
+    def _may_refresh(self) -> bool:
+        return (
+            self._owns_data_dir
+            and not self._guest
+            and not getattr(self._refresh_scope, "depth", 0)
+            and not getattr(self._startup_scope, "active", False)
+            and not getattr(self._restore_scope, "active", False)
+        )
+
+    def _refresh_if_changed_externally(self) -> None:
+        """Выполнить reload, если registry.json сменил другой процесс."""
+        if self._registry_stamp is _REGISTRY_STAMP_UNSEEN:
+            return
+        if self._registry_file_stamp() == self._registry_stamp:
+            return
+        logger.info("registry.json изменён другим процессом: перечитываем")
+        for message in self.startup():
+            logger.info("reload: %s", message)
 
     def _startup_guest(self) -> list[str]:
         """Поднять память, не трогая журналы и файлы живого владельца data/.
@@ -6884,11 +7151,8 @@ class Registry:
         как аварийный, а его временные каталоги — как мусор.
         """
         messages = self.reload_dictionary()
-        messages.append(
-            "Каталог данных обслуживает работающий сервер: журналы и уборку "
-            "выполняет он. Изменения, записанные этой командой, сервер "
-            "применит после POST /admin/reload."
-        )
+        # Подсказку про /admin/reload печатает только пишущая команда CLI:
+        # чтению она ни к чему (см. `role`).
         return messages + self.restore()
 
     def _ensure_owner(self, operation: str) -> None:
@@ -6914,8 +7178,32 @@ class Registry:
             if path.is_dir() and not path.is_symlink():
                 shutil.rmtree(path, ignore_errors=True)
 
+    def _подмести_временные_файлы_записи(self) -> None:
+        """Удалить tmp-файлы `_write_json_durably`, пережившие SIGKILL.
+
+        Под замком записи registry.json ни один writer не держит свой tmp;
+        журнал рокировки пишется под `_modules_cache_lock`, его tmp
+        подметает `_подмести_временный_кэш_модулей`.
+        """
+        with self._registry_file_lock():
+            for pattern in (".registry.json.*.tmp", "registry.tmp"):
+                try:
+                    кандидаты = tuple(self.data_dir.glob(pattern))
+                except OSError:
+                    return
+                for path in кандидаты:
+                    try:
+                        path.unlink(missing_ok=True)
+                    except OSError:
+                        continue
+
     def _подмести_временный_кэш_модулей(self) -> None:
         """Удалить staging-каталоги, пережившие аварийную остановку."""
+        try:
+            for path in self.data_dir.glob(".modules-swap.json.*.tmp"):
+                path.unlink(missing_ok=True)
+        except OSError:
+            pass
         try:
             кандидаты = tuple(self.cache_dir.glob(".modules-cache.tmp-*"))
         except OSError:
@@ -6987,6 +7275,7 @@ class Registry:
             self._restore_hold = ""
 
     def _startup_held(self) -> list[str]:
+        self._подмести_временные_файлы_записи()
         try:
             # Живая публикация держит этот замок от записи WAL до его
             # очистки: reload дожидается её, а не откатывает чужой staging.
@@ -7026,7 +7315,11 @@ class Registry:
             # суметь поднять прежнее готовое поколение, а не обнаружить, что
             # fail-closed проверка сама его забыла и подмела.
             return messages
-        messages += [f"добавлено из bootstrap: {name}" for name in self.bootstrap()]
+        messages += [
+            # Id источника не содержит «: », а пропуск и ошибка содержат.
+            f"bootstrap: {name}" if ": " in name else f"добавлено из bootstrap: {name}"
+            for name in self.bootstrap()
+        ]
         # Уборка после загрузки, а не до: снести нужно то, что не заявил ни
         # один источник, а список источников известен только теперь.
         dropped = index_cache.sweep(self.cache_dir, self._cached_names())
@@ -7042,5 +7335,18 @@ class Registry:
                 f"исходных файлов: {len(orphans)}, {весом:.0f} МБ — для ответов "
                 "не нужны, видны на странице источников, удаляются вручную"
             )
-        self.save()
+        try:
+            self.save()
+        except RegistryChangedExternally:
+            # Гость (CLI reg-add) записал registry.json, пока шёл долгий
+            # старт. Его строку нужно поднять, а не затереть и не уронить
+            # старт traceback-ом: перечитываем и сохраняем один раз.
+            messages += self.restore()
+            try:
+                self.save()
+            except RegistryChangedExternally:
+                messages.append(
+                    "registry.json снова изменён другим процессом во время "
+                    "старта; запись отложена до следующей операции."
+                )
         return messages

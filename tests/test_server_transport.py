@@ -81,6 +81,9 @@ def test_main_проверяет_запись_только_по_явному_ф�
         def __init__(self, data):
             self.data = data
 
+        def acquire_ownership(self, *_args, **_kwargs):
+            return True
+
         def startup(self):
             return []
 
@@ -122,6 +125,9 @@ def test_sse_транспорт_отклоняется_до_запуска_се�
         def __init__(self, data):
             self.data = data
 
+        def acquire_ownership(self, *_args, **_kwargs):
+            return True
+
         def startup(self):
             return []
 
@@ -153,6 +159,9 @@ def test_http_по_умолчанию_слушает_loopback_и_не_довер
 
         def __init__(self, data):
             self.data = data
+
+        def acquire_ownership(self, *_args, **_kwargs):
+            return True
 
         def startup(self):
             return []
@@ -187,6 +196,9 @@ def test_http_доверяет_proxy_по_native_runtime_переменной(tm
         def __init__(self, data):
             self.data = data
 
+        def acquire_ownership(self, *_args, **_kwargs):
+            return True
+
         def startup(self):
             return []
 
@@ -217,6 +229,9 @@ def test_прямой_http_не_доверяет_proxy_и_предупрежда
 
         def __init__(self, data):
             self.data = data
+
+        def acquire_ownership(self, *_args, **_kwargs):
+            return True
 
         def startup(self):
             return []

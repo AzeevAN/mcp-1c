@@ -178,6 +178,9 @@ class _FakeRegistry:
     def __init__(self, data):
         self.data = data
 
+    def acquire_ownership(self, *_args, **_kwargs):
+        return True
+
     def startup(self):
         return []
 

@@ -47,7 +47,10 @@ def test_bootstrap_той_же_a_не_откатывает_native_b_full(tmp_pat
     messages = restarted.startup()
     assert _mode(restarted) is ActivationMode.B_FULL, messages
     # Пропуск A назван в стартовых сообщениях, а не молчалив.
-    assert any("пропущен" in message for message in messages), messages
+    assert any(
+        message.startswith("bootstrap: ") and "пропущен" in message
+        for message in messages
+    ), messages
     assert restarted.resolve("DemoConfiguration").modules is not None
     again = Registry(data)
     again.startup()

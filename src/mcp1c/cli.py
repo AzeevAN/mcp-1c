@@ -167,6 +167,12 @@ def _cmd_reg_add(args: argparse.Namespace) -> int:
           f" элементов {source.items_total})")
     for warning in source.warnings:
         print(f"  ! {warning}")
+    if registry.role == "guest":
+        print(
+            "Каталог данных обслуживает работающий сервер: запись дописана в "
+            "registry.json, сервер применит её после POST /admin/reload.",
+            file=sys.stderr,
+        )
     return 0
 
 

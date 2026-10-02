@@ -119,7 +119,7 @@ def test_гость_не_публикует_поколение_и_не_сним�
         _stop(server)
 
 
-def test_запись_поверх_чужого_registry_json_отклоняется_до_reload(tmp_path):
+def test_операция_сервера_перечитывает_чужой_registry_json(tmp_path):
     incoming = tmp_path / "input"
     incoming.mkdir()
     server = Registry(tmp_path / "data")
@@ -133,14 +133,72 @@ def test_запись_поверх_чужого_registry_json_отклоняет
     other.add_configuration(write_export(incoming, build_configuration(name="Другая")))
     other.save()
 
-    with pytest.raises(RegistryChangedExternally, match="admin/reload"):
-        server.save()
+    # У дашборда нет ручки reload: операция сервера сама перечитывает файл
+    # и не стирает строку CLI.
+    server.set_platform_version("Пример", "8.3.27.2130")
     payload = json.loads(server.registry_path.read_text(encoding="utf-8"))
-    assert "Другая" in {raw["id"] for raw in payload["sources"]}
-
-    server.startup()
-    server.save()
+    assert {"Пример", "Другая"} <= {raw["id"] for raw in payload["sources"]}
     assert {"Пример", "Другая"} <= set(server.configurations)
+    assert payload["platform_declarations"]["Пример"]["version"] == "8.3.27.2130"
+
+
+def test_смена_файла_во_время_операции_повторяется_после_reload(
+    tmp_path, monkeypatch
+):
+    incoming = tmp_path / "input"
+    incoming.mkdir()
+    server = Registry(tmp_path / "data")
+    server.startup()
+    server.add_configuration(write_export(incoming, build_configuration(name="Пример")))
+    server.save()
+    other = Registry(server.data_dir)
+    other.restore()
+    подлинный = server._registry_payload
+    вызовов = {"n": 0}
+
+    def payload_с_гонкой(*args, **kwargs):
+        вызовов["n"] += 1
+        if вызовов["n"] == 1:
+            # CLI успевает записать между сверкой перед операцией и записью.
+            other.add_configuration(
+                write_export(incoming, build_configuration(name="Другая"))
+            )
+            other.save()
+        return подлинный(*args, **kwargs)
+
+    monkeypatch.setattr(server, "_registry_payload", payload_с_гонкой)
+    server.save()
+
+    payload = json.loads(server.registry_path.read_text(encoding="utf-8"))
+    assert {"Пример", "Другая"} <= {raw["id"] for raw in payload["sources"]}
+
+
+def test_старт_не_падает_если_гость_записал_registry_во_время_старта(
+    tmp_path, monkeypatch
+):
+    incoming = tmp_path / "input"
+    incoming.mkdir()
+    first = Registry(tmp_path / "data")
+    first.add_configuration(write_export(incoming, build_configuration(name="Пример")))
+    first.save()
+    server = Registry(first.data_dir)
+    other = Registry(first.data_dir)
+    other.restore()
+    подлинный_bootstrap = server.bootstrap
+
+    def bootstrap_с_гостем():
+        other.add_configuration(
+            write_export(incoming, build_configuration(name="Другая"))
+        )
+        other.save()
+        return подлинный_bootstrap()
+
+    monkeypatch.setattr(server, "bootstrap", bootstrap_с_гостем)
+    server.startup()
+
+    assert {"Пример", "Другая"} <= set(server.configurations)
+    payload = json.loads(server.registry_path.read_text(encoding="utf-8"))
+    assert {"Пример", "Другая"} <= {raw["id"] for raw in payload["sources"]}
 
 
 def test_параллельная_запись_json_не_теряет_временный_файл(tmp_path):
@@ -165,3 +223,188 @@ def test_параллельная_запись_json_не_теряет_време
     assert ошибки == []
     assert json.loads(target.read_text(encoding="utf-8"))["step"] == 149
     assert not list(registry.data_dir.glob("*.tmp"))
+
+
+def test_flock_без_поддержки_тома_не_делает_сервер_гостем(tmp_path, monkeypatch):
+    import errno
+
+    import mcp1c.registry as registry_module
+
+    def нет_блокировок(*_args, **_kwargs):
+        raise OSError(errno.ENOLCK, "flock не поддержан томом")
+
+    monkeypatch.setattr(registry_module.fcntl, "flock", нет_блокировок)
+    incoming = tmp_path / "input"
+    incoming.mkdir()
+    registry = Registry(tmp_path / "data")
+    registry.startup()
+
+    assert registry.role == "owner"
+    registry.add_configuration(write_export(incoming, build_configuration()))
+    registry.save()
+
+
+def test_гость_становится_владельцем_на_следующем_startup(tmp_path):
+    data = tmp_path / "data"
+    data.mkdir()
+    server = _start_server(data)
+    try:
+        registry = Registry(data)
+        registry.startup()
+        assert registry.role == "guest"
+        assert registry.acquire_ownership(timeout=0.3) is False
+    finally:
+        _stop(server)
+    registry.startup()
+    assert registry.role == "owner"
+
+
+def test_сервер_не_стартует_гостем(tmp_path, monkeypatch, capsys):
+    from mcp1c import server as server_module
+
+    data = tmp_path / "data"
+    data.mkdir()
+    holder = _start_server(data)
+    try:
+        monkeypatch.setattr(server_module, "OWNERSHIP_TIMEOUT", 0.3)
+        code = server_module.main(["--data", str(data), "--transport", "stdio"])
+    finally:
+        _stop(holder)
+    assert code == 2
+    assert "не освободился" in capsys.readouterr().err
+
+
+def test_гость_не_создаёт_staging_замены_native_базы(tmp_path):
+    from test_intake_v2_extensions import _stage_active_base
+    from test_intake_v2_legacy_cleanup import _native_generation
+
+    setup = Registry(tmp_path / "data")
+    setup.publish_generation(
+        _stage_active_base(setup, _native_generation(tmp_path, "full"))
+    )
+    data = setup.data_dir
+    server = _start_server(data)
+    try:
+        guest = Registry(data)
+        guest.startup()
+        incoming = tmp_path / "input"
+        incoming.mkdir()
+        archive = write_export(
+            incoming, build_configuration(name="DemoConfiguration")
+        )
+        with pytest.raises(RegistryOwnedElsewhere):
+            guest.add_configuration(archive)
+        assert not list(data.glob(".schema-v1-base-*"))
+        assert not list((data / "generations").glob(".staging-*"))
+    finally:
+        _stop(server)
+
+
+def test_гость_дописывает_строки_поверх_свежего_файла(tmp_path):
+    incoming = tmp_path / "input"
+    incoming.mkdir()
+    server = Registry(tmp_path / "data")
+    server.startup()
+    server.add_configuration(write_export(incoming, build_configuration(name="А")))
+    server.save()
+    guest = Registry(server.data_dir)
+    guest.restore()
+    guest._guest = True
+    # Сервер записал своё уже после чтения гостем.
+    server.add_configuration(write_export(incoming, build_configuration(name="Б")))
+    server.save()
+
+    guest.add_configuration(write_export(incoming, build_configuration(name="В")))
+    guest.save()
+
+    payload = json.loads(server.registry_path.read_text(encoding="utf-8"))
+    assert {"А", "Б", "В"} <= {raw["id"] for raw in payload["sources"]}
+
+
+def test_гость_не_удаляет_чужие_слитые_справки(tmp_path):
+    from conftest import write_syntax
+
+    registry = Registry(tmp_path / "data")
+    registry.add_syntax(write_syntax(tmp_path / "s1", "8.3.20.1"))
+    registry.add_syntax(write_syntax(tmp_path / "s2", "8.3.21.1"))
+    чужой = registry._syntax_index_dir() / "merged-0000000000000000.json.gz"
+    чужой.write_bytes(b"server view")
+    registry._guest = True
+    registry.add_syntax(write_syntax(tmp_path / "s3", "8.3.22.1"))
+    assert чужой.read_bytes() == b"server view"
+
+
+def test_старт_владельца_подметает_временные_файлы_записи(tmp_path):
+    data = tmp_path / "data"
+    data.mkdir()
+    сироты = [
+        data / ".registry.json.0123abcd.tmp",
+        data / ".modules-swap.json.0123abcd.tmp",
+    ]
+    for path in сироты:
+        path.write_text("{}", encoding="utf-8")
+
+    Registry(data).startup()
+
+    assert not any(path.exists() for path in сироты)
+
+
+def test_замок_открывается_без_права_записи(tmp_path):
+    data = tmp_path / "data"
+    data.mkdir()
+    lock = data / ".registry.owner.lock"
+    lock.write_text("", encoding="utf-8")
+    # Файл создан другим пользователем (root): у сервера только чтение.
+    lock.chmod(0o444)
+    (data / ".registry.lock").write_text("", encoding="utf-8")
+    (data / ".registry.lock").chmod(0o444)
+    registry = Registry(data)
+    registry.startup()
+    assert registry.role == "owner"
+    registry.save()
+
+
+def test_чтение_cli_при_сервере_без_подсказки_про_reload(tmp_path, capsys):
+    from mcp1c.cli import main
+
+    data = tmp_path / "data"
+    data.mkdir()
+    server = _start_server(data)
+    try:
+        main(["reg-list", "--data", str(data)])
+    finally:
+        _stop(server)
+    assert "обслуживает" not in capsys.readouterr().err
+
+
+def test_remove_сверяет_штамп_до_сноса_каталогов(
+    tmp_path, архив_кода, корень_кода, monkeypatch
+):
+    incoming = tmp_path / "input"
+    incoming.mkdir()
+    server = Registry(tmp_path / "data")
+    server.startup()
+    server.add_configuration(write_export(incoming, build_configuration(name="Пример")))
+    server.add_modules(архив_кода(корень_кода), configuration="Пример")
+    other = Registry(server.data_dir)
+    other.restore()
+    other.add_configuration(write_export(incoming, build_configuration(name="Другая")))
+    other.save()
+    # Сверка перед операцией «не заметила» смену: проверяем сам remove.
+    monkeypatch.setattr(server, "_refresh_if_changed_externally", lambda: None)
+    отставлено: list = []
+    подлинный = server._retire_code_root
+
+    def учесть(*args, **kwargs):
+        отставлено.append(args[0])
+        return подлинный(*args, **kwargs)
+
+    monkeypatch.setattr(server, "_retire_code_root", учесть)
+    server.remove("Пример")
+    server.save()
+
+    # Первая попытка отказала до rename, повтор после reload снял один раз.
+    assert len(отставлено) == 1
+    payload = json.loads(server.registry_path.read_text(encoding="utf-8"))
+    ids = {raw["id"] for raw in payload["sources"]}
+    assert "Другая" in ids and "Пример" not in ids

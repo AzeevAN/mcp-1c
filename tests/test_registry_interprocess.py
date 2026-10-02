@@ -361,6 +361,54 @@ def test_файл_замка_доступен_другим_при_строгом
         assert (registry.data_dir / name).stat().st_mode & 0o777 == 0o644
 
 
+def test_симлинк_вместо_замка_записи_не_меняет_права_цели(tmp_path):
+    """Симлинк `.registry.lock` на чужой файл: fchmod 0644 по нему открыл бы
+    цель на чтение всем."""
+    from mcp1c.registry import RegistryError
+
+    victim = tmp_path / "secret.txt"
+    victim.write_text("секрет")
+    victim.chmod(0o600)
+    registry = Registry(tmp_path / "data")
+    registry.startup()
+    (registry.data_dir / ".registry.lock").unlink()
+    (registry.data_dir / ".registry.lock").symlink_to(victim)
+
+    with pytest.raises(RegistryError, match="замок записи"):
+        registry.save()
+    assert victim.stat().st_mode & 0o777 == 0o600
+
+
+def test_симлинк_вместо_замка_владельца_не_даёт_владения(tmp_path):
+    victim = tmp_path / "secret.txt"
+    victim.write_text("секрет")
+    victim.chmod(0o600)
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / ".registry.owner.lock").symlink_to(victim)
+
+    registry = Registry(data)
+    assert registry.acquire_ownership(0) is False
+    assert victim.stat().st_mode & 0o777 == 0o600
+
+
+def test_чужой_файл_замка_не_получает_fchmod(tmp_path, monkeypatch):
+    """Права меняет только владелец файла: чужой (другой uid) файл замка
+    остаётся с теми правами, что выставил его хозяин."""
+    from mcp1c import registry as registry_module
+
+    data = tmp_path / "data"
+    data.mkdir()
+    lock = data / ".registry.lock"
+    lock.write_text("")
+    lock.chmod(0o600)
+    monkeypatch.setattr(registry_module.os, "geteuid", lambda: os.getuid() + 1)
+
+    descriptor = registry_module._open_lock_file(lock)
+    os.close(descriptor)
+    assert lock.stat().st_mode & 0o777 == 0o600
+
+
 def test_своя_запись_соседнего_потока_не_вызывает_reload(tmp_path, monkeypatch):
     incoming = tmp_path / "input"
     incoming.mkdir()

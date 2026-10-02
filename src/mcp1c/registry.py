@@ -196,17 +196,34 @@ def _open_lock_file(path: Path) -> int:
     основной путь — O_RDWR. Файл, созданный root с 0644, сервер под uid 10001
     открыть на запись не может: тогда O_RDONLY, локально flock это допускает.
     Права выставляются fchmod после создания: umask 077 иначе запер бы файл
-    для процесса другого пользователя.
+    для процесса другого пользователя. Именно 0644, а не 0640: файл, первым
+    созданный root-CLI (`docker compose exec -u root`) с группой root, сервер
+    под uid 10001 иначе не открыл бы вовсе и не стал бы владельцем.
+
+    `O_NOFOLLOW` и проверка обычного файла не дают подложенному в `data/`
+    симлинку направить fchmod на чужой файл и открыть его на чтение всем;
+    fchmod делается только для своего файла.
     """
+    flags = getattr(os, "O_NOFOLLOW", 0)
     try:
-        descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+        descriptor = os.open(path, os.O_RDWR | os.O_CREAT | flags, 0o644)
     except PermissionError:
-        return os.open(path, os.O_RDONLY)
+        descriptor = os.open(path, os.O_RDONLY | flags)
     try:
-        os.fchmod(descriptor, 0o644)
-    except OSError:
-        # Чужой файл: права не наши, сам замок от этого не зависит.
-        pass
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError(
+                errno.EINVAL, "файл замка не является обычным файлом", str(path)
+            )
+        if info.st_uid == os.geteuid():
+            try:
+                os.fchmod(descriptor, 0o644)
+            except OSError:
+                # Том только на чтение и т.п.: сам замок от прав не зависит.
+                pass
+    except BaseException:
+        os.close(descriptor)
+        raise
     return descriptor
 
 
@@ -539,12 +556,14 @@ class Registry:
         self._startup_scope = threading.local()
         # Staging разных кандидатов может идти параллельно, но pointer и общий
         # WAL переключаются только одним publisher за раз. Startup/reload
-        # держит этот же замок целиком: иначе он прочитал бы живой WAL идущей
-        # публикации как аварийный и откатил её staging, а restore применил
-        # бы прочитанные до долгой сборки pointers поверх параллельной
-        # публикации или remove. Поэтому recovery и native-часть restore
-        # берут его же. Замок реентерабельный: restore поднимает строки через
-        # add_configuration, который берёт его сам. Порядок:
+        # держит этот замок не целиком, а на двух участках: на recovery WAL
+        # с уборкой временных баз schema v1 (иначе живой WAL идущей
+        # публикации прочитался бы как аварийный и её staging откатился) и на
+        # native-части restore — от чтения registry.json до применения
+        # pointers (иначе прочитанные до долгой сборки pointers легли бы
+        # поверх параллельной публикации или remove). Legacy-строки restore
+        # поднимает уже без него. Замок реентерабельный: restore поднимает
+        # строки через add_configuration, который берёт его сам. Порядок:
         # startup -> mutation -> cache -> registry.
         self._generation_mutation_lock = threading.RLock()
         # Версии нужны только для незавершённых публикаций внутри процесса.
@@ -2421,8 +2440,6 @@ class Registry:
         source: Source,
         корень: Path,
         поколение: int,
-        *,
-        дождаться: threading.Thread | None = None,
     ) -> None:
         """Опубликовать заглушку `готов=False` и начать сборку индекса кода."""
         файлы_каталога = catalog_files(корень)
@@ -2443,12 +2460,6 @@ class Registry:
         source.status = STATUS_LOADING
         source.error = ""
         def собрать() -> None:
-            if дождаться is not None:
-                # Между регистрацией потока и start() join() бросил бы
-                # RuntimeError: ждём, пока прежний поток действительно стартует.
-                while дождаться.ident is None:
-                    time.sleep(0.001)
-                дождаться.join()
             self._собрать_индексы_фоном(
                 source, корень, строится, поколение, файлы_каталога
             )

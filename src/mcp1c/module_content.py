@@ -18,10 +18,12 @@ from typing import Mapping
 from .bsl_lex import нормализовать
 from .member_pack import open_stored_member
 from .readers.modules import read_module_body
+from .resource_limits import INTAKE_MAX_MODULE_BYTES
 from .v8container import V8Container, V8ContainerError, V8ResourceLimitError
 
 
 _KINDS = frozenset(("file", "container", "compiled"))
+HISTORICAL_MODULE_BYTES = INTAKE_MAX_MODULE_BYTES
 
 
 def _safe_relative(value: str) -> str:
@@ -233,7 +235,43 @@ def read_bsl(
 ) -> str:
     """Прочитать обычный файл или запись контейнера одним нормализатором."""
 
-    raw = read_content_bytes(root, address, locator)
+    if locator.kind == "compiled":
+        raise ContentReadError(
+            "compiled_without_source", address,
+            "исходный текст модуля поставлен скомпилированным",
+        )
+    if locator.kind == "file":
+        try:
+            with open_stored_member(root, locator.relative_path) as stream:
+                raw = stream.read(HISTORICAL_MODULE_BYTES + 1)
+        except OSError as error:
+            raise ContentReadError(
+                "file_unreadable", address, "файл модуля недоступен"
+            ) from error
+        if len(raw) > HISTORICAL_MODULE_BYTES:
+            raise ContentReadError(
+                "budget_exceeded", address, "текст модуля превысил предел чтения"
+            )
+    else:
+        try:
+            raw_container = _read_relative_bytes(root, locator.relative_path)
+            with V8Container(raw_container) as container:
+                raw = container.read_bounded(locator.entry, HISTORICAL_MODULE_BYTES)
+        except KeyError as error:
+            raise ContentReadError(
+                "container_entry_missing", address,
+                "в контейнере нет ожидаемой записи модуля",
+            ) from error
+        except V8ResourceLimitError as error:
+            raise ContentReadError(
+                "budget_exceeded", address,
+                "контейнер модуля превысил вычислительный предел",
+            ) from error
+        except (OSError, V8ContainerError) as error:
+            raise ContentReadError(
+                "container_unreadable", address,
+                "контейнер модуля не прочитан",
+            ) from error
     result = read_module_body(raw)
     if result.state == "unreadable":
         raise ContentReadError(

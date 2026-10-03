@@ -260,6 +260,50 @@ class V8Container:
         document = b"".join(chunks)
         return document[:total] if total >= 0 else document
 
+    def _document_size(self, addr: int) -> int:
+        if addr in (EMPTY_ADDR, 0):
+            return 0
+        header = self._data[addr : addr + BLOCK_HEADER_SIZE]
+        if len(header) < BLOCK_HEADER_SIZE or header[:2] != b"\r\n":
+            raise V8ContainerError("Битый заголовок блока контейнера.")
+        try:
+            size = int(header[2:10], 16)
+        except ValueError as error:
+            raise V8ContainerError("Нечитаемый размер документа контейнера.") from error
+        if size > self._limits.max_entry_bytes:
+            raise V8ResourceLimitError("Документ контейнера превысил предел записи.")
+        return size
+
+    def _iter_document_chunks(self, addr: int) -> Iterator[bytes]:
+        """Выбранный документ по частям, сохраняя структурный предел V8."""
+        total = self._document_size(addr)
+        collected = 0
+        visited: set[int] = set()
+        while addr not in (EMPTY_ADDR, 0) and collected < total:
+            if addr in visited:
+                raise V8ContainerError("Циклическая ссылка блоков контейнера.")
+            visited.add(addr)
+            header = self._data[addr : addr + BLOCK_HEADER_SIZE]
+            if len(header) < BLOCK_HEADER_SIZE or header[:2] != b"\r\n":
+                raise V8ContainerError("Битый заголовок блока контейнера.")
+            try:
+                block_size = int(header[11:19], 16)
+                next_addr = int(header[20:28], 16)
+            except ValueError as error:
+                raise V8ContainerError("Нечитаемый заголовок блока контейнера.") from error
+            remaining = min(block_size, total - collected)
+            offset = addr + BLOCK_HEADER_SIZE
+            while remaining:
+                chunk = bytes(self._data[offset : offset + min(remaining, 64 * 1024)])
+                if not chunk:
+                    break
+                yield chunk
+                size = len(chunk)
+                offset += size
+                remaining -= size
+                collected += size
+            addr = next_addr
+
     # ------------------------------------------------------------- таблица
 
     def _read_table(self) -> None:
@@ -339,6 +383,72 @@ class V8Container:
                 raise V8ResourceLimitError(str(error)) from error
             return raw
 
+    def _read_entry_data_bounded(self, addr: int, max_output_bytes: int) -> bytes:
+        """Распаковать одну запись до лимита, не собирая raw document целиком."""
+        if max_output_bytes < 0:
+            raise ValueError("предел записи должен быть неотрицательным")
+        compressed_size = self._document_size(addr)
+        if not compressed_size:
+            return b""
+        limits = self._limits
+        allowed = min(
+            max_output_bytes,
+            limits.max_entry_bytes,
+            limits.max_total_bytes - self._budget.read_total,
+            compressed_size * limits.max_compression_ratio,
+        )
+        decoder = zlib.decompressobj(-15)
+        chunks: list[bytes] = []
+        decoded_total = 0
+        compressed_actual = 0
+        try:
+            for chunk in self._iter_document_chunks(addr):
+                compressed_actual += len(chunk)
+                if decoder.eof:
+                    # zlib копит весь хвост в unused_data после EOF. Считать
+                    # его для прежнего ratio, но больше не кормить decoder.
+                    continue
+                part = decoder.decompress(chunk, max(1, allowed - decoded_total + 1))
+                decoded_total += len(part)
+                if decoded_total > allowed or decoder.unconsumed_tail:
+                    raise V8ResourceLimitError("Запись контейнера превысила предел чтения.")
+                chunks.append(part)
+            tail = decoder.flush(max(1, allowed - decoded_total + 1))
+            decoded_total += len(tail)
+            if decoded_total > allowed:
+                raise V8ResourceLimitError("Запись контейнера превысила предел чтения.")
+            chunks.append(tail)
+            if not decoder.eof:
+                raise zlib.error("неполный поток raw deflate")
+            if self._budget.ratio_exceeded(decoded_total, compressed_actual):
+                raise V8ResourceLimitError("Запись контейнера превысила предел сжатия.")
+        except zlib.error:
+            # Исторические записи иногда лежат как есть. Повторный проход
+            # обрывается при превышении лимита очередным блоком (до 64 КиБ),
+            # не создавая большой raw bytes.
+            raw_chunks: list[bytes] = []
+            raw_total = 0
+            raw_allowed = min(
+                max_output_bytes,
+                limits.max_entry_bytes,
+                limits.max_total_bytes - self._budget.read_total,
+            )
+            for chunk in self._iter_document_chunks(addr):
+                raw_total += len(chunk)
+                if raw_total > raw_allowed:
+                    raise V8ResourceLimitError("Запись контейнера превысила предел чтения.")
+                raw_chunks.append(chunk)
+            try:
+                self._budget.consume(f"entry@{addr}", 0, raw_total)
+            except ResourceLimitError as error:
+                raise V8ResourceLimitError(str(error)) from error
+            return b"".join(raw_chunks)
+        try:
+            self._budget.consume(f"entry@{addr}", 0, decoded_total)
+        except ResourceLimitError as error:
+            raise V8ResourceLimitError(str(error)) from error
+        return b"".join(chunks)
+
     # ------------------------------------------------------------- публичное API
 
     def namelist(self) -> list[str]:
@@ -362,6 +472,10 @@ class V8Container:
 
     def read(self, name: str) -> bytes:
         return self.entry(name).read()
+
+    def read_bounded(self, name: str, max_output_bytes: int) -> bytes:
+        """Прочитать одну запись с отдельным пределом распакованного тела."""
+        return self._read_entry_data_bounded(self.entry(name)._data_addr, max_output_bytes)
 
     def read_text(self, name: str, encoding: str = "utf-8") -> str:
         data = self.read(name)

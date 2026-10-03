@@ -181,3 +181,31 @@ def test_параллельные_вызовы_дают_одну_выдачу_и
     assert not расхождения
     assert len(кэш._записи) == 2
     assert кэш.объём == sum(запись.размер for запись in кэш._записи.values())
+
+
+def test_тело_не_совпавшее_с_закэшированными_границами_не_отдаётся(
+    реестр_с_кодом, monkeypatch
+):
+    """Границы из кэша, текст — заново с диска: если текст под тем же
+    пакетом разошёлся с границами, рассогласованное тело не уходит в ответ."""
+    адрес = "ОбщийМодуль.ОбщийПример::Сложить"
+    tools.get_procedure(реестр_с_кодом, адрес, config="Пример")
+    monkeypatch.setattr(
+        tools, "_read_module_snapshot", lambda *args, **kwargs: "\n" * 40
+    )
+
+    with pytest.raises(RegistryError, match="сопоставить оглавление"):
+        tools.get_procedure(реестр_с_кодом, адрес, config="Пример")
+
+
+def test_снятый_пакет_освобождает_кэш_без_нового_обращения(реестр_с_кодом):
+    import gc
+
+    tools.get_procedure(реестр_с_кодом, "ОбщийМодуль.ОбщийПример", config="Пример")
+    assert tools._РАЗБОРЫ.объём > 0
+    for source_id in list(реестр_с_кодом.modules):
+        реестр_с_кодом.remove(source_id.split(":")[0])
+        break
+    gc.collect()
+
+    assert tools._РАЗБОРЫ.объём == 0

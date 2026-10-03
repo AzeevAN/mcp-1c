@@ -5416,8 +5416,16 @@ class Registry:
             по_версии = sorted(versions, key=lambda s: parse_version(s.platform))
             allowed.add(self._merged_path(по_версии).resolve())
         removed: list[str] = []
+        now = time.time()
         for path in sorted(directory.iterdir()):
             if not path.is_file() or path.resolve() in allowed:
+                continue
+            # `add_syntax` пишет индекс до того, как заявит Source, а `.hbk`
+            # не хранится: удалить свежий незаявленный файл — потерять
+            # справку. Его может писать и гость (CLI) в другом процессе.
+            if index_cache.being_written(path, now) or index_cache.recently_modified(
+                path, now
+            ):
                 continue
             try:
                 path.unlink()

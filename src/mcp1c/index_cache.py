@@ -98,8 +98,9 @@ _NO_HARDLINK = frozenset(
 # realpath, префикс имени) → число живых записей. `sweep` идёт на старте
 # владельца сразу после `restore()`, а тот уже запустил фоновую сборку
 # индексов кода; по одному имени `.<файл>.*.tmp` живую запись не отличить от
-# обрывка SIGKILL. Учёт процессный, а не межпроцессный: кэш пишет только
-# владелец data/ (гость его не трогает), и уборка идёт в том же процессе.
+# обрывка SIGKILL. Учёт процессный и точный, но кэш пишет и гость (CLI
+# `reg-add` при живом сервере: Source A, справка, ролевой индекс при
+# restore) — его записи закрывает порог свежести `TEMPORARY_GRACE_SECONDS`.
 _LIVE_WRITES: dict[tuple[str, str], int] = {}
 _LIVE_WRITES_LOCK = threading.Lock()
 
@@ -131,6 +132,39 @@ def _live_prefixes(directory: Path) -> tuple[str, ...]:
         return tuple(prefix for folder, prefix in _LIVE_WRITES if folder == real)
 
 
+def is_temporary_name(name: str) -> bool:
+    """Имя временного файла записи: `.<цель>.<случайное>.tmp`."""
+    return name.startswith(".") and name.endswith(".tmp")
+
+
+def recently_modified(path: Path, now: float | None = None) -> bool:
+    """Файл менялся позже порога свежести — возможно, его ещё пишут.
+
+    Будущий mtime (сдвиг часов) тоже считается свежим: удалить живое хуже,
+    чем оставить обрывок до следующей уборки.
+    """
+    try:
+        mtime = path.lstat().st_mtime
+    except OSError:
+        return False
+    return (time.time() if now is None else now) - mtime < TEMPORARY_GRACE_SECONDS
+
+
+def being_written(path: Path, now: float | None = None) -> bool:
+    """Отмечен живой записью этого процесса или свежий временный другого."""
+    if any(path.name.startswith(prefix) for prefix in _live_prefixes(path.parent)):
+        return True
+    return is_temporary_name(path.name) and recently_modified(path, now)
+
+
+# Временный файл моложе порога уборка не трогает: его может писать другой
+# процесс (гость — CLI `reg-add` при живом сервере), а процессная отметка
+# `live_write` ему не видна. Самое долгое окно записи на крупнейшей реальной
+# выгрузке (2026-10-03) — 4,2 с у ролевого SQLite, 0,18 с у `save_blob`,
+# 1,5 с у разобранной справки. 10 минут — запас больше ×100 на медленный
+# том (bind-mount Docker Desktop, сетевой диск), где окно не замерено;
+# цена запаса — обрывок SIGKILL ждёт следующей уборки.
+TEMPORARY_GRACE_SECONDS = 10 * 60
 _KEY_BYTES = 32
 # Без жёстких ссылок ключ создаётся O_EXCL прямо на месте, и между open и
 # write файл виден пустым. Свежий пустой файл — не «битый», а ключ соперника
@@ -577,13 +611,14 @@ def sweep(cache_dir: str | Path, keep: Iterable[str]) -> list[str]:
 
     allowed = set(keep)
     removed: list[str] = []
+    now = time.time()
     for path in sorted(directory.iterdir()):
         # Ключ подписи уборке не подлежит: без него обесценился бы весь кэш.
         if not path.is_file() or path.name in allowed or path.name == KEY_FILE_NAME:
             continue
-        # Временный файл живой записи этого процесса — не обрывок. Проверка
-        # после листинга: запись регистрируется до создания файла.
-        if any(path.name.startswith(prefix) for prefix in _live_prefixes(directory)):
+        # Временный файл живой записи — не обрывок. Проверка после листинга:
+        # запись регистрируется до создания файла.
+        if being_written(path, now):
             continue
         try:
             path.unlink()

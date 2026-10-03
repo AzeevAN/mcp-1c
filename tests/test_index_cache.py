@@ -210,15 +210,38 @@ def test_уборка_не_сносит_временный_ключ_живой_�
     assert убрано == []
 
 
+def _состарить(path, seconds=None):
+    import time
+
+    было = time.time() - (seconds or index_cache.TEMPORARY_GRACE_SECONDS + 60)
+    os.utime(path, (было, было))
+
+
 def test_уборка_сносит_обрывок_после_завершения_записи(tmp_path, sample_index):
     """Живая запись того же файла защищает только свои временные файлы на
-    время записи: обрывок, переживший SIGKILL, уходит при следующей уборке."""
+    время записи: старый обрывок, переживший SIGKILL, уходит при уборке."""
     path = index_cache.path_for(tmp_path, "Розница", "objects")
     обрывок = tmp_path / f".{path.name}.abcd1234.tmp"
     обрывок.write_bytes(b"half")
+    _состарить(обрывок)
     index_cache.save(sample_index, path, source_sha256="abc", kind="objects")
 
     assert index_cache.sweep(tmp_path, keep=[path.name]) == [обрывок.name]
+
+
+def test_уборка_не_сносит_свежий_временный_файл_другого_процесса(tmp_path):
+    """Гость (CLI `reg-add` при живом сервере) тоже пишет кэш: Source A,
+    справку, ролевой индекс при restore. Отметка `live_write` процессная, и
+    уборка владельца при reload видит временный файл гостя без отметки.
+    Свежий `.*.tmp` моложе порога не удаляется; старый — обрывок."""
+    свежий = tmp_path / ".Розница.objects.k3j4m5n6.tmp"
+    свежий.write_bytes(b"writing")
+    старый = tmp_path / ".Розница.fields.q1w2e3r4.tmp"
+    старый.write_bytes(b"half")
+    _состарить(старый)
+
+    assert index_cache.sweep(tmp_path, keep=["Розница.objects"]) == [старый.name]
+    assert свежий.exists()
 
 
 def test_уборка_молчит_когда_каталога_нет(tmp_path):

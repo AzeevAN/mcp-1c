@@ -17,9 +17,13 @@ from __future__ import annotations
 
 import gzip
 import json
+import os
+import tempfile
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
+
+from . import index_cache
 
 from .syntax_model import (
     SyntaxFacts,
@@ -78,18 +82,32 @@ def save_syntax(index: SyntaxIndex, path: str | Path) -> Path:
     }
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_suffix(target.suffix + ".tmp")
-    # asdict всего индекса одновременно держал в памяти вторую копию всех
-    # страниц и ссылок. Пишем тот же JSON по одной карточке, сохраняя формат.
-    with gzip.open(tmp, "wt", encoding="utf-8", compresslevel=6) as stream:
-        stream.write(json.dumps(header, ensure_ascii=False, separators=(",", ":"))[:-1])
-        stream.write(',"items":[')
-        for number, item in enumerate(index.items.values()):
-            if number:
-                stream.write(",")
-            json.dump(_item_to_dict(item), stream, ensure_ascii=False, separators=(",", ":"))
-        stream.write("]}")
-    tmp.replace(target)
+    # Уникальный временный файл, а не предсказуемый `<файл>.tmp`: сервер и
+    # CLI, записывающие одну версию, делили бы его. Имя `.<файл>.*.tmp` и
+    # отметка живой записи защищают его от `sweep_syntax`.
+    prefix = f".{target.name}."
+    with index_cache.live_write(target.parent, prefix):
+        descriptor, raw = tempfile.mkstemp(prefix=prefix, suffix=".tmp", dir=target.parent)
+        tmp = Path(raw)
+        try:
+            # asdict всего индекса одновременно держал в памяти вторую копию
+            # всех страниц и ссылок. Пишем тот же JSON по одной карточке.
+            with os.fdopen(descriptor, "wb") as raw_stream, gzip.open(
+                raw_stream, "wt", encoding="utf-8", compresslevel=6
+            ) as stream:
+                stream.write(json.dumps(header, ensure_ascii=False, separators=(",", ":"))[:-1])
+                stream.write(',"items":[')
+                for number, item in enumerate(index.items.values()):
+                    if number:
+                        stream.write(",")
+                    json.dump(
+                        _item_to_dict(item), stream, ensure_ascii=False, separators=(",", ":")
+                    )
+                stream.write("]}")
+            os.replace(tmp, target)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
     return target
 
 

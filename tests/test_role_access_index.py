@@ -654,6 +654,62 @@ def test_уборка_кэша_не_сносит_недостроенный_ро
     assert cache.is_file()
 
 
+def _ephemeral_в_каталоге_кэша(tmp_path, monkeypatch):
+    role_access = importlib.import_module(SUBJECT)
+    layer, _saved = _role_layer(
+        tmp_path / "generation",
+        ((
+            "Reader",
+            _descriptor("Reader", uuid="11111111-1111-1111-1111-111111111111"),
+            _rights((("Catalog.Orders", (_right("Read", True),)),)),
+        ),),
+    )
+    cache = tmp_path / "cache" / "roles.sqlite"
+
+    def замена_отказала(*_args, **_kwargs):
+        raise OSError("том занят")
+
+    monkeypatch.setattr(role_access.os, "replace", замена_отказала)
+    index = _open(tmp_path / "generation", layer, cache)
+    monkeypatch.undo()
+    return index, cache
+
+
+def test_ephemeral_индекс_в_каталоге_кэша_не_сносится_уборкой_пока_открыт(
+    tmp_path, monkeypatch
+):
+    """`os.replace` не удался — индекс живёт во временном файле каталога кэша
+    всё время жизни объекта. Отметка живой записи держится до `close()`:
+    иначе уборка старта удалила бы его, как только он стал старше порога."""
+    import os
+    import time
+
+    from mcp1c import index_cache
+
+    index, cache = _ephemeral_в_каталоге_кэша(tmp_path, monkeypatch)
+    try:
+        assert index.path.parent == cache.parent
+        было = time.time() - index_cache.TEMPORARY_GRACE_SECONDS - 60
+        os.utime(index.path, (было, было))
+        assert index_cache.sweep(cache.parent, keep=[cache.name]) == []
+        assert index.path.exists()
+    finally:
+        index.close()
+    assert not index.path.exists()
+
+
+def test_ephemeral_индекс_читается_после_удаления_файла(tmp_path, monkeypatch):
+    """Межпроцессный остаток: уборка владельца может удалить ephemeral-файл
+    гостя старше порога. Соединение `immutable=1` держит дескриптор, и на
+    POSIX чтение продолжается из удалённого inode."""
+    index, _cache = _ephemeral_в_каталоге_кэша(tmp_path, monkeypatch)
+    try:
+        index.path.unlink()
+        assert [role.name for role in index.list_roles()] == ["Reader"]
+    finally:
+        index.close()
+
+
 def test_cache_переживает_удаление_snapshot_а_повреждение_требует_пересборки(
     tmp_path,
 ):

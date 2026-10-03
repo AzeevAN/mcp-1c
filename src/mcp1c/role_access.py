@@ -1017,6 +1017,8 @@ class RoleAccessIndex:
         self._path = path
         self._lock = threading.Lock()
         self._ephemeral = ephemeral
+        # Отметка живой записи ephemeral-файла в каталоге кэша, до close().
+        self._live: ExitStack | None = None
         self.from_cache = from_cache
         self.summary = self._read_summary()
 
@@ -1106,6 +1108,14 @@ class RoleAccessIndex:
                 from_cache=False,
                 ephemeral=ephemeral,
             )
+            if ephemeral:
+                # Не удался `os.replace` — индекс живёт во временном файле
+                # каталога кэша всё время жизни объекта. Отметка снимается в
+                # `close()`, иначе уборка удалила бы его, как только он стал
+                # старше порога свежести. Уборка другого процесса отметки не
+                # видит, но открытое соединение `immutable=1` держит
+                # дескриптор, и на POSIX чтение идёт из удалённого inode.
+                result._live = live.pop_all()
             complete = True
             return result
         except RoleAccessError:
@@ -1829,6 +1839,9 @@ class RoleAccessIndex:
                 self._path.unlink(missing_ok=True)
             except OSError:
                 pass
+        live, self._live = self._live, None
+        if live is not None:
+            live.close()
 
     def __del__(self):
         try:

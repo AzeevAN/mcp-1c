@@ -386,6 +386,48 @@ def test_повторный_старт_не_перечитывает_справ�
     assert подъёмов == 3
 
 
+def test_уборка_справок_не_сносит_свежую_незаявленную(tmp_path):
+    """`add_syntax` сначала пишет `.json.gz`, потом заявляет Source; гость
+    (CLI) делает это в другом процессе. Уборка между этими шагами удаляла
+    живой tmp и уже записанный индекс, а `.hbk` не хранится — Source
+    оставался с пустым `stored_path`. Свежие файлы не удаляются, старые
+    незаявленные — по-прежнему."""
+    import os
+    import time
+
+    from mcp1c import index_cache
+
+    registry = Registry(tmp_path / "data")
+    каталог = registry._syntax_index_dir()
+    каталог.mkdir(parents=True)
+    свежий = каталог / "8.3.99.1.json.gz"
+    свежий.write_bytes(b"x")
+    свежий_tmp = каталог / ".8.3.99.1.json.gz.abcd.tmp"
+    свежий_tmp.write_bytes(b"x")
+    старый = каталог / "8.3.1.1.json.gz"
+    старый.write_bytes(b"x")
+    было = time.time() - index_cache.TEMPORARY_GRACE_SECONDS - 60
+    os.utime(старый, (было, было))
+
+    assert registry.sweep_syntax() == [старый.name]
+    assert свежий.exists() and свежий_tmp.exists()
+
+
+def test_save_syntax_не_пишет_в_предсказуемый_временный_файл(tmp_path):
+    """Предсказуемый `<файл>.tmp` делили бы две записи одной версии (сервер
+    и CLI), и одна подменила бы чужой поток. Временный файл — уникальный."""
+    from mcp1c.store import load_syntax
+
+    чужой = tmp_path / "8.3.27.2130.json.gz.tmp"
+    чужой.write_bytes(b"foreign")
+
+    path = справка(tmp_path, "8.3.27.2130", имена=("Найти",))
+
+    assert чужой.read_bytes() == b"foreign"
+    assert {item.name_ru for item in load_syntax(path).items.values()} == {"Найти"}
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted([path.name, чужой.name])
+
+
 def test_уборка_не_сносит_кэш_слитого_вида(tmp_path):
     """Уборка сносит разобранные справки, которых не заявил ни один источник.
 

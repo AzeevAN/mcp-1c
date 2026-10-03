@@ -13,10 +13,21 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 
+from mcp1c import index_cache
 from mcp1c.registry import Registry
 
 from conftest import write_syntax, живой_клиент
+
+
+def _состарить(path):
+    """Свежий незаявленный файл уборка не трогает: его может дописывать
+    `add_syntax` того же или другого процесса. Остаток прошлой загрузки
+    всегда старше порога свежести."""
+    было = time.time() - index_cache.TEMPORARY_GRACE_SECONDS - 60
+    os.utime(path, (было, было))
 
 
 def test_чужой_разобранный_индекс_сносится_на_старте(tmp_path):
@@ -32,6 +43,7 @@ def test_чужой_разобранный_индекс_сносится_на_с
     # Остаток прошлой загрузки: реестр о нём не знает.
     чужой = data / "index" / "syntax" / "8.3.5.1570.json.gz"
     чужой.write_bytes("остаток прошлой справки".encode("utf-8"))
+    _состарить(чужой)
 
     сообщения = Registry(data).startup()
 
@@ -65,6 +77,7 @@ def test_устаревший_вид_источника_снимается_и_е
     index = data / "index" / "syntax" / "устаревший.json.gz"
     index.parent.mkdir(parents=True)
     index.write_bytes(b"retired derived index")
+    _состарить(index)
     registry_path = data / "registry.json"
     registry_path.write_text(
         json.dumps(

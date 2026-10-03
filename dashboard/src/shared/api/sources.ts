@@ -48,6 +48,7 @@ export type CodeCorpus = {
   journal: string;
   journal_url: string;
   error: string;
+  last_successful_load_at?: string | null;
 };
 
 export type ConfigurationSource = {
@@ -58,6 +59,7 @@ export type ConfigurationSource = {
   objects: number;
   edges: number;
   loaded_at: string;
+  last_successful_load_at?: string | null;
   notes: string[];
   native_generation: boolean;
   activation_mode: "A_ONLY" | "B_FULL" | "unknown";

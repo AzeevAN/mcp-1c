@@ -508,7 +508,8 @@ def test_noop_commit_не_создаёт_staging_а_устаревший_preview
     staging_before = tuple((registry.data_dir / "generations").glob(".staging-*"))
     no_op = coordinator.confirm("job-002", registry)
     assert no_op.no_op is True
-    assert no_op.pointer == created.pointer
+    assert no_op.pointer.generation_id == created.pointer.generation_id
+    assert no_op.pointer.last_successful_load_at != created.pointer.last_successful_load_at
     assert tuple((registry.data_dir / "generations").glob(".staging-*")) == staging_before
 
     _accepted(uploads, coordinator, "candidate-003", "job-003")
@@ -525,8 +526,8 @@ def test_noop_commit_не_создаёт_staging_а_устаревший_preview
         generation_id="generation-competitor",
     )
     registry.publish_generation(
-        registry.stage_generation(competitor_manifest, registry.generation_payload_sources(created.pointer)),
-        expected_previous=created.pointer,
+        registry.stage_generation(competitor_manifest, registry.generation_payload_sources(no_op.pointer)),
+        expected_previous=no_op.pointer,
     )
 
     with pytest.raises(OperationConflict, match="active generation изменился"):

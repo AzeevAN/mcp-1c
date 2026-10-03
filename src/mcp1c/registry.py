@@ -35,7 +35,7 @@ import zipfile
 from collections import Counter
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
 from types import MappingProxyType
@@ -381,6 +381,18 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _accepted_load_time(previous: str | None = None) -> str:
+    current = datetime.now(timezone.utc)
+    if previous:
+        try:
+            earlier = datetime.fromisoformat(previous)
+            if earlier.tzinfo is not None and current <= earlier:
+                current = earlier + timedelta(microseconds=1)
+        except ValueError:
+            pass
+    return current.isoformat(timespec="microseconds")
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -661,6 +673,9 @@ class Registry:
         # переносятся в каждую запись реестра дословно: иначе первый же
         # save() после неудачного старта навсегда снял бы источник с учёта.
         self._carried_source_rows: dict[str, dict] = {}
+        # Legacy Source публикуется в памяти до вызывающего save(); дата
+        # становится видимой лишь после durable записи этой же строки.
+        self._pending_configuration_load_dates: dict[str, Source] = {}
         # Соотношение версий не меняется, пока не сменились источники, а его
         # вычисление — перебор всех элементов справки. Без кэша это давало
         # 16 мс на каждый вызов любого инструмента.
@@ -1256,6 +1271,7 @@ class Registry:
         source_transport: CandidateTransport = CandidateTransport.LOCAL_FILE,
         replace_native: bool = True,
         expected_revision: int | None = None,
+        restored_last_successful_load_at: str | None = None,
     ) -> Source:
         self._ensure_not_blocked(allow_restore=True)
         source_path = Path(path)
@@ -1338,6 +1354,7 @@ class Registry:
             origin=known_origin or source_path.name,
             sha256=digest,
             loaded_at=_now(),
+            last_successful_load_at=restored_last_successful_load_at,
             platform=config.platform,
             status=STATUS_READY,
             warnings=[
@@ -1371,6 +1388,13 @@ class Registry:
                     f"Конфигурация «{config.name}» изменилась во время загрузки "
                     "Source A. Повторите загрузку."
                 )
+            if not getattr(self._restore_scope, "active", False):
+                previous_source = self.sources.get(source.id)
+                source.last_successful_load_at = (
+                    previous_source.last_successful_load_at
+                    if previous_source is not None else None
+                )
+                self._pending_configuration_load_dates[source.id] = source
             self.configurations[config.name] = self._словарь_конфигурации_locked(
                 loaded
             )
@@ -1443,6 +1467,11 @@ class Registry:
                 raise RegistryError(
                     "active generation изменилась во время проверки schema-v1 no-op"
                 )
+            if self._guest:
+                # Гость сверил уже опубликованное поколение владельца, но не
+                # принимает новую загрузку и не меняет его pointer.
+                return loaded.source
+            self.accept_generation_noop(current, None)
             return loaded.source
         # Новое поколение публикует только владелец: гость не создаёт
         # временный каталог и staging, которые сервер счёл бы мусором.
@@ -1528,6 +1557,7 @@ class Registry:
                 pointer = self.publish_generation(
                     staged,
                     expected_previous=previous,
+                    record_load_at=True,
                 )
                 staged = None
                 with self._lock:
@@ -3854,6 +3884,107 @@ class Registry:
         with self._lock:
             return self._generation_pointers.get(identity.grouping_key)
 
+    def pending_generation_load(
+        self, identity: ExportIdentity, job_id: str
+    ) -> GenerationPointer | None:
+        with self._lock:
+            current = self._generation_pointers.get(identity.grouping_key)
+            if current is None:
+                return None
+            return next(
+                (
+                    pointer for pending_job_id, pointer in current.pending_load_commits
+                    if pending_job_id == job_id
+                ),
+                None,
+            )
+
+    def _retarget_extension_resolution_cache_locked(
+        self, before: GenerationPointer, after: GenerationPointer
+    ) -> None:
+        """Дата не меняет разрешение структуры расширения."""
+        cached = self._extension_resolution_cache
+        if cached is None:
+            return
+        if cached[5] is before or cached[6] is before:
+            self._extension_resolution_cache = (
+                *cached[:5],
+                after if cached[5] is before else cached[5],
+                after if cached[6] is before else cached[6],
+                cached[7],
+            )
+
+    def accept_generation_noop(
+        self, expected: GenerationPointer, job_id: str | None
+    ) -> GenerationPointer:
+        """Сохранить дату принятого no-op без смены поколения и payload."""
+        self._ensure_owner("Подтверждение загрузки без изменений")
+        with self._generation_mutation_lock, self._lock:
+            self._ensure_not_blocked()
+            key = expected.identity.grouping_key
+            current = self._generation_pointers.get(key)
+            if current is not None and job_id is not None:
+                for pending_job_id, accepted_pointer in current.pending_load_commits:
+                    if pending_job_id == job_id:
+                        return accepted_pointer
+            if (
+                current is None
+                or current.generation_id != expected.generation_id
+                or current.root_path != expected.root_path
+                or current.manifest_sha256 != expected.manifest_sha256
+            ):
+                raise GenerationPublishConflict(
+                    "active generation изменился после построения preview"
+                )
+            accepted_pointer = replace(
+                current,
+                last_successful_load_at=_accepted_load_time(current.last_successful_load_at),
+                last_successful_load_job_id=job_id,
+                pending_load_commits=(),
+            )
+            accepted = (
+                replace(
+                    accepted_pointer,
+                    pending_load_commits=(
+                        *current.pending_load_commits,
+                        (job_id, accepted_pointer),
+                    ),
+                )
+                if job_id is not None else replace(
+                    accepted_pointer, pending_load_commits=current.pending_load_commits
+                )
+            )
+            next_pointers = dict(self._generation_pointers)
+            next_pointers[key] = accepted
+            self._write_registry_payload(self._registry_payload(next_pointers))
+            self._generation_pointers = next_pointers
+            self._retarget_extension_resolution_cache_locked(current, accepted)
+            return accepted_pointer
+
+    def acknowledge_generation_load(self, identity: ExportIdentity, job_id: str) -> None:
+        """Убрать маркер только после durable commit receipt."""
+        self._ensure_owner("Очистка подтверждения загрузки")
+        with self._generation_mutation_lock, self._lock:
+            key = identity.grouping_key
+            current = self._generation_pointers.get(key)
+            if current is None or not any(
+                pending_job_id == job_id
+                for pending_job_id, _ in current.pending_load_commits
+            ):
+                return
+            updated = replace(
+                current,
+                pending_load_commits=tuple(
+                    entry for entry in current.pending_load_commits
+                    if entry[0] != job_id
+                ),
+            )
+            next_pointers = dict(self._generation_pointers)
+            next_pointers[key] = updated
+            self._write_registry_payload(self._registry_payload(next_pointers))
+            self._generation_pointers = next_pointers
+            self._retarget_extension_resolution_cache_locked(current, updated)
+
     def active_activation(
         self, identity: ExportIdentity
     ) -> ActivationClassification | None:
@@ -4479,6 +4610,8 @@ class Registry:
         self,
         staged: StagedGeneration,
         *,
+        accepted_job_id: str | None = None,
+        record_load_at: bool = False,
         expected_previous: GenerationPointer | None | object = (
             _EXPECTED_GENERATION_UNSET
         ),
@@ -4630,8 +4763,34 @@ class Registry:
                                 == manifest.identity.configuration_name
                             )
                         ]
+                    pending = (
+                        previous.pending_load_commits if previous is not None else ()
+                    )
+                    if accepted_job_id is not None or record_load_at:
+                        accepted_pointer = replace(
+                            pointer,
+                            last_successful_load_at=_accepted_load_time(
+                                previous.last_successful_load_at if previous else None
+                            ),
+                            last_successful_load_job_id=accepted_job_id,
+                        )
+                        pointer = (
+                            replace(
+                                accepted_pointer,
+                                pending_load_commits=(
+                                    *pending,
+                                    (accepted_job_id, accepted_pointer),
+                                ),
+                            )
+                            if accepted_job_id is not None else replace(
+                                accepted_pointer, pending_load_commits=pending
+                            )
+                        )
+                    elif pending:
+                        pointer = replace(pointer, pending_load_commits=pending)
                     prepared = replace(
                         prepared,
+                        staged=pointer,
                         detached=tuple(detached_extensions),
                     )
                     # Точный cleanup-план обязан стать durable до Registry
@@ -4928,7 +5087,26 @@ class Registry:
     def _save_unrefreshed(self) -> None:
         """Запись без reload: для путей, которые уже держат замки startup."""
         with self._lock:
-            self._write_registry_payload(self._registry_payload())
+            payload = self._registry_payload()
+            rows = payload["sources"]
+            assert isinstance(rows, list)
+            accepted: list[tuple[str, Source, str]] = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                pending = self._pending_configuration_load_dates.get(row.get("id"))
+                if pending is None or self.sources.get(row["id"]) is not pending:
+                    continue
+                accepted_at = _accepted_load_time(pending.last_successful_load_at)
+                row["last_successful_load_at"] = accepted_at
+                accepted.append((row["id"], pending, accepted_at))
+            self._write_registry_payload(payload)
+            for source_id, source, accepted_at in accepted:
+                source.last_successful_load_at = accepted_at
+                self._pending_configuration_load_dates.pop(source_id, None)
+            for source_id, source in tuple(self._pending_configuration_load_dates.items()):
+                if self.sources.get(source_id) is not source:
+                    self._pending_configuration_load_dates.pop(source_id, None)
 
     def mutate_dictionary(
         self,
@@ -5218,6 +5396,7 @@ class Registry:
                     known_origin=source.origin,
                     allow_truncated=source.incomplete,
                     replace_native=False,
+                    restored_last_successful_load_at=source.last_successful_load_at,
                 )
             except _NativeGenerationActive:
                 continue
@@ -5320,6 +5499,7 @@ class Registry:
                             known_origin=source.origin,
                             allow_truncated=source.incomplete,
                             replace_native=False,
+                            restored_last_successful_load_at=source.last_successful_load_at,
                             expected_revision=ревизии_конфигураций.get(
                                 source.id, 0
                             ),

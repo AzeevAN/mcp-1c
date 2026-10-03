@@ -215,6 +215,71 @@ it("переключает конфигурацию без ухода со ст�
   expect(screen.getAllByRole("link", { name: "Открыть JSON-журнал" })).toHaveLength(2);
 });
 
+it("показывает независимые даты принятых загрузок структуры и корпусов в свёрнутых карточках", async () => {
+  const fetchMock = vi.mocked(fetch);
+  const regularFetch = fetchMock.getMockImplementation()!;
+  fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const response = await regularFetch(input, init);
+    if (String(input) !== "/api/v1/sources") return response;
+    const payload = await response.json();
+    payload.configurations[0].last_successful_load_at = "2026-10-01T08:00:00Z";
+    payload.configurations[0].corpora[0].last_successful_load_at = "2026-10-01T09:00:00Z";
+    payload.configurations[1].last_successful_load_at = "2026-10-02T08:00:00Z";
+    payload.configurations[1].corpora[0].last_successful_load_at = "2026-10-02T09:00:00Z";
+    payload.configurations[1].corpora[1].last_successful_load_at = "2026-10-03T10:00:00Z";
+    return new Response(JSON.stringify(payload), { status: 200, headers: { "content-type": "application/json" } });
+  });
+
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <MemoryRouter initialEntries={["/sources"]}>
+      <QueryClientProvider client={client}><SourcesPage /></QueryClientProvider>
+    </MemoryRouter>,
+  );
+
+  expect(await screen.findByRole("heading", { name: "Отраслевая конфигурация А" })).toBeInTheDocument();
+  expect(screen.getByLabelText("Сводка конфигурации").nextElementSibling?.querySelector("time"))
+    .toHaveAttribute("datetime", "2026-10-01T08:00:00Z");
+  expect(screen.getByRole("heading", { name: "Основная конфигурация" }).closest("article")?.querySelector("time"))
+    .toHaveAttribute("datetime", "2026-10-01T09:00:00Z");
+
+  fireEvent.click(screen.getByRole("button", { name: /Отраслевая конфигурация Б/ }));
+  expect(screen.getByLabelText("Сводка конфигурации").nextElementSibling?.querySelector("time"))
+    .toHaveAttribute("datetime", "2026-10-02T08:00:00Z");
+  const main = screen.getByRole("heading", { name: "Основная конфигурация" }).closest("article")!;
+  const extension = screen.getByRole("heading", { name: "Расширение Доп" }).closest("article")!;
+  expect(main.querySelector("time")).toHaveAttribute("datetime", "2026-10-02T09:00:00Z");
+  expect(extension.querySelector("time")).toHaveAttribute("datetime", "2026-10-03T10:00:00Z");
+  expect(within(extension).getByRole("button", { name: "Показать подробности Расширение Доп" }))
+    .toHaveAttribute("aria-expanded", "false");
+  expect(extension.querySelector("time")).toHaveAttribute("title", expect.stringMatching(/2026/));
+});
+
+it("показывает отсутствие даты без вывода из loaded_at", async () => {
+  const fetchMock = vi.mocked(fetch);
+  const regularFetch = fetchMock.getMockImplementation()!;
+  fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const response = await regularFetch(input, init);
+    if (String(input) !== "/api/v1/sources") return response;
+    const payload = await response.json();
+    payload.configurations[0].corpora[0].last_successful_load_at = null;
+    return new Response(JSON.stringify(payload), { status: 200, headers: { "content-type": "application/json" } });
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <MemoryRouter initialEntries={["/sources"]}>
+      <QueryClientProvider client={client}><SourcesPage /></QueryClientProvider>
+    </MemoryRouter>,
+  );
+
+  const main = (await screen.findByRole("heading", { name: "Основная конфигурация" })).closest("article")!;
+  expect(within(main).getByText("Дата не сохранена")).toBeInTheDocument();
+  expect(main.querySelector("time")).toBeNull();
+  const origin = screen.getByLabelText("Сводка конфигурации").nextElementSibling!;
+  expect(within(origin as HTMLElement).getByText("Дата не сохранена")).toBeInTheDocument();
+  expect(origin.querySelector("time")).toBeNull();
+});
+
 it("показывает необходимость повторной загрузки данных", async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(

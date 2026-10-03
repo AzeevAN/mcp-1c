@@ -515,6 +515,34 @@ def test_гость_не_создаёт_staging_замены_native_базы(tmp
         _stop(server)
 
 
+def test_гость_повторяет_идентичную_native_a_без_смены_даты(tmp_path):
+    from test_intake_v2_extensions import _stage_active_base
+    from test_intake_v2_legacy_cleanup import _native_generation
+
+    setup = Registry(tmp_path / "data")
+    native = _native_generation(tmp_path, "full-for-noop")
+    setup.publish_generation(_stage_active_base(setup, native))
+    incoming = tmp_path / "input"
+    incoming.mkdir()
+    archive = write_export(
+        incoming, build_configuration(name="DemoConfiguration")
+    )
+    setup.add_configuration(archive)
+    before = setup.active_generation_pointer(native.manifest.identity)
+    registry_bytes = setup.registry_path.read_bytes()
+
+    server = _start_server(setup.data_dir)
+    try:
+        guest = Registry(setup.data_dir)
+        guest.startup()
+        assert guest.role == "guest"
+        guest.add_configuration(archive)
+        assert guest.active_generation_pointer(native.manifest.identity) == before
+        assert setup.registry_path.read_bytes() == registry_bytes
+    finally:
+        _stop(server)
+
+
 def test_гость_дописывает_строки_поверх_свежего_файла(tmp_path):
     incoming = tmp_path / "input"
     incoming.mkdir()

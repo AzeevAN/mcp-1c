@@ -87,7 +87,69 @@ def test_noop_skips_collection_and_survives_restart(world, monkeypatch):
     assert recovered.active_generation_pointer(ExportIdentity.configuration('Demo0'))==before
     restarted=IntakeApiService.for_registry(recovered,config_sources_root=d['root'].parent,directory_settle_seconds=0)
     assert restarted.confirm(w.job_id)['commit']['no_op']
-    assert d['registry'].active_generation_pointer(ExportIdentity.configuration('Demo0'))==before
+    after=recovered.active_generation_pointer(ExportIdentity.configuration('Demo0'))
+    assert d['registry'].active_generation_pointer(ExportIdentity.configuration('Demo0')) == before
+    assert after.generation_id == before.generation_id
+    assert after.last_successful_load_at is not None
+    assert after.last_successful_load_at != before.last_successful_load_at
+    latest=Registry(d['registry'].data_dir)
+    assert latest.restore() == []
+    assert latest.active_generation_pointer(ExportIdentity.configuration('Demo0')) == after
+
+
+def test_noop_failed_registry_write_preserves_date(world, monkeypatch):
+    registry = world['registry']
+    coordinator = world['service'].lifecycle.operations
+    identity = ExportIdentity.configuration('Demo0')
+    before = registry.active_generation_pointer(identity)
+    work = world['prepare']()
+    original_write = registry._write_registry_payload
+
+    def fail_write(_payload):
+        raise OSError('отказ записи реестра')
+
+    monkeypatch.setattr(registry, '_write_registry_payload', fail_write)
+    with pytest.raises(OSError, match='отказ записи'):
+        coordinator.confirm(work.job_id, registry)
+    assert registry.active_generation_pointer(identity) == before
+    monkeypatch.setattr(registry, '_write_registry_payload', original_write)
+    result = coordinator.confirm(work.job_id, registry)
+    assert result.pointer.last_successful_load_at != before.last_successful_load_at
+
+
+def test_noop_receipt_gap_keeps_each_accepted_date(world, monkeypatch):
+    registry = world['registry']
+    coordinator = world['service'].lifecycle.operations
+    identity = ExportIdentity.configuration('Demo0')
+    first = world['prepare']()
+    second = world['prepare']()
+    original_save = coordinator._save_commit
+    failed = False
+
+    def fail_first_once(result):
+        nonlocal failed
+        if result.job_id == first.job_id and not failed:
+            failed = True
+            raise OSError('отказ receipt')
+        return original_save(result)
+
+    monkeypatch.setattr(coordinator, '_save_commit', fail_first_once)
+    with pytest.raises(OSError, match='отказ receipt'):
+        coordinator.confirm(first.job_id, registry)
+    accepted_first = registry.pending_generation_load(identity, first.job_id)
+    assert accepted_first is not None
+    second_result = coordinator.confirm(second.job_id, registry)
+    active_after_second = registry.active_generation_pointer(identity)
+    assert second_result.pointer.last_successful_load_at > accepted_first.last_successful_load_at
+    assert active_after_second.last_successful_load_at == second_result.pointer.last_successful_load_at
+
+    recovered = Registry(registry.data_dir)
+    assert recovered.restore() == []
+    retry = coordinator.confirm(first.job_id, recovered)
+    assert retry.pointer.last_successful_load_at == accepted_first.last_successful_load_at
+    assert recovered.active_generation_pointer(identity).last_successful_load_at == second_result.pointer.last_successful_load_at
+    assert recovered.pending_generation_load(identity, first.job_id) is None
+    assert coordinator.confirm(first.job_id, recovered) == retry
 
 
 def test_полный_b_восстанавливает_pointer_без_activation(world):

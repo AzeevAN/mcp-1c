@@ -1415,7 +1415,7 @@ class IntakeCoordinator:
             job_id=preview.job_id,
             candidate_id=preview.candidate_id,
             no_op=preview.plan.no_op,
-            pointer=pointer,
+            pointer=replace(pointer, pending_load_commits=()),
             applied_layers=preview.plan.applied_layers,
         )
 
@@ -1430,6 +1430,12 @@ class IntakeCoordinator:
         except KeyError:
             pass
         else:
+            acknowledge = getattr(publisher, "acknowledge_generation_load", None)
+            if callable(acknowledge):
+                try:
+                    acknowledge(result.pointer.identity, job_id)
+                except Exception:
+                    pass  # Receipt уже durable; маркер очистится при повторе.
             self._discard_payload(job_id, keep_commit=True, keep_job=True)
             return result
 
@@ -1437,6 +1443,12 @@ class IntakeCoordinator:
             # Сначала durable result: если очистка оборвётся, повторный confirm
             # безопасно закончит её, не публикуя поколение второй раз.
             self._save_commit(result)
+            acknowledge = getattr(publisher, "acknowledge_generation_load", None)
+            if callable(acknowledge):
+                try:
+                    acknowledge(result.pointer.identity, job_id)
+                except Exception:
+                    pass  # Дата и receipt сохранены; маркер может остаться.
             self._discard_payload(job_id, keep_commit=True, keep_job=True)
             return result
 
@@ -1453,6 +1465,11 @@ class IntakeCoordinator:
         )
         expected = preview.expected_previous
         current = publisher.active_generation_pointer(preview.plan.identity)
+        pending_load = getattr(publisher, "pending_generation_load", None)
+        if callable(pending_load):
+            accepted = pending_load(preview.plan.identity, preview.job_id)
+            if accepted is not None:
+                return finish(self._result(preview, accepted))
 
         if target_manifest is None:
             if not _same_generation_pointer(current, expected):
@@ -1461,6 +1478,9 @@ class IntakeCoordinator:
                 )
             if current is None:
                 raise OperationError("no-op не имеет active generation")
+            accept_noop = getattr(publisher, "accept_generation_noop", None)
+            if callable(accept_noop):
+                current = accept_noop(current, preview.job_id)
             result = self._result(preview, current)
             return finish(result)
 
@@ -1530,6 +1550,7 @@ class IntakeCoordinator:
                 staged,
                 expected_previous=current,
                 expected_active=preview.active,
+                accepted_job_id=preview.job_id,
             )
         except Exception as error:
             current = publisher.active_generation_pointer(preview.plan.identity)

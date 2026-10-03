@@ -468,6 +468,7 @@ def test_registry_сохраняет_extension_generation_при_строгой_
     ] == [
         ("DemoExtension", "Справочник.Items", "target_missing")
     ]
+
     registry.publish_generation(
         _stage_active_base(registry, new_base),
         expected_previous=registry.active_generation_pointer(base.manifest.identity),
@@ -505,6 +506,87 @@ def test_registry_сохраняет_extension_generation_при_строгой_
         restored.extension.source,
         expected=coverage_log.build_payload(restored.extension),
     ) is not None
+
+
+def test_дата_принятия_расширения_не_меняет_дату_базы(tmp_path):
+    _base_collection, base = _materialized(tmp_path, "dated-base")
+    _extension_collection, extension = _materialized(
+        tmp_path, "dated-extension",
+        configuration_name="DemoExtension",
+        extension=True,
+    )
+    registry = Registry(tmp_path / "data")
+    base_pointer = registry.publish_generation(
+        _stage_active_base(registry, base), accepted_job_id="base-job"
+    )
+    registry.acknowledge_generation_load(base.manifest.identity, "base-job")
+    extension_pointer = registry.publish_generation(
+        registry.stage_generation(extension.manifest, extension.payloads),
+        accepted_job_id="extension-job",
+    )
+    registry.acknowledge_generation_load(extension.manifest.identity, "extension-job")
+    assert registry.active_generation_pointer(base.manifest.identity).last_successful_load_at == base_pointer.last_successful_load_at
+    assert extension_pointer.last_successful_load_at is not None
+
+    snapshot = sources_snapshot(registry)
+    row = next(row for row in snapshot.configurations if row.name == "DemoConfiguration")
+    corpus = next(code for code in row.code if code.corpus == "Расширение DemoExtension")
+    assert row.last_successful_load_at == base_pointer.last_successful_load_at
+    assert corpus.last_successful_load_at == extension_pointer.last_successful_load_at
+
+    restarted = Registry(registry.data_dir)
+    assert restarted.restore() == []
+    assert restarted.active_generation_pointer(base.manifest.identity).last_successful_load_at == base_pointer.last_successful_load_at
+    assert restarted.active_generation_pointer(extension.manifest.identity).last_successful_load_at == extension_pointer.last_successful_load_at
+
+    _next_collection, next_extension = _materialized(
+        tmp_path, "dated-extension-next",
+        configuration_name="DemoExtension", extension=True,
+    )
+    next_pointer = restarted.publish_generation(
+        restarted.stage_generation(next_extension.manifest, next_extension.payloads),
+        expected_previous=restarted.active_generation_pointer(extension.manifest.identity),
+        accepted_job_id="extension-next-job",
+    )
+    restarted.acknowledge_generation_load(extension.manifest.identity, "extension-next-job")
+    assert next_pointer.last_successful_load_at > extension_pointer.last_successful_load_at
+    assert restarted.active_generation_pointer(base.manifest.identity).last_successful_load_at == base_pointer.last_successful_load_at
+
+    _next_base_collection, next_base = _materialized(tmp_path, "dated-base-next")
+    updated_base = restarted.publish_generation(
+        _stage_active_base(restarted, next_base),
+        expected_previous=restarted.active_generation_pointer(base.manifest.identity),
+        accepted_job_id="base-next-job",
+    )
+    restarted.acknowledge_generation_load(base.manifest.identity, "base-next-job")
+    assert updated_base.last_successful_load_at > base_pointer.last_successful_load_at
+    assert restarted.active_generation_pointer(extension.manifest.identity).last_successful_load_at == next_pointer.last_successful_load_at
+
+
+def test_noop_даты_не_пересобирает_разрешение_расширения(tmp_path, monkeypatch):
+    import mcp1c.registry as registry_module
+
+    _base_collection, base = _materialized(tmp_path, "cached-base")
+    _extension_collection, extension = _materialized(
+        tmp_path, "cached-extension",
+        configuration_name="DemoExtension",
+        extension=True,
+    )
+    registry = Registry(tmp_path / "data")
+    registry.publish_generation(_stage_active_base(registry, base))
+    registry.publish_generation(
+        registry.stage_generation(extension.manifest, extension.payloads)
+    )
+    registry.resolve("DemoConfiguration", extension="DemoExtension")
+    previous = registry.active_generation_pointer(extension.manifest.identity)
+
+    def unexpected_resolution(*_args, **_kwargs):
+        pytest.fail("Дата загрузки пересобрала разрешение расширения")
+
+    monkeypatch.setattr(registry_module, "resolve_extension_structure", unexpected_resolution)
+    registry.accept_generation_noop(previous, "extension-noop")
+    registry.acknowledge_generation_load(extension.manifest.identity, "extension-noop")
+    registry.resolve("DemoConfiguration", extension="DemoExtension")
 
 
 def test_schema_v1_поверх_native_отключает_расширение_и_не_воскрешает_его_после_restart(

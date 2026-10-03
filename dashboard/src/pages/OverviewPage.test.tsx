@@ -125,6 +125,26 @@ it("показывает оперативную сводку вместо дем
   expect(screen.queryByText("Состояния должны различаться сразу")).not.toBeInTheDocument();
 });
 
+it("показывает дату принятой основной структуры в краткой сводке", async () => {
+  vi.mocked(fetch).mockImplementation((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/api/v1/dashboard/bootstrap")) return response(bootstrap) as Promise<Response>;
+    if (url.endsWith("/api/v1/sources")) {
+      return response({
+        ...sources,
+        configurations: [{ ...sources.configurations[0], last_successful_load_at: "2026-10-04T08:00:00Z" }],
+      }) as Promise<Response>;
+    }
+    if (url.endsWith("/api/v1/capabilities")) return response(capabilities) as Promise<Response>;
+    throw new Error(`Неожиданный URL: ${url}`);
+  });
+  renderOverview();
+
+  const title = await screen.findByText("Демонстрационная конфигурация");
+  expect(title.closest("article")?.querySelector("time"))
+    .toHaveAttribute("datetime", "2026-10-04T08:00:00Z");
+});
+
 it("не считает admin-only capabilities отказом read API", async () => {
   vi.mocked(fetch).mockImplementation((input: RequestInfo | URL) => {
     const url = String(input);

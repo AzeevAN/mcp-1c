@@ -113,6 +113,7 @@ class Source:
     origin: str = ""
     sha256: str = ""
     loaded_at: str = ""
+    last_successful_load_at: str | None = None
     platform: str = ""
     status: str = STATUS_LOADING
     error: str = ""
@@ -148,6 +149,7 @@ class Source:
             "origin": self.origin,
             "sha256": self.sha256,
             "loaded_at": self.loaded_at,
+            "last_successful_load_at": self.last_successful_load_at,
             "platform": self.platform,
             "status": self.status,
             "error": self.error,
@@ -171,6 +173,7 @@ class Source:
             origin=raw.get("origin", ""),
             sha256=raw.get("sha256", ""),
             loaded_at=raw.get("loaded_at", ""),
+            last_successful_load_at=raw.get("last_successful_load_at"),
             platform=raw.get("platform", ""),
             status=raw.get("status", STATUS_READY),
             error=raw.get("error", ""),
@@ -279,6 +282,7 @@ class SourceSnapshot:
     origin: str
     sha256: str
     loaded_at: str
+    last_successful_load_at: str | None
     platform: str
     status: str
     error: str
@@ -298,6 +302,7 @@ class SourceSnapshot:
             origin=source.origin,
             sha256=source.sha256,
             loaded_at=source.loaded_at,
+            last_successful_load_at=source.last_successful_load_at,
             platform=source.platform,
             status=source.status,
             error=source.error,

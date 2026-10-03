@@ -31,6 +31,7 @@ import {
   useSources,
 } from "../shared/api/sources";
 import { StatusBadge } from "../shared/ui/StatusBadge";
+import { LastSuccessfulLoad } from "../shared/ui/LastSuccessfulLoad";
 import { activationStatus, corpusPhaseView as phaseView, mainCodeStatus, structureOrigin } from "../shared/ui/configurationState";
 import { ReferenceSidebar } from "./ReferenceSidebar";
 import { ConfigIntakePanel } from "./ConfigIntakePanel";
@@ -294,8 +295,11 @@ function CorpusCard({
       <header>
         <div className="corpus-title">
           <span className="corpus-icon" aria-hidden="true"><Icon size={20} /></span>
-          <div>
-            <span className="eyebrow">{sourceKindLabel[corpus.kind]}</span>
+          <div className="corpus-title-copy">
+            <div className="corpus-title-meta">
+              <span className="eyebrow">{sourceKindLabel[corpus.kind]}</span>
+              <LastSuccessfulLoad value={corpus.last_successful_load_at} />
+            </div>
             <h3>{corpus.label}</h3>
           </div>
         </div>
@@ -344,7 +348,6 @@ function CorpusCard({
             <dl className="source-facts">
               <div><dt>Элементов выгрузки</dt><dd>{formatNumber(corpus.source.items_total)}</dd></div>
               <div><dt>Версия кода</dt><dd>{corpus.source.code_version || "—"}</dd></div>
-              <div><dt>Загружено</dt><dd>{formatDate(corpus.source.loaded_at)}</dd></div>
             </dl>
           )}
 
@@ -500,6 +503,7 @@ function ConfigurationDetail({
       </section>
       <div className="configuration-origin">
         <span>Формат загрузки</span><strong>{structureOrigin(configuration)}</strong>
+        <LastSuccessfulLoad value={configuration.last_successful_load_at} />
       </div>
 
       {configuration.notes.length > 0 && (

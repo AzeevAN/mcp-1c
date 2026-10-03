@@ -268,6 +268,7 @@ class CodeStateRow:
     diagnostic: str = ""
     kind: str = KIND_MODULES
     native_generation: bool = False
+    last_successful_load_at: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -283,6 +284,7 @@ class SourceStateRow:
     loaded_at: str = ""
     code_version: str = ""
     incomplete: bool = False
+    last_successful_load_at: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -319,6 +321,7 @@ class ConfigurationStateRow:
     activation_status: str = "unknown"
     platform_declaration: dict[str, str] | None = None
     source_origin: str = "unknown"
+    last_successful_load_at: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -867,6 +870,7 @@ def _source_state_row(source) -> SourceStateRow:
         warnings=tuple(source.warnings),
         status=source.status,
         loaded_at=source.loaded_at,
+        last_successful_load_at=source.last_successful_load_at,
         code_version=source.code_version,
         incomplete=source.incomplete,
     )
@@ -1329,7 +1333,7 @@ def _code_state_rows(
     for snapshot in capture.rows:
         native_base = capture.registry.generation(
             ExportIdentity.configuration(snapshot.context.name)
-        ) is not None
+        )
         source_id, journal_path = journal(snapshot.modules)
         rows.append(
             CodeStateRow(
@@ -1346,7 +1350,17 @@ def _code_state_rows(
                 phase(snapshot.modules),
                 diagnostic(snapshot.modules),
                 KIND_MODULES,
-                native_base,
+                native_base is not None,
+                (
+                    native_base.pointer.last_successful_load_at
+                    if native_base is not None
+                    and snapshot.modules.capture.source is not None
+                    else (
+                        snapshot.modules.capture.source.last_successful_load_at
+                        if snapshot.modules.capture.source is not None
+                        else None
+                    )
+                ),
             )
         )
         for extension_name, view in snapshot.extensions:
@@ -1355,7 +1369,7 @@ def _code_state_rows(
                     extension_name,
                     parent_configuration=snapshot.context.name,
                 )
-            ) is not None
+            )
             source_id, journal_path = journal(view)
             rows.append(CodeStateRow(
                 snapshot.context.name,
@@ -1367,7 +1381,16 @@ def _code_state_rows(
                 phase(view),
                 diagnostic(view),
                 KIND_EXTENSION,
-                native_extension,
+                native_extension is not None,
+                (
+                    native_extension.pointer.last_successful_load_at
+                    if native_extension is not None
+                    else (
+                        view.capture.source.last_successful_load_at
+                        if view.capture.source is not None
+                        else None
+                    )
+                ),
             ))
     return tuple(rows)
 
@@ -1415,6 +1438,13 @@ def _configurations_result(
                 objects=len(config),
                 edges=len(configuration.graph.edges),
                 loaded_at=configuration.source.loaded_at,
+                last_successful_load_at=(
+                    generation.pointer.last_successful_load_at
+                    if (generation := capture.registry.generation(
+                        ExportIdentity.configuration(config.name)
+                    )) is not None
+                    else configuration.source.last_successful_load_at
+                ),
                 syntax_present=context.syntax is not None,
                 syntax_platform=context.syntax_platform,
                 syntax_relation=context.syntax_relation,

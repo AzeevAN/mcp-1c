@@ -17,6 +17,7 @@ import shutil
 import tempfile
 import threading
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from functools import wraps
 from pathlib import Path
 from urllib.parse import quote, urlencode
@@ -212,6 +213,7 @@ def _sources_payload(
                     "label": corpus.corpus,
                     "kind": corpus.kind,
                     "native_generation": corpus.native_generation,
+                    "last_successful_load_at": corpus.last_successful_load_at,
                     "phase": corpus.phase,
                     "state": corpus.state,
                     "source": _source_payload(source),
@@ -241,6 +243,7 @@ def _sources_payload(
                 "objects": configuration.objects,
                 "edges": configuration.edges,
                 "loaded_at": configuration.loaded_at,
+                "last_successful_load_at": configuration.last_successful_load_at,
                 "notes": list(configuration.notes),
                 "native_generation": configuration.native_generation,
                 "source": _source_payload(sources_by_id.get(configuration.name)),
@@ -401,9 +404,26 @@ def _sources_revision(snapshot) -> str:
     """
     evidence = (
         _REVISION_SALT,
-        tuple(snapshot.sources.items()),
-        tuple(snapshot.syntax_versions.items()),
-        tuple((key, value.pointer) for key, value in snapshot.generations.items()),
+        tuple(
+            (key, replace(value, last_successful_load_at=None))
+            for key, value in snapshot.sources.items()
+        ),
+        tuple(
+            (key, replace(value, last_successful_load_at=None))
+            for key, value in snapshot.syntax_versions.items()
+        ),
+        tuple(
+            (
+                key,
+                replace(
+                    value.pointer,
+                    last_successful_load_at=None,
+                    last_successful_load_job_id=None,
+                    pending_load_commits=(),
+                ),
+            )
+            for key, value in snapshot.generations.items()
+        ),
         snapshot.source_lifecycle_token,
     )
     return hashlib.sha256(repr(evidence).encode()).hexdigest()

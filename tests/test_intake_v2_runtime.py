@@ -1916,11 +1916,18 @@ def test_повторная_идентичная_schema_v1_поверх_native_�
 
     repeated_source = registry.add_configuration(source_a_path)
 
-    assert registry.active_generation_pointer(generation.manifest.identity) == (
-        first_pointer
-    )
+    repeated_pointer = registry.active_generation_pointer(generation.manifest.identity)
+    assert repeated_pointer.generation_id == first_pointer.generation_id
+    assert repeated_pointer.manifest_sha256 == first_pointer.manifest_sha256
+    assert repeated_pointer.last_successful_load_at > first_pointer.last_successful_load_at
     assert registry.active_generation(generation.manifest.identity) == first_manifest
     assert repeated_source == first_source
+    row = next(
+        row for row in mcp_tools.sources_snapshot(registry).configurations
+        if row.name == "DemoConfiguration"
+    )
+    assert row.last_successful_load_at == repeated_pointer.last_successful_load_at
+    assert row.code[0].last_successful_load_at is None
 
 
 def test_schema_v1_самостоятельно_публикуется_поверх_несовместимого_native(tmp_path):

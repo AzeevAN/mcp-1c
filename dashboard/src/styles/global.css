@@ -2498,7 +2498,7 @@ h2 {
   background: var(--info-surface-soft);
 }
 
-.configuration-origin span {
+.configuration-origin > span:not(.last-successful-load) {
   flex: 0 0 auto;
   color: var(--subtle);
   font-size: 10px;
@@ -2507,11 +2507,40 @@ h2 {
   text-transform: uppercase;
 }
 
-.configuration-origin strong {
+.configuration-origin > strong {
   min-width: 0;
   color: var(--ink-900);
   font-size: 13px;
   overflow-wrap: anywhere;
+}
+
+.last-successful-load {
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 3px 6px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.last-successful-load-label {
+  color: var(--subtle);
+}
+
+.last-successful-load time {
+  color: var(--ink-900);
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.last-successful-load-empty {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.configuration-origin .last-successful-load {
+  margin-left: auto;
 }
 
 .overview-configuration-list .configuration-origin {
@@ -2630,10 +2659,16 @@ h2 {
   gap: 16px;
 }
 
+.corpus-card > header > .corpus-title {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
 .corpus-actions {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex: 0 0 auto;
 }
 
 .corpus-actions button {
@@ -2665,19 +2700,35 @@ h2 {
   gap: 12px;
 }
 
-.corpus-title .eyebrow {
+.corpus-title-copy {
+  min-width: 0;
+}
+
+.corpus-title-meta {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 12px;
   margin-bottom: 4px;
+}
+
+.corpus-title-meta .eyebrow {
+  margin-bottom: 0;
 }
 
 .corpus-title h3 {
   margin-bottom: 0;
   color: var(--ink-900);
   font-size: 19px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .corpus-icon {
   width: 42px;
   height: 42px;
+  flex: 0 0 42px;
   display: grid;
   place-items: center;
   border-radius: 12px;

@@ -172,6 +172,9 @@ class GenerationPointer:
     manifest_path: str
     manifest_sha256: str
     activation: ActivationManifest | None = None
+    last_successful_load_at: str | None = None
+    last_successful_load_job_id: str | None = None
+    pending_load_commits: tuple[tuple[str, GenerationPointer], ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.identity, ExportIdentity):
@@ -191,6 +194,18 @@ class GenerationPointer:
             or any(char not in "0123456789abcdef" for char in self.manifest_sha256)
         ):
             raise BundleStoreError("manifest_sha256 pointer должен быть sha256")
+        if self.last_successful_load_at is not None and not isinstance(self.last_successful_load_at, str):
+            raise BundleStoreError("last_successful_load_at pointer должен быть строкой")
+        if self.last_successful_load_job_id is not None and not isinstance(self.last_successful_load_job_id, str):
+            raise BundleStoreError("last_successful_load_job_id pointer должен быть строкой")
+        if not isinstance(self.pending_load_commits, tuple) or any(
+            not isinstance(job_id, str)
+            or not isinstance(pointer, GenerationPointer)
+            or pointer.identity != self.identity
+            or pointer.pending_load_commits
+            for job_id, pointer in self.pending_load_commits
+        ) or len({job_id for job_id, _ in self.pending_load_commits}) != len(self.pending_load_commits):
+            raise BundleStoreError("pending_load_commits pointer содержит неверные записи")
 
     @classmethod
     def for_manifest(
@@ -220,12 +235,29 @@ class GenerationPointer:
         }
         if self.activation is not None:
             result["activation"] = self.activation.to_dict()
+        if self.last_successful_load_at is not None:
+            result["last_successful_load_at"] = self.last_successful_load_at
+        if self.last_successful_load_job_id is not None:
+            result["last_successful_load_job_id"] = self.last_successful_load_job_id
+        if self.pending_load_commits:
+            result["pending_load_commits"] = [
+                {"job_id": job_id, "pointer": pointer.to_dict()}
+                for job_id, pointer in self.pending_load_commits
+            ]
         return result
 
     @classmethod
     def from_dict(cls, raw: object) -> GenerationPointer:
         if not isinstance(raw, dict):
             raise BundleStoreError("generation pointer должен быть объектом")
+        pending = raw.get("pending_load_commits", ())
+        if not isinstance(pending, (tuple, list)) or any(
+            not isinstance(entry, dict)
+            or not isinstance(entry.get("pointer"), dict)
+            or bool(entry["pointer"].get("pending_load_commits"))
+            for entry in pending
+        ):
+            raise BundleStoreError("pending_load_commits pointer содержит неверные записи")
         try:
             return cls(
                 identity=ExportIdentity.from_dict(raw["identity"]),
@@ -237,6 +269,12 @@ class GenerationPointer:
                     ActivationManifest.from_dict(raw["activation"])
                     if raw.get("activation") is not None
                     else None
+                ),
+                last_successful_load_at=raw.get("last_successful_load_at"),
+                last_successful_load_job_id=raw.get("last_successful_load_job_id"),
+                pending_load_commits=tuple(
+                    (entry["job_id"], cls.from_dict(entry["pointer"]))
+                    for entry in pending
                 ),
             )
         except (KeyError, TypeError, ValueError) as error:

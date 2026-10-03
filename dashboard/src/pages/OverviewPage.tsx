@@ -13,6 +13,7 @@ import { getCapabilities } from "../shared/api/capabilities";
 import { useSources } from "../shared/api/sources";
 import { MetricCard } from "../shared/ui/MetricCard";
 import { StatusBadge, type StatusTone } from "../shared/ui/StatusBadge";
+import { LastSuccessfulLoad } from "../shared/ui/LastSuccessfulLoad";
 import { activationStatus, availableCodeCount, mainCodeStatus, structureOrigin } from "../shared/ui/configurationState";
 
 type AttentionItem = {
@@ -254,6 +255,7 @@ export function OverviewPage() {
                   </dl>
                   <div className="configuration-origin">
                     <span>Формат загрузки</span><strong>{structureOrigin(configuration)}</strong>
+                    <LastSuccessfulLoad value={configuration.last_successful_load_at} />
                   </div>
                 </article>
               );

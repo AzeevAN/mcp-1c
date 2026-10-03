@@ -1675,10 +1675,12 @@ class RoleAccessIndex:
         if not isinstance(operations, tuple) or not operations:
             raise ValueError("operations должен быть непустым tuple")
         normalized = tuple(operation.casefold() for operation in operations)
-        if len(normalized) != len(set(normalized)) or any(
-            operation not in OPERATION_RIGHTS for operation in normalized
-        ):
-            raise ValueError("operation неизвестна или повторяется")
+        unknown = any(operation not in OPERATION_RIGHTS for operation in normalized)
+        repeated = len(normalized) != len(set(normalized))
+        if unknown or repeated:
+            allowed = ", ".join(f"`{operation}`" for operation in OPERATION_RIGHTS)
+            reason = "неизвестна" if unknown else "повторяется"
+            raise ValueError(f"operation {reason}. Допустимые operations: {allowed}.")
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
             raise ValueError("limit должен быть от 1 до 100")
         if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:

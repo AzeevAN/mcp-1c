@@ -1234,3 +1234,29 @@ def test_roles_api_фильтрует_объекты_роли_и_возвращ�
             "count": 1,
         },
     ]
+
+
+async def test_mcp_ошибка_операции_позволяет_исправить_вызов(tmp_path):
+    from mcp1c.role_access import OPERATION_RIGHTS
+    from mcp1c.role_access_service import RoleAccessQueryError, find_roles_payload
+
+    registry = Registry(tmp_path / "data")
+    _publish(registry, tmp_path / "source", configuration="DemoConfiguration", generation_id="generation-1")
+    with pytest.raises(RoleAccessQueryError) as failure:
+        find_roles_payload(registry, "Справочник.Orders", ["Чтение"], config="DemoConfiguration")
+    message = str(failure.value)
+    assert "Допустимые operations:" in message
+    for operation in OPERATION_RIGHTS:
+        assert f"`{operation}`" in message
+    server = _server(registry, tmp_path)
+    error_result = await server.call_tool("find_roles_for_access", {
+        "config": "DemoConfiguration", "full_name": "Справочник.Orders", "operations": ["Чтение"],
+    })
+    # Ошибка должна быть видна обычному MCP-клиенту, а не только в исключении индекса.
+    assert "Допустимые operations:" in str(error_result)
+    payload = _tool_json(await server.call_tool("find_roles_for_access", {
+        "config": "DemoConfiguration", "full_name": "Справочник.Orders", "operations": ["read"],
+    }))
+    assert any(row["role"]["name"] == "Reader" for row in payload["candidates"])
+    with pytest.raises(RoleAccessQueryError, match="повтор"):
+        find_roles_payload(registry, "Справочник.Orders", ["read", "READ"], config="DemoConfiguration")

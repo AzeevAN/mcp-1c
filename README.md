@@ -40,9 +40,9 @@
 mkdir mcp-1c
 cd mcp-1c
 curl --fail --show-error --location --output compose.yaml \
-  https://raw.githubusercontent.com/AzeevAN/mcp-1c/v4.2.0/compose.yaml
+  https://raw.githubusercontent.com/AzeevAN/mcp-1c/v4.3.0/compose.yaml
 curl --fail --show-error --location --output .env.example \
-  https://raw.githubusercontent.com/AzeevAN/mcp-1c/v4.2.0/.env.example
+  https://raw.githubusercontent.com/AzeevAN/mcp-1c/v4.3.0/.env.example
 ```
 
 ### 2. Создать .env и токены

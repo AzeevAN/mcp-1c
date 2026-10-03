@@ -589,3 +589,98 @@ def test_разобранная_справка_читается_не_тольк�
 
     target = save_syntax(build_syntax(), tmp_path / "8.3.99.1.json.gz")
     assert stat_module.S_IMODE(target.stat().st_mode) & 0o044
+
+
+def test_предел_модуля_при_приёме_выше_реальных_выгрузок():
+    from mcp1c.resource_limits import INTAKE_MAX_MODULE_BYTES
+
+    # Крупнейший .bsl десяти реальных выгрузок — 7 007 323 байт (6,68 МиБ),
+    # ×2,5 запаса = 16,71 МиБ, с округлением вверх — 17 МиБ.
+    assert INTAKE_MAX_MODULE_BYTES == 17 * MIB == 17_825_792
+    assert INTAKE_MAX_MODULE_BYTES >= 7_007_323 * 5 // 2
+
+
+def _архив_с_модулем(tmp_path: Path, size: int) -> Path:
+    тело = b"//" + b"x" * (size - 3) + b"\n"
+    assert len(тело) == size
+    archive = tmp_path / f"module-{size}.zip"
+    archive.write_bytes(
+        _zip_bytes(
+            {
+                "Configuration.xml": _configuration(),
+                "Catalogs/Demo/Ext/ObjectModule.bsl": тело,
+            }
+        )
+    )
+    return archive
+
+
+def test_модуль_больше_предела_отвергает_всю_выгрузку_с_именем_записи(
+    tmp_path, monkeypatch
+):
+    """Модуль читался в память целиком под одним пределом записи 4 ГиБ."""
+    предел = 4096
+    monkeypatch.setattr(intake_v2_collector, "INTAKE_MAX_MODULE_BYTES", предел)
+    tree = ZipExportTree(
+        _архив_с_модулем(tmp_path, предел + 1),
+        transport=CandidateTransport.INCOMING,
+    )
+    target = tmp_path / "work" / "collection"
+    try:
+        with pytest.raises(CollectorError, match="предела 4096") as error:
+            collect_source_b(tree, probe_export(tree), target)
+    finally:
+        tree.close()
+    assert "Catalogs/Demo/Ext/ObjectModule.bsl" in str(error.value)
+    assert "4097 байт" in str(error.value)
+    assert not target.exists()
+    assert _written(tmp_path / "work") == 0
+
+
+def test_модуль_ровно_на_пределе_принимается(tmp_path, monkeypatch):
+    предел = 4096
+    monkeypatch.setattr(intake_v2_collector, "INTAKE_MAX_MODULE_BYTES", предел)
+    tree = ZipExportTree(
+        _архив_с_модулем(tmp_path, предел),
+        transport=CandidateTransport.INCOMING,
+    )
+    try:
+        collection = collect_source_b(
+            tree, probe_export(tree), tmp_path / "work" / "collection"
+        )
+    finally:
+        tree.close()
+    assert [artifact.size for artifact in collection.code] == [предел]
+
+
+def test_фактически_прочитанный_модуль_сверяется_с_пределом(monkeypatch):
+    """Предел держится и при чтении: дерево, заявившее в preflight меньше,
+    чем отдаёт, не протащит модуль больше предела в staging."""
+    import contextlib
+
+    предел = 16
+    monkeypatch.setattr(intake_v2_collector, "INTAKE_MAX_MODULE_BYTES", предел)
+
+    class Дерево:
+        def size(self, raw_path):
+            return 64
+
+        def open(self, raw_path):
+            return io.BytesIO(b"/" * 64)
+
+    class Пакет:
+        @contextlib.contextmanager
+        def entry(self, relative_path):
+            yield io.BytesIO()
+
+    with pytest.raises(CollectorError, match="предела 16") as error:
+        intake_v2_collector._copy_artifact(
+            Дерево(),
+            "Catalogs/Demo/Ext/ObjectModule.bsl",
+            "Catalogs/Demo/Ext/ObjectModule.bsl",
+            Пакет(),
+            intake_v2_collector.ArtifactKind.CODE,
+            "Catalog",
+            "Справочник.Demo.МодульОбъекта",
+        )
+    assert "Catalogs/Demo/Ext/ObjectModule.bsl" in str(error.value)

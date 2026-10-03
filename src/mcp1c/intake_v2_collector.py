@@ -32,7 +32,7 @@ from .intake_v2 import (
 )
 from .intake_v2_probe import CandidateProbe, ProbeError
 from .intake_v2_transport import TransportError
-from .resource_limits import INTAKE_MAX_PARSED_XML_BYTES
+from .resource_limits import INTAKE_MAX_MODULE_BYTES, INTAKE_MAX_PARSED_XML_BYTES
 from .member_pack import MemberPackError, MemberPackWriter, open_stored_member
 
 
@@ -926,6 +926,14 @@ def _copy_artifact(
             total += len(block)
             if total > expected_size:
                 raise CollectorError("член source B превысил объявленный размер")
+            # Объявленный размер модуля сверен в `_preflight`; фактически
+            # прочитанный сверяется ещё раз, чтобы предел не зависел от
+            # честности транспорта.
+            if kind is ArtifactKind.CODE and total > INTAKE_MAX_MODULE_BYTES:
+                raise CollectorError(
+                    f"{source_path}: модуль больше предела "
+                    f"{INTAKE_MAX_MODULE_BYTES} байт"
+                )
             output.write(block)
             digest.update(block)
     if total != expected_size:
@@ -1280,6 +1288,16 @@ def _preflight(
     # до первого распакованного байта, с именем записи в отказе.
     limit = INTAKE_MAX_PARSED_XML_BYTES
     for step in plan:
+        # Модуль читается в память целиком тем же образом: свой предел,
+        # отказ всей выгрузки с именем записи до первого распакованного байта.
+        if step.reads and step.kind is ArtifactKind.CODE:
+            size = tree.size(step.raw_path)
+            if size > INTAKE_MAX_MODULE_BYTES:
+                raise CollectorError(
+                    f"{step.source_path}: {size} байт больше предела "
+                    f"{INTAKE_MAX_MODULE_BYTES} для модуля"
+                )
+            continue
         # Тело макета converter не читает вовсе, а реальные бывают по 59 МиБ.
         template_body = PurePosixPath(step.source_path).parts[-2:] == (
             "Ext",

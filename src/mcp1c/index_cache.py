@@ -53,8 +53,9 @@ import tempfile
 import threading
 import time
 import zlib
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Iterator
 
 from .search import SearchIndex
 from .package_digest import package_digest
@@ -93,6 +94,43 @@ _NO_HARDLINK = frozenset(
     )
     if code is not None
 )
+# Временные файлы, которые этот процесс пишет прямо сейчас: (каталог после
+# realpath, префикс имени) → число живых записей. `sweep` идёт на старте
+# владельца сразу после `restore()`, а тот уже запустил фоновую сборку
+# индексов кода; по одному имени `.<файл>.*.tmp` живую запись не отличить от
+# обрывка SIGKILL. Учёт процессный, а не межпроцессный: кэш пишет только
+# владелец data/ (гость его не трогает), и уборка идёт в том же процессе.
+_LIVE_WRITES: dict[tuple[str, str], int] = {}
+_LIVE_WRITES_LOCK = threading.Lock()
+
+
+@contextmanager
+def live_write(directory: str | Path, prefix: str) -> Iterator[None]:
+    """Защитить от `sweep` временные файлы `<directory>/<prefix>*` на время записи.
+
+    Регистрироваться нужно до создания временного файла: тогда `sweep`,
+    увидевший файл в листинге, увидит и запись — либо файла уже нет.
+    """
+    key = (os.path.realpath(directory), prefix)
+    with _LIVE_WRITES_LOCK:
+        _LIVE_WRITES[key] = _LIVE_WRITES.get(key, 0) + 1
+    try:
+        yield
+    finally:
+        with _LIVE_WRITES_LOCK:
+            left = _LIVE_WRITES[key] - 1
+            if left:
+                _LIVE_WRITES[key] = left
+            else:
+                del _LIVE_WRITES[key]
+
+
+def _live_prefixes(directory: Path) -> tuple[str, ...]:
+    real = os.path.realpath(directory)
+    with _LIVE_WRITES_LOCK:
+        return tuple(prefix for folder, prefix in _LIVE_WRITES if folder == real)
+
+
 _KEY_BYTES = 32
 # Без жёстких ссылок ключ создаётся O_EXCL прямо на месте, и между open и
 # write файл виден пустым. Свежий пустой файл — не «битый», а ключ соперника
@@ -268,6 +306,11 @@ def _create_key_in_place(key_path: Path, key: bytes) -> bytes:
 
 
 def _create_key(directory: Path, *, replace_broken: bool) -> bytes:
+    with live_write(directory, f"{KEY_FILE_NAME}."):
+        return _create_key_unguarded(directory, replace_broken=replace_broken)
+
+
+def _create_key_unguarded(directory: Path, *, replace_broken: bool) -> bytes:
     key_path = directory / KEY_FILE_NAME
     temporary = directory / f"{KEY_FILE_NAME}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
     key = secrets.token_bytes(_KEY_BYTES)
@@ -406,19 +449,20 @@ def save_blob(payload, path: str | Path, *, source_sha256: str, kind: str) -> Pa
         # Уникальное имя через mkstemp (O_EXCL, 0600), а не предсказуемый
         # `<файл>.tmp`: write_bytes по такому имени шёл бы по подложенному
         # симлинку и перезаписывал его цель.
-        descriptor, temporary = tempfile.mkstemp(
-            prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
-        )
-        try:
-            with os.fdopen(descriptor, "wb") as stream:
-                stream.write(header + b"\n" + mac + b"\n" + blob)
-            os.replace(temporary, target)
-        except BaseException:
+        with live_write(target.parent, f".{target.name}."):
+            descriptor, temporary = tempfile.mkstemp(
+                prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
+            )
             try:
-                os.unlink(temporary)
-            except OSError:
-                pass
-            raise
+                with os.fdopen(descriptor, "wb") as stream:
+                    stream.write(header + b"\n" + mac + b"\n" + blob)
+                os.replace(temporary, target)
+            except BaseException:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
+                raise
     except _KeyUnavailable:
         return None
     except OSError:
@@ -536,6 +580,10 @@ def sweep(cache_dir: str | Path, keep: Iterable[str]) -> list[str]:
     for path in sorted(directory.iterdir()):
         # Ключ подписи уборке не подлежит: без него обесценился бы весь кэш.
         if not path.is_file() or path.name in allowed or path.name == KEY_FILE_NAME:
+            continue
+        # Временный файл живой записи этого процесса — не обрывок. Проверка
+        # после листинга: запись регистрируется до создания файла.
+        if any(path.name.startswith(prefix) for prefix in _live_prefixes(directory)):
             continue
         try:
             path.unlink()

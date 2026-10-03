@@ -617,6 +617,43 @@ def test_child_path_ищется_точно_и_не_смешивается_с_к
         index.close()
 
 
+def test_уборка_кэша_не_сносит_недостроенный_ролевой_индекс(tmp_path, monkeypatch):
+    """Старт владельца подметает кэш, пока ролевой индекс ещё строится.
+
+    Временный `.roles.sqlite.*.tmp` лежит в том же каталоге кэша, что и
+    подметает `index_cache.sweep`. Удалённый посреди сборки файл ронял запрос
+    ролей ошибкой «ролевой индекс не сохранён» вместо ответа.
+    """
+    from mcp1c import index_cache
+
+    role_access = importlib.import_module(SUBJECT)
+    layer, _saved = _role_layer(
+        tmp_path / "generation",
+        ((
+            "Reader",
+            _descriptor("Reader", uuid="11111111-1111-1111-1111-111111111111"),
+            _rights((("Catalog.Orders", (_right("Read", True),)),)),
+        ),),
+    )
+    cache = tmp_path / "cache" / "roles.sqlite"
+    настоящая_сборка = role_access._build_database
+    убрано: list[str] = []
+
+    def сборка_с_уборкой(path, *args, **kwargs):
+        настоящая_сборка(path, *args, **kwargs)
+        убрано.extend(index_cache.sweep(cache.parent, keep=[cache.name]))
+
+    monkeypatch.setattr(role_access, "_build_database", сборка_с_уборкой)
+
+    index = _open(tmp_path / "generation", layer, cache)
+    try:
+        assert [role.name for role in index.list_roles()] == ["Reader"]
+    finally:
+        index.close()
+    assert убрано == []
+    assert cache.is_file()
+
+
 def test_cache_переживает_удаление_snapshot_а_повреждение_требует_пересборки(
     tmp_path,
 ):

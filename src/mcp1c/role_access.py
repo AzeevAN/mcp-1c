@@ -17,12 +17,13 @@ import stat
 import tempfile
 import threading
 import xml.etree.ElementTree as ET
+from contextlib import ExitStack
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Iterable, Mapping
 from urllib.parse import quote
-from . import xml_safety
+from . import index_cache, xml_safety
 from .package_digest import package_digest
 
 from .intake_v2 import GenerationManifest, LayerKind, LayerManifest, LayerState
@@ -1054,11 +1055,18 @@ class RoleAccessIndex:
         temporary: Path | None = None
         ephemeral = False
         complete = False
+        # Временный `.roles.sqlite.*.tmp` лежит в каталоге кэша, который
+        # подметает старт владельца: без отметки живой записи `sweep` удалил
+        # бы недостроенный индекс, и запрос ролей упал бы.
+        live = ExitStack()
         try:
             try:
                 if cache is None:
                     raise OSError("запрошен ephemeral index")
                 cache.parent.mkdir(parents=True, exist_ok=True)
+                live.enter_context(
+                    index_cache.live_write(cache.parent, f".{cache.name}.")
+                )
                 descriptor, name = tempfile.mkstemp(
                     dir=cache.parent, prefix=f".{cache.name}.", suffix=".tmp"
                 )
@@ -1107,6 +1115,7 @@ class RoleAccessIndex:
         finally:
             if temporary is not None and (not ephemeral or not complete):
                 temporary.unlink(missing_ok=True)
+            live.close()
 
     @property
     def path(self) -> Path:

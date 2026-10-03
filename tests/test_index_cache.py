@@ -170,6 +170,57 @@ def test_уборка_сносит_обрывок_прерванной_запи�
     assert removed == ["Розница.objects.tmp"]
 
 
+def test_уборка_не_сносит_временный_файл_живой_записи(tmp_path, sample_index, monkeypatch):
+    """Старт владельца подметает кэш, пока фоновая сборка ещё пишет его.
+
+    `restore()` запускает сборку индексов кода в фоне, а `index_cache.sweep`
+    идёт следом в том же startup: временный `.<файл>.*.tmp` недописанного
+    кэша он принимал за обрывок и удалял, `os.replace` падал, и кэш на этом
+    старте не сохранялся. Гонка воспроизводится без случайности: уборка
+    вклинивается ровно между записью временного файла и заменой.
+    """
+    path = index_cache.path_for(tmp_path, "Розница", "objects")
+    настоящая_замена = os.replace
+    убрано: list[str] = []
+
+    def замена_с_уборкой(источник, цель):
+        убрано.extend(index_cache.sweep(tmp_path, keep=[path.name]))
+        настоящая_замена(источник, цель)
+
+    monkeypatch.setattr(index_cache.os, "replace", замена_с_уборкой)
+
+    assert index_cache.save(sample_index, path, source_sha256="abc", kind="objects") == path
+    assert убрано == []
+    assert path.is_file()
+
+
+def test_уборка_не_сносит_временный_ключ_живой_записи(tmp_path, sample_index, monkeypatch):
+    """Ключ подписи создаётся через временный файл и `os.link` — та же гонка."""
+    path = index_cache.path_for(tmp_path, "Розница", "objects")
+    настоящая_ссылка = os.link
+    убрано: list[str] = []
+
+    def ссылка_с_уборкой(источник, цель, *args, **kwargs):
+        убрано.extend(index_cache.sweep(tmp_path, keep=[path.name]))
+        настоящая_ссылка(источник, цель, *args, **kwargs)
+
+    monkeypatch.setattr(index_cache.os, "link", ссылка_с_уборкой)
+
+    assert index_cache.save(sample_index, path, source_sha256="abc", kind="objects") == path
+    assert убрано == []
+
+
+def test_уборка_сносит_обрывок_после_завершения_записи(tmp_path, sample_index):
+    """Живая запись того же файла защищает только свои временные файлы на
+    время записи: обрывок, переживший SIGKILL, уходит при следующей уборке."""
+    path = index_cache.path_for(tmp_path, "Розница", "objects")
+    обрывок = tmp_path / f".{path.name}.abcd1234.tmp"
+    обрывок.write_bytes(b"half")
+    index_cache.save(sample_index, path, source_sha256="abc", kind="objects")
+
+    assert index_cache.sweep(tmp_path, keep=[path.name]) == [обрывок.name]
+
+
 def test_уборка_молчит_когда_каталога_нет(tmp_path):
     assert index_cache.sweep(tmp_path / "ещё-не-создан", keep=[]) == []
 

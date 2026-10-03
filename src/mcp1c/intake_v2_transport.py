@@ -1031,22 +1031,23 @@ def _scan_directory(
         raise TypeError("limits должен быть ResourceLimits")
     root_fd, root_identity = _open_directory_root(root)
     members: dict[str, _DirectoryMember] = {}
-    entries_total = 0
+    # Файлы считаются против `max_entries` так же, как записи ZIP (там
+    # каталогов в центральном каталоге нет), а подкаталоги — отдельно против
+    # того же предела, чтобы обход оставался ограниченным. Общий счёт
+    # давал у крупнейшей выгрузки 70 771 запись при 37 037 файлах (×1,41 к
+    # пределу вместо правила ×2,5, 2026-10-03).
+    files_total = 0
+    directories_total = 0
     latest_mtime_ns = root_identity[3]
 
     def visit(directory_fd: int, prefix: tuple[str, ...]) -> None:
-        nonlocal entries_total, latest_mtime_ns
+        nonlocal files_total, directories_total, latest_mtime_ns
         try:
             with os.scandir(directory_fd) as iterator:
                 entries = sorted(iterator, key=lambda item: item.name)
         except OSError as error:
             raise TransportError("read-only каталог недоступен") from error
         for entry in entries:
-            entries_total += 1
-            if entries_total > limits.max_entries:
-                raise TransportLimitError(
-                    "каталог файловой выгрузки: число записей превышает предел"
-                )
             raw_path = PurePosixPath(*prefix, entry.name).as_posix()
             normalized = _normalized_member_path(raw_path)
             try:
@@ -1061,6 +1062,11 @@ def _scan_directory(
                     "read-only каталог содержит символическую ссылку"
                 )
             if stat.S_ISDIR(info.st_mode):
+                directories_total += 1
+                if directories_total > limits.max_entries:
+                    raise TransportLimitError(
+                        "каталог файловой выгрузки: число подкаталогов превышает предел"
+                    )
                 flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(
                     os, "O_NOFOLLOW", 0
                 )
@@ -1087,6 +1093,11 @@ def _scan_directory(
             if not stat.S_ISREG(info.st_mode):
                 raise TransportSecurityError(
                     "read-only каталог содержит специальный файл"
+                )
+            files_total += 1
+            if files_total > limits.max_entries:
+                raise TransportLimitError(
+                    "каталог файловой выгрузки: число записей превышает предел"
                 )
             member = _DirectoryMember(info.st_size, _identity(info))
             members[normalized] = member

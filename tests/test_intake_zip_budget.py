@@ -381,6 +381,44 @@ def test_каталог_сверяет_сумму_выбранных_файло�
     assert not (tmp_path / "collection").exists()
 
 
+def test_предел_записей_каталога_считает_файлы_как_у_zip(tmp_path):
+    """У ZIP в центральном каталоге только файлы, а обход каталога считал и
+    подкаталоги: распакованная крупнейшая выгрузка — 37 037 файлов и
+    70 771 запись с каталогами, запас к пределу 100 000 всего ×1,41 при
+    правиле ×2,5. Файлы и подкаталоги теперь считаются отдельно, каждый
+    против `max_entries`, — обход по-прежнему ограничен."""
+    from mcp1c.intake_v2_transport import DirectoryExportTree
+
+    root = tmp_path / "export"
+    root.mkdir()
+    (root / "Configuration.xml").write_bytes(_configuration())
+    for index in range(3):
+        (root / f"D{index}").mkdir()
+        (root / f"D{index}" / "f.xml").write_bytes(b"x")
+    limits = ResourceLimits(
+        max_entries=4,
+        max_entry_bytes=1024,
+        max_total_bytes=4096,
+        max_compression_ratio=200,
+    )
+    # 4 файла и 3 подкаталога: вместе 7 > 4, по отдельности в пределе.
+    tree = DirectoryExportTree(root, limits=limits, settle_seconds=0)
+    assert len(tree.paths()) == 4
+
+    for index in range(3, 5):
+        (root / f"D{index}").mkdir()
+    with pytest.raises(TransportLimitError, match="подкаталогов"):
+        DirectoryExportTree(root, limits=limits, settle_seconds=0)
+
+
+def test_предел_записей_выше_реальных_выгрузок_с_запасом():
+    """Правило владельца — запас ×2,5 к крупнейшей реальной выгрузке
+    (2026-10-03): 37 037 файлов и 33 734 подкаталога."""
+    limits = intake_archive_limits({})
+    assert limits.max_entries >= 37_037 * 2.5
+    assert limits.max_entries >= 33_734 * 2.5
+
+
 def test_предел_разбираемого_xml_выше_реальных_выгрузок():
     from mcp1c.resource_limits import INTAKE_MAX_PARSED_XML_BYTES
 

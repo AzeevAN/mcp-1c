@@ -4312,7 +4312,7 @@ def _unavailable_here(context, matching: list[SyntaxItem]) -> str:
     )
 
 
-_RE_РАЗДЕЛ_СПРАВКИ = re.compile(r"(?:^|/)catalog\d+$")
+_RE_РАЗДЕЛ_СПРАВКИ = re.compile(r"(?:^|/)catalog\d+(?:@[\d.]+)?$")
 
 
 def _пустой_раздел_справки(item: SyntaxItem) -> bool:

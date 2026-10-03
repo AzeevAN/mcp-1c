@@ -620,6 +620,12 @@ class Registry:
         # диске и поднимается на время сборки слитого вида.
         self.syntax_versions: dict[str, Source] = {}
         self.syntax: LoadedSyntax | None = None
+        # Ревизии файлов, по которым приняты справки версий и собран слитый
+        # вид. Reload без изменений справок переиспользует уже собранное:
+        # чтение трёх справок и подъём слитого вида — 2,4 с и основная доля
+        # пика RSS `/admin/reload` (см. CHANGELOG 2026-10-03).
+        self._syntax_version_keys: dict[str, tuple] = {}
+        self._syntax_built: tuple[tuple, LoadedSyntax] | None = None
         self.sources: dict[str, Source] = {}
         # Runtime-снимок намеренно не входит ни в schema v1, ни в индекс
         # кода: это состояние конкретного сеанса и области данных на момент
@@ -2505,14 +2511,47 @@ class Registry:
         known_sha256: str = "",
         rebuild: bool = True,
         expected_revision: int | None = None,
+        reuse_loaded: bool = False,
     ) -> Source:
-        """Принять версионную справку платформы."""
+        """Принять версионную справку платформы.
+
+        ``reuse_loaded`` — для restore: справка той же версии с тем же SHA,
+        чей разобранный файл не менялся с прошлого приёма, повторно не
+        читается. Проверки ниже она уже прошла, учётная запись копируется.
+        """
         self._ensure_not_blocked(allow_restore=True)
         source_path = Path(path)
         digest = known_sha256 or _sha256(source_path)
         platform = platform or _platform_from_path(source_path)
 
         is_index = source_path.suffix == ".gz"
+        # Ревизия снимается ДО чтения: заменят файл во время разбора — ключ
+        # останется от прежнего, и следующий reload честно перечитает.
+        file_key = (
+            self._syntax_file_key(source_path, digest, platform)
+            if is_index
+            else None
+        )
+        if reuse_loaded and file_key is not None and platform:
+            source_id = f"syntax-{platform}"
+            with self._lock:
+                прежний = self.syntax_versions.get(source_id)
+                годен = (
+                    прежний is not None
+                    and прежний.status == STATUS_READY
+                    and self._syntax_version_keys.get(source_id) == file_key
+                )
+            if годен:
+                source = replace(
+                    прежний, loaded_at=_now(), warnings=list(прежний.warnings)
+                )
+                snapshot = self._register_syntax_source(
+                    source, expected_revision, file_key
+                )
+                if rebuild:
+                    self._apply_syntax(snapshot)
+                return source
+
         if is_index:
             syntax = load_syntax(source_path)
             platform = platform or syntax.max_platform
@@ -2584,6 +2623,7 @@ class Registry:
             имя = platform or source_path.stem
             index_path = self.index_dir / "syntax" / f"{имя}.json.gz"
             save_syntax(syntax, index_path)
+            file_key = self._syntax_file_key(index_path, digest, platform)
 
         source = Source(
             id=f"syntax-{platform or source_path.stem}",
@@ -2601,6 +2641,20 @@ class Registry:
         if предупреждение:
             source.warnings.append(предупреждение)
 
+        snapshot = self._register_syntax_source(source, expected_revision, file_key)
+
+        if rebuild:
+            # Разобранная справка уже в руках — заново с диска её не читаем.
+            self._apply_syntax(snapshot, {source.id: syntax})
+        return source
+
+    def _register_syntax_source(
+        self,
+        source: Source,
+        expected_revision: int | None,
+        file_key: tuple | None,
+    ) -> dict[str, Source]:
+        """Поставить учётную запись справки версии; вернуть снимок набора."""
         with self._lock:
             self._check_source_revision(source.id, expected_revision)
             self._advance_source_revision(source.id)
@@ -2608,14 +2662,33 @@ class Registry:
             # и заменяет прежнюю запись, другая версия дополняет набор.
             self.syntax_versions[source.id] = source
             self.sources[source.id] = source
+            if file_key is None:
+                self._syntax_version_keys.pop(source.id, None)
+            else:
+                self._syntax_version_keys[source.id] = file_key
             self._advance_source_lifecycle_revision()
             self._relation_cache.clear()
-            snapshot = dict(self.syntax_versions)
+            return dict(self.syntax_versions)
 
-        if rebuild:
-            # Разобранная справка уже в руках — заново с диска её не читаем.
-            self._apply_syntax(snapshot, {source.id: syntax})
-        return source
+    @staticmethod
+    def _syntax_file_key(path: Path, digest: str, platform: str) -> tuple | None:
+        """Ревизия разобранной справки: SHA исходника, версия и метаданные файла.
+
+        Повторный разбор того же HBK сохраняет SHA, но заменяет файл
+        атомарно — inode и mtime меняются, и переиспользование отпадает.
+        """
+        try:
+            stat_result = path.stat()
+        except OSError:
+            return None
+        return (
+            digest,
+            platform,
+            stat_result.st_dev,
+            stat_result.st_ino,
+            stat_result.st_size,
+            stat_result.st_mtime_ns,
+        )
 
     @staticmethod
     def _fingerprint(versions: dict[str, "Source"]) -> tuple:
@@ -2773,12 +2846,39 @@ class Registry:
         списку источников.
         """
         while True:
-            prepared, problems = self._prepare_syntax(versions, preloaded)
+            # Ключ снимается до сборки по той же причине, что в add_syntax:
+            # файл, заменённый во время сборки, обесценит ключ, а не вид.
+            key = (
+                self._fingerprint(versions),
+                self._syntax_revision(list(versions.values())),
+            )
+            with self._lock:
+                built = self._syntax_built
+                reuse = (
+                    built[1]
+                    if not preloaded
+                    and built is not None
+                    and built[0] == key
+                    and self.syntax is built[1]
+                    else None
+                )
+            if reuse is not None:
+                # Reload без изменений справок: слитый вид, его поисковый
+                # индекс и таблицы те же — тот же объект, и кэши, привязанные
+                # к нему по identity, остаются в силе.
+                prepared, problems = reuse, []
+            else:
+                prepared, problems = self._prepare_syntax(versions, preloaded)
             with self._lock:
                 if self._fingerprint(self.syntax_versions) == self._fingerprint(versions):
                     if self.syntax is not prepared:
                         self._advance_source_lifecycle_revision()
                     self.syntax = prepared
+                    self._syntax_built = (
+                        (key, prepared)
+                        if prepared is not None and not problems
+                        else None
+                    )
                     self._relation_cache.clear()
                     for problem in problems:
                         source_id = problem.split(":", 1)[0]
@@ -5181,6 +5281,8 @@ class Registry:
                         known_sha256=source.sha256,
                         rebuild=False,
                         expected_revision=ревизии_источников.get(source.id, 0),
+                        # Reload без изменений не перечитывает справку.
+                        reuse_loaded=True,
                     )
                 else:
                     problems.append(

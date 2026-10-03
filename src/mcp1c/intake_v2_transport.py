@@ -26,7 +26,6 @@ from typing import BinaryIO, Iterable
 from . import intake_v2_fsio as fsio
 from .intake_v2 import CandidateTransport
 from .resource_limits import (
-    ARCHIVE_LIMITS,
     MIB,
     LimitedReader,
     ResourceBudget,
@@ -759,15 +758,11 @@ class ZipExportTree:
     ):
         if transport not in self._ALLOWED_TRANSPORTS:
             raise ValueError("для ZIP выбран неподдержанный transport")
-        # Browser и incoming принимают полные выгрузки больше гигабайта, и
-        # потому живут на своём, более высоком профиле; но без потолка ZIP на
-        # десятки мегабайт раскрывался в десятки гигабайт и заполнял том.
+        # Полные выгрузки больше гигабайта легальны для любого транспорта,
+        # поэтому все ZIP выгрузки живут на профиле intake; но без потолка ZIP
+        # на десятки мегабайт раскрывался в десятки гигабайт и заполнял том.
         if limits is None:
-            limits = (
-                ARCHIVE_LIMITS
-                if transport is CandidateTransport.LOCAL_FILE
-                else intake_archive_limits()
-            )
+            limits = intake_archive_limits()
         self.path = Path(path)
         self.transport = transport
         self.origin_name = _display_name(origin_name or self.path.name)
@@ -1173,7 +1168,7 @@ class DirectoryExportTree:
         root: Path,
         *,
         origin_name: str | None = None,
-        limits: ResourceLimits = ARCHIVE_LIMITS,
+        limits: ResourceLimits | None = None,
         settle_seconds: float = DIRECTORY_SETTLE_SECONDS,
     ):
         if (
@@ -1184,11 +1179,12 @@ class DirectoryExportTree:
             raise ValueError("settle_seconds должен быть неотрицательным числом")
         self.root = Path(root)
         self.origin_name = _display_name(origin_name or self.root.name)
-        self._limits = limits
+        # Каталог — распакованная полная выгрузка: профиль тот же, что у ZIP.
+        self._limits = intake_archive_limits() if limits is None else limits
         self._settle_seconds = float(settle_seconds)
         self._snapshot, self._budget = _scan_directory(
             self.root,
-            limits,
+            self._limits,
             self._settle_seconds,
         )
         self._paths = tuple(sorted(self._snapshot.members))
@@ -1322,14 +1318,14 @@ def open_export_tree(
 ) -> ZipExportTree | DirectoryExportTree:
     """Открыть настроенный вход без выбора parser или публикации Registry.
 
-    ``limits=None`` выбирает профиль по транспорту: intake-профиль для
-    incoming, ``ARCHIVE_LIMITS`` для локальных ZIP и каталогов.
+    ``limits=None`` — профиль intake (``intake_archive_limits``) для любого
+    транспорта: локальный ZIP и каталог — та же полная выгрузка.
     """
     if transport is CandidateTransport.LOCAL_DIRECTORY:
         return DirectoryExportTree(
             source,
             origin_name=origin_name,
-            limits=ARCHIVE_LIMITS if limits is None else limits,
+            limits=limits,
             settle_seconds=directory_settle_seconds,
         )
     if transport in {CandidateTransport.INCOMING, CandidateTransport.LOCAL_FILE}:

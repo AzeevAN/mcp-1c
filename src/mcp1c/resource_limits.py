@@ -54,7 +54,8 @@ V8_LIMITS = ResourceLimits(
 
 INTAKE_MAX_UNPACKED_ENV = "MCP1C_INTAKE_MAX_UNPACKED"
 
-# Профиль intake (browser-upload и incoming) выше ARCHIVE_LIMITS: полные
+# Профиль полной файловой выгрузки (browser-upload, incoming, а с 2026-10-03
+# и локальные ZIP и каталоги /config-sources) выше ARCHIVE_LIMITS: полные
 # файловые выгрузки больше гигабайта легальны. Дефолты взяты с запасом от
 # замера реальных выгрузок (2026-10-02): крупнейшая — 2,01 ГиБ распакованных,
 # 33 189 записей; самая большая запись — 713 МиБ (.cf родителя); больше всего
@@ -97,7 +98,7 @@ def _parse_size(name: str, raw: str) -> int:
 def intake_archive_limits(
     environ: Mapping[str, str] | None = None,
 ) -> ResourceLimits:
-    """Профиль бюджета browser- и incoming-ZIP с учётом окружения.
+    """Профиль бюджета полной выгрузки (ZIP любого транспорта и каталог).
 
     Пустое значение переменной означает дефолт: так Compose может передавать
     её всегда, не навязывая собственное число.

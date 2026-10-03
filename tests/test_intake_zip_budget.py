@@ -451,3 +451,67 @@ def test_предел_разбора_не_касается_потоковых_п
         )
     finally:
         tree.close()
+
+
+def _local_lifecycle(tmp_path: Path, source: Path) -> IntakeLifecycle:
+    managed = tmp_path / "managed"
+    return IntakeLifecycle(
+        CandidateCatalog(managed / "catalog"),
+        BrowserStagingStore(managed / "uploads"),
+        IntakeCoordinator(managed / "operations", DurableCandidateStore(managed / "records")),
+        local_sources={"export": source},
+        directory_settle_seconds=0,
+    )
+
+
+def test_локальный_каталог_живёт_на_профиле_intake(tmp_path, monkeypatch):
+    """Подключённый каталог — та же полная выгрузка, что и ZIP из incoming.
+
+    Раньше локальные источники жили на `ARCHIVE_LIMITS` с суммой 1 ГиБ, а
+    collector реальной выгрузки читает до 1 248 344 276 байт: каталог такой
+    выгрузки отвергался до сборки. Теперь они на профиле intake, и
+    `MCP1C_INTAKE_MAX_UNPACKED` ограничивает их так же — здесь он понижен
+    до 4 КиБ, чтобы проверка не писала на диск гигабайты.
+    """
+    from mcp1c.intake_v2_lifecycle import CandidateLocator
+
+    monkeypatch.setenv(INTAKE_MAX_UNPACKED_ENV, "4KiB")
+    root = tmp_path / "export"
+    (root / "Roles").mkdir(parents=True)
+    (root / "Configuration.xml").write_bytes(_configuration())
+    for index in range(5):
+        (root / "Roles" / f"Part{index}.xml").write_bytes(b"\0" * 1024)
+    lifecycle = _local_lifecycle(tmp_path, root)
+
+    locator = CandidateLocator(CandidateTransport.LOCAL_DIRECTORY, "export")
+    with lifecycle._open(locator) as tree:
+        with pytest.raises(CollectorError, match="суммарный"):
+            collect_source_b(tree, probe_export(tree), tmp_path / "collection")
+    assert not (tmp_path / "collection").exists()
+
+
+def test_локальный_zip_с_реальным_сжатием_шаблона_не_отвергается(tmp_path):
+    """Шаблоны этикеток реальных выгрузок жмутся до 243,6:1 (2026-10-03).
+
+    `ARCHIVE_LIMITS` проверял коэффициент 200:1 у записи любого размера, и
+    локальный ZIP двух из пяти крупных реальных выгрузок отвергался ещё до
+    сборки. Профиль intake проверяет 512:1 у записей крупнее 1 МиБ.
+    """
+    import random
+    import zlib
+
+    from mcp1c.intake_v2_lifecycle import CandidateLocator
+
+    payload = random.Random(0).randbytes(5000) + b"\0" * (2 * MIB)
+    ratio = len(payload) / len(zlib.compress(payload, 6))
+    assert 200 < ratio < 512
+    archive = tmp_path / "local" / "export.zip"
+    archive.parent.mkdir()
+    archive.write_bytes(
+        _zip_bytes({"Configuration.xml": _configuration(), "Roles/Label.xml": payload})
+    )
+    lifecycle = _local_lifecycle(tmp_path, archive)
+
+    locator = CandidateLocator(CandidateTransport.LOCAL_FILE, "export")
+    with lifecycle._open(locator) as tree:
+        tree.validate_selection(["Configuration.xml", "Roles/Label.xml"])

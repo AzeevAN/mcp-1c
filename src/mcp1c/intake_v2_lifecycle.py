@@ -43,7 +43,7 @@ from .intake_v2_transport import (
     open_export_tree,
 )
 from .config_sources import ConfigSourceError, source_path
-from .resource_limits import ARCHIVE_LIMITS, ResourceLimits, intake_archive_limits
+from .resource_limits import ResourceLimits, intake_archive_limits
 
 
 _FORMAT_VERSION = 1
@@ -375,7 +375,7 @@ class IntakeLifecycle:
         incoming_root: Path | None = None,
         local_sources: Mapping[str, Path] | None = None,
         config_sources_root: Path | None = None,
-        limits: ResourceLimits = ARCHIVE_LIMITS,
+        limits: ResourceLimits | None = None,
         intake_limits: ResourceLimits | None = None,
         directory_settle_seconds: float = 5.0,
     ):
@@ -385,14 +385,20 @@ class IntakeLifecycle:
             raise TypeError("browser должен быть BrowserStagingStore")
         if not isinstance(operations, IntakeCoordinator):
             raise TypeError("operations должен быть IntakeCoordinator")
-        if not isinstance(limits, ResourceLimits):
-            raise TypeError("limits должен быть ResourceLimits")
         if intake_limits is None:
             # Окружение читается один раз на процесс: невалидное значение
             # останавливает старт, а не первый же приём выгрузки.
             intake_limits = intake_archive_limits()
         if not isinstance(intake_limits, ResourceLimits):
             raise TypeError("intake_limits должен быть ResourceLimits")
+        if limits is None:
+            # Локальный ZIP и каталог — та же полная выгрузка, что и intake:
+            # на ARCHIVE_LIMITS (1 ГиБ, 200:1 у любой записи) каталог реальной
+            # выгрузки с 1,25 ГиБ выбранного и ZIP с шаблонами 243:1
+            # отвергались до сборки (замер 2026-10-03).
+            limits = intake_limits
+        if not isinstance(limits, ResourceLimits):
+            raise TypeError("limits должен быть ResourceLimits")
         if (
             isinstance(directory_settle_seconds, bool)
             or not isinstance(directory_settle_seconds, (int, float))
@@ -412,6 +418,7 @@ class IntakeLifecycle:
         self.local_sources = MappingProxyType(
             dict(sorted(normalized_sources.items()))
         )
+        # Локальные ZIP и каталоги; по умолчанию — тот же профиль intake.
         self.limits = limits
         # Browser и incoming: профиль полной выгрузки, см. intake_archive_limits.
         self.intake_limits = intake_limits

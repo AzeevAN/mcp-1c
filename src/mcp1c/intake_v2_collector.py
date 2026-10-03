@@ -886,6 +886,17 @@ def _form_address(path: str, spec: MetadataKindSpec) -> str | None:
     return None
 
 
+def _module_read_as_text(kind: ArtifactKind, path: str) -> bool:
+    """Модуль, который каталог потом читает в память целиком как текст.
+
+    Скомпилированный `.Module` (бывает только в плоской раскладке) каталог
+    помечает `compiled` и тела не читает — `read_bsl` для него не вызывается,
+    поэтому предел памяти модуля его не касается: отвергать выгрузку из-за
+    большого закрытого модуля значило бы терять её без причины.
+    """
+    return kind is ArtifactKind.CODE and not path.endswith(".Module")
+
+
 def _looks_like_code(path: str) -> bool:
     return path.endswith((".bsl", ".txt", ".Module"))
 
@@ -916,6 +927,7 @@ def _copy_artifact(
     relative_path = f"{kind.value}/{source_path}"
     digest = hashlib.sha256()
     total = 0
+    text_module = _module_read_as_text(kind, source_path)
     with tree.open(raw_path) as source, pack.entry(relative_path) as output:
         while True:
             block = source.read(_READ_CHUNK)
@@ -929,7 +941,7 @@ def _copy_artifact(
             # Объявленный размер модуля сверен в `_preflight`; фактически
             # прочитанный сверяется ещё раз, чтобы предел не зависел от
             # честности транспорта.
-            if kind is ArtifactKind.CODE and total > INTAKE_MAX_MODULE_BYTES:
+            if text_module and total > INTAKE_MAX_MODULE_BYTES:
                 raise CollectorError(
                     f"{source_path}: модуль больше предела "
                     f"{INTAKE_MAX_MODULE_BYTES} байт"
@@ -1290,7 +1302,9 @@ def _preflight(
     for step in plan:
         # Модуль читается в память целиком тем же образом: свой предел,
         # отказ всей выгрузки с именем записи до первого распакованного байта.
-        if step.reads and step.kind is ArtifactKind.CODE:
+        # Скомпилированный `.Module` текстом не читается — см.
+        # `_module_read_as_text`.
+        if step.reads and _module_read_as_text(step.kind, step.source_path):
             size = tree.size(step.raw_path)
             if size > INTAKE_MAX_MODULE_BYTES:
                 raise CollectorError(

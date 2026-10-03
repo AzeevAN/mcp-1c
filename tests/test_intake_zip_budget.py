@@ -684,3 +684,85 @@ def test_фактически_прочитанный_модуль_сверяет
             "Справочник.Demo.МодульОбъекта",
         )
     assert "Catalogs/Demo/Ext/ObjectModule.bsl" in str(error.value)
+
+
+def _архив_с_записью(tmp_path: Path, имя: str, тело: bytes) -> Path:
+    archive = tmp_path / f"entry-{len(тело)}.zip"
+    archive.write_bytes(
+        _zip_bytes({"Configuration.xml": _configuration(), имя: тело})
+    )
+    return archive
+
+
+def test_скомпилированный_модуль_больше_предела_не_отвергается(
+    tmp_path, monkeypatch
+):
+    """Предел модуля защищает память при чтении текста; скомпилированный
+    `.Module` текстом не читается (каталог помечает его `compiled`), поэтому
+    предел его не касается."""
+    предел = 4096
+    monkeypatch.setattr(intake_v2_collector, "INTAKE_MAX_MODULE_BYTES", предел)
+    тело = b"\xff" * (предел + 1)
+    tree = ZipExportTree(
+        _архив_с_записью(tmp_path, "CommonModule.Закрытый.Module", тело),
+        transport=CandidateTransport.INCOMING,
+    )
+    try:
+        collection = collect_source_b(
+            tree, probe_export(tree), tmp_path / "work" / "collection"
+        )
+    finally:
+        tree.close()
+    assert [artifact.size for artifact in collection.code] == [предел + 1]
+
+
+def test_скомпилированный_модуль_при_чтении_не_сверяется_с_пределом(
+    monkeypatch,
+):
+    import contextlib
+
+    предел = 16
+    monkeypatch.setattr(intake_v2_collector, "INTAKE_MAX_MODULE_BYTES", предел)
+
+    class Дерево:
+        def size(self, raw_path):
+            return 64
+
+        def open(self, raw_path):
+            return io.BytesIO(b"\xff" * 64)
+
+    class Пакет:
+        @contextlib.contextmanager
+        def entry(self, relative_path):
+            yield io.BytesIO()
+
+    artifact = intake_v2_collector._copy_artifact(
+        Дерево(),
+        "CommonModule.Закрытый.Module",
+        "CommonModule.Закрытый.Module",
+        Пакет(),
+        intake_v2_collector.ArtifactKind.CODE,
+        "CommonModules",
+        "ОбщийМодуль.Закрытый",
+    )
+    assert artifact.size == 64
+
+
+def test_плоский_текстовый_модуль_больше_предела_отвергается(
+    tmp_path, monkeypatch
+):
+    предел = 4096
+    monkeypatch.setattr(intake_v2_collector, "INTAKE_MAX_MODULE_BYTES", предел)
+    тело = b"//" + b"x" * (предел - 2) + b"\n"
+    tree = ZipExportTree(
+        _архив_с_записью(tmp_path, "Catalog.Flat.ObjectModule.txt", тело),
+        transport=CandidateTransport.INCOMING,
+    )
+    target = tmp_path / "work" / "collection"
+    try:
+        with pytest.raises(CollectorError, match="предела 4096") as error:
+            collect_source_b(tree, probe_export(tree), target)
+    finally:
+        tree.close()
+    assert "Catalog.Flat.ObjectModule.txt" in str(error.value)
+    assert not target.exists()

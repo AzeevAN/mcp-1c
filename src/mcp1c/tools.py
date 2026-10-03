@@ -1700,6 +1700,10 @@ def search_objects(
 ) -> str:
     """Найти объект конфигурации по описанию или части имени."""
     context = registry.resolve(config)
+    if kind:
+        unsupported = _unsupported_object_kind(context, kind)
+        if unsupported:
+            return unsupported + _notes_block(context)
     kinds = [kind] if kind else None
     hits = context.configuration.index.search(query, limit=_clamp(limit), kinds=kinds)
 
@@ -1726,6 +1730,39 @@ def search_objects(
 
     out += _fields_section(context, query)
     return "\n".join(out) + "\n" + _notes_block(context)
+
+
+# Как агенты называют роль в `kind`. Роли не попадают в индекс объектов:
+# структура приходит из источника A, где ролей нет, а объявленные права
+# читаются отдельным ролевым слоем источника B.
+_ROLE_KIND_NAMES = frozenset({"роль", "роли", "role", "roles"})
+
+
+def _unsupported_object_kind(context, kind: str) -> str:
+    """Отказ для вида, которого нет среди объектов конфигурации.
+
+    Фильтр поискового индекса отбрасывает неизвестный вид молча, и пустая
+    выдача читалась как факт о конфигурации: в слепой приёмке агент искал
+    роль через `kind="Роль"` и решил, что ролей с таким именем нет. Поэтому
+    неизвестный вид называется прямо, с видами, которые здесь есть.
+    """
+    present = {obj.kind for obj in context.configuration.config.objects.values()}
+    if kind in present:
+        return ""
+    if kind.strip().casefold() in _ROLE_KIND_NAMES:
+        return (
+            f"Роли не входят в поиск объектов конфигурации {context.name}: "
+            "вид «Роль» здесь не индексируется. Роли по объекту и операциям "
+            "подбирает `find_roles_for_access`, доступы роли по имени читает "
+            "`get_role_access` — если эти инструменты есть в списке "
+            "инструментов сервера."
+        )
+    return (
+        f"Вида «{kind}» среди объектов конфигурации {context.name} нет, "
+        "поиск с этим ограничением не выполнялся. Доступные виды: "
+        + ", ".join(sorted(present))
+        + ". Повторите поиск с одним из них или без `kind`."
+    )
 
 
 def _fields_section(context, query: str, limit: int = 5) -> list[str]:

@@ -27,7 +27,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from mcp1c import role_access_service, tools  # noqa: E402
-from mcp1c.registry import Registry  # noqa: E402
+from mcp1c.registry import Registry, RegistryError  # noqa: E402
 from mcp1c.role_access import OPERATION_RIGHTS  # noqa: E402
 
 
@@ -98,7 +98,14 @@ def main(argv: list[str] | None = None) -> int:
         f"модуль {module} ({len(records)} процедур)"
     )
     for label, fn in calls.items():
-        first, median = _measure(fn, args.repeat)
+        # Временный реестр из выгрузки в файлы (замер на крупных типовых
+        # конфигурациях) часто без справки платформы: такой вызов честно
+        # пропускается, а не обрывает замер остальных.
+        try:
+            first, median = _measure(fn, args.repeat)
+        except RegistryError as error:
+            print(f"{label:36s} пропущено: {str(error).splitlines()[0]}")
+            continue
         print(f"{label:36s} first {first:8.2f} ms  median {median:8.2f} ms")
     return 0
 

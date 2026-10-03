@@ -19,10 +19,13 @@ import hashlib
 import heapq
 import json
 import re
+import sys
 import threading
 import weakref
-from bisect import bisect_right
-from dataclasses import dataclass
+from array import array
+from bisect import bisect_left, bisect_right
+from collections import OrderedDict
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import (
@@ -507,6 +510,11 @@ class _CodeAggregates:
     summary: _CodeSummary | None = None
     coverage: CodeCoverage | None = None
     coverage_without_rows: CodeCoverage | None = None
+    # Корень сверяется отдельно: тело модуля читается с диска по нему.
+    корень: object = None
+    # Ключ пакета в общем кэше разборов (`_РАЗБОРЫ`): у каждой записи
+    # агрегатов свой, поэтому замена записи отрезает и её разборы.
+    пакет: object = field(default_factory=object)
 
 
 # Пакет кода после публикации не меняется, а `get_object`, `list_configurations`,
@@ -532,11 +540,19 @@ def _code_aggregates(loaded: LoadedModules) -> _CodeAggregates | None:
             or запись.оглавление is not loaded.оглавление
             or запись.формы is not loaded.формы
             or запись.каталог is not loaded.каталог
+            or запись.корень != loaded.корень
         ):
+            if запись is not None:
+                _РАЗБОРЫ.забыть(запись.пакет)
             запись = _CodeAggregates(
-                loaded.оглавление, loaded.формы, loaded.каталог
+                loaded.оглавление, loaded.формы, loaded.каталог,
+                корень=loaded.корень,
             )
             _CODE_AGGREGATES[ключ] = запись
+            # Финализатор не берёт замок: сборка мусора может сработать прямо
+            # внутри `_РАЗБОРЫ` под его же замком. Он только помечает пакет,
+            # а разборы снимаются при следующем обращении к кэшу.
+            weakref.finalize(ключ, _РАЗБОРЫ.забыть, запись.пакет)
         return запись
 
 
@@ -2840,29 +2856,26 @@ def _прочитать_тело_модуля(loaded: LoadedModules, модул�
 def _сигнатура(
     loaded: LoadedModules,
     запись,
-    снимки: dict[str, tuple[list[str], dict[int, Процедура]]] | None = None,
+    снимки: "dict[str, _РазборМодуля] | None" = None,
 ) -> str:
-    """Дочитывает только декларацию по сохранённому номеру строки.
+    """Декларация из компактного разбора модуля.
 
-    В `LoadedModules` сигнатуры и тела не появляются: текст существует лишь
-    на время одного ответа. Снимок позволяет не читать и не разбирать один
-    файл по разу на каждую строку оглавления.
+    В `LoadedModules` сигнатуры и тела не появляются: их держит отдельный
+    кэш разборов пакета (`_разбор_модуля`), текст модуля читается только при
+    промахе. Снимки ответа нужны пакету без поискового индекса, у которого
+    кэша нет: один файл не разбирается по разу на каждую строку оглавления.
     """
     if снимки is None:
         снимки = {}
-    снимок = снимки.get(запись.модуль)
-    if снимок is None:
-        текст = _прочитать_тело_модуля(loaded, запись.модуль)
-        разбор = _parsed_procedures(
-            loaded.оглавление.модуля(запись.модуль), текст
+    разбор = снимки.get(запись.модуль)
+    if разбор is None:
+        разбор = _разбор_модуля(
+            loaded,
+            запись.модуль,
+            lambda: _прочитать_тело_модуля(loaded, запись.модуль),
         )
-        строки = _строки_модуля(текст)
-        снимки[запись.модуль] = (строки, разбор)
-    else:
-        строки, разбор = снимок
-    return _сигнатура_из_текста(
-        строки, _parsed_procedure(разбор, запись)
-    )
+        снимки[запись.модуль] = разбор
+    return _parsed_procedure(разбор, запись).сигнатура
 
 
 class _SignatureError(Exception):
@@ -2957,7 +2970,7 @@ def _modules_availability_message(
 def _procedure_matches(
     loaded: LoadedModules,
     записи: list,
-    снимки: dict[str, tuple[list[str], dict[int, Процедура]]] | None = None,
+    снимки: "dict[str, _РазборМодуля] | None" = None,
 ) -> list[ProcedureMatch]:
     счётчики: dict[str, tuple[dict[str, int], int]] = {}
     результат: list[ProcedureMatch] = []
@@ -3140,7 +3153,7 @@ def _search_procedures_once(
         )
 
     try:
-        снимки: dict[str, tuple[list[str], dict[int, Процедура]]] = {}
+        снимки: dict[str, _РазборМодуля] = {}
         точные_совпадения = _procedure_matches(loaded, точные, снимки)
         словесные_совпадения = _procedure_matches(loaded, слова, снимки)
     except (OSError, _SignatureError) as ошибка:
@@ -3243,32 +3256,217 @@ def _read_module_snapshot(
     return текст
 
 
-def _parsed_procedures(
-    записи: list, текст: str
-) -> dict[int, Процедура]:
-    """Сопоставляет оглавление с последовательностью одноразового разбора."""
+@dataclass(frozen=True, slots=True)
+class _РазобраннаяПроцедура:
+    """Поля одного объявления, которые нужны ответу, без текста модуля.
+
+    Атрибуты названы как у `Процедура`: карточка, оглавление и поиск читают
+    их одинаково, откуда бы ни пришла запись — из кэша или из свежего разбора.
+    """
+
+    имя: str
+    сигнатура: str
+    строка: int
+    начало_столбец: int
+    конец: int
+    конец_столбец: int
+    директива: str
+    перекрытие: tuple[str, str] | tuple[()]
+
+
+@dataclass(frozen=True, slots=True)
+class _РазборМодуля:
+    """Компактный итог разбора одного модуля одного пакета кода.
+
+    Текст модуля здесь не держится: тело карточка дочитывает с диска. Числа
+    лежат в `array` по четыре на процедуру, а не объектами `int`: номера
+    строк за 256 стоили бы по 28 байт каждый. Записи упорядочены по позиции
+    в оглавлении — по ней и ищутся двоичным поиском.
+    """
+
+    позиции: array
+    границы: array
+    имена: tuple[str, ...]
+    сигнатуры: tuple[str, ...]
+    директивы: tuple[str, ...]
+    перекрытия: tuple[tuple[str, str] | tuple[()], ...]
+    # Оценка памяти записи для бюджета кэша. Имена — ссылки на строки
+    # оглавления, директивы интернированы: ни те, ни другие не считаются.
+    размер: int = 0
+
+    def процедура(self, запись) -> _РазобраннаяПроцедура:
+        i = bisect_left(self.позиции, запись.позиция)
+        if i == len(self.позиции) or self.позиции[i] != запись.позиция:
+            raise _SignatureError
+        строка, начало_столбец, конец, конец_столбец = self.границы[4 * i:4 * i + 4]
+        return _РазобраннаяПроцедура(
+            имя=self.имена[i],
+            сигнатура=self.сигнатуры[i],
+            строка=строка,
+            начало_столбец=начало_столбец,
+            конец=конец,
+            конец_столбец=конец_столбец,
+            директива=self.директивы[i],
+            перекрытие=self.перекрытия[i],
+        )
+
+
+def _parsed_procedures(записи: list, текст: str) -> _РазборМодуля:
+    """Сопоставляет оглавление с разбором и сжимает его до нужных полей."""
     процедуры = разобрать(текст)
     if len(записи) != len(процедуры):
         raise _SignatureError
-    результат: dict[int, Процедура] = {}
+    строки = _строки_модуля(текст)
+    пары = []
     for запись, процедура in zip(записи, процедуры, strict=True):
         if (
             запись.строка != процедура.строка
             or запись.имя.casefold() != процедура.имя.casefold()
         ):
             raise _SignatureError
-        результат[запись.позиция] = процедура
-    return результат
+        пары.append((запись.позиция, запись, процедура))
+    пары.sort(key=lambda item: item[0])
+    границы = array("q")
+    for _, _, процедура in пары:
+        границы.extend((
+            процедура.строка, процедура.начало_столбец,
+            процедура.конец, процедура.конец_столбец,
+        ))
+    разбор = _РазборМодуля(
+        позиции=array("q", (позиция for позиция, _, _ in пары)),
+        границы=границы,
+        # Имя оглавления уже лежит в памяти; своя копия строки нужна, только
+        # если разбор написал его иначе (регистр сверяется выше без учёта).
+        имена=tuple(
+            запись.имя if запись.имя == процедура.имя else процедура.имя
+            for _, запись, процедура in пары
+        ),
+        сигнатуры=tuple(
+            _сигнатура_из_текста(строки, процедура) for _, _, процедура in пары
+        ),
+        # Директив единицы видов на весь корпус: одна строка на вид.
+        директивы=tuple(sys.intern(процедура.директива) for _, _, процедура in пары),
+        перекрытия=tuple(процедура.перекрытие for _, _, процедура in пары),
+    )
+    размер = (
+        _ЦЕНА_ЗАПИСИ_КЭША
+        + sys.getsizeof(разбор)
+        + sys.getsizeof(разбор.позиции)
+        + sys.getsizeof(разбор.границы)
+        + sum(
+            sys.getsizeof(часть)
+            for часть in (
+                разбор.имена, разбор.сигнатуры, разбор.директивы, разбор.перекрытия
+            )
+        )
+        + sum(sys.getsizeof(сигнатура) for сигнатура in разбор.сигнатуры)
+        + sum(
+            sys.getsizeof(перекрытие) + sum(sys.getsizeof(часть) for часть in перекрытие)
+            for перекрытие in разбор.перекрытия
+            if перекрытие
+        )
+    )
+    object.__setattr__(разбор, "размер", размер)
+    return разбор
 
 
-def _parsed_procedure(разбор: dict[int, Процедура], запись) -> Процедура:
-    try:
-        return разбор[запись.позиция]
-    except KeyError as error:
-        raise _SignatureError from error
+# Слот `OrderedDict` с ключом-кортежем на запись кэша; ключ модуля — строка
+# оглавления, она уже в памяти.
+_ЦЕНА_ЗАПИСИ_КЭША = 200
+
+# Бюджет общего кэша разборов. Компактные разборы всех модулей крупнейшей из
+# измеренных типовых конфигураций (Зарплата и управление персоналом с тремя
+# расширениями: 8 543 модуля, 172 тыс. процедур) занимают 49,8 МиБ, две трети
+# из них — сигнатуры. Без вытеснения это не десятки МиБ: предел — тот же
+# максимум с запасом 2,5. Несколько конфигураций на сервере делят бюджет,
+# дольше всех не тронутые модули вытесняются первыми.
+PARSE_CACHE_MAX_BYTES = 125 * 1024 * 1024
 
 
-def _procedure_body(строки: list[str], процедура: Процедура) -> list[str]:
+class _КэшРазборов:
+    """Общий LRU компактных разборов всех пакетов кода с бюджетом в байтах.
+
+    Ключ — (пакет из агрегатов, адрес модуля). Новое поколение получает
+    новые агрегаты и новый пакет, поэтому устаревший разбор не отдаётся;
+    разборы снятого пакета снимаются при ближайшем обращении к кэшу.
+    """
+
+    def __init__(self, предел: int) -> None:
+        self.предел = предел
+        self.объём = 0
+        self._замок = threading.Lock()
+        self._записи: OrderedDict[tuple[object, str], _РазборМодуля] = OrderedDict()
+        # Пополняется финализатором без замка: `list.append` атомарен.
+        self._забытые: list[object] = []
+
+    def забыть(self, пакет: object) -> None:
+        self._забытые.append(пакет)
+
+    def _убрать_забытые(self) -> None:
+        if not self._забытые:
+            return
+        забытые = set()
+        while self._забытые:
+            забытые.add(self._забытые.pop())
+        for ключ in [ключ for ключ in self._записи if ключ[0] in забытые]:
+            self.объём -= self._записи.pop(ключ).размер
+
+    def взять(self, пакет: object, модуль: str) -> _РазборМодуля | None:
+        with self._замок:
+            self._убрать_забытые()
+            разбор = self._записи.get((пакет, модуль))
+            if разбор is not None:
+                self._записи.move_to_end((пакет, модуль))
+            return разбор
+
+    def положить(
+        self, пакет: object, модуль: str, разбор: _РазборМодуля
+    ) -> _РазборМодуля:
+        if разбор.размер > self.предел:
+            return разбор
+        with self._замок:
+            self._убрать_забытые()
+            ключ = (пакет, модуль)
+            готовый = self._записи.get(ключ)
+            if готовый is not None:
+                self._записи.move_to_end(ключ)
+                return готовый
+            self._записи[ключ] = разбор
+            self.объём += разбор.размер
+            while self.объём > self.предел:
+                _, вытесненный = self._записи.popitem(last=False)
+                self.объём -= вытесненный.размер
+            return разбор
+
+
+_РАЗБОРЫ = _КэшРазборов(PARSE_CACHE_MAX_BYTES)
+
+
+def _разбор_модуля(loaded: LoadedModules, модуль: str, прочитать) -> _РазборМодуля:
+    """Разбор модуля один раз на пакет кода; `прочитать` зовётся при промахе.
+
+    Разбор — 75–95% времени `get_procedure` и `search_procedures`, а пакет
+    после публикации не меняется. Ключ кэша — пакет из агрегатов: новое
+    поколение приходит с новым ключом, старое уходит вместе со своим
+    `LoadedModules`. Гонка двух потоков на промахе лишь разберёт модуль
+    дважды; в кэше останется первая запись, обе равны.
+    """
+    агрегаты = _code_aggregates(loaded)
+    if агрегаты is not None:
+        готовый = _РАЗБОРЫ.взять(агрегаты.пакет, модуль)
+        if готовый is not None:
+            return готовый
+    разбор = _parsed_procedures(loaded.оглавление.модуля(модуль), прочитать())
+    if агрегаты is None:
+        return разбор
+    return _РАЗБОРЫ.положить(агрегаты.пакет, модуль, разбор)
+
+
+def _parsed_procedure(разбор: _РазборМодуля, запись) -> _РазобраннаяПроцедура:
+    return разбор.процедура(запись)
+
+
+def _procedure_body(строки: list[str], процедура: _РазобраннаяПроцедура) -> list[str]:
     """Физические строки точного вхождения без соседей на граничных строках."""
     конец_строка = процедура.конец or len(строки)
     return _отрезок_процедуры(
@@ -3280,7 +3478,7 @@ def _procedure_body(строки: list[str], процедура: Процеду�
     )
 
 
-def _extension_delta(строки: list[str], процедура: Процедура) -> list[str]:
+def _extension_delta(строки: list[str], процедура: _РазобраннаяПроцедура) -> list[str]:
     """Блоки правки дословно, включая сами граничные директивы."""
     результат: list[str] = []
     внутри: str | None = None
@@ -3424,9 +3622,14 @@ def _foreign_extension_warnings(
         записи = foreign.оглавление.модуля(module)
         if not записи:
             continue
-        текст = _read_module_snapshot(registry, foreign, module)
+        # При попадании в кэш файл не читается, и CAS чтения не случается:
+        # чужой пакет всё равно попадает в `observed` и сверяется перед render.
         observed.append(foreign)
-        разбор = _parsed_procedures(записи, текст)
+        разбор = _разбор_модуля(
+            foreign,
+            module,
+            lambda: _read_module_snapshot(registry, foreign, module),
+        )
         for запись in записи:
             parsed = _parsed_procedure(разбор, запись)
             if not parsed.перекрытие:
@@ -3517,9 +3720,15 @@ def _get_procedure_once(
             f"процедуры отсутствуют: их нельзя увидеть.{хвост}\n"
         )
 
-    текст = _read_module_snapshot(registry, loaded, модуль)
-    разбор = _parsed_procedures(записи, текст)
-    строки = _строки_модуля(текст)
+    # Текст нужен разбору только при промахе кэша, а оглавлению — вовсе нет:
+    # сигнатуры лежат в разборе. Карточка дочитывает тело ниже.
+    прочитанный: list[str] = []
+
+    def прочитать() -> str:
+        прочитанный.append(_read_module_snapshot(registry, loaded, модуль))
+        return прочитанный[0]
+
+    разбор = _разбор_модуля(loaded, модуль, прочитать)
     observed = [loaded]
     warnings = _module_warnings(context, loaded, записи)
     if partial_warning:
@@ -3537,7 +3746,7 @@ def _get_procedure_once(
             outlines.append(
                 ProcedureOutline(
                     address=f"{модуль}::{запись.имя}",
-                    signature=_сигнатура_из_текста(строки, parsed),
+                    signature=parsed.сигнатура,
                     exported=запись.экспорт,
                     function=запись.функция,
                     line=запись.строка,
@@ -3561,6 +3770,10 @@ def _get_procedure_once(
         return warning_prefix + f"В модуле `{модуль}` нет процедуры `{имя}`.{хвост}\n"
     запись = совпадения[0]
     parsed = _parsed_procedure(разбор, запись)
+    текст = прочитанный[0] if прочитанный else _read_module_snapshot(
+        registry, loaded, модуль
+    )
+    строки = _строки_модуля(текст)
     body = _procedure_body(строки, parsed)
     target_name = (
         parsed.перекрытие[1] or parsed.имя
@@ -3588,9 +3801,7 @@ def _get_procedure_once(
             )
         base_text = _read_module_snapshot(registry, base, модуль)
         observed.append(base)
-        base_parsed = _parsed_procedures(
-            base.оглавление.модуля(модуль), base_text
-        )
+        base_parsed = _разбор_модуля(base, модуль, lambda: base_text)
         body = [
             "// Тело основной конфигурации",
             *_procedure_body(
@@ -3621,7 +3832,7 @@ def _get_procedure_once(
     return render_procedure_card(
         context.name,
         f"{модуль}::{запись.имя}",
-        signature=_сигнатура_из_текста(строки, parsed),
+        signature=parsed.сигнатура,
         compilation=compilation,
         body=body,
         start_line=start_line,

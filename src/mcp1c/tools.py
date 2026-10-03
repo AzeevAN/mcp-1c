@@ -18,6 +18,7 @@ import difflib
 import hashlib
 import heapq
 import json
+import re
 import threading
 import weakref
 from bisect import bisect_right
@@ -4204,7 +4205,7 @@ def _deprecation_block(context, item: SyntaxItem) -> str:
             lines.append(f"Рекомендуемая замена: {link.label} — цель не разрешена.")
         elif context.platform and not target.available_in(context.platform):
             lines.append(f"Рекомендуемая замена: {link.label} — недоступна в платформе {context.platform}.")
-        elif [candidate.id for candidate in context.syntax.find_exact(target.address)
+        elif [candidate.id for candidate in _точные_элементы(context, target.address)
               if not context.platform or candidate.available_in(context.platform)] != [target.id]:
             lines.append(f"Рекомендуемая замена: {link.label} — публичный адрес неоднозначен.")
         else:
@@ -4311,6 +4312,56 @@ def _unavailable_here(context, matching: list[SyntaxItem]) -> str:
     )
 
 
+_RE_РАЗДЕЛ_СПРАВКИ = re.compile(r"(?:^|/)catalog\d+$")
+
+
+def _пустой_раздел_справки(item: SyntaxItem) -> bool:
+    """Страница папки оглавления справки без собственного содержимого.
+
+    Разбор берёт в индекс каждую страницу дерева, и папки вроде
+    `objects/catalog2/catalog259` («Запрос») становятся объектами. В
+    объединённой справке 2026-10-03 таких страниц 284; 16 из них делят
+    публичный адрес с настоящим элементом, и `get_syntax` показывал их пустым
+    «вариантом». Шесть страниц разделов несут пример кода — они
+    содержательны и остаются.
+    """
+    if not _RE_РАЗДЕЛ_СПРАВКИ.search(item.id):
+        return False
+    return not (
+        item.description
+        or item.variants
+        or item.examples
+        or item.members
+        or item.values
+        or item.note
+        or item.see_also
+        or item.availability
+        or item.deprecations
+        or any(snapshot.links for snapshot in item.link_snapshots)
+    )
+
+
+def _точные_элементы(context, name: str) -> list[SyntaxItem]:
+    """Элементы справки с точным именем или адресом, без пустых разделов.
+
+    Пустой раздел оглавления — не вариант элемента: показать в нём нечего,
+    а отдельного адреса, чтобы до него дойти, у него нет. Через этот же
+    поиск переходы карточки решают, однозначен ли адрес цели, поэтому раздел
+    отсеивается здесь, а не только в `get_syntax`: иначе ссылка на `Запрос`
+    числилась бы неоднозначной, хотя карточка открывается одна. Отсев идёт
+    до фильтра версии: на 8.3.5 «Планировщик» (появился в 8.3.6) давал два
+    пустых «варианта» вместо честного «недоступен в этой версии». Одинокий
+    раздел остаётся, чтобы точное имя не превращалось в «элемента нет».
+    """
+    matching = context.syntax.find_exact(name)
+    if len(matching) < 2:
+        # Единственный кандидат отсеивать не из чего, а переходы карточки
+        # зовут этот поиск на каждую из 50 ссылок.
+        return matching
+    содержательные =[item for item in matching if not _пустой_раздел_справки(item)]
+    return содержательные or matching
+
+
 def get_syntax(
     registry: Registry,
     name: str,
@@ -4329,7 +4380,7 @@ def get_syntax(
     keep = context.syntax_filter()
     wanted = name.strip().lower()
 
-    matching = context.syntax.find_exact(wanted)
+    matching = _точные_элементы(context, wanted)
     exact = [item for item in matching if keep(item)]
     отсечённые = [item for item in matching if not keep(item)]
 
@@ -4543,7 +4594,7 @@ def _syntax_navigation_page(context, item: SyntaxItem, offset: int) -> dict:
             address, status = "", "unavailable"
         else:
             matching = [
-                candidate for candidate in context.syntax.find_exact(target.address)
+                candidate for candidate in _точные_элементы(context, target.address)
                 if not context.platform or candidate.available_in(context.platform)
             ]
             if len(matching) != 1 or matching[0].id != target.id:
@@ -4625,7 +4676,7 @@ def syntax_navigation_data(
     """Структурированные проверенные переходы для карточки дашборда."""
     context = _syntax_context(registry, config)
     keep = context.syntax_filter()
-    exact = [item for item in context.syntax.find_exact(name.strip().lower()) if keep(item)]
+    exact = [item for item in _точные_элементы(context, name.strip().lower()) if keep(item)]
     addressed = [item for item in exact if item.address.casefold() == name.strip().casefold()]
     if addressed:
         exact = addressed

@@ -311,3 +311,107 @@ def test_некорректное_смещение_связей_отклоняе
 
     with pytest.raises(RegistryError, match="links_offset"):
         get_syntax(registry, "Запрос", detail=detail, links_offset=offset)
+
+
+def _section(id: str, name: str, **content) -> SyntaxItem:
+    """Страница раздела дерева справки: `objects/catalog2/catalog259`.
+
+    Разбор принимает её за объект, хотя это папка оглавления без описания.
+    """
+    return SyntaxItem(id=id, kind="object", name_ru=name, **content)
+
+
+def test_пустой_раздел_справки_не_считается_вариантом(tmp_path):
+    # Справка 8.3.26 на живых данных 2026-10-03: `get_syntax("Запрос", full)`
+    # давал «Одноимённые варианты: 2», и первый вариант был пуст — это раздел
+    # оглавления «Запрос», а не второй тип платформы. Перейти к нему нечем.
+    empty = _section("objects/catalog2/catalog259", "Запрос")
+    registry, _ = _registry(
+        tmp_path,
+        [("8.3.19", [empty, _owner("8.3.19", _link("Выполнить")), _method("Выполнить")])],
+    )
+
+    answer = get_syntax(registry, "Запрос", detail="full")
+
+    assert "Одноимённые варианты" not in answer
+    assert "Вариант 1 из" not in answer
+    assert "Объект для выполнения запросов." in answer
+    assert "`Запрос.Выполнить`" in answer
+
+
+def test_раздел_справки_с_примером_остаётся_вариантом(tmp_path):
+    # Шесть страниц разделов в справке 2026-10-03 несут пример кода («Диаграмма»,
+    # «Константы»): выбросить их значит потерять содержимое.
+    sample = _section(
+        "objects/catalog63/catalog247", "Запрос",
+        examples=["Результат = Запрос.Выполнить();"],
+    )
+    registry, _ = _registry(
+        tmp_path,
+        [("8.3.19", [sample, _owner("8.3.19", _link("Выполнить")), _method("Выполнить")])],
+    )
+
+    answer = get_syntax(registry, "Запрос", detail="full")
+
+    assert "Одноимённые варианты: 2" in answer
+    assert "Результат = Запрос.Выполнить();" in answer
+
+
+def test_одинокий_раздел_справки_по_имени_по_прежнему_виден(tmp_path):
+    registry, _ = _registry(
+        tmp_path,
+        # Справку без единого описания реестр отвергает, поэтому рядом
+        # нужен хоть один описанный элемент с другим именем.
+        [("8.3.19", [_section("objects/catalog2/catalog259", "Запрос"), _method("Выполнить")])],
+    )
+
+    answer = get_syntax(registry, "Запрос", detail="full")
+
+    assert "Запрос" in answer
+    assert "нет элемента" not in answer
+
+
+def test_ссылка_на_элемент_рядом_с_пустым_разделом_не_неоднозначна(tmp_path):
+    builder = SyntaxItem(
+        id="objects/Builder",
+        kind="object",
+        name_ru="Построитель",
+        description="Строит запрос.",
+        link_snapshots=[SyntaxLinkSnapshot(
+            platform="8.3.19", source_id="objects/Builder",
+            links=[_link("Запрос", target_id=OWNER_ID, href="Query.html")],
+        )],
+    )
+    registry, _ = _registry(
+        tmp_path,
+        [("8.3.19", [builder, _section("objects/catalog2/catalog259", "Запрос"),
+                     _owner("8.3.19")])],
+    )
+
+    (page,) = syntax_navigation_data(registry, "Построитель")
+
+    assert [(entry["address"], entry["status"]) for entry in page["items"]] == [
+        ("Запрос", "ready")
+    ]
+
+
+def test_пустой_раздел_не_заслоняет_недоступность_в_версии(tmp_path):
+    # Справка 8.3.5 на живых данных: «Планировщик» появился в 8.3.6, рядом
+    # два пустых раздела оглавления с тем же именем — и ответ состоял из двух
+    # пустых «вариантов» вместо сообщения о версии.
+    planner = SyntaxItem(
+        id="objects/catalog63/catalog2269/Planner", kind="object",
+        name_ru="Планировщик", description="Представляет собой планировщик.",
+        since="8.3.6",
+    )
+    registry, config = _registry(
+        tmp_path,
+        [("8.3.19", [planner, _section("objects/catalog2/catalog2284", "Планировщик"),
+                     _section("objects/catalog63/catalog2269", "Планировщик")])],
+        "8.3.5",
+    )
+
+    answer = get_syntax(registry, "Планировщик", config=config, detail="full")
+
+    assert "Одноимённые варианты" not in answer
+    assert "8.3.6" in answer

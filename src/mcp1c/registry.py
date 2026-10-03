@@ -97,6 +97,7 @@ from .source_modes import (
 )
 from .intake_v2_extensions import (
     ExtensionRelation,
+    ExtensionResolution,
     ExtensionResolutionError,
     ExtensionStructure,
     resolve_extension_relation_map,
@@ -667,6 +668,13 @@ class Registry:
             str,
             tuple[LoadedConfiguration, LoadedSyntax | None, str, str, int],
         ] = {}
+        # Одно последнее разрешение: deepcopy крупной структуры нельзя
+        # накапливать по всем расширениям. Ссылки удерживают поколения до CAS.
+        self._extension_resolution_cache: tuple[
+            tuple[str, int], str, str, LoadedConfiguration,
+            ExtensionStructure, GenerationPointer | None,
+            GenerationPointer | None, ExtensionResolution,
+        ] | None = None
 
     def _snapshot_fingerprint_locked(self) -> tuple:
         """Дешёвый CAS-маркер всех полей, видимых через ``snapshot``."""
@@ -1207,6 +1215,7 @@ class Registry:
     def _advance_source_lifecycle_revision(self) -> None:
         """Отметить публикацию или снятие источника под ``_lock``."""
         self._source_lifecycle_revision += 1
+        self._extension_resolution_cache = None
 
     def _advance_source_revision(self, source_id: str) -> None:
         """Вызывается под ``_lock`` при публикации или снятии строки."""
@@ -3151,6 +3160,7 @@ class Registry:
                 identity = native_pointer.identity
                 self._generation_pointers.pop(native_key, None)
                 self._generation_manifests.pop(native_key, None)
+                self._extension_resolution_cache = None
                 if identity.source_kind is SourceKind.CONFIGURATION:
                     configuration = identity.configuration_name
                     modules_id = source_ids.modules_id(configuration)
@@ -3317,6 +3327,32 @@ class Registry:
                     расширение = self.modules.get(extension_key)
                     extension_structure = self.extension_structures.get(extension_key)
                     extension_roles = self.extension_roles.get(extension_key)
+                extension_pointer = (
+                    self._generation_pointers.get(
+                        ExportIdentity.extension(
+                            extension, parent_configuration=selected_name
+                        ).grouping_key
+                    )
+                    if extension else None
+                )
+                lifecycle_token = (
+                    self._source_lifecycle_nonce,
+                    self._source_lifecycle_revision,
+                )
+                extension_cache = self._extension_resolution_cache
+                cached_resolution = (
+                    extension_cache[7]
+                    if extension_structure is not None
+                    and extension_cache is not None
+                    and extension_cache[0] == lifecycle_token
+                    and extension_cache[1] == selected_name
+                    and extension_cache[2] == extension_key
+                    and extension_cache[3] is loaded
+                    and extension_cache[4] is extension_structure
+                    and extension_cache[5] is pointer
+                    and extension_cache[6] is extension_pointer
+                    else None
+                )
                 cached = self._relation_cache.get(selected_name)
                 if (
                     cached is not None
@@ -3336,8 +3372,8 @@ class Registry:
                 relation, hidden = self._compute_relation(
                     loaded, syntax, platform_override
                 )
-            extension_resolution = None
-            if extension_structure is not None:
+            extension_resolution = cached_resolution
+            if extension_structure is not None and extension_resolution is None:
                 try:
                     extension_resolution = resolve_extension_structure(
                         loaded.config,
@@ -3347,6 +3383,14 @@ class Registry:
                     raise RegistryError(str(error)) from error
 
             with self._lock:
+                extension_pointer_unchanged = (
+                    not extension
+                    or self._generation_pointers.get(
+                        ExportIdentity.extension(
+                            extension, parent_configuration=selected_name
+                        ).grouping_key
+                    ) is extension_pointer
+                )
                 unchanged = (
                     self.configurations.get(selected_name) is loaded
                     and self._generation_pointers.get(
@@ -3364,6 +3408,7 @@ class Registry:
                     and self.modules.get(modules_key) is modules
                     and self.roles.get(selected_name) is roles
                     and self.extension_runtime.get(selected_name) is runtime
+                    and extension_pointer_unchanged
                     and (
                         extension_key is None
                         or (
@@ -3381,6 +3426,17 @@ class Registry:
                 )
                 if not unchanged:
                     continue
+                if (extension_structure is not None
+                        and extension_resolution is not None
+                        and lifecycle_token == (
+                            self._source_lifecycle_nonce,
+                            self._source_lifecycle_revision,
+                        )):
+                    self._extension_resolution_cache = (
+                        lifecycle_token, selected_name, extension_key, loaded,
+                        extension_structure, pointer, extension_pointer,
+                        extension_resolution,
+                    )
                 self._relation_cache[selected_name] = (
                     loaded,
                     syntax,
@@ -4589,6 +4645,7 @@ class Registry:
                         self._registry_payload(next_pointers)
                     )
                     self._generation_pointers = next_pointers
+                    self._extension_resolution_cache = None
                     self._generation_manifests[key] = manifest
                     if loaded_configuration is not None:
                         name = loaded_configuration.config.name
@@ -4792,6 +4849,7 @@ class Registry:
         self._generation_store.clear_recovery()
         with self._lock:
             self._generation_pointers[key] = recovery.staged
+            self._extension_resolution_cache = None
             self._generation_manifests[key] = manifest
         return [
             f"generation {recovery.staged.generation_id}: публикация завершена"
@@ -5072,6 +5130,7 @@ class Registry:
             )
         with self._lock:
             self._generation_pointers = pointers
+            self._extension_resolution_cache = None
             self._generation_manifests = manifests
             self._platform_declarations = declarations
             for _key, (

@@ -2540,6 +2540,9 @@ class Registry:
                     прежний is not None
                     and прежний.status == STATUS_READY
                     and self._syntax_version_keys.get(source_id) == file_key
+                    # Тот же файл под другим путём строки реестра (`mv` плюс
+                    # правка registry.json) перечитывается: запись хранит путь.
+                    and прежний.stored_path == self._relative(source_path)
                 )
             if годен:
                 source = replace(

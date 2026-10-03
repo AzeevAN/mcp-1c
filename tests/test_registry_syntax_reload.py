@@ -128,3 +128,25 @@ def test_битая_справка_после_reload_не_переиспольз
 
     assert registry.sources["syntax-8.3.100.1"].status == "ready"
     assert registry.syntax.syntax.platforms == ["8.3.99.1", "8.3.100.1"]
+
+
+def test_reload_после_переноса_файла_справки_берёт_новый_путь(tmp_path):
+    """`mv` сохраняет inode, размер и mtime; если строка реестра указывает на
+    новый путь, запись справки должна взять его, а не прежний."""
+    import json
+
+    registry = _две_справки(tmp_path)
+    source = registry.syntax_versions["syntax-8.3.100.1"]
+    old = registry._absolute(source.stored_path)
+    new = old.with_name("перенесённая-8.3.100.1.json.gz")
+    old.rename(new)
+    payload = json.loads(registry.registry_path.read_text(encoding="utf-8"))
+    for row in payload["sources"]:
+        if row["id"] == "syntax-8.3.100.1":
+            row["stored_path"] = registry._relative(new)
+    registry.registry_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    registry.startup()
+
+    assert registry.syntax_versions["syntax-8.3.100.1"].stored_path == registry._relative(new)
+    assert registry.syntax_versions["syntax-8.3.100.1"].status == "ready"

@@ -553,3 +553,39 @@ def test_локальный_zip_с_реальным_сжатием_шаблон�
     locator = CandidateLocator(CandidateTransport.LOCAL_FILE, "export")
     with lifecycle._open(locator) as tree:
         tree.validate_selection(["Configuration.xml", "Roles/Label.xml"])
+
+
+def test_предел_записей_zip_не_считает_записи_каталогов(tmp_path):
+    """ZIP, собранный `zip -r` из распакованной выгрузки, содержит явные
+    записи каталогов и почти удваивает их число; предел считает файлы, а
+    каталоги — отдельно, как у обхода каталога."""
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w") as archive:
+        archive.writestr("Configuration.xml", _configuration())
+        for index in range(3):
+            archive.writestr(f"D{index}/", b"")
+            archive.writestr(f"D{index}/f.xml", b"x")
+    path = tmp_path / "export.zip"
+    path.write_bytes(payload.getvalue())
+    limits = ResourceLimits(
+        max_entries=4,
+        max_entry_bytes=1 << 20,
+        max_total_bytes=1 << 22,
+        max_compression_ratio=200,
+    )
+    # 4 файла и 3 записи каталогов: вместе 7 > 4, по отдельности в пределе.
+    tree = ZipExportTree(path, transport=CandidateTransport.INCOMING, limits=limits)
+    tree.close()
+
+
+def test_разобранная_справка_читается_не_только_владельцем(tmp_path):
+    """Справка хранится только разобранной: файл получает права обычного
+    файла, а не 0600 от mkstemp, иначе root-CLI с `cap_drop: ALL` его не
+    прочитает."""
+    import stat as stat_module
+
+    from conftest import build_syntax
+    from mcp1c.store import save_syntax
+
+    target = save_syntax(build_syntax(), tmp_path / "8.3.99.1.json.gz")
+    assert stat_module.S_IMODE(target.stat().st_mode) & 0o044

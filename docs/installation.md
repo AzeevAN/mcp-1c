@@ -132,7 +132,7 @@ chmod 0600 .env
 | `MCP1C_TRUSTED_PROXIES` | IP или сети CIDR proxy через запятую, чьим `X-Forwarded-*` верит `https-proxy` | пусто — любой источник |
 | `MCP1C_ALLOWED_HOSTS` | имена сервера через запятую (`host` или `host:port`); включает проверку `Host`/`Origin` в контейнере | пусто |
 | `MCP1C_ALLOW_SELF_RESTART` | разрешить admin-дашборду завершить процесс для возврата внешним supervisor | Compose: `1`; bare-запуск: выключено |
-| `MCP1C_INTAKE_MAX_UNPACKED` | предел суммы распакованного у ZIP полной выгрузки из браузера и `incoming` (байты или `16GiB`); защищает том от ZIP-бомбы | `16GiB` |
+| `MCP1C_INTAKE_MAX_UNPACKED` | предел суммы распакованного у полной выгрузки: ZIP из браузера и `incoming`, каталог `/config-sources/<id>` (байты или `16GiB`); защищает том от ZIP-бомбы | `16GiB` |
 
 Прежнее значение `spa` переименовано в `on`. У удалённого серверного
 HTML-режима прямой замены нет: выберите `on` для SPA либо `off` без UI.

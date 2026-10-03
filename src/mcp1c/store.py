@@ -23,7 +23,7 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
-from . import index_cache
+from . import index_cache, intake_v2_fsio
 
 from .syntax_model import (
     SyntaxFacts,
@@ -92,6 +92,14 @@ def save_syntax(index: SyntaxIndex, path: str | Path) -> Path:
         try:
             # asdict всего индекса одновременно держал в памяти вторую копию
             # всех страниц и ссылок. Пишем тот же JSON по одной карточке.
+            # mkstemp создаёт 0600, а разобранная справка — единственная
+            # копия (`.hbk` не хранится): root-CLI в контейнере с
+            # `cap_drop: ALL` и хост-пользователь читают её как раньше, с
+            # правами обычного файла.
+            try:
+                os.fchmod(descriptor, intake_v2_fsio._record_mode(target))
+            except OSError:
+                pass
             with os.fdopen(descriptor, "wb") as raw_stream, gzip.open(
                 raw_stream, "wt", encoding="utf-8", compresslevel=6
             ) as stream:

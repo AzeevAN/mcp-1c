@@ -801,9 +801,17 @@ class ZipExportTree:
         members: dict[str, _ZipMember] = {}
         seen: set[str] = set()
         infos = archive.infolist()
-        if len(infos) > limits.max_entries:
+        # Как у каталога: предел считает файлы, а явные записи каталогов
+        # (ZIP, собранный `zip -r` из распакованной выгрузки, почти удваивает
+        # их число) — отдельно против того же предела.
+        directories = sum(1 for info in infos if info.is_dir())
+        if len(infos) - directories > limits.max_entries:
             raise TransportLimitError(
                 "ZIP файловой выгрузки: число записей превышает предел"
+            )
+        if directories > limits.max_entries:
+            raise TransportLimitError(
+                "ZIP файловой выгрузки: число записей каталогов превышает предел"
             )
         for info in infos:
             normalized = _normalized_member_path(info.filename)

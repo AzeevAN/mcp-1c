@@ -673,12 +673,18 @@ def run_queries(
     for phrase in phrases:
         hits = index.search(
             phrase, limit=5,
-            predicate=(lambda doc: keep(doc.payload)) if keep is not None else None,
+            predicate=(
+                lambda doc: tools._поисковый_элемент_справки(context, doc.payload)
+                and keep(doc.payload)
+            ) if keep is not None else None,
         )
         hidden: list = []
         if keep is not None:
             # Выборка скрытого не отнимает места у доступных результатов.
-            raw = index.search(phrase, limit=20)
+            raw = index.search(
+                phrase, limit=20,
+                predicate=lambda doc: tools._поисковый_элемент_справки(context, doc.payload),
+            )
             hidden = [hit for hit in raw if not keep(hit.doc.payload)]
         result.append((phrase, hits, hidden[:5]))
     return result

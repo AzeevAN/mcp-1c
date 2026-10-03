@@ -4254,11 +4254,16 @@ def search_syntax(
     limit = _clamp(limit)
     hits = context.syntax.index.search(
         query, limit=limit, kinds=kinds,
-        predicate=lambda doc: keep(doc.payload),
+        predicate=lambda doc: (
+            _поисковый_элемент_справки(context, doc.payload) and keep(doc.payload)
+        ),
     )
     # Окно нужно только для ограниченных подсказок о скрытом. Оно не может
     # ограничивать поиск доступных элементов: все верхние места бывают новее.
-    raw = context.syntax.index.search(query, limit=limit * 4, kinds=kinds)
+    raw = context.syntax.index.search(
+        query, limit=limit * 4, kinds=kinds,
+        predicate=lambda doc: _поисковый_элемент_справки(context, doc.payload),
+    )
     filtered_out = [h for h in raw if not keep(h.doc.payload)]
 
     if not hits:
@@ -4577,6 +4582,22 @@ def _пустой_раздел_справки(item: SyntaxItem) -> bool:
         or item.availability
         or item.deprecations
         or any(snapshot.links for snapshot in item.link_snapshots)
+    )
+
+
+def _поисковый_элемент_справки(context, item: SyntaxItem) -> bool:
+    """Сохранить элемент, если он не пустая папка с содержательным дублем.
+
+    Проверка предшествует фильтру версии: пустая папка не делает новый
+    элемент доступным на старой платформе. Поиск точного адреса использует
+    готовый индекс имён, без обхода всей справки на каждый результат.
+    """
+    if not _пустой_раздел_справки(item):
+        return True
+    address = item.address.casefold()
+    return not any(
+        peer.address.casefold() == address and not _пустой_раздел_справки(peer)
+        for peer in context.syntax.find_exact(item.address)
     )
 
 

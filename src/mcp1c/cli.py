@@ -266,10 +266,17 @@ def _cmd_reg_search(args: argparse.Namespace) -> int:
             return 1
         keep = context.syntax_filter()
         hits = context.syntax.index.search(
-            args.query, limit=args.limit, predicate=lambda doc: keep(doc.payload),
+            args.query, limit=args.limit,
+            predicate=lambda doc: (
+                tools._поисковый_элемент_справки(context, doc.payload)
+                and keep(doc.payload)
+            ),
         )
         # Предварительное окно ограничивает лишь диагностическую выборку.
-        raw = context.syntax.index.search(args.query, limit=args.limit * 3)
+        raw = context.syntax.index.search(
+            args.query, limit=args.limit * 3,
+            predicate=lambda doc: tools._поисковый_элемент_справки(context, doc.payload),
+        )
         скрытые = [h for h in raw if not keep(h.doc.payload)]
         for hit in hits:
             item = hit.doc.payload

@@ -113,3 +113,42 @@ def test_ручные_и_автоматические_запросы_сохра�
                 response = search_syntax(registry, query, kind=kind, limit=limit)
                 actual = [line.split("`")[1] for line in response.splitlines() if line.startswith("- `")]
                 assert actual == expected[:limit], (query, kind, limit)
+
+
+@pytest.mark.parametrize("surface", ["mcp", "cli", "http"])
+def test_пустые_дубли_не_занимают_поисковую_выдачу(tmp_path, monkeypatch, capsys, surface):
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    pages = [SyntaxItem(id=f"objects/catalog{i}", kind="object", name_ru="Запрос") for i in range(30)]
+    pages += [SyntaxItem(id="objects/Query", kind="object", name_ru="Запрос", description="Работа с запросами")]
+    registry = build_syntax_registry(tmp_path, pages, "8.3.5")
+    if surface == "mcp":
+        answer = search_syntax(registry, "Запрос", limit=50)
+        assert sum(line.startswith("- `Запрос`") for line in answer.splitlines()) == 1
+    elif surface == "cli":
+        assert cli.main(["reg-search", "Запрос", "--syntax", "--limit", "50", "--data", str(registry.data_dir)]) == 0
+        answer = capsys.readouterr().out
+        assert answer.splitlines().count("Запрос") == 1
+    else:
+        _, hits, hidden = run_queries(registry, None, "syntax", ["Запрос"])[0]
+        assert len(hits) == 1
+        assert hidden == []
+        assert hits[0].doc.id == "objects/Query"
+
+
+def test_пустой_дубль_не_делает_новый_элемент_доступным(tmp_path):
+    registry = build_syntax_registry(tmp_path, [
+        SyntaxItem(id="objects/catalog1", kind="object", name_ru="Планировщик"),
+        SyntaxItem(id="objects/Scheduler", kind="object", name_ru="Планировщик", description="Расписание", since="8.3.6"),
+    ], "8.3.5")
+    assert "доступного ничего нет" in search_syntax(registry, "Планировщик")
+
+
+def test_поиск_сохраняет_одинокий_раздел_и_настоящий_параметр_без_описания(tmp_path):
+    registry = build_syntax_registry(tmp_path, [
+        SyntaxItem(id="objects/catalog1", kind="object", name_ru="Одиночный"),
+        SyntaxItem(id="query/order", kind="property", name_ru="Порядок"),
+        SyntaxItem(id="objects/catalog2", kind="object", name_ru="РазделСПримером", examples=["Сообщить(1);"]),
+        SyntaxItem(id="objects/Other", kind="object", name_ru="Другой", description="Содержательная справка"),
+    ], "8.3.5")
+    for name in ("Одиночный", "Порядок", "РазделСПримером"):
+        assert f"`{name}`" in search_syntax(registry, name)

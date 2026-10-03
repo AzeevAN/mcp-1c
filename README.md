@@ -40,9 +40,9 @@
 mkdir mcp-1c
 cd mcp-1c
 curl --fail --show-error --location --output compose.yaml \
-  https://raw.githubusercontent.com/AzeevAN/mcp-1c/v4.3.0/compose.yaml
+  https://raw.githubusercontent.com/AzeevAN/mcp-1c/v4.3.1/compose.yaml
 curl --fail --show-error --location --output .env.example \
-  https://raw.githubusercontent.com/AzeevAN/mcp-1c/v4.3.0/.env.example
+  https://raw.githubusercontent.com/AzeevAN/mcp-1c/v4.3.1/.env.example
 ```
 
 ### 2. Создать .env и токены
@@ -113,11 +113,11 @@ Source A даёт структуру объектов; Source B дополнит
 публикации. Индексы и загруженные данные сохраняются в `data/`.
 
 На страницах «Обзор» и «Источники» отдельно показаны происхождение структуры
-(Source A, Source B или неизвестно), активация и состояние основного кода.
+(Source A, Source B или неизвестно), статус активации и состояние основного кода.
+Внутренний режим активации не дублирует источник отдельным полем.
 Наличие записи о корпусе не означает готовность кода: различаются отсутствие,
 сборка, ошибка, готовность и ограничения. При необходимости повторной
-активации код указан как недоступный, а не как незагруженный. Режим `B_FULL`
-сам по себе не доказывает состав A+B.
+активации код указан как недоступный, а не как незагруженный.
 
 Полная выгрузка — ZIP из браузера и `data/incoming/`, а также подключённый
 каталог `/config-sources/<id>` — читается под одним бюджетом: сумма распакованного — `MCP1C_INTAKE_MAX_UNPACKED` (по умолчанию

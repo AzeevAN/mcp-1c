@@ -490,7 +490,6 @@ function ConfigurationDetail({
 
       <section className="configuration-facts" aria-label="Сводка конфигурации">
         <div><span>Происхождение структуры</span><strong>{structureOrigin(configuration)}</strong></div>
-        <div><span>Режим активации</span><strong>{configuration.activation_mode ?? "unknown"}</strong></div>
         <div><span>Версия</span><strong>{configuration.version || "—"}</strong></div>
         <div><span>Платформа</span>{onRemove
           ? <PlatformDeclaration configuration={configuration} />

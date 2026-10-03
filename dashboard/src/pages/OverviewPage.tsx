@@ -247,7 +247,6 @@ export function OverviewPage() {
                   </div>
                   <dl>
                     <div><dt>Происхождение структуры</dt><dd>{structureOrigin(configuration)}</dd></div>
-                    <div><dt>Режим</dt><dd>{configuration.activation_mode}</dd></div>
                     <div><dt>Платформа</dt><dd>{configuration.platform || "unknown"}</dd></div>
                     <div><dt>Объекты</dt><dd>{new Intl.NumberFormat("ru-RU").format(configuration.objects)}</dd></div>
                     <div><dt>Основной код</dt><dd>{mainCodeStatus(configuration)}</dd></div>

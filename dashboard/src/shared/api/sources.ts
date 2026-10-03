@@ -51,6 +51,7 @@ export type CodeCorpus = {
 };
 
 export type ConfigurationSource = {
+  source_origin?: "source_a" | "source_b" | "unknown";
   id: string;
   version: string;
   platform: string;

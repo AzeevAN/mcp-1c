@@ -318,6 +318,7 @@ class ConfigurationStateRow:
     activation_mode: str = "unknown"
     activation_status: str = "unknown"
     platform_declaration: dict[str, str] | None = None
+    source_origin: str = "unknown"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1395,6 +1396,11 @@ def _configurations_result(
         rows.append(
             ConfigurationStateRow(
                 name=config.name,
+                source_origin=(
+                    "source_a" if config.source_format in ("xml", "json")
+                    else "source_b" if config.source_format == "source-b"
+                    else "unknown"
+                ),
                 version=config.version,
                 platform=declaration.version if declaration else config.platform,
                 compatibility_mode=config.compatibility_mode,

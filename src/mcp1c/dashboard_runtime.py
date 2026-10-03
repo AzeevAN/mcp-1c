@@ -232,6 +232,7 @@ def _sources_payload(
                 "version": configuration.version,
                 "platform": configuration.platform,
                 "compatibility_mode": configuration.compatibility_mode,
+                "source_origin": configuration.source_origin,
                 "activation_mode": configuration.activation_mode,
                 "activation_status": configuration.activation_status,
                 "platform_declaration": configuration.platform_declaration,

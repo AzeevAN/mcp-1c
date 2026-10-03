@@ -13,6 +13,7 @@ import { getCapabilities } from "../shared/api/capabilities";
 import { useSources } from "../shared/api/sources";
 import { MetricCard } from "../shared/ui/MetricCard";
 import { StatusBadge, type StatusTone } from "../shared/ui/StatusBadge";
+import { activationStatus, availableCodeCount, mainCodeStatus, structureOrigin } from "../shared/ui/configurationState";
 
 type AttentionItem = {
   id: string;
@@ -39,7 +40,7 @@ export function OverviewPage() {
   const configurations = sources.data?.configurations ?? [];
   const codeCorpora = sources.data
     ? configurations.reduce(
-      (total, configuration) => total + configuration.corpora.filter((corpus) => corpus.phase !== "missing").length,
+      (total, configuration) => total + availableCodeCount(configuration),
       0,
     )
     : summary?.code_corpora;
@@ -158,7 +159,7 @@ export function OverviewPage() {
       <section className="metrics-grid" aria-label="Сводка по источникам">
         <MetricCard label="Конфигурации" value={summary?.configurations ?? "—"} hint="опубликованные структуры" />
         <MetricCard label="Объекты метаданных" value={summary?.metadata_objects ?? "—"} hint="поиск, карточки и связи" />
-        <MetricCard label="Корпуса кода" value={codeCorpora ?? "—"} hint="основной код и расширения" />
+        <MetricCard label="Корпуса кода" value={codeCorpora ?? "—"} hint="доступные: основной код и расширения" />
         <MetricCard label="Версии справки платформы" value={summary?.reference_sources ?? "—"} hint="для поиска по синтаксису" />
       </section>
 
@@ -237,23 +238,19 @@ export function OverviewPage() {
           </div>
           <div className="overview-configuration-list">
             {configurations.map((configuration) => {
-              const tone: StatusTone = configuration.activation_status === "ACTIVE" ? "success" : "warning";
-              const status = configuration.activation_status === "ACTIVE"
-                ? "Активна"
-                : configuration.activation_status === "RELOAD_REQUIRED"
-                  ? "Нужна активация"
-                  : "Статус неизвестен";
+              const activation = activationStatus(configuration);
               return (
                 <article key={configuration.id}>
                   <div className="overview-configuration-title">
                     <strong>{configuration.id}</strong>
-                    <StatusBadge tone={tone}>{status}</StatusBadge>
+                    <StatusBadge tone={activation.tone}>{activation.label}</StatusBadge>
                   </div>
                   <dl>
+                    <div><dt>Происхождение структуры</dt><dd>{structureOrigin(configuration)}</dd></div>
                     <div><dt>Режим</dt><dd>{configuration.activation_mode}</dd></div>
                     <div><dt>Платформа</dt><dd>{configuration.platform || "unknown"}</dd></div>
                     <div><dt>Объекты</dt><dd>{new Intl.NumberFormat("ru-RU").format(configuration.objects)}</dd></div>
-                    <div><dt>Код</dt><dd>{configuration.corpora.filter((corpus) => corpus.phase !== "missing").length}</dd></div>
+                    <div><dt>Основной код</dt><dd>{mainCodeStatus(configuration)}</dd></div>
                   </dl>
                 </article>
               );

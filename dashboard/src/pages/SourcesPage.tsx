@@ -30,7 +30,8 @@ import {
   type SourceItem,
   useSources,
 } from "../shared/api/sources";
-import { StatusBadge, type StatusTone } from "../shared/ui/StatusBadge";
+import { StatusBadge } from "../shared/ui/StatusBadge";
+import { activationStatus, corpusPhaseView as phaseView, mainCodeStatus, structureOrigin } from "../shared/ui/configurationState";
 import { ReferenceSidebar } from "./ReferenceSidebar";
 import { ConfigIntakePanel } from "./ConfigIntakePanel";
 import { SourcesAdminPanel } from "./SourcesAdminPanel";
@@ -41,14 +42,6 @@ const sourceKindLabel: Record<SourceItem["kind"], string> = {
   extension: "Расширение",
   "extension-runtime": "Снимок активности расширений",
   syntax: "Справка платформы",
-};
-
-const phaseView: Record<CodeCorpus["phase"], { label: string; tone: StatusTone }> = {
-  ready: { label: "Готово", tone: "success" },
-  limited: { label: "С ограничениями", tone: "warning" },
-  building: { label: "Строится", tone: "info" },
-  error: { label: "Ошибка", tone: "danger" },
-  missing: { label: "Не загружен", tone: "info" },
 };
 
 function formatNumber(value: number) {
@@ -67,25 +60,6 @@ function formatDate(value: string) {
 
 function percent(value: number, total: number) {
   return total === 0 ? "—" : `${((value * 100) / total).toFixed(1).replace(".", ",")}%`;
-}
-
-function activationStatus(configuration: ConfigurationSource): {
-  label: string;
-  tone: StatusTone;
-  detail: string;
-} {
-  if (configuration.activation_status === "RELOAD_REQUIRED") {
-    return {
-      label: "Требуется повторная активация",
-      tone: "warning",
-      detail: "Старый active generation. Нужна полная активация B_FULL; обычный restart это состояние не исправит.",
-    };
-  }
-  return {
-    label: "Источник активен",
-    tone: "success",
-    detail: "",
-  };
 }
 
 type CoverageRow = { label: string; value: number; total: number };
@@ -390,7 +364,11 @@ function CorpusCard({
           {corpus.coverage ? (
             <CoverageTables coverage={corpus.coverage} />
           ) : (
-            <div className="coverage-empty">Таблицы появятся после завершения разбора корпуса.</div>
+            <div className="coverage-empty">{corpus.phase === "missing"
+              ? "Нет загруженного кода для построения таблиц покрытия."
+              : corpus.phase === "building"
+                ? "Таблицы появятся после завершения разбора корпуса."
+                : "Данные покрытия недоступны."}</div>
           )}
 
           <footer className="corpus-footer">
@@ -511,6 +489,8 @@ function ConfigurationDetail({
       )}
 
       <section className="configuration-facts" aria-label="Сводка конфигурации">
+        <div><span>Происхождение структуры</span><strong>{structureOrigin(configuration)}</strong></div>
+        <div><span>Режим активации</span><strong>{configuration.activation_mode ?? "unknown"}</strong></div>
         <div><span>Версия</span><strong>{configuration.version || "—"}</strong></div>
         <div><span>Платформа</span>{onRemove
           ? <PlatformDeclaration configuration={configuration} />
@@ -535,7 +515,7 @@ function ConfigurationDetail({
 
       <section className="relationship-strip" aria-label="Состав конфигурации">
         <div><PackageCheck size={20} aria-hidden="true" /><span><strong>Структура</strong><small>{formatNumber(configuration.objects)} объектов</small></span></div>
-        <div><Layers3 size={20} aria-hidden="true" /><span><strong>Основной код</strong><small>{configuration.corpora.some((item) => item.kind === "modules") ? "подключён" : "не загружен"}</small></span></div>
+        <div><Layers3 size={20} aria-hidden="true" /><span><strong>Основной код</strong><small>{mainCodeStatus(configuration)}</small></span></div>
         <div><Puzzle size={20} aria-hidden="true" /><span><strong>Расширения</strong><small>{extensionCount}</small></span></div>
         {showRuntimeStatus && (
           <div><FileJson size={20} aria-hidden="true" /><span><strong>Снимок активности расширений</strong><small>{configuration.extension_runtime ? "загружен" : "не загружен"}</small></span></div>

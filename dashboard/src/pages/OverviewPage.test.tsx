@@ -244,3 +244,38 @@ it("не подменяет отсутствующий замер контекс
   expect(screen.getByText("не все модули измерены")).toBeInTheDocument();
   expect(screen.queryByText("≈ 0")).not.toBeInTheDocument();
 });
+
+
+it("разделяет происхождение legacy структуры, активацию и отсутствие кода", async () => {
+  const regularFetch = vi.mocked(fetch).getMockImplementation()!;
+  vi.mocked(fetch).mockImplementation(async (input, init) => {
+    if (String(input).endsWith("/api/v1/sources")) return response({
+      ...sources,
+      configurations: [{ ...sources.configurations[0], source_origin: "source_a",
+        native_generation: false, activation_mode: "unknown", activation_status: "unknown",
+        corpora: [{ ...sources.configurations[0].corpora[0], phase: "missing" }],
+      }],
+    }) as Promise<Response>;
+    return regularFetch(input, init);
+  });
+  renderOverview();
+  expect(await screen.findByText("Источник A")).toBeInTheDocument();
+  expect(screen.getByText("Активация неизвестна")).toBeInTheDocument();
+  expect(screen.getByText("Не загружен")).toBeInTheDocument();
+  expect(screen.queryByText("Активна")).not.toBeInTheDocument();
+});
+
+it("не считает скрытый до активации код отсутствующим", async () => {
+  const regularFetch = vi.mocked(fetch).getMockImplementation()!;
+  vi.mocked(fetch).mockImplementation(async (input, init) => {
+    if (String(input).endsWith("/api/v1/sources")) return response({
+      ...sources, configurations: [{ ...sources.configurations[0],
+        activation_status: "RELOAD_REQUIRED", corpora: [],
+      }],
+    }) as Promise<Response>;
+    return regularFetch(input, init);
+  });
+  renderOverview();
+  expect(await screen.findByText("Недоступен до повторной активации")).toBeInTheDocument();
+  expect(screen.queryByText("Не загружен")).not.toBeInTheDocument();
+});

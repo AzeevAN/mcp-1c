@@ -799,3 +799,53 @@ it("показывает выбор каталога в шапке выбран�
   fireEvent.click(await screen.findByRole("button", { name: "Выбрать каталог" }));
   expect(within(screen.getByRole("dialog")).getByText("Отраслевая конфигурация Б")).toBeInTheDocument();
 });
+
+
+it.each([
+  ["missing", "Не загружен"], ["building", "Строится"],
+  ["error", "Ошибка"], ["ready", "Готово"], ["limited", "С ограничениями"],
+])("показывает реальную фазу основного кода %s в составе", async (phase, label) => {
+  const regularFetch = vi.mocked(fetch).getMockImplementation()!;
+  vi.mocked(fetch).mockImplementation(async (input, init) => {
+    const result = await regularFetch(input, init);
+    if (String(input) !== "/api/v1/sources") return result;
+    const payload = await result.json();
+    payload.configurations = [{ ...payload.configurations[0], source_origin: "source_a",
+      native_generation: false, activation_mode: "unknown", activation_status: "unknown",
+      corpora: [{ ...corpus("a:modules", "Основная конфигурация", "modules"), phase,
+        ...(phase === "missing" ? { source: null, coverage: null } : {}),
+      }],
+    }];
+    return { ...result, json: async () => payload };
+  });
+  render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+    <SourcesPage />
+  </QueryClientProvider></MemoryRouter>);
+  expect(await screen.findByText("Источник A")).toBeInTheDocument();
+  expect(screen.getByText("Активация неизвестна")).toBeInTheDocument();
+  expect(screen.queryByText("Источник активен")).not.toBeInTheDocument();
+  expect(screen.getByLabelText("Состав конфигурации")).toHaveTextContent(label);
+  if (phase === "missing") {
+    expect(screen.getByText("Нет загруженного кода для построения таблиц покрытия.")).toBeInTheDocument();
+    expect(screen.queryByText("Таблицы появятся после завершения разбора корпуса.")).not.toBeInTheDocument();
+  }
+});
+
+it("не подменяет неизвестное происхождение Source A", async () => {
+  const regularFetch = vi.mocked(fetch).getMockImplementation()!;
+  vi.mocked(fetch).mockImplementation(async (input, init) => {
+    const result = await regularFetch(input, init);
+    if (String(input) !== "/api/v1/sources") return result;
+    const payload = await result.json();
+    payload.configurations = [{ ...payload.configurations[0], native_generation: false,
+      source_origin: "unknown", activation_mode: "unknown", activation_status: "RELOAD_REQUIRED", corpora: [],
+    }];
+    return { ...result, json: async () => payload };
+  });
+  render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+    <SourcesPage />
+  </QueryClientProvider></MemoryRouter>);
+  expect(await screen.findByText("Происхождение неизвестно")).toBeInTheDocument();
+  expect(screen.queryByText("Источник A")).not.toBeInTheDocument();
+  expect(screen.getByLabelText("Состав конфигурации")).toHaveTextContent("Недоступен до повторной активации");
+});

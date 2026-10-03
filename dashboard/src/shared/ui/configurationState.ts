@@ -1,0 +1,41 @@
+import type { CodeCorpus, ConfigurationSource } from "../api/sources";
+import type { StatusTone } from "./StatusBadge";
+
+type StateView = { label: string; tone: StatusTone; detail: string };
+
+export const corpusPhaseView: Record<CodeCorpus["phase"], { label: string; tone: StatusTone }> = {
+  ready: { label: "Готово", tone: "success" },
+  limited: { label: "С ограничениями", tone: "warning" },
+  building: { label: "Строится", tone: "info" },
+  error: { label: "Ошибка", tone: "danger" },
+  missing: { label: "Не загружен", tone: "info" },
+};
+
+export function structureOrigin(configuration: ConfigurationSource): string {
+  if (configuration.source_origin === "source_a") return "Источник A";
+  if (configuration.source_origin === "source_b") return "Источник B";
+  return "Происхождение неизвестно";
+}
+
+export function activationStatus(configuration: ConfigurationSource): StateView {
+  if (configuration.activation_status === "RELOAD_REQUIRED") return {
+    label: "Требуется повторная активация", tone: "warning",
+    detail: "Старый active generation. Нужна полная активация B_FULL; обычный restart это состояние не исправит.",
+  };
+  if (configuration.activation_status === "ACTIVE") return {
+    label: "Активна", tone: "success", detail: "",
+  };
+  return { label: "Активация неизвестна", tone: "info", detail: "" };
+}
+
+export function mainCodeStatus(configuration: ConfigurationSource): string {
+  // При барьере API скрывает корпуса: пустой список не доказывает отсутствия кода.
+  if (configuration.activation_status === "RELOAD_REQUIRED") return "Недоступен до повторной активации";
+  const corpus = configuration.corpora.find((item) => item.kind === "modules");
+  return corpus ? corpusPhaseView[corpus.phase].label : corpusPhaseView.missing.label;
+}
+
+export function availableCodeCount(configuration: ConfigurationSource): number {
+  if (configuration.activation_status === "RELOAD_REQUIRED") return 0;
+  return configuration.corpora.filter((corpus) => corpus.phase === "ready" || corpus.phase === "limited").length;
+}

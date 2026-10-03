@@ -477,3 +477,28 @@ def test_sources_api_при_двойной_смене_поколения_про�
             "загрузки."
         )
     }
+
+
+@pytest.mark.parametrize("source_format,origin", [
+    ("json", "source_a"), ("xml", "source_a"),
+    ("source-b", "source_b"), ("schema-v1", "unknown"),
+    ("", "unknown"), ("future", "unknown"),
+])
+def test_sources_origin_следует_формату_снимка_а_не_режиму(
+    tmp_path, source_format, origin,
+):
+    from conftest import build_configuration, write_export
+
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    registry = Registry(tmp_path / "data")
+    registry.add_configuration(write_export(incoming, build_configuration(name="Пример")))
+    before = tools.list_configurations(registry)
+    registry.configurations["Пример"].config.source_format = source_format
+    snapshot = tools.sources_snapshot(registry)
+    row = _sources_payload(snapshot, admin=False)["configurations"][0]
+    assert row["source_origin"] == origin
+    assert row["native_generation"] is False
+    assert row["activation_status"] == "unknown"
+    assert row["corpora"][0]["phase"] == "missing"
+    assert tools.list_configurations(registry) == before

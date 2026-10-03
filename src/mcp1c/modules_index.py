@@ -41,6 +41,8 @@ Python-объект (кортеж + строки внутри), а `array('i')` 
 """
 from __future__ import annotations
 
+import threading
+
 import marshal
 import re
 import sys
@@ -1021,6 +1023,7 @@ class Формы:
         "_синонимы", "_типы", "битых", "полных", "частичных",
         "непрочитанных", "неизвестных_маркеров", "известных_неполных",
         "превышений_бюджета", "проблемы", "problem_counts", "object_problems",
+        "_кэш_событий", "_замок_событий",
     )
 
     БИТАЯ = 1
@@ -1106,6 +1109,10 @@ class Формы:
                 key: tuple(value) for key, value in grouped.items()
             }
         self.object_problems = object_problems
+        # Только последняя запрошенная форма: не дублируем CSR всего корпуса.
+        # Кэш не сериализуется и живёт ровно столько же, сколько этот индекс.
+        self._кэш_событий: tuple[int, dict[str, tuple[str, ...]]] | None = None
+        self._замок_событий = threading.Lock()
 
     @staticmethod
     def _по_модулю_из(модули: list[str]) -> dict[str, int]:
@@ -1700,6 +1707,17 @@ class Формы:
         return cls._из_состояния(marshal.loads(путь.read_bytes()))
 
     def _события_формы_из_индекса(self, i: int) -> dict[str, tuple[str, ...]]:
+        # При чтении оглавления подряд запрашиваются все процедуры одной
+        # формы. Одной группировки достаточно; другой модуль вытесняет её.
+        with self._замок_событий:
+            cached = self._кэш_событий
+            if cached is not None and cached[0] == i:
+                return cached[1]
+            events = self._собрать_события_формы_из_индекса(i)
+            self._кэш_событий = (i, events)
+            return events
+
+    def _собрать_события_формы_из_индекса(self, i: int) -> dict[str, tuple[str, ...]]:
         """Группирует плоские пары CSR-диапазона формы `i` по имени
         процедуры, без потери событий и без дублей.
 
@@ -1753,7 +1771,7 @@ class Формы:
         return Форма(
             реквизиты=реквизиты,
             элементы=элементы,
-            события=self._события_формы_из_индекса(i),
+            события=dict(self._события_формы_из_индекса(i)),
             битая=bool(self._флаги[i] & self.БИТАЯ),
             структура_доступна=not bool(
                 self._флаги[i] & self.НЕТ_СТРУКТУРЫ

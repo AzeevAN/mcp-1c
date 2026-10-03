@@ -243,14 +243,18 @@ export function OverviewPage() {
                 <article key={configuration.id}>
                   <div className="overview-configuration-title">
                     <strong>{configuration.id}</strong>
-                    <StatusBadge tone={activation.tone}>{activation.label}</StatusBadge>
+                    {configuration.activation_status === "RELOAD_REQUIRED" && (
+                      <StatusBadge tone={activation.tone}>{activation.label}</StatusBadge>
+                    )}
                   </div>
                   <dl>
-                    <div><dt>Происхождение структуры</dt><dd>{structureOrigin(configuration)}</dd></div>
                     <div><dt>Платформа</dt><dd>{configuration.platform || "unknown"}</dd></div>
                     <div><dt>Объекты</dt><dd>{new Intl.NumberFormat("ru-RU").format(configuration.objects)}</dd></div>
                     <div><dt>Основной код</dt><dd>{mainCodeStatus(configuration)}</dd></div>
                   </dl>
+                  <div className="configuration-origin">
+                    <span>Формат загрузки</span><strong>{structureOrigin(configuration)}</strong>
+                  </div>
                 </article>
               );
             })}

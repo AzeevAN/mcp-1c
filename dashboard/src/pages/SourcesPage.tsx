@@ -457,9 +457,11 @@ function ConfigurationDetail({
           <p>Структура, основной код и расширения собраны в один связанный контур.</p>
         </div>
         <div className="configuration-hero-actions">
-          <div className="configuration-hero-status">
-            <StatusBadge tone={activation.tone}>{activation.label}</StatusBadge>
-          </div>
+          {configuration.activation_status === "RELOAD_REQUIRED" && (
+            <div className="configuration-hero-status">
+              <StatusBadge tone={activation.tone}>{activation.label}</StatusBadge>
+            </div>
+          )}
           <div className="configuration-hero-controls">
             {onRemove && <ConfigIntakePanel key={configuration.id} configuration={configuration.id} />}
             {onRemove && (configuration.source || configuration.native_generation) && (
@@ -489,7 +491,6 @@ function ConfigurationDetail({
       )}
 
       <section className="configuration-facts" aria-label="Сводка конфигурации">
-        <div><span>Происхождение структуры</span><strong>{structureOrigin(configuration)}</strong></div>
         <div><span>Версия</span><strong>{configuration.version || "—"}</strong></div>
         <div><span>Платформа</span>{onRemove
           ? <PlatformDeclaration configuration={configuration} />
@@ -497,6 +498,9 @@ function ConfigurationDetail({
         <div><span>Объекты</span><strong>{formatNumber(configuration.objects)}</strong></div>
         <div><span>Связи</span><strong>{formatNumber(configuration.edges)}</strong></div>
       </section>
+      <div className="configuration-origin">
+        <span>Формат загрузки</span><strong>{structureOrigin(configuration)}</strong>
+      </div>
 
       {configuration.notes.length > 0 && (
         <section className="configuration-notes" aria-label="Ограничения текущего источника">

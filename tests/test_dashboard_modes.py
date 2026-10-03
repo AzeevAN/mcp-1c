@@ -65,7 +65,7 @@ def test_spa_отдаёт_api_и_понятный_ответ_без_сборки
     assert bootstrap.json() == {
         "api_version": "v1",
         "dashboard_mode": "on",
-        "server": {"status": "ok", "version": "4.3.1"},
+        "server": {"status": "ok", "version": "4.3.2"},
         "permissions": {"read": True, "admin": False},
         "authentication": {
             "read_required": False,

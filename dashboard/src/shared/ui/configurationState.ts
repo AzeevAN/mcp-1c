@@ -12,15 +12,15 @@ export const corpusPhaseView: Record<CodeCorpus["phase"], { label: string; tone:
 };
 
 export function structureOrigin(configuration: ConfigurationSource): string {
-  if (configuration.source_origin === "source_a") return "Источник A";
-  if (configuration.source_origin === "source_b") return "Источник B";
-  return "Происхождение неизвестно";
+  if (configuration.source_origin === "source_a") return "Структура конфигурации";
+  if (configuration.source_origin === "source_b") return "Полная выгрузка";
+  return "Формат загрузки неизвестен";
 }
 
 export function activationStatus(configuration: ConfigurationSource): StateView {
   if (configuration.activation_status === "RELOAD_REQUIRED") return {
-    label: "Требуется повторная активация", tone: "warning",
-    detail: "Старый active generation. Нужна полная активация B_FULL; обычный restart это состояние не исправит.",
+    label: "Требуется повторная загрузка", tone: "warning",
+    detail: "Опубликованные данные требуют повторной загрузки полной выгрузки конфигурации. Перезапуск сервера не исправит это состояние.",
   };
   if (configuration.activation_status === "ACTIVE") return {
     label: "Активна", tone: "success", detail: "",
@@ -30,7 +30,7 @@ export function activationStatus(configuration: ConfigurationSource): StateView 
 
 export function mainCodeStatus(configuration: ConfigurationSource): string {
   // При барьере API скрывает корпуса: пустой список не доказывает отсутствия кода.
-  if (configuration.activation_status === "RELOAD_REQUIRED") return "Недоступен до повторной активации";
+  if (configuration.activation_status === "RELOAD_REQUIRED") return "Недоступен до повторной загрузки";
   const corpus = configuration.corpora.find((item) => item.kind === "modules");
   return corpus ? corpusPhaseView[corpus.phase].label : corpusPhaseView.missing.label;
 }

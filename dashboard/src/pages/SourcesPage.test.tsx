@@ -215,7 +215,7 @@ it("переключает конфигурацию без ухода со ст�
   expect(screen.getAllByRole("link", { name: "Открыть JSON-журнал" })).toHaveLength(2);
 });
 
-it("показывает необходимость повторной активации старого поколения", async () => {
+it("показывает необходимость повторной загрузки данных", async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <MemoryRouter initialEntries={["/sources"]}>
@@ -225,8 +225,8 @@ it("показывает необходимость повторной акти�
     </MemoryRouter>,
   );
 
-  expect(await screen.findByText("Требуется повторная активация")).toBeInTheDocument();
-  expect(screen.getByText(/Старый active generation/)).toBeInTheDocument();
+  expect(await screen.findByText("Требуется повторная загрузка")).toBeInTheDocument();
+  expect(screen.getByText(/Перезапуск сервера не исправит это состояние/)).toBeInTheDocument();
 });
 
 it("редактирует ручную версию платформы поверх активного Source A", async () => {
@@ -821,8 +821,8 @@ it.each([
   render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
     <SourcesPage />
   </QueryClientProvider></MemoryRouter>);
-  expect(await screen.findByText("Источник A")).toBeInTheDocument();
-  expect(screen.getByText("Активация неизвестна")).toBeInTheDocument();
+  expect(await screen.findByText("Структура конфигурации")).toBeInTheDocument();
+  expect(screen.queryByText("Активация неизвестна")).not.toBeInTheDocument();
   expect(screen.queryByText("Источник активен")).not.toBeInTheDocument();
   expect(screen.getByLabelText("Состав конфигурации")).toHaveTextContent(label);
   if (phase === "missing") {
@@ -845,7 +845,7 @@ it("не подменяет неизвестное происхождение So
   render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
     <SourcesPage />
   </QueryClientProvider></MemoryRouter>);
-  expect(await screen.findByText("Происхождение неизвестно")).toBeInTheDocument();
-  expect(screen.queryByText("Источник A")).not.toBeInTheDocument();
-  expect(screen.getByLabelText("Состав конфигурации")).toHaveTextContent("Недоступен до повторной активации");
+  expect(await screen.findByText("Формат загрузки неизвестен")).toBeInTheDocument();
+  expect(screen.queryByText("Структура конфигурации")).not.toBeInTheDocument();
+  expect(screen.getByLabelText("Состав конфигурации")).toHaveTextContent("Недоступен до повторной загрузки");
 });

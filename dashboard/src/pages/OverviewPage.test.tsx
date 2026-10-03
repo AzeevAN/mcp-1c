@@ -259,8 +259,8 @@ it("разделяет происхождение legacy структуры, а�
     return regularFetch(input, init);
   });
   renderOverview();
-  expect(await screen.findByText("Источник A")).toBeInTheDocument();
-  expect(screen.getByText("Активация неизвестна")).toBeInTheDocument();
+  expect(await screen.findByText("Структура конфигурации")).toBeInTheDocument();
+  expect(screen.queryByText("Активация неизвестна")).not.toBeInTheDocument();
   expect(screen.getByText("Не загружен")).toBeInTheDocument();
   expect(screen.queryByText("Активна")).not.toBeInTheDocument();
 });
@@ -276,6 +276,6 @@ it("не считает скрытый до активации код отсут
     return regularFetch(input, init);
   });
   renderOverview();
-  expect(await screen.findByText("Недоступен до повторной активации")).toBeInTheDocument();
+  expect(await screen.findByText("Недоступен до повторной загрузки")).toBeInTheDocument();
   expect(screen.queryByText("Не загружен")).not.toBeInTheDocument();
 });

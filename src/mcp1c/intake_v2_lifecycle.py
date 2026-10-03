@@ -395,8 +395,8 @@ class IntakeLifecycle:
             # Каталог /config-sources и локальный ZIP (`local_sources`, в
             # боевой проводке не задаётся) — та же полная выгрузка, что intake:
             # на ARCHIVE_LIMITS (1 ГиБ, 200:1 у любой записи) каталог реальной
-            # выгрузки с 1,25 ГиБ выбранного и ZIP с шаблонами 243:1
-            # отвергались до сборки (замер 2026-10-03).
+            # выгрузки с 1 248 344 276 байт (1,16 ГиБ) выбранного и ZIP с
+            # шаблонами 243:1 отвергались до сборки (замер 2026-10-03).
             limits = intake_limits
         if not isinstance(limits, ResourceLimits):
             raise TypeError("limits должен быть ResourceLimits")

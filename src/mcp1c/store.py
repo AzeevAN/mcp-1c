@@ -97,7 +97,7 @@ def save_syntax(index: SyntaxIndex, path: str | Path) -> Path:
             # `cap_drop: ALL` и хост-пользователь читают её как раньше, с
             # правами обычного файла.
             try:
-                os.fchmod(descriptor, intake_v2_fsio._record_mode(target))
+                os.fchmod(descriptor, intake_v2_fsio.record_mode(target))
             except OSError:
                 pass
             with os.fdopen(descriptor, "wb") as raw_stream, gzip.open(

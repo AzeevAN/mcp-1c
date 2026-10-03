@@ -48,7 +48,7 @@ os.umask(_UMASK)
 _NEW_RECORD_MODE = 0o644 & ~_UMASK
 
 
-def _record_mode(path: Path) -> int:
+def record_mode(path: Path) -> int:
     """Права новой версии записи: как у прежней, иначе как у обычного open."""
     try:
         info = path.lstat()
@@ -82,7 +82,7 @@ def write_record_atomic(path: Path, payload: bytes, *, suffix: str = ".tmp") -> 
             # Права — best-effort: на ФС без chmod (exFAT, часть SMB/FUSE)
             # запись должна пройти с правами mkstemp, а не отказать целиком.
             try:
-                os.fchmod(stream.fileno(), _record_mode(path))
+                os.fchmod(stream.fileno(), record_mode(path))
             except OSError:
                 pass
             stream.write(payload)

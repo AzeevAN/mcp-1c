@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-## [4.4.0] — 2026-10-04
+## [4.4.0] — 2026-10-11
 
 ### Добавлено
 
@@ -8564,10 +8564,10 @@ JSON-журнал schema v1 для основной выгрузки и кажд
 одинаковый набор из 30 ключей модели.
 
 [Unreleased]: https://github.com/AzeevAN/mcp-1c/compare/v4.4.0...HEAD
-[4.4.0]: https://github.com/AzeevAN/mcp-1c/compare/v4.3.2...v4.4.0
-[4.3.2]: https://github.com/AzeevAN/mcp-1c/compare/v4.3.1...v4.3.2
-[4.3.1]: https://github.com/AzeevAN/mcp-1c/compare/v4.3.0...v4.3.1
-[4.3.0]: https://github.com/AzeevAN/mcp-1c/compare/v4.2.0...v4.3.0
+[4.4.0]: https://github.com/AzeevAN/mcp-1c/compare/v4.2.0...v4.4.0
+[4.3.2]: https://github.com/AzeevAN/mcp-1c/compare/2b3c8223d92bec45405f775648fd993d814a3915...959b8c29f7276e13a480aa2315d4cc8500015a01
+[4.3.1]: https://github.com/AzeevAN/mcp-1c/compare/62404b59b6de3900e5ac2674d41e8622ba01f3a5...2b3c8223d92bec45405f775648fd993d814a3915
+[4.3.0]: https://github.com/AzeevAN/mcp-1c/compare/v4.2.0...62404b59b6de3900e5ac2674d41e8622ba01f3a5
 [4.2.0]: https://github.com/AzeevAN/mcp-1c/compare/v4.1.0...v4.2.0
 [4.1.0]: https://github.com/AzeevAN/mcp-1c/compare/v4.0.0...v4.1.0
 [4.0.0]: https://github.com/AzeevAN/mcp-1c/compare/v3.3.0...v4.0.0

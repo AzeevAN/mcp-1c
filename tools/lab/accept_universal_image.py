@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import datetime
+import hashlib
 import http.client
 import http.server
 import ipaddress
@@ -416,7 +417,7 @@ def _image_filesystem_is_public(image: str) -> None:
         "test ! -e /usr/local/bin/node && "
         "test ! -e /usr/local/bin/npm && "
         "test ! -d /app/node_modules && "
-        "! find /app -type f \\( -name '*.mcp1cref' -o -name '*.sqlite*' "
+        "! find /app -type f \\( -name '*.sqlite*' "
         "-o -name '*.pem' -o -name '*.key' -o -name '?GENTS.md' \\) | grep -q .",
     ]
     _run(command)
@@ -438,7 +439,8 @@ def _image_filesystem_is_public(image: str) -> None:
         ).stdout.splitlines()
     )
     tracked = _run(["git", "ls-files", "src/mcp1c"]).stdout.splitlines()
-    expected = {"/app/requirements-lock.txt"}
+    reference_path = "/app/reference/reference.mcp1cref"
+    expected = {"/app/requirements-lock.txt", reference_path}
     expected.update(f"/app/{path}" for path in tracked)
     if actual != expected:
         raise AssertionError(
@@ -446,6 +448,18 @@ def _image_filesystem_is_public(image: str) -> None:
             f"лишних файлов {len(actual - expected)}, "
             f"отсутствующих {len(expected - actual)}."
         )
+
+    # В образ входит только общая подписанная справка из публичного checkout.
+    # Точное имя и хеш сохраняют запрет на любые дополнительные пакеты данных.
+    root = Path(__file__).resolve().parents[2]
+    reference_sha256 = hashlib.sha256(
+        (root / "release-assets/reference/reference.mcp1cref").read_bytes()
+    ).hexdigest()
+    image_reference_sha256 = _run(
+        ["docker", "run", "--rm", "--entrypoint", "sha256sum", image, reference_path]
+    ).stdout.split()[0]
+    if image_reference_sha256 != reference_sha256:
+        raise AssertionError("Общая справка в образе отличается от публичного пакета.")
 
 
 def _accept_mode(

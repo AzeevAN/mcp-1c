@@ -515,9 +515,17 @@ def test_гость_не_создаёт_staging_замены_native_базы(tmp
         _stop(server)
 
 
-def test_гость_повторяет_идентичную_native_a_без_смены_даты(tmp_path):
+def test_гость_повторяет_идентичную_native_a_без_смены_даты(tmp_path, monkeypatch):
     from test_intake_v2_extensions import _stage_active_base
     from test_intake_v2_legacy_cleanup import _native_generation
+
+    def содержимое_реестра() -> dict:
+        # Владелец на старте штатно пересохраняет реестр с новым `saved_at`
+        # (точность — секунда), поэтому побайтовое сравнение падало, когда
+        # старт процесса пересекал границу секунды.
+        payload = json.loads(setup.registry_path.read_text(encoding="utf-8"))
+        payload.pop("saved_at", None)
+        return payload
 
     setup = Registry(tmp_path / "data")
     native = _native_generation(tmp_path, "full-for-noop")
@@ -529,16 +537,19 @@ def test_гость_повторяет_идентичную_native_a_без_см
     )
     setup.add_configuration(archive)
     before = setup.active_generation_pointer(native.manifest.identity)
-    registry_bytes = setup.registry_path.read_bytes()
+    registry_before = содержимое_реестра()
 
     server = _start_server(setup.data_dir)
     try:
         guest = Registry(setup.data_dir)
         guest.startup()
         assert guest.role == "guest"
+        записи_гостя = []
+        monkeypatch.setattr(guest, "_write_registry_payload", записи_гостя.append)
         guest.add_configuration(archive)
         assert guest.active_generation_pointer(native.manifest.identity) == before
-        assert setup.registry_path.read_bytes() == registry_bytes
+        assert записи_гостя == []
+        assert содержимое_реестра() == registry_before
     finally:
         _stop(server)
 

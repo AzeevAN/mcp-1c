@@ -488,7 +488,7 @@ async def limited_upload_form(
     request: Request,
     file_limit: int | None = None,
     *,
-    allowed_fields: frozenset[str] = frozenset({"allow_truncated"}),
+    allowed_fields: frozenset[str] = frozenset(),
 ) -> FormData:
     """Разобрать загрузку, не принимая лишние файлы и поля."""
     if not request.headers.get("content-type", "").lower().startswith(
@@ -561,9 +561,7 @@ def start_job(name: str, size: int) -> dict:
         JOBS.remove(лишнее)
     return job
 
-def _index_source(
-    registry: Registry, path: Path, suffix: str, *, allow_truncated: bool = False
-) -> None:
+def _index_source(registry: Registry, path: Path, suffix: str) -> None:
     """Выполняется в отдельном потоке: разбор .hbk занимает около 4 секунд."""
     for попытка in range(2):
         if suffix == ".hbk":
@@ -573,7 +571,6 @@ def _index_source(
         else:
             registry.add_configuration(
                 path,
-                allow_truncated=allow_truncated,
                 source_transport=CandidateTransport.BROWSER,
                 same_edition_only=True,
             )
@@ -594,15 +591,11 @@ def run_job(
     directory: str,
     path: Path,
     suffix: str,
-    *,
-    allow_truncated: bool = False,
 ) -> None:
     """Разбор в фоне. Ошибку кладём в задание: ответа, куда её вернуть, уже нет."""
     job["state"] = JOB_PARSING
     try:
-        _index_source(
-            registry, path, suffix, allow_truncated=allow_truncated
-        )
+        _index_source(registry, path, suffix)
     except (ExportError, RegistryError, V8ContainerError, ValueError) as error:
         job["state"] = JOB_FAILED
         job["error"] = str(error)

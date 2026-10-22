@@ -91,7 +91,6 @@ export function SourcesAdminPanel({
   const queryClient = useQueryClient();
   const fileInput = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
-  const [allowTruncated, setAllowTruncated] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -134,7 +133,7 @@ export function SourcesAdminPanel({
     setUploadProgress(0);
     setFeedback(null);
     try {
-      await uploadSource(file, allowTruncated, setUploadProgress);
+      await uploadSource(file, setUploadProgress);
       setFeedback({
         tone: "success",
         text: "Файл передан. Разбор продолжается в фоне и останется в журнале.",
@@ -199,14 +198,6 @@ export function SourcesAdminPanel({
         </div>
 
         <div className="upload-options">
-          <label className="switch-field">
-            <input type="checkbox" checked={allowTruncated} onChange={(event) => setAllowTruncated(event.target.checked)} />
-            <span className="switch-control" aria-hidden="true"><i /></span>
-            <span>
-              <strong>Разрешить неполную тестовую выгрузку</strong>
-              <small>Только для осознанной диагностики файла с <code>truncated=true</code>. Отсутствие объекта или связи в таком источнике ничего не доказывает.</small>
-            </span>
-          </label>
           <button className="button-primary" type="button" onClick={beginUpload} disabled={!file || uploading}>
             {uploading ? <LoaderCircle className="is-spinning" size={17} /> : <FileUp size={17} />}
             {uploading ? `Передаём ${uploadProgress}%` : "Загрузить и разобрать"}

@@ -567,9 +567,8 @@ it("показывает администратору действия без д
   expect(await screen.findByRole("region", { name: "Полная файловая выгрузка" })).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Обновить код, формы и роли" })).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Обновить полностью" })).toBeEnabled();
-  const truncated = screen.getByRole("checkbox", { name: /Разрешить неполную тестовую выгрузку/ });
-  fireEvent.click(truncated);
-  expect(truncated).toBeChecked();
+  // Неполная тестовая выгрузка разрешается только в CLI (`--allow-truncated`).
+  expect(screen.queryByRole("checkbox", { name: /неполную/ })).not.toBeInTheDocument();
 
   const input = container.querySelector<HTMLInputElement>(
     'input[accept=".zip,.hbk,.json"]',

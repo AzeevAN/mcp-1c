@@ -146,7 +146,6 @@ export function useAdminSources(enabled: boolean) {
 
 export function uploadSource(
   file: File,
-  allowTruncated: boolean,
   onProgress: (percent: number) => void,
 ): Promise<{ job: AdminJob }> {
   return new Promise((resolve, reject) => {
@@ -178,7 +177,6 @@ export function uploadSource(
     });
     const form = new FormData();
     form.append("file", file);
-    if (allowTruncated) form.append("allow_truncated", "1");
     request.send(form);
   });
 }

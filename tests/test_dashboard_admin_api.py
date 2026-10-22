@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 import zipfile
 
@@ -298,3 +299,80 @@ def test_spa_forget_удаляет_только_файл_из_списка_orpha
     ]
     assert response.status_code == 200
     assert not orphan.exists()
+
+
+def _truncated_payload(directory) -> bytes:
+    """Выгрузка schema v1 с манифестом truncated=true."""
+    target = write_export(
+        directory, build_configuration(name="СинтетическаяКонфигурация")
+    )
+    with zipfile.ZipFile(target) as archive:
+        members = {
+            item.filename: archive.read(item.filename)
+            for item in archive.infolist()
+        }
+    manifest = json.loads(members["manifest.json"])
+    manifest["truncated"] = True
+    members["manifest.json"] = json.dumps(
+        manifest, ensure_ascii=False
+    ).encode("utf-8")
+    with zipfile.ZipFile(target, "w") as archive:
+        for name, content in members.items():
+            archive.writestr(name, content)
+    return target.read_bytes()
+
+
+def test_spa_upload_отвергает_поле_allow_truncated(tmp_path, monkeypatch):
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    monkeypatch.setattr(dashboard, "JOBS", [])
+    registry = Registry(tmp_path / "data")
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    payload = _truncated_payload(export_dir)
+    client = _client(registry)
+    _login(client)
+
+    response = client.post(
+        "/api/v1/sources/upload",
+        data={"allow_truncated": "1"},
+        files={"file": ("структура.zip", payload)},
+    )
+
+    assert response.status_code == 400
+    assert (
+        "Некорректная multipart-форма: разрешён один файл `file`."
+        in response.text
+    )
+    assert dashboard.JOBS == []
+    assert registry.snapshot().sources == {}
+
+
+def test_spa_upload_truncated_выгрузка_отклоняется_заданием(
+    tmp_path, monkeypatch
+):
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    monkeypatch.setattr(dashboard, "JOBS", [])
+    registry = Registry(tmp_path / "data")
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    payload = _truncated_payload(export_dir)
+    client = _client(registry)
+    _login(client)
+
+    response = client.post(
+        "/api/v1/sources/upload",
+        files={"file": ("структура.zip", payload)},
+    )
+
+    assert response.status_code == 202
+    _wait_until(
+        lambda: client.get("/api/v1/sources/admin").json()["jobs"][0]["state"]
+        == dashboard.JOB_FAILED
+    )
+    job = client.get("/api/v1/sources/admin").json()["jobs"][0]
+    assert "truncated=true" in job["error"]
+    snapshot = registry.snapshot()
+    assert snapshot.sources == {}
+    assert snapshot.configurations == {}

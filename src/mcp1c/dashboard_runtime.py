@@ -1833,13 +1833,11 @@ def _spa_routes(
             return _json_error("Недостаточно места для временного файла загрузки.", 507)
         except MultiPartException:
             return _json_error(
-                "Некорректная multipart-форма: разрешены один файл `file` "
-                "и флаг `allow_truncated`.",
+                "Некорректная multipart-форма: разрешён один файл `file`.",
                 400,
             )
 
         uploaded = form.get("file")
-        allow_truncated = str(form.get("allow_truncated", "")) == "1"
         if not isinstance(uploaded, UploadFile) or not uploaded.filename:
             await form.close()
             return _json_error("Файл не выбран.", 400)
@@ -1868,7 +1866,6 @@ def _spa_routes(
                 heavy.run(
                     dashboard_backend.run_job,
                     registry, job, directory, target, suffix,
-                    allow_truncated=allow_truncated,
                 )
             )
             handed_off = True

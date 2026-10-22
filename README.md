@@ -40,9 +40,9 @@
 mkdir mcp-1c
 cd mcp-1c
 curl --fail --show-error --location --output compose.yaml \
-  https://raw.githubusercontent.com/AzeevAN/mcp-1c/v4.4.1/compose.yaml
+  https://raw.githubusercontent.com/AzeevAN/mcp-1c/v4.4.2/compose.yaml
 curl --fail --show-error --location --output .env.example \
-  https://raw.githubusercontent.com/AzeevAN/mcp-1c/v4.4.1/.env.example
+  https://raw.githubusercontent.com/AzeevAN/mcp-1c/v4.4.2/.env.example
 ```
 
 ### 2. Создать .env и токены
@@ -136,7 +136,9 @@ Source A даёт структуру объектов; Source B дополнит
 разбираются в памяти целиком, — до 24 МиБ каждый; текстовый модуль — до
 17 МиБ (больший отвергает всю выгрузку с именем записи; скомпилированный
 `.Module` текстом не читается и этим пределом не ограничен); перед сборкой
-проверяется свободное место.
+проверяется свободное место. Расхождения, не мешающие разбору (например,
+повтор цели в составе подсистемы), загрузку не останавливают и выводятся
+предупреждением в `docker logs mcp1c`.
 
 Подробный порядок, форматы ZIP, ограничения и API:
 [загрузка конфигураций и расширений](docs/configuration-loading.md).

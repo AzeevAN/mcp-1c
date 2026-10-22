@@ -173,7 +173,19 @@ def _configuration(
     return _document("Configuration", properties, children)
 
 
-def _subsystem(name: str, *, child: str = "", use_one: str | None = None) -> bytes:
+def _subsystem(
+    name: str,
+    *,
+    child: str = "",
+    use_one: str | None = None,
+    repeat_first: tuple[str, ...] = (),
+) -> bytes:
+    repeated = "".join(
+        '<xr:Item xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+        'xsi:type="xr:MDObjectRef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable">'
+        f"{raw}</xr:Item>"
+        for raw in repeat_first
+    )
     children = f"<Subsystem>{child}</Subsystem>" if child else ""
     use_one_xml = f"<UseOneCommand>{use_one}</UseOneCommand>" if use_one else ""
     return _document(
@@ -187,6 +199,7 @@ def _subsystem(name: str, *, child: str = "", use_one: str | None = None) -> byt
             '<xr:Item xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
             'xsi:type="xr:MDObjectRef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable">'
             "Catalog.Items</xr:Item>"
+            f"{repeated}"
             '<xr:Item xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
             'xsi:type="xr:MDObjectRef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable">'
             "CommonPicture.Unknown</xr:Item></Content>"
@@ -802,6 +815,7 @@ def _collection(
     subsystems: bool = False,
     flat_subsystems: bool = False,
     duplicate_subsystem_leafs: bool = False,
+    duplicate_subsystem_content: tuple[str, ...] = (),
     predefined: bool = False,
 ):
     payloads = {
@@ -884,6 +898,13 @@ def _collection(
                 "Subsystems/Admin.xml": _subsystem("Admin", child="Settings"),
                 "Subsystems/Admin/Subsystems/Settings.xml": _subsystem("Settings"),
             }
+        )
+    if duplicate_subsystem_content:
+        payloads["Configuration.xml"] = payloads["Configuration.xml"].replace(
+            b"</ChildObjects>", b"<Subsystem>Dup</Subsystem></ChildObjects>"
+        )
+        payloads["Subsystems/Dup.xml"] = _subsystem(
+            "Dup", repeat_first=duplicate_subsystem_content
         )
     if filter_criteria:
         payloads.update(
@@ -1238,6 +1259,59 @@ def test_subsystems_одноименные_листья_различаются_�
     assert result.extended.get("Подсистема.Sales.Settings") is not None
     assert result.extended.get("Подсистема.Admin.Settings") is not None
     assert result.extended.get("Подсистема.Settings") is None
+
+
+@pytest.mark.parametrize(
+    ("repeat", "expected", "dropped"),
+    [
+        (
+            "Catalog.Items",
+            [
+                ("Catalog.Items", "Справочник.Items"),
+                ("CommonPicture.Unknown", "CommonPicture.Unknown"),
+            ],
+            "Catalog.Items",
+        ),
+        (
+            "commonpicture.unknown",
+            [
+                ("Catalog.Items", "Справочник.Items"),
+                ("commonpicture.unknown", "commonpicture.unknown"),
+            ],
+            "CommonPicture.Unknown",
+        ),
+    ],
+    ids=["точный повтор", "повтор в другом регистре"],
+)
+def test_subsystems_повтор_цели_в_content_пропускается_с_предупреждением(
+    tmp_path, repeat, expected, dropped
+):
+    result = _symbol("convert_collection")(
+        _collection(
+            tmp_path, subsystems=True, duplicate_subsystem_content=(repeat,)
+        )
+    )
+
+    dup = result.extended.get("Подсистема.Dup")
+    assert dup is not None
+    assert [(item.raw, item.target) for item in dup.payload.content] == expected
+    contains = [
+        relation.target
+        for relation in dup.relations
+        if relation.kind == "subsystem_contains"
+    ]
+    assert len(contains) == 2
+    assert contains.count(expected[0][1]) == 1
+    assert contains.count(expected[1][1]) == 1
+    [diagnostic] = [
+        item
+        for item in result.diagnostics
+        if item.code == "duplicate_subsystem_content"
+    ]
+    assert diagnostic.severity == "warning"
+    assert diagnostic.signature == "Subsystem.Content"
+    assert diagnostic.count == 1
+    assert diagnostic.examples == (f"Subsystems/Dup.xml: {dropped}",)
 
 
 def test_common_command_сохраняет_descriptor_модуль_и_ссылки_формы(tmp_path):

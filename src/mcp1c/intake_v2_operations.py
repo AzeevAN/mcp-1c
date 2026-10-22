@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import logging
 import shutil
 import stat
 import uuid
@@ -35,7 +36,7 @@ from .intake_v2 import (
 from . import intake_v2_fsio as fsio
 from .intake_v2_collector import collect_source_b
 from .intake_v2_composition import compose_generation, compose_manifest
-from .intake_v2_converter import convert_collection
+from .intake_v2_converter import StructureConversion, convert_collection
 from .intake_v2_generation import MaterializedGeneration, materialize_generation
 from .intake_v2_planner import IntakeAction, IntakePlan, PlannerError, plan_intake
 from .intake_v2_probe import CandidateProbe, probe_export
@@ -63,6 +64,30 @@ from .source_modes import (
 _PREVIEW_FORMAT_VERSION = 1
 _MAX_PREVIEW_RECORD_BYTES = 64 << 20
 _MAX_REQUEST_RECORD_BYTES = 4 << 20
+
+
+
+def _log_conversion_warnings(job_id: str, conversion: StructureConversion) -> None:
+    """Вывести предупреждения разбора в журнал процесса.
+
+    Converter собирает их в diagnostics, но в поколение они не попадают, и
+    без журнала пропущенное при разборе (например, повтор в составе
+    подсистемы) было бы не видно никому. Diagnostics уже сгруппированы по
+    коду и сигнатуре, поэтому строк столько, сколько разных случаев, а не
+    вхождений.
+    """
+    log = logging.getLogger(__name__)
+    for item in conversion.diagnostics:
+        if item.severity != "warning":
+            continue
+        log.warning(
+            "Разбор %s: %s %s ×%d, например: %s",
+            job_id,
+            item.code,
+            item.signature,
+            item.count,
+            "; ".join(item.examples),
+        )
 
 
 def _activation_for_generation(
@@ -1259,6 +1284,7 @@ class IntakeCoordinator:
             )
             job = self._save_job(job.checkpoint(CandidateJobStage.CONVERTING))
             conversion = convert_collection(collection)
+            _log_conversion_warnings(job.job_id, conversion)
             job = self._save_job(job.checkpoint(CandidateJobStage.MATERIALIZING))
             materialized = materialize_generation(
                 collection,

@@ -2086,7 +2086,17 @@ def _subsystem(
         target = _subsystem_address(raw)
         key = target.casefold()
         if key in seen:
-            raise ConversionError(f"{where}: Content дублирует цель")
+            # Типовая «Розница» 2.3.26.24 выгружает одну цель в Content дважды
+            # подряд, и платформа это принимает. Повтор ничего не добавляет к
+            # составу подсистемы, поэтому оставляем первое вхождение, а не
+            # роняем всю загрузку из-за одной строки.
+            diagnostics.add(
+                "duplicate_subsystem_content",
+                "Subsystem.Content",
+                f"{where}: {raw}",
+                severity="warning",
+            )
+            continue
         seen.add(key)
         content.append(SubsystemContentItem(raw, target))
     child_relations: list[MetadataRelation] = []

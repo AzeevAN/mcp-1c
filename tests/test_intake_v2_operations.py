@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import io
 import json
+import logging
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -19,7 +20,11 @@ from mcp1c.intake_v2 import (
     DurableCandidateStore,
     LayerKind,
 )
-from mcp1c.intake_v2_operations import _activation_for_generation
+from mcp1c.intake_v2_converter import ConversionDiagnostic
+from mcp1c.intake_v2_operations import (
+    _activation_for_generation,
+    _log_conversion_warnings,
+)
 from mcp1c.intake_v2_planner import IntakeAction
 from mcp1c.intake_v2_transport import BrowserStagingStore
 from mcp1c.registry import Registry, RegistryError
@@ -659,3 +664,30 @@ def test_commit_сериализует_публикацию_с_конкурен�
         "DemoConfiguration"
     )
     assert not tuple((registry.data_dir / "generations").glob(".staging-*"))
+
+
+def test_предупреждения_разбора_попадают_в_журнал_а_info_нет(caplog):
+    conversion = SimpleNamespace(
+        diagnostics=(
+            ConversionDiagnostic(
+                "duplicate_subsystem_content",
+                "Subsystem.Content",
+                2,
+                ("Sales: A", "Sales: B"),
+                severity="warning",
+            ),
+            ConversionDiagnostic("some_info", "Sig", 5, ("x",)),
+        )
+    )
+
+    with caplog.at_level(logging.INFO, logger="mcp1c.intake_v2_operations"):
+        _log_conversion_warnings("job-42", conversion)
+
+    assert [(r.levelno, r.name, r.getMessage()) for r in caplog.records] == [
+        (
+            logging.WARNING,
+            "mcp1c.intake_v2_operations",
+            "Разбор job-42: duplicate_subsystem_content Subsystem.Content ×2, "
+            "например: Sales: A; Sales: B",
+        )
+    ]

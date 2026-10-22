@@ -8,7 +8,7 @@ healthcheck, обновление, резервное копирование и 
 
 Единственный пользовательский [compose.yaml](../compose.yaml):
 
-- получает готовый образ `ghcr.io/azeevan/mcp-1c:4.4.2` без локальной сборки;
+- получает готовый образ `ghcr.io/azeevan/mcp-1c:4.5.0` без локальной сборки;
 - запускает процесс как UID/GID `10001:10001`;
 - монтирует подготовленный каталог хоста в `/data`;
 - по умолчанию публикует порт только на `127.0.0.1`, а прямой HTTP требует
@@ -26,7 +26,7 @@ Compose-файла и встроенного proxy нет.
 Есть два поддержанных способа получить этот образ:
 
 1. Обычный пользователь скачивает готовый
-   `ghcr.io/azeevan/mcp-1c:4.4.2` и запускает один `compose.yaml` по инструкции
+   `ghcr.io/azeevan/mcp-1c:4.5.0` и запускает один `compose.yaml` по инструкции
    ниже.
 2. Разработчик собирает локальный тег из чистого checkout командой
    `python3 tools/build_image.py mcp1c:local`, указывает
@@ -66,9 +66,9 @@ curl --version
 mkdir mcp-1c
 cd mcp-1c
 curl --fail --show-error --location --output compose.yaml \
-  https://raw.githubusercontent.com/AzeevAN/mcp-1c/v4.4.2/compose.yaml
+  https://raw.githubusercontent.com/AzeevAN/mcp-1c/v4.5.0/compose.yaml
 curl --fail --show-error --location --output .env.example \
-  https://raw.githubusercontent.com/AzeevAN/mcp-1c/v4.4.2/.env.example
+  https://raw.githubusercontent.com/AzeevAN/mcp-1c/v4.5.0/.env.example
 ```
 
 Исходники и Node для обычного запуска не нужны. Точный release-тег в URL и
@@ -90,7 +90,7 @@ cp .env.example .env
 MCP1C_DATA_DIR=/srv/mcp1c/data
 MCP1C_BIND_ADDRESS=127.0.0.1
 MCP1C_PORT=5001
-MCP1C_IMAGE=ghcr.io/azeevan/mcp-1c:4.4.2
+MCP1C_IMAGE=ghcr.io/azeevan/mcp-1c:4.5.0
 MCP1C_DASHBOARD=on
 MCP1C_ACCESS=local
 API_TOKEN=<первый случайный токен>
@@ -123,7 +123,7 @@ chmod 0600 .env
 | `MCP1C_DATA_DIR` | bind source на машине Docker | `./data` |
 | `MCP1C_BIND_ADDRESS` | интерфейс хоста: loopback, конкретный IP либо все интерфейсы | `127.0.0.1` |
 | `MCP1C_PORT` | опубликованный порт хоста | `5001` |
-| `MCP1C_IMAGE` | готовый OCI-образ или точный digest | `ghcr.io/azeevan/mcp-1c:4.4.2` |
+| `MCP1C_IMAGE` | готовый OCI-образ или точный digest | `ghcr.io/azeevan/mcp-1c:4.5.0` |
 | `API_TOKEN` | чтение MCP и дашборда | обязателен |
 | `ADMIN_TOKEN` | загрузка, удаление, incoming, словарь, reload | обязателен и отличается от `API_TOKEN` |
 | `MCP1C_DASHBOARD` | `on` — SPA, `off` — без UI | `on` |
@@ -222,7 +222,7 @@ mkdir -p data/bootstrap data/incoming
 docker run --rm \
   --entrypoint sh \
   --mount type=bind,src=/srv/mcp1c/data,dst=/data \
-  ghcr.io/azeevan/mcp-1c:4.4.2 \
+  ghcr.io/azeevan/mcp-1c:4.5.0 \
   -c 'id; test -w /data'
 ```
 

@@ -5,6 +5,49 @@ from __future__ import annotations
 import pytest
 
 from mcp1c import xdto
+from mcp1c.model import Configuration, MetadataObject
+
+
+def _package(full_name: str, namespace: str, **members: list[str]) -> MetadataObject:
+    return MetadataObject(
+        full_name=full_name,
+        kind="ПакетXDTO",
+        name=full_name.split(".", 1)[1],
+        extended={"target_namespace": namespace, **members},
+    )
+
+
+@pytest.mark.parametrize(
+    "order",
+    [
+        ("ПакетXDTO.Envelope", "ПакетXDTO.SOAP_Envelope_1_1"),
+        ("ПакетXDTO.SOAP_Envelope_1_1", "ПакетXDTO.Envelope"),
+    ],
+    ids=["по_порядку", "в_обратном_порядке"],
+)
+def test_catalog_namespace_принадлежит_первому_по_имени_пакету(order):
+    namespace = "http://schemas.xmlsoap.org/soap/envelope/"
+    configuration = Configuration()
+    for full_name in order:
+        configuration.objects[full_name] = _package(
+            full_name, namespace, object_types=["Envelope"]
+        )
+
+    assert xdto._catalog(configuration) == {
+        namespace: {"type:Envelope": "ПакетXDTO.Envelope.ТипОбъекта.Envelope"}
+    }
+
+
+def test_catalog_порядок_имён_нечувствителен_к_регистру():
+    configuration = Configuration()
+    for full_name in ("ПакетXDTO.beta", "ПакетXDTO.Альфа", "ПакетXDTO.Alpha"):
+        configuration.objects[full_name] = _package(
+            full_name, "urn:shared", value_types=["Code"]
+        )
+
+    assert xdto._catalog(configuration) == {
+        "urn:shared": {"type:Code": "ПакетXDTO.Alpha.ТипЗначения.Code"}
+    }
 
 
 def test_namespace_scope_переиспользуется_и_локально_переопределяется():

@@ -185,11 +185,16 @@ def _namespace(element: ET.Element) -> str:
 
 def _catalog(configuration: Configuration) -> dict[str, dict[str, str]]:
     result: dict[str, dict[str, str]] = {}
-    for obj in configuration.objects.values():
+    # Порядок и правило владельца те же, что в converter: при одной схеме,
+    # выгруженной двумя пакетами, namespace принадлежит первому по имени.
+    for obj in sorted(
+        configuration.objects.values(),
+        key=lambda item: (item.full_name.casefold(), item.full_name),
+    ):
         if obj.kind != "ПакетXDTO":
             continue
         namespace = obj.extended.get("target_namespace")
-        if not isinstance(namespace, str) or not namespace:
+        if not isinstance(namespace, str) or not namespace or namespace in result:
             continue
         names: dict[str, str] = {}
         for key, public_kind in (

@@ -3518,11 +3518,16 @@ def _resolve_xdto_references(
             "XDTO-пакеты расширения не поддержаны без доказанного образца"
         )
     catalog: dict[str, dict[str, str]] = {}
-    for obj in objects.values():
-        if obj.kind != "ПакетXDTO" or not isinstance(
-            obj.payload, XDTOPackagePayload
-        ):
-            continue
+    owners: dict[str, ExtendedObject] = {}
+    packages = sorted(
+        (
+            obj
+            for obj in objects.values()
+            if obj.kind == "ПакетXDTO" and isinstance(obj.payload, XDTOPackagePayload)
+        ),
+        key=lambda obj: _order(obj.full_name),
+    )
+    for obj in packages:
         namespace_members: dict[str, str] = {}
         for names, kind in (
             (obj.payload.object_types, "ТипОбъекта"),
@@ -3537,9 +3542,31 @@ def _resolve_xdto_references(
                         f"{obj.full_name}: имя XDTO дублируется в symbol space"
                     )
                 namespace_members[key] = f"{obj.full_name}.{kind}.{name}"
-        if obj.payload.target_namespace in catalog:
-            raise ConversionError("пространство имён XDTO объявлено двумя пакетами")
-        catalog[obj.payload.target_namespace] = namespace_members
+        namespace = obj.payload.target_namespace
+        owner = owners.get(namespace)
+        if owner is not None:
+            # Типовая «Розница» 3.0.14.178 выгружает одну схему SOAP Envelope
+            # двумя пакетами (Envelope и SOAP_Envelope_1_1) с побайтно
+            # одинаковым Package.bin: их подключили две разные библиотеки.
+            # Одинаковая схема даёт одинаковые цели ссылок, поэтому первый по
+            # имени пакет остаётся владельцем namespace. Разные схемы под одним
+            # namespace сделали бы ссылки неоднозначными — это по-прежнему отказ.
+            assert isinstance(owner.payload, XDTOPackagePayload)
+            if owner.payload.content_sha256 != obj.payload.content_sha256:
+                raise ConversionError(
+                    f"пространство имён XDTO {namespace} объявлено двумя "
+                    f"пакетами с разным содержимым: {owner.full_name} и "
+                    f"{obj.full_name}"
+                )
+            diagnostics.add(
+                "duplicate_xdto_namespace",
+                namespace,
+                f"{owner.full_name}, {obj.full_name}",
+                severity="warning",
+            )
+            continue
+        owners[namespace] = obj
+        catalog[namespace] = namespace_members
 
     for artifact in collection.metadata:
         parts = PurePosixPath(artifact.source_path).parts

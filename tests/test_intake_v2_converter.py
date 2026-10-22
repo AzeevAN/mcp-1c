@@ -23,6 +23,7 @@ NS_XS = "http://www.w3.org/2001/XMLSchema"
 NS_CFG = "http://v8.1c.ru/8.1/data/enterprise/current-config"
 NS_EXTERNAL_PROPERTIES = "http://v8.1c.ru/8.3/xcf/extrnprops"
 NS_XDTO = "http://v8.1c.ru/8.1/xdto"
+SOAP_NAMESPACE = "http://schemas.xmlsoap.org/soap/envelope/"
 
 
 def _symbol(name: str):
@@ -106,6 +107,7 @@ def _configuration(
     opaque_common_module: bool = False,
     http_services: bool = False,
     xdto_packages: bool = False,
+    xdto_soap_order: tuple[str, ...] = (),
     accounting_register: bool = False,
     common_commands: bool = False,
     subsystems: bool = False,
@@ -164,6 +166,8 @@ def _configuration(
         children += "<HTTPService>Api</HTTPService>"
     if xdto_packages:
         children += "<XDTOPackage>Main</XDTOPackage><XDTOPackage>Common</XDTOPackage>"
+    for package_name in xdto_soap_order:
+        children += f"<XDTOPackage>{package_name}</XDTOPackage>"
     if accounting_register:
         children += "<AccountingRegister>Ledger</AccountingRegister>"
     if common_commands:
@@ -803,6 +807,7 @@ def _collection(
     xdto_future: str = "",
     xdto_reference: str = "c:Code",
     xdto_qualified: bool = True,
+    xdto_soap: tuple[tuple[str, str], ...] = (),
     accounting_register: bool = False,
     filter_criteria: bool = False,
     flat_filter_criteria: bool = False,
@@ -830,6 +835,7 @@ def _collection(
             opaque_common_module=opaque_common_module,
             http_services=http_services or flat_http_services,
             xdto_packages=xdto_packages,
+            xdto_soap_order=tuple(name for name, _ in xdto_soap),
             accounting_register=accounting_register,
             common_commands=common_commands or flat_common_commands,
             subsystems=subsystems or flat_subsystems,
@@ -1126,6 +1132,22 @@ def _collection(
                 future=xdto_future,
                 qualified=xdto_qualified,
             )
+    for package_name, type_name in xdto_soap:
+        payloads[f"XDTOPackages/{package_name}.xml"] = _xdto_descriptor(
+            package_name, SOAP_NAMESPACE
+        )
+        payloads[f"XDTOPackages/{package_name}/Ext/Package.bin"] = _xdto_package(
+            SOAP_NAMESPACE,
+            f'<objectType name="{type_name}"/>',
+        )
+    if xdto_soap:
+        payloads["XDTOPackages/Client.xml"] = _xdto_descriptor("Client", "urn:client")
+        payloads["XDTOPackages/Client/Ext/Package.bin"] = _xdto_package(
+            "urn:client",
+            f'<import namespace="{SOAP_NAMESPACE}"/>'
+            '<property name="Body" type="s:Envelope"/>',
+            declarations=f'xmlns:s="{SOAP_NAMESPACE}" ',
+        )
     if flat_mandatory:
         replacements = {
             "CommonAttributes/Tenant.xml": "CommonAttribute.Tenant.xml",
@@ -1721,6 +1743,58 @@ def test_xdto_неразрешённая_ссылка_остаётся_диаг�
         and item.severity == "warning"
         for item in result.diagnostics
     )
+
+
+def test_xdto_одинаковая_схема_двух_пакетов_даёт_предупреждение(tmp_path):
+    convert_collection = _symbol("convert_collection")
+    # Порядок в Configuration.xml обратен сортировке: владелец выбирается по имени.
+    result = convert_collection(
+        _collection(
+            tmp_path,
+            xdto_soap=(("SOAP_Envelope_1_1", "Envelope"), ("Envelope", "Envelope")),
+        )
+    )
+
+    assert result.extended.get("ПакетXDTO.Envelope") is not None
+    assert result.extended.get("ПакетXDTO.SOAP_Envelope_1_1") is not None
+    duplicates = [
+        item
+        for item in result.diagnostics
+        if item.code == "duplicate_xdto_namespace"
+    ]
+    assert len(duplicates) == 1
+    assert duplicates[0].severity == "warning"
+    assert duplicates[0].signature == SOAP_NAMESPACE
+    assert duplicates[0].count == 1
+    assert duplicates[0].examples == (
+        "ПакетXDTO.Envelope, ПакетXDTO.SOAP_Envelope_1_1",
+    )
+    # Ссылка из третьего пакета на тип общего namespace разрешается.
+    assert any(
+        item.code == "xdto_reference" and item.signature == "imported"
+        for item in result.diagnostics
+    )
+    assert not any(
+        item.code == "unresolved_xdto_reference" for item in result.diagnostics
+    )
+
+
+def test_xdto_разное_содержимое_под_одним_namespace_отклоняется(tmp_path):
+    ConversionError = _symbol("ConversionError")
+    convert_collection = _symbol("convert_collection")
+
+    with pytest.raises(ConversionError) as error:
+        convert_collection(
+            _collection(
+                tmp_path,
+                xdto_soap=(("SOAP_Envelope_1_1", "Other"), ("Envelope", "Envelope")),
+            )
+        )
+
+    assert (
+        f"пространство имён XDTO {SOAP_NAMESPACE} объявлено двумя пакетами "
+        "с разным содержимым: ПакетXDTO.Envelope и ПакетXDTO.SOAP_Envelope_1_1"
+    ) in str(error.value)
 
 
 @pytest.mark.parametrize("flat", [False, True], ids=["tree", "flat"])

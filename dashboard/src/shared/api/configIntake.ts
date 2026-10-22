@@ -14,6 +14,7 @@ export type IntakeCandidate = {
   raw_sha256: string;
   requires_parent: boolean;
   actions: IntakeAction[];
+  blocked_reason?: string;
 };
 
 export type IntakeLayerVersion = {

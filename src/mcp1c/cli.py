@@ -160,7 +160,7 @@ def _cmd_reg_add(args: argparse.Namespace) -> int:
         source = registry.add_extension_runtime(path)
     else:
         source = registry.add_configuration(
-            path, allow_truncated=args.allow_truncated
+            path, allow_truncated=args.allow_truncated, same_edition_only=True
         )
     registry.save()
     print(f"добавлено: {source.id}  ({source.kind}, платформа {source.platform or '—'},"

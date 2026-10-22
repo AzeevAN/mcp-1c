@@ -3394,6 +3394,16 @@ h2 {
   gap: 8px;
 }
 
+.intake-candidate-blocked {
+  flex-basis: 100%;
+  max-width: 52ch;
+  padding: 8px 10px;
+  border: 1px solid var(--warning-line);
+  border-radius: 8px;
+  color: var(--warning-text);
+  background: var(--warning-surface);
+}
+
 .intake-parent-select {
   display: grid;
   gap: 3px;

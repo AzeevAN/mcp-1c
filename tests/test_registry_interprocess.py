@@ -224,14 +224,15 @@ def test_загрузка_дашборда_повторяется_целиком
     server = Registry(tmp_path / "data")
     server.startup()
     server.add_configuration(
-        write_export(incoming, build_configuration(name="Пример", version="1.0"))
+        write_export(incoming, build_configuration(name="Пример", version="1.0.1"))
     )
     server.save()
     other = Registry(server.data_dir)
     other.restore()
     (tmp_path / "upload").mkdir()
+    # Версия новой выгрузки той же редакции: загрузка из дашборда сверяет её.
     upload = write_export(
-        tmp_path / "upload", build_configuration(name="Пример", version="2.0")
+        tmp_path / "upload", build_configuration(name="Пример", version="1.0.2")
     )
     подлинный_save = server.save
     вызовов = {"n": 0}
@@ -252,7 +253,7 @@ def test_загрузка_дашборда_повторяется_целиком
     rows = {raw["id"]: raw for raw in payload["sources"]}
     assert "Другая" in rows
     # Загруженная версия не откатилась строкой из файла.
-    assert server.configurations["Пример"].config.version == "2.0"
+    assert server.configurations["Пример"].config.version == "1.0.2"
     assert rows["Пример"]["sha256"] == server.configurations["Пример"].source.sha256
 
 

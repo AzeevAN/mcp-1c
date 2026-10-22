@@ -48,6 +48,7 @@ except ImportError:  # pragma: no cover
 
 from . import coverage_log, index_cache, modules_index, source_ids, structure_origin
 from .dictionary import Dictionary, DictionaryError
+from .editions import edition_conflict
 from .extension_runtime import (
     ExtensionRuntimeError,
     load_extension_runtime,
@@ -1272,6 +1273,7 @@ class Registry:
         replace_native: bool = True,
         expected_revision: int | None = None,
         restored_last_successful_load_at: str | None = None,
+        same_edition_only: bool = False,
     ) -> Source:
         self._ensure_not_blocked(allow_restore=True)
         source_path = Path(path)
@@ -1313,6 +1315,15 @@ class Registry:
                     )
             previous = self.active_generation_pointer(identity)
             active = self.active_generation(identity)
+            loaded = self.configurations.get(config.name)
+        # Только для новой загрузки человеком: restore и bootstrap
+        # восстанавливают уже принятое и редакцию не сверяют.
+        if same_edition_only and loaded is not None:
+            reason = edition_conflict(
+                config.name, loaded.config.version, config.version
+            )
+            if reason:
+                raise RegistryError(reason)
         if previous is not None and not replace_native:
             raise _NativeGenerationActive(
                 f"{source_path.name}: у конфигурации «{config.name}» уже есть "

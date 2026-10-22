@@ -575,6 +575,7 @@ def _index_source(
                 path,
                 allow_truncated=allow_truncated,
                 source_transport=CandidateTransport.BROWSER,
+                same_edition_only=True,
             )
         try:
             registry.save()

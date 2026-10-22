@@ -51,6 +51,7 @@ from .intake_v2_transport import (
 )
 from .intake_v2_probe import CandidateProbe, ProbeError, probe_export
 from .config_sources import CONFIG_SOURCES_ROOT, ConfigSourceBindings, ConfigSourceError
+from .editions import edition_conflict
 from .registry import Registry, RegistryError, RegistrySnapshot
 from .source_modes import ActivationMode, ActivationStatus
 
@@ -255,20 +256,30 @@ class IntakeApiService:
         if current.raw_sha256 != candidate.probe.raw_sha256:
             raise IntakeApiConflict("Каталог изменился. Заново нажмите «Обновить из каталога».")
 
-    def _actions(
+    def _action_policy(
         self,
         candidate: DiscoveredCandidate,
         registry_snapshot: RegistrySnapshot | None = None,
-    ) -> list[str]:
+    ) -> tuple[list[str], str]:
+        """Доступные действия и причина, если полное обновление запрещено."""
         if candidate.probe.source_kind is SourceKind.EXTENSION:
             # Родитель выбирается при start. До этого можно обещать только
             # полную первую загрузку/замену отдельного extension layer.
-            return [IntakeAction.UPDATE_FULL.value]
+            # Редакцию расширения не сверяем: его поколение задаёт родитель.
+            return [IntakeAction.UPDATE_FULL.value], ""
         snapshot = registry_snapshot or self.registry.snapshot()
         configuration = candidate.probe.internal_name
-        if configuration not in snapshot.configuration_names:
-            return [IntakeAction.CREATE.value]
-        return [IntakeAction.UPDATE_FULL.value]
+        loaded = snapshot.configurations.get(configuration)
+        if loaded is None:
+            return [IntakeAction.CREATE.value], ""
+        reason = edition_conflict(
+            configuration,
+            loaded.config.version,
+            candidate.probe.configuration_version,
+        )
+        if reason:
+            return [], reason
+        return [IntakeAction.UPDATE_FULL.value], ""
 
     def candidate_payload(
         self,
@@ -276,6 +287,7 @@ class IntakeApiService:
         *,
         registry_snapshot: RegistrySnapshot | None = None,
     ) -> dict[str, object]:
+        actions, blocked_reason = self._action_policy(candidate, registry_snapshot)
         return {
             "id": candidate.candidate_id,
             "transport": candidate.probe.transport.value,
@@ -286,7 +298,8 @@ class IntakeApiService:
             "origin_name": candidate.probe.origin_name,
             "raw_sha256": candidate.probe.raw_sha256,
             "requires_parent": candidate.probe.source_kind is SourceKind.EXTENSION,
-            "actions": self._actions(candidate, registry_snapshot),
+            "actions": actions,
+            "blocked_reason": blocked_reason,
         }
 
     def _listed_job_payload(self, job) -> dict[str, object]:
@@ -476,6 +489,15 @@ class IntakeApiService:
             return None
         if not exists:
             raise IntakeApiConflict("Конфигурация для обновления не найдена.")
+        # Проверка здесь, а не только в списке действий: прямой вызов API и
+        # «Обновить из каталога» должны получить отказ до создания job.
+        reason = edition_conflict(
+            configuration,
+            snapshot.configurations[configuration].config.version,
+            candidate.probe.configuration_version,
+        )
+        if reason:
+            raise IntakeApiConflict(reason)
         try:
             active = snapshot.generation_view(configuration)
         except RegistryError as error:

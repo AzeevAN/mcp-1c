@@ -163,6 +163,46 @@ def test_spa_upload_принимает_файл_и_публикует_источ
     assert jobs[0]["state"] == dashboard.JOB_DONE
 
 
+def test_spa_upload_schema_v1_другой_редакции_завершается_ошибкой_с_причиной(
+    tmp_path, monkeypatch
+):
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    monkeypatch.setattr(dashboard, "JOBS", [])
+    registry = Registry(tmp_path / "data")
+    старая = tmp_path / "old"
+    новая = tmp_path / "new"
+    старая.mkdir()
+    новая.mkdir()
+    registry.add_configuration(
+        write_export(
+            старая, build_configuration(name="СинтетическаяКонфигурация", version="2.3.26.24")
+        ),
+        keep_source=False,
+    )
+    payload = write_export(
+        новая, build_configuration(name="СинтетическаяКонфигурация", version="3.0.14.178")
+    ).read_bytes()
+    client = _client(registry)
+    _login(client)
+
+    response = client.post(
+        "/api/v1/sources/upload",
+        files={"file": ("структура.zip", payload)},
+    )
+
+    assert response.status_code == 202
+    _wait_until(
+        lambda: client.get("/api/v1/sources/admin").json()["jobs"][0]["state"]
+        == dashboard.JOB_FAILED
+    )
+    job = client.get("/api/v1/sources/admin").json()["jobs"][0]
+    assert "редакции 2.3" in job["error"]
+    assert "редакции 3.0" in job["error"]
+    loaded = registry.snapshot().configurations["СинтетическаяКонфигурация"]
+    assert loaded.config.version == "2.3.26.24"
+
+
 def test_spa_incoming_не_разбирает_частичный_код(
     tmp_path, monkeypatch
 ):

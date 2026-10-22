@@ -15,6 +15,7 @@ const candidate = {
   raw_sha256: "a".repeat(64),
   requires_parent: false,
   actions: ["create"],
+  blocked_reason: "",
 };
 
 const preview = {
@@ -532,6 +533,58 @@ it("называет владельца preview и не запрашивает j
   });
   expect(screen.queryByText("Job не найдена.")).not.toBeInTheDocument();
   expect(deletedJobRequests).toBe(0);
+});
+
+const editionReason =
+  "Загружена конфигурация «СинтетическаяКонфигурация» редакции 2.0, новая выгрузка — редакции 3.0. "
+  + "Это другое поколение конфигурации, полное обновление между редакциями не выполняется.";
+
+it("при смене редакции вместо обновления показывает причину сервера", async () => {
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    if (String(input) === "/api/v1/sources/intake/jobs") return response({ jobs: [] });
+    return response(snapshot([{
+      ...candidate,
+      configuration_version: "3.0.1",
+      actions: [],
+      blocked_reason: editionReason,
+    }]));
+  }));
+  renderPanel();
+
+  expect(await screen.findByRole("note")).toHaveTextContent(editionReason);
+  expect(screen.queryByRole("button", { name: "Обновить полностью" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Создать конфигурацию" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Удалить ZIP" })).toBeEnabled();
+});
+
+it("обновление из каталога другой редакции не запускается и называет причину", async () => {
+  const requests: string[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    const path = String(input);
+    requests.push(path);
+    if (path === "/api/v1/sources/directories") return response({
+      roots: ["config-a"], bindings: { Demo: "config-a" }, configuration_names: ["Demo"],
+    });
+    if (path === "/api/v1/sources/intake/jobs") return response({ jobs: [] });
+    if (path === "/api/v1/sources/directories/refresh") return response({ candidate: {
+      ...candidate,
+      id: "directory-candidate",
+      transport: "local-directory",
+      internal_name: "Demo",
+      origin_name: "config-a",
+      actions: [],
+      blocked_reason: editionReason,
+    } });
+    throw new Error(`Неожиданный запрос ${path}`);
+  }));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={client}>
+    <ConfigIntakePanel configuration="Demo" />
+  </QueryClientProvider>);
+
+  fireEvent.click(await screen.findByRole("button", { name: "Обновить из каталога" }));
+  expect(await screen.findByText(editionReason)).toBeInTheDocument();
+  expect(requests).not.toContain("/api/v1/sources/intake/start");
 });
 
 it("кнопки каталога не ждут общий intake и список preview", async () => {

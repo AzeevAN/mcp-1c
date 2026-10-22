@@ -42,16 +42,18 @@ def _symbol(name: str):
     return getattr(module, name)
 
 
-def _archive(name: str = "DemoConfiguration") -> bytes:
+def _archive(name: str = "DemoConfiguration", version: str = "1.0") -> bytes:
     payload = io.BytesIO()
     with zipfile.ZipFile(payload, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("Configuration.xml", _configuration(name))
+        archive.writestr("Configuration.xml", _configuration(name, version))
     return payload.getvalue()
 
 
-def _write_archive(path: Path, name: str = "DemoConfiguration") -> None:
+def _write_archive(
+    path: Path, name: str = "DemoConfiguration", version: str = "1.0"
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(_archive(name))
+    path.write_bytes(_archive(name, version))
 
 
 def _write_extension_archive(path: Path, name: str = "DemoExtension") -> None:
@@ -1064,3 +1066,160 @@ def test_remove_дочищает_job_если_registry_уже_снят_стар�
     assert incoming.is_file()
     assert service.snapshot()["jobs"] == []
     assert not (operations.work_dir / update.job_id).exists()
+
+
+def _загруженная(tmp_path, version: str, name: str = "DemoConfiguration") -> Registry:
+    registry = Registry(tmp_path / "data")
+    source = tmp_path / "base"
+    source.mkdir()
+    registry.add_configuration(
+        write_export(source, build_configuration(name=name, version=version)),
+        keep_source=False,
+    )
+    return registry
+
+
+@pytest.mark.parametrize(
+    ("загружена", "кандидат", "действия", "заблокировано"),
+    [
+        ("2.3.26.24", "3.0.14.178", [], True),
+        ("3.0.14.178", "2.3.26.24", [], True),
+        ("2.3.26.24", "2.3.27.1", ["update_full"], False),
+        ("2.3.26.24", "", [], True),
+        ("", "2.3.26.24", [], True),
+        ("", "", ["update_full"], False),
+        ("20080620(0935)", "20090101(1000)", ["update_full"], False),
+    ],
+    ids=[
+        "повышение", "понижение", "та_же_редакция", "номерная_в_пустую",
+        "пустая_в_номерную", "обе_пустые", "обе_не_номерные",
+    ],
+)
+def test_кандидат_несёт_действия_и_причину_запрета_по_редакции(
+    tmp_path, загружена, кандидат, действия, заблокировано
+):
+    registry = _загруженная(tmp_path, загружена)
+    _write_archive(registry.incoming_dir / "candidate.zip", version=кандидат)
+    service = _service(registry)
+
+    payload = service.snapshot()["candidates"][0]
+
+    assert payload["actions"] == действия
+    assert bool(payload["blocked_reason"]) is заблокировано
+    if заблокировано:
+        assert "DemoConfiguration" in payload["blocked_reason"]
+
+
+def test_новая_конфигурация_получает_create_без_причины(tmp_path):
+    registry = Registry(tmp_path / "data")
+    _write_archive(registry.incoming_dir / "candidate.zip", version="3.0.1.1")
+
+    payload = _service(registry).snapshot()["candidates"][0]
+
+    assert payload["actions"] == ["create"]
+    assert payload["blocked_reason"] == ""
+
+
+def test_расширение_не_проверяется_на_редакцию(tmp_path):
+    registry = _загруженная(tmp_path, "2.3.26.24")
+    _write_extension_archive(registry.incoming_dir / "extension.zip")
+    service = _service(registry)
+
+    payload = service.snapshot()["candidates"][0]
+
+    assert payload["source_kind"] == "extension"
+    assert payload["actions"] == ["update_full"]
+    assert payload["blocked_reason"] == ""
+
+
+def test_start_update_full_при_смене_редакции_отклоняется_без_job(tmp_path):
+    IntakeApiConflict = _symbol("IntakeApiConflict")
+    registry = _загруженная(tmp_path, "2.3.26.24")
+    _write_archive(registry.incoming_dir / "candidate.zip", version="3.0.14.178")
+    service = _service(registry)
+    candidate = service.snapshot()["candidates"][0]
+
+    with pytest.raises(IntakeApiConflict, match="редакции 2.3.*редакции 3.0"):
+        service.start(candidate["id"], "update_full")
+
+    assert service.lifecycle.operations.records.list_jobs() == ()
+    loaded = registry.snapshot().configurations["DemoConfiguration"]
+    assert loaded.config.version == "2.3.26.24"
+
+
+def test_http_start_при_смене_редакции_отдаёт_409_с_причиной(tmp_path, monkeypatch):
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    registry = _загруженная(tmp_path, "2.3.26.24")
+    _write_archive(registry.incoming_dir / "candidate.zip", version="3.0.14.178")
+    service = _service(registry)
+    client = _client(registry, service)
+    headers = {"x-api-token": "admin-token"}
+
+    candidate = client.get("/api/v1/sources/intake", headers=headers).json()[
+        "candidates"
+    ][0]
+    rejected = client.post(
+        "/api/v1/sources/intake/start",
+        headers=headers,
+        json={"candidate_id": candidate["id"], "action": "update_full"},
+    )
+
+    assert candidate["actions"] == []
+    assert candidate["blocked_reason"]
+    assert rejected.status_code == 409
+    assert rejected.json()["error"] == candidate["blocked_reason"]
+    assert service.lifecycle.operations.records.list_jobs() == ()
+
+
+def test_start_update_full_той_же_редакции_создаёт_job(tmp_path):
+    registry = _загруженная(tmp_path, "2.3.26.24")
+    _write_archive(registry.incoming_dir / "candidate.zip", version="2.3.27.1")
+    service = _service(registry)
+    candidate = service.snapshot()["candidates"][0]
+
+    work = service.start(candidate["id"], "update_full", job_id="job-same-edition")
+
+    assert work.job_id == "job-same-edition"
+    assert {
+        job.job_id for job in service.lifecycle.operations.records.list_jobs()
+    } == {"job-same-edition"}
+
+
+def _сервис_с_каталогом(tmp_path, registry: Registry, version: str):
+    roots = tmp_path / "mounts"
+    folder = roots / "config-0"
+    folder.mkdir(parents=True)
+    (folder / "Configuration.xml").write_bytes(
+        _configuration("DemoConfiguration", version)
+    )
+    service = _symbol("IntakeApiService").for_registry(
+        registry, config_sources_root=roots, directory_settle_seconds=0
+    )
+    service.bind_directory("DemoConfiguration", "config-0")
+    return service
+
+
+def test_каталог_при_смене_редакции_отдаёт_blocked_reason_и_start_отклоняется(
+    tmp_path,
+):
+    IntakeApiConflict = _symbol("IntakeApiConflict")
+    registry = _загруженная(tmp_path, "2.3.26.24")
+    service = _сервис_с_каталогом(tmp_path, registry, "3.0.14.178")
+
+    payload = service.refresh_directory("DemoConfiguration")
+
+    assert payload["actions"] == []
+    assert "редакции 3.0" in payload["blocked_reason"]
+    with pytest.raises(IntakeApiConflict, match="редакции 2.3"):
+        service.start(payload["id"], "update_full")
+    assert service.lifecycle.operations.records.list_jobs() == ()
+
+
+def test_каталог_той_же_редакции_предлагает_update_full(tmp_path):
+    registry = _загруженная(tmp_path, "2.3.26.24")
+    service = _сервис_с_каталогом(tmp_path, registry, "2.3.30.5")
+
+    payload = service.refresh_directory("DemoConfiguration")
+
+    assert payload["actions"] == ["update_full"]
+    assert payload["blocked_reason"] == ""

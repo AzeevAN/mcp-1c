@@ -165,6 +165,9 @@ function CandidateRow({
         {candidate.requires_parent && configurationNames.length === 0 && (
           <small>Сначала загрузите родительскую конфигурацию.</small>
         )}
+        {candidate.blocked_reason && (
+          <small className="intake-candidate-blocked" role="note">{candidate.blocked_reason}</small>
+        )}
       </div>
     </article>
   );
@@ -528,7 +531,10 @@ export function ConfigIntakePanel({ configuration }: { configuration?: string } 
               || candidate.source_kind !== "configuration"
               || candidate.internal_name !== configuration
               || !candidate.actions.includes("update_full")) {
-            setFeedback({ tone: "danger", text: "Каталог не допускает полного обновления этой конфигурации." });
+            setFeedback({
+              tone: "danger",
+              text: candidate.blocked_reason || "Каталог не допускает полного обновления этой конфигурации.",
+            });
             return;
           }
           void start(candidate, "update_full", "");

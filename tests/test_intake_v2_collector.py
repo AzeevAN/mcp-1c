@@ -34,10 +34,10 @@ def _symbol(name: str):
     return getattr(module, name)
 
 
-def _configuration(name: str = "DemoConfiguration") -> bytes:
+def _configuration(name: str = "DemoConfiguration", version: str = "1.0") -> bytes:
     return (
         f'<MetaDataObject xmlns="{NS}"><Configuration><Properties>'
-        f"<Name>{name}</Name><Version>1.0</Version>"
+        f"<Name>{name}</Name><Version>{version}</Version>"
         "<CompatibilityMode>Version8_3_21</CompatibilityMode>"
         "</Properties></Configuration></MetaDataObject>"
     ).encode()

@@ -7,6 +7,9 @@ services:
     container_name: mcp1c
     restart: unless-stopped
     init: true
+    # Пик cgroup при полной загрузке Розницы с расширением ×2,5 (2026-10-23).
+    mem_limit: 7564124160
+    pids_limit: 256
     security_opt:
       - no-new-privileges:true
     cap_drop:

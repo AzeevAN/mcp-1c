@@ -339,7 +339,7 @@ _DictionaryMutationResult = TypeVar("_DictionaryMutationResult")
 
 logger = logging.getLogger(__name__)
 
-_RE_PLATFORM = re.compile(r"\b(\d+\.\d+\.\d+(?:\.\d+)?)\b")
+_RE_PLATFORM = re.compile(r"(?<!\d)(?<!\d\.)(\d+\.\d+\.\d+(?:\.\d+)?)(?!\d)")
 
 
 def _protect_source_operation(method):

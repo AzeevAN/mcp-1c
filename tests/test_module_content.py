@@ -156,13 +156,17 @@ def test_дочитывание_сигнатур_и_тел_использует_
             entries={address: SimpleNamespace(locator=locator)},
         ),
     )
-    monkeypatch.setattr(
-        tools,
-        "прочитать_модуль",
-        lambda *_: pytest.fail("путь нельзя выводить из публичного адреса"),
-    )
+    original_read = tools.read_bsl
+    calls = []
+
+    def read(root, module, actual_locator):
+        calls.append((root, module, actual_locator))
+        return original_read(root, module, actual_locator)
+
+    monkeypatch.setattr(tools, "read_bsl", read)
 
     assert tools._прочитать_тело_модуля(loaded, address).startswith("Процедура А")
+    assert calls == [(tmp_path, address, locator)]
 
 
 def test_локатор_сохраняется_без_корня_и_только_для_того_же_поколения(tmp_path):

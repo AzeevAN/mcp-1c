@@ -172,28 +172,6 @@ from .registry_types import (
 )
 
 REGISTRY_VERSION = 1
-# Виды строк registry.json, которые restore больше не поднимает: код и
-# расширения, загруженные отдельно от структуры до 4.2.0, и сеансовый снимок
-# активности расширений. Строка снимается с учёта с понятной причиной,
-# файлы на диске остаются человеку.
-_RETIRED_SOURCE_KINDS = MappingProxyType(
-    {
-        KIND_MODULES: (
-            "код, загруженный отдельно от структуры до версии 4.2.0, больше "
-            "не поддерживается; запись снята с учёта. Загрузите выгрузку "
-            "конфигурации в файлы целиком."
-        ),
-        KIND_EXTENSION: (
-            "код расширения, загруженный отдельно от структуры до версии "
-            "4.2.0, больше не поддерживается; запись снята с учёта. "
-            "Загрузите выгрузку расширения в файлы целиком."
-        ),
-        "extension-runtime": (
-            "снимок активности расширений больше не поддерживается; запись "
-            "снята с учёта."
-        ),
-    }
-)
 _EXPECTED_GENERATION_UNSET = object()
 # registry.json ещё не читался этим экземпляром: сверять не с чем.
 _REGISTRY_STAMP_UNSEEN = object()
@@ -4760,25 +4738,15 @@ class Registry:
         native_phase.close()
 
         for source in все_источники:
-            if source.kind in _RETIRED_SOURCE_KINDS:
-                # Исходники и каталоги кода не трогаются: их судьбу решает
-                # человек. Журнал покрытия сервер писал сам, и без строки
-                # его уже никто не покажет и не уберёт. У native-корпуса с
-                # тем же id журнал общий: его не трогаем.
+            if source.kind not in (KIND_CONFIGURATION, KIND_SYNTAX):
+                # Неизвестную строку нельзя терять при итоговом save(). Её
+                # файл не читаем: поддержка вида может вернуться после
+                # обновления сервера или исправления реестра владельцем.
+                удержать(source.id)
                 problems.append(
-                    f"{source.id}: {_RETIRED_SOURCE_KINDS[source.kind]}"
+                    f"{source.id}: неизвестный вид источника `{source.kind}`; "
+                    "запись сохранена в registry.json."
                 )
-                with self._lock:
-                    живой_корпус = source.id in self.modules
-                if (
-                    not self._guest
-                    and not живой_корпус
-                    and source.kind in (KIND_MODULES, KIND_EXTENSION)
-                ):
-                    try:
-                        coverage_log.remove(self.data_dir, source.id)
-                    except OSError:
-                        pass
                 continue
             if (
                 source.kind == KIND_CONFIGURATION
@@ -4831,11 +4799,6 @@ class Registry:
                         expected_revision=ревизии_источников.get(source.id, 0),
                         # Reload без изменений не перечитывает справку.
                         reuse_loaded=True,
-                    )
-                else:
-                    problems.append(
-                        f"{source.id}: вид источника `{source.kind}` больше "
-                        "не поддерживается и снят с учёта."
                     )
             except Exception as error:  # источник не должен ронять запуск
                 problems.append(f"{source.id}: {error}{перенести(source, error)}")
@@ -5279,45 +5242,6 @@ class Registry:
                     except OSError:
                         continue
 
-    def _остатки_прежнего_приёма_кода(self) -> list[str]:
-        """Назвать файлы приёма кода до 4.2.0, которые сервер не читает.
-
-        Пустые `modules/` и `extensions/` прежние версии создавали сами на
-        каждом старте: такие каталоги убираются молча. Непустые сервер не
-        удаляет — в них может лежать единственная копия кода, и решение о
-        ней принимает человек.
-        """
-        остатки = []
-        for name in ("modules", "extensions"):
-            path = self.data_dir / name
-            if path.is_dir() and not path.is_symlink():
-                try:
-                    path.rmdir()
-                    continue
-                except OSError:
-                    pass
-            if path.exists() or path.is_symlink():
-                остатки.append(name)
-        if (self.data_dir / ".modules-swap.json").exists():
-            остатки.append(".modules-swap.json")
-        # Временные файлы оборванных операций прежних версий: в них нет
-        # ничего, кроме полупостроенного кэша и черновика журнала.
-        try:
-            for path in self.data_dir.glob(".modules-swap.json.*.tmp"):
-                path.unlink(missing_ok=True)
-            for path in self.cache_dir.glob(".modules-cache.tmp-*"):
-                if path.is_dir() and not path.is_symlink():
-                    shutil.rmtree(path, ignore_errors=True)
-        except OSError:
-            pass
-        if not остатки:
-            return []
-        return [
-            "в каталоге данных остались файлы приёма кода до версии 4.2.0 ("
-            + ", ".join(остатки)
-            + "); сервер их не использует, удалите вручную"
-        ]
-
     def _startup_once(self) -> list[str]:
         # Каталог приёма создаёт сервер, как и каталог данных в `save()`.
         # Пока каталога нет, `scan()` возвращает пустой список, блок
@@ -5352,7 +5276,6 @@ class Registry:
         # Флаг снимается только доказанным восстановлением: пока он стоит,
         # все записи в data/ отклоняются (`_ensure_not_blocked`).
         self._generation_recovery_blocked = False
-        messages += self._остатки_прежнего_приёма_кода()
         messages += self.restore()
         # Память собрана заново: дальше действует только новый вердикт.
         self._restore_hold = ""

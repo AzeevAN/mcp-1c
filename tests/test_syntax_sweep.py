@@ -71,8 +71,8 @@ def test_используемый_индекс_остаётся(tmp_path):
     assert len(заново.syntax.syntax) == 3
 
 
-def test_устаревший_вид_источника_снимается_и_его_индекс_убирается(tmp_path):
-    """Обновление не должно оставлять источник, которого новый код не читает."""
+def test_неизвестный_вид_источника_и_его_индекс_сохраняются(tmp_path):
+    """Неизвестная строка не обслуживается, но не теряется вместе с данными."""
     data = tmp_path / "data"
     index = data / "index" / "syntax" / "устаревший.json.gz"
     index.parent.mkdir(parents=True)
@@ -100,10 +100,15 @@ def test_устаревший_вид_источника_снимается_и_е
     messages = registry.startup()
 
     assert registry.sources == {}
-    assert not index.exists()
-    assert any("больше не поддерживается и снят с учёта" in row for row in messages)
+    assert index.read_bytes() == b"retired derived index"
+    assert any("неизвестный вид источника" in row for row in messages)
     saved = json.loads(registry_path.read_text(encoding="utf-8"))
-    assert saved["sources"] == []
+    assert saved["sources"] == [{
+        "id": "retired-reference",
+        "kind": "retired-reference",
+        "status": "ready",
+        "stored_path": "index/syntax/устаревший.json.gz",
+    }]
 
 
 def test_исходные_файлы_не_трогаются(tmp_path):

@@ -17,7 +17,6 @@ from mcp1c.registry import Registry, RegistryError
 from conftest import build_configuration, write_export
 from test_intake_v2_extensions import _materialized
 from mcp1c import tools
-from native_export import записать_старый_код
 
 
 def _manifest(**overrides):
@@ -142,31 +141,6 @@ def test_restored_native_without_activation_is_diagnostic_only(tmp_path):
     assert tools.sources_snapshot(restored).configuration_names == ("DemoConfiguration",)
     with pytest.raises(RegistryError, match="reload_required"):
         restored.resolve("DemoConfiguration")
-
-
-def test_restored_legacy_a_plus_separate_code_drops_code_row(
-    tmp_path, корень_кода
-):
-    incoming = tmp_path / "in"
-    incoming.mkdir()
-    registry = Registry(tmp_path / "data")
-    registry.add_configuration(
-        write_export(incoming, build_configuration(name="Розница"))
-    )
-    registry.save()
-    # Код отдельно от структуры оставляет только data/ прежней версии.
-    записать_старый_код(registry, корень_кода, configuration="Розница")
-
-    restored = Registry(registry.data_dir)
-    problems = restored.restore()
-    assert len(problems) == 1
-    assert problems[0].startswith("Розница:modules: ")
-    assert "до версии 4.2.0" in problems[0]
-    # Осталась чистая Source A: читается, как и без строки кода.
-    assert restored.active_activation(ExportIdentity.configuration("Розница")) is None
-    context = restored.resolve("Розница")
-    assert context.name == "Розница"
-    assert context.modules is None
 
 
 def test_restored_pure_source_a_remains_readable(tmp_path):

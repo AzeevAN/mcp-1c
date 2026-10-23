@@ -33,6 +33,8 @@ from mcp1c.intake_v2_registry import (
     hash_layer_semantic,
     load_layer_payload,
 )
+from mcp1c.intake_v2_converter import base_layer_data
+from mcp1c.model import Configuration
 from mcp1c.registry import Registry
 from test_intake_v2_generation import _stage_b_generation
 
@@ -220,14 +222,11 @@ def _generation(
     configuration_name: str = "DemoConfiguration",
 ):
     roles_layer, _saved = _role_layer(root, roles)
-    base_semantic = {
-        "name": configuration_name,
-        "synonym": "Синтетическая конфигурация",
-        "version": "1.0",
-        "vendor": "Example",
-        "schema_version": "1",
-        "objects": [],
-    }
+    base_semantic = base_layer_data(Configuration(
+        name=configuration_name, synonym="Синтетическая конфигурация",
+        version="1.0", vendor="Example", schema_version="1",
+        source_format="source-b", predefined_available=False,
+    ))
     base_payload = LayerPayload(LayerKind.BASE_STRUCTURE, base_semantic)
     base_path = root / "base-source.json"
     base_path.write_bytes(base_payload.to_json_bytes())

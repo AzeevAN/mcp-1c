@@ -34,9 +34,9 @@ from . import (
     replacements,
     source_ids,
 )
-from .bsl_lex import Процедура, прочитать_модуль, разобрать
+from .bsl_lex import Процедура, разобрать
 from .intake_v2 import ExportIdentity
-from .module_content import ModuleLocator, read_bsl
+from .module_content import read_bsl
 from .module_address import путь_модуля
 from .source_modes import ActivationStatus
 from .registry import (
@@ -78,9 +78,6 @@ from .standard_procedure_intents import recognize_standard_procedure_intent
 from .syntax_model import KIND_TITLES, SyntaxItem, parse_version, release
 from .virtual_tables import analyze_virtual_tables
 from .xdto import XDTOReadError, member_details, read_package_member
-
-
-_ИСХОДНЫЙ_ЧИТАТЕЛЬ_МОДУЛЯ = прочитать_модуль
 
 
 def health(registry: Registry, *, detailed: bool) -> dict:
@@ -2648,29 +2645,20 @@ def _сигнатура_из_текста(строки: list[str], процед�
 
 
 def _прочитать_тело_модуля(loaded: LoadedModules, модуль: str) -> str:
-    """Единая граница чтения; каталог подменяет файловый fallback-локатор."""
-    if loaded.каталог is not None:
-        identity = loaded.каталог.identity
-        if (
-            identity.source_id != loaded.source.id
-            or identity.source_sha256 != loaded.source.sha256
-            or identity.generation != loaded.source.locator_generation
-        ):
-            raise OSError("каталог локаторов принадлежит другому поколению")
-        entry = loaded.каталог.entries.get(модуль)
-        if entry is None or entry.locator is None:
-            raise OSError("для адреса нет читаемого локатора")
-        locator = entry.locator
-    else:
-        # Совместимость только для вручную собранных старых тестовых пакетов;
-        # production LoadedModules всегда публикуется вместе с каталогом.
-        locator = ModuleLocator.file(путь_модуля(модуль))
-    # Старые проверки подменяют этот символ, чтобы синхронизировать смену
-    # поколения посреди чтения. В рабочем процессе всегда действует
-    # защищённый reader локатора; подмена остаётся узким тестовым seam.
-    if locator.kind == "file" and прочитать_модуль is not _ИСХОДНЫЙ_ЧИТАТЕЛЬ_МОДУЛЯ:
-        return прочитать_модуль(loaded.корень / locator.relative_path)
-    return read_bsl(loaded.корень, модуль, locator)
+    """Прочитать модуль через каталог локаторов опубликованного поколения."""
+    if loaded.каталог is None:
+        raise OSError("для поколения нет каталога локаторов")
+    identity = loaded.каталог.identity
+    if (
+        identity.source_id != loaded.source.id
+        or identity.source_sha256 != loaded.source.sha256
+        or identity.generation != loaded.source.locator_generation
+    ):
+        raise OSError("каталог локаторов принадлежит другому поколению")
+    entry = loaded.каталог.entries.get(модуль)
+    if entry is None or entry.locator is None:
+        raise OSError("для адреса нет читаемого локатора")
+    return read_bsl(loaded.корень, модуль, entry.locator)
 
 
 def _сигнатура(

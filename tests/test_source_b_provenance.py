@@ -1,13 +1,14 @@
 """Source B не выдаёт неизвестные runtime-факты за проверенные сведения."""
 
 from copy import deepcopy
+import json
 
 import pytest
 
 from conftest import write_export
 from mcp1c.intake_v2_converter import base_layer_data, convert_collection
 from mcp1c.intake_v2 import LayerSourceProfile
-from mcp1c.intake_v2_runtime import configuration_from_base_layer
+from mcp1c.intake_v2_runtime import GenerationRuntimeError, configuration_from_base_layer
 from mcp1c.registry import Registry
 from mcp1c.store import save_syntax
 from mcp1c.syntax_model import SyntaxIndex, SyntaxItem
@@ -74,22 +75,21 @@ def test_b_only_явно_сообщает_неизвестные_факты_и_�
 
 
 @pytest.mark.parametrize("legacy_platform", ["Version8_3_24", ""])
-def test_старый_b_snapshot_читается_без_перезаписи_и_ложных_фактов(tmp_path, legacy_platform):
+def test_старый_b_snapshot_отклоняется_без_изменения_данных(tmp_path, legacy_platform):
     collection, _ = _materialized(tmp_path, "old")
     semantic = base_layer_data(convert_collection(collection).base)
     semantic.pop("compatibility_mode", None)
     semantic.update(platform=legacy_platform, predefined_available=True)
     before = deepcopy(semantic)
-    config = configuration_from_base_layer(semantic)
-    assert config.platform == ""
-    assert config.compatibility_mode == legacy_platform
-    assert config.predefined_available is False
+    with pytest.raises(GenerationRuntimeError, match="base_structure содержит неверный набор полей"):
+        configuration_from_base_layer(semantic)
     assert semantic == before
 
 
 def test_современный_source_b_сохраняет_доказанные_предопределённые(tmp_path):
     collection, _ = _materialized(tmp_path, "b-predefined")
     base = convert_collection(collection).base
+    base.platform = "8.3.27.2130"
     base.predefined_available = True
     base.get("Справочник.Items").predefined = ["Основной"]
     raw = base_layer_data(base)
@@ -100,10 +100,12 @@ def test_современный_source_b_сохраняет_доказанные
     )
 
     assert restored.predefined_available is True
+    assert restored.platform == ""
+    assert restored.compatibility_mode == base.compatibility_mode
     assert restored.get("Справочник.Items").predefined
 
 
-def test_старое_поколение_v3_восстанавливается_без_перезаписи_bundle(tmp_path, monkeypatch):
+def test_старое_поколение_v3_изолируется_без_перезаписи_bundle(tmp_path, monkeypatch):
     from hashlib import sha256
     import mcp1c.intake_v2_converter as converter
     import mcp1c.intake_v2_generation as generation_module
@@ -122,15 +124,25 @@ def test_старое_поколение_v3_восстанавливается_�
         legacy.setattr(generation_module, "GENERATION_PARSER_VERSION", 3)
         _, generation = _materialized(tmp_path, "old-bundle")
     registry = Registry(tmp_path / "data")
-    pointer = registry.publish_generation(_stage_b_generation(registry, generation.manifest, generation.payloads))
+    staged = _stage_b_generation(registry, generation.manifest, generation.payloads)
+    # Фикстура моделирует уже записанный старым сервером bundle. Публикация
+    # через современный runtime должна отвергнуть его до active pointer.
+    registry._generation_store.promote(staged)
+    pointer = staged.pointer
+    registry.registry_path.write_text(json.dumps({
+        "registry_version": 1,
+        "sources": [],
+        "generation_manifests": [pointer.to_dict()],
+    }), encoding="utf-8")
     root = registry.data_dir / pointer.root_path
     before = {p.relative_to(root): sha256(p.read_bytes()).hexdigest() for p in root.rglob("*") if p.is_file()}
     restarted = Registry(registry.data_dir)
-    assert restarted.restore() == []
-    config = restarted.resolve("DemoConfiguration").configuration.config
-    assert config.platform == ""
-    assert config.compatibility_mode == "Version8_3_24"
-    assert config.predefined_available is False
+    problems = restarted.restore()
+    assert any("base_structure содержит неверный набор полей" in problem for problem in problems)
+    assert restarted.active_generation_pointer(pointer.identity) is None
+    assert "DemoConfiguration" not in restarted.configurations
+    restarted.save()
+    assert json.loads(restarted.registry_path.read_text(encoding="utf-8"))["generation_manifests"] == [pointer.to_dict()]
     assert before == {p.relative_to(root): sha256(p.read_bytes()).hexdigest() for p in root.rglob("*") if p.is_file()}
 
 

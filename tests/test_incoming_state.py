@@ -59,14 +59,14 @@ def test_незнакомый_файл_не_разобран(tmp_path):
 
 
 def test_строка_реестра_с_тем_же_хешем_и_именем_не_делает_файл_разобранным(
-    tmp_path, корень_кода
+    tmp_path,
 ):
     """Сверки с реестром нет: «разобрано», «обновлённая выгрузка» и «отбор
-    устарел» не существуют, а старые строки кода и конфигурации не влияют."""
+    устарел» не существуют, а неизвестные строки источников не влияют."""
     import hashlib
 
     from conftest import build_configuration, write_export
-    from native_export import записать_старый_код
+    from mcp1c.registry import STATUS_READY, Source
 
     экспорт = tmp_path / "экспорт"
     экспорт.mkdir()
@@ -75,13 +75,14 @@ def test_строка_реестра_с_тем_же_хешем_и_именем_�
     registry.add_configuration(zip_файл)
     registry.save()
     хеш = hashlib.sha256(zip_файл.read_bytes()).hexdigest()
-    записать_старый_код(
-        registry,
-        корень_кода,
-        configuration="Розница",
-        origin=zip_файл.name,
-        sha256=хеш,
+    unrelated = Source(
+        id="UnrelatedSource", kind="unknown-source-kind", origin=zip_файл.name,
+        sha256=хеш, loaded_at="2026-10-23T00:00:00+00:00",
+        status=STATUS_READY, stored_path="sources/missing.json",
     )
+    payload = json.loads(registry.registry_path.read_text(encoding="utf-8"))
+    payload["sources"].append(unrelated.to_dict())
+    registry.registry_path.write_text(json.dumps(payload), encoding="utf-8")
     registry.incoming_dir.mkdir(parents=True, exist_ok=True)
     копия = registry.incoming_dir / zip_файл.name
     копия.write_bytes(zip_файл.read_bytes())

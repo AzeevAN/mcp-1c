@@ -118,7 +118,7 @@ def _text_list(value: object, label: str) -> list[str]:
     return list(value)
 
 
-_LEGACY_FIELD_KEYS = {
+_FIELD_KEYS = {
     "name",
     "synonym",
     "comment",
@@ -128,15 +128,14 @@ _LEGACY_FIELD_KEYS = {
     "digits",
     "fraction_digits",
     "date_parts",
+    "string_allowed_length",
 }
-_FIELD_KEYS = _LEGACY_FIELD_KEYS | {"string_allowed_length"}
 _BALANCE_FIELD_KEYS = _FIELD_KEYS | {"balance"}
 
 
 def _field(value: object, label: str) -> Field:
     raw = _mapping(value, label)
     if frozenset(raw) not in {
-        frozenset(_LEGACY_FIELD_KEYS),
         frozenset(_FIELD_KEYS),
         frozenset(_BALANCE_FIELD_KEYS),
     }:
@@ -149,7 +148,7 @@ def _field(value: object, label: str) -> Field:
         types=_text_list(raw["types"], f"{label}.types"),
         string_length=_optional_int(raw["string_length"], f"{label}.string_length"),
         string_allowed_length=_text(
-            raw.get("string_allowed_length", ""),
+            raw["string_allowed_length"],
             f"{label}.string_allowed_length",
         ),
         digits=_optional_int(raw["digits"], f"{label}.digits"),
@@ -273,21 +272,20 @@ def configuration_from_base_layer(
 ) -> Configuration:
     """Восстановить формат-независимую модель из canonical base layer.
 
-    Пишет слой `intake_v2_converter.base_layer_data`. Reader шире writer-а:
-    принимает прежние наборы полей и по профилю Source B сбрасывает
-    `platform`, поэтому общий модуль схемы не выделен — согласованность
-    закрепляет `tests/test_intake_v2_layer_roundtrip.py`.
+    Принимается полный современный формат, который пишет
+    `intake_v2_converter.base_layer_data`; согласованность закрепляет
+    `tests/test_intake_v2_layer_roundtrip.py`. Профиль Source B очищает
+    недоказанную фактическую версию платформы, сохраняя режим совместимости
+    и сведения о предопределённых элементах.
     """
     raw = _mapping(semantic, "base_structure")
-    legacy_keys = {
+    current_keys = {
         "name",
         "synonym",
         "version",
         "vendor",
         "schema_version",
         "objects",
-    }
-    current_keys = legacy_keys | {
         "platform",
         "exported_at",
         "exporter_version",
@@ -295,14 +293,9 @@ def configuration_from_base_layer(
         "truncated",
         "predefined_available",
         "warnings",
+        "compatibility_mode",
     }
-    if frozenset(raw) not in {
-        frozenset(legacy_keys), frozenset(current_keys),
-        frozenset(current_keys | {"compatibility_mode"}),
-    }:
-        raise GenerationRuntimeError(
-            "base_structure содержит неверный набор полей"
-        )
+    _exact_keys(raw, current_keys, "base_structure")
     objects_raw = raw["objects"]
     if not isinstance(objects_raw, list):
         raise GenerationRuntimeError("base_structure.objects должен быть массивом")
@@ -316,30 +309,22 @@ def configuration_from_base_layer(
         casefold_names.add(folded)
         objects[obj.full_name] = obj
     source_format = _text(
-        raw.get("source_format", "source-b"), "base_structure.source_format"
+        raw["source_format"], "base_structure.source_format"
     )
-    platform = _text(raw.get("platform", ""), "base_structure.platform")
+    platform = _text(raw["platform"], "base_structure.platform")
     compatibility = _text(
-        raw.get("compatibility_mode", ""), "base_structure.compatibility_mode"
+        raw["compatibility_mode"], "base_structure.compatibility_mode"
     )
     predefined = _boolean(
-        raw.get("predefined_available", True), "base_structure.predefined_available"
+        raw["predefined_available"], "base_structure.predefined_available"
     )
     is_source_b = (
         source_profile is LayerSourceProfile.SOURCE_B
         or (source_profile is None and source_format == "source-b")
     )
     if is_source_b:
-        # Старый B-payload до появления отдельного compatibility_mode не мог
-        # доказать ни режим, ни предопределённые элементы. Современный
-        # Source B уже содержит собственные предопределённые элементы, и их
-        # флаг нельзя сбрасывать только из-за происхождения B.
-        if "compatibility_mode" not in raw:
-            compatibility = platform
-            platform = ""
-            predefined = False
-        else:
-            platform = ""
+        # Выгрузка содержит режим совместимости, а не фактическую платформу.
+        platform = ""
     configuration = Configuration(
         name=_text(raw["name"], "base_structure.name", required=True),
         synonym=_text(raw["synonym"], "base_structure.synonym"),
@@ -348,21 +333,21 @@ def configuration_from_base_layer(
         platform=platform,
         compatibility_mode=compatibility,
         exported_at=_text(
-            raw.get("exported_at", ""), "base_structure.exported_at"
+            raw["exported_at"], "base_structure.exported_at"
         ),
         exporter_version=_text(
-            raw.get("exporter_version", ""), "base_structure.exporter_version"
+            raw["exporter_version"], "base_structure.exporter_version"
         ),
         schema_version=_text(
             raw["schema_version"], "base_structure.schema_version", required=True
         ),
         source_format=source_format,
         truncated=_boolean(
-            raw.get("truncated", False), "base_structure.truncated"
+            raw["truncated"], "base_structure.truncated"
         ),
         predefined_available=predefined,
         warnings=_text_list(
-            raw.get("warnings", []), "base_structure.warnings"
+            raw["warnings"], "base_structure.warnings"
         ),
         objects=objects,
     )

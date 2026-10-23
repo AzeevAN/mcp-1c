@@ -17,7 +17,7 @@ from mcp1c import coverage_log, registry as registry_module, tools as mcp_tools
 from mcp1c.intake_v2 import LayerKind, LayerSourceProfile, LayerState
 from mcp1c.intake_v2_converter import base_layer_data, convert_collection
 from mcp1c.intake_v2_generation import materialize_generation
-from mcp1c.intake_v2_runtime import configuration_from_base_layer
+from mcp1c.intake_v2_runtime import GenerationRuntimeError, configuration_from_base_layer
 from mcp1c.model import Configuration, Field, MetadataObject
 from mcp1c.registry import Registry, RegistryError
 from mcp1c.render import render_http_service, render_subsystem
@@ -1410,11 +1410,7 @@ def test_source_b_missing_register_properties_остаются_unknown_посл�
 
 def test_runtime_сохраняет_ссылку_defined_type_и_публикует_exact_members():
     semantic = {
-        "name": "DefinedTypes",
-        "synonym": "",
-        "version": "1",
-        "vendor": "",
-        "schema_version": "1",
+        **base_layer_data(Configuration(name="DefinedTypes", version="1")),
         "objects": [
             {
                 "full_name": "ОпределяемыйТип.Price",
@@ -1489,11 +1485,7 @@ def test_runtime_сохраняет_ссылку_defined_type_и_публику�
 
 def test_runtime_помечает_неизвестную_ссылку_defined_type_unknown():
     semantic = {
-        "name": "UnknownDefinedType",
-        "synonym": "",
-        "version": "1",
-        "vendor": "",
-        "schema_version": "1",
+        **base_layer_data(Configuration(name="UnknownDefinedType", version="1")),
         "objects": [
             {
                 "full_name": "Справочник.Items",
@@ -1623,14 +1615,31 @@ def test_legacy_schema_v1_получает_ту_же_проекцию_после
     assert xml_document.props["number_rules_resolved"] is True
     assert xml_document.attributes[1].type_spec() == "Строка(11, фикс.)"
 
-    old_semantic = base_layer_data(configuration)
-    for raw_object in old_semantic["objects"]:
-        for raw_field in raw_object["attributes"]:
-            raw_field.pop("string_allowed_length")
-    restored_old = configuration_from_base_layer(old_semantic)
-    old_field = restored_old.get("Справочник.Items").attributes[0]
-    assert old_field.name == "Custom"
-    assert old_field.string_allowed_length == ""
+
+@pytest.mark.parametrize("collection", ["attributes", "dimensions"])
+def test_runtime_отклоняет_поле_без_string_allowed_length(collection):
+    obj = MetadataObject(
+        full_name="РегистрБухгалтерии.Учёт",
+        kind="РегистрБухгалтерии",
+        name="Учёт",
+        **{collection: [Field("Поле", types=["Строка"], balance=True)]},
+    )
+    semantic = base_layer_data(Configuration(name="Тест", objects={obj.full_name: obj}))
+    del semantic["objects"][0][collection][0]["string_allowed_length"]
+
+    with pytest.raises(GenerationRuntimeError, match="содержит неверный набор полей"):
+        configuration_from_base_layer(semantic)
+
+
+def test_runtime_отклоняет_прежний_минимальный_корень_base_structure():
+    semantic = base_layer_data(Configuration(name="Тест"))
+    minimal = {
+        key: semantic[key]
+        for key in ("name", "synonym", "version", "vendor", "schema_version", "objects")
+    }
+
+    with pytest.raises(GenerationRuntimeError, match="base_structure содержит неверный набор полей"):
+        configuration_from_base_layer(minimal)
 
 
 def test_смена_только_extended_не_поднимает_старый_object_cache(tmp_path):

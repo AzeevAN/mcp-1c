@@ -14,6 +14,8 @@ from dataclasses import replace
 import pytest
 
 from conftest import build_configuration, write_export
+from mcp1c.intake_v2_converter import base_layer_data
+from mcp1c.model import Configuration
 from mcp1c.registry import Registry
 from mcp1c.source_modes import ActivationComponent, ActivationManifest, ActivationMode
 from test_intake_v2_extensions import _materialized, _stage_active_base
@@ -48,14 +50,11 @@ def _manifest(tmp_path, generation_id: str, *, suffix: str = ""):
 
     base = tmp_path / f"base{suffix}.json"
     code = tmp_path / f"code{suffix}.json"
-    base_semantic = {
-        "name": "DemoConfiguration",
-        "synonym": f"Demo{suffix}",
-        "version": "1.0",
-        "vendor": "Example",
-        "schema_version": "1",
-        "objects": [],
-    }
+    base_semantic = base_layer_data(Configuration(
+        name="DemoConfiguration", synonym=f"Demo{suffix}", version="1.0",
+        vendor="Example", schema_version="1", source_format="source-b",
+        predefined_available=False,
+    ))
     code_semantic = {"modules": []}
     base.write_bytes(
         LayerPayload(LayerKind.BASE_STRUCTURE, base_semantic).to_json_bytes()

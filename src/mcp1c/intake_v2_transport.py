@@ -1152,6 +1152,8 @@ def _open_directory_member(
         os, "O_NOFOLLOW", 0
     )
     flags_file = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    # FIFO после подмены должен дойти до fstat, а не ждать писателя в open.
+    flags_file |= getattr(os, "O_NONBLOCK", 0)
     file_fd: int | None = None
     try:
         current = root_fd

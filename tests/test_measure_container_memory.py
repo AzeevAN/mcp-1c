@@ -385,7 +385,7 @@ def test_cli_явно_требует_cold_или_warm_и_не_раскрывае
     )
 
     assert help_result.returncode == 0
-    assert "--mode {cold,warm}" in help_result.stdout
+    assert "--mode {cold,warm,observe}" in help_result.stdout
     assert invalid.returncode == 2
     assert invalid.stderr == ""
     assert json.loads(invalid.stdout) == {
@@ -858,3 +858,136 @@ def test_warm_после_stop_не_следует_symlink_родительско
     assert ("docker", "start", "mcp1c") not in calls
     assert sentinel.read_bytes() == b"outside"
     assert cache.name == "cache"
+
+
+
+
+def _i7_runner(target, calls, *, bad_memory=False, docker_error=''):
+    def run(args, *, timeout):
+        command = tuple(args)
+        calls.append(command)
+        assert 0 < timeout <= 30
+        assert command[:1] == ('docker',)
+        # Полный whitelist исключает compose, logs и управление жизненным циклом.
+        assert command[1] in {'inspect', 'exec', 'stats'}
+        if command[1] == 'exec':
+            assert command[2] == target
+        else:
+            assert command[-1] == target
+        if docker_error:
+            return _Result(returncode=1, stderr=docker_error)
+        if command[1] == 'inspect':
+            return _Result('healthy|2|false\n')
+        if command[1] == 'exec':
+            if bad_memory:
+                return _Result('not-memory\n')
+            return _Result('1185505280\n1198469120\nVmHWM: 669056 kB\nVmRSS: 667008 kB\n')
+        return _Result('699.1MiB / 7.654GiB\n')
+    return run
+
+
+def _i7_cli(module, args, capsys):
+    # Обе формы отказа main (return и argparse SystemExit) дают тот же CLI exit.
+    try:
+        code = module.main(args)
+    except SystemExit as caught:
+        code = caught.code
+    captured = capsys.readouterr()
+    assert captured.err == ''
+    assert len(captured.out.splitlines()) == 1
+    return code, json.loads(captured.out), captured.out
+
+
+def test_observe_читает_только_метрики_явно_выбранного_контейнера():
+    module = _module()
+    target = 'audit-observe-17'
+    calls = []
+    result = module.observe_container(
+        target, run=_i7_runner(target, calls), clock=lambda: 10.0, timeout=30,
+    )
+    assert result['schema_version'] == 1
+    assert result['completed'] is True
+    assert result['mode'] == 'observe'
+    assert result['container'] == target
+    assert result['cgroup_memory_current_bytes'] == 1_185_505_280
+    assert result['cgroup_memory_peak_bytes'] == 1_198_469_120
+    assert result['pid1_vm_rss_kib'] == 667_008
+    assert result['pid1_vm_hwm_kib'] == 669_056
+    assert result['docker_stats_memory'] == '699.1MiB'
+    assert result['health'] == 'healthy'
+    assert result['restart_count'] == 2
+    assert result['oom_killed'] is False
+    assert len(calls) == 3
+    assert {command[1] for command in calls} == {'inspect', 'exec', 'stats'}
+
+
+def test_cli_observe_работает_без_data_и_принимает_docker_id(monkeypatch, capsys):
+    module = _module()
+    target = 'ab12cd34ef56'
+    calls = []
+    monkeypatch.setattr(module, '_run', _i7_runner(target, calls))
+    code, payload, _raw = _i7_cli(module, [
+        '--mode', 'observe', '--container', target, '--timeout', '30',
+    ], capsys)
+    assert code == 0
+    assert payload['completed'] is True
+    assert payload['mode'] == 'observe'
+    assert payload['container'] == target
+    assert payload['cgroup_memory_peak_bytes'] == 1_198_469_120
+    assert len(calls) == 3
+
+
+@pytest.mark.parametrize('args', [
+    ['--mode', 'observe'],
+    ['--mode', 'observe', '--container', 'audit-observe', '--data', '/private/audit-secret-data'],
+    ['--mode', 'observe', '--container', '/private/audit-secret-container'],
+    ['--mode', 'cold', '--container', 'audit-observe', '--data', '/private/audit-secret-data'],
+], ids=['missing-target', 'observe-forbids-data', 'target-is-not-path', 'cold-forbids-target'])
+def test_cli_observe_несовместимые_аргументы_дают_один_безопасный_json(args, monkeypatch, capsys):
+    module = _module()
+    def forbidden(*_args, **_kwargs):
+        pytest.fail('Неверные аргументы должны отклоняться до Docker')
+    monkeypatch.setattr(module, '_run', forbidden)
+    code, payload, raw = _i7_cli(module, args, capsys)
+    assert code == 2
+    assert payload['schema_version'] == 1
+    assert payload['completed'] is False
+    assert payload['error']
+    assert '/private/' not in raw
+    assert 'audit-secret' not in raw
+    assert 'cgroup_memory_peak_bytes' not in payload
+
+
+def test_cli_observe_ошибка_docker_не_публикует_секреты_и_ложный_peak(monkeypatch, capsys):
+    module = _module()
+    target = 'audit-observe'
+    private = 'DOCKER_SECRET_7Qx /private/audit-hidden-path'
+    calls = []
+    monkeypatch.setattr(module, '_run', _i7_runner(target, calls, docker_error=private))
+    code, payload, raw = _i7_cli(module, [
+        '--mode', 'observe', '--container', target, '--timeout', '30',
+    ], capsys)
+    assert code == 2
+    assert payload['schema_version'] == 1
+    assert payload['completed'] is False
+    assert payload['error']
+    assert 'DOCKER_SECRET_7Qx' not in raw
+    assert '/private/audit-hidden-path' not in raw
+    assert 'cgroup_memory_peak_bytes' not in payload
+    assert 'pid1_vm_hwm_kib' not in payload
+    assert calls
+
+
+def test_cli_observe_невалидные_метрики_не_становятся_нулевым_пиком(monkeypatch, capsys):
+    module = _module()
+    calls = []
+    monkeypatch.setattr(module, '_run', _i7_runner('audit-observe', calls, bad_memory=True))
+    code, payload, _raw = _i7_cli(module, [
+        '--mode', 'observe', '--container', 'audit-observe', '--timeout', '30',
+    ], capsys)
+    assert code == 2
+    assert payload['schema_version'] == 1
+    assert payload['completed'] is False
+    assert payload['error']
+    assert 'cgroup_memory_peak_bytes' not in payload
+    assert 'pid1_vm_hwm_kib' not in payload

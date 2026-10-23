@@ -1,4 +1,4 @@
-"""Замер холодной и тёплой памяти финального контейнера.
+"""Замер памяти контейнера и чтение метрик без управления его запуском.
 
 Скрипт печатает один JSON-объект только с агрегатами. Имена источников,
 конфигураций, локальные пути и содержимое журнала в вывод не попадают.
@@ -6,6 +6,7 @@
 Холодный режим собирает финальный образ, удаляет только точные расходные файлы
 четырёх модульных индексов и пересоздаёт контейнер. Тёплый режим сохраняет
 кэш и останавливает/запускает тот же контейнер.
+Режим observe читает только метрики явно выбранного контейнера.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import argparse
 import json
 import math
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -391,7 +393,8 @@ def _delete_expected_cache(anchor: CacheAnchor, expected: frozenset[str]) -> int
 
 
 def _inspect_state(
-    run: Callable, deadline: float, clock: Callable[[], float]
+    run: Callable, deadline: float, clock: Callable[[], float],
+    *, container: str | None = None,
 ) -> dict:
     result = _checked(
         run,
@@ -400,7 +403,7 @@ def _inspect_state(
             "inspect",
             "--format",
             "{{.State.Health.Status}}|{{.RestartCount}}|{{.State.OOMKilled}}",
-            CONTAINER,
+            CONTAINER if container is None else container,
         ),
         "docker inspect",
         deadline,
@@ -518,14 +521,15 @@ def _wait_until_ready(
 
 
 def _memory_metrics(
-    run: Callable, deadline: float, clock: Callable[[], float]
+    run: Callable, deadline: float, clock: Callable[[], float],
+    *, container: str | None = None,
 ) -> dict:
     result = _checked(
         run,
         (
             "docker",
             "exec",
-            CONTAINER,
+            CONTAINER if container is None else container,
             "sh",
             "-c",
             "cat /sys/fs/cgroup/memory.current; "
@@ -558,7 +562,8 @@ def _memory_metrics(
 
 
 def _docker_stats_memory(
-    run: Callable, deadline: float, clock: Callable[[], float]
+    run: Callable, deadline: float, clock: Callable[[], float],
+    *, container: str | None = None,
 ) -> str:
     result = _checked(
         run,
@@ -568,7 +573,7 @@ def _docker_stats_memory(
             "--no-stream",
             "--format",
             "{{.MemUsage}}",
-            CONTAINER,
+            CONTAINER if container is None else container,
         ),
         "docker stats",
         deadline,
@@ -748,10 +753,40 @@ def measure(
     return result
 
 
+def observe_container(
+    container: str,
+    *,
+    run: Callable = _run,
+    clock: Callable[[], float] = time.monotonic,
+    timeout: float = 300.0,
+) -> dict:
+    """Снимок cgroup/PID1 конкретного контейнера без lifecycle и файлов data."""
+    _validate_limits(timeout, 0.5)
+    if (
+        not isinstance(container, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", container) is None
+    ):
+        raise MeasurementError("observe требует корректное имя или ID контейнера")
+    deadline = clock() + timeout
+    state = _inspect_state(run, deadline, clock, container=container)
+    metrics = _memory_metrics(run, deadline, clock, container=container)
+    stats = _docker_stats_memory(run, deadline, clock, container=container)
+    return {
+        "schema_version": 1,
+        "completed": True,
+        "mode": "observe",
+        "container": container,
+        **metrics,
+        "docker_stats_memory": stats,
+        **state,
+    }
+
+
 def _arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = _JsonArgumentParser(description=__doc__)
-    parser.add_argument("--mode", choices=("cold", "warm"), required=True)
-    parser.add_argument("--data", type=Path, required=True)
+    parser.add_argument("--mode", choices=("cold", "warm", "observe"), required=True)
+    parser.add_argument("--data", type=Path, help="каталог данных для cold/warm")
+    parser.add_argument("--container", help="явное имя или ID только для observe")
     parser.add_argument("--timeout", type=float, default=300.0)
     parser.add_argument("--poll-interval", type=float, default=0.5)
     return parser.parse_args(argv)
@@ -761,13 +796,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _arguments(argv)
     try:
         _validate_limits(args.timeout, args.poll_interval)
-        result = measure(
-            args.mode,
-            args.data,
-            run=_run,
-            timeout=args.timeout,
-            poll_interval=args.poll_interval,
-        )
+        if args.mode == "observe":
+            if args.data is not None:
+                raise MeasurementError("observe не принимает --data")
+            result = observe_container(args.container, run=_run, timeout=args.timeout)
+        else:
+            if args.container is not None:
+                raise MeasurementError("--container предназначен только для observe")
+            if args.data is None:
+                raise MeasurementError("cold/warm требуют --data")
+            result = measure(
+                args.mode,
+                args.data,
+                run=_run,
+                timeout=args.timeout,
+                poll_interval=args.poll_interval,
+            )
     except MeasurementError as exc:
         _print_json_error(str(exc))
         return 2

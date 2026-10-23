@@ -757,3 +757,69 @@ def test_incoming_refresh_сохраняет_issue_превышенного_eocd
     assert "предел" in first.issues[0].message.lower()
     assert second.candidates == ()
     assert second.issues == first.issues
+
+
+
+
+@pytest.mark.skipif(
+    not hasattr(os, 'mkfifo') or not hasattr(os, 'O_NONBLOCK'),
+    reason='Для проверки подмены файла нужны FIFO и O_NONBLOCK',
+)
+def test_directory_tree_подмена_member_на_fifo_не_блокирует_open(tmp_path):
+    import subprocess
+    import sys
+    import textwrap
+
+    root = tmp_path / 'export'
+    member_path = 'Catalogs/Demo/Ext/ObjectModule.bsl'
+    payload = b'Procedure Demo()\nEndProcedure\n'
+    _write_tree(root, {
+        'Configuration.xml': b'<MetaDataObject><Configuration/></MetaDataObject>',
+        member_path: payload,
+    })
+    script = textwrap.dedent('''
+        import os
+        import sys
+        from pathlib import Path
+        from mcp1c.intake_v2_transport import DirectoryExportTree, TransportError
+        from mcp1c.resource_limits import ResourceLimits
+
+        root = Path(sys.argv[1])
+        member_path = 'Catalogs/Demo/Ext/ObjectModule.bsl'
+        tree = DirectoryExportTree(root, limits=ResourceLimits(
+            max_entries=20, max_entry_bytes=1024,
+            max_total_bytes=4096, max_compression_ratio=50,
+        ), settle_seconds=0)
+        with tree.open(member_path) as reader:
+            assert reader.read() == b'Procedure Demo()\\nEndProcedure\\n'
+
+        # FIFO появляется только после сканирования. Вложенный member не
+        # меняет mtime корня и не подменяет целевой отказ проверкой корня.
+        root_mtime = root.stat().st_mtime_ns
+        member = root / member_path
+        member.unlink()
+        os.mkfifo(member)
+        assert root.stat().st_mtime_ns == root_mtime
+        try:
+            try:
+                with tree.open(member_path) as reader:
+                    raise AssertionError('FIFO ошибочно открыт как обычный файл')
+            except TransportError as error:
+                assert str(error)
+                print('fifo-refused')
+        finally:
+            member.unlink()
+    ''')
+    environment = dict(os.environ)
+    # Выбираем исходники этого checkout и тот же Python, не установленный пакет.
+    environment['PYTHONPATH'] = str(Path(__file__).resolve().parents[1] / 'src')
+    try:
+        result = subprocess.run(
+            [sys.executable, '-c', script, str(root)],
+            env=environment, capture_output=True, text=True, timeout=3,
+        )
+    except subprocess.TimeoutExpired:
+        # run сам убивает и дожидается только созданного им дочернего процесса.
+        pytest.fail('tree.open завис на FIFO после подмены member', pytrace=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == 'fifo-refused'

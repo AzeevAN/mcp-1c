@@ -148,6 +148,9 @@ class IntakeApiService:
             raise TypeError("lifecycle должен быть IntakeLifecycle")
         self.registry = registry
         self.lifecycle = lifecycle
+        # Изменение binding ждёт завершения confirm, чтение списка — только
+        # короткой проверки. Порядок замков: mutation -> directory.
+        self._directory_mutation_lock = threading.RLock()
         self._directory_lock = threading.RLock()
         self.bindings = ConfigSourceBindings(
             registry.data_dir / "config-source-bindings.json",
@@ -207,7 +210,7 @@ class IntakeApiService:
             )) from error
 
     def bind_directory(self, configuration: str, source_id: str) -> dict[str, object]:
-        with self._directory_lock:
+        with self._directory_mutation_lock, self._directory_lock:
             self._directory_probe(configuration, source_id)
             try:
                 bindings = self.bindings.load()
@@ -220,7 +223,7 @@ class IntakeApiService:
             return self.directory_sources()
 
     def unbind_directory(self, configuration: str) -> dict[str, object]:
-        with self._directory_lock:
+        with self._directory_mutation_lock, self._directory_lock:
             try:
                 bindings = self.bindings.load()
                 if configuration in bindings:
@@ -231,7 +234,7 @@ class IntakeApiService:
             return self.directory_sources()
 
     def refresh_directory(self, configuration: str) -> dict[str, object]:
-        with self._directory_lock:
+        with self._directory_mutation_lock, self._directory_lock:
             try:
                 source_id = self.bindings.load().get(configuration)
             except ConfigSourceError as error:
@@ -646,7 +649,7 @@ class IntakeApiService:
         except KeyError:
             raise IntakeApiNotFound("Job не найдена.") from None
         try:
-            with self._directory_lock:
+            with self._directory_mutation_lock:
                 # Повторный confirm готового commit не зависит от доступности входа.
                 if self.job_payload(job_id).get("commit") is None:
                     self.lifecycle.operations.load_preview(job_id)
@@ -658,11 +661,12 @@ class IntakeApiService:
                     # повторного probe. Browser-preview после prepare автономен:
                     # его ZIP уже может быть штатно очищен другим commit.
                     if durable.transport is CandidateTransport.LOCAL_DIRECTORY:
-                        self._validate_directory_candidate(
-                            self.lifecycle.catalog.load(job.candidate_id)
-                        )
+                        with self._directory_lock:
+                            self._validate_directory_candidate(
+                                self.lifecycle.catalog.load(job.candidate_id)
+                            )
                 self.lifecycle.operations.confirm(job_id, self.registry)
-            self.lifecycle.release_committed_candidate(job_id)
+                self.lifecycle.release_committed_candidate(job_id)
         except KeyError:
             raise IntakeApiConflict(
                 "Durable preview или commit result job недоступен."

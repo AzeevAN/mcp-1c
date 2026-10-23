@@ -2,6 +2,8 @@
 import io
 import os
 import zipfile
+import threading
+import time
 from dataclasses import replace
 import pytest
 from conftest import build_configuration, write_export
@@ -447,3 +449,116 @@ def test_compact_preview_is_revalidated(world, damage, monkeypatch):
                             intake_v2_generation.GENERATION_PARSER_VERSION + 1)
     with pytest.raises(ops.OperationError):
         coordinator.load_preview(work.job_id)
+
+
+def _m10_worker(action, results, errors, finished):
+    def run():
+        try:
+            results.append(action())
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            finished.set()
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return thread
+
+
+@pytest.mark.parametrize("world", ["directory"], indirect=True)
+@pytest.mark.parametrize("mutation", [None, "unbind", "rebind"])
+def test_m10_directory_sources_доступны_во_время_confirm_а_binding_ждёт_commit(
+    world, monkeypatch, mutation
+):
+    service = world["service"]
+    registry = world["registry"]
+    # Второй каталог нужен лишь для rebind; его descriptor имеет ту же identity.
+    if mutation == "rebind":
+        other = world["root"].parent / "config-other"
+        other.mkdir()
+        (other / "Configuration.xml").write_bytes(
+            (world["root"] / "Configuration.xml").read_bytes()
+        )
+    work = world["prepare"]()
+    before_sources = service.directory_sources()
+    assert before_sources["bindings"] == {"Demo0": "config-test"}
+    identity = ExportIdentity.configuration("Demo0")
+    before_pointer = registry.active_generation_pointer(identity)
+    original_confirm = service.lifecycle.operations.confirm
+    entered = threading.Event()
+    release = threading.Event()
+    confirm_done = threading.Event()
+    reader_done = threading.Event()
+    mutation_started = threading.Event()
+    mutation_done = threading.Event()
+    confirms, reads, mutations, errors, threads = [], [], [], [], []
+
+    def paused_confirm(*args, **kwargs):
+        # Application preflight уже проверил binding и bytes каталога.
+        entered.set()
+        if not release.wait(timeout=10):
+            raise TimeoutError("Не освобождён confirm проверки M10")
+        return original_confirm(*args, **kwargs)
+
+    monkeypatch.setattr(service.lifecycle.operations, "confirm", paused_confirm)
+
+    def mutate_binding():
+        mutation_started.set()
+        if mutation == "unbind":
+            return service.unbind_directory("Demo0")
+        return service.bind_directory("Demo0", "config-other")
+
+    def read_sources():
+        started = time.monotonic()
+        payload = service.directory_sources()
+        return payload, time.monotonic() - started
+
+    try:
+        threads.append(_m10_worker(
+            lambda: service.confirm(work.job_id), confirms, errors, confirm_done,
+        ))
+        assert entered.wait(timeout=5), f"Confirm не достиг coordinator: {errors!r}"
+        assert not confirm_done.is_set()
+        if mutation is not None:
+            threads.append(_m10_worker(
+                mutate_binding, mutations, errors, mutation_done,
+            ))
+            assert mutation_started.wait(timeout=5)
+            # Окно контролируется событием paused_confirm: commit точно ещё
+            # не продолжился. Mutation не должна успеть сменить его binding.
+            assert not mutation_done.wait(timeout=0.1), "Binding изменён до завершения commit"
+        threads.append(_m10_worker(read_sources, reads, errors, reader_done))
+        assert reader_done.wait(timeout=0.1), "directory_sources ждёт coordinator.confirm"
+        assert not errors, repr(errors)
+        sources, elapsed = reads[0]
+        assert elapsed < 0.1
+        assert sources == before_sources
+        assert not confirm_done.is_set()
+        if mutation is not None:
+            assert not mutation_done.is_set()
+    finally:
+        release.set()
+        for thread in threads:
+            thread.join(timeout=10)
+        assert not any(thread.is_alive() for thread in threads), "Потоки M10 не завершились"
+
+    assert not errors, repr(errors)
+    assert confirm_done.is_set()
+    assert confirms[0]["commit"]["no_op"] is True
+    assert confirms[0]["commit"]["generation_id"] == before_pointer.generation_id
+    active = registry.active_generation_pointer(identity)
+    assert active.generation_id == before_pointer.generation_id
+    assert active.last_successful_load_job_id == work.job_id
+    assert registry.snapshot().configuration_names == ("Demo0",)
+    assert service.lifecycle.operations.load_commit(work.job_id).pointer.generation_id == active.generation_id
+    expected_binding = {
+        None: {"Demo0": "config-test"},
+        "unbind": {},
+        "rebind": {"Demo0": "config-other"},
+    }[mutation]
+    after_sources = service.directory_sources()
+    assert after_sources["bindings"] == expected_binding
+    assert service.bindings.load() == expected_binding
+    if mutation is not None:
+        assert mutation_done.is_set()
+        assert mutations[0]["bindings"] == expected_binding

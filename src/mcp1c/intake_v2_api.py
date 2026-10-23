@@ -39,12 +39,13 @@ from .intake_v2_lifecycle import (
 from .intake_v2_operations import (
     IntakeCommitResult,
     IntakeCoordinator,
+    IntakePreview,
     OperationConflict,
     OperationError,
     OperationStalePreview,
 )
 from .intake_v2_planner import IntakeAction, LayerVersion
-from .intake_v2_registry import GenerationView
+from .intake_v2_registry import GenerationPointer, GenerationView
 from .intake_v2_transport import (
     BrowserStagingStore,
     TransportError,
@@ -367,8 +368,20 @@ class IntakeApiService:
 
     def _listed_jobs(self) -> list[dict[str, object]]:
         with self.lifecycle.stable_jobs() as (jobs, unreadable):
-            return [self._listed_job_payload(job) for job in jobs] + [
-                self._unreadable_job_payload(record) for record in unreadable
+            dated = []
+            broken = list(unreadable)
+            for job in jobs:
+                try:
+                    modified = self.lifecycle.operations.records.job_modified_at(job.job_id)
+                except KeyError:
+                    continue
+                except (CandidateStoreError, OSError) as error:
+                    broken.append(UnreadableJob(f"{job.job_id}.json", str(error)))
+                    continue
+                dated.append((modified, job))
+            dated.sort(key=lambda item: (-item[0], item[1].job_id))
+            return [self._listed_job_payload(job) for _modified, job in dated[:50]] + [
+                self._unreadable_job_payload(record) for record in broken
             ]
 
     @_store_conflicts
@@ -577,6 +590,39 @@ class IntakeApiService:
             f"generation-{secrets.token_hex(16)}",
         )
 
+    def _preview_active_pointer(
+        self, identity: ExportIdentity, previous: GenerationPointer | None,
+    ) -> GenerationPointer:
+        expected = self.registry.active_generation_pointer(identity)
+        if (
+            expected is None or previous is None
+            or expected.identity != previous.identity
+            or expected.generation_id != previous.generation_id
+            or expected.root_path != previous.root_path
+        ):
+            raise RegistryError("active generation отсутствует или изменился")
+        return expected
+
+    def _preview_impacts(self, preview: IntakePreview) -> dict[str, object]:
+        if not preview.materialized.payloads:
+            expected = self._preview_active_pointer(
+                preview.plan.identity, preview.expected_previous
+            )
+            relations = self.registry.preview_active_extension_relations(expected)
+        else:
+            relations = self.registry.preview_extension_relations(
+                preview.materialized.root, preview.materialized.manifest,
+            )
+        impacts = tuple(item for item in relations if item.state.value == "target_missing")
+        return {
+            "total": len(impacts),
+            "items": [
+                {"extension": item.extension, "target": item.target, "state": item.state.value}
+                for item in impacts[:_MAX_EXTENSION_IMPACT_ITEMS]
+            ],
+            "truncated": len(impacts) > _MAX_EXTENSION_IMPACT_ITEMS,
+        }
+
     def prepare(self, work: IntakeWork) -> None:
         if not isinstance(work, IntakeWork):
             raise TypeError("work должен быть IntakeWork")
@@ -586,6 +632,7 @@ class IntakeApiService:
                 action=work.action,
                 active=work.active,
                 generation_id=work.generation_id,
+                preview_impacts=self._preview_impacts,
             )
         except Exception as error:
             self.lifecycle.operations.fail(work.job_id, error)
@@ -712,7 +759,7 @@ class IntakeApiService:
             payload["discardable"] = False
             return payload
         try:
-            preview = self.lifecycle.operations.load_preview(job_id)
+            preview = self.lifecycle.operations.load_preview_status(job_id)
         except OperationStalePreview as error:
             # Один preview прежней версии не должен блокировать список
             # кандидатов и остальные durable jobs.
@@ -743,22 +790,10 @@ class IntakeApiService:
                 for layer in preview.plan.layers
             ],
         }
-        if not preview.materialized.payloads:
+        if preview.reuse_active:
             try:
-                expected = self.registry.active_generation_pointer(
-                    preview.plan.identity
-                )
-                previous = preview.expected_previous
-                if (
-                    expected is None
-                    or previous is None
-                    or expected.identity != previous.identity
-                    or expected.generation_id != previous.generation_id
-                    or expected.root_path != previous.root_path
-                ):
-                    raise RegistryError("active generation отсутствует")
-                relations = self.registry.preview_active_extension_relations(
-                    expected,
+                self._preview_active_pointer(
+                    preview.plan.identity, preview.expected_previous
                 )
             except RegistryError as error:
                 # Устаревший компактный preview не блокирует список других jobs.
@@ -769,23 +804,7 @@ class IntakeApiService:
                     preview=None,
                 )
                 return payload
-        else:
-            relations = self.registry.preview_extension_relations(
-                preview.materialized.root, preview.materialized.manifest,
-            )
-        impacts = tuple(item for item in relations if item.state.value == "target_missing")
-        payload["preview"]["extension_impacts"] = {
-            "total": len(impacts),
-            "items": [
-                {
-                    "extension": item.extension,
-                    "target": item.target,
-                    "state": item.state.value,
-                }
-                for item in impacts[:_MAX_EXTENSION_IMPACT_ITEMS]
-            ],
-            "truncated": len(impacts) > _MAX_EXTENSION_IMPACT_ITEMS,
-        }
+        payload["preview"]["extension_impacts"] = preview.extension_impacts
         return payload
 
 

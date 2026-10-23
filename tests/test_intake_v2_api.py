@@ -6,18 +6,22 @@ import base64
 import importlib
 import io
 import json
+import os
+import sys
 import random
 import threading
 import time
 import zipfile
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from starlette.applications import Starlette
 
 from conftest import build_configuration, write_export, живой_клиент
 from mcp1c.dashboard_runtime import DASHBOARD_ON, routes
-from mcp1c.intake_v2 import DurableCandidateStore, ExportIdentity
+from mcp1c.intake_v2 import DurableCandidateStore, ExportIdentity, LayerKind
 from mcp1c.intake_v2_lifecycle import CandidateCatalog, IntakeLifecycle, LifecycleError
 from mcp1c.intake_v2_operations import IntakeCoordinator
 from mcp1c.intake_v2_transport import BrowserStagingStore
@@ -1223,3 +1227,389 @@ def test_каталог_той_же_редакции_предлагает_update
 
     assert payload["actions"] == ["update_full"]
     assert payload["blocked_reason"] == ""
+
+
+M8_ADMIN = {"x-api-token": "admin-token"}
+M8_INTAKE = "/api/v1/sources/intake"
+
+
+def _m8_prepared(service, *, name="DemoConfiguration", version="1.0", action="create", job_id="m8-job", raw=None):
+    candidate = service.accept_upload(
+        "configuration.zip", io.BytesIO(_archive(name, version) if raw is None else raw), expected_size=None
+    )
+    work = service.start(candidate["id"], action, job_id=job_id)
+    service.prepare(work)
+    return candidate["id"], work.job_id
+
+
+def _m8_count_payload_restore(monkeypatch):
+    """Перехватить уже импортированные ссылки на две дорогие операции.
+
+    Это бюджет чтения, прямо заданный M8, а не требование к новому API.
+    Перехватываются также aliases: перенос импорта не обходит проверку.
+    """
+    watched = {"load_layer_payload", "configuration_from_base_layer"}
+    calls = dict.fromkeys(watched, 0)
+
+    originals = {
+        getattr(module, name): name
+        for module_name, module in tuple(sys.modules.items())
+        if module_name.startswith("mcp1c.") and module is not None
+        for name in watched
+        if hasattr(module, name)
+    }
+    assert len(originals) == 2
+    wrappers = {}
+    for original, operation in originals.items():
+        def counted(*args, _original=original, _operation=operation, **kwargs):
+            calls[_operation] += 1
+            return _original(*args, **kwargs)
+
+        wrappers[original] = counted
+    for module_name, module in tuple(sys.modules.items()):
+        if module_name.startswith("mcp1c.") and module is not None:
+            for name, value in tuple(vars(module).items()):
+                for original, wrapper in wrappers.items():
+                    if value is original:
+                        monkeypatch.setattr(module, name, wrapper)
+    return calls
+
+
+@pytest.mark.parametrize("restart", [False, True])
+@pytest.mark.parametrize("with_impacts", [False, True])
+def test_m8_GET_preview_и_jobs_не_восстанавливают_payload(
+    tmp_path, monkeypatch, restart, with_impacts
+):
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    registry = Registry(tmp_path / "data")
+    service = _service(registry)
+    # Синтетический результат публичного расчёта relations позволяет отличить
+    # сохранённый при prepare снимок от повторного расчёта при чтении.
+    relations = (
+        SimpleNamespace(
+            extension="SyntheticExtension",
+            target="Catalog.SyntheticTarget",
+            state=SimpleNamespace(value="target_missing"),
+        ),
+    ) if with_impacts else ()
+    monkeypatch.setattr(registry, "preview_extension_relations", lambda *_a, **_kw: relations)
+    _candidate, job_id = _m8_prepared(service)
+    expected_impacts = {
+        "total": int(with_impacts),
+        "items": [{
+            "extension": "SyntheticExtension",
+            "target": "Catalog.SyntheticTarget",
+            "state": "target_missing",
+        }] if with_impacts else [],
+        "truncated": False,
+    }
+    if restart:
+        service = _service(registry)
+
+    relation_calls = []
+
+    def counted_relations(*_args, **_kwargs):
+        relation_calls.append(True)
+        return relations
+
+    monkeypatch.setattr(registry, "preview_extension_relations", counted_relations)
+    restore_calls = _m8_count_payload_restore(monkeypatch)
+    client = _client(registry, service)
+    detail = client.get(f"{M8_INTAKE}/jobs/{job_id}", headers=M8_ADMIN)
+    assert detail.status_code == 200
+    assert restore_calls == {"load_layer_payload": 0, "configuration_from_base_layer": 0}
+    assert relation_calls == []
+    expected = detail.json()["job"]
+    assert expected["state"] == "done"
+    assert expected["commit"] is None
+    assert expected["preview"]["action"] == "create"
+    assert expected["preview"]["no_op"] is False
+    assert expected["preview"]["extension_impacts"] == expected_impacts
+    for endpoint in (f"{M8_INTAKE}/jobs", M8_INTAKE):
+        response = client.get(endpoint, headers=M8_ADMIN)
+        assert response.status_code == 200
+        assert restore_calls == {"load_layer_payload": 0, "configuration_from_base_layer": 0}
+        assert relation_calls == []
+        assert response.json()["jobs"] == [expected]
+
+
+@pytest.mark.parametrize("restart", [False, True])
+def test_m8_confirm_проверяет_payload_bytes_и_сохраняет_active(tmp_path, monkeypatch, restart):
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    registry = Registry(tmp_path / "data")
+    service = _service(registry)
+    _m8_prepared(service, job_id="m8-create")
+    service.confirm("m8-create")
+    identity = ExportIdentity.configuration("DemoConfiguration")
+    before = registry.active_generation_pointer(identity)
+    _candidate, job_id = _m8_prepared(
+        service, version="1.0.1", action="update_full", job_id="m8-tampered"
+    )
+    preview = service.lifecycle.operations.load_preview(job_id)
+    payload = preview.materialized.payloads[LayerKind.BASE_STRUCTURE].manifest_path
+    # JSON остаётся валидным: изменены физические bytes после prepare.
+    payload.write_bytes(payload.read_bytes() + b" \n")
+    if restart:
+        service = _service(registry)
+    client = _client(registry, service)
+    response = client.post(
+        f"{M8_INTAKE}/confirm", headers=M8_ADMIN, json={"job_id": job_id}
+    )
+    assert response.status_code == 422
+    assert "preview" in response.json()["error"]
+    assert registry.active_generation_pointer(identity) == before
+    assert not (service.lifecycle.operations.commits_dir / f"{job_id}.json").exists()
+
+
+def test_m8_compact_no_op_отклоняет_сменившийся_active_после_restart(tmp_path, monkeypatch):
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    registry = Registry(tmp_path / "data")
+    service = _service(registry)
+    raw = _archive()
+    _m8_prepared(service, job_id="m8-initial", raw=raw)
+    service.confirm("m8-initial")
+    identity = ExportIdentity.configuration("DemoConfiguration")
+    previous = registry.active_generation_pointer(identity)
+    _candidate, job_id = _m8_prepared(
+        service, action="update_full", job_id="m8-compact", raw=raw
+    )
+    preview = service.lifecycle.operations.load_preview(job_id)
+    assert preview.plan.no_op is True
+    assert not preview.materialized.payloads
+    competitor = replace(registry.active_generation(identity), generation_id="m8-competitor")
+    registry.publish_generation(
+        registry.stage_generation(competitor, registry.generation_payload_sources(previous)),
+        expected_previous=previous,
+    )
+    before = registry.active_generation_pointer(identity)
+    restarted = _service(registry)
+    client = _client(registry, restarted)
+    detail = client.get(f"{M8_INTAKE}/jobs/{job_id}", headers=M8_ADMIN)
+    assert detail.status_code == 200
+    assert detail.json()["job"]["state"] == "failed"
+    assert detail.json()["job"]["preview"] is None
+    listed = client.get(f"{M8_INTAKE}/jobs", headers=M8_ADMIN)
+    assert listed.status_code == 200
+    assert next(row for row in listed.json()["jobs"] if row["job_id"] == job_id) == detail.json()["job"]
+    confirmed = client.post(f"{M8_INTAKE}/confirm", headers=M8_ADMIN, json={"job_id": job_id})
+    assert confirmed.status_code == 409
+    assert registry.active_generation_pointer(identity) == before
+
+
+@pytest.mark.parametrize("endpoint", [M8_INTAKE, f"{M8_INTAKE}/jobs"])
+def test_m8_список_сериализует_последние_50_и_все_unreadable(tmp_path, monkeypatch, endpoint):
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    registry = Registry(tmp_path / "data")
+    service = _service(registry)
+    records = service.lifecycle.operations.records
+    stamps = {}
+    # FAILED с отсутствующим candidate не старше retention, без дорогих parse.
+    now = time.time()
+    for index in reversed(range(55)):
+        job_id = f"m8-history-{index:02d}"
+        service.lifecycle.operations.create_job(job_id, f"m8-candidate-{index:02d}")
+        service.lifecycle.operations.fail(job_id, RuntimeError("синтетическая ошибка"))
+        stamp = now - index // 2
+        stamps[job_id] = stamp
+        os.utime(records.jobs_dir / f"{job_id}.json", (stamp, stamp))
+    broken = {f"m8-unreadable-{index}" for index in range(3)}
+    for job_id in broken:
+        path = records.jobs_dir / f"{job_id}.json"
+        path.write_text("{не JSON", encoding="utf-8")
+        os.utime(path, (now - 1000, now - 1000))
+    expected = sorted(stamps, key=lambda job_id: (-stamps[job_id], job_id))[:50]
+    calls = []
+    original = service.job_payload
+
+    def counted(job_id):
+        calls.append(job_id)
+        return original(job_id)
+
+    monkeypatch.setattr(service, "job_payload", counted)
+    response = _client(registry, service).get(endpoint, headers=M8_ADMIN)
+    assert response.status_code == 200
+    rows = response.json()["jobs"]
+    assert [row["job_id"] for row in rows if row["job_id"] not in broken] == expected
+    assert {row["job_id"] for row in rows if row["broken"]} == broken
+    assert all(not row["discardable"] and row["error"] for row in rows if row["job_id"] in broken)
+    assert calls == expected
+    assert len(rows) == 53
+    readable, unreadable = records.scan_jobs()
+    assert len(readable) == 55
+    assert len(unreadable) == 3
+
+
+@pytest.mark.parametrize("case,remove", [
+    ("old_commit_fresh_job", True),
+    ("recent_commit_old_job", False),
+    ("boundary_commit_old_job", False),
+    ("invalid_commit_old_job", False),
+    ("preview_without_commit", False),
+    ("failed_without_commit", False),
+    ("ready_without_commit", False),
+])
+def test_m8_refresh_чистит_только_DONE_с_valid_commit_старше_30_дней(
+    tmp_path, monkeypatch, case, remove
+):
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    # Точная граница должна быть воспроизводимой, без sleep и гонки часов.
+    now = 2_000_000_000.0
+    monkeypatch.setattr(time, "time", lambda: now)
+    cutoff = now - 30 * 24 * 3600
+    registry = Registry(tmp_path / "data")
+    incoming = registry.incoming_dir / "retention.zip"
+    _write_archive(incoming)
+    service = _service(registry)
+    candidate = service.snapshot()["candidates"][0]
+    work = service.start(candidate["id"], "create", job_id="m8-retention")
+    operations = service.lifecycle.operations
+    if case == "failed_without_commit":
+        operations.fail(work.job_id, RuntimeError("синтетическая ошибка"))
+    elif case != "ready_without_commit":
+        service.prepare(work)
+    commit_path = operations.commits_dir / f"{work.job_id}.json"
+    if case in {
+        "old_commit_fresh_job", "recent_commit_old_job",
+        "boundary_commit_old_job", "invalid_commit_old_job",
+    }:
+        service.confirm(work.job_id)
+        if case == "invalid_commit_old_job":
+            commit_path.write_text("{не JSON", encoding="utf-8")
+        commit_stamp = now if case == "recent_commit_old_job" else cutoff
+        if case in {"old_commit_fresh_job", "invalid_commit_old_job"}:
+            commit_stamp -= 1
+        os.utime(commit_path, (commit_stamp, commit_stamp))
+    job_path = operations.records.jobs_dir / f"{work.job_id}.json"
+    job_stamp = now if case == "old_commit_fresh_job" else cutoff - 1
+    os.utime(job_path, (job_stamp, job_stamp))
+    candidate_path = operations.records.candidates_dir / f"{candidate['id']}.json"
+    candidate_before = candidate_path.read_bytes()
+    zip_before = incoming.read_bytes()
+    job_before = job_path.read_bytes()
+    identity = ExportIdentity.configuration("DemoConfiguration")
+    active_before = registry.active_generation_pointer(identity)
+
+    response = _client(registry, service).get(M8_INTAKE, headers=M8_ADMIN)
+    assert response.status_code == 200
+    listed = {row["job_id"] for row in response.json()["jobs"]}
+    assert (work.job_id not in listed) is remove
+    assert job_path.exists() is (not remove)
+    if remove:
+        # Допускается удаление производных данных job, исходник и candidate живы.
+        assert not commit_path.exists()
+    else:
+        assert job_path.read_bytes() == job_before
+    assert candidate_path.read_bytes() == candidate_before
+    assert incoming.read_bytes() == zip_before
+    assert registry.active_generation_pointer(identity) == active_before
+
+
+def test_m8_ошибка_relations_при_prepare_очищает_job_и_сохраняет_candidate(
+    tmp_path, monkeypatch
+):
+    from mcp1c.intake_v2_operations import OperationError
+    from mcp1c.registry import RegistryError
+
+    registry = Registry(tmp_path / "data")
+    service = _service(registry)
+    candidate = service.accept_upload(
+        "configuration.zip", io.BytesIO(_archive()), expected_size=None
+    )
+    work = service.start(candidate["id"], "create", job_id="m8-relations-failure")
+    operations = service.lifecycle.operations
+    candidate_path = operations.records.candidates_dir / f"{candidate['id']}.json"
+    zip_path = service.lifecycle.browser.payloads_dir / f"{candidate['id']}.upload"
+    candidate_before = candidate_path.read_bytes()
+    zip_before = zip_path.read_bytes()
+    identity = ExportIdentity.configuration("DemoConfiguration")
+    active_before = registry.active_generation_pointer(identity)
+    assert active_before is None
+
+    def failed_relations(*_args, **_kwargs):
+        raise RegistryError("синтетический отказ расчёта")
+
+    monkeypatch.setattr(registry, "preview_extension_relations", failed_relations)
+    # Ошибка должна произойти внутри prepare, до первой попытки читать job.
+    with pytest.raises(OperationError, match="синтетический отказ расчёта"):
+        service.prepare(work)
+
+    job = operations.records.load_job(work.job_id)
+    assert job.state.value == "failed"
+    assert job.stage.value == "failed"
+    assert "синтетический отказ расчёта" in job.error
+    assert not (operations.previews_dir / f"{work.job_id}.json").exists()
+    assert not (operations.commits_dir / f"{work.job_id}.json").exists()
+    assert not (operations.work_dir / work.job_id).exists()
+    assert candidate_path.read_bytes() == candidate_before
+    assert zip_path.read_bytes() == zip_before
+    assert registry.active_generation_pointer(identity) == active_before
+
+
+def test_m8_старый_preview_без_impacts_читается_как_stale_но_confirm_сохраняется(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    registry = Registry(tmp_path / "data")
+    service = _service(registry)
+    candidate = service.accept_upload(
+        "configuration.zip", io.BytesIO(_archive()), expected_size=None
+    )
+    work = service.start(candidate["id"], "create", job_id="m8-old-preview")
+    # Прежняя lifecycle.prepare не получала callback расчёта impacts.
+    service.lifecycle.prepare(
+        work.job_id,
+        action=work.action,
+        active=work.active,
+        generation_id=work.generation_id,
+    )
+    operations = service.lifecycle.operations
+    job_path = operations.records.jobs_dir / f"{work.job_id}.json"
+    preview_path = operations.previews_dir / f"{work.job_id}.json"
+    assert "extension_impacts" not in json.loads(
+        preview_path.read_text(encoding="utf-8")
+    )["payload"]
+    assert operations.records.load_job(work.job_id).state.value == "done"
+    durable_paths = [
+        job_path,
+        preview_path,
+        operations.requests_dir / f"{work.job_id}.json",
+        operations.records.candidates_dir / f"{candidate['id']}.json",
+        service.lifecycle.browser.payloads_dir / f"{candidate['id']}.upload",
+        *(
+            path for path in (operations.work_dir / work.job_id).rglob("*")
+            if path.is_file()
+        ),
+    ]
+    before = {
+        path: (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in durable_paths
+    }
+    client = _client(registry, service)
+
+    detail = client.get(f"{M8_INTAKE}/jobs/{work.job_id}", headers=M8_ADMIN)
+    assert detail.status_code == 200
+    stale = detail.json()["job"]
+    assert stale["state"] == "failed"
+    assert stale["stage"] == "failed"
+    assert stale["preview"] is None
+    assert "заново" in stale["error"]
+    assert stale["discardable"] is True
+    for endpoint in (f"{M8_INTAKE}/jobs", M8_INTAKE):
+        listed = client.get(endpoint, headers=M8_ADMIN)
+        assert listed.status_code == 200
+        assert listed.json()["jobs"] == [stale]
+    assert {
+        path: (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in durable_paths
+    } == before
+    assert operations.records.load_job(work.job_id).state.value == "done"
+    assert not (operations.commits_dir / f"{work.job_id}.json").exists()
+    identity = ExportIdentity.configuration("DemoConfiguration")
+    assert registry.active_generation_pointer(identity) is None
+
+    # Старый status не запрещает штатный confirm с полной проверкой payload.
+    confirmed = service.confirm(work.job_id)
+    assert confirmed["commit"]["no_op"] is False
+    assert confirmed["commit"]["generation_id"] == work.generation_id
+    assert registry.active_generation_pointer(identity).generation_id == work.generation_id
+    assert registry.snapshot().configuration_names == ("DemoConfiguration",)

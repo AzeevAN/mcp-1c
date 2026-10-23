@@ -19,7 +19,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Iterator, Mapping
+from typing import Callable, Iterator, Mapping
 
 from . import fsio
 from .intake_v2 import (
@@ -65,6 +65,7 @@ _INTERRUPTED_JOB_ERROR = (
 # конфигурации, ни (для incoming и каталогов) удаление ZIP. Месяц — с
 # запасом, чтобы администратор успел прочитать причину отказа.
 FAILED_UNPROBED_JOB_RETENTION_SECONDS = 30 * 24 * 3600
+COMMITTED_JOB_RETENTION_SECONDS = 30 * 24 * 3600
 
 
 class LifecycleError(RuntimeError):
@@ -505,6 +506,26 @@ class IntakeLifecycle:
                         error,
                     )
 
+    def _expire_committed_jobs(self) -> None:
+        """Удалить производные записи давних подтверждённых операций."""
+        with self._lock:
+            jobs, _broken = self.operations.records.scan_jobs()
+            deadline = time.time() - COMMITTED_JOB_RETENTION_SECONDS
+            for job in jobs:
+                if job.state is not CandidateJobState.DONE:
+                    continue
+                try:
+                    if self.operations._commit_modified_at(job.job_id) >= deadline:
+                        continue
+                    self.operations.remove_job(job.job_id)
+                except KeyError:
+                    continue
+                except (CandidateStoreError, IntakeV2ContractError, OperationError) as error:
+                    logging.getLogger(__name__).warning(
+                        "Не удалось удалить давнюю подтверждённую job %s: %s",
+                        job.job_id, error,
+                    )
+
     @staticmethod
     def _issue(source_id: str, origin_name: str, error: Exception) -> DiscoveryIssue:
         try:
@@ -814,6 +835,7 @@ class IntakeLifecycle:
     def refresh(self) -> CandidateRefresh:
         """Сканировать входы ровно по явному запросу вызывающего."""
         with self._lock:
+            self._expire_committed_jobs()
             locators: list[CandidateLocator] = []
             issues: list[DiscoveryIssue] = []
             found, failed = self._browser_locators()
@@ -978,6 +1000,7 @@ class IntakeLifecycle:
         action: IntakeAction,
         active: GenerationView | None,
         generation_id: str,
+        preview_impacts: Callable[[IntakePreview], dict[str, object]] | None = None,
     ) -> IntakePreview:
         """Построить preview из server-side locator, не принимая путь."""
         job = self.operations.records.load_job(job_id)
@@ -989,6 +1012,7 @@ class IntakeLifecycle:
                 action=action,
                 active=active,
                 generation_id=generation_id,
+                preview_impacts=preview_impacts,
             )
 
     def discard(self, job_id: str) -> None:

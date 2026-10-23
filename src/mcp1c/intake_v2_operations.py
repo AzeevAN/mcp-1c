@@ -16,7 +16,7 @@ import uuid
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Mapping
+from typing import Callable, Mapping
 
 from .intake_v2 import (
     CandidateJob,
@@ -615,6 +615,56 @@ class IntakePreview:
         return GenerationPointer.for_manifest(self.active.manifest)
 
 
+@dataclass(frozen=True, slots=True)
+class IntakePreviewStatus:
+    """Сохранённый результат prepare без восстановления физических payloads."""
+
+    plan: IntakePlan
+    expected_previous: GenerationPointer | None
+    reuse_active: bool
+    extension_impacts: dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class _PreviewMetadata:
+    request: _OperationRequest
+    record: dict[str, object]
+    operation_root: Path
+    materialized_root: Path
+    manifest: GenerationManifest
+    reuse_active: bool
+    plan: IntakePlan
+
+
+def _extension_impacts(value: object) -> dict[str, object]:
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"total", "items", "truncated"}
+        or type(value["total"]) is not int or value["total"] < 0
+        or not isinstance(value["items"], list)
+        or type(value["truncated"]) is not bool
+        or value["total"] < len(value["items"])
+        or value["truncated"] != (value["total"] > len(value["items"]))
+        or any(
+            not isinstance(item, dict)
+            or set(item) != {"extension", "target", "state"}
+            or not isinstance(item["extension"], str)
+            or not isinstance(item["target"], str)
+            or item["state"] != "target_missing"
+            for item in value["items"]
+        )
+    ):
+        raise OperationStalePreview(
+            "Сохранённый preview не содержит корректного снимка влияния расширений. "
+            "Подготовьте preview заново."
+        )
+    return {
+        "total": value["total"],
+        "items": [dict(item) for item in value["items"]],
+        "truncated": value["truncated"],
+    }
+
+
 
 def _reuse_active(
     candidate: ExportCandidate,
@@ -919,6 +969,32 @@ class IntakeCoordinator:
             raise OperationError("commit result относится к другой identity")
         return result
 
+    def _commit_modified_at(self, job_id: str) -> float:
+        """Вернуть mtime только проверенного и не подменённого commit result."""
+        if not fsio.is_safe_identifier(job_id):
+            raise OperationError("job_id операции имеет недопустимый формат")
+        path = self.commits_dir / f"{job_id}.json"
+
+        def identity(info):
+            if not stat.S_ISREG(info.st_mode):
+                raise OperationError("commit result должен быть обычным файлом")
+            return (
+                info.st_dev, info.st_ino, info.st_size,
+                info.st_mtime_ns, info.st_ctime_ns,
+            )
+
+        try:
+            before = identity(path.lstat())
+            self.load_commit(job_id)
+            after = path.lstat()
+            if before != identity(after):
+                raise OperationError("commit result изменился во время чтения")
+            return after.st_mtime
+        except FileNotFoundError:
+            raise KeyError(job_id) from None
+        except OSError as error:
+            raise OperationError("commit result недоступен") from error
+
     def create_job(self, job_id: str, candidate_id: str) -> CandidateJob:
         try:
             self.records.load_job(job_id)
@@ -1210,7 +1286,10 @@ class IntakeCoordinator:
             raise OperationError("не удалось подготовить operation work") from error
         return root
 
-    def _write_preview(self, preview: IntakePreview, operation_root: Path) -> None:
+    def _write_preview(
+        self, preview: IntakePreview, operation_root: Path,
+        extension_impacts: dict[str, object] | None = None,
+    ) -> None:
         self._write_record(
             self.previews_dir,
             preview.job_id,
@@ -1226,6 +1305,10 @@ class IntakeCoordinator:
                 "manifest": preview.materialized.manifest.to_dict(),
                 "reuse_active": not preview.materialized.payloads and preview.plan.no_op,
                 "payloads": _payloads_to_dict(operation_root, preview.materialized),
+                **(
+                    {"extension_impacts": extension_impacts}
+                    if extension_impacts is not None else {}
+                ),
             },
             limit=_MAX_PREVIEW_RECORD_BYTES,
             label="preview record",
@@ -1239,6 +1322,7 @@ class IntakeCoordinator:
         action: IntakeAction,
         active: GenerationView | None,
         generation_id: str,
+        preview_impacts: Callable[[IntakePreview], dict[str, object]] | None = None,
     ) -> IntakePreview:
         if not isinstance(action, IntakeAction):
             raise TypeError("action должен быть IntakeAction")
@@ -1255,6 +1339,18 @@ class IntakeCoordinator:
         try:
             self._discard_preview(job_id)
             operation_root = self._reset_work(job_id)
+
+            def finish(preview: IntakePreview) -> IntakePreview:
+                impacts = (
+                    _extension_impacts(preview_impacts(preview))
+                    if preview_impacts is not None else None
+                )
+                self._write_preview(preview, operation_root, impacts)
+                self._save_job(
+                    job.transition(CandidateJobState.DONE, result=preview.job_id)
+                )
+                return preview
+
             candidate = self.records.load_candidate(job.candidate_id)
             current_probe = probe_export(tree)
             current = self._candidate(
@@ -1273,9 +1369,7 @@ class IntakeCoordinator:
                 preview = IntakePreview(job.job_id, job.candidate_id, request.action, request.active, materialized)
                 if not preview.plan.no_op:
                     raise OperationError("повторное использование требует no-op")
-                self._write_preview(preview, operation_root)
-                self._save_job(job.transition(CandidateJobState.DONE, result=preview.job_id))
-                return preview
+                return finish(preview)
 
             collection = collect_source_b(
                 tree,
@@ -1301,11 +1395,7 @@ class IntakeCoordinator:
                 active=request.active,
                 materialized=materialized,
             )
-            self._write_preview(preview, operation_root)
-            self._save_job(
-                job.transition(CandidateJobState.DONE, result=preview.job_id)
-            )
-            return preview
+            return finish(preview)
         except Exception as error:
             message = self._error_text(error)
             cleanup_error = ""
@@ -1356,7 +1446,7 @@ class IntakeCoordinator:
             job.transition(CandidateJobState.FAILED, error=message)
         )
 
-    def load_preview(self, job_id: str) -> IntakePreview:
+    def _load_preview_metadata(self, job_id: str) -> _PreviewMetadata:
         job = self.records.load_job(job_id)
         if job.state is not CandidateJobState.DONE or job.result != job_id:
             raise OperationError("job не содержит готовый preview")
@@ -1382,6 +1472,10 @@ class IntakeCoordinator:
             if materialized_root.is_symlink() or not materialized_root.is_dir():
                 raise OperationError("materialized_root preview недоступен")
             manifest = _manifest_from_dict(payload["manifest"])
+            if manifest.generation_id != request.generation_id:
+                raise OperationError("preview manifest относится к другому generation_id")
+            if not isinstance(payload.get("payloads"), dict):
+                raise OperationError("preview payloads должен быть объектом")
             reuse = payload.get("reuse_active", False)
             if not isinstance(reuse, bool):
                 raise OperationError("reuse_active должен быть boolean")
@@ -1391,30 +1485,52 @@ class IntakeCoordinator:
                         or manifest != replace(request.active.manifest, generation_id=request.generation_id)
                         or payload["payloads"] != {}):
                     raise OperationStalePreview("Ранний no-op больше не доказан. Подготовьте новое обновление.")
-            materialized = MaterializedGeneration(
-                materialized_root,
-                manifest,
-                {} if reuse else _payloads_from_dict(operation_root, manifest, payload["payloads"]),
-            )
-            preview = IntakePreview(
-                job_id=job_id,
-                candidate_id=job.candidate_id,
-                action=request.action,
-                active=request.active,
-                materialized=materialized,
-            )
             candidate = self.records.load_candidate(job.candidate_id)
             if (
-                preview.materialized.manifest.identity != candidate.identity
-                or preview.materialized.manifest.raw_sha256 != candidate.raw_sha256
+                manifest.identity != candidate.identity
+                or manifest.raw_sha256 != candidate.raw_sha256
             ):
                 raise OperationError("preview не совпадает с durable candidate")
-            return preview
+            return _PreviewMetadata(
+                request, payload, operation_root, materialized_root, manifest, reuse,
+                plan_intake(request.action, manifest, active=request.active),
+            )
         except PlannerError as error:
             raise OperationStalePreview(
                 "Готовый preview несовместим с текущим контрактом: "
                 f"{error} Постройте новый preview."
             ) from error
+        except OperationError:
+            raise
+        except Exception as error:
+            raise OperationError("preview record содержит неверные поля") from error
+
+    def load_preview_status(self, job_id: str) -> IntakePreviewStatus:
+        """Читать результат prepare без обращения к содержимому слоёв."""
+        saved = self._load_preview_metadata(job_id)
+        active = saved.request.active
+        return IntakePreviewStatus(
+            saved.plan,
+            GenerationPointer.for_manifest(active.manifest)
+            if active is not None and active.manifest is not None else None,
+            saved.reuse_active,
+            _extension_impacts(saved.record.get("extension_impacts")),
+        )
+
+    def load_preview(self, job_id: str) -> IntakePreview:
+        """Восстановить и полностью проверить payloads перед confirm."""
+        saved = self._load_preview_metadata(job_id)
+        try:
+            materialized = MaterializedGeneration(
+                saved.materialized_root, saved.manifest,
+                {} if saved.reuse_active else _payloads_from_dict(
+                    saved.operation_root, saved.manifest, saved.record["payloads"]
+                ),
+            )
+            return IntakePreview(
+                job_id, saved.request.candidate_id, saved.request.action,
+                saved.request.active, materialized,
+            )
         except OperationError:
             raise
         except Exception as error:
@@ -1617,6 +1733,7 @@ __all__ = [
     "IntakeCommitResult",
     "IntakeCoordinator",
     "IntakePreview",
+    "IntakePreviewStatus",
     "OperationConflict",
     "OperationError",
     "OperationStalePreview",

@@ -672,6 +672,9 @@ from mcp1c.registry import Registry
 registry = Registry(sys.argv[1])
 registry.startup()
 assert registry.role == 'guest'
+import mcp1c.registry as registry_module
+# Перечитывание обновляет loaded_at: заведомо отличаем его от времени владельца.
+registry_module._now = lambda: '2000-01-01T00:00:00+00:00'
 registry.add_syntax(Path({str(syntax)!r}))
 registry.save()
 print('ready', flush=True)
@@ -685,6 +688,15 @@ sys.stdin.readline()
         return source
     finally:
         process_helpers._stop(process)
+
+
+def _m6_assert_guest_row_preserved(payload, expected):
+    actual = next(row for row in payload['sources'] if row['id'] == expected['id'])
+    assert expected['loaded_at'] == '2000-01-01T00:00:00+00:00'
+    assert actual['loaded_at'] and actual['loaded_at'] != expected['loaded_at']
+    assert {key: value for key, value in actual.items() if key != 'loaded_at'} == {
+        key: value for key, value in expected.items() if key != 'loaded_at'
+    }
 
 
 @pytest.mark.parametrize('kind', ['configuration', 'extension'])
@@ -702,7 +714,7 @@ def test_m6_accept_noop_перечитывает_guest_и_сохраняет_п�
     assert registry.pending_generation_load(previous.identity, 'm6-accepted-noop') == accepted
     assert guest_row['id'] in registry.snapshot().sources
     payload = json.loads(registry.registry_path.read_text(encoding='utf-8'))
-    assert guest_row in payload['sources']
+    _m6_assert_guest_row_preserved(payload, guest_row)
     restarted = Registry(registry.data_dir)
     assert restarted.restore() == []
     restored = restarted.active_generation_pointer(previous.identity)
@@ -727,7 +739,7 @@ def test_m6_acknowledge_перечитывает_guest_и_снимает_pending
     assert current.last_successful_load_job_id == 'm6-pending-noop'
     assert guest_row['id'] in registry.snapshot().sources
     payload = json.loads(registry.registry_path.read_text(encoding='utf-8'))
-    assert guest_row in payload['sources']
+    _m6_assert_guest_row_preserved(payload, guest_row)
     restarted = Registry(registry.data_dir)
     assert restarted.restore() == []
     assert restarted.pending_generation_load(previous.identity, 'm6-pending-noop') is None

@@ -659,19 +659,29 @@ def test_publish_после_pointer_failure_завершает_новое_пок
     assert (registry.data_dir / staged.pointer.root_path).is_dir()
 
 
-def test_restore_повреждённого_active_manifest_fail_closed_до_payload(tmp_path):
-    BundleStoreError = _symbol("BundleStoreError")
+def test_restore_изолирует_повреждённый_active_manifest_до_payload(tmp_path):
     manifest, payloads = _manifest(tmp_path, "generation-001")
     registry = Registry(tmp_path / "data")
     registry.publish_generation(registry.stage_generation(manifest, payloads))
     pointer = registry.active_generation_pointer(manifest.identity)
+    raw_pointer = json.loads(registry.registry_path.read_text(encoding="utf-8"))[
+        "generation_manifests"
+    ][0]
     manifest_path = registry.data_dir / pointer.manifest_path
     manifest_path.write_bytes(b"{}")
 
     restarted = Registry(registry.data_dir)
-    with pytest.raises(BundleStoreError, match="manifest.*контрольная сумма"):
-        restarted.restore()
+    messages = restarted.restore()
+
+    assert any("manifest" in message and "контрольная сумма" in message
+               for message in messages), messages
     assert restarted.active_generation_pointer(manifest.identity) is None
+    assert restarted.active_generation(manifest.identity) is None
+    assert manifest.identity.configuration_name not in restarted.snapshot().configurations
+    restarted.save()
+    assert raw_pointer in json.loads(registry.registry_path.read_text(encoding="utf-8"))[
+        "generation_manifests"
+    ]
 
 
 def test_legacy_view_ничего_не_выдумывает_и_не_создаёт_generation(tmp_path):

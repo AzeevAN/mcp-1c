@@ -34,6 +34,7 @@ import weakref
 import zipfile
 from collections import Counter
 from contextlib import ExitStack, contextmanager
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from functools import wraps
@@ -659,6 +660,11 @@ class Registry:
         # переносятся в каждую запись реестра дословно: иначе первый же
         # save() после неудачного старта навсегда снял бы источник с учёта.
         self._carried_source_rows: dict[str, dict] = {}
+        # Повреждённые записи не обслуживаются, но save другого источника
+        # не должен лишать владельца возможности починить их на диске.
+        self._carried_generation_pointers: dict[tuple[str, ...], object] = {}
+        self._carried_invalid_source_rows: list[object] = []
+        self._carried_platform_declarations: dict[str, object] = {}
         # Legacy Source публикуется в памяти до вызывающего save(); дата
         # становится видимой лишь после durable записи этой же строки.
         self._pending_configuration_load_dates: dict[str, Source] = {}
@@ -1263,6 +1269,7 @@ class Registry:
             previous = self.active_generation_pointer(identity)
             active = self.active_generation(identity)
             loaded = self.configurations.get(config.name)
+            carried_native = identity.grouping_key in self._carried_generation_pointers
         # Только для новой загрузки человеком: restore и bootstrap
         # восстанавливают уже принятое и редакцию не сверяют.
         if same_edition_only and loaded is not None:
@@ -1271,11 +1278,15 @@ class Registry:
             )
             if reason:
                 raise RegistryError(reason)
-        if previous is not None and not replace_native:
+        if (previous is not None or carried_native) and not replace_native:
             raise _NativeGenerationActive(
                 f"{source_path.name}: у конфигурации «{config.name}» уже есть "
                 "активное native-поколение; файл schema v1 его не заменяет."
             )
+        if carried_native and previous is None:
+            # Отсутствие runtime не превращает принятую native-конфигурацию
+            # в новую legacy: сначала восстановление файлов или явное снятие.
+            raise ReloadRequired("reload_required")
         if previous is not None and active is not None:
             return self._replace_native_base(
                 config,
@@ -2214,6 +2225,7 @@ class Registry:
                     configuration in self.configurations
                     or configuration in self.sources
                     or identity.grouping_key in self._generation_pointers
+                    or identity.grouping_key in self._carried_generation_pointers
                 )
             if aggregate_exists:
                 source_id = configuration
@@ -2250,10 +2262,21 @@ class Registry:
             # после снятия оставил бы его применённым наполовину.
             self._check_registry_stamp()
             source = self.sources.get(source_id)
+            all_pointers = dict(self._generation_pointers)
+            carried_identities = {}
+            for key, raw in self._carried_generation_pointers.items():
+                identity = self._generation_row_identity(raw)
+                if identity is not None:
+                    carried_identities[key] = identity
+                try:
+                    pointer = GenerationPointer.from_dict(raw)
+                except (BundleStoreError, TypeError, ValueError):
+                    continue
+                all_pointers.setdefault(key, pointer)
             native_configuration = next(
                 (
                     (key, pointer)
-                    for key, pointer in self._generation_pointers.items()
+                    for key, pointer in all_pointers.items()
                     if pointer.identity.source_kind is SourceKind.CONFIGURATION
                     and source_id == pointer.identity.configuration_name
                 ),
@@ -2262,7 +2285,7 @@ class Registry:
             native_extension = next(
                 (
                     (key, pointer)
-                    for key, pointer in self._generation_pointers.items()
+                    for key, pointer in all_pointers.items()
                     if pointer.identity.source_kind is SourceKind.EXTENSION
                     and source_id
                     == source_ids.extension_modules_id(
@@ -2275,11 +2298,16 @@ class Registry:
             configuration_removal = (
                 native_configuration is not None
                 or (source is not None and source.kind == KIND_CONFIGURATION)
+                or any(
+                    identity.source_kind is SourceKind.CONFIGURATION
+                    and identity.configuration_name == source_id
+                    for identity in carried_identities.values()
+                )
             )
             if configuration_removal:
                 native = [
                     (key, pointer)
-                    for key, pointer in self._generation_pointers.items()
+                    for key, pointer in all_pointers.items()
                     if (
                         pointer.identity.source_kind is SourceKind.CONFIGURATION
                         and pointer.identity.configuration_name == source_id
@@ -2293,9 +2321,27 @@ class Registry:
                 native = [native_extension]
             else:
                 native = []
+            carried_keys = {
+                key for key, identity in carried_identities.items()
+                if (
+                    configuration_removal
+                    and (
+                        identity.configuration_name == source_id
+                        if identity.source_kind is SourceKind.CONFIGURATION
+                        else identity.parent_configuration == source_id
+                    )
+                ) or (
+                    not configuration_removal
+                    and identity.source_kind is SourceKind.EXTENSION
+                    and source_id == source_ids.extension_modules_id(
+                        identity.parent_configuration, index_cache.safe_name(identity.extension_name)
+                    )
+                )
+            }
             if (
                 source is None
                 and not native
+                and not carried_keys
                 and source_id in self._carried_source_rows
             ):
                 # Строку, не поднятую временным сбоем, снимают с учёта так же
@@ -2315,13 +2361,26 @@ class Registry:
                     self._advance_source_revision(sid)
                 self._advance_configuration_revision(source_id)
                 return
-            if source is None and not native:
+            if source is None and not native and not carried_keys:
                 raise RegistryError(f"Источник не зарегистрирован: {source_id}")
 
-            if native:
+            if native or carried_keys:
                 next_pointers = dict(self._generation_pointers)
                 for native_key, _native_pointer in native:
-                    next_pointers.pop(native_key)
+                    next_pointers.pop(native_key, None)
+                next_carried_pointers = {
+                    key: raw for key, raw in self._carried_generation_pointers.items()
+                    if key not in carried_keys
+                }
+                next_carried_sources = {
+                    sid: raw for sid, raw in self._carried_source_rows.items()
+                    if sid != source_id and not (
+                        configuration_removal and sid.startswith(f"{source_id}:")
+                    )
+                }
+                next_carried_declarations = dict(self._carried_platform_declarations)
+                if configuration_removal:
+                    next_carried_declarations.pop(source_id, None)
                 next_sources = {
                     sid: current
                     for sid, current in self.sources.items()
@@ -2338,8 +2397,14 @@ class Registry:
                         next_pointers,
                         sources=next_sources,
                         platform_declarations=next_platform_declarations,
+                        carried_generation_pointers=next_carried_pointers,
+                        carried_source_rows=next_carried_sources,
+                        carried_platform_declarations=next_carried_declarations,
                     )
                 )
+                self._carried_generation_pointers = next_carried_pointers
+                self._carried_source_rows = next_carried_sources
+                self._carried_platform_declarations = next_carried_declarations
 
             if configuration_removal:
                 self._advance_configuration_revision(source_id)
@@ -2771,6 +2836,9 @@ class Registry:
         *,
         sources: Mapping[str, Source] | None = None,
         platform_declarations: Mapping[str, PlatformDeclaration] | None = None,
+        carried_generation_pointers: Mapping[tuple[str, ...], object] | None = None,
+        carried_source_rows: Mapping[str, dict] | None = None,
+        carried_platform_declarations: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
         pointers = (
             self._generation_pointers
@@ -2783,27 +2851,43 @@ class Registry:
             if platform_declarations is None
             else platform_declarations
         )
+        carried_pointers = (
+            self._carried_generation_pointers
+            if carried_generation_pointers is None else carried_generation_pointers
+        )
+        carried_sources = (
+            self._carried_source_rows if carried_source_rows is None else carried_source_rows
+        )
+        carried_declarations = (
+            self._carried_platform_declarations
+            if carried_platform_declarations is None else carried_platform_declarations
+        )
         rows = [source.to_dict() for source in source_rows.values()]
         rows += [
-            dict(raw)
-            for source_id, raw in self._carried_source_rows.items()
+            deepcopy(raw)
+            for source_id, raw in carried_sources.items()
             if source_id not in source_rows
         ]
+        rows += deepcopy(self._carried_invalid_source_rows)
         payload: dict[str, object] = {
             "registry_version": REGISTRY_VERSION,
             "saved_at": _now(),
             "sources": rows,
         }
-        if pointers:
-            payload["generation_manifests"] = [
-                pointer.to_dict()
-                for _key, pointer in sorted(pointers.items())
-            ]
-        if declarations:
-            payload["platform_declarations"] = {
-                name: declaration.to_dict()
-                for name, declaration in sorted(declarations.items())
-            }
+        pointer_rows = [pointer.to_dict() for _key, pointer in sorted(pointers.items())]
+        for key, raw in carried_pointers.items():
+            identity = self._generation_row_identity(raw)
+            if key in pointers or (identity is not None and identity.grouping_key in pointers):
+                continue
+            pointer_rows.append(deepcopy(raw))
+        if pointer_rows:
+            payload["generation_manifests"] = pointer_rows
+        declaration_rows = deepcopy(dict(carried_declarations))
+        declaration_rows.update({
+            name: declaration.to_dict() for name, declaration in sorted(declarations.items())
+        })
+        if declaration_rows:
+            payload["platform_declarations"] = declaration_rows
         return payload
 
     def platform_declaration(self, configuration: str) -> PlatformDeclaration | None:
@@ -2823,10 +2907,16 @@ class Registry:
                 raise ConfigurationNotLoaded("configuration_not_loaded")
             next_declarations = dict(self._platform_declarations)
             next_declarations[configuration] = declaration
+            next_carried = dict(self._carried_platform_declarations)
+            next_carried.pop(configuration, None)
             self._write_registry_payload(
-                self._registry_payload(platform_declarations=next_declarations)
+                self._registry_payload(
+                    platform_declarations=next_declarations,
+                    carried_platform_declarations=next_carried,
+                )
             )
             self._platform_declarations = next_declarations
+            self._carried_platform_declarations = next_carried
         return declaration
 
     @_refresh_on_external_change()
@@ -2841,10 +2931,16 @@ class Registry:
                 raise ConfigurationNotLoaded("configuration_not_loaded")
             next_declarations = dict(self._platform_declarations)
             next_declarations.pop(configuration, None)
+            next_carried = dict(self._carried_platform_declarations)
+            next_carried.pop(configuration, None)
             self._write_registry_payload(
-                self._registry_payload(platform_declarations=next_declarations)
+                self._registry_payload(
+                    platform_declarations=next_declarations,
+                    carried_platform_declarations=next_carried,
+                )
             )
             self._platform_declarations = next_declarations
+            self._carried_platform_declarations = next_carried
 
     def _write_registry_payload(self, payload: Mapping[str, object]) -> None:
         """Durable atomic replace общего Registry pointer."""
@@ -2886,10 +2982,17 @@ class Registry:
             if self.registry_path.exists()
             else {"registry_version": REGISTRY_VERSION, "sources": []}
         )
-        rows = [raw for raw in current.get("sources") or [] if isinstance(raw, dict)]
-        positions = {raw.get("id"): index for index, raw in enumerate(rows)}
+        # Гость меняет адресуемые источники; повреждённые строки текущего
+        # файла сохраняет дословно и не воскрешает их из старого снимка.
+        rows = list(current.get("sources") or [])
+        positions = {
+            raw["id"]: index for index, raw in enumerate(rows)
+            if isinstance(raw, dict) and isinstance(raw.get("id"), str) and raw["id"]
+        }
         for raw in payload.get("sources") or []:
-            if base_rows.get(raw.get("id")) == raw:
+            if not isinstance(raw, dict) or not isinstance(raw.get("id"), str) or not raw["id"]:
+                continue
+            if base_rows.get(raw["id"]) == raw:
                 continue
             index = positions.get(raw.get("id"))
             if index is None:
@@ -3018,6 +3121,88 @@ class Registry:
                 raise BundleStoreError("registry дублирует generation identity")
             result[key] = pointer
         return result
+
+    def _restore_generation_pointers(
+        self, payload: dict, problems: list[str],
+    ) -> tuple[
+        dict[tuple[str, ...], GenerationPointer],
+        dict[tuple[str, ...], object],
+        dict[tuple[str, ...], object],
+        set[str],
+    ] | None:
+        """Изолировать строки при старте; WAL и CAS используют строгий разбор."""
+        raw_pointers = payload.get("generation_manifests", [])
+        if not isinstance(raw_pointers, list):
+            # Контейнер неизвестного вида нельзя безопасно пересохранить.
+            self._registry_version_blocked = (
+                "Реестр открыт только для чтения: generation_manifests должен быть массивом. "
+                "Файл не перезаписан; исправьте его и выполните перезагрузку."
+            )
+            problems.append(self._registry_version_blocked)
+            return None
+        pointers: dict[tuple[str, ...], GenerationPointer] = {}
+        raw_by_key: dict[tuple[str, ...], object] = {}
+        carried: dict[tuple[str, ...], object] = {}
+        native_configurations: set[str] = set()
+        seen_identities: set[tuple[str, ...]] = set()
+        for index, raw in enumerate(raw_pointers):
+            identity = self._generation_row_identity(raw)
+            key = identity.grouping_key if identity is not None else ("invalid", str(index))
+            label = (
+                identity.configuration_name or identity.extension_name
+                if identity is not None else f"generation_manifests[{index}]"
+            )
+            if identity is not None and identity.source_kind is SourceKind.CONFIGURATION:
+                native_configurations.add(identity.configuration_name)
+            if identity is not None and key in seen_identities:
+                # У неоднозначной identity нельзя выбрать первый готовый root:
+                # сохраняем все строки, но не обслуживаем ни одно поколение.
+                if key in pointers:
+                    pointers.pop(key)
+                    carried[key] = raw_by_key.pop(key)
+                carried[("invalid", str(index))] = raw
+                problems.append(f"{label}: поколение не поднято: registry дублирует generation identity")
+                continue
+            if identity is not None:
+                seen_identities.add(key)
+            try:
+                pointer = GenerationPointer.from_dict(raw)
+                if key in pointers:
+                    raise BundleStoreError("registry дублирует generation identity")
+                pointers[key] = pointer
+                raw_by_key[key] = raw
+            except Exception as error:
+                carried[key if key not in carried else ("invalid", str(index))] = raw
+                problems.append(f"{label}: поколение не поднято: {error}")
+
+        return pointers, raw_by_key, carried, native_configurations
+
+    @staticmethod
+    def _generation_row_identity(raw: object) -> ExportIdentity | None:
+        if not isinstance(raw, dict):
+            return None
+        try:
+            return ExportIdentity.from_dict(raw["identity"])
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def _drop_native_runtime_locked(self, identity: ExportIdentity) -> None:
+        """Reload не должен оставлять старый runtime пропущенного поколения."""
+        if identity.source_kind is SourceKind.CONFIGURATION:
+            name = identity.configuration_name
+            self.configurations.pop(name, None)
+            self.modules.pop(source_ids.modules_id(name), None)
+            self.roles.pop(name, None)
+        else:
+            name = identity.parent_configuration
+            source_id = source_ids.extension_modules_id(
+                name, index_cache.safe_name(identity.extension_name)
+            )
+            self.modules.pop(source_id, None)
+            self.extension_structures.pop(source_id, None)
+            self.extension_relations.pop(source_id, None)
+            self.extension_roles.pop(source_id, None)
+        self._relation_cache.pop(name, None)
 
     def stage_generation(
         self,
@@ -4358,21 +4543,44 @@ class Registry:
         # потоки до конца restore держит `_restore_hold`.
         self._registry_version_blocked = ""
 
-        pointers = self._generation_pointers_from_payload(payload)
+        for field, expected_type, empty, description in (
+            ("sources", list, [], "массивом"),
+            ("platform_declarations", dict, {}, "объектом"),
+        ):
+            raw = payload.get(field, empty)
+            if field == "sources" and raw is None:
+                continue
+            if not isinstance(raw, expected_type):
+                self._registry_version_blocked = (
+                    f"Реестр открыт только для чтения: {field} должен быть {description}. "
+                    "Файл не перезаписан; исправьте его и выполните перезагрузку."
+                )
+                return [self._registry_version_blocked]
+        restored_pointers = self._restore_generation_pointers(payload, problems)
+        if restored_pointers is None:
+            return problems
+        pointers, raw_by_key, carried, native_configurations = restored_pointers
+
         raw_declarations = payload.get("platform_declarations", {})
-        if not isinstance(raw_declarations, dict):
-            return ["registry.json platform_declarations должен быть объектом"]
-        declarations = {
-            name: PlatformDeclaration(
-                raw["version"], raw.get("source", "user"), raw.get("status", "declared")
-            )
-            for name, raw in raw_declarations.items()
-            if isinstance(name, str) and isinstance(raw, dict)
-        }
+        declarations: dict[str, PlatformDeclaration] = {}
+        carried_declarations: dict[str, object] = {}
+        for name, raw in raw_declarations.items():
+            try:
+                declarations[name] = PlatformDeclaration(
+                    raw["version"], raw.get("source", "user"), raw.get("status", "declared")
+                )
+            except Exception as error:
+                carried_declarations[name] = raw
+                problems.append(f"{name}: объявление платформы не поднято: {error}")
         manifests: dict[tuple[str, ...], GenerationManifest] = {}
         for key, pointer in pointers.items():
-            manifest = self._generation_store.verify(pointer)
-            manifests[key] = manifest
+            try:
+                manifests[key] = self._generation_store.verify(pointer)
+            except Exception as error:
+                carried[key] = raw_by_key[key]
+                identity = pointer.identity
+                label = identity.configuration_name or identity.extension_name
+                problems.append(f"{label}: поколение не поднято: {error}")
 
         native_runtime: dict[
             tuple[str, ...],
@@ -4387,25 +4595,29 @@ class Registry:
             if manifest.identity.source_kind is not SourceKind.CONFIGURATION:
                 continue
             pointer = pointers[key]
-            prepared = self._build_native_generation_runtime(
-                self.data_dir / pointer.root_path,
-                manifest,
-            )
-            loaded_configuration, loaded_modules = self._native_runtime_maps(
-                prepared,
-                self.data_dir / pointer.root_path,
-            )
-            assert loaded_configuration is not None
-            native_runtime[key] = (
-                prepared,
-                loaded_configuration,
-                loaded_modules,
-            )
+            try:
+                prepared = self._build_native_generation_runtime(
+                    self.data_dir / pointer.root_path, manifest,
+                )
+                loaded_configuration, loaded_modules = self._native_runtime_maps(
+                    prepared, self.data_dir / pointer.root_path,
+                )
+                assert loaded_configuration is not None
+                native_runtime[key] = (prepared, loaded_configuration, loaded_modules)
+            except Exception as error:
+                carried[key] = raw_by_key[key]
+                problems.append(
+                    f"{manifest.identity.configuration_name}: поколение не поднято: {error}"
+                )
         with self._lock:
-            self._generation_pointers = pointers
+            for previous in self._generation_pointers.values():
+                self._drop_native_runtime_locked(previous.identity)
+            self._generation_pointers = {key: pointers[key] for key in native_runtime}
+            self._generation_manifests = {key: manifests[key] for key in native_runtime}
+            self._carried_generation_pointers = carried
             self._extension_resolution_cache = None
-            self._generation_manifests = manifests
             self._platform_declarations = declarations
+            self._carried_platform_declarations = carried_declarations
             for _key, (
                 _prepared,
                 loaded_configuration,
@@ -4429,13 +4641,23 @@ class Registry:
                     self.roles[name] = _prepared.runtime.roles
                 self._relation_cache.pop(name, None)
 
-        native_configurations = {
-            manifest.identity.configuration_name
-            for manifest in manifests.values()
-            if manifest.identity.source_kind is SourceKind.CONFIGURATION
-        }
         сырые_строки = payload.get("sources") or []
-        все_источники = [Source.from_dict(raw) for raw in сырые_строки]
+        все_источники: list[Source] = []
+        invalid_source_rows: list[object] = []
+        malformed_sources: dict[str, dict] = {}
+        for index, raw in enumerate(сырые_строки):
+            try:
+                все_источники.append(Source.from_dict(raw))
+            except Exception as error:
+                source_id = raw.get("id") if isinstance(raw, dict) else None
+                if isinstance(source_id, str) and source_id:
+                    malformed_sources[source_id] = raw
+                else:
+                    invalid_source_rows.append(raw)
+                problems.append(f"{source_id or f'sources[{index}]'}: источник не поднят: {error}")
+        with self._lock:
+            self._carried_invalid_source_rows = invalid_source_rows
+            self._carried_source_rows.update(malformed_sources)
         строка_по_id = {
             raw.get("id"): raw for raw in сырые_строки if isinstance(raw, dict)
         }
@@ -4443,7 +4665,7 @@ class Registry:
         # повторяются этим проходом. До конца прохода прежний набор остаётся
         # в силе: параллельный save() не должен потерять ещё не повторённую
         # строку. Итоговый набор присваивается в конце restore.
-        новые_перенесённые: dict[str, dict] = {}
+        новые_перенесённые: dict[str, dict] = dict(malformed_sources)
 
         def удержать(source_id: str) -> bool:
             raw = строка_по_id.get(source_id)
@@ -4478,11 +4700,11 @@ class Registry:
                 or source.id not in legacy_родители_расширений
             ):
                 continue
-            stored = self._absolute(source.stored_path)
-            if not stored.exists():
-                problems.append(f"{source.id}: файл источника пропал ({stored})")
-                continue
             try:
+                stored = self._absolute(source.stored_path)
+                if not stored.exists():
+                    problems.append(f"{source.id}: файл источника пропал ({stored})")
+                    continue
                 конфигурации_этого_restore[source.id] = self.add_configuration(
                     stored,
                     keep_source=False,
@@ -4502,17 +4724,30 @@ class Registry:
             if manifest.identity.source_kind is not SourceKind.EXTENSION:
                 continue
             pointer = pointers[key]
-            prepared = self._build_native_generation_runtime(
-                self.data_dir / pointer.root_path,
-                manifest,
-            )
-            loaded_configuration, loaded_modules = self._native_runtime_maps(
-                prepared,
-                self.data_dir / pointer.root_path,
-            )
-            assert loaded_configuration is None
-            native_runtime[key] = (prepared, None, loaded_modules)
             identity = manifest.identity
+            try:
+                with self._lock:
+                    parent_ready = identity.parent_configuration in self.configurations
+                if not parent_ready:
+                    raise RegistryError(
+                        f"родительская конфигурация {identity.parent_configuration!r} не поднята"
+                    )
+                prepared = self._build_native_generation_runtime(
+                    self.data_dir / pointer.root_path, manifest,
+                )
+                loaded_configuration, loaded_modules = self._native_runtime_maps(
+                    prepared, self.data_dir / pointer.root_path,
+                )
+                assert loaded_configuration is None
+                native_runtime[key] = (prepared, None, loaded_modules)
+            except Exception as error:
+                with self._lock:
+                    carried[key] = raw_by_key[key]
+                problems.append(f"{identity.extension_name}: поколение не поднято: {error}")
+                continue
+            with self._lock:
+                self._generation_pointers[key] = pointer
+                self._generation_manifests[key] = manifest
             extension_key = source_ids.extension_modules_id(
                 identity.parent_configuration,
                 index_cache.safe_name(identity.extension_name),
@@ -4578,11 +4813,11 @@ class Registry:
                 # Legacy-файл сохраняется до отдельного crash-safe cleanup,
                 # но не может подменить уже проверенный native runtime.
                 continue
-            stored = self._absolute(source.stored_path)
-            if not stored.exists():
-                problems.append(f"{source.id}: файл источника пропал ({stored})")
-                continue
             try:
+                stored = self._absolute(source.stored_path)
+                if not stored.exists():
+                    problems.append(f"{source.id}: файл источника пропал ({stored})")
+                    continue
                 if source.kind == KIND_CONFIGURATION:
                     try:
                         восстановленный_source = self.add_configuration(
@@ -4635,7 +4870,8 @@ class Registry:
                 problems += self._apply_syntax(dict(self.syntax_versions))
             except Exception as error:
                 problems.append(f"слитый вид не собран: {error}")
-        for pointer in pointers.values():
+        for key in native_runtime:
+            pointer = pointers[key]
             if (
                 pointer.identity.source_kind is not SourceKind.CONFIGURATION
                 or self._guest

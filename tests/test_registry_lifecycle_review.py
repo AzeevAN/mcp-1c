@@ -33,15 +33,15 @@ def _задержать_native_фазу(registry: Registry, monkeypatch):
     """Остановить restore внутри native-фазы, пока она держит замок публикации."""
     внутри = threading.Event()
     отпустить = threading.Event()
-    подлинный = registry._generation_pointers_from_payload
+    подлинный = registry._restore_generation_pointers
 
-    def задержка(payload):
+    def задержка(payload, problems):
         if threading.current_thread().name == "restore":
             внутри.set()
             assert отпустить.wait(10)
-        return подлинный(payload)
+        return подлинный(payload, problems)
 
-    monkeypatch.setattr(registry, "_generation_pointers_from_payload", задержка)
+    monkeypatch.setattr(registry, "_restore_generation_pointers", задержка)
     return внутри, отпустить
 
 

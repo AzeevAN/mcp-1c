@@ -524,8 +524,7 @@ def test_role_error_не_отменяет_остальные_готовые_сл
     assert registry.active_generation(materialized.manifest.identity) == materialized.manifest
 
 
-def test_tampered_member_блокирует_restore_даже_при_целом_layer_manifest(tmp_path):
-    BundleStoreError = _symbol("BundleStoreError")
+def test_tampered_member_изолируется_при_restore_даже_при_целом_layer_manifest(tmp_path):
     collection = _collection(tmp_path / "source", common_forms=True)
     materialized = _materialized(tmp_path, "tamper", collection)
     registry = Registry(tmp_path / "data")
@@ -533,6 +532,9 @@ def test_tampered_member_блокирует_restore_даже_при_целом_l
         _stage_b_generation(registry, materialized.manifest, materialized.payloads)
     )
     pointer = registry.active_generation_pointer(materialized.manifest.identity)
+    raw_pointer = json.loads(registry.registry_path.read_text(encoding="utf-8"))[
+        "generation_manifests"
+    ][0]
     code_manifest = json.loads(
         (registry.data_dir / pointer.root_path / "layers/code.json").read_text(
             encoding="utf-8"
@@ -550,5 +552,18 @@ def test_tampered_member_блокирует_restore_даже_при_целом_l
         stream.seek(entry["offset"])
         stream.write(bytes((original[0] ^ 0xFF,)))
 
-    with pytest.raises(BundleStoreError, match="member.*контрольная сумма"):
-        Registry(registry.data_dir).restore()
+    restarted = Registry(registry.data_dir)
+    messages = restarted.restore()
+
+    assert any("member" in message and "контрольная сумма" in message
+               for message in messages), messages
+    identity = materialized.manifest.identity
+    assert restarted.active_generation_pointer(identity) is None
+    assert restarted.active_generation(identity) is None
+    snapshot = restarted.snapshot()
+    assert identity.configuration_name not in snapshot.configurations
+    assert not any(key.startswith(identity.configuration_name + ":") for key in snapshot.modules)
+    restarted.save()
+    assert raw_pointer in json.loads(registry.registry_path.read_text(encoding="utf-8"))[
+        "generation_manifests"
+    ]

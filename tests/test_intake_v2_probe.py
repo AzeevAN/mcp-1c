@@ -317,3 +317,41 @@ def test_active_only_compare_различает_current_duplicate_reparse_foreig
         parser_version=2,
         selection_version=3,
     ) is CandidateState.FOREIGN_IDENTITY
+
+
+
+
+@pytest.mark.parametrize(
+    "version", ["", "1.2.3", "9" * 62 + ".1"],
+    ids=["empty", "ordinary", "exactly-64-chars"],
+)
+def test_probe_сохраняет_версию_не_длиннее_64_символов(version):
+    probe_export = _symbol("probe_export")
+    tree = MemoryTree({
+        "Configuration.xml": _xml("DemoConfiguration", version=version),
+        "Catalogs/Demo/Ext/ObjectModule.bsl": b"procedure Demo() endprocedure",
+    })
+
+    probe = probe_export(tree)
+
+    assert probe.configuration_version == version
+
+
+@pytest.mark.parametrize(
+    "version", ["9" * 63 + ".1", "9" * 5000 + ".1"],
+    ids=["65-chars", "5002-chars"],
+)
+def test_probe_отвергает_длинную_version_с_причиной_и_пределом(version):
+    ProbeError = _symbol("ProbeError")
+    probe_export = _symbol("probe_export")
+    tree = MemoryTree({
+        "Configuration.xml": _xml("DemoConfiguration", version=version),
+        "Catalogs/Demo/Ext/ObjectModule.bsl": b"procedure Demo() endprocedure",
+    })
+
+    with pytest.raises(ProbeError) as caught:
+        probe_export(tree)
+
+    message = str(caught.value).lower()
+    assert "version" in message or "верси" in message
+    assert "64" in message

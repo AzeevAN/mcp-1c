@@ -22,6 +22,7 @@ from .intake_v2 import (
 
 _NS_MDCLASSES = "http://v8.1c.ru/8.3/MDClasses"
 _MAX_CONFIGURATION_XML_SIZE = 8 * 1024 * 1024
+_MAX_VERSION_LENGTH = 64
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _CANDIDATE_ID_RE = re.compile(r"[A-Za-z0-9._-]+\Z")
 _TREE_ROOTS = frozenset(
@@ -337,6 +338,10 @@ def probe_export(tree: VirtualExportTree) -> CandidateProbe:
         raise ProbeError("Configuration.xml изменился или превышает предел размера")
     properties = _properties(payload)
     source_kind, internal_name = _identity_from_properties(properties)
+    if len(properties["Version"]) > _MAX_VERSION_LENGTH:
+        raise ProbeError(
+            f"Version в Configuration.xml длиннее {_MAX_VERSION_LENGTH} символов"
+        )
     try:
         from .intake_v2_transport import DirectoryExportTree
         if isinstance(tree, DirectoryExportTree):

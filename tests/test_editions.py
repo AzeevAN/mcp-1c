@@ -77,3 +77,9 @@ def test_обновление_запрещено_и_причина_называ�
         assert фрагмент in reason
     assert "удалите загруженную конфигурацию" in reason
     assert "как новую" in reason
+
+
+
+
+def test_edition_не_бросает_на_пяти_тысячах_цифр_версии():
+    assert edition("9" * 5000 + ".1") is None

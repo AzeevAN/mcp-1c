@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import re
 
-_EDITION = re.compile(r"(\d+)\.(\d+)(?:\.|$)", re.ASCII)
+_EDITION = re.compile(r"(\d{1,9})\.(\d{1,9})(?:\.|$)", re.ASCII)
 
 
 def edition(version: str) -> tuple[int, int] | None:

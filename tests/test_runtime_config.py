@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+from mcp1c.runtime_config import token_is_strong
+
 from mcp1c.runtime_config import (
     ACCESS_HTTP,
     ACCESS_HTTPS_PROXY,
@@ -17,6 +19,11 @@ from mcp1c.runtime_config import (
     dashboard_mode,
     require_tokens,
 )
+
+
+# Только синтетические значения, совпадающие по классу с fixtures token_throttle.
+_L1_API = "Qm7vR2xK9pLt4WcZ8hNbE3sYgU6dJfA1oTq5"
+_L1_ADMIN = "Zx4Pk8Lw2Ns6Hd9Vb3Tm7Rq1Gy5Cf0Ja8Ue2"
 
 
 def test_dashboard_по_умолчанию_включён():
@@ -60,8 +67,8 @@ def test_access_отклоняет_неявные_и_неизвестные_зн
 def test_обязательные_токены_принимаются_только_разными_и_длинными():
     require_tokens(
         {
-            "API_TOKEN": "a" * 32,
-            "ADMIN_TOKEN": "b" * 32,
+            "API_TOKEN": _L1_API,
+            "ADMIN_TOKEN": _L1_ADMIN,
         }
     )
 
@@ -70,7 +77,7 @@ def test_обязательные_токены_принимаются_тольк
     ("environment", "message"),
     [
         ({}, "API_TOKEN обязателен"),
-        ({"API_TOKEN": "a" * 32}, "ADMIN_TOKEN обязателен"),
+        ({"API_TOKEN": _L1_API}, "ADMIN_TOKEN обязателен"),
         (
             {"API_TOKEN": "short", "ADMIN_TOKEN": "b" * 32},
             "не менее 32",
@@ -80,7 +87,7 @@ def test_обязательные_токены_принимаются_тольк
             "печатных ASCII",
         ),
         (
-            {"API_TOKEN": "a" * 32, "ADMIN_TOKEN": "a" * 32},
+            {"API_TOKEN": _L1_API, "ADMIN_TOKEN": _L1_API},
             "должны различаться",
         ),
     ],
@@ -88,3 +95,40 @@ def test_обязательные_токены_принимаются_тольк
 def test_обязательные_токены_fail_closed(environment, message):
     with pytest.raises(TokenConfigurationError, match=message):
         require_tokens(environment)
+
+
+
+
+
+
+def _l1_weak(kind):
+    return "abcdefgh" * 4 if kind == "periodic" else "a" * 32
+
+
+def _l1_no_tokens_in(text, values):
+    if any(value and value in text for value in values):
+        pytest.fail("Значение токена попало в диагностику", pytrace=False)
+
+
+@pytest.mark.parametrize("token_name", ["API_TOKEN", "ADMIN_TOKEN"])
+@pytest.mark.parametrize("weak_kind", ["periodic", "low-distinct"])
+def test_require_tokens_отвергает_предсказуемый_токен_любой_роли(
+    token_name, weak_kind, capsys
+):
+    environment = {"API_TOKEN": _L1_API, "ADMIN_TOKEN": _L1_ADMIN}
+    environment[token_name] = _l1_weak(weak_kind)
+    assert not token_is_strong(environment[token_name])
+
+    with pytest.raises(TokenConfigurationError) as caught:
+        require_tokens(environment)
+
+    assert token_name in str(caught.value)
+    captured = capsys.readouterr()
+    _l1_no_tokens_in(str(caught.value) + captured.out + captured.err, environment.values())
+
+
+def test_require_tokens_принимает_разные_стойкие_токены_без_рекурсии():
+    assert token_is_strong(_L1_API)
+    assert token_is_strong(_L1_ADMIN)
+
+    assert require_tokens({"API_TOKEN": _L1_API, "ADMIN_TOKEN": _L1_ADMIN}) is None

@@ -11,6 +11,8 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+
+from test_runtime_config import _L1_ADMIN, _L1_API, _l1_no_tokens_in, _l1_weak
 from starlette.applications import Starlette
 from starlette.responses import PlainTextResponse
 from starlette.routing import Route
@@ -251,8 +253,8 @@ def test_stdio_без_токена_не_требует_флага(tmp_path, monk
 
 
 def test_docker_с_токенами_не_включает_проверку_host(tmp_path, monkeypatch):
-    monkeypatch.setenv("API_TOKEN", "a" * 40)
-    monkeypatch.setenv("ADMIN_TOKEN", "b" * 40)
+    monkeypatch.setenv("API_TOKEN", _L1_API)
+    monkeypatch.setenv("ADMIN_TOKEN", _L1_ADMIN)
     monkeypatch.delenv("MCP1C_ALLOWED_HOSTS", raising=False)
     параметры = _patch_main(monkeypatch)
 
@@ -402,3 +404,156 @@ def test_websocket_своего_origin_доходит_до_приложения(
         [(b"host", b"localhost"), (b"origin", b"http://localhost")],
     )
     assert called == ["websocket"]
+
+
+
+
+def _l1_main_environment(monkeypatch, *, api=_L1_API, admin=_L1_ADMIN,
+                         access="local", proxies=""):
+    for name, value in (("API_TOKEN", api), ("ADMIN_TOKEN", admin)):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+    monkeypatch.setenv("MCP1C_ACCESS", access)
+    monkeypatch.setenv("MCP1C_TRUSTED_PROXIES", proxies)
+    monkeypatch.delenv("MCP1C_ALLOWED_HOSTS", raising=False)
+    monkeypatch.delenv("MCP1C_PUBLIC_BASE_URL", raising=False)
+
+
+def _l1_main_stubs(monkeypatch):
+    http = _patch_main(monkeypatch)
+    stdio = []
+    monkeypatch.setattr(
+        server_module, "build_server",
+        lambda registry, **kwargs: SimpleNamespace(run=lambda **params: stdio.append(params)),
+    )
+    return http, stdio
+
+
+@pytest.mark.parametrize("token_name", ["API_TOKEN", "ADMIN_TOKEN"])
+@pytest.mark.parametrize("insecure_open_read", [False, True])
+def test_network_http_отвергает_заданный_слабый_токен_без_require_tokens(
+    tmp_path, monkeypatch, capsys, token_name, insecure_open_read
+):
+    environment = {"API_TOKEN": _L1_API, "ADMIN_TOKEN": _L1_ADMIN}
+    environment[token_name] = "1234" if token_name == "API_TOKEN" else _l1_weak("periodic")
+    _l1_main_environment(monkeypatch, api=environment["API_TOKEN"], admin=environment["ADMIN_TOKEN"])
+    _l1_main_stubs(monkeypatch)
+    monkeypatch.setattr(server_module, "Registry", lambda data: pytest.fail("Отказ нужен до Registry"))
+    args = ["--data", str(tmp_path), "--host", "0.0.0.0"]
+    if insecure_open_read:
+        args.append("--insecure-open-read")
+
+    with pytest.raises(SystemExit) as caught:
+        server_module.main(args)
+
+    assert caught.value.code == 2
+    captured = capsys.readouterr()
+    assert token_name in captured.err
+    _l1_no_tokens_in(captured.out + captured.err, environment.values())
+
+
+def test_open_read_без_api_не_разрешает_слабый_admin(tmp_path, monkeypatch, capsys):
+    weak_admin = _l1_weak("periodic")
+    _l1_main_environment(monkeypatch, api=None, admin=weak_admin)
+    _l1_main_stubs(monkeypatch)
+    monkeypatch.setattr(server_module, "Registry", lambda data: pytest.fail("Отказ нужен до Registry"))
+
+    with pytest.raises(SystemExit) as caught:
+        server_module.main(["--data", str(tmp_path), "--host", "0.0.0.0", "--insecure-open-read"])
+
+    assert caught.value.code == 2
+    captured = capsys.readouterr()
+    assert "ADMIN_TOKEN" in captured.err
+    _l1_no_tokens_in(captured.out + captured.err, (weak_admin,))
+
+
+@pytest.mark.parametrize(
+    ("admin_present", "require_tokens"), [(False, False), (True, False), (True, True)],
+    ids=["api-only", "both-optional", "both-required"],
+)
+def test_network_стойкие_токены_разрешают_старт_с_необязательным_admin(
+    tmp_path, monkeypatch, capsys, admin_present, require_tokens
+):
+    _l1_main_environment(monkeypatch, admin=_L1_ADMIN if admin_present else None)
+    http, _stdio = _l1_main_stubs(monkeypatch)
+    args = ["--data", str(tmp_path), "--host", "0.0.0.0"]
+    if require_tokens:
+        args.append("--require-tokens")
+
+    assert server_module.main(args) == 0
+
+    assert http["host"] == "0.0.0.0"
+    captured = capsys.readouterr()
+    _l1_no_tokens_in(captured.out + captured.err, (_L1_API, _L1_ADMIN))
+
+
+@pytest.mark.parametrize(
+    ("transport", "host"), [("streamable-http", "127.0.0.1"), ("stdio", "0.0.0.0")],
+    ids=["loopback-http", "stdio"],
+)
+def test_local_и_stdio_без_require_tokens_сохраняют_слабые_токены(
+    tmp_path, monkeypatch, capsys, transport, host
+):
+    weak_api, weak_admin = "1234", _l1_weak("periodic")
+    _l1_main_environment(monkeypatch, api=weak_api, admin=weak_admin)
+    http, stdio = _l1_main_stubs(monkeypatch)
+
+    assert server_module.main([
+        "--data", str(tmp_path), "--host", host, "--transport", transport,
+    ]) == 0
+
+    if transport == "stdio":
+        assert stdio == [{"transport": "stdio"}]
+    else:
+        assert http["host"] == host
+    captured = capsys.readouterr()
+    _l1_no_tokens_in(captured.out + captured.err, (weak_api, weak_admin))
+
+
+@pytest.mark.parametrize("transport", ["streamable-http", "stdio"])
+def test_require_tokens_отвергает_предсказуемый_api_и_для_локального_транспорта(
+    tmp_path, monkeypatch, capsys, transport
+):
+    weak_api = _l1_weak("periodic")
+    _l1_main_environment(monkeypatch, api=weak_api)
+    _l1_main_stubs(monkeypatch)
+    monkeypatch.setattr(server_module, "Registry", lambda data: pytest.fail("Отказ нужен до Registry"))
+
+    with pytest.raises(SystemExit) as caught:
+        server_module.main(["--data", str(tmp_path), "--transport", transport, "--require-tokens"])
+
+    assert caught.value.code == 2
+    captured = capsys.readouterr()
+    assert "API_TOKEN" in captured.err
+    _l1_no_tokens_in(captured.out + captured.err, (weak_api, _L1_ADMIN))
+
+
+@pytest.mark.parametrize(
+    ("transport", "host", "proxies", "warned"),
+    [
+        ("streamable-http", "0.0.0.0", "", True),
+        ("streamable-http", "0.0.0.0", "192.0.2.2", False),
+        ("streamable-http", "127.0.0.1", "", False),
+        ("stdio", "0.0.0.0", "", False),
+    ],
+    ids=["network-empty", "network-explicit", "loopback-empty", "stdio-empty"],
+)
+def test_https_proxy_предупреждает_о_пустом_trusted_только_в_сети(
+    tmp_path, monkeypatch, capsys, transport, host, proxies, warned
+):
+    _l1_main_environment(monkeypatch, access="https-proxy", proxies=proxies)
+    _l1_main_stubs(monkeypatch)
+
+    assert server_module.main([
+        "--data", str(tmp_path), "--host", host, "--transport", transport,
+    ]) == 0
+
+    captured = capsys.readouterr()
+    if warned:
+        assert "MCP1C_TRUSTED_PROXIES" in captured.err
+        assert "предупреждение" in captured.err.lower()
+    else:
+        assert "MCP1C_TRUSTED_PROXIES" not in captured.err
+    _l1_no_tokens_in(captured.out + captured.err, (_L1_API, _L1_ADMIN))

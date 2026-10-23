@@ -98,6 +98,7 @@ from .runtime_config import (
     host_check_required,
     is_loopback_bind,
     require_tokens,
+    token_is_strong,
 )
 
 # Лимит файла и лимит HTTP-тела различаются: multipart добавляет служебные
@@ -1884,6 +1885,7 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     args = parser.parse_args(argv)
+    network_http = args.transport != "stdio" and not is_loopback_bind(args.host)
 
     try:
         capability_store, enabled_capabilities = resolve_capability_settings(
@@ -1892,6 +1894,14 @@ def main(argv: list[str] | None = None) -> int:
         access = access_mode()
         if args.require_tokens:
             require_tokens()
+        if network_http:
+            for name in ("API_TOKEN", "ADMIN_TOKEN"):
+                value = os.environ.get(name, "")
+                if value and not token_is_strong(value):
+                    raise TokenConfigurationError(
+                        f"{name}: для сетевого HTTP нужен стойкий случайный "
+                        "токен не короче 32 печатных ASCII-символов без пробелов."
+                    )
         # Сам бюджет читается лениво, при первом intake-запросе; неверное
         # значение там превращалось в 500 на каждом запросе вместо отказа
         # старта, который оператор увидит сразу.
@@ -1918,11 +1928,7 @@ def main(argv: list[str] | None = None) -> int:
     ) as error:
         parser.error(str(error))
 
-    open_network_read = (
-        args.transport != "stdio"
-        and not is_loopback_bind(args.host)
-        and not os.environ.get("API_TOKEN", "")
-    )
+    open_network_read = network_http and not os.environ.get("API_TOKEN", "")
     if open_network_read and not args.insecure_open_read:
         # Инвариант «вне своей машины токен чтения обязателен» держится кодом,
         # а не только документацией: MCP отдаёт структуру конфигураций целиком.
@@ -1936,6 +1942,18 @@ def main(argv: list[str] | None = None) -> int:
             "Предупреждение: --insecure-open-read открывает чтение без токена "
             "всем, кто дотянется до адреса. Имена, по которым к серверу "
             "обращаются клиенты, перечислите в MCP1C_ALLOWED_HOSTS.",
+            file=sys.stderr,
+        )
+
+    if (
+        network_http
+        and access == ACCESS_HTTPS_PROXY
+        and not os.environ.get("MCP1C_TRUSTED_PROXIES", "").strip()
+    ):
+        print(
+            "Предупреждение: MCP1C_ACCESS=https-proxy на сетевом адресе при "
+            "пустом MCP1C_TRUSTED_PROXIES доверяет proxy-заголовкам всех "
+            "соединений. Укажите адреса или CIDR доверенного reverse proxy.",
             file=sys.stderr,
         )
 

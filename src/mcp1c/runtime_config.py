@@ -105,8 +105,8 @@ def _validate_token(name: str, value: str) -> None:
 def token_is_strong(value: str) -> bool:
     """Выдерживает ли токен онлайн-перебор без блокировки.
 
-    Правила `--require-tokens` (32+ печатных ASCII-символа, не известная
-    заглушка) плюс признаки случайности: не меньше 8 различных символов, без
+    Формат обязательных секретов (32+ печатных ASCII-символа, не известная
+    заглушка) и признаки случайности: не меньше 8 различных символов, без
     слова-заглушки внутри и без повторяющегося периода. Такой токен ответ
     «совпало» не раскрывает — догадаться до него за время жизни процесса
     нельзя, — поэтому его сверяют и под блокировкой перебора.
@@ -153,6 +153,11 @@ def require_tokens(environ: Mapping[str, str] | None = None) -> None:
     admin_token = source.get("ADMIN_TOKEN", "")
     _validate_token("API_TOKEN", api_token)
     _validate_token("ADMIN_TOKEN", admin_token)
+    for name, value in (("API_TOKEN", api_token), ("ADMIN_TOKEN", admin_token)):
+        if _looks_predictable(value):
+            raise TokenConfigurationError(
+                f"{name} предсказуем; сгенерируйте стойкий случайный токен."
+            )
     if api_token == admin_token:
         raise TokenConfigurationError(
             "API_TOKEN и ADMIN_TOKEN должны различаться."

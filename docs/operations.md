@@ -386,8 +386,8 @@ PYTHONPATH=src .venv/bin/python tools/measure_tool_latency.py \
 | `--port PORT` | порт HTTP, по умолчанию `8000` |
 | `--trust-proxy-headers` | доверять `X-Forwarded-*` только за своим reverse proxy |
 | `--require-writable-data` | создать рабочие подкаталоги и проверить запись; Docker включает автоматически |
-| `--require-tokens` | до старта потребовать разные безопасные `API_TOKEN` и `ADMIN_TOKEN`; Docker включает автоматически |
-| `--insecure-open-read` | разрешить сетевой `--host` без `API_TOKEN`; без флага такой старт останавливается |
+| `--require-tokens` | до старта потребовать оба разных стойких `API_TOKEN` и `ADMIN_TOKEN`; Docker включает автоматически |
+| `--insecure-open-read` | разрешить сетевой `--host` с пустым `API_TOKEN`; заданные слабые токены всё равно отклоняются |
 
 ```bash
 PYTHONPATH=src .venv/bin/python -m mcp1c.server \
@@ -398,13 +398,22 @@ PYTHONPATH=src .venv/bin/python -m mcp1c.server \
 уметь загружать источники, тогда как локальный `stdio` можно осознанно
 направить на уже готовый read-only Registry.
 
+На сетевом HTTP bind каждый заданный `API_TOKEN` и `ADMIN_TOKEN` проверяется
+на стойкость ещё до открытия Registry, даже без `--require-tokens`: 32+
+печатных ASCII-символа без пробелов, не меньше восьми различных символов,
+без заглушек и повторяющегося периода. `ADMIN_TOKEN` без флага необязателен.
+Loopback HTTP и `stdio` без флага допускают прежние локальные настройки.
+Значения секретов в диагностике не выводятся.
+
 `MCP1C_ACCESS=local|http|https-proxy` задаёт доверие к сетевой топологии.
 Для bare-запуска прямой `http` дополнительно требует `--host 0.0.0.0` либо
 конкретный IP; Compose вместо этого использует `MCP1C_BIND_ADDRESS`.
 
 Доверие к `X-Forwarded-*` (`https-proxy` или `--trust-proxy-headers`) сужает
 `MCP1C_TRUSTED_PROXIES` — IP или CIDR через запятую; без него доверяется любой
-источник. Проверку `Host`/`Origin` против DNS rebinding включают отсутствие
+источник. При сетевом HTTP bind в режиме `https-proxy` пустой список
+вызывает предупреждение при старте; правило доверия остаётся прежним.
+Проверку `Host`/`Origin` против DNS rebinding включают отсутствие
 `API_TOKEN`, loopback-`--host` или заданный `MCP1C_ALLOWED_HOSTS`; к loopback и
 хосту `MCP1C_PUBLIC_BASE_URL` переменная добавляет имена `host` или
 `host:port`. Подробно — в

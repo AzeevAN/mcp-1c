@@ -203,8 +203,7 @@ it("переключает конфигурацию без ухода со ст�
 
   expect(screen.getByRole("heading", { name: "Отраслевая конфигурация Б" })).toBeInTheDocument();
   const composition = screen.getByLabelText("Состав конфигурации");
-  expect(within(composition).getByText("Снимок активности расширений")).toBeInTheDocument();
-  expect(within(composition).getByText("не загружен")).toBeInTheDocument();
+  expect(within(composition).queryByText("Снимок активности расширений")).not.toBeInTheDocument();
   expect(screen.getByText("Расширение Доп")).toBeInTheDocument();
   expect(screen.getByRole("region", { name: "Ограничения текущего источника" })).toHaveTextContent(
     "Ограничения текущего опубликованного источника",
@@ -449,42 +448,6 @@ it("не изображает состав конфигурации декора
   expect(within(screen.getByLabelText("Состав конфигурации")).queryByText("Активность")).not.toBeInTheDocument();
 });
 
-it("показывает загруженный снимок активности расширений понятным статусом", async () => {
-  const fetchMock = vi.mocked(fetch);
-  const regularFetch = fetchMock.getMockImplementation()!;
-  fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const response = await regularFetch(input, init);
-    if (String(input) !== "/api/v1/sources") return response;
-    const payload = await response.json();
-    payload.configurations[0].extension_runtime = {
-      id: "a:extension-runtime",
-      kind: "extension-runtime",
-      platform: "8.3.23.1997",
-      items_total: 2,
-      status: "ready",
-      loaded_at: "2026-08-29T09:00:00+00:00",
-      code_version: "",
-      incomplete: false,
-      warnings: [],
-    };
-    return { ...response, json: async () => payload };
-  });
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-
-  render(
-    <MemoryRouter initialEntries={["/sources"]}>
-      <QueryClientProvider client={client}>
-        <SourcesPage />
-      </QueryClientProvider>
-    </MemoryRouter>,
-  );
-
-  expect(await screen.findByRole("heading", { name: "Отраслевая конфигурация А" })).toBeInTheDocument();
-  const composition = screen.getByLabelText("Состав конфигурации");
-  expect(within(composition).getByText("Снимок активности расширений")).toBeInTheDocument();
-  expect(within(composition).getByText("загружен")).toBeInTheDocument();
-});
-
 it("показывает администратору техническую причину ошибки корпуса", async () => {
   const fetchMock = vi.mocked(fetch);
   const regularFetch = fetchMock.getMockImplementation()!;
@@ -571,7 +534,7 @@ it("показывает администратору действия без д
   expect(screen.queryByRole("checkbox", { name: /неполную/ })).not.toBeInTheDocument();
 
   const input = container.querySelector<HTMLInputElement>(
-    'input[accept=".zip,.hbk,.json"]',
+    'input[accept=".zip,.hbk"]',
   );
   const file = new File(["synthetic"], "структура.zip", { type: "application/zip" });
   fireEvent.change(input!, { target: { files: [file] } });

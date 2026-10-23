@@ -2,7 +2,6 @@
 import io
 import os
 import zipfile
-from pathlib import Path
 from dataclasses import replace
 import pytest
 from conftest import build_configuration, write_export
@@ -83,7 +82,6 @@ def test_noop_skips_collection_and_survives_restart(world, monkeypatch):
     assert d['service'].job_payload(w.job_id)['preview']['no_op']
     recovered=Registry(d['registry'].data_dir)
     recovered.startup()
-    assert recovered.wait_for_module_builds()
     assert recovered.active_generation_pointer(ExportIdentity.configuration('Demo0'))==before
     restarted=IntakeApiService.for_registry(recovered,config_sources_root=d['root'].parent,directory_settle_seconds=0)
     assert restarted.confirm(w.job_id)['commit']['no_op']

@@ -32,7 +32,6 @@ from mcp1c.server import build_server
 
 CORE_TOOLS = [
     "list_configurations",
-    "list_extensions",
     "search_objects",
     "search_procedures",
     "get_procedure",

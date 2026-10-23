@@ -265,7 +265,6 @@ def test_warm_restart_пересобирает_битый_журнал_с_пол
 
     restored = Registry(registry.data_dir)
     assert restored.startup() == []
-    assert restored.wait_for_module_builds()
     current = _source(restored, KIND_MODULES)
     payload = coverage_log.load_current(restored.data_dir, current)
 
@@ -310,7 +309,6 @@ def test_warm_restart_заменяет_валидный_но_содержате�
 
     restored = Registry(registry.data_dir)
     assert restored.startup() == []
-    assert restored.wait_for_module_builds()
     current = _source(restored, KIND_MODULES)
     rewritten = coverage_log.load_current(restored.data_dir, current)
 
@@ -343,7 +341,6 @@ def test_stale_журнал_не_публикуется_если_его_нель
     monkeypatch.setattr(coverage_log, "remove", fail)
     restored = Registry(registry.data_dir)
     assert restored.startup() == []
-    assert restored.wait_for_module_builds()
     current = _source(restored, KIND_MODULES)
     assert coverage_log.WRITE_WARNING in current.warnings
     # Корпус обслуживается, но устаревший журнал наружу не показан.

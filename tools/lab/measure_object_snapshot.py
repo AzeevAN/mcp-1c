@@ -261,19 +261,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--data", type=Path, default=Path("data"))
     parser.add_argument("--iterations", type=int, default=200)
     parser.add_argument("--allocation-runs", type=int, default=10)
-    parser.add_argument("--timeout", type=float, default=180.0)
     args = parser.parse_args(argv)
     if args.iterations < 1 or args.allocation_runs < 1:
         parser.error("число прогонов должно быть положительным")
-    if args.timeout < 0:
-        parser.error("timeout должен быть неотрицательным")
 
     logging.disable(logging.CRITICAL)
     try:
         registry = Registry(args.data)
         startup_problems = registry.startup()
-        if not registry.wait_for_module_builds(timeout=args.timeout):
-            return _failure("индексы не готовы до истечения timeout")
         report = measure_registry(
             registry,
             iterations=args.iterations,

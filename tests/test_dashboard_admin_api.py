@@ -105,6 +105,46 @@ def test_spa_upload_запрещён_токену_чтения(tmp_path, monkeyp
     assert dashboard.JOBS == []
 
 
+def test_spa_upload_отвергает_json_снимка_расширений(tmp_path, monkeypatch):
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    monkeypatch.setattr(dashboard, "JOBS", [])
+    registry = Registry(tmp_path / "data")
+    client = _client(registry)
+    _login(client)
+
+    response = client.post(
+        "/api/v1/sources/upload",
+        files={"file": ("снимок.json", b'{"extensions": []}')},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "Принимаются только .zip и .hbk."
+    assert registry.snapshot().sources == {}
+    assert dashboard.JOBS == []
+
+
+def test_spa_sources_не_содержит_extension_runtime(tmp_path, monkeypatch):
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    monkeypatch.setattr(dashboard, "JOBS", [])
+    exports = tmp_path / "exports"
+    exports.mkdir()
+    registry = Registry(tmp_path / "data")
+    registry.add_configuration(
+        write_export(exports, build_configuration(name="СинтетическаяКонфигурация"))
+    )
+    client = _client(registry)
+    _login(client)
+
+    response = client.get("/api/v1/sources")
+
+    assert response.status_code == 200
+    configurations = response.json()["configurations"]
+    assert [c["id"] for c in configurations] == ["СинтетическаяКонфигурация"]
+    assert "extension_runtime" not in configurations[0]
+
+
 def test_spa_cookie_mutation_отвергает_чужой_origin(tmp_path, monkeypatch):
     monkeypatch.delenv("API_TOKEN", raising=False)
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")

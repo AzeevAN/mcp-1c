@@ -1,9 +1,8 @@
-"""CLI зеркалит инструменты кода и дожидается холодной сборки."""
+"""CLI зеркалит инструменты кода."""
 
 import os
 import subprocess
 import sys
-import threading
 from pathlib import Path
 
 import pytest
@@ -13,7 +12,6 @@ from mcp1c.registry import (
     KIND_MODULES,
     STATUS_ERROR,
     STATUS_LOADING,
-    Registry,
 )
 from native_export import загрузить_код
 
@@ -233,23 +231,6 @@ def test_cli_без_кода_возвращает_честный_ответ_и_�
     assert code == 0
     answer = capsys.readouterr().out
     assert "выгрузка в файлы не загружена" in answer
-
-
-def test_public_wait_ограничен_timeout_и_дожидается_завершения(tmp_path):
-    registry = Registry(tmp_path / "data")
-    release = threading.Event()
-    thread = threading.Thread(target=release.wait, daemon=True)
-    with registry._lock:
-        registry._module_builds["Синтетика:modules"] = thread
-    thread.start()
-
-    try:
-        assert not registry.wait_for_module_builds(timeout=0.01)
-        release.set()
-        assert registry.wait_for_module_builds(timeout=1.0)
-    finally:
-        release.set()
-        thread.join(timeout=1)
 
 
 def test_one_shot_cli_холодно_строит_четыре_кэша_и_тепло_поднимает_их(

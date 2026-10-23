@@ -1,23 +1,14 @@
 """Состояния файла incoming и кэш хеша."""
 import json
-import shutil
-from dataclasses import replace
 from pathlib import Path
 
-import pytest
-
-from conftest import build_configuration, состарить, write_export
+from conftest import состарить
 from mcp1c.incoming import (
     STATE_FAILED,
     STATE_NEW,
-    STATE_READY,
-    STATE_STALE,
-    STATE_UPDATED,
     IncomingScanner,
 )
-from mcp1c.intake import SELECTION_VERSION
-from mcp1c.registry import KIND_MODULES, Registry, Source
-from native_export import записать_старый_код
+from mcp1c.registry import Registry
 
 
 def _реестр(tmp_path) -> Registry:
@@ -31,66 +22,6 @@ def _архив(registry: Registry, имя: str, содержимое: bytes = b
     путь = registry.incoming_dir / имя
     путь.write_bytes(содержимое or b"PK\x05\x06" + b"\0" * 18)
     return путь
-
-
-def _старый_код(tmp_path: Path, процедура: str = "А") -> Path:
-    корень = tmp_path / f"код-{процедура}"
-    модуль = корень / "Catalogs" / "Т" / "Ext" / "ObjectModule.bsl"
-    модуль.parent.mkdir(parents=True)
-    модуль.write_text(f"Процедура {процедура}() КонецПроцедуры", encoding="utf-8")
-    return корень
-
-
-def _реестр_прежней_версии(tmp_path: Path, **код) -> tuple[Registry, Source]:
-    """schema v1 «Розница» и её код строкой прежней версии (без startup)."""
-    input_dir = tmp_path / "input"
-    input_dir.mkdir()
-    registry = Registry(tmp_path / "data")
-    registry.add_configuration(
-        write_export(input_dir, build_configuration(name="Розница"))
-    )
-    registry.save()
-    source = записать_старый_код(
-        registry,
-        _старый_код(tmp_path, код.pop("процедура", "А")),
-        configuration="Розница",
-        **код,
-    )
-    return registry, source
-
-
-def _оборванная_рокировка(
-    registry: Registry, source: Source, *, новый_текст: str, selection_version: int
-) -> tuple[Path, Path, Source]:
-    """Состояние после SIGKILL прежней версии между rename и уборкой.
-
-    Прежний приём кода писал журнал `.modules-swap.json`, затем отставлял
-    canonical root в `.<имя>.old-<token>` и ставил на его место распакованный
-    `.<имя>.tmp-<token>`. Здесь собрано ровно это состояние на диске.
-    """
-    root = registry._modules_root("Розница")
-    temporary = root.parent / f".{root.name}.tmp-crash"
-    detached = root.parent / f".{root.name}.old-crash"
-    new = replace(source, selection_version=selection_version, sha256="b" * 64)
-    registry._write_json_durably(
-        registry._module_swap_path,
-        {
-            "version": 1,
-            "source_id": new.id,
-            "new_sha256": new.sha256,
-            "new_selection_version": new.selection_version,
-            "root": registry._relative(root),
-            "temporary": registry._relative(temporary),
-            "detached": registry._relative(detached),
-        },
-    )
-    shutil.copytree(root, temporary)
-    (temporary / "Catalogs/Т/Ext/ObjectModule.bsl").write_text(
-        новый_текст, encoding="utf-8"
-    )
-    root.rename(detached)
-    temporary.rename(root)
-    return root, detached, new
 
 
 def _записать_неудачу(registry: Registry, файл: Path, причина: str) -> None:
@@ -127,304 +58,40 @@ def test_незнакомый_файл_не_разобран(tmp_path):
     assert [s["state"] for s in строки] == [STATE_NEW]
 
 
-def test_знакомый_хеш_даёт_разобрано(tmp_path):
-    """Источник, разобранный нынешним правилом отбора (`selection_version`
-    равен текущей `SELECTION_VERSION`), — «разобрано», а не «отбор устарел»."""
-    registry = _реестр(tmp_path)
-    файл = состарить(_архив(registry, "в.zip"))
-    сканер = IncomingScanner(registry)
-    хеш = сканер.digest(файл)
-    registry.sources["Р:modules"] = Source(
-        id="Р:modules",
-        kind=KIND_MODULES,
-        origin="в.zip",
-        sha256=хеш,
-        selection_version=SELECTION_VERSION,
-    )
-
-    строки = сканер.scan()
-
-    assert строки[0]["state"] == STATE_READY
-
-
-def test_версия_отбора_меньше_текущей_даёт_устарел(tmp_path):
-    """Источник, разобранный более старым правилом отбора, — «отбор устарел»,
-    а не «разобрано»: `_состояние` сравнивает `selection_version` источника
-    с текущей `SELECTION_VERSION` напрямую, без запасного значения."""
-    registry = _реестр(tmp_path)
-    файл = состарить(_архив(registry, "в.zip"))
-    сканер = IncomingScanner(registry)
-    хеш = сканер.digest(файл)
-    registry.sources["Р:modules"] = Source(
-        id="Р:modules",
-        kind=KIND_MODULES,
-        origin="в.zip",
-        sha256=хеш,
-        selection_version=SELECTION_VERSION - 1,
-    )
-
-    строки = сканер.scan()
-
-    assert строки[0]["state"] == STATE_STALE
-    assert строки[0]["detail"] == "Р:modules"
-
-
-def test_предыдущее_правило_отбора_помечено_устаревшим(tmp_path):
-    registry = _реестр(tmp_path)
-    файл = состарить(_архив(registry, "в.zip"))
-    сканер = IncomingScanner(registry)
-    хеш = сканер.digest(файл)
-    registry.sources["Р:modules"] = Source(
-        id="Р:modules",
-        kind=KIND_MODULES,
-        origin="в.zip",
-        sha256=хеш,
-        selection_version=3,
-    )
-
-    строки = сканер.scan()
-
-    assert SELECTION_VERSION == 7
-    assert строки[0]["state"] == STATE_STALE
-
-
-def test_startup_не_переразбирает_selection_v3_из_incoming_автоматически(tmp_path):
-    archive = tmp_path / "modules.zip"
-    archive.write_bytes(b"PK\x05\x06" + b"\0" * 18)
-    registry, _source = _реестр_прежней_версии(
-        tmp_path,
-        origin="modules.zip",
-        sha256=IncomingScanner(Registry(tmp_path / "scan")).digest(archive),
-    )
-    raw = json.loads(registry.registry_path.read_text(encoding="utf-8"))
-    for source in raw["sources"]:
-        if source["id"] == "Розница:modules":
-            source["selection_version"] = 3
-    registry.registry_path.write_text(json.dumps(raw), encoding="utf-8")
-    incoming = registry.data_dir / "incoming"
-    incoming.mkdir(exist_ok=True)
-    copied = incoming / archive.name
-    copied.write_bytes(archive.read_bytes())
-    состарить(copied)
-
-    restored = Registry(registry.data_dir)
-    restored.startup()
-    assert restored.wait_for_module_builds(timeout=10)
-
-    assert restored.sources["Розница:modules"].selection_version == 3
-    assert IncomingScanner(restored).scan()[0]["state"] == STATE_STALE
-
-
-
-def test_startup_откатывает_рокировку_оборванную_до_registry_json(tmp_path):
-    registry, old = _реестр_прежней_версии(tmp_path, процедура="Старая")
-    raw = json.loads(registry.registry_path.read_text(encoding="utf-8"))
-    for row in raw["sources"]:
-        if row["id"] == old.id:
-            row["selection_version"] = 3
-    registry.registry_path.write_text(json.dumps(raw), encoding="utf-8")
-    root, detached, _new = _оборванная_рокировка(
-        registry,
-        old,
-        новый_текст="Процедура Новая() КонецПроцедуры",
-        selection_version=4,
-    )
-    # Имитируем SIGKILL: registry.json остался v3, finally не выполнялся.
-
-    restarted = Registry(registry.data_dir)
-    restarted.startup()
-    assert restarted.wait_for_module_builds(timeout=10)
-
-    assert "Старая" in (root / "Catalogs/Т/Ext/ObjectModule.bsl").read_text()
-    assert not detached.exists()
-    assert restarted.sources[old.id].selection_version == 3
-    assert not restarted._module_swap_path.exists()
-
-
-
-def test_startup_завершает_рокировку_если_registry_json_уже_новый(tmp_path):
-    registry, old = _реестр_прежней_версии(tmp_path, процедура="Старая")
-    root, detached, new = _оборванная_рокировка(
-        registry,
-        old,
-        новый_текст="Процедура Новая() КонецПроцедуры",
-        selection_version=4,
-    )
-    raw = json.loads(registry.registry_path.read_text(encoding="utf-8"))
-    raw["sources"] = [
-        new.to_dict() if row["id"] == new.id else row for row in raw["sources"]
-    ]
-    registry.registry_path.write_text(json.dumps(raw), encoding="utf-8")
-    assert detached.exists()
-    # Имитируем SIGKILL после registry.json, но до удаления journal/.old.
-
-    restarted = Registry(registry.data_dir)
-    restarted.startup()
-    assert restarted.wait_for_module_builds(timeout=10)
-
-    assert "Новая" in (root / "Catalogs/Т/Ext/ObjectModule.bsl").read_text()
-    assert restarted.sources[new.id].selection_version == 4
-    assert not detached.exists()
-    assert not restarted._module_swap_path.exists()
-
-
-
-def test_startup_подметает_staging_каталог_кэша_после_sigkill(tmp_path):
-    registry = Registry(tmp_path / "data")
-    stale = registry.cache_dir / ".modules-cache.tmp-crash"
-    stale.mkdir(parents=True)
-    (stale / "Пример_modules.modules-toc").write_bytes(b"large cache")
-
-    registry.startup()
-
-    assert not stale.exists()
-
-
-@pytest.mark.parametrize(
-    "marker,protected",
-    [
-        (
-            {
-                "version": 1,
-                "source_id": "Пример:modules",
-                "new_sha256": "new",
-                "new_selection_version": 4,
-                "root": ".",
-                "temporary": ".tmp-crash",
-                "detached": None,
-            },
-            "keep.txt",
-        ),
-        (
-            {
-                "version": 1,
-                "source_id": "Пример:modules",
-                "new_sha256": "new",
-                "new_selection_version": 4,
-                "root": "modules",
-                "temporary": "modules/.modules.tmp-crash",
-                "detached": None,
-            },
-            "modules/keep.txt",
-        ),
-        (
-            {
-                "version": 1,
-                "source_id": "Пример:modules",
-                "new_sha256": "new",
-                "new_selection_version": 4,
-                "root": "modules/Другой",
-                "temporary": "modules/.Другой.tmp-crash",
-                "detached": None,
-            },
-            "modules/Другой/keep.txt",
-        ),
-        (["не", "объект"], "keep.txt"),
-    ],
-    ids=["data-root", "modules-root", "other-source", "json-list"],
-)
-def test_битый_wal_не_удаляет_чужие_каталоги(marker, protected, tmp_path):
-    registry = Registry(tmp_path / "data")
-    sentinel = registry.data_dir / protected
-    sentinel.parent.mkdir(parents=True, exist_ok=True)
-    sentinel.write_text("keep", encoding="utf-8")
-    registry._module_swap_path.write_text(
-        json.dumps(marker, ensure_ascii=False), encoding="utf-8"
-    )
-
-    problems = registry._восстановить_рокировку_кода()
-
-    assert problems
-    assert sentinel.read_text(encoding="utf-8") == "keep"
-
-
-def test_неисправимый_wal_блокирует_все_источники_кода_на_startup(tmp_path):
-    registry, source = _реестр_прежней_версии(tmp_path, процедура="Старая")
-    warm = Registry(registry.data_dir)
-    assert warm.startup() == []
-    assert warm.wait_for_module_builds(timeout=10)
-    registry._module_swap_path.write_text("[]", encoding="utf-8")
-    registry_before = registry.registry_path.read_bytes()
-    cache_before = {
-        path.name: path.read_bytes()
-        for path in registry.cache_dir.iterdir()
-        if path.is_file()
-    }
-
-    restarted = Registry(registry.data_dir)
-    problems = restarted.startup()
-
-    assert problems
-    assert source.id not in restarted.sources
-    assert source.id not in restarted.modules
-    assert registry.registry_path.read_bytes() == registry_before
-    assert {
-        path.name: path.read_bytes()
-        for path in registry.cache_dir.iterdir()
-        if path.is_file()
-    } == cache_before
-
-    registry._module_swap_path.unlink()
-    recovered = Registry(registry.data_dir)
-    assert recovered.startup() == []
-    assert source.id in recovered.sources
-
-
-
-def test_запись_без_selection_version_из_registry_json_после_restore_устарела(
-    tmp_path,
+def test_строка_реестра_с_тем_же_хешем_и_именем_не_делает_файл_разобранным(
+    tmp_path, корень_кода
 ):
-    """Запись, сделанная до появления поля `selection_version` (обычный
-    `registry.json` тех версий кода), при чтении не должна выглядеть свежей.
+    """Сверки с реестром нет: «разобрано», «обновлённая выгрузка» и «отбор
+    устарел» не существуют, а старые строки кода и конфигурации не влияют."""
+    import hashlib
 
-    `from_dict` для отсутствующего ключа обязан поставить 0, а не текущую
-    `SELECTION_VERSION` — соврать «отбор свежий» про запись, о которой ничего
-    не известно, означало бы, что человек никогда не увидит «переразобрать»
-    для кода, который никогда не проходил через нынешнее правило отбора.
-    """
-    архив = tmp_path / "модули.zip"
-    архив.write_bytes(b"PK\x05\x06" + b"\0" * 18)
-    registry, _source = _реестр_прежней_версии(
-        tmp_path,
-        origin="модули.zip",
-        sha256=IncomingScanner(Registry(tmp_path / "scan")).digest(архив),
+    from conftest import build_configuration, write_export
+    from native_export import записать_старый_код
+
+    экспорт = tmp_path / "экспорт"
+    экспорт.mkdir()
+    registry = Registry(tmp_path / "data")
+    zip_файл = write_export(экспорт, build_configuration(name="Розница"))
+    registry.add_configuration(zip_файл)
+    registry.save()
+    хеш = hashlib.sha256(zip_файл.read_bytes()).hexdigest()
+    записать_старый_код(
+        registry,
+        корень_кода,
+        configuration="Розница",
+        origin=zip_файл.name,
+        sha256=хеш,
     )
-
-    # Имитируем старую запись: убираем ключ selection_version из sources —
-    # так выглядит registry.json, сделанный до появления этого поля.
-    сырое = json.loads(registry.registry_path.read_text(encoding="utf-8"))
-    for источник in сырое["sources"]:
-        if источник["id"] == "Розница:modules":
-            assert "selection_version" in источник
-            del источник["selection_version"]
-    registry.registry_path.write_text(json.dumps(сырое), encoding="utf-8")
-
-    заново = Registry(registry.data_dir)
-    assert заново.restore() == []
-    assert заново.wait_for_module_builds(timeout=10)
-    assert заново.sources["Розница:modules"].selection_version == 0
-
-    заново.incoming_dir.mkdir(parents=True, exist_ok=True)
-    копия = заново.incoming_dir / "модули.zip"
-    копия.write_bytes(архив.read_bytes())
+    registry.incoming_dir.mkdir(parents=True, exist_ok=True)
+    копия = registry.incoming_dir / zip_файл.name
+    копия.write_bytes(zip_файл.read_bytes())
     состарить(копия)
 
-    строки = IncomingScanner(заново).scan()
+    строки = IncomingScanner(Registry(registry.data_dir)).scan()
 
-    assert строки[0]["state"] == STATE_STALE
-
-
-
-def test_то_же_имя_другой_хеш_даёт_обновлённую(tmp_path):
-    registry = _реестр(tmp_path)
-    файл = состарить(_архив(registry, "в.zip"))
-    registry.sources["Р:modules"] = Source(
-        id="Р:modules", kind=KIND_MODULES, origin="в.zip", sha256="другой"
-    )
-
-    строки = IncomingScanner(registry).scan()
-
-    assert строки[0]["state"] == STATE_UPDATED
+    assert [(s["name"], s["state"], s["detail"]) for s in строки] == [
+        (zip_файл.name, STATE_NEW, "")
+    ]
 
 
 def test_неудача_переживает_пересоздание_сканера(tmp_path):

@@ -328,10 +328,6 @@ def test_exporter_sources_and_binaries_write_documented_chunk_count_and_current_
     current_core_markers = (b"string_allowed_length", b"number_rules_resolved")
 
     for path in dist.glob("*.bsl"):
-        # Самостоятельный runtime-снимок расширений не является schema v1 и
-        # потому не пишет чанки структуры с полем count.
-        if path.name.startswith("СнимокРасширений_"):
-            continue
         payload = path.read_bytes()
         assert xml_marker in payload, path.name
         assert all(marker in payload for marker in current_core_markers), path.name

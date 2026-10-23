@@ -28,7 +28,6 @@ from .module_content import (
     ModuleLocator,
     read_bsl,
 )
-from .structure_origin import CATALOG_FILE
 
 
 _CATEGORIES = (
@@ -736,7 +735,6 @@ def catalog_files(root: Path) -> tuple[Path, ...]:
         for path in sorted(root.rglob("*"))
         if (
             path.is_file()
-            and path.name != CATALOG_FILE
             and not is_intentionally_ignored(path.relative_to(root).as_posix())
         )
     )

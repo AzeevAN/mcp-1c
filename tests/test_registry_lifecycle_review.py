@@ -8,7 +8,6 @@ from __future__ import annotations
 import errno
 import json
 import threading
-from pathlib import Path
 
 import pytest
 
@@ -20,7 +19,6 @@ from mcp1c.registry import (
     SourceInUseError,
 )
 from mcp1c.source_modes import ActivationMode
-from test_extension_runtime import _snapshot, _write
 from test_intake_v2_extensions import _stage_active_base
 from test_intake_v2_legacy_cleanup import _native_generation
 from test_intake_v2_registry import _manifest
@@ -143,30 +141,29 @@ def test_публикация_b_во_время_native_фазы_не_откат�
 
 
 def test_прежний_вердикт_блокировки_держится_до_конца_restore(
-    tmp_path, корень_кода, monkeypatch
+    tmp_path, monkeypatch
 ):
-    from native_export import старый_реестр
-
-    # Журнал рокировки и строку кода оставляет только прежняя версия.
-    original = Registry(
-        старый_реестр(
-            tmp_path / "old",
-            корень_кода,
-            configuration=build_configuration(name="Пример"),
-        )
+    incoming = tmp_path / "input"
+    incoming.mkdir()
+    original = Registry(tmp_path / "data")
+    original.add_configuration(
+        write_export(incoming, build_configuration(name="Пример"))
     )
-    original._module_swap_path.write_text("[]", encoding="utf-8")
+    original.save()
     before = original.registry_path.read_bytes()
+    чужой = json.loads(before)
+    чужой["registry_version"] = 999
+    original.registry_path.write_text(json.dumps(чужой), encoding="utf-8")
 
     registry = Registry(original.data_dir)
     assert registry.startup()
-    registry._module_swap_path.unlink()
+    original.registry_path.write_bytes(before)
 
     внутри, отпустить = _задержать_native_фазу(registry, monkeypatch)
     restore, результат = _запустить_restore(registry)
     try:
         assert внутри.wait(10)
-        # Журнал уже разобран, но память ещё неполна: запись из другого
+        # Файл уже исправлен, но память ещё неполна: запись из другого
         # потока не должна заменить registry.json частичным состоянием.
         with pytest.raises(RegistryRecoveryBlocked, match="идёт восстановление"):
             registry.save()
@@ -176,7 +173,7 @@ def test_прежний_вердикт_блокировки_держится_д�
         restore.join(20)
     assert результат == []
     registry.save()
-    assert "Пример:modules" in _rows(registry)
+    assert "Пример" in _rows(registry)
 
 
 def test_перенесённые_строки_видны_уборке_старта(tmp_path, monkeypatch):
@@ -217,37 +214,6 @@ def test_перенесённые_строки_видны_уборке_стар�
     }
     with pytest.raises(SourceInUseError):
         registry.forget_source(configuration.stored_path)
-
-
-def test_снимок_расширений_перенесённого_владельца_сохраняется(
-    tmp_path, monkeypatch
-):
-    import mcp1c.registry as registry_module
-
-    incoming = tmp_path / "input"
-    incoming.mkdir()
-    original = Registry(tmp_path / "data")
-    original.add_configuration(write_export(incoming, build_configuration()))
-    runtime = original.add_extension_runtime(
-        _write(tmp_path / "runtime.json", _snapshot())
-    )
-    original.save()
-    before = _rows(original)
-    configuration_file = original._absolute(
-        before["ТестоваяКонфигурация"]["stored_path"]
-    )
-    подлинный = registry_module._sha256
-
-    def сбой_тома(path):
-        if Path(path) == configuration_file:
-            raise OSError(errno.EIO, "синтетический сбой тома")
-        return подлинный(path)
-
-    monkeypatch.setattr(registry_module, "_sha256", сбой_тома)
-    registry = Registry(original.data_dir)
-    registry.startup()
-
-    assert _rows(registry)[runtime.id] == before[runtime.id]
 
 
 def test_повреждённый_zip_не_считается_временным_сбоем(tmp_path):

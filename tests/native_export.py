@@ -481,8 +481,9 @@ def записать_старый_код(
     Код лежит каталогом в `data/modules/<Конфигурация>` (или
     `data/extensions/<Конфигурация>/<Расширение>`), а в registry.json — строка
     `KIND_MODULES`/`KIND_EXTENSION` рядом со строкой schema v1. Так выглядят
-    данные прежней версии, которые startup ещё обязан поднять в окне
-    совместимости. Реестр должен уже держать сохранённую конфигурацию.
+    данные до 4.2.0: startup снимает такие строки с учёта с понятной
+    причиной и не трогает каталоги. Реестр должен уже держать сохранённую
+    конфигурацию.
     """
     import hashlib
     import json
@@ -493,11 +494,16 @@ def записать_старый_код(
 
     if extension is None:
         source_id = f"{configuration}:modules"
-        root = registry._modules_root(configuration)
+        root = registry.data_dir / "modules" / index_cache.safe_name(configuration)
         kind = KIND_MODULES
     else:
         source_id = f"{configuration}:ext:{index_cache.safe_name(extension)}"
-        root = registry._extension_root(configuration, extension)
+        root = (
+            registry.data_dir
+            / "extensions"
+            / index_cache.safe_name(configuration)
+            / index_cache.safe_name(extension)
+        )
         kind = KIND_EXTENSION
     if root.exists():
         shutil.rmtree(root)

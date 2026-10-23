@@ -23,8 +23,6 @@ def test_проверка_каталога_создаёт_рабочие_под�
         "incoming",
         "sources",
         "index",
-        "modules",
-        "extensions",
         "logs",
         "reference",
     }

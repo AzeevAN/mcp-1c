@@ -82,8 +82,6 @@ MAX_CACHE_PAYLOAD_BYTES = 512 * 1024 * 1024
 _MAX_HEADER_BYTES = 16 * 1024
 
 KEY_FILE_NAME = ".cache-key"
-# Префикс временного каталога сборки кэша модулей в Registry.
-_MODULES_STAGING_PREFIX = ".modules-cache.tmp-"
 # Ошибки os.link на файловых системах без жёстких ссылок (часть сетевых и
 # FUSE-томов, bind-монтирования Docker Desktop): тогда ключ создаётся O_EXCL на месте.
 _NO_HARDLINK = frozenset(
@@ -255,21 +253,6 @@ class _KeyUnavailable(Exception):
     """Ключ нельзя ни прочитать, ни безопасно создать — кэш не используется."""
 
 
-def _key_directory(path: Path) -> Path:
-    """Каталог, ключ которого подписывает файл ``path``.
-
-    Registry собирает кэш модулей во временном `.modules-cache.tmp-*` внутри
-    каталога кэша и затем переносит файлы: подпись обязана остаться верной,
-    поэтому такой каталог делит ключ с родителем. Подъём — ровно на один
-    уровень и только для этого префикса: иначе ключ искался бы в каталоге,
-    который кэшу не принадлежит.
-    """
-    directory = path.parent
-    if directory.name.startswith(_MODULES_STAGING_PREFIX):
-        return directory.parent
-    return directory
-
-
 def _read_key_file(key_path: Path) -> bytes | None:
     """Прочитать ключ. ``None`` — файла нет или он испорчен (размер не тот)."""
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
@@ -411,7 +394,7 @@ def _existing_key(key_path: Path) -> bytes:
 
 
 def _key_for(path: Path, *, create: bool) -> bytes:
-    directory = _key_directory(path)
+    directory = path.parent
     with _KEYS_LOCK:
         cached = _KEYS.get(directory)
         if cached is not None:

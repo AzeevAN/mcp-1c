@@ -12,14 +12,12 @@
 - `<Конфигурация>` — сама конфигурация (структура);
 - `<Конфигурация>:modules` — корпус кода основной конфигурации;
 - `<Конфигурация>:ext:<Ключ>` — корпус кода расширения; ключ — имя
-  расширения после `index_cache.safe_name`, чистку делает вызывающий;
-- `<Конфигурация>:extension-runtime` — снимок применённых расширений.
+  расширения после `index_cache.safe_name`, чистку делает вызывающий.
 """
 
 from __future__ import annotations
 
 MODULES_SUFFIX = ":modules"
-EXTENSION_RUNTIME_SUFFIX = ":extension-runtime"
 EXTENSION_SEPARATOR = ":ext:"
 
 
@@ -36,11 +34,6 @@ def extension_prefix(configuration: str) -> str:
 def extension_modules_id(configuration: str, extension_key: str) -> str:
     """Id корпуса кода расширения по уже очищенному ключу расширения."""
     return extension_prefix(configuration) + extension_key
-
-
-def extension_runtime_id(configuration: str) -> str:
-    """Id снимка применённых расширений конфигурации."""
-    return f"{configuration}{EXTENSION_RUNTIME_SUFFIX}"
 
 
 def configuration_of_modules(source_id: str) -> str:

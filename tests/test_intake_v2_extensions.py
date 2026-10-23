@@ -29,7 +29,7 @@ from mcp1c.intake_v2_probe import probe_export
 from mcp1c.model import Configuration, Field, MetadataObject
 from mcp1c.registry import KIND_EXTENSION, Registry, RegistryError
 from mcp1c.source_modes import ActivationComponent, ActivationManifest, ActivationMode
-from mcp1c.tools import list_extensions, sources_snapshot
+from mcp1c.tools import sources_snapshot
 from conftest import write_export
 from test_intake_v2_converter import (
     MemoryTree,
@@ -454,9 +454,9 @@ def test_registry_сохраняет_extension_generation_при_строгой_
     assert before.extension_roles is not None and before.extension_roles.ready
     assert before.extension_resolution is not None
     assert before.extension_resolution.relations[0].state.value == "resolved"
-    extension_status = list_extensions(registry, "DemoConfiguration")
-    assert "DemoExtension" in extension_status
-    assert "отключ" not in extension_status.casefold()
+    assert registry.snapshot().extension_names("DemoConfiguration") == (
+        "DemoExtension",
+    )
 
     shutil.rmtree(extension_collection.root)
     impacts = registry.preview_extension_relations(
@@ -727,47 +727,6 @@ def test_remove_снимает_native_generation_расширения_без_leg
     assert "DemoExtension" not in restarted.snapshot().extension_names(
         "DemoConfiguration"
     )
-
-
-def test_remove_снимает_legacy_source_и_native_generation_одного_расширения(
-    tmp_path,
-    корень_кода,
-):
-    from conftest import build_configuration
-    from native_export import старый_реестр
-
-    # Строка расширения прежней версии рядом с native-поколением того же имени.
-    data_dir = старый_реестр(
-        tmp_path / "old",
-        корень_кода,
-        configuration=build_configuration(name="DemoConfiguration"),
-        extension="DemoExtension",
-    )
-    registry = Registry(data_dir)
-    assert registry.startup() == []
-    assert registry.wait_for_module_builds(timeout=10)
-    _base_collection, base = _materialized(tmp_path, "base-remove-over-legacy")
-    registry.publish_generation(_stage_active_base(registry, base))
-    _collection_value, extension = _materialized(
-        tmp_path,
-        "extension-remove-over-legacy",
-        configuration_name="DemoExtension",
-        extension=True,
-    )
-    registry.publish_generation(
-        registry.stage_generation(extension.manifest, extension.payloads)
-    )
-    source_id = "DemoConfiguration:ext:DemoExtension"
-    assert source_id in registry.snapshot().sources
-    assert registry.active_generation_pointer(extension.manifest.identity) is not None
-
-    registry.remove(source_id)
-
-    snapshot = registry.snapshot()
-    assert source_id not in snapshot.sources
-    assert source_id not in snapshot.modules
-    assert registry.active_generation_pointer(extension.manifest.identity) is None
-    assert "DemoExtension" not in snapshot.extension_names("DemoConfiguration")
 
 
 @pytest.mark.parametrize(

@@ -103,9 +103,9 @@ export function SourcesAdminPanel({
       return;
     }
     const suffix = next.name.toLowerCase().split(".").pop();
-    if (suffix !== "zip" && suffix !== "hbk" && suffix !== "json") {
+    if (suffix !== "zip" && suffix !== "hbk") {
       setFile(null);
-      setFeedback({ tone: "danger", text: "Выберите файл .zip, .hbk или .json. Общую справку загрузите через её блок в боковом меню." });
+      setFeedback({ tone: "danger", text: "Выберите файл .zip или .hbk. Общую справку загрузите через её блок в боковом меню." });
       return;
     }
     const limit = admin.data?.limits.upload_bytes;
@@ -174,7 +174,7 @@ export function SourcesAdminPanel({
           <span className="admin-card-icon"><FileUp size={21} aria-hidden="true" /></span>
           <div>
             <h3>Базовая структура и справки</h3>
-            <p>Schema v1, HBK или снимок активности — до {formatBytes(data.limits.upload_bytes)}.</p>
+            <p>Schema v1 или HBK — до {formatBytes(data.limits.upload_bytes)}.</p>
           </div>
         </header>
 
@@ -189,12 +189,12 @@ export function SourcesAdminPanel({
           {file ? (
             <span><strong>{file.name}</strong><small>{formatBytes(file.size)}</small></span>
           ) : (
-            <span><strong>Перетащите файл сюда</strong><small>.zip структуры · .hbk платформы · .json снимка</small></span>
+            <span><strong>Перетащите файл сюда</strong><small>.zip структуры · .hbk платформы</small></span>
           )}
           <button className="button-secondary" type="button" onClick={() => fileInput.current?.click()} disabled={uploading}>
             Выбрать файл
           </button>
-          <input ref={fileInput} type="file" accept=".zip,.hbk,.json" onChange={handleInput} hidden />
+          <input ref={fileInput} type="file" accept=".zip,.hbk" onChange={handleInput} hidden />
         </div>
 
         <div className="upload-options">
@@ -209,7 +209,6 @@ export function SourcesAdminPanel({
           <summary>Какие файлы загружать</summary>
           <div>
             <p><strong>Структура конфигурации:</strong> архив <code>СтруктураКонфигурации_*.zip</code>, полученный обработкой проекта.</p>
-            <p><strong>Активность расширений:</strong> файл <code>СнимокРасширений_*.json</code> из отдельной обработки снимка.</p>
             <p><strong>Справка платформы:</strong> точный файл <code>shcntx_ru.hbk</code>; другие похожие HBK его не заменяют.</p>
             <p><strong>Общая справка:</strong> загрузите подписанный <code>.mcp1cref</code> через блок «Общая справка» в боковом меню.</p>
             <p><strong>Полная файловая выгрузка:</strong> используйте отдельный двухфазный блок выше; ZIP больше 4 ГиБ положите в <code>{data.incoming_dir}</code>.</p>

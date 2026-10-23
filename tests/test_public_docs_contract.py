@@ -143,12 +143,12 @@ def test_вступление_списка_инструментов_соотве
     stdio = names("module_source_download", transport="stdio")
     roles = names("role_access")
 
-    assert len(core) == 11
+    assert len(core) == 10
     assert http - core == {"get_module_source_file"}
     assert stdio == core
     assert roles - core == {"find_roles_for_access", "get_role_access"}
-    assert len(roles) == 13
-    assert "одиннадцать основных инструментов" in introduction
+    assert len(roles) == 12
+    assert "десять основных инструментов" in introduction
     assert "module_source_download" in introduction
     assert "startup-only capability `role_access`" in introduction
     assert "без готового ролевого слоя" in introduction

@@ -31,7 +31,6 @@ from pathlib import Path
 from . import (
     coverage_log,
     cursor as cursor_codec,
-    index_cache,
     replacements,
     source_ids,
     structure_origin,
@@ -117,19 +116,8 @@ def _render_notes(notes: list[str]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _notes_block(
-    context, *, critical_only: bool = True, include_code: bool = True
-) -> str:
-    return _render_notes(
-        context.notes(
-            critical_only=critical_only,
-            include_code=include_code,
-        )
-    )
-
-
-def _code_notes_block(context) -> str:
-    return _render_notes(context.code_notes())
+def _notes_block(context, *, critical_only: bool = True) -> str:
+    return _render_notes(context.notes(critical_only=critical_only))
 
 
 def _clamp(limit: int) -> int:
@@ -313,7 +301,6 @@ class ConfigurationStateRow:
     syntax_hidden: int
     notes: tuple[str, ...]
     code: tuple[CodeStateRow, ...]
-    extension_runtime: SourceStateRow | None = None
     native_generation: bool = False
     compatibility_mode: str = ""
     predefined_available: bool = True
@@ -1125,175 +1112,6 @@ def _blocked_configurations_text(
     )
 
 
-def list_extensions(registry: Registry, config: str | None = None) -> str:
-    """Фактическое состояние расширений по отдельному сеансовому снимку."""
-    for _ in range(2):
-        context = registry.resolve(config)
-        snapshot = registry.snapshot()
-        configuration = context.configuration
-        assert configuration is not None
-        name = configuration.config.name
-        if snapshot.configurations.get(name) is not configuration:
-            continue
-        runtime = snapshot.extension_runtime.get(name)
-        if context.extension_runtime is None:
-            if runtime is not None:
-                continue
-        elif (
-            runtime is None
-            or runtime.snapshot is not context.extension_runtime.snapshot
-            or runtime.source != SourceSnapshot.capture(
-                context.extension_runtime.source
-            )
-        ):
-            continue
-        code_names = snapshot.extension_names(name)
-        if not registry.snapshot_is_current(snapshot):
-            continue
-        return _render_extensions_state(
-            configuration.config,
-            runtime,
-            code_names,
-        )
-    raise SourcesChanged(
-        "Источники состояния расширений изменились дважды; повторите запрос "
-        "после завершения загрузки."
-    )
-
-
-def _render_extensions_state(config, runtime, code_names: tuple[str, ...]) -> str:
-    out = [f"# Расширения: {config.name}", ""]
-    if runtime is None:
-        out.extend(
-            [
-                "- Состояние: **unknown**",
-                "- Фактическая активность и порядок неизвестны: отдельный "
-                "снимок текущего сеанса не загружен.",
-            ]
-        )
-        if code_names:
-            out.extend(
-                [
-                    "",
-                    "## Загруженный код",
-                    "",
-                    *(
-                        f"- `{name}` — активность **unknown**"
-                        for name in code_names
-                    ),
-                ]
-            )
-        return "\n".join(out).rstrip() + "\n"
-
-    state = runtime.snapshot
-    stale_reasons = _extension_runtime_stale_reasons(config, state)
-
-    status = "stale" if stale_reasons else "snapshot"
-    out.extend(
-        [
-            f"- Состояние: **{status}**",
-            f"- Снято: `{state.captured_at}` · снимок `{state.snapshot_id}`",
-            f"- Identity источника: `sha256:{runtime.source.sha256}`",
-            "- Область наблюдения: текущий сеанс и его текущая область данных.",
-        ]
-    )
-    if state.database_changed_since_session_start is None:
-        out.append(
-            "- Признак изменения набора после старта: **unknown** — API не "
-            "получен в снятом сеансе; метод существует с платформы 8.3.22."
-        )
-    for reason in stale_reasons:
-        out.append(f"- ⚠ {reason}.")
-
-    out.extend(
-        [
-            "",
-            "## Действуют в снятом сеансе",
-            "",
-            "> Позиция — порядок элементов в ответе API платформы; сама по "
-            "себе она не является доказанным порядком исполнения модулей.",
-            "",
-        ]
-    )
-    if state.session_active:
-        for item in state.session_active:
-            details = [
-                value
-                for value in (
-                    f"назначение {item.purpose}" if item.purpose else "",
-                    f"область {item.scope}" if item.scope else "",
-                    f"версия {item.version}" if item.version else "",
-                )
-                if value
-            ]
-            suffix = f" — {', '.join(details)}" if details else ""
-            out.append(f"{item.session_position}. `{item.name}`{suffix}")
-    else:
-        out.append("Расширений, действующих в снятом сеансе, нет.")
-
-    out.extend(["", "## Не применены в этом сеансе", ""])
-    if state.session_disabled:
-        for item in state.session_disabled:
-            enabled = (
-                "включено для следующего запуска"
-                if item.enabled
-                else "отключено в базе"
-            )
-            out.append(f"- `{item.name}` — {enabled}")
-    else:
-        out.append("Платформа не вернула не применённых расширений.")
-
-    runtime_by_code_name: dict[str, list[object]] = {}
-    for item in state.by_uuid.values():
-        runtime_by_code_name.setdefault(
-            index_cache.safe_name(item.name).casefold(), []
-        ).append(item)
-    if code_names:
-        out.extend(["", "## Связь с загруженным кодом", ""])
-        for code_name in code_names:
-            matches = runtime_by_code_name.get(code_name.casefold(), [])
-            if len(matches) != 1:
-                status_text = "unknown"
-            else:
-                activity = matches[0].active_in_session
-                status_text = (
-                    "действует"
-                    if activity is True
-                    else "не применено" if activity is False else "unknown"
-                )
-            out.append(f"- `{code_name}` — {status_text}")
-    return "\n".join(out).rstrip() + "\n"
-
-
-def _extension_runtime_stale_reasons(config, state) -> list[str]:
-    stale_reasons: list[str] = []
-    if (
-        state.configuration.version
-        and config.version
-        and state.configuration.version != config.version
-    ):
-        stale_reasons.append(
-            "версия конфигурации снимка "
-            f"{state.configuration.version} не совпадает с загруженной "
-            f"версией {config.version}"
-        )
-    if (
-        state.configuration.platform
-        and config.platform
-        and state.configuration.platform != config.platform
-    ):
-        stale_reasons.append(
-            "платформа снимка "
-            f"{state.configuration.platform} не совпадает с платформой "
-            f"структурной выгрузки {config.platform}"
-        )
-    if state.database_changed_since_session_start is True:
-        stale_reasons.append(
-            "набор расширений изменён после запуска снятого сеанса"
-        )
-    return stale_reasons
-
-
 def _code_state_rows(
     capture: _ListConfigurationsCapture,
     registry: Registry | None = None,
@@ -1405,7 +1223,6 @@ def _configurations_result(
         context = snapshot.context
         configuration = context.configuration
         config = configuration.config
-        runtime = capture.registry.extension_runtime.get(config.name)
         activation = (
             registry.active_activation(ExportIdentity.configuration(config.name))
             if registry is not None
@@ -1457,9 +1274,6 @@ def _configurations_result(
                     else tuple(
                         state for state in code if state.configuration == config.name
                     )
-                ),
-                extension_runtime=(
-                    _source_state_row(runtime.source) if runtime is not None else None
                 ),
                 native_generation=(
                     capture.registry.generation(
@@ -2015,7 +1829,7 @@ def get_object(
         return (
             f"В конфигурации {context.name} нет объекта `{full_name}`.\n\n"
             + (f"Возможно, имелось в виду:\n{suggestion}\n" if suggestion else "")
-            + _notes_block(context, include_code=False)
+            + _notes_block(context)
         )
     if cursor is not None and (obj.kind not in {"HTTPСервис", "Подсистема"} or detail == BRIEF):
         raise RegistryError(
@@ -2150,14 +1964,7 @@ def get_object(
         if snapshot is not None and cursor is None
         else ""
     )
-    if snapshot is None:
-        return body + _notes_block(context, include_code=False)
-    return (
-        body
-        + _code_notes_block(context)
-        + code
-        + _notes_block(context, include_code=False)
-    )
+    return body + code + _notes_block(context)
 
 
 def _belongs_to_object(module: str, full_name: str) -> bool:

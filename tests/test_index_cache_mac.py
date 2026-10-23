@@ -91,19 +91,6 @@ def test_ключ_лежит_в_каталоге_кэша_с_правами_0600
     assert key.exists()
 
 
-def test_временный_каталог_сборки_делит_ключ_с_каталогом_кэша(tmp_path):
-    """Registry собирает кэш модулей в `.modules-cache.tmp-*` и переносит файлы."""
-    staging = tmp_path / ".modules-cache.tmp-abc"
-    staging.mkdir()
-    built = staging / "Розница.modules-toc"
-    index_cache.save_blob({"a": 1}, built, source_sha256="abc", kind="toc")
-    target = tmp_path / built.name
-    built.replace(target)
-
-    assert not (staging / index_cache.KEY_FILE_NAME).exists()
-    assert index_cache.load_blob(target, source_sha256="abc", kind="toc") == {"a": 1}
-
-
 def test_испорченный_ключ_заменяется_и_кэш_перестраивается(tmp_path):
     path = tmp_path / "blob"
     index_cache.save_blob({"a": 1}, path, source_sha256="abc", kind="blob")
@@ -175,19 +162,12 @@ def test_ключ_чужого_владельца_не_используется(
     assert index_cache.load_blob(path, source_sha256="abc", kind="blob") is None
 
 
-def test_ключ_поднимается_только_из_временного_каталога_модулей(tmp_path):
+def test_ключ_лежит_в_каталоге_самого_файла(tmp_path):
     hidden = tmp_path / ".hidden"
     hidden.mkdir()
     index_cache.save_blob({"a": 1}, hidden / "blob", source_sha256="abc", kind="blob")
     assert (hidden / index_cache.KEY_FILE_NAME).exists()
     assert not (tmp_path / index_cache.KEY_FILE_NAME).exists()
-
-    nested = tmp_path / ".modules-cache.tmp-x" / ".deeper"
-    nested.mkdir(parents=True)
-    index_cache.save_blob({"a": 1}, nested / "blob", source_sha256="abc", kind="blob")
-    # Подъём ровно на один уровень и только для `.modules-cache.tmp-*`.
-    assert (nested / index_cache.KEY_FILE_NAME).exists()
-    assert not (tmp_path / ".modules-cache.tmp-x" / index_cache.KEY_FILE_NAME).exists()
 
 
 @pytest.mark.parametrize("code", [errno.EPERM, errno.ENOTSUP, errno.EXDEV])

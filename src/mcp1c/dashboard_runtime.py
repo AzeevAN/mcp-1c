@@ -247,11 +247,6 @@ def _sources_payload(
                 "notes": list(configuration.notes),
                 "native_generation": configuration.native_generation,
                 "source": _source_payload(sources_by_id.get(configuration.name)),
-                "extension_runtime": _source_payload(
-                    sources_by_id.get(
-                        source_ids.extension_runtime_id(configuration.name)
-                    )
-                ),
                 "corpora": corpora,
             }
         )
@@ -1844,9 +1839,9 @@ def _spa_routes(
 
         name = Path(uploaded.filename).name
         suffix = Path(name).suffix.lower()
-        if suffix not in (".zip", ".hbk", ".json"):
+        if suffix not in (".zip", ".hbk"):
             await form.close()
-            return _json_error("Принимаются только .zip, .hbk и .json.", 400)
+            return _json_error("Принимаются только .zip и .hbk.", 400)
 
         directory = None
         job = None

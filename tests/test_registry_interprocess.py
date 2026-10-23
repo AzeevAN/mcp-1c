@@ -119,21 +119,6 @@ def test_гость_не_публикует_поколение_и_не_сним�
         _stop(server)
 
 
-def test_гость_не_удаляет_осиротевшие_каталоги_кода(tmp_path):
-    from test_registry_code_dir_sweep import _сироты
-
-    data = tmp_path / "data"
-    data.mkdir()
-    server = _start_server(data)
-    try:
-        # Сироты появились уже после старта владельца: убирать их — его дело.
-        сироты = _сироты(data)
-        Registry(data).startup()
-        assert all(путь.is_dir() for путь in сироты.values())
-    finally:
-        _stop(server)
-
-
 def test_операция_сервера_перечитывает_чужой_registry_json(tmp_path):
     incoming = tmp_path / "input"
     incoming.mkdir()
@@ -594,7 +579,6 @@ def test_старт_владельца_подметает_временные_ф�
     data.mkdir()
     сироты = [
         data / ".registry.json.0123abcd.tmp",
-        data / ".modules-swap.json.0123abcd.tmp",
     ]
     for path in сироты:
         path.write_text("{}", encoding="utf-8")
@@ -632,39 +616,22 @@ def test_чтение_cli_при_сервере_без_подсказки_про
     assert "обслуживает" not in capsys.readouterr().err
 
 
-def test_remove_сверяет_штамп_до_сноса_каталогов(
-    tmp_path, корень_кода, monkeypatch
-):
-    from native_export import старый_реестр
-
+def test_remove_сверяет_штамп_до_записи(tmp_path, monkeypatch):
     incoming = tmp_path / "input"
     incoming.mkdir()
-    # Каталог кода снимает только строка кода прежней версии.
-    data_dir = старый_реестр(
-        tmp_path / "old", корень_кода, configuration=build_configuration(name="Пример")
-    )
-    server = Registry(data_dir)
+    server = Registry(tmp_path / "data")
     server.startup()
-    assert server.wait_for_module_builds(timeout=10)
+    server.add_configuration(write_export(incoming, build_configuration(name="Пример")))
+    server.save()
     other = Registry(server.data_dir)
     other.restore()
     other.add_configuration(write_export(incoming, build_configuration(name="Другая")))
     other.save()
     # Сверка перед операцией «не заметила» смену: проверяем сам remove.
     monkeypatch.setattr(server, "_refresh_if_changed_externally", lambda: None)
-    отставлено: list = []
-    подлинный = server._retire_code_root
-
-    def учесть(*args, **kwargs):
-        отставлено.append(args[0])
-        return подлинный(*args, **kwargs)
-
-    monkeypatch.setattr(server, "_retire_code_root", учесть)
     server.remove("Пример")
     server.save()
 
-    # Первая попытка отказала до rename, повтор после reload снял один раз.
-    assert len(отставлено) == 1
     payload = json.loads(server.registry_path.read_text(encoding="utf-8"))
     ids = {raw["id"] for raw in payload["sources"]}
     assert "Другая" in ids and "Пример" not in ids

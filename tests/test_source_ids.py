@@ -7,7 +7,6 @@ def test_формы_идентификаторов_совпадают_с_фор�
     assert source_ids.modules_id("УТ") == "УТ:modules"
     assert source_ids.extension_prefix("УТ") == "УТ:ext:"
     assert source_ids.extension_modules_id("УТ", "Доп") == "УТ:ext:Доп"
-    assert source_ids.extension_runtime_id("УТ") == "УТ:extension-runtime"
 
 
 def test_разбор_идентификатора_кода():
@@ -16,4 +15,3 @@ def test_разбор_идентификатора_кода():
     assert source_ids.is_code_source_id("УТ:modules")
     assert source_ids.is_code_source_id("УТ:ext:Доп")
     assert not source_ids.is_code_source_id("УТ")
-    assert not source_ids.is_code_source_id("УТ:extension-runtime")

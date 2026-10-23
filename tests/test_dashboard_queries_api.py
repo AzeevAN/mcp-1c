@@ -110,21 +110,6 @@ def test_повторная_загрузка_справки_не_восстан�
     assert _queries_setup_payload(registry)["sources_revision"] != before
 
 
-def test_повторная_загрузка_runtime_в_ту_же_секунду_меняет_ревизию(tmp_path, monkeypatch):
-    from mcp1c import registry as registry_module
-    from mcp1c.dashboard_runtime import _queries_setup_payload
-    from test_extension_runtime import _snapshot, _write
-
-    monkeypatch.setattr(registry_module, "_now", lambda: "2026-09-30T00:00:00+00:00")
-    registry = _registry(tmp_path)
-    path = _write(tmp_path / "runtime.json", _snapshot())
-    source = registry.add_extension_runtime(path)
-    before = _queries_setup_payload(registry)["sources_revision"]
-    registry.remove(source.id)
-    registry.add_extension_runtime(path)
-    assert _queries_setup_payload(registry)["sources_revision"] != before
-
-
 def test_повторная_загрузка_модулей_повышает_ревизию_жизненного_цикла(tmp_path, monkeypatch):
     from mcp1c import registry as registry_module
     from mcp1c.dashboard_runtime import _queries_setup_payload

@@ -242,7 +242,6 @@ def test_generation_pack_с_пустым_member_публикуется_и_чит
 
     restarted = Registry(registry.data_dir)
     assert restarted.restore() == []
-    assert restarted.wait_for_module_builds()
     assert "procedure Ready() export" in tools.get_procedure(
         restarted,
         "ОбщийМодуль.a::Ready",

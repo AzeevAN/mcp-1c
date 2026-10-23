@@ -258,7 +258,6 @@ def _failure(reason: str) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data", default="data", help="каталог данных сервера")
-    parser.add_argument("--timeout", type=float, default=120.0)
     args = parser.parse_args(argv)
 
     # Реестр журналирует только агрегаты, но lab-контракт ещё строже: stdout
@@ -269,8 +268,6 @@ def main(argv: list[str] | None = None) -> int:
     try:
         registry = Registry(Path(args.data))
         startup_problems = registry.startup()
-        if not registry.wait_for_module_builds(timeout=args.timeout):
-            return _failure("индексы не готовы до истечения timeout")
         loaded_sources = [loaded for _, loaded in sorted(registry.modules.items())]
         rows = []
         for number, loaded in enumerate(loaded_sources, start=1):

@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Callable, Mapping
 
 from . import modules_index, source_ids, structure_origin
-from .extension_runtime import ExtensionRuntimeSnapshot
 from .graph import Graph
 from .intake_v2 import ExportIdentity, GenerationManifest, SourceKind
 from .intake_v2_extensions import ExtensionResolution
@@ -37,7 +36,6 @@ KIND_CONFIGURATION = "configuration"
 KIND_SYNTAX = "syntax"
 KIND_MODULES = "modules"
 KIND_EXTENSION = "extension"
-KIND_EXTENSION_RUNTIME = "extension-runtime"
 
 STATUS_LOADING = "loading"
 STATUS_READY = "ready"
@@ -123,20 +121,15 @@ class Source:
     # Версия правила отбора (`intake.SELECTION_VERSION`), под которой код
     # был разобран. 0 — «неизвестно»: так выглядят и записи, сделанные до
     # появления этого поля, и любой источник, для которого версию никто не
-    # проставил явно. `intake._состояние` (incoming.py) считает ноль
-    # устаревшим, а не свежим — см. комментарий там же.
+    # проставил явно.
     selection_version: int = 0
-    # Стабильное поколение каталога локаторов. В отличие от внутреннего
-    # `_modules_generation`, оно переживает restart и потому позволяет
-    # доказать, что warm-кэш и Source относятся к одному снимку кода.
+    # Стабильное поколение каталога локаторов. Оно переживает restart и
+    # потому позволяет доказать, что warm-кэш и Source относятся к одному
+    # снимку кода.
     locator_generation: int = 0
     # Версия конфигурации (или расширения) из Configuration.xml выгрузки в
-    # файлы — только у KIND_MODULES/KIND_EXTENSION. Пустая строка везде
-    # больше нигде не значит ошибку: у остальных родов источника поля попросту
-    # нет. Хранится на Source (не только на LoadedModules), потому что архив,
-    # из которого её брал прежний приём кода, на диск не копировался — без
-    # этого поля `restore()` старой строки registry.json не смог бы
-    # восстановить её ни из чего.
+    # файлы — только у KIND_MODULES/KIND_EXTENSION. Пустая строка
+    # нигде не значит ошибку: у остальных родов источника поля попросту нет.
     code_version: str = ""
     # Администратор явно разрешил публикацию schema v1 с truncated=true.
     # Старые записи без поля восстанавливаются fail-closed.
@@ -206,14 +199,6 @@ class LoadedConfiguration:
 
 
 @dataclass(slots=True)
-class LoadedExtensionRuntime:
-    """Отдельный point-in-time снимок расширений одного сеанса 1С."""
-
-    source: Source
-    snapshot: ExtensionRuntimeSnapshot
-
-
-@dataclass(slots=True)
 class LoadedSyntax:
     source: Source
     syntax: SyntaxIndex
@@ -253,8 +238,7 @@ class LoadedModules:
     поиск: SearchIndex | None
     # Версия конфигурации/расширения из Configuration.xml выгрузки в файлы —
     # то же значение, что и `source.code_version`, но под публичным именем
-    # провайдера. Сверяется в `ResolvedContext.notes()` с
-    # версией загруженных метаданных.
+    # провайдера.
     версия_кода: str
     каталог: modules_index.ModuleCatalog | None = None
     # Компактное доказательство происхождения структуры публикуется тем же
@@ -331,14 +315,6 @@ class RegistryCodeSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
-class RegistryExtensionRuntimeSnapshot:
-    """Неизменяемая пара identity источника и разобранного снимка."""
-
-    source: SourceSnapshot
-    snapshot: ExtensionRuntimeSnapshot
-
-
-@dataclass(frozen=True, slots=True)
 class RegistryGenerationSnapshot:
     """Неизменяемая согласованная пара active pointer и его manifest."""
 
@@ -381,7 +357,6 @@ class RegistrySnapshot:
     syntax: LoadedSyntax | None
     sources: Mapping[str, SourceSnapshot]
     modules: Mapping[str, RegistryCodeSnapshot]
-    extension_runtime: Mapping[str, RegistryExtensionRuntimeSnapshot]
     generations: Mapping[tuple[str, ...], RegistryGenerationSnapshot]
     source_lifecycle_token: tuple[str, int]
     _owner: object = field(repr=False, compare=False)
@@ -393,19 +368,13 @@ class RegistrySnapshot:
         return tuple(self.configurations)
 
     def extension_names(self, configuration: str) -> tuple[str, ...]:
-        prefix = source_ids.extension_prefix(configuration)
-        legacy = {
-            source_id[len(prefix):]
-            for source_id, source in self.sources.items()
-            if source.kind == KIND_EXTENSION and source_id.startswith(prefix)
-        }
-        native = {
+        names = {
             generation.manifest.identity.extension_name
             for generation in self.generations.values()
             if generation.manifest.identity.source_kind is SourceKind.EXTENSION
             and generation.manifest.identity.parent_configuration == configuration
         }
-        return tuple(sorted(legacy | native, key=lambda value: (value.casefold(), value)))
+        return tuple(sorted(names, key=lambda value: (value.casefold(), value)))
 
     def generation(
         self, identity: ExportIdentity
@@ -458,7 +427,6 @@ class ResolvedContext:
     syntax_hidden: int = 0
     modules: LoadedModules | None = None
     extension: LoadedModules | None = None
-    extension_runtime: LoadedExtensionRuntime | None = None
     roles: LoadedRoleAccess | None = None
     extension_roles: LoadedRoleAccess | None = None
     extension_resolution: ExtensionResolution | None = None
@@ -511,27 +479,7 @@ class ResolvedContext:
             return lambda item: True
         return lambda item: item.available_in_tuple(target)
 
-    def code_notes(self) -> list[str]:
-        """Оговорки, относящиеся только к ответам по коду."""
-        if self.configuration is None or self.modules is None:
-            return []
-        config = self.configuration.config
-        if (
-            self.modules.версия_кода
-            and config.version
-            and self.modules.версия_кода != config.version
-        ):
-            return [
-                f"Код модулей выгружен для версии {self.modules.версия_кода}, "
-                f"загруженные метаданные — версии {config.version}: "
-                "конфигурация и код разошлись, номера строк и состав "
-                "процедур могут не совпадать с тем, что видит платформа."
-            ]
-        return []
-
-    def notes(
-        self, *, critical_only: bool = False, include_code: bool = True
-    ) -> list[str]:
+    def notes(self, *, critical_only: bool = False) -> list[str]:
         """Оговорки, которые сервер обязан передать агенту.
 
         `critical_only` — только то, что влияет на достоверность ответа.
@@ -571,13 +519,6 @@ class ResolvedContext:
                 "отсутствие элементов в базе."
             )
         notes.extend(config.warnings)
-
-        if include_code:
-            # Загрузка новой выгрузки метаданных под тем же именем подменяет
-            # конфигурацию (`add_configuration`), а индекс кода остаётся
-            # прежним — они молча расходятся, если не сказать вслух (см.
-            # `docs/modules-provider-design.md`, раздел 9).
-            notes.extend(self.code_notes())
 
         if self.syntax is None:
             notes.append(

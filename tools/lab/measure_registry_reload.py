@@ -152,7 +152,6 @@ def main() -> int:
     registry = Registry(data_dir)
     start = time.perf_counter()
     registry.startup()
-    registry.wait_for_module_builds(timeout=600)
     print(f"первый startup        : {time.perf_counter() - start:.2f} с")
     print(f"конфигураций          : {len(registry.configurations)}")
     gc.collect()
@@ -167,7 +166,6 @@ def main() -> int:
             start = time.perf_counter()
             registry.startup()
             длительность = time.perf_counter() - start
-        registry.wait_for_module_builds(timeout=600)
         gc.collect()
         после = снимок_кэша(registry.cache_dir)
         переписано = sum(

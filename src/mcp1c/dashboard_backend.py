@@ -566,8 +566,6 @@ def _index_source(registry: Registry, path: Path, suffix: str) -> None:
     for попытка in range(2):
         if suffix == ".hbk":
             registry.add_syntax(path)
-        elif suffix == ".json":
-            registry.add_extension_runtime(path)
         else:
             registry.add_configuration(
                 path,

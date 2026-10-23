@@ -144,7 +144,7 @@ def test_restored_native_without_activation_is_diagnostic_only(tmp_path):
         restored.resolve("DemoConfiguration")
 
 
-def test_restored_legacy_a_plus_separate_code_requires_full_reload(
+def test_restored_legacy_a_plus_separate_code_drops_code_row(
     tmp_path, корень_кода
 ):
     incoming = tmp_path / "in"
@@ -158,16 +158,15 @@ def test_restored_legacy_a_plus_separate_code_requires_full_reload(
     записать_старый_код(registry, корень_кода, configuration="Розница")
 
     restored = Registry(registry.data_dir)
-    assert restored.restore() == []
-    activation = restored.active_activation(ExportIdentity.configuration("Розница"))
-    assert activation is not None
-    assert activation.status is ActivationStatus.RELOAD_REQUIRED
-    assert "RELOAD_REQUIRED" in tools.list_configurations(restored)
-    diagnostic = tools.sources_snapshot(restored)
-    assert diagnostic.configuration_names == ("Розница",)
-    assert diagnostic.configurations[0].code == ()
-    with pytest.raises(RegistryError, match="reload_required"):
-        restored.resolve("Розница")
+    problems = restored.restore()
+    assert len(problems) == 1
+    assert problems[0].startswith("Розница:modules: ")
+    assert "до версии 4.2.0" in problems[0]
+    # Осталась чистая Source A: читается, как и без строки кода.
+    assert restored.active_activation(ExportIdentity.configuration("Розница")) is None
+    context = restored.resolve("Розница")
+    assert context.name == "Розница"
+    assert context.modules is None
 
 
 def test_restored_pure_source_a_remains_readable(tmp_path):

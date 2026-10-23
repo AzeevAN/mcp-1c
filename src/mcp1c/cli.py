@@ -129,24 +129,11 @@ def _cmd_find(args: argparse.Namespace) -> int:
 
 
 def _registry(args: argparse.Namespace) -> Registry:
-    # Только startup разбирает журналы прерванных операций и ведёт поколение
-    # восстановления. Голый restore() пропускал WAL, а фоновая сборка кода
-    # считала такой частичный снимок завершённым и могла сохранить его в
-    # registry.json.
+    # Только startup разбирает журналы прерванных операций: голый restore()
+    # пропускал WAL публикации поколения.
     registry = Registry(args.data)
     for message in registry.startup():
         print(f"  {message}", file=sys.stderr)
-    return registry
-
-
-def _registry_for_code(args: argparse.Namespace) -> Registry:
-    """Холодный одноразовый CLI ждёт кэш, сервер продолжает отвечать фоном."""
-    registry = _registry(args)
-    if not registry.wait_for_module_builds(timeout=90.0):
-        raise RegistryError(
-            "Индекс кода не успел построиться за 90 секунд. "
-            "Повторите команду: готовый кэш будет поднят при следующем запуске."
-        )
     return registry
 
 
@@ -156,8 +143,6 @@ def _cmd_reg_add(args: argparse.Namespace) -> int:
     suffix = path.suffix.lower()
     if suffix == ".hbk":
         source = registry.add_syntax(path)
-    elif suffix == ".json":
-        source = registry.add_extension_runtime(path)
     else:
         source = registry.add_configuration(
             path, allow_truncated=args.allow_truncated, same_edition_only=True
@@ -227,16 +212,6 @@ def _cmd_reg_list(args: argparse.Namespace) -> int:
             print(f"  {label:<11}: {state.state}")
             for line in tools.code_coverage_lines(state.coverage):
                 print(f"    {line}")
-        runtime = row.extension_runtime
-        print(
-            "  расширения : "
-            + (
-                f"сеансовый снимок, {runtime.items_total} элементов, "
-                f"загружен {runtime.loaded_at}"
-                if runtime is not None
-                else "фактическая активность unknown"
-            )
-        )
         for note in row.notes:
             print(f"  ! {note}")
         print()
@@ -307,7 +282,7 @@ def _cmd_reg_search(args: argparse.Namespace) -> int:
 
 def _cmd_reg_search_procedures(args: argparse.Namespace) -> int:
     """CLI-зеркало MCP `search_procedures` без второго пути рендера."""
-    registry = _registry_for_code(args)
+    registry = _registry(args)
     print(
         tools.search_procedures(
             registry,
@@ -323,7 +298,7 @@ def _cmd_reg_search_procedures(args: argparse.Namespace) -> int:
 
 def _cmd_reg_get_procedure(args: argparse.Namespace) -> int:
     """CLI-зеркало MCP `get_procedure` с теми же границами окна."""
-    registry = _registry_for_code(args)
+    registry = _registry(args)
     print(
         tools.get_procedure(
             registry,
@@ -339,7 +314,7 @@ def _cmd_reg_get_procedure(args: argparse.Namespace) -> int:
 
 def _cmd_reg_get_callers(args: argparse.Namespace) -> int:
     """CLI-зеркало MCP `get_callers`, включая честные предупреждения."""
-    registry = _registry_for_code(args)
+    registry = _registry(args)
     print(
         tools.get_callers(
             registry,
@@ -498,7 +473,7 @@ def main(argv: list[str] | None = None) -> int:
         if name == "reg-add":
             sp.add_argument(
                 "path",
-                help="ZIP структуры, .hbk справки или .json снимка расширений",
+                help="ZIP структуры или .hbk справки",
             )
             sp.add_argument(
                 "--allow-truncated",

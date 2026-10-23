@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from dataclasses import replace
 import threading
-import time
 
 import pytest
 
@@ -1167,51 +1166,6 @@ def test_без_кода_отвечает_честной_причиной(tmp_pa
 
     assert "выгрузка в файлы не загружена" in ответ
     assert "код" in ответ.lower()
-
-
-def test_строящийся_индекс_показывает_этап_и_фактический_прогресс(
-    tmp_path, корень_кода, monkeypatch
-):
-    # Фоновая сборка осталась только у строк кода прежней версии.
-    from native_export import старый_реестр
-
-    data_dir = старый_реестр(
-        tmp_path / "old", корень_кода, configuration=build_configuration(name="Пример")
-    )
-
-    второй_файл = threading.Event()
-    отпустить = threading.Event()
-    прочитано = 0
-    настоящее_чтение = modules_index.read_bsl
-
-    def прочитать(корень, адрес, локатор):
-        nonlocal прочитано
-        прочитано += 1
-        if прочитано == 2:
-            второй_файл.set()
-            отпустить.wait(timeout=3)
-        return настоящее_чтение(корень, адрес, локатор)
-
-    monkeypatch.setattr(modules_index, "read_bsl", прочитать)
-    заново = Registry(data_dir)
-    try:
-        assert not заново.startup()
-        assert второй_файл.wait(timeout=1)
-
-        with pytest.raises(RegistryError, match="reload_required"):
-            tools.search_procedures(заново, "Сложить", config="Пример")
-        # Диагностический путь может наблюдать сборку, не выдавая старый код.
-        loaded = заново.resolve("Пример", diagnostic=True).modules
-        assert loaded.этап == (1, 4)
-        assert loaded.название_этапа == "оглавление"
-        assert loaded.прогресс == (1, 3)
-    finally:
-        отпустить.set()
-
-    край = time.monotonic() + 3
-    while not заново.modules["Пример:modules"].готов:
-        assert time.monotonic() < край, "фоновая сборка не завершилась"
-        time.sleep(0.01)
 
 
 @pytest.mark.parametrize("extension", [None, "Доп"], ids=["modules", "extension"])

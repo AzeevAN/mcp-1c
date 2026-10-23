@@ -8,20 +8,18 @@
 from __future__ import annotations
 
 import copy
-import gzip
 import time
 import zipfile
 from pathlib import Path
 
 from starlette.applications import Starlette
 
-from conftest import build_configuration, write_export, живой_клиент, состарить
+from conftest import write_export, живой_клиент, состарить
 from mcp1c import dashboard_backend as dashboard
 from mcp1c.dashboard_runtime import DASHBOARD_ON, routes
 from mcp1c.intake_v2_api import IntakeApiService
 from mcp1c.model import Field
 from mcp1c.registry import Registry
-from native_export import старый_реестр
 
 
 _NS = "http://v8.1c.ru/8.3/MDClasses"
@@ -176,38 +174,3 @@ def test_source_a_не_создаёт_смешанный_overlay_через_lega
 
     monkeypatch.setattr(dashboard, "JOBS", [])
     parse_with_legacy_http(restarted)
-
-
-def test_служебный_каталог_не_считается_модулем_без_адреса(tmp_path):
-    from mcp1c import structure_origin
-
-    # Каталог происхождения лежит в корне кода только у data/ прежней версии.
-    code = tmp_path / "code"
-    module = code / "Catalogs" / "Контрагенты" / "Ext" / "ObjectModule.bsl"
-    module.parent.mkdir(parents=True)
-    module.write_text("Процедура Проверка() Экспорт\nКонецПроцедуры\n", encoding="utf-8")
-    (code / structure_origin.CATALOG_FILE).write_bytes(gzip.compress(b"{}"))
-    registry = Registry(
-        старый_реестр(
-            tmp_path / "old", code, configuration=build_configuration(name=_CONFIG)
-        )
-    )
-    registry.startup()
-    assert registry.wait_for_module_builds(timeout=10)
-
-    coverage = registry.modules[f"{_CONFIG}:modules"].каталог.coverage
-
-    assert coverage.total_candidates == 1
-    assert coverage.unknown_address == 0
-
-
-def test_повреждённый_каталог_даёт_unknown_а_не_роняет_restore(tmp_path):
-    from mcp1c import structure_origin
-
-    root = tmp_path / "code"
-    root.mkdir()
-    (root / structure_origin.CATALOG_FILE).write_bytes(gzip.compress(b"[]"))
-
-    assert structure_origin.load(root) is None
-
-

@@ -49,10 +49,6 @@ except ImportError:  # pragma: no cover
 from . import coverage_log, index_cache, modules_index, source_ids, structure_origin
 from .dictionary import Dictionary, DictionaryError
 from .editions import edition_conflict
-from .extension_runtime import (
-    ExtensionRuntimeError,
-    load_extension_runtime,
-)
 from .graph import Graph
 from .intake_v2 import (
     CandidateTransport,
@@ -113,7 +109,6 @@ from .intake_v2_runtime import (
 )
 from .loader import ExportError, load
 from .model import Configuration
-from .module_catalog import catalog_files
 from .module_content import LocatorIdentity
 from .resource_limits import ResourceLimitError
 from .role_access import LoadedRoleAccess
@@ -138,13 +133,12 @@ from .v8container import V8ContainerError
 # Типы-данные живут в registry_types; имена реэкспортируются отсюда, чтобы
 # `from mcp1c.registry import X` у потребителей не менялся. `SourcesChanged`
 # сам реестр не бросает — его импортируют tools и дашборд, поэтому pyflakes
-# видит его неиспользуемым здесь.
+# видит его неиспользуемым здесь. Так же и `STATUS_LOADING`: его читают тесты.
 from .registry_types import (
     KIND_CONFIGURATION,
     KIND_SYNTAX,
     KIND_MODULES,
     KIND_EXTENSION,
-    KIND_EXTENSION_RUNTIME,
     STATUS_LOADING,
     STATUS_READY,
     STATUS_ERROR,
@@ -166,19 +160,39 @@ from .registry_types import (
     RegistryOwnedElsewhere,
     Source,
     LoadedConfiguration,
-    LoadedExtensionRuntime,
     LoadedSyntax,
     LoadedModules,
     SourcesChanged,
     SourceSnapshot,
     RegistryCodeSnapshot,
-    RegistryExtensionRuntimeSnapshot,
     RegistryGenerationSnapshot,
     RegistrySnapshot,
     ResolvedContext,
 )
 
 REGISTRY_VERSION = 1
+# Виды строк registry.json, которые restore больше не поднимает: код и
+# расширения, загруженные отдельно от структуры до 4.2.0, и сеансовый снимок
+# активности расширений. Строка снимается с учёта с понятной причиной,
+# файлы на диске остаются человеку.
+_RETIRED_SOURCE_KINDS = MappingProxyType(
+    {
+        KIND_MODULES: (
+            "код, загруженный отдельно от структуры до версии 4.2.0, больше "
+            "не поддерживается; запись снята с учёта. Загрузите выгрузку "
+            "конфигурации в файлы целиком."
+        ),
+        KIND_EXTENSION: (
+            "код расширения, загруженный отдельно от структуры до версии "
+            "4.2.0, больше не поддерживается; запись снята с учёта. "
+            "Загрузите выгрузку расширения в файлы целиком."
+        ),
+        "extension-runtime": (
+            "снимок активности расширений больше не поддерживается; запись "
+            "снята с учёта."
+        ),
+    }
+)
 _EXPECTED_GENERATION_UNSET = object()
 # registry.json ещё не читался этим экземпляром: сверять не с чем.
 _REGISTRY_STAMP_UNSEEN = object()
@@ -521,19 +535,9 @@ class Registry:
         # старте: гигабайтную выгрузку так разбирать нельзя. Сервер его
         # НЕ удаляет — исходник принадлежит человеку.
         self.incoming_dir = self.data_dir / "incoming"
-        self.modules_dir = self.data_dir / "modules"
-        # Каталог кода расширений — рядом с `modules_dir`, но не внутри него:
-        # у расширения свой ключ и своя жизнь, а не подкаталог конфигурации.
-        self.extensions_dir = self.data_dir / "extensions"
         self.registry_path = self.data_dir / "registry.json"
         self._generation_store = GenerationBundleStore(self.data_dir)
         self.generation_recovery_path = self._generation_store.recovery_path
-        # Write-ahead marker рокировки каталога кода. Новых рокировок нет:
-        # приём кода отдельно от структуры удалён, код приходит только
-        # native-поколением. Startup ещё дочитывает marker, оставленный
-        # процессом прежней версии (окно совместимости, удалить после
-        # выпуска 4.3.0 вместе с `_восстановить_рокировку_кода`).
-        self._module_swap_path = self.data_dir / ".modules-swap.json"
         self.dictionary_path = self.data_dir / "dictionary.json"
         # Битый словарь не должен останавливать ни сервер, ни CLI: поиск
         # работает на встроенном слое, причина называется в сообщениях
@@ -611,18 +615,8 @@ class Registry:
         # поэтому writers сериализуются отдельным реентерабельным замком.
         self._dictionary_mutation_lock = threading.RLock()
         # Повторные startup/reload сериализуются отдельно: долгий reload не
-        # держит основной замок и не мешает `resolve()`, но два восстановления
-        # не могут одновременно резервировать одну фоновую сборку.
+        # держит основной замок и не мешает `resolve()`.
         self._startup_lock = threading.Lock()
-        # Сервер вызывает restore() до обслуживания запросов. Синтетические
-        # сборщики могут создавать старые индексы до этой границы, но работающий
-        # Registry не выдаёт смешанный вид A+код.
-        self._restored_for_serving = False
-        # Фоновая сборка может закончиться раньше последовательного restore.
-        # Поколения различают успешно завершённый полный startup и аварийно
-        # оборванный частичный снимок: второй нельзя писать в registry.json.
-        self._startup_generation = 0
-        self._last_successful_startup_generation = 0
         # Все writers кэша модулей и смена поколения источника идут через
         # один порядок `cache -> registry`. Так старый writer не успевает
         # записать свой пакет после смены поколения кода.
@@ -641,14 +635,11 @@ class Registry:
         self._syntax_version_keys: dict[str, tuple] = {}
         self._syntax_built: tuple[tuple, LoadedSyntax] | None = None
         self.sources: dict[str, Source] = {}
-        # Runtime-снимок намеренно не входит ни в schema v1, ни в индекс
-        # кода: это состояние конкретного сеанса и области данных на момент
-        # выгрузки. На конфигурацию публикуется ровно одно последнее поколение.
-        self.extension_runtime: dict[str, LoadedExtensionRuntime] = {}
-        # Индекс кода — по id источника (`<Имя>:modules` и `<Имя>:ext:<Имя>`),
-        # тот же ключ, что и в `self.sources`: у конфигурации ровно одна
-        # выгрузка кода, у расширений их может быть несколько, и `resolve()`
-        # достаёт нужную запись напрямую по составленному ключу.
+        # Индекс кода native-поколений — по id (`<Имя>:modules` и
+        # `<Имя>:ext:<Имя>`): у конфигурации ровно одна выгрузка кода, у
+        # расширений их может быть несколько, и `resolve()` достаёт нужную
+        # запись напрямую по составленному ключу. В `self.sources` эти
+        # Source не дублируются: их владелец — generation pointer.
         self.modules: dict[str, LoadedModules] = {}
         # Ролевой provider принадлежит тому же native generation, но его
         # большой прямой/обратный индекс остаётся файловой SQLite, а не
@@ -660,15 +651,9 @@ class Registry:
         self.extension_structures: dict[str, ExtensionStructure] = {}
         self.extension_relations: dict[str, tuple[ExtensionRelation, ...]] = {}
         self.extension_roles: dict[str, LoadedRoleAccess] = {}
-        # Сильная ссылка нужна не потоку (он живёт сам), а повторному
-        # `startup()`: пока предыдущая сборка ещё идёт, reload не должен
-        # запускать второй разбор того же корпуса и удваивать расход памяти.
-        self._module_builds: dict[str, threading.Thread] = {}
-        self._modules_generation: dict[str, int] = {}
         # Диагностика пишется при публикации поколения, а не на каждом запросе.
         # Множество также страхует повторный путь публикации от дубля строки.
         self._logged_module_limitations: set[tuple[str, int, str]] = set()
-        self._module_recovery_blocked = False
         # Строки registry.json, которые restore не поднял из-за временного
         # сбоя (OSError, нехватка памяти). Они не видны в памяти, но
         # переносятся в каждую запись реестра дословно: иначе первый же
@@ -719,16 +704,6 @@ class Registry:
             )
             for source_id, loaded in sorted(self.modules.items())
         )
-        runtime_rows = tuple(
-            (
-                name,
-                id(loaded),
-                id(loaded.source),
-                SourceSnapshot.capture(loaded.source),
-                loaded.snapshot,
-            )
-            for name, loaded in sorted(self.extension_runtime.items())
-        )
         syntax_version_rows = tuple(
             (
                 platform,
@@ -746,7 +721,6 @@ class Registry:
             syntax_version_rows,
             source_rows,
             module_rows,
-            runtime_rows,
             generation_rows,
         )
 
@@ -766,13 +740,6 @@ class Registry:
                 for platform, source in sorted(self.syntax_versions.items())
             }
             loaded_modules = dict(sorted(self.modules.items()))
-            runtime = {
-                name: RegistryExtensionRuntimeSnapshot(
-                    source=SourceSnapshot.capture(loaded.source),
-                    snapshot=loaded.snapshot,
-                )
-                for name, loaded in sorted(self.extension_runtime.items())
-            }
             if set(self._generation_pointers) != set(self._generation_manifests):
                 raise RegistryError(
                     "runtime Registry содержит несогласованные generation maps"
@@ -784,38 +751,19 @@ class Registry:
                 )
                 for key, pointer in sorted(self._generation_pointers.items())
             }
-            code_ids = sorted(
-                {
-                    source.id
-                    for source in source_objects
-                    if source.kind in (KIND_MODULES, KIND_EXTENSION)
-                }
-                | set(loaded_modules)
-            )
-            modules: dict[str, RegistryCodeSnapshot] = {}
-            source_by_id = {source.id: source for source in source_objects}
-            for source_id in code_ids:
-                loaded = loaded_modules.get(source_id)
-                source = (
-                    loaded.source
-                    if loaded is not None
-                    else source_by_id.get(source_id)
-                )
-                source_snapshot = (
-                    SourceSnapshot.capture(source) if source is not None else None
-                )
-                modules[source_id] = RegistryCodeSnapshot(
-                    source=source_snapshot,
+            modules = {
+                source_id: RegistryCodeSnapshot(
+                    source=SourceSnapshot.capture(loaded.source),
                     loaded=loaded,
-                    ready=loaded.готов if loaded is not None else False,
-                    status=source.status if source is not None else "",
-                    error=source.error if source is not None else "",
-                    stage=loaded.этап if loaded is not None else (0, 0),
-                    stage_title=(
-                        loaded.название_этапа if loaded is not None else ""
-                    ),
-                    progress=loaded.прогресс if loaded is not None else (0, 0),
+                    ready=loaded.готов,
+                    status=loaded.source.status,
+                    error=loaded.source.error,
+                    stage=loaded.этап,
+                    stage_title=loaded.название_этапа,
+                    progress=loaded.прогресс,
                 )
+                for source_id, loaded in loaded_modules.items()
+            }
             # Тот же вызов, что и в `snapshot_is_current`, под тем же `_lock`:
             # вторая копия набора полей разошлась бы с первой молча при
             # добавлении поля — вечные отказы CAS или пропуск устаревшего.
@@ -826,7 +774,6 @@ class Registry:
                 syntax=self.syntax,
                 sources=MappingProxyType(sources),
                 modules=MappingProxyType(modules),
-                extension_runtime=MappingProxyType(runtime),
                 generations=MappingProxyType(generations),
                 source_lifecycle_token=(
                     self._source_lifecycle_nonce,
@@ -1585,384 +1532,6 @@ class Registry:
                         pass
                 shutil.rmtree(temporary, ignore_errors=True)
 
-    @_refresh_on_external_change()
-    @_protect_source_operation
-    def add_extension_runtime(
-        self,
-        path: str | Path,
-        *,
-        keep_source: bool = True,
-        known_sha256: str = "",
-        expected_id: str = "",
-        known_origin: str = "",
-        expected_revision: int | None = None,
-    ) -> Source:
-        """Опубликовать отдельный снимок текущего сеанса расширений.
-
-        Сам JSON мал и сохраняется как исходник. Он привязан к уже загруженной
-        конфигурации по имени, но несовпадение версий не отвергается: это
-        полезный, честно помечаемый ``stale``-снимок, а не повреждённый файл.
-        ``expected_revision`` передаёт restore: строка из снимка registry.json
-        не публикуется, если источник сняли или заменили после снимка.
-        """
-        self._ensure_not_blocked(allow_restore=True)
-        source_path = Path(path)
-        digest = _sha256(source_path)
-        if known_sha256 and digest != known_sha256:
-            raise RegistryError(
-                f"{source_path.name}: контрольная сумма сохранённого источника "
-                "не совпала с registry.json."
-            )
-        try:
-            snapshot = load_extension_runtime(source_path)
-        except ExtensionRuntimeError as error:
-            raise RegistryError(f"{source_path.name}: {error}") from error
-
-        configuration = snapshot.configuration.name
-        source_id = source_ids.extension_runtime_id(configuration)
-        if expected_id and source_id != expected_id:
-            raise RegistryError(
-                f"{source_path.name}: идентификатор снимка «{source_id}» "
-                f"не совпал с registry.json («{expected_id}»)."
-            )
-        with self._lock:
-            if configuration not in self.configurations:
-                raise UnknownConfiguration(
-                    f"Конфигурация не загружена: {configuration}. Сначала "
-                    "добавьте её структурную выгрузку schema v1."
-                )
-
-        stored = (
-            self._store_source(
-                source_path,
-                "extension-runtime",
-                source_id=source_id,
-                digest=digest,
-            )
-            if keep_source
-            else source_path
-        )
-        warnings = []
-        if snapshot.database_changed_since_session_start is True:
-            warnings.append(
-                "Набор расширений базы изменён после запуска сеанса; снимок "
-                "уже не описывает набор нового сеанса."
-            )
-        source = Source(
-            id=source_id,
-            kind=KIND_EXTENSION_RUNTIME,
-            origin=known_origin or source_path.name,
-            sha256=digest,
-            loaded_at=_now(),
-            platform=snapshot.configuration.platform,
-            status=STATUS_READY,
-            warnings=warnings,
-            items_total=len(snapshot.by_uuid),
-            stored_path=self._relative(stored),
-        )
-        loaded = LoadedExtensionRuntime(source=source, snapshot=snapshot)
-        with self._lock:
-            if configuration not in self.configurations:
-                raise UnknownConfiguration(
-                    f"Конфигурация не загружена: {configuration}. Она была "
-                    "снята во время добавления снимка."
-                )
-            self._check_source_revision(source_id, expected_revision)
-            self.extension_runtime[configuration] = loaded
-            self.sources[source_id] = source
-            self._advance_source_revision(source_id)
-            self._advance_source_lifecycle_revision()
-        return source
-
-    def _modules_root(self, configuration: str) -> Path:
-        """Каталог кода конфигурации внутри `modules_dir`.
-
-        Имя чистится тем же правилом, что и имена файлов кэша
-        (`index_cache.safe_name`): оно приходит из манифеста, а там встречается
-        и косая черта, и двоеточие.
-
-        Чистки мало: точку правило сохраняет, поэтому имя «..» проходит через
-        неё неизменным. Путь сверяется при восстановлении рокировки, а каталог
-        удаляется при снятии источника — промах увёл бы удаление за пределы
-        `modules_dir`, вплоть до соседнего `incoming/`, который сервер трогать
-        не вправе.
-        Поэтому путь проверяется, а не предполагается верным.
-        """
-        корень = (self.modules_dir / index_cache.safe_name(configuration)).resolve()
-        база = self.modules_dir.resolve()
-        if корень == база or база not in корень.parents:
-            raise RegistryError(
-                f"Имя конфигурации «{configuration}» не годится для каталога "
-                "кода: путь уходит за пределы data/modules."
-            )
-        return корень
-
-    def _drop_modules_root(self, корень: Path) -> None:
-        """Снести каталог кода. Только внутри `modules_dir` и только его.
-
-        Проверка повторяется здесь намеренно: путь может прийти из
-        `registry.json`, где его правил кто угодно, а рядом с `data/modules/`
-        лежит `data/incoming/` с исходником человека.
-        """
-        цель = корень.resolve()
-        база = self.modules_dir.resolve()
-        if цель == база or база not in цель.parents:
-            return
-        if цель.is_dir():
-            shutil.rmtree(цель, ignore_errors=True)
-        родитель = цель.parent
-        if родитель.parent != база:
-            return
-        try:
-            родитель.rmdir()
-        except OSError:
-            # Другие расширения той же конфигурации сохраняют общий каталог.
-            pass
-
-    # Сегменты, которые после чистки нельзя пускать в путь ни на одном
-    # уровне: пустая строка — от имени, целиком состоящего из символов,
-    # которые `index_cache.safe_name` заменяет; `.` и `..` — потому что
-    # `pathlib` схлопывает их при `resolve()` ДО сравнения с базой. Один
-    # уровень (`_modules_root`) это уже ловит побочно: `корень == база`
-    # верно и когда единственный сегмент — `.`. Два уровня (расширение) —
-    # нет: `extensions_dir/<Конфигурация>/.` резолвится в
-    # `extensions_dir/<Конфигурация>` — существующий чужой каталог, а не в
-    # `extensions_dir`, и проверка `корень == база` его пропускает. Отсюда и
-    # ловится явно, до `resolve()`, а не полагаясь на побочный эффект.
-    _НЕГОДНЫЕ_СЕГМЕНТЫ = ("", ".", "..")
-
-    def _extension_root(self, configuration: str, extension: str) -> Path:
-        """Каталог кода расширения: `extensions_dir/<Конфигурация>/<Расширение>`.
-
-        Два уровня, а не склейка имён в одно: `index_cache.safe_name`
-        схлопывает необычные символы в подчёркивание, и склейка вида
-        `Розница@Доп` дала бы `Розница_Доп` — путь, который может совпасть с
-        конфигурацией, названной так же. Каждый уровень чистится тем же
-        правилом, что и `_modules_root`, каждый сегмент после чистки
-        проверяется на `_НЕГОДНЫЕ_СЕГМЕНТЫ`, и путь так же проверяется на
-        принадлежность корню: имя расширения приходит из выгрузки человека,
-        а не проверено заранее.
-        """
-        сегмент_конфигурации = index_cache.safe_name(configuration)
-        сегмент_расширения = index_cache.safe_name(extension)
-        for сегмент, кого, имя in (
-            (сегмент_конфигурации, "конфигурации", configuration),
-            (сегмент_расширения, "расширения", extension),
-        ):
-            if сегмент in self._НЕГОДНЫЕ_СЕГМЕНТЫ:
-                raise RegistryError(
-                    f"Имя {кого} «{имя}» не годится для каталога кода: после "
-                    f"чистки от него остаётся «{сегмент or '(пусто)'}» — с "
-                    "таким сегментом путь мог бы указать на чужой каталог."
-                )
-        корень = (
-            self.extensions_dir / сегмент_конфигурации / сегмент_расширения
-        ).resolve()
-        база = self.extensions_dir.resolve()
-        if корень == база or база not in корень.parents:
-            raise RegistryError(
-                f"Расширение «{extension}» конфигурации «{configuration}» не "
-                "годится для каталога кода: путь уходит за пределы "
-                "data/extensions."
-            )
-        return корень
-
-    def _drop_extension_root(self, корень: Path) -> None:
-        """Снести каталог кода расширения. Только внутри `extensions_dir`.
-
-        Проверка повторяется, как и в `_drop_modules_root`: путь может прийти
-        из `registry.json`, где его правил кто угодно.
-        """
-        цель = корень.resolve()
-        база = self.extensions_dir.resolve()
-        if цель == база or база not in цель.parents:
-            return
-        if цель.is_dir():
-            shutil.rmtree(цель, ignore_errors=True)
-        # У расширений есть дополнительный managed-уровень с именем базы.
-        # Последнее расширение не должно оставлять пустую конфигурацию в
-        # `data/extensions`; при конкурентном добавлении или наличии соседа
-        # точечный `rmdir` безопасно откажется и ничего не удалит.
-        if цель.parent.parent == база:
-            try:
-                цель.parent.rmdir()
-            except OSError:
-                pass
-
-    def _retire_code_root(self, корень: Path, kind: str) -> Path | None:
-        """Быстро отвязать старое поколение от canonical path.
-
-        Вызывается под `cache -> registry` до снятия Source. Долгий
-        `rmtree` потом работает только по возвращённому уникальному пути и
-        физически не может задеть новое поколение на `корень`.
-        """
-        цель = корень.resolve()
-        база = (
-            self.modules_dir.resolve()
-            if kind == KIND_MODULES
-            else self.extensions_dir.resolve()
-        )
-        if цель == база or база not in цель.parents or not цель.is_dir():
-            return None
-        отставленный = цель.parent / f".{цель.name}.retired-{uuid.uuid4().hex}"
-        try:
-            цель.rename(отставленный)
-        except OSError as error:
-            raise RegistryError(
-                f"Каталог кода «{цель}» не снят: не удалось "
-                f"отставить его в «{отставленный}»: {error}"
-            ) from error
-        return отставленный
-
-    def _путь_из_журнала_рокировки(self, raw: object) -> Path:
-        if not isinstance(raw, str) or not raw:
-            raise ValueError("invalid transaction path")
-        path = self._absolute(raw).resolve()
-        path.relative_to(self.data_dir.resolve())
-        return path
-
-    def _восстановить_рокировку_кода(self) -> list[str]:
-        """Завершить или откатить пережившую процесс рокировку по registry.
-
-        Окно совместимости: рокировку писал только прежний приём кода
-        отдельно от структуры (`add_modules`), удалённый после 4.2.0. Marker мог
-        остаться от процесса прежней версии, убитого посреди операции.
-        Удалить после выпуска 4.3.0 вместе с подъёмом строк
-        `KIND_MODULES`/`KIND_EXTENSION` без native-поколения.
-        """
-        if not self._module_swap_path.exists():
-            return []
-        try:
-            marker = json.loads(
-                self._module_swap_path.read_text(encoding="utf-8")
-            )
-            if not isinstance(marker, dict):
-                raise ValueError("transaction marker is not an object")
-            if marker.get("version") != 1:
-                raise ValueError("invalid transaction version")
-            source_id = marker["source_id"]
-            new_sha256 = marker["new_sha256"]
-            selection_version = marker["new_selection_version"]
-            if (
-                not isinstance(source_id, str)
-                or not isinstance(new_sha256, str)
-                or isinstance(selection_version, bool)
-                or not isinstance(selection_version, int)
-            ):
-                raise ValueError("invalid transaction identity")
-            корень = self._путь_из_журнала_рокировки(marker["root"])
-            временный = self._путь_из_журнала_рокировки(marker["temporary"])
-            raw_detached = marker.get("detached")
-            отставленный = (
-                self._путь_из_журнала_рокировки(raw_detached)
-                if raw_detached is not None
-                else None
-            )
-            try:
-                if source_id.endswith(source_ids.MODULES_SUFFIX):
-                    configuration = source_id[: -len(source_ids.MODULES_SUFFIX)]
-                    if not configuration:
-                        raise ValueError("empty configuration")
-                    ожидаемый_корень = self._modules_root(configuration)
-                else:
-                    configuration, separator, extension = source_id.partition(
-                        source_ids.EXTENSION_SEPARATOR
-                    )
-                    if not separator or not configuration or not extension:
-                        raise ValueError("invalid source id")
-                    ожидаемый_корень = self._extension_root(
-                        configuration, extension
-                    )
-            except RegistryError as error:
-                raise ValueError("invalid source root") from error
-            if корень != ожидаемый_корень:
-                raise ValueError("root does not match source")
-            prefix = f".{корень.name}.tmp-"
-            if временный.parent != корень.parent or not временный.name.startswith(
-                prefix
-            ):
-                raise ValueError("invalid temporary path")
-            token = временный.name[len(prefix) :]
-            if not token or временный == корень:
-                raise ValueError("invalid temporary token")
-            if отставленный is not None and (
-                отставленный.parent != корень.parent
-                or отставленный.name != f".{корень.name}.old-{token}"
-                or отставленный in (корень, временный)
-            ):
-                raise ValueError("invalid detached path")
-
-            registry_payload = {}
-            if self.registry_path.exists():
-                registry_payload = json.loads(
-                    self.registry_path.read_text(encoding="utf-8")
-                )
-            if not isinstance(registry_payload, dict):
-                raise ValueError("registry is not an object")
-            raw_sources = registry_payload.get("sources") or []
-            if not isinstance(raw_sources, list):
-                raise ValueError("registry sources are not a list")
-            записанный_источник = next(
-                (
-                    raw
-                    for raw in raw_sources
-                    if isinstance(raw, dict) and raw.get("id") == source_id
-                ),
-                None,
-            )
-            новое_записано = (
-                записанный_источник is not None
-                and записанный_источник.get("sha256") == new_sha256
-                and записанный_источник.get("selection_version")
-                == selection_version
-            )
-
-            if новое_записано:
-                if not корень.exists() and временный.exists():
-                    временный.rename(корень)
-                if not корень.exists():
-                    raise OSError("published root is missing")
-                if отставленный is not None:
-                    shutil.rmtree(отставленный, ignore_errors=True)
-                shutil.rmtree(временный, ignore_errors=True)
-            else:
-                if (отставленный is None) != (записанный_источник is None):
-                    raise ValueError("root history does not match registry")
-                if отставленный is not None and отставленный.exists():
-                    shutil.rmtree(корень, ignore_errors=True)
-                    отставленный.rename(корень)
-                elif отставленный is not None and not корень.exists():
-                    raise OSError("previous root is missing")
-                elif отставленный is None:
-                    shutil.rmtree(корень, ignore_errors=True)
-                shutil.rmtree(временный, ignore_errors=True)
-
-            self._module_swap_path.unlink(missing_ok=True)
-            self._module_swap_path.with_suffix(".tmp").unlink(missing_ok=True)
-        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
-            return [
-                "Незавершённую рокировку кода не удалось восстановить; "
-                "источник кода не следует использовать до проверки каталога данных."
-            ]
-        return []
-
-    def _заблокировать_источники_кода_после_ошибки_рокировки(self) -> None:
-        """Не публиковать ни один code root, пока WAL не исправлен."""
-        with self._lock:
-            code_ids = {
-                source_id
-                for source_id, source in self.sources.items()
-                if source.kind in (KIND_MODULES, KIND_EXTENSION)
-            } | set(self.modules)
-            for source_id in code_ids:
-                removed_source = self.sources.pop(source_id, None)
-                removed_modules = self.modules.pop(source_id, None)
-                if removed_source is not None or removed_modules is not None:
-                    self._advance_source_lifecycle_revision()
-                self._modules_generation[source_id] = (
-                    self._modules_generation.get(source_id, 0) + 1
-                )
-
     def _словарь_модулей_locked(self, loaded: LoadedModules) -> LoadedModules:
         """Под `_lock`: поиск кода получает действующую таблицу синонимов."""
         if loaded.поиск is not None:
@@ -1997,11 +1566,8 @@ class Registry:
     ) -> modules_index.Индексы:
         """Все четыре структуры провайдера `modules` по коду на `корень`.
 
-        Общее тело для native-поколения (`корень` — каталог поколения,
-        `каталог` уже построен runtime) и для восстановления старой строки
-        кода после рестарта (`корень` — каталог, куда код положил прежний
-        приём). `метка` — только для текста ошибки: имя выгрузки или
-        `source.origin` строки registry.json.
+        `корень` — каталог native-поколения, `каталог` уже построен runtime.
+        `метка` — только для текста ошибки: имя выгрузки.
 
         Любая ошибка сборки заворачивается в `RegistryError` с причиной —
         отказ сборки называет её вслух, а не
@@ -2106,11 +1672,7 @@ class Registry:
             поиск=индексы.поиск,
             версия_кода=source.code_version,
             каталог=индексы.каталог,
-            структура=(
-                структура
-                if структура is not None
-                else structure_origin.load(корень)
-            ),
+            структура=структура,
             готов=True,
             прогресс=(всего, всего),
         )
@@ -2218,15 +1780,13 @@ class Registry:
         source: Source,
         loaded: LoadedModules,
     ) -> bool:
-        """Проверить под ``_lock`` legacy- или native-владельца корпуса."""
+        """Проверить под ``_lock`` native-владельца корпуса."""
         if (
             self.modules.get(source.id) is not loaded
             or loaded.source is not source
             or not loaded.готов
         ):
             return False
-        if self.sources.get(source.id) is source:
-            return True
         # Native Source не дублируется строкой ``sources``: его durable-
         # владельцем является active generation pointer. Совпадение exact
         # runtime-объекта, canonical id и root не позволяет отставленному
@@ -2247,308 +1807,6 @@ class Registry:
             ):
                 return True
         return False
-
-    def _следующее_поколение_модулей(self, source_id: str) -> int:
-        """Вызывается под `_lock`; возвращает новый монотонный номер."""
-        поколение = self._modules_generation.get(source_id, 0) + 1
-        self._modules_generation[source_id] = поколение
-        return поколение
-
-    def _поколение_актуально(
-        self,
-        source: Source,
-        поколение: int,
-        loaded: LoadedModules | None = None,
-    ) -> bool:
-        """CAS-предикат; вызывается под `_lock`."""
-        if (
-            self.sources.get(source.id) is not source
-            or self._modules_generation.get(source.id) != поколение
-        ):
-            return False
-        return loaded is None or self.modules.get(source.id) is loaded
-
-    def _собрать_индексы_фоном(
-        self,
-        source: Source,
-        корень: Path,
-        строится: LoadedModules,
-        поколение: int,
-        файлы_каталога: tuple[Path, ...],
-    ) -> None:
-        """Собирает четыре структуры и публикует их только единым пакетом."""
-        source_id = source.id
-        опубликовано = False
-
-        def отметить(
-            номер: int, название: str, обработано: int, всего: int
-        ) -> None:
-            with self._lock:
-                if self._поколение_актуально(source, поколение, строится):
-                    строится.этап = (номер, 4)
-                    строится.название_этапа = название
-                    строится.прогресс = (обработано, всего)
-
-        try:
-            индексы = self._с_локальными_синонимами(self._построить_индекс_кода(
-                source.origin,
-                корень,
-                LocatorIdentity(
-                    source.id, source.sha256, source.locator_generation
-                ),
-                отметить,
-                файлы_каталога,
-            ))
-            готовые = self._готовые_модули(source, корень, индексы)
-            # Writer и смена поколения сериализованы одним mutex. CAS
-            # проверяется внутри него до записи, поэтому после проверки
-            # remove или повторный restore не может вклиниться и сменить
-            # Source под ногами.
-            with self._modules_cache_lock:
-                with self._lock:
-                    if not self._поколение_актуально(
-                        source, поколение, строится
-                    ):
-                        return
-                if not self._guest:
-                    # Кэш принадлежит владельцу data/: гость не пишет его
-                    # поверх файлов, которые читает работающий сервер.
-                    modules_index.сохранить_индексы(
-                        self,
-                        source_id,
-                        индексы,
-                        source_sha256=source.sha256,
-                        selection_version=source.selection_version,
-                    )
-                with self._lock:
-                    if self._поколение_актуально(source, поколение, строится):
-                        source.status = STATUS_READY
-                        source.error = ""
-                        self.modules[source_id] = self._словарь_модулей_locked(
-                            готовые
-                        )
-                        опубликовано = True
-            if опубликовано:
-                self._журналировать_ограничения_кода(source, индексы)
-                self._обновить_журнал_покрытия(source, готовые)
-        except Exception as error:
-            logger.exception(
-                "Фоновая сборка индекса кода %s завершилась ошибкой.",
-                source_id,
-            )
-            with self._lock:
-                if self._поколение_актуально(source, поколение, строится):
-                    source.status = STATUS_ERROR
-                    source.error = str(error)
-        finally:
-            with self._lock:
-                if self._module_builds.get(source_id) is threading.current_thread():
-                    self._module_builds.pop(source_id, None)
-            # Статус готовности/ошибки переживает следующий restart. Пока
-            # `startup()` восстанавливает строки registry.json по очереди,
-            # его снимок в памяти заведомо неполон: быстрый фоновый поток не
-            # должен успеть заменить файл таким промежуточным списком и
-            # потерять ещё не обработанный источник при аварийной остановке.
-            # Порядок замков совпадает со startup: startup -> registry;
-            # `_lock` выше уже отпущен, поэтому взаимного ожидания нет.
-            self._сохранить_результат_фоновой_сборки()
-
-    def _сохранить_результат_фоновой_сборки(self) -> bool:
-        """Записать статус, только если последний startup завершился целиком."""
-        with self._startup_lock:
-            if (
-                self._last_successful_startup_generation
-                != self._startup_generation
-                or self._generation_recovery_blocked
-                or self._module_recovery_blocked
-                or self._registry_version_blocked
-                or self._restore_hold
-                or self._guest
-            ):
-                return False
-            # Под `_startup_lock` reload невозможен: перечитывание внутри
-            # save() заклинило бы поток, поэтому оно здесь подавлено.
-            self._refresh_scope.depth = 1
-            try:
-                self.save()
-            except Exception:
-                # Исключение из finally фоновой сборки иначе терялось бы
-                # вместе с потоком. Статус в памяти верен; на диск он попадёт
-                # следующей записью реестра.
-                logger.warning(
-                    "Статус фоновой сборки кода не записан в registry.json.",
-                    exc_info=True,
-                )
-                return False
-            finally:
-                self._refresh_scope.depth = 0
-            return True
-
-    def _поднять_или_построить_модули(
-        self,
-        source: Source,
-        корень: Path,
-        *,
-        configuration: str,
-        expected_configuration_source: Source,
-        expected_generation: int,
-    ) -> None:
-        """Восстановить индекс кода из строки `source`.
-
-        Только для `restore()` старых строк `KIND_MODULES`/`KIND_EXTENSION`
-        без native-поколения: их записывал прежний приём кода отдельно от
-        структуры, удалённый после 4.2.0. Окно совместимости — удалить после
-        выпуска 4.3.0 вместе с `_восстановить_рокировку_кода` и фоновой
-        сборкой. Код к этому моменту уже лежит на `корень`. Сначала
-        `поднять_индексы` из кэша проекта — на живой выгрузке 0,46 с против
-        ~50 с полной сборки; не сошлось (штамп разошёлся после коммита, кэш побит, том
-        только на чтение) — строим прямо по `корень` и складываем в кэш тем
-        же приёмом, что и живая загрузка.
-
-        Исключение из сборки не перехватывается здесь — источник остаётся в
-        `self.sources` (код на диске цел, просто не проиндексирован), а
-        `restore()` заносит причину в список проблем и продолжает поднимать
-        остальные источники, как и для всех прочих родов.
-        """
-        with self._lock:
-            владелец = self.configurations.get(configuration)
-            if (
-                владелец is None
-                or владелец.source is not expected_configuration_source
-                or self._modules_generation.get(source.id, 0)
-                != expected_generation
-            ):
-                raise RegistryError(
-                    "восстановление кода отменено — "
-                    f"конфигурация «{configuration}» снята, "
-                    "заменена или её код уже переразбирается."
-                )
-            прежний_поток = self._module_builds.get(source.id)
-            прежние = self.modules.get(source.id)
-            if (
-                прежний_поток is not None
-                and self._сборка_жива(прежний_поток)
-                and прежние
-            ):
-                # Текущая сборка владеет своим Source. Подмена его
-                # объектом из JSON обесценила бы её CAS-публикацию.
-                if self.sources.get(source.id) is not прежние.source:
-                    self.sources[source.id] = прежние.source
-                    self._advance_source_lifecycle_revision()
-                return
-            if (
-                self.sources.get(source.id) is not None
-                and прежние is not None
-                and прежние.готов
-            ):
-                # Сборка прошлого restore могла успеть завершиться до
-                # этого прохода. Её Source/индекс уже опубликованы;
-                # старая строка registry не имеет права их откатывать.
-                # Неготовая заглушка без живой сборки (сбой или отменённая
-                # сборка) — не публикация: reload строит её заново.
-                return
-            self.sources[source.id] = source
-            self._advance_source_lifecycle_revision()
-            поколение = self._следующее_поколение_модулей(source.id)
-            if source.locator_generation <= 0:
-                # Старые registry.json не знали стабильного поколения. Их
-                # прежний кэш всё равно не содержит каталог и будет промахом;
-                # новое значение сохранится после фоновой пересборки.
-                source.locator_generation = поколение
-
-        индексы = modules_index.поднять_индексы(
-            self,
-            source.id,
-            source_sha256=source.sha256,
-            selection_version=source.selection_version,
-        )
-        if индексы is not None:
-            опубликовано = False
-            with self._lock:
-                if not self._поколение_актуально(source, поколение):
-                    return
-                source.status = STATUS_READY
-                source.error = ""
-                self.modules[source.id] = self._словарь_модулей_locked(
-                    self._готовые_модули(source, корень, индексы)
-                )
-                опубликовано = True
-            if опубликовано:
-                self._журналировать_ограничения_кода(source, индексы)
-                готовые = self.modules.get(source.id)
-                if готовые is not None:
-                    self._обновить_журнал_покрытия(source, готовые)
-            return
-
-        self._запустить_фоновую_сборку(source, корень, поколение)
-
-    @staticmethod
-    def _сборка_жива(поток: threading.Thread) -> bool:
-        """Поток уже зарегистрирован, но ещё не запущен, тоже считается живым.
-
-        Между записью в ``_module_builds`` и ``start()`` у потока нет
-        ``ident`` и ``is_alive()`` ложен: reload в это окно запустил бы
-        вторую сборку того же корпуса.
-        """
-        return поток.ident is None or поток.is_alive()
-
-    def _запустить_фоновую_сборку(
-        self,
-        source: Source,
-        корень: Path,
-        поколение: int,
-    ) -> None:
-        """Опубликовать заглушку `готов=False` и начать сборку индекса кода."""
-        файлы_каталога = catalog_files(корень)
-        строится = LoadedModules(
-            source=source,
-            корень=корень,
-            оглавление=None,
-            вызовы=None,
-            формы=None,
-            поиск=None,
-            версия_кода=source.code_version,
-            структура=structure_origin.load(корень),
-            готов=False,
-            прогресс=(0, len(файлы_каталога)),
-            этап=(1, 4),
-            название_этапа="оглавление",
-        )
-        source.status = STATUS_LOADING
-        source.error = ""
-        def собрать() -> None:
-            self._собрать_индексы_фоном(
-                source, корень, строится, поколение, файлы_каталога
-            )
-
-        поток = threading.Thread(
-            target=собрать,
-            daemon=True,
-            name=f"modules:{source.id}",
-        )
-        # Generation снимается до первой долгой загрузки. Если
-        # remove или повторный restore начнётся и даже завершится до
-        # публикации, монотонный номер всё равно выдаст старую строку.
-        with self._lock:
-            if not self._поколение_актуально(source, поколение):
-                return
-            self.modules[source.id] = строится
-            self._module_builds[source.id] = поток
-        поток.start()
-
-    @staticmethod
-    def _владелец_источника_кода(source: Source) -> str | None:
-        """Имя конфигурации из стабильной схемы id источника кода."""
-        if source.kind == KIND_MODULES:
-            суффикс = source_ids.MODULES_SUFFIX
-            if source.id.endswith(суффикс):
-                return source.id[: -len(суффикс)] or None
-            return None
-        if source.kind == KIND_EXTENSION:
-            configuration, разделитель, extension = source.id.partition(source_ids.EXTENSION_SEPARATOR)
-            if разделитель and configuration and extension:
-                return configuration
-        return None
 
     @_refresh_on_external_change()
     @_protect_source_operation
@@ -2980,21 +2238,18 @@ class Registry:
         metadata остались бы в памяти без второй части, а на диске появились
         бы каталоги, которые уже нельзя вернуть через интерфейс (см.
         `docs/modules-provider-design.md`, раздел 9). Поэтому конфигурация
-        снимает base/extended/code/forms/roles, сеансовый снимок и дочерние
-        расширения; самостоятельное расширение по-прежнему снимается отдельно.
+        снимает base/extended/code/forms/roles и дочерние расширения;
+        самостоятельное расширение по-прежнему снимается отдельно.
         """
-        # Каталоги кода сносятся ПОСЛЕ выхода из-под замка (тысячи файлов, а
-        # тот же замок берут `resolve()` и все инструменты MCP), справка —
-        # тоже (сборка слитого вида недёшева). Собираем всё, что предстоит
-        # сделать вне замка, пока сам замок ещё держим.
-        отложенные_сносы: list[tuple[Callable[[Path], None], Path]] = []
+        # Справка пересобирается ПОСЛЕ выхода из-под замка: сборка слитого
+        # вида недёшева, а тот же замок берут `resolve()` и инструменты MCP.
         отложенная_справка: dict[str, Source] | None = None
 
         # Тот же порядок, что у writers: cache -> registry. После CAS старый
         # writer не может записать файл между `_drop_cache` и снятием Source.
         with self._modules_cache_lock, self._lock:
-            # Штамп сверяется до первого rename каталогов: отказ записи
-            # registry.json после сноса оставил бы снятие применённым наполовину.
+            # Штамп сверяется до первой записи: отказ записи registry.json
+            # после снятия оставил бы его применённым наполовину.
             self._check_registry_stamp()
             source = self.sources.get(source_id)
             native_configuration = next(
@@ -3065,133 +2320,42 @@ class Registry:
             if source is None and not native:
                 raise RegistryError(f"Источник не зарегистрирован: {source_id}")
 
-            # Цепочка считается ДО первого удаления: `self.sources` меняется
-            # по ходу цикла ниже, и вычислять её позже значило бы гоняться за
-            # движущейся целью. Только конфигурация каскадирует; отдельное
-            # расширение снимается само по себе, без цепочки.
-            цепочка = [source_id]
-            if configuration_removal:
-                модули_id = source_ids.modules_id(source_id)
-                префикс_расширений = source_ids.extension_prefix(source_id)
-                runtime_id = source_ids.extension_runtime_id(source_id)
-                цепочка += sorted(
-                    sid
-                    for sid in self.sources
-                    if sid in (модули_id, runtime_id)
-                    or sid.startswith(префикс_расширений)
+            if native:
+                next_pointers = dict(self._generation_pointers)
+                for native_key, _native_pointer in native:
+                    next_pointers.pop(native_key)
+                next_sources = {
+                    sid: current
+                    for sid, current in self.sources.items()
+                    if sid != source_id
+                }
+                next_platform_declarations = dict(self._platform_declarations)
+                if configuration_removal:
+                    next_platform_declarations.pop(source_id, None)
+                # Pointer и возможная строка Source A исчезают одной durable
+                # записью ДО удаления generation root. После SIGKILL
+                # restore уже не попытается открыть снятое поколение.
+                self._write_registry_payload(
+                    self._registry_payload(
+                        next_pointers,
+                        sources=next_sources,
+                        platform_declarations=next_platform_declarations,
+                    )
                 )
-
-            # Canonical root отставляется ДО изменения реестра. Это
-            # быстрый rename под тем же `cache -> registry`, а не rmtree.
-            # Если один из rename не удался, все уже отставленные каталоги
-            # возвращаются, а Source/индексы остаются нетронутыми.
-            отставленные: list[
-                tuple[Callable[[Path], None], Path, Path]
-            ] = []
-            try:
-                for sid in цепочка:
-                    текущий = self.sources.get(sid)
-                    if текущий is None or текущий.kind not in (
-                        KIND_MODULES,
-                        KIND_EXTENSION,
-                    ):
-                        continue
-                    канонический = (
-                        self._absolute(текущий.stored_path)
-                        if текущий.stored_path
-                        else None
-                    )
-                    if канонический is None:
-                        continue
-                    снести = (
-                        self._drop_modules_root
-                        if текущий.kind == KIND_MODULES
-                        else self._drop_extension_root
-                    )
-                    отставленный = self._retire_code_root(
-                        канонический, текущий.kind
-                    )
-                    if отставленный is not None:
-                        отставленные.append(
-                            (снести, отставленный, канонический)
-                        )
-                if native:
-                    next_pointers = dict(self._generation_pointers)
-                    for native_key, _native_pointer in native:
-                        next_pointers.pop(native_key)
-                    next_sources = {
-                        sid: current
-                        for sid, current in self.sources.items()
-                        if sid not in цепочка
-                    }
-                    next_platform_declarations = dict(self._platform_declarations)
-                    if configuration_removal:
-                        next_platform_declarations.pop(source_id, None)
-                    # Pointer и возможная legacy-строка исчезают одной durable
-                    # записью ДО удаления generation root. После SIGKILL
-                    # restore уже не попытается открыть снятое поколение.
-                    self._write_registry_payload(
-                        self._registry_payload(
-                            next_pointers,
-                            sources=next_sources,
-                            platform_declarations=next_platform_declarations,
-                        )
-                    )
-            except BaseException as error:
-                ошибки_отката: list[str] = []
-                for _, отставленный, канонический in reversed(отставленные):
-                    try:
-                        отставленный.rename(канонический)
-                    except OSError as ошибка_возврата:
-                        ошибки_отката.append(
-                            f"{отставленный} -> {канонический}: {ошибка_возврата}"
-                        )
-                if ошибки_отката:
-                    raise RegistryError(
-                        "Каталоги кода не сняты, и откат отставленных "
-                        f"каталогов не удался: {'; '.join(ошибки_отката)}"
-                    ) from error
-                raise
-            отложенные_сносы.extend(
-                (снести, отставленный)
-                for снести, отставленный, _ in отставленные
-            )
-
-            инвалидировать: set[str] = set()
 
             if configuration_removal:
                 self._advance_configuration_revision(source_id)
                 self._platform_declarations.pop(source_id, None)
-            for sid in цепочка:
-                self._advance_source_revision(sid)
-                текущий = self.sources.pop(sid, None)
-                if текущий is None:
-                    continue
+            self._advance_source_revision(source_id)
+            текущий = self.sources.pop(source_id, None)
+            if текущий is not None:
                 self._advance_source_lifecycle_revision()
-                if текущий.kind in (KIND_MODULES, KIND_EXTENSION):
-                    try:
-                        coverage_log.remove(self.data_dir, sid)
-                    except OSError:
-                        # Журнал диагностический и проверяется по identity;
-                        # невозможность удалить его не держит источник живым.
-                        logger.warning(
-                            "Журнал покрытия снятого корпуса не удалён."
-                        )
-                self._drop_cache(sid, текущий.kind)
-                self.modules.pop(sid, None)
-                if текущий.kind in (KIND_MODULES, KIND_EXTENSION):
-                    инвалидировать.add(sid)
-
+                self._drop_cache(source_id, текущий.kind)
                 if текущий.kind == KIND_CONFIGURATION:
-                    self.configurations.pop(sid, None)
-                    self.roles.pop(sid, None)
-                    self._relation_cache.pop(sid, None)
-                elif текущий.kind in (KIND_MODULES, KIND_EXTENSION):
-                    pass
-                elif текущий.kind == KIND_EXTENSION_RUNTIME:
-                    configuration = sid.removesuffix(source_ids.EXTENSION_RUNTIME_SUFFIX)
-                    self.extension_runtime.pop(configuration, None)
-                elif self.syntax_versions.pop(sid, None) is not None:
+                    self.configurations.pop(source_id, None)
+                    self.roles.pop(source_id, None)
+                    self._relation_cache.pop(source_id, None)
+                elif self.syntax_versions.pop(source_id, None) is not None:
                     self._relation_cache.clear()
                     отложенная_справка = dict(self.syntax_versions)
 
@@ -3223,7 +2387,6 @@ class Registry:
                         logger.warning(
                             "Журнал покрытия снятой native-конфигурации не удалён."
                         )
-                    инвалидировать.add(modules_id)
                 else:
                     native_source_id = source_ids.extension_modules_id(
                         identity.parent_configuration,
@@ -3247,15 +2410,7 @@ class Registry:
                         logger.warning(
                             "Журнал покрытия снятого native-расширения не удалён."
                         )
-                    инвалидировать.add(native_source_id)
 
-            for sid in инвалидировать:
-                # Номер не сбрасывается: иначе remove -> add даст
-                # тот же generation и ABA вернёт старому writer право голоса.
-                self._следующее_поколение_модулей(sid)
-
-        for снести, каталог_кода in отложенные_сносы:
-            снести(каталог_кода)
         if отложенная_справка is not None:
             self._apply_syntax(отложенная_справка)
         for native_pointer in native_pointers:
@@ -3349,14 +2504,11 @@ class Registry:
                         and not diagnostic
                     ):
                         raise ReloadRequired("reload_required")
-                elif self._legacy_mixed_locked(selected_name) and not diagnostic:
-                    raise ReloadRequired("reload_required")
                 declaration = self._platform_declarations.get(selected_name)
                 platform_override = declaration.version if declaration else ""
                 modules_key = source_ids.modules_id(selected_name)
                 modules = self.modules.get(modules_key)
                 roles = self.roles.get(selected_name)
-                runtime = self.extension_runtime.get(selected_name)
                 extension_key = None
                 расширение = None
                 extension_structure = None
@@ -3448,7 +2600,6 @@ class Registry:
                     )
                     and self.modules.get(modules_key) is modules
                     and self.roles.get(selected_name) is roles
-                    and self.extension_runtime.get(selected_name) is runtime
                     and extension_pointer_unchanged
                     and (
                         extension_key is None
@@ -3492,7 +2643,6 @@ class Registry:
                     syntax_hidden=hidden,
                     modules=modules,
                     extension=расширение,
-                    extension_runtime=runtime,
                     roles=roles,
                     extension_roles=extension_roles,
                     extension_resolution=extension_resolution,
@@ -4002,30 +3152,10 @@ class Registry:
         """Вернуть mode/barrier active pointer без миграции старого state."""
         pointer = self.active_generation_pointer(identity)
         if pointer is None:
-            if identity.source_kind is SourceKind.CONFIGURATION:
-                with self._lock:
-                    if self._legacy_mixed_locked(identity.configuration_name):
-                        return classify_activation({"legacy_mixed": True})
             return None
         if pointer.activation is None:
             return classify_activation(pointer.to_dict())
         return classify_activation(pointer.activation.to_dict())
-
-    def _legacy_mixed_locked(self, configuration: str) -> bool:
-        """Старая A-структура с отдельным B-кодом/расширением не является A_ONLY."""
-        if not self._restored_for_serving or configuration not in self.configurations:
-            return False
-        modules_id = source_ids.modules_id(configuration)
-        extension_prefix = source_ids.extension_prefix(configuration)
-        return (
-            modules_id in self.modules
-            or any(key.startswith(extension_prefix) for key in self.modules)
-            or any(
-                source.kind in (KIND_MODULES, KIND_EXTENSION)
-                and (source.id == modules_id or source.id.startswith(extension_prefix))
-                for source in self.sources.values()
-            )
-        )
 
     def require_active_activation(self, identity: ExportIdentity) -> ActivationClassification:
         """Fail-closed guard для consumers, которым нужен новый active contract."""
@@ -4176,30 +3306,23 @@ class Registry:
     def _managed_legacy_location(
         self,
         source: Source,
-    ) -> tuple[tuple[str, ...], str, bool] | None:
-        """Вернуть только принадлежащее Registry legacy-положение.
+    ) -> tuple[tuple[str, ...], str] | None:
+        """Вернуть только принадлежащее Registry положение файла schema v1.
 
         `keep_source=False` оставляет в Source внешний путь. Native commit
         снимает такую строку с учёта, но не получает права удалять файл
-        пользователя. Для managed-каталогов принимаются только точные
-        раскладки старого Registry без вложенных или родительских сегментов.
+        пользователя. Принимается только точная раскладка Registry без
+        вложенных или родительских сегментов.
         """
         stored = Path(source.stored_path)
         if not source.stored_path or stored.is_absolute():
             return None
         parts = stored.parts
-        if source.kind == KIND_CONFIGURATION:
-            if len(parts) != 3 or parts[:2] != ("sources", "configurations"):
-                return None
-            return ("sources", "configurations"), parts[-1], False
-        elif source.kind == KIND_MODULES:
-            expected = Path("modules") / index_cache.safe_name(
-                source.id.removesuffix(source_ids.MODULES_SUFFIX)
-            )
-            if stored != expected:
-                return None
-            return ("modules",), parts[-1], True
-        return None
+        if source.kind != KIND_CONFIGURATION:
+            return None
+        if len(parts) != 3 or parts[:2] != ("sources", "configurations"):
+            return None
+        return ("sources", "configurations"), parts[-1]
 
     def _remove_managed_legacy_source(self, source: Source) -> bool:
         """Удалить managed-путь через `dir_fd`, не следуя symlink.
@@ -4210,7 +3333,7 @@ class Registry:
         location = self._managed_legacy_location(source)
         if location is None:
             return False
-        parents, name, directory = location
+        parents, name = location
         opened: list[int] = []
         try:
             flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
@@ -4227,12 +3350,6 @@ class Registry:
                 return True
             if stat.S_ISLNK(info.st_mode):
                 os.unlink(name, dir_fd=parent_fd)
-            elif directory:
-                if not stat.S_ISDIR(info.st_mode):
-                    raise RegistryError(
-                        f"Legacy-каталог кода имеет неожиданный тип: {source.stored_path}"
-                    )
-                shutil.rmtree(name, dir_fd=parent_fd)
             else:
                 if not stat.S_ISREG(info.st_mode):
                     raise RegistryError(
@@ -4278,10 +3395,6 @@ class Registry:
         if not isinstance(raw_sources, list):
             raise RegistryError("legacy cleanup получил неверный список sources")
         configuration = pointer.identity.configuration_name
-        expected = {
-            (configuration, KIND_CONFIGURATION),
-            (source_ids.modules_id(configuration), KIND_MODULES),
-        }
         records: list[tuple[Source, dict[str, object]]] = []
         try:
             for raw in raw_sources:
@@ -4293,14 +3406,14 @@ class Registry:
         selected = tuple(
             (source, raw)
             for source, raw in records
-            if (source.id, source.kind) in expected
+            if source.id == configuration and source.kind == KIND_CONFIGURATION
         )
         if len({source.id for source, _raw in selected}) != len(selected):
             raise RegistryError("legacy cleanup обнаружил дубли Source")
         return payload, selected
 
     def _cleanup_legacy_sources(self, pointer: GenerationPointer) -> int:
-        """После native commit удалить legacy base/code с recovery через строки.
+        """После native commit удалить файл Source A с recovery через строку.
 
         Сначала удаляются только точные managed-файлы, затем атомарно исчезают
         их строки. Поэтому авария до второго шага оставляет в `registry.json`
@@ -4323,16 +3436,9 @@ class Registry:
                     source.id: self.sources.get(source.id)
                     for source, _raw in records
                 }
-                modules_id = source_ids.modules_id(pointer.identity.configuration_name)
-                self._следующее_поколение_модулей(modules_id)
 
             for source, _raw in records:
                 self._remove_managed_legacy_source(source)
-                if source.kind == KIND_MODULES:
-                    try:
-                        coverage_log.remove(self.data_dir, source.id)
-                    except OSError:
-                        pass
             self._after_legacy_files_removed(pointer)
 
             with self._lock:
@@ -5060,7 +4166,7 @@ class Registry:
         """Отказать в записи, пока журнал прерванной операции не разобран.
 
         При неоднозначном WAL память заведомо неполна: startup вышел до
-        restore() либо выкинул строки кода. Любая запись registry.json,
+        restore(). Любая запись registry.json,
         нового WAL или удаление файлов источников затёрли бы единственное
         свидетельство сбоя и прежнее готовое состояние. ``allow_restore``
         пропускает только собственные add_* вызовы restore(): они поднимают
@@ -5077,13 +4183,6 @@ class Registry:
             raise RegistryRecoveryBlocked(
                 "Реестр открыт только для чтения: журнал публикации поколения "
                 f"({self._relative(self.generation_recovery_path)}) не удалось "
-                "восстановить. Проверьте каталог данных, исправьте или уберите "
-                "журнал и выполните перезагрузку."
-            )
-        if self._module_recovery_blocked:
-            raise RegistryRecoveryBlocked(
-                "Реестр открыт только для чтения: журнал рокировки кода "
-                f"({self._relative(self._module_swap_path)}) не удалось "
                 "восстановить. Проверьте каталог данных, исправьте или уберите "
                 "журнал и выполните перезагрузку."
             )
@@ -5208,8 +4307,6 @@ class Registry:
             self._restore_scope.active = previous
 
     def _restore_rows(self) -> list[str]:
-        with self._lock:
-            self._restored_for_serving = True
         # От чтения registry.json до применения native pointers и runtime
         # restore сериализован с publish/remove: иначе снимок, прочитанный до
         # долгой сборки runtime, затёр бы опубликованное за это время
@@ -5463,27 +4560,26 @@ class Registry:
             ревизии_источников = dict(self._source_revisions)
         native_phase.close()
 
-        # Код восстанавливается вторым проходом: порядок строк в
-        # registry.json не является контрактом, а модули/расширение
-        # без уже восстановленной конфигурации не имеют владельца.
-        with self._lock:
-            отложенный_код = [
-                (source, self._modules_generation.get(source.id, 0))
-                for source in все_источники
-                if source.kind in (KIND_MODULES, KIND_EXTENSION)
-                and not self._module_recovery_blocked
-            ]
-            отложенный_runtime = [
-                source
-                for source in все_источники
-                if source.kind == KIND_EXTENSION_RUNTIME
-            ]
         for source in все_источники:
-            if source.kind in (
-                KIND_MODULES,
-                KIND_EXTENSION,
-                KIND_EXTENSION_RUNTIME,
-            ):
+            if source.kind in _RETIRED_SOURCE_KINDS:
+                # Исходники и каталоги кода не трогаются: их судьбу решает
+                # человек. Журнал покрытия сервер писал сам, и без строки
+                # его уже никто не покажет и не уберёт. У native-корпуса с
+                # тем же id журнал общий: его не трогаем.
+                problems.append(
+                    f"{source.id}: {_RETIRED_SOURCE_KINDS[source.kind]}"
+                )
+                with self._lock:
+                    живой_корпус = source.id in self.modules
+                if (
+                    not self._guest
+                    and not живой_корпус
+                    and source.kind in (KIND_MODULES, KIND_EXTENSION)
+                ):
+                    try:
+                        coverage_log.remove(self.data_dir, source.id)
+                    except OSError:
+                        pass
                 continue
             if (
                 source.kind == KIND_CONFIGURATION
@@ -5544,90 +4640,6 @@ class Registry:
                     )
             except Exception as error:  # источник не должен ронять запуск
                 problems.append(f"{source.id}: {error}{перенести(source, error)}")
-
-        for source in отложенный_runtime:
-            владелец = source.id.removesuffix(source_ids.EXTENSION_RUNTIME_SUFFIX)
-            if владелец in новые_перенесённые:
-                # Снимок без временно не поднятой конфигурации не публикуется,
-                # но и не теряется вместе с ней.
-                удержать(source.id)
-                problems.append(
-                    f"{source.id}: снимок не поднят — нет его конфигурации. "
-                    "Запись сохранена до следующего восстановления."
-                )
-                continue
-            stored = self._absolute(source.stored_path)
-            if not stored.exists():
-                problems.append(f"{source.id}: файл источника пропал ({stored})")
-                continue
-            try:
-                self.add_extension_runtime(
-                    stored,
-                    keep_source=False,
-                    known_sha256=source.sha256,
-                    expected_id=source.id,
-                    known_origin=source.origin,
-                    expected_revision=ревизии_источников.get(source.id, 0),
-                )
-            except Exception as error:
-                problems.append(f"{source.id}: {error}{перенести(source, error)}")
-
-        for source, expected_generation in отложенный_код:
-            configuration = self._владелец_источника_кода(source)
-            if (
-                source.kind == KIND_MODULES
-                and configuration in native_configurations
-            ):
-                continue
-            stored = self._absolute(source.stored_path)
-            if not stored.exists():
-                problems.append(f"{source.id}: файл источника пропал ({stored})")
-                continue
-            expected = (
-                конфигурации_этого_restore.get(configuration)
-                if configuration is not None
-                else None
-            )
-            if expected is None and configuration in native_configurations:
-                with self._lock:
-                    loaded_configuration = self.configurations.get(configuration)
-                    expected = (
-                        loaded_configuration.source
-                        if loaded_configuration is not None
-                        else None
-                    )
-            if configuration is None or expected is None:
-                владелец_перенесён = configuration in новые_перенесённые
-                if владелец_перенесён:
-                    # Код без своей конфигурации не публикуется, но и не
-                    # теряется вместе с временно не поднятым владельцем.
-                    удержать(source.id)
-                problems.append(
-                    f"{source.id}: индекс кода не поднят — "
-                    "в этом восстановлении нет его конфигурации."
-                    + (
-                        " Запись сохранена до следующего восстановления."
-                        if владелец_перенесён
-                        else ""
-                    )
-                )
-                continue
-            # Код уже лежит на диске; архив могли убрать. Source
-            # и generation публикуются атомарно только пока identity
-            # владельца совпадает с этим проходом restore.
-            try:
-                self._поднять_или_построить_модули(
-                    source,
-                    stored,
-                    configuration=configuration,
-                    expected_configuration_source=expected,
-                    expected_generation=expected_generation,
-                )
-            except Exception as error:
-                problems.append(
-                    f"{source.id}: индекс кода не поднят и не "
-                    f"построен — {error}"
-                )
 
         if self.syntax_versions:
             # Сборка не должна ронять запуск: испорченная справка версии
@@ -5891,13 +4903,9 @@ class Registry:
                 # гость, стартовавший при чужом замке (долгий CLI, старый
                 # контейнер при обновлении), не должен остаться им навсегда.
                 self._try_take_ownership()
-                self._startup_generation += 1
-                поколение = self._startup_generation
-                результат = (
+                return (
                     self._startup_guest() if self._guest else self._startup_once()
                 )
-                self._last_successful_startup_generation = поколение
-                return результат
         finally:
             self._startup_scope.active = previous
 
@@ -6012,9 +5020,7 @@ class Registry:
     def _подмести_временные_файлы_записи(self) -> None:
         """Удалить tmp-файлы `_write_json_durably`, пережившие SIGKILL.
 
-        Под замком записи registry.json ни один writer не держит свой tmp;
-        журнал рокировки пишется под `_modules_cache_lock`, его tmp
-        подметает `_подмести_временный_кэш_модулей`.
+        Под замком записи registry.json ни один writer не держит свой tmp.
         """
         with self._registry_file_lock():
             for pattern in (".registry.json.*.tmp", "registry.tmp"):
@@ -6028,89 +5034,44 @@ class Registry:
                     except OSError:
                         continue
 
-    def _подмести_временный_кэш_модулей(self) -> None:
-        """Удалить staging-каталоги, пережившие аварийную остановку."""
+    def _остатки_прежнего_приёма_кода(self) -> list[str]:
+        """Назвать файлы приёма кода до 4.2.0, которые сервер не читает.
+
+        Пустые `modules/` и `extensions/` прежние версии создавали сами на
+        каждом старте: такие каталоги убираются молча. Непустые сервер не
+        удаляет — в них может лежать единственная копия кода, и решение о
+        ней принимает человек.
+        """
+        остатки = []
+        for name in ("modules", "extensions"):
+            path = self.data_dir / name
+            if path.is_dir() and not path.is_symlink():
+                try:
+                    path.rmdir()
+                    continue
+                except OSError:
+                    pass
+            if path.exists() or path.is_symlink():
+                остатки.append(name)
+        if (self.data_dir / ".modules-swap.json").exists():
+            остатки.append(".modules-swap.json")
+        # Временные файлы оборванных операций прежних версий: в них нет
+        # ничего, кроме полупостроенного кэша и черновика журнала.
         try:
             for path in self.data_dir.glob(".modules-swap.json.*.tmp"):
                 path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        try:
-            кандидаты = tuple(self.cache_dir.glob(".modules-cache.tmp-*"))
-        except OSError:
-            return
-        for path in кандидаты:
-            if path.is_dir():
-                shutil.rmtree(path, ignore_errors=True)
-
-    def _подмести_осиротевшие_каталоги_кода(self) -> None:
-        """Дочистить `.<имя>.retired-*` и `.<имя>.tmp-*` в modules/ и extensions/.
-
-        `.retired-*` уже отвязан от реестра операцией `remove` и остаётся,
-        только если процесс погиб до `rmtree`; `.tmp-*` — от рокировки
-        прежнего приёма кода. Раньше их подбирал следующий `add_modules`,
-        которого больше нет. `.<имя>.old-*` не трогаем: это отставленная
-        копия после отказа отката, и удалить её — решение человека.
-        Вызывается только владельцем под `_modules_cache_lock`: гость
-        не убирает за живым сервером.
-        """
-        корни = [self.modules_dir, self.extensions_dir]
-        try:
-            корни += [
-                каталог
-                for каталог in self.extensions_dir.iterdir()
-                if каталог.is_dir() and not каталог.is_symlink()
-            ]
-        except OSError:
-            pass
-        for корень in корни:
-            try:
-                кандидаты = tuple(корень.glob(".*.retired-*")) + tuple(
-                    корень.glob(".*.tmp-*")
-                )
-            except OSError:
-                continue
-            for path in кандидаты:
+            for path in self.cache_dir.glob(".modules-cache.tmp-*"):
                 if path.is_dir() and not path.is_symlink():
                     shutil.rmtree(path, ignore_errors=True)
-
-    def wait_for_module_builds(self, timeout: float = 90.0) -> bool:
-        """Дождаться фоновых индексов кода, но не дольше ``timeout`` секунд.
-
-        Серверу ждать не нужно: во время холодной сборки он показывает
-        прогресс. Одноразовый CLI-процесс иначе завершился бы вместе с
-        daemon-потоками до результата и до записи четырёх файлов кэша.
-        Ожидание публичное и ограниченное; замок реестра на ``join`` не
-        удерживается.
-        """
-        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
-            raise ValueError("timeout должен быть неотрицательным числом")
-        if timeout < 0:
-            raise ValueError("timeout должен быть неотрицательным числом")
-        deadline = time.monotonic() + timeout
-        while True:
-            with self._lock:
-                for source_id, thread in tuple(self._module_builds.items()):
-                    if thread.ident is not None and not thread.is_alive():
-                        if self._module_builds.get(source_id) is thread:
-                            self._module_builds.pop(source_id, None)
-                threads = tuple(dict.fromkeys(self._module_builds.values()))
-            if not threads:
-                return True
-
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return False
-            for thread in threads:
-                if thread is threading.current_thread():
-                    return False
-                # Между регистрацией и `start()` есть несколько инструкций.
-                # `join()` на ещё не запущенном потоке бросает RuntimeError;
-                # коротко уступаем процессор и перечитываем registry.
-                if thread.ident is None:
-                    time.sleep(min(0.001, remaining))
-                    break
-                thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        except OSError:
+            pass
+        if not остатки:
+            return []
+        return [
+            "в каталоге данных остались файлы приёма кода до версии 4.2.0 ("
+            + ", ".join(остатки)
+            + "); сервер их не использует, удалите вручную"
+        ]
 
     def _startup_once(self) -> list[str]:
         # Каталог приёма создаёт сервер, как и каталог данных в `save()`.
@@ -6122,11 +5083,7 @@ class Registry:
         # Словарь перечитывается первым: правки в нём должны применяться
         # перезагрузкой, без пересборки образа и рестарта контейнера.
         dictionary_messages = self.reload_dictionary()
-        if (
-            self._generation_recovery_blocked
-            or self._module_recovery_blocked
-            or self._registry_version_blocked
-        ):
+        if self._generation_recovery_blocked or self._registry_version_blocked:
             self._restore_hold = (
                 "Реестр открыт только для чтения: идёт восстановление после "
                 "сбоя. Повторите операцию после завершения перезагрузки."
@@ -6150,33 +5107,15 @@ class Registry:
         # Флаг снимается только доказанным восстановлением: пока он стоит,
         # все записи в data/ отклоняются (`_ensure_not_blocked`).
         self._generation_recovery_blocked = False
-        # Журнал рокировки мог остаться только от процесса прежней версии,
-        # убитого посреди приёма кода (окно совместимости до выпуска 4.3.0).
-        # Lock кэша занят лишь живым writer кэша; startup его не ждёт.
-        module_messages: list[str] = []
-        if self._modules_cache_lock.acquire(blocking=False):
-            try:
-                module_messages = self._восстановить_рокировку_кода()
-                self._подмести_временный_кэш_модулей()
-                if not module_messages:
-                    # Только после доказанного восстановления: `.tmp-*`
-                    # неразобранной рокировки ещё нужен человеку.
-                    self._подмести_осиротевшие_каталоги_кода()
-            finally:
-                self._modules_cache_lock.release()
-            # Без попытки восстановления прежний вердикт не меняется.
-            self._module_recovery_blocked = bool(module_messages)
-        messages += module_messages
-        if self._module_recovery_blocked:
-            self._заблокировать_источники_кода_после_ошибки_рокировки()
+        messages += self._остатки_прежнего_приёма_кода()
         messages += self.restore()
         # Память собрана заново: дальше действует только новый вердикт.
         self._restore_hold = ""
-        if self._module_recovery_blocked or self._registry_version_blocked:
-            # Сохраняем исходный registry.json и code-cache дословно: после
-            # ручного исправления/удаления WAL следующий startup должен
-            # суметь поднять прежнее готовое поколение, а не обнаружить, что
-            # fail-closed проверка сама его забыла и подмела.
+        if self._registry_version_blocked:
+            # Сохраняем исходный registry.json и кэш дословно: после ручного
+            # исправления следующий startup должен суметь поднять прежнее
+            # готовое состояние, а не обнаружить, что fail-closed проверка
+            # сама его забыла и подмела.
             return messages
         messages += [
             # Id источника не содержит «: », а пропуск и ошибка содержат.

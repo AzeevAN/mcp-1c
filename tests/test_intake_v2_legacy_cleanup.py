@@ -8,11 +8,10 @@ import pytest
 
 from mcp1c.intake_v2_converter import convert_collection
 from mcp1c.intake_v2_generation import materialize_generation
-from mcp1c.registry import KIND_EXTENSION, Registry, RegistryError
+from mcp1c.registry import Registry, RegistryError
 from conftest import build_configuration, write_export
 from test_intake_v2_converter import _collection
 from test_intake_v2_extensions import _stage_active_base
-from native_export import записать_старый_код, старый_реестр
 
 
 def _native_generation(tmp_path, suffix: str):
@@ -25,39 +24,25 @@ def _native_generation(tmp_path, suffix: str):
     )
 
 
-def _legacy_registry(tmp_path, корень_кода, *, extension: str | None = None):
-    """data/ прежней версии (schema v1 и код отдельно), поднятое startup."""
-    data_dir = старый_реестр(
-        tmp_path / "legacy",
-        корень_кода,
-        configuration=build_configuration(name="DemoConfiguration"),
+def _legacy_registry(tmp_path):
+    """data/ с конфигурацией Source A (schema v1), поднятое startup."""
+    incoming = tmp_path / "incoming-a"
+    incoming.mkdir()
+    registry = Registry(tmp_path / "legacy")
+    registry.add_configuration(
+        write_export(incoming, build_configuration(name="DemoConfiguration"))
     )
-    extension_source = None
-    if extension is not None:
-        extension_source = записать_старый_код(
-            Registry(data_dir),
-            корень_кода,
-            configuration="DemoConfiguration",
-            extension=extension,
-        )
-    registry = Registry(data_dir)
+    registry.save()
+    registry = Registry(registry.data_dir)
     assert registry.startup() == []
-    assert registry.wait_for_module_builds(timeout=10)
-    return registry, extension_source
+    return registry
 
 
-def test_native_commit_удаляет_только_legacy_структуру_и_модули(
-    tmp_path,
-    корень_кода,
-):
-    registry, extension = _legacy_registry(
-        tmp_path, корень_кода, extension="SyntheticExtension"
-    )
+def test_native_commit_удаляет_файл_source_a(tmp_path):
+    registry = _legacy_registry(tmp_path)
     legacy_configuration = registry.sources["DemoConfiguration"]
-    legacy_modules = registry.sources["DemoConfiguration:modules"]
     configuration_path = registry._absolute(legacy_configuration.stored_path)
-    modules_path = registry._absolute(legacy_modules.stored_path)
-    extension_path = registry._absolute(extension.stored_path)
+    assert configuration_path.is_file()
     generation = _native_generation(tmp_path, "001")
 
     registry.publish_generation(
@@ -65,35 +50,20 @@ def test_native_commit_удаляет_только_legacy_структуру_и_
     )
 
     assert "DemoConfiguration" not in registry.sources
-    assert "DemoConfiguration:modules" not in registry.sources
-    assert registry.sources[extension.id].kind == KIND_EXTENSION
     assert not configuration_path.exists()
-    assert not modules_path.exists()
-    assert extension_path.is_dir()
     assert registry.resolve("DemoConfiguration").modules is not None
     stored = json.loads(registry.registry_path.read_text(encoding="utf-8"))
-    assert {source["id"] for source in stored["sources"]} == {extension.id}
+    assert stored["sources"] == []
 
     restarted = Registry(registry.data_dir)
     assert restarted.startup() == []
-    assert restarted.sources[extension.id].kind == KIND_EXTENSION
-    restored = restarted.resolve(
-        "DemoConfiguration",
-        extension="SyntheticExtension",
-    )
-    assert restored.extension is not None and restored.extension.готов
+    assert restarted.resolve("DemoConfiguration").modules is not None
 
 
-def test_авария_очистки_завершается_после_restart(
-    tmp_path,
-    корень_кода,
-    monkeypatch,
-):
-    registry, _extension = _legacy_registry(tmp_path, корень_кода)
+def test_авария_очистки_завершается_после_restart(tmp_path, monkeypatch):
+    registry = _legacy_registry(tmp_path)
     legacy_configuration = registry.sources["DemoConfiguration"]
-    legacy_modules = registry.sources["DemoConfiguration:modules"]
     configuration_path = registry._absolute(legacy_configuration.stored_path)
-    modules_path = registry._absolute(legacy_modules.stored_path)
     generation = _native_generation(tmp_path, "crash")
 
     def crash_after_files(*_args, **_kwargs):
@@ -111,17 +81,12 @@ def test_авария_очистки_завершается_после_restart(
 
     assert registry.active_generation(generation.manifest.identity) is not None
     assert not configuration_path.exists()
-    assert not modules_path.exists()
     stored = json.loads(registry.registry_path.read_text(encoding="utf-8"))
-    assert {source["id"] for source in stored["sources"]} >= {
-        "DemoConfiguration",
-        "DemoConfiguration:modules",
-    }
+    assert {source["id"] for source in stored["sources"]} == {"DemoConfiguration"}
 
     restarted = Registry(registry.data_dir)
     assert restarted.startup() == []
     assert "DemoConfiguration" not in restarted.sources
-    assert "DemoConfiguration:modules" not in restarted.sources
     assert restarted.resolve("DemoConfiguration").modules is not None
 
 
@@ -147,11 +112,8 @@ def test_legacy_источник_вне_managed_data_не_удаляется(
     assert "DemoConfiguration" not in registry.sources
 
 
-def test_cleanup_понимает_legacy_строки_без_новых_полей(
-    tmp_path,
-    корень_кода,
-):
-    registry, _extension = _legacy_registry(tmp_path, корень_кода)
+def test_cleanup_понимает_legacy_строки_без_новых_полей(tmp_path):
+    registry = _legacy_registry(tmp_path)
     payload = json.loads(registry.registry_path.read_text(encoding="utf-8"))
     for source in payload["sources"]:
         for field in (
@@ -171,20 +133,15 @@ def test_cleanup_понимает_legacy_строки_без_новых_поле
     stored = json.loads(registry.registry_path.read_text(encoding="utf-8"))
     assert stored["sources"] == []
     assert "DemoConfiguration" not in registry.sources
-    assert "DemoConfiguration:modules" not in registry.sources
 
 
-def test_отказ_до_native_commit_сохраняет_legacy_строки_и_файлы(
+def test_отказ_до_native_commit_сохраняет_legacy_строку_и_файл(
     tmp_path,
-    корень_кода,
     monkeypatch,
 ):
-    registry, _extension = _legacy_registry(tmp_path, корень_кода)
+    registry = _legacy_registry(tmp_path)
     configuration_path = registry._absolute(
         registry.sources["DemoConfiguration"].stored_path
-    )
-    modules_path = registry._absolute(
-        registry.sources["DemoConfiguration:modules"].stored_path
     )
     generation = _native_generation(tmp_path, "failure")
 
@@ -199,8 +156,4 @@ def test_отказ_до_native_commit_сохраняет_legacy_строки_и
 
     assert registry.active_generation(generation.manifest.identity) is None
     assert configuration_path.is_file()
-    assert modules_path.is_dir()
     assert "DemoConfiguration" in registry.sources
-    assert "DemoConfiguration:modules" in registry.sources
-    # Смешанное прежнее состояние после рестарта видно только диагностически.
-    assert registry.resolve("DemoConfiguration", diagnostic=True).modules is not None

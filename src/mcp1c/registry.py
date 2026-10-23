@@ -883,22 +883,25 @@ class Registry:
 
     def _cached_names(self) -> set[str]:
         """Имена файлов, которые кэшу разрешено иметь прямо сейчас."""
+        with self._lock:
+            sources = list(self.sources.values())
+            carried = self._carried_rows_locked()
+            manifests = list(self._generation_manifests.values())
         names = {
             self._cache_path(source.id, kind).name
-            for source in self.sources.values()
+            for source in sources
             for kind in self.CACHE_KINDS.get(source.kind, ())
         }
-        with self._lock:
-            names.update(
-                self._cache_path(source_id, cache_kind).name
-                for source_id, kind, _ in self._carried_rows_locked()
-                for cache_kind in self.CACHE_KINDS.get(kind, ())
-            )
+        names.update(
+            self._cache_path(source_id, cache_kind).name
+            for source_id, kind, _ in carried
+            for cache_kind in self.CACHE_KINDS.get(kind, ())
+        )
         # Native runtime не дублирует Source в registry.json: его identity и
         # hashes уже находятся в generation manifest. Расходный кэш всё же
         # принадлежит активному поколению и не должен сноситься sweep после
         # успешного restore.
-        for manifest in self._generation_manifests.values():
+        for manifest in manifests:
             layers = {layer.kind: layer for layer in manifest.layers}
             if manifest.identity.source_kind is SourceKind.EXTENSION:
                 source_id = source_ids.extension_modules_id(
@@ -4956,17 +4959,20 @@ class Registry:
         """Снести разобранные справки, которых не заявил ни один источник.
 
         Каталог рос с каждой попыткой: снятая с учёта справка оставляла свой
-        `.json.gz` лежать. Индекс производный, восстанавливается разбором
-        `.hbk`, поэтому сносится так же, как кэш. Справки версий, стоящие в
-        реестре, остаются все — их заявляют свои источники.
+        `.json.gz` лежать. Индекс может быть единственной копией справки,
+        поэтому действующие и временно не поднятые источники сохраняются,
+        а незавершённые записи защищает протокол live_write.
         """
         directory = self._syntax_index_dir()
         if not directory.is_dir():
             return []
 
+        with self._lock:
+            sources = list(self.sources.values())
+            versions = list(self.syntax_versions.values())
         allowed = {
             self._absolute(source.stored_path).resolve()
-            for source in self.sources.values()
+            for source in sources
             if source.kind == KIND_SYNTAX and source.stored_path
         }
         # Справка, не поднятая временным сбоем, остаётся строкой реестра:
@@ -4974,8 +4980,6 @@ class Registry:
         allowed |= self._carried_stored_paths()
         # Слитый вид источником не заявлен — он производное от всего набора.
         # Действующий оставляем, устаревшие уходят вместе с прочим мусором.
-        with self._lock:
-            versions = list(self.syntax_versions.values())
         if versions:
             по_версии = sorted(versions, key=lambda s: parse_version(s.platform))
             allowed.add(self._merged_path(по_версии).resolve())

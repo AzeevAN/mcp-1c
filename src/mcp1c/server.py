@@ -30,6 +30,7 @@ from typing import Annotated, Callable, Literal, ParamSpec, TypeVar
 from urllib.parse import urlencode
 
 from mcp.server import MCPServer
+from mcp.server._otel import OpenTelemetryMiddleware
 from mcp.server.subscriptions import InMemorySubscriptionBus, ToolsListChanged
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import CallToolResult, TextContent
@@ -1417,6 +1418,12 @@ def build_server(
         ),
         version=__version__,
     )
+    # Экспортёра телеметрии нет; разбор недоверенного _meta.tracestate
+    # в middleware SDK добавляет поверхность атаки без пользы серверу.
+    server.middleware[:] = [
+        middleware for middleware in server.middleware
+        if not isinstance(middleware, OpenTelemetryMiddleware)
+    ]
     download_tickets = ModuleDownloadTickets()
 
     _register_overview_and_code_tools(server, registry)

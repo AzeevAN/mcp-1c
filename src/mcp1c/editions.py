@@ -40,7 +40,9 @@ def _label(version: str) -> str:
 
 def edition_conflict(configuration: str, current: str, incoming: str) -> str:
     """Причина запрета полного обновления; пустая строка — обновление допустимо."""
-    if edition(current) == edition(incoming):
+    # Пустая версия не задаёт редакцию: её первое назначение допустимо.
+    # Непустую нечисловую версию по-прежнему нельзя заменить номерной.
+    if not current.strip() or edition(current) == edition(incoming):
         return ""
     return (
         f"Загружена конфигурация «{configuration}» {_label(current)}, "

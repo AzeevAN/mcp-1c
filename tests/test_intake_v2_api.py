@@ -1086,7 +1086,7 @@ def _загруженная(tmp_path, version: str, name: str = "DemoConfigurati
         ("3.0.14.178", "2.3.26.24", [], True),
         ("2.3.26.24", "2.3.27.1", ["update_full"], False),
         ("2.3.26.24", "", [], True),
-        ("", "2.3.26.24", [], True),
+        ("", "2.3.26.24", ["update_full"], False),
         ("", "", ["update_full"], False),
         ("20080620(0935)", "20090101(1000)", ["update_full"], False),
     ],

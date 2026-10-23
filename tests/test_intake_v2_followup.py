@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from conftest import build_configuration, write_export
-from mcp1c import intake_v2_fsio as fsio
+from mcp1c import fsio
 from mcp1c.config_sources import ConfigSourceBindings
 from mcp1c.intake_v2 import CandidateJobState, DurableCandidateStore
 from mcp1c.intake_v2_api import IntakeApiConflict, IntakeApiService
@@ -375,7 +375,7 @@ def test_schema_v1_поколение_проходит_verify_после_рес�
 
 
 def test_запись_проходит_на_фс_без_chmod_и_не_теряет_дескриптор(tmp_path, monkeypatch):
-    from mcp1c import intake_v2_fsio as fsio
+    from mcp1c import fsio
 
     def refuse(*_args, **_kwargs):
         raise PermissionError(1, "Operation not permitted")

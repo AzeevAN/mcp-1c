@@ -175,7 +175,7 @@ def test_durable_store_не_теряет_прежнюю_запись_при_от
         raise OSError("synthetic replace failure")
 
     # Атомарная замена общая для всех хранилищ intake и живёт в fsio.
-    monkeypatch.setattr("mcp1c.intake_v2_fsio.os.replace", fail_replace)
+    monkeypatch.setattr("mcp1c.fsio.os.replace", fail_replace)
 
     with pytest.raises(CandidateStoreError, match="атомарно"):
         store.save_candidate(changed)

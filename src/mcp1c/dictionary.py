@@ -25,11 +25,11 @@ import json
 import logging
 import os
 import stat
-import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
+from . import fsio
 from .synonyms import BUILTIN_ALIASES, SYNONYM_GROUPS
 
 logger = logging.getLogger(__name__)
@@ -112,40 +112,32 @@ def _write_durably(target: Path, text: str) -> None:
         mode = stat.S_IMODE(target.stat().st_mode)
     except FileNotFoundError:
         mode = None
-    # Уникальное имя: общий `dictionary.tmp` сталкивался у параллельных
-    # CLI/HTTP writers — первый replace уносил файл, второй получал
-    # FileNotFoundError.
-    temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        descriptor = os.open(
-            temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666
-        )
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            if mode is not None:
-                os.fchmod(stream.fileno(), mode)
-            stream.write(text)
-            stream.flush()
-            os.fsync(stream.fileno())
-        temporary.replace(target)
+
+    def sync_parent(directory: int) -> None:
         # После replace новый словарь уже виден на диске. Отказ fsync
         # каталога не отменяет запись: исключение здесь оставило бы в памяти
         # прежний словарь при новом файле, поэтому только журнал.
         try:
-            directory = os.open(
-                target.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-            )
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
+            os.fsync(directory)
         except OSError as error:
             logger.warning(
                 "fsync каталога словаря не выполнен (%s): запись видна, но "
                 "может не пережить сбой питания",
                 error.strerror or type(error).__name__,
             )
+
+    directory = os.open(
+        target.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+    )
+    try:
+        with fsio.atomic_writer(
+            directory, target.name, mode=0o666, sync_parent=sync_parent,
+        ) as stream:
+            if mode is not None:
+                os.fchmod(stream.fileno(), mode)
+            stream.write(text.encode("utf-8"))
     finally:
-        temporary.unlink(missing_ok=True)
+        os.close(directory)
 
 
 @dataclass(slots=True)

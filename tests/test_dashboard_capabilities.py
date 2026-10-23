@@ -268,7 +268,7 @@ def test_mutation_при_ошибке_записи_сохраняет_прежн
     monkeypatch.setattr(
         capability_module.os,
         "replace",
-        lambda source, target: (_ for _ in ()).throw(OSError("synthetic")),
+        lambda source, target, **kwargs: (_ for _ in ()).throw(OSError("synthetic")),
     )
 
     response = client.put(

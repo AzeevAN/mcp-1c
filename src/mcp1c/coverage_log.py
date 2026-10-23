@@ -10,9 +10,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from . import fsio
 
 if TYPE_CHECKING:
     from .registry import LoadedModules, Source
@@ -162,31 +163,9 @@ def write(
     directory_fd = _open_directory(data_dir, create=True)
     assert directory_fd is not None
     target = _filename(loaded.source.id)
-    temporary = f".{target}.{uuid.uuid4().hex}.tmp"
-    file_fd: int | None = None
     try:
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-        flags |= getattr(os, "O_NOFOLLOW", 0)
-        file_fd = os.open(temporary, flags, 0o600, dir_fd=directory_fd)
-        with os.fdopen(file_fd, "wb", closefd=True) as stream:
-            file_fd = None
-            stream.write(encoded)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(
-            temporary,
-            target,
-            src_dir_fd=directory_fd,
-            dst_dir_fd=directory_fd,
-        )
-        os.fsync(directory_fd)
+        fsio.write_in_dir(directory_fd, target, encoded, mode=0o600)
     finally:
-        if file_fd is not None:
-            os.close(file_fd)
-        try:
-            os.unlink(temporary, dir_fd=directory_fd)
-        except FileNotFoundError:
-            pass
         os.close(directory_fd)
     return relative_path(loaded.source.id)
 

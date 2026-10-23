@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
-from . import intake_v2_fsio as fsio
+from . import fsio
 from .intake_v2 import (
     CandidateStoreError,
     CandidateTransport,

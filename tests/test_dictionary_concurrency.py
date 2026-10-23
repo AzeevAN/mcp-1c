@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 from pathlib import Path
 
@@ -52,16 +53,16 @@ def test_параллельные_save_используют_уникальные
     встретились = threading.Barrier(2)
     временные: list[Path] = []
     замок = threading.Lock()
-    настоящий_replace = Path.replace
+    настоящий_replace = os.replace
 
-    def заменить_одновременно(self: Path, target: Path) -> Path:
-        if Path(target) == путь:
+    def заменить_одновременно(source, target, **kwargs) -> None:
+        if target == путь.name:
             with замок:
-                временные.append(self)
+                временные.append(Path(source))
             встретились.wait(timeout=5)
-        return настоящий_replace(self, target)
+        return настоящий_replace(source, target, **kwargs)
 
-    monkeypatch.setattr(Path, "replace", заменить_одновременно)
+    monkeypatch.setattr(os, "replace", заменить_одновременно)
 
     ошибки = _параллельно(первый.save, второй.save)
 

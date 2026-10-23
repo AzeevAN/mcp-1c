@@ -47,7 +47,7 @@ try:  # pragma: no cover - на Windows межпроцессного flock не�
 except ImportError:  # pragma: no cover
     fcntl = None
 
-from . import coverage_log, index_cache, modules_index, source_ids
+from . import coverage_log, fsio, index_cache, modules_index, source_ids
 from .dictionary import Dictionary, DictionaryError
 from .editions import edition_conflict
 from .graph import Graph
@@ -1111,7 +1111,6 @@ class Registry:
         self._reserve_source_file(target_dir / target)
         self._reserve_source_file(target_dir / temporary)
         opened: list[int] = []
-        temporary_created = False
 
         def open_child(parent_fd: int, name: str) -> int:
             try:
@@ -1134,49 +1133,22 @@ class Registry:
             target_fd = open_child(sources_fd, subdir)
             opened.append(target_fd)
 
-            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-            flags |= getattr(os, "O_NOFOLLOW", 0)
-            file_fd = os.open(temporary, flags, 0o600, dir_fd=target_fd)
-            temporary_created = True
             copied = hashlib.sha256()
-            # Дескриптор сразу переходит во владение file-объекта: при
-            # отказе открыть исходник он закрывается вместе с ним, а не
-            # утекает до конца процесса.
-            try:
-                target_file = os.fdopen(file_fd, "wb", closefd=True)
-            except BaseException:
-                os.close(file_fd)
-                raise
-            with target_file as target_stream, path.open("rb") as source_stream:
+            with fsio.atomic_writer(
+                target_fd, target, mode=0o600, temporary_name=temporary,
+            ) as target_stream, path.open("rb") as source_stream:
                 for block in iter(lambda: source_stream.read(1 << 20), b""):
                     copied.update(block)
                     target_stream.write(block)
-                target_stream.flush()
-                os.fsync(target_stream.fileno())
-
-            if copied.hexdigest() != digest:
-                raise RegistryError(
-                    f"{path.name}: исходник изменился во время сохранения."
-                )
-
-            os.replace(
-                temporary,
-                target,
-                src_dir_fd=target_fd,
-                dst_dir_fd=target_fd,
-            )
-            temporary_created = False
-            os.fsync(target_fd)
+                if copied.hexdigest() != digest:
+                    raise RegistryError(
+                        f"{path.name}: исходник изменился во время сохранения."
+                    )
         except OSError as error:
             raise RegistryError(
                 f"{path.name}: не удалось безопасно сохранить исходник: {error}"
             ) from error
         finally:
-            if temporary_created and opened:
-                try:
-                    os.unlink(temporary, dir_fd=opened[-1])
-                except FileNotFoundError:
-                    pass
             for descriptor in reversed(opened):
                 os.close(descriptor)
         return target_dir / target
@@ -3086,25 +3058,15 @@ class Registry:
         переводит реестр в fail-closed режим.
         """
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        # Общий `registry.tmp` сталкивался у параллельных writers: первый
-        # replace уносил файл, второй получал FileNotFoundError.
-        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        directory = os.open(
+            target.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
         try:
-            with temporary.open("x", encoding="utf-8") as stream:
-                json.dump(payload, stream, ensure_ascii=False, indent=indent)
-                stream.flush()
-                os.fsync(stream.fileno())
-            temporary.replace(target)
-            descriptor = os.open(
-                target.parent,
-                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
-            )
-            try:
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
+            with fsio.atomic_writer(directory, target.name, mode=0o666) as stream:
+                encoded = json.dumps(payload, ensure_ascii=False, indent=indent)
+                stream.write(encoded.encode("utf-8"))
         finally:
-            temporary.unlink(missing_ok=True)
+            os.close(directory)
 
     @staticmethod
     def _generation_pointers_from_payload(

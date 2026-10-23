@@ -16,6 +16,8 @@ import stat
 import threading
 import uuid
 
+from . import fsio
+
 
 SERVER_SETTINGS_NAME = "server-settings.json"
 SERVER_SETTINGS_VERSION = 2
@@ -280,42 +282,32 @@ class CapabilitySettingsStore:
                 raise CapabilityConfigurationError(
                     f"{self.path}: server settings превышает допустимый размер."
                 )
+
+            def sync_parent(directory: int) -> None:
+                try:
+                    os.fsync(directory)
+                except OSError:
+                    # После replace ошибка барьера не отменяет видимую запись.
+                    logger.warning(
+                        "%s: server settings заменён, но каталог не синхронизирован.",
+                        self.path,
+                        exc_info=True,
+                    )
+
             try:
                 self.path.parent.mkdir(parents=True, exist_ok=True)
-                temporary = self.path.with_name(
-                    f".{self.path.name}.tmp-{uuid.uuid4().hex}"
-                )
-                descriptor = os.open(
-                    temporary,
-                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                    0o600,
+                directory = os.open(
+                    self.path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
                 )
                 try:
-                    with os.fdopen(descriptor, "wb") as stream:
+                    with fsio.atomic_writer(
+                        directory, self.path.name, mode=0o600,
+                        temporary_name=f".{self.path.name}.tmp-{uuid.uuid4().hex}",
+                        sync_parent=sync_parent,
+                    ) as stream:
                         stream.write(encoded)
-                        stream.flush()
-                        os.fsync(stream.fileno())
-                    os.replace(temporary, self.path)
-                    try:
-                        directory = os.open(
-                            self.path.parent,
-                            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
-                        )
-                        try:
-                            os.fsync(directory)
-                        finally:
-                            os.close(directory)
-                    except OSError:
-                        # После replace новые bytes уже видимы текущему процессу.
-                        # Ошибка durability-барьера не должна превращать
-                        # применённую запись в ложный HTTP-отказ.
-                        logger.warning(
-                            "%s: server settings заменён, но каталог не синхронизирован.",
-                            self.path,
-                            exc_info=True,
-                        )
                 finally:
-                    temporary.unlink(missing_ok=True)
+                    os.close(directory)
             except OSError as error:
                 raise CapabilityConfigurationError(
                     f"{self.path}: не удалось сохранить server settings."

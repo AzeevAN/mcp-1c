@@ -23,7 +23,7 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
-from . import index_cache, intake_v2_fsio
+from . import index_cache, fsio
 
 from .syntax_model import (
     SyntaxFacts,
@@ -97,7 +97,7 @@ def save_syntax(index: SyntaxIndex, path: str | Path) -> Path:
             # `cap_drop: ALL` и хост-пользователь читают её как раньше, с
             # правами обычного файла.
             try:
-                os.fchmod(descriptor, intake_v2_fsio.record_mode(target))
+                os.fchmod(descriptor, fsio.record_mode(target))
             except OSError:
                 pass
             with os.fdopen(descriptor, "wb") as raw_stream, gzip.open(

@@ -17,7 +17,7 @@ from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import BinaryIO, Protocol, runtime_checkable
 
-from . import intake_v2_fsio as fsio
+from . import fsio
 
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")

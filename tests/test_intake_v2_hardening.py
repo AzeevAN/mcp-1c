@@ -17,7 +17,7 @@ import pytest
 from starlette.applications import Starlette
 
 from conftest import живой_клиент
-from mcp1c import intake_v2_fsio as fsio
+from mcp1c import fsio
 from mcp1c.dashboard_runtime import DASHBOARD_ON, routes
 from mcp1c.intake_v2 import CandidateJobState, DurableCandidateStore
 from mcp1c.intake_v2_lifecycle import (
@@ -462,7 +462,7 @@ def test_incoming_state_пишется_атомарно_и_забывает_уд
     def broken_replace(*_args, **_kwargs):
         raise OSError("диск отключён")
 
-    monkeypatch.setattr("mcp1c.intake_v2_fsio.os.replace", broken_replace)
+    monkeypatch.setattr("mcp1c.fsio.os.replace", broken_replace)
     kept.write_bytes(b"zip-changed-again")
     os.utime(kept, (time.time() - 20, time.time() - 20))
     scanner.digest(kept)

@@ -252,9 +252,9 @@ def test_состояние_пишется_на_диск_под_замком(tmp
     файл = состарить(_архив(registry, "в.zip"))
     сканер = IncomingScanner(registry)
     занят = []
-    from mcp1c import intake_v2_fsio
+    from mcp1c import fsio
 
-    настоящая_запись = intake_v2_fsio.write_record_atomic
+    настоящая_запись = fsio.write_record_atomic
 
     def под_наблюдением(*args, **kwargs):
         # Проверяем из ЧУЖОГО потока: `RLock` для своего повторно входим.
@@ -270,7 +270,7 @@ def test_состояние_пишется_на_диск_под_замком(tmp
         return настоящая_запись(*args, **kwargs)
 
     # Состояние пишется атомарной заменой из общего fsio, а не `write_text`.
-    monkeypatch.setattr(intake_v2_fsio, "write_record_atomic", под_наблюдением)
+    monkeypatch.setattr(fsio, "write_record_atomic", под_наблюдением)
 
     сканер.digest(файл)
 

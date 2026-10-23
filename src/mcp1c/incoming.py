@@ -16,7 +16,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import intake_v2_fsio as fsio
+from . import fsio
 from .registry import Registry
 
 STATE_NEW = "не разобрано"

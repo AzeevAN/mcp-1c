@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Iterable
 
-from . import intake_v2_fsio as fsio
+from . import fsio
 from .intake_v2 import CandidateTransport
 from .resource_limits import (
     MIB,

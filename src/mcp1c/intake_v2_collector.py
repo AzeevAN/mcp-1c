@@ -22,7 +22,7 @@ from typing import BinaryIO, Iterable, Mapping
 
 from . import xml_safety
 from . import module_address
-from . import intake_v2_fsio as fsio
+from . import fsio
 from .intake_v2 import (
     LayerKind,
     LayerState,

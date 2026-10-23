@@ -19,7 +19,7 @@ from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import BinaryIO, Mapping
 
-from . import intake_v2_fsio as fsio
+from . import fsio
 from .intake_v2 import (
     CandidateTransport,
     ExportIdentity,

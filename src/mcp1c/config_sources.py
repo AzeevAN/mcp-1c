@@ -9,7 +9,7 @@ import json
 import stat
 from pathlib import Path
 
-from . import intake_v2_fsio as fsio
+from . import fsio
 from .intake_v2_registry import _write_atomic
 
 CONFIG_SOURCES_ROOT = Path("/config-sources")

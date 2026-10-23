@@ -21,7 +21,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Iterator, Mapping
 
-from . import intake_v2_fsio as fsio
+from . import fsio
 from .intake_v2 import (
     CandidateJob,
     CandidateJobState,

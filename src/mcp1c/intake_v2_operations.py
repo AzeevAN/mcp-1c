@@ -33,7 +33,7 @@ from .intake_v2 import (
     SourceKind,
     VirtualExportTree,
 )
-from . import intake_v2_fsio as fsio
+from . import fsio
 from .intake_v2_collector import collect_source_b
 from .intake_v2_composition import compose_generation, compose_manifest
 from .intake_v2_converter import StructureConversion, convert_collection

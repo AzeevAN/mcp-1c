@@ -509,7 +509,7 @@ def test_ошибка_atomic_replace_не_портит_предыдущие_sett
     monkeypatch.setattr(
         capability_module.os,
         "replace",
-        lambda source, target: (_ for _ in ()).throw(OSError("synthetic")),
+        lambda source, target, **kwargs: (_ for _ in ()).throw(OSError("synthetic")),
     )
 
     with pytest.raises(CapabilityConfigurationError, match="сохранить"):

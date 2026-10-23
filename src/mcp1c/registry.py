@@ -586,6 +586,11 @@ class Registry:
         # строки через add_configuration, который берёт его сам. Порядок:
         # startup -> mutation -> cache -> registry.
         self._generation_mutation_lock = threading.RLock()
+        # До WAL staging ещё принадлежит выполняющемуся intake. Слабые ссылки
+        # защищают его при reload, не удерживая брошенный bundle после ошибки.
+        self._live_generation_staging: weakref.WeakValueDictionary[
+            Path, StagedGeneration
+        ] = weakref.WeakValueDictionary()
         # Версии нужны только для незавершённых публикаций внутри процесса.
         # После удаления счётчик сохраняется: пусто -> B -> пусто тоже смена
         # состояния, которую не обнаружить сравнением одних pointers.
@@ -3176,9 +3181,12 @@ class Registry:
         activation=None,
     ) -> StagedGeneration:
         """Подготовить проверяемый bundle, не меняя active pointer."""
-        return self._generation_store.stage(
-            manifest, payloads, activation=activation
-        )
+        with self._generation_mutation_lock:
+            staged = self._generation_store.stage(
+                manifest, payloads, activation=activation
+            )
+            self._live_generation_staging[staged.root] = staged
+            return staged
 
     def discard_staged_generation(self, staged: StagedGeneration) -> None:
         """Убрать только незапубликованный staging неудачной операции."""
@@ -5192,6 +5200,50 @@ class Registry:
                 "остановите сервер."
             )
 
+    def _подмести_временные_поколения(self) -> list[str]:
+        """Убрать orphan staging под mutation lock после успешного recovery.
+
+        Живой bundle до публикации ещё не попал в WAL; его защищает объект
+        StagedGeneration. Неизвестный WAL сохраняет всё для восстановления.
+        """
+        try:
+            self.generation_recovery_path.lstat()
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            return [f"не удалось проверить WAL перед уборкой staging: {error}"]
+        else:
+            return []
+        root = self._generation_store.root
+        removed: list[str] = []
+        messages: list[str] = []
+        try:
+            if root.is_symlink():
+                return ["уборка staging пропущена: generations — символическая ссылка"]
+            for path in root.iterdir():
+                if (
+                    not path.name.startswith(".staging-")
+                    or path in self._live_generation_staging
+                    or path.is_symlink()
+                    or not path.is_dir()
+                ):
+                    continue
+                try:
+                    self._generation_store.remove_staging(
+                        path.relative_to(self.data_dir).as_posix()
+                    )
+                except (OSError, RecoveryBlocked) as error:
+                    messages.append(f"{path.name}: ошибка уборки staging: {error}")
+                else:
+                    removed.append(path.name)
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            messages.append(f"ошибка обхода staging: {error}")
+        if removed:
+            messages.append(f"убрано временных поколений: {', '.join(removed)}")
+        return messages
+
     def _подмести_временные_базы_schema_v1(self) -> None:
         """Удалить `.schema-v1-base-*`, пережившие аварийную остановку.
 
@@ -5306,6 +5358,8 @@ class Registry:
             # готовое состояние, а не обнаружить, что fail-closed проверка
             # сама его забыла и подмела.
             return messages
+        with self._generation_mutation_lock:
+            messages += self._подмести_временные_поколения()
         messages += [
             # Id источника не содержит «: », а пропуск и ошибка содержат.
             f"bootstrap: {name}" if ": " in name else f"добавлено из bootstrap: {name}"

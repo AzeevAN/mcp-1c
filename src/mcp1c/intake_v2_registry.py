@@ -283,7 +283,7 @@ class GenerationPointer:
             raise BundleStoreError("generation pointer содержит неверные поля") from error
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, weakref_slot=True)
 class StagedGeneration:
     manifest: GenerationManifest
     root: Path

@@ -109,7 +109,10 @@ def test_битый_wal_поколения_закрывает_запись_до_
 
     # Флаг снимается только успешным восстановлением на следующем startup.
     restarted.generation_recovery_path.unlink()
-    assert restarted.startup() == []
+    messages = restarted.startup()
+    # Отклонённые публикации могли оставить staging; его уборка — сообщение,
+    # а не продолжение блокировки. Ни одна ошибка восстановления не скрывается.
+    assert all(message.startswith("убрано временных поколений: ") for message in messages)
     assert restarted.active_generation(first.identity) == first
     restarted.add_syntax(syntax)
     restarted.save()
@@ -343,3 +346,119 @@ def test_невалидный_utf8_registry_json_при_wal_закрывает_�
     with pytest.raises(RegistryRecoveryBlocked):
         restarted.save()
     assert restarted.registry_path.read_bytes() == before
+
+
+def test_startup_owner_удаляет_брошенный_staging_без_wal_только_в_generations(tmp_path):
+    data = tmp_path / 'data'
+    orphan = data / 'generations' / '.staging-orphan-123'
+    orphan.mkdir(parents=True)
+    (orphan / 'partial-payload').write_bytes(b'incomplete generation')
+    preserved = data / 'generations' / 'preserved-generation'
+    preserved.mkdir()
+    (preserved / 'marker').write_bytes(b'keep generation')
+    outside = data / '.staging-outside-generations'
+    outside.mkdir()
+    (outside / 'marker').write_bytes(b'keep outside')
+    linked = data / 'generations' / '.staging-link'
+    linked.symlink_to(outside, target_is_directory=True)
+    registry = Registry(data)
+    assert not registry.generation_recovery_path.exists()
+
+    registry.startup()
+
+    assert registry.role == 'owner'
+    assert not orphan.exists()
+    assert (preserved / 'marker').read_bytes() == b'keep generation'
+    assert (outside / 'marker').read_bytes() == b'keep outside'
+    assert linked.is_symlink()
+
+
+def test_startup_не_удаляет_staging_на_который_ссылается_неразрешимый_wal(tmp_path):
+    from mcp1c.intake_v2 import RecoveryPhase
+
+    first, first_payloads = _manifest(tmp_path, 'l7-first')
+    second, second_payloads = _manifest(tmp_path, 'l7-second', suffix='-changed')
+    setup = Registry(tmp_path / 'data')
+    setup.publish_generation(setup.stage_generation(first, first_payloads))
+    previous = setup.active_generation_pointer(first.identity)
+    assert previous is not None
+    staged = setup.stage_generation(second, second_payloads)
+    assert staged.root.name.startswith('.staging-')
+    record = setup._generation_store.recovery_for(
+        previous, staged, RecoveryPhase.POINTER_SWITCHED,
+    )
+    setup._generation_store.write_recovery(record)
+    wal_before = setup.generation_recovery_path.read_bytes()
+    registry_before = setup.registry_path.read_bytes()
+    staged_files = {
+        path.relative_to(staged.root): path.read_bytes()
+        for path in staged.root.rglob('*') if path.is_file()
+    }
+    assert staged_files
+
+    restarted = Registry(setup.data_dir)
+    messages = restarted.startup()
+
+    # POINTER_SWITCHED при всё ещё старом active pointer не допускает
+    # произвольного выбора поколения: recovery блокирует запись и уборку.
+    assert messages
+    assert any('неоднознач' in message for message in messages)
+    assert staged.root.is_dir()
+    assert {
+        path.relative_to(staged.root): path.read_bytes()
+        for path in staged.root.rglob('*') if path.is_file()
+    } == staged_files
+    assert setup.generation_recovery_path.read_bytes() == wal_before
+    assert setup.registry_path.read_bytes() == registry_before
+
+
+def test_startup_guest_не_удаляет_staging_при_живом_owner(tmp_path):
+    from test_registry_interprocess import _start_server, _stop
+
+    data = tmp_path / 'data'
+    data.mkdir()
+    owner = _start_server(data)
+    try:
+        # Создаём после owner.startup, чтобы проверялся именно guest startup.
+        orphan = data / 'generations' / '.staging-guest-visible-123'
+        orphan.mkdir(parents=True)
+        marker = orphan / 'partial-payload'
+        marker.write_bytes(b'owner may still use this staging')
+        guest = Registry(data)
+
+        guest.startup()
+
+        assert guest.role == 'guest'
+        assert orphan.is_dir()
+        assert marker.read_bytes() == b'owner may still use this staging'
+    finally:
+        _stop(owner)
+
+
+def test_reload_сохраняет_живой_staging_и_убирает_его_после_освобождения(tmp_path):
+    import gc
+
+    manifest, payloads = _manifest(tmp_path, 'l7-live')
+    registry = Registry(tmp_path / 'data')
+    registry.startup()
+    staged = registry.stage_generation(manifest, payloads)
+    root = staged.root
+    before = {
+        path.relative_to(root): path.read_bytes()
+        for path in root.rglob('*') if path.is_file()
+    }
+    assert before
+
+    registry.startup()
+
+    assert root.is_dir()
+    assert {
+        path.relative_to(root): path.read_bytes()
+        for path in root.rglob('*') if path.is_file()
+    } == before
+    del staged
+    gc.collect()
+
+    registry.startup()
+
+    assert not root.exists()

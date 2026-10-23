@@ -182,3 +182,29 @@ it("при ошибке settings не предлагает заведомо не
   expect(await screen.findByRole("alert")).toHaveTextContent("server settings повреждён");
   expect(screen.queryByRole("button", { name: /restart|перезапуст/i })).not.toBeInTheDocument();
 });
+
+it("показывает отказ restart во время загрузки и позволяет повторить позже", async () => {
+  const actual = await vi.importActual<typeof import("../shared/api/sourceAdmin")>(
+    "../shared/api/sourceAdmin",
+  );
+  vi.mocked(requestServerRestart).mockImplementation(actual.requestServerRestart);
+  const message = "Идёт загрузка. Перезапуск возможен после её завершения.";
+  const pending = { ...ready, desired: ["reference"], pending_restart: true };
+  vi.stubGlobal("fetch", vi.fn(async (path: RequestInfo | URL) => {
+    if (String(path) === "/api/v1/server/restart") {
+      return { ok: false, status: 409, json: async () => ({ error: message }) };
+    }
+    return { ok: true, json: async () => pending };
+  }));
+  mount();
+  const trigger = await screen.findByRole("button", { name: "Перезапустить и применить" });
+  fireEvent.click(trigger);
+  fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Да, перезапустить" }));
+
+  expect(await screen.findByRole("status")).toHaveTextContent(message);
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(trigger).toBeEnabled();
+  expect(waitForServerRestart).not.toHaveBeenCalled();
+  fireEvent.click(trigger);
+  expect(screen.getByRole("dialog", { name: "Перезапустить сервер?" })).toBeVisible();
+});

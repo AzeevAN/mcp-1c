@@ -912,12 +912,12 @@ def _spa_routes(
     capabilities: CapabilityRuntime,
     intake: IntakeApiService | None,
     role_tools_refresh: Callable[[], Awaitable[bool]] | None,
+    heavy: HeavyOperations,
 ) -> list[Route]:
     static_dir = static_dir.resolve()
     current_intake = intake
     intake_tasks: set[asyncio.Task[None]] = set()
     intake_start_lock = asyncio.Lock()
-    heavy = HeavyOperations()
 
     # Ставится под `admin_endpoint(..., mutation=True)`: права и CSRF
     # проверяются снаружи, до захвата допуска, поэтому чужой запрос не
@@ -925,6 +925,8 @@ def _spa_routes(
     def heavy_endpoint(endpoint):
         @wraps(endpoint)
         async def admitted(request):
+            if restart.requested:
+                return _json_error("Перезапуск уже запрошен.", 409)
             lease = heavy.acquire()
             if lease is None:
                 return _json_error(
@@ -2467,6 +2469,7 @@ def _server_routes(
     *,
     reference: ReferenceService,
     capabilities: CapabilityRuntime,
+    heavy: HeavyOperations,
 ) -> list[Route]:
     """Общие process-level маршруты, не принадлежащие одному провайдеру."""
 
@@ -2486,11 +2489,11 @@ def _server_routes(
             return _json_error(
                 "Нет ожидающих изменений, требующих полного перезапуска.", 409
             )
-        if not restart.reserve():
+        if restart.requested:
             return _json_error("Перезапуск уже запрошен.", 409)
 
         background = BackgroundTask(restart.terminate_after_response)
-        return JSONResponse(
+        response = JSONResponse(
             {
                 "state": "restarting",
                 "runtime_id": restart.runtime_id,
@@ -2499,6 +2502,22 @@ def _server_routes(
             status_code=202,
             background=background,
         )
+        lease = heavy.acquire()
+        if lease is None:
+            return _json_error(
+                "Идёт загрузка. Перезапуск возможен после её завершения.", 409,
+            )
+        reserved = False
+        try:
+            if not restart.reserve():
+                return _json_error("Перезапуск уже запрошен.", 409)
+            reserved = True
+            # Принятый restart удерживает допуск до выхода процесса:
+            # в задержке перед завершением новая загрузка не должна начаться.
+            return response
+        finally:
+            if not reserved:
+                lease.release()
 
     return [
         Route(
@@ -2542,6 +2561,7 @@ def routes(
     root = static_dir or (
         Path(configured_dist) if configured_dist else DEFAULT_DASHBOARD_DIST
     )
+    heavy = HeavyOperations()
     return [
         *_spa_routes(
             registry,
@@ -2551,11 +2571,13 @@ def routes(
             capabilities,
             intake,
             role_tools_refresh,
+            heavy,
         ),
         *_reference_routes(reference),
         *_server_routes(
             restart,
             reference=reference,
             capabilities=capabilities,
+            heavy=heavy,
         ),
     ]

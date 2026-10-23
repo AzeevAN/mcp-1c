@@ -49,7 +49,7 @@ from .module_content import (
     ContentReadError,
     LocatorIdentity,
     ModuleLocator,
-    read_bsl,
+    read_bsl_state,
 )
 from .role_access import LoadedRoleAccess, load_role_access
 from .standard_attributes import (
@@ -1040,8 +1040,11 @@ def _catalog(
             resolved_code[address] = member, state
             continue
         assert member is not None
+        if member.size == 0:
+            resolved_code[address] = member, "empty"
+            continue
         try:
-            text = read_bsl(
+            body_state = read_bsl_state(
                 root,
                 address,
                 ModuleLocator.file(member.relative_path),
@@ -1051,7 +1054,7 @@ def _catalog(
         else:
             resolved_code[address] = (
                 member,
-                "empty" if not text.strip() else "source",
+                "empty" if body_state == "empty" else "source",
             )
     folded: dict[str, str] = {}
     for address in (*code_members, *form_members):

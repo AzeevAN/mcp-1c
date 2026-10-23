@@ -17,7 +17,7 @@ from typing import Mapping
 
 from .bsl_lex import нормализовать
 from .member_pack import open_stored_member
-from .readers.modules import read_module_body
+from .readers.modules import ModuleBodyResult, read_module_body
 from .resource_limits import (
     FORM_MAX_DATA_BYTES, FORM_MAX_MODULE_BYTES, FORM_V8_LIMITS,
     INTAKE_MAX_MODULE_BYTES,
@@ -233,12 +233,12 @@ def _read_bytes(
         ) from error
 
 
-def read_bsl(
+def _read_bsl_result(
     root: Path,
     address: str,
     locator: ModuleLocator,
-) -> str:
-    """Прочитать обычный файл или запись контейнера одним нормализатором."""
+) -> ModuleBodyResult:
+    """Прочитать и декодировать тело с общими пределами и категориями отказа."""
 
     if locator.kind == "compiled":
         raise ContentReadError(
@@ -283,7 +283,23 @@ def read_bsl(
             "module_invalid_utf8", address, result.reason
         )
     assert result.text is not None
+    return result
+
+
+def read_bsl(
+    root: Path,
+    address: str,
+    locator: ModuleLocator,
+) -> str:
+    """Прочитать обычный файл или запись контейнера одним нормализатором."""
+    result = _read_bsl_result(root, address, locator)
+    assert result.text is not None
     return нормализовать(result.text)
+
+
+def read_bsl_state(root: Path, address: str, locator: ModuleLocator) -> str:
+    """Проверить всё тело и вернуть empty/ready без нормализованной копии текста."""
+    return _read_bsl_result(root, address, locator).state
 
 
 def read_content_bytes(

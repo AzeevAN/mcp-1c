@@ -893,3 +893,101 @@ def test_m7_невозможность_записи_marker_не_ломает_sta
     root = registry.data_dir / pointer.root_path
     assert not (root / '.verified').exists()
     assert registry._generation_store.verify(pointer) == materialized.manifest
+
+
+@pytest.mark.parametrize("body,state", [
+    (b"", "empty"),
+    (b" \r\n\t", "empty"),
+    (b"\xef\xbb\xbf \r\n\t", "empty"),
+    (b"procedure Demo() endprocedure" + b" \r\n" * 4096 + b"\xff", "unreadable"),
+    ("Процедура Проверка()\r\nКонецПроцедуры\r".encode("utf-8"), "source"),
+], ids=["empty", "whitespace", "bom-whitespace", "invalid-utf8-tail", "source"])
+def test_m11_catalog_классифицирует_тело_без_нормализации_с_бюджетом_чтения(
+    tmp_path, monkeypatch, body, state
+):
+    import sys
+    from mcp1c import intake_v2_runtime as runtime, module_content
+    from mcp1c.module_content import LocatorIdentity
+
+    collection = _collection(tmp_path / "m11-source", object_module=body)
+    materialized = _materialized(tmp_path, "m11-catalog", collection)
+    code = load_layer_payload(materialized.payloads[LayerKind.CODE].manifest_path)
+    assert len(code.members) == 1
+    member = code.members[0]
+    assert member.size == len(body)
+    address = "Справочник.Items.МодульОбъекта"
+    assert member.key == address
+    original_read = module_content.read_bsl
+    original_normalize = module_content.нормализовать
+    original_open = module_content.open_stored_member
+    calls = {"read_bsl": 0, "normalize": 0, "body_open": 0}
+    reads = []
+
+    def counted_read(*args, **kwargs):
+        calls["read_bsl"] += 1
+        return original_read(*args, **kwargs)
+
+    def counted_normalize(*args, **kwargs):
+        calls["normalize"] += 1
+        return original_normalize(*args, **kwargs)
+
+    class ObservedBody:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __enter__(self):
+            self.stream.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.stream.__exit__(*args)
+
+        def read(self, size=-1):
+            block = self.stream.read(size)
+            reads.append((size, len(block)))
+            return block
+
+        def __getattr__(self, name):
+            return getattr(self.stream, name)
+
+    def observed_open(root, relative_path):
+        stream = original_open(root, relative_path)
+        if root == materialized.root and relative_path == member.relative_path:
+            calls["body_open"] += 1
+            return ObservedBody(stream)
+        return stream
+
+    replacements = {
+        original_read: counted_read,
+        original_normalize: counted_normalize,
+        original_open: observed_open,
+    }
+    # Материализация и converter закончены до instrumentation. Считаются
+    # существующие ссылки по identity; удаление runtime-import не ломает тест.
+    for module_name, module in tuple(sys.modules.items()):
+        if module_name.startswith("mcp1c.") and module is not None:
+            for name, value in tuple(vars(module).items()):
+                for original, replacement in replacements.items():
+                    if value is original:
+                        monkeypatch.setattr(module, name, replacement)
+    catalog = runtime._catalog(
+        materialized.root, code, None,
+        LocatorIdentity("DemoConfiguration:modules", "m11-synthetic", 1),
+    )
+    assert catalog is not None
+    expected_category = {"empty": "empty", "unreadable": "unreadable_body", "source": "indexed"}[state]
+    assert [(item.address, item.category) for item in catalog.outcomes] == [(address, expected_category)]
+    assert catalog.coverage.empty == int(state == "empty")
+    assert catalog.coverage.unreadable_body == int(state == "unreadable")
+    assert catalog.coverage.indexed == int(state == "source")
+    assert (catalog.entries[address].locator is None) is (state == "unreadable")
+    assert calls["normalize"] == 0
+    if body:
+        assert calls["body_open"] >= 1
+        assert reads
+        assert all(0 < requested <= module_content.HISTORICAL_MODULE_BYTES + 1 for requested, _size in reads)
+        assert sum(size for _requested, size in reads) == len(body)
+    else:
+        assert calls["read_bsl"] == 0
+        assert calls["body_open"] == 0
+        assert reads == []

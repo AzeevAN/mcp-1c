@@ -33,6 +33,7 @@ _MODULES = (
     "registry", "registry_types", "intake_v2", "intake_v2_api",
     "intake_v2_lifecycle", "intake_v2_operations", "intake_v2_registry",
     "intake_v2_transport", "member_pack", "cli", "index_cache", "fsio", "package_digest",
+    "intake_v2_runtime", "module_content", "bsl_lex", "readers.modules",
 )
 
 
@@ -116,7 +117,7 @@ def _hash(stream, deadline):
 def _code_identity(deadline, *, with_git=False):
     result = {"module_sha256": {}}
     for name in _MODULES:
-        with (_ROOT / "src" / "mcp1c" / (name + ".py")).open("rb") as stream:
+        with (_ROOT / "src" / "mcp1c" / (name.replace(".", "/") + ".py")).open("rb") as stream:
             result["module_sha256"]["mcp1c." + name] = _hash(stream, deadline)[0]
     if with_git:
         result["git_head"] = None

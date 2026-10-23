@@ -425,7 +425,7 @@ def _key_for(path: Path, *, create: bool) -> bytes:
         return key
 
 
-def _mac(key: bytes, header: bytes, blob: bytes) -> bytes:
+def _mac(key: bytes, header: bytes, blob: bytes | memoryview) -> bytes:
     digest = hmac.new(key, header, hashlib.sha256)
     digest.update(b"\n")
     digest.update(blob)
@@ -474,7 +474,10 @@ def save_blob(payload, path: str | Path, *, source_sha256: str, kind: str) -> Pa
             )
             try:
                 with os.fdopen(descriptor, "wb") as stream:
-                    stream.write(header + b"\n" + mac + b"\n" + blob)
+                    # Крупный blob уже готов: склейка дублировала его в памяти.
+                    stream.write(header + b"\n")
+                    stream.write(mac + b"\n")
+                    stream.write(blob)
                 os.replace(temporary, target)
             except BaseException:
                 try:
@@ -550,8 +553,11 @@ def _read_verified(
     mac_end = separator + 1 + _MAC_HEX_BYTES
     if raw[mac_end : mac_end + 1] != b"\n":
         raise _Miss("нет подписи")
-    mac = raw[separator + 1 : mac_end]
-    blob = raw[mac_end + 1 :]
+    # Заголовок мал, а сжатый blob может занимать сотни мегабайт. Срез view
+    # сохраняет исходный буфер для HMAC и zlib без второй копии blob.
+    view = memoryview(raw)
+    mac = view[separator + 1 : mac_end]
+    blob = view[mac_end + 1 :]
 
     try:
         stamp = json.loads(head.decode("utf-8"))

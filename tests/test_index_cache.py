@@ -369,3 +369,119 @@ print('cache-miss')
         pytest.fail('FIFO cache marker/key заблокировал read; дочерний процесс остановлен', pytrace=False)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == 'cache-miss'
+
+
+def test_m11_load_blob_передаёт_декодеру_view_исходного_буфера_после_HMAC(
+    tmp_path, monkeypatch
+):
+    import random
+
+    path = tmp_path / "m11-view-cache"
+    payload = {"rows": list(range(100)), "body": random.Random(11).randbytes(8192)}
+    assert index_cache.save_blob(payload, path, source_sha256="m11", kind="blob") == path
+    frame = path.read_bytes()
+    _header, _mac, compressed = frame.split(b"\n", 2)
+    comparisons, inputs = [], []
+    original_compare = index_cache.hmac.compare_digest
+    original_decoder = index_cache.zlib.decompressobj
+
+    def compare(*args, **kwargs):
+        accepted = original_compare(*args, **kwargs)
+        comparisons.append(accepted)
+        return accepted
+
+    class ObservedDecoder:
+        def __init__(self, decoder):
+            self.decoder = decoder
+
+        def decompress(self, block, *args, **kwargs):
+            inputs.append((block, comparisons == [True]))
+            return self.decoder.decompress(block, *args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self.decoder, name)
+
+    def decoder(*args, **kwargs):
+        return ObservedDecoder(original_decoder(*args, **kwargs))
+
+    monkeypatch.setattr(index_cache.hmac, "compare_digest", compare)
+    monkeypatch.setattr(index_cache.zlib, "decompressobj", decoder)
+    assert index_cache.load_blob(path, source_sha256="m11", kind="blob") == payload
+    assert comparisons == [True]
+    assert inputs
+    assert all(verified for _block, verified in inputs)
+    assert all(isinstance(block, memoryview) for block, _verified in inputs)
+    # View должен ссылаться на целый прочитанный frame, а не на отдельную
+    # уже скопированную bytes-срезку сжатого blob.
+    assert all(len(block.obj) == len(frame) for block, _verified in inputs)
+    assert sum(block.nbytes for block, _verified in inputs) == len(compressed)
+    assert b"".join(block for block, _verified in inputs) == compressed
+
+
+def test_m11_save_blob_пишет_header_mac_blob_раздельно_без_склейки(
+    tmp_path, monkeypatch
+):
+    import random
+
+    # Создание .cache-key само пишет файл; оно закончено до счётчика writer.
+    assert index_cache.save_blob(
+        {"seed": True}, tmp_path / "m11-seed", source_sha256="seed", kind="blob"
+    ) is not None
+    path = tmp_path / "m11-chunks-cache"
+    payload = {"body": random.Random(12).randbytes(16384), "rows": (1, 2, 3)}
+    original_compress = index_cache.gzip.compress
+    original_mkstemp = index_cache.tempfile.mkstemp
+    original_fdopen = index_cache.os.fdopen
+    blobs, chunks, descriptors = [], [], set()
+
+    def compress(*args, **kwargs):
+        blob = original_compress(*args, **kwargs)
+        blobs.append(blob)
+        return blob
+
+    def mkstemp(*args, **kwargs):
+        descriptor, temporary = original_mkstemp(*args, **kwargs)
+        if kwargs.get("prefix") == f".{path.name}.":
+            descriptors.add(descriptor)
+        return descriptor, temporary
+
+    class ObservedWriter:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __enter__(self):
+            self.stream.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.stream.__exit__(*args)
+
+        def write(self, block):
+            chunks.append(block)
+            return self.stream.write(block)
+
+        def __getattr__(self, name):
+            return getattr(self.stream, name)
+
+    def fdopen(descriptor, *args, **kwargs):
+        stream = original_fdopen(descriptor, *args, **kwargs)
+        if descriptor in descriptors:
+            return ObservedWriter(stream)
+        return stream
+
+    monkeypatch.setattr(index_cache.gzip, "compress", compress)
+    monkeypatch.setattr(index_cache.tempfile, "mkstemp", mkstemp)
+    monkeypatch.setattr(index_cache.os, "fdopen", fdopen)
+    assert index_cache.save_blob(payload, path, source_sha256="m11", kind="blob") == path
+    assert len(blobs) == 1
+    blob = blobs[0]
+    assert len(chunks) >= 3
+    assert any(chunk is blob for chunk in chunks)
+    assert max(map(len, chunks)) <= len(blob)
+    frame = path.read_bytes()
+    header, mac, persisted_blob = frame.split(b"\n", 2)
+    assert header.startswith(b"{")
+    assert len(mac) == 64
+    assert persisted_blob == blob
+    assert b"".join(chunks) == frame
+    assert index_cache.load_blob(path, source_sha256="m11", kind="blob") == payload

@@ -310,7 +310,9 @@ def test_сервис_intake_создаётся_вне_event_loop(tmp_path, monk
     assert loops == [False]
 
 
-def test_показ_incoming_пишет_состояние_один_раз_за_проход(tmp_path, monkeypatch):
+def test_показ_incoming_пишет_изменения_хешей_один_раз_за_проход(tmp_path, monkeypatch):
+    import hashlib
+    import json
     import time
 
     from mcp1c.incoming import IncomingScanner
@@ -322,6 +324,18 @@ def test_показ_incoming_пишет_состояние_один_раз_за_
         path = registry.incoming_dir / f"f{i}.zip"
         path.write_bytes(os.urandom(64))
         os.utime(path, (old, old))
+    # Хеш нужен только для проверки записанной прежде неудачи. Без неё
+    # STATE_NEW больше не создаёт расходный снимок состояния.
+    (registry.data_dir / "incoming-state.json").write_text(json.dumps({
+        "digests": {},
+        "failures": {
+            path.name: {
+                "reason": "Синтетическая прежняя ошибка",
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+            for path in registry.incoming_dir.glob("*.zip")
+        },
+    }), encoding="utf-8")
     scanner = IncomingScanner(registry)
     writes: list[Path] = []
     real = fsio.write_record_atomic

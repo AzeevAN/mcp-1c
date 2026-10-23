@@ -440,6 +440,10 @@ def test_incoming_state_пишется_атомарно_и_забывает_уд
         path.write_bytes(b"zip")
         os.utime(path, (time.time() - 60, time.time() - 60))
     scanner = IncomingScanner(registry)
+    # Наполняем кэш явными обращениями: STATE_NEW без прежней неудачи
+    # больше не читает архив ради неиспользуемого SHA.
+    scanner.digest(kept)
+    scanner.digest(gone)
     scanner.scan()
     state_path = registry.data_dir / "incoming-state.json"
     assert set(json.loads(state_path.read_text(encoding="utf-8"))["digests"]) == {

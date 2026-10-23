@@ -425,6 +425,9 @@ class IntakeLifecycle:
         self.intake_limits = intake_limits
         self.directory_settle_seconds = float(directory_settle_seconds)
         self._lock = threading.RLock()
+        self._incoming_cache: dict[
+            str, tuple[tuple[int, int, int, int], DiscoveredCandidate]
+        ] = {}
         self._fail_interrupted_jobs()
         self._expire_unprobed_failed_jobs()
 
@@ -542,6 +545,34 @@ class IntakeLifecycle:
             self._candidate_id(locator, probe), locator, probe
         )
         self.catalog.save(candidate)
+        return candidate
+
+    def _incoming_identity(self, locator: CandidateLocator) -> tuple[int, int, int, int]:
+        if self.incoming_root is None:
+            raise LifecycleConflict("incoming больше не настроен")
+        try:
+            info = (self.incoming_root / locator.entry_name).lstat()
+        except OSError as error:
+            raise TransportError("ZIP candidate недоступен") from error
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            raise TransportSecurityError("ZIP candidate должен быть обычным файлом")
+        return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
+
+    def _discover_incoming(self, locator: CandidateLocator) -> DiscoveredCandidate:
+        before = self._incoming_identity(locator)
+        cached = self._incoming_cache.get(locator.entry_name)
+        if cached is not None and cached[0] == before:
+            candidate = cached[1]
+            # Purge может удалить durable-запись, оставив сам ZIP. Кэш
+            # заменяет только обнаружение, а start по-прежнему читает catalog.
+            self.catalog.save(candidate)
+        else:
+            self._incoming_cache.pop(locator.entry_name, None)
+            candidate = self._discover(locator)
+        if self._incoming_identity(locator) != before:
+            self._incoming_cache.pop(locator.entry_name, None)
+            raise TransportError("ZIP candidate изменился во время обнаружения")
+        self._incoming_cache[locator.entry_name] = (before, candidate)
         return candidate
 
     def discover_browser(self, candidate_id: str) -> DiscoveredCandidate:
@@ -791,6 +822,11 @@ class IntakeLifecycle:
             found, failed = self._incoming_locators()
             locators.extend(found)
             issues.extend(failed)
+            incoming_names = {locator.entry_name for locator in found}
+            self._incoming_cache = {
+                name: cached for name, cached in self._incoming_cache.items()
+                if name in incoming_names
+            }
             for source_id, source in self.local_sources.items():
                 found, failed = self._local_locators(source_id, source)
                 locators.extend(found)
@@ -808,11 +844,12 @@ class IntakeLifecycle:
                 ),
             ):
                 try:
-                    candidate = (
-                        self._cached_browser(locator)
-                        if locator.transport is CandidateTransport.BROWSER
-                        else None
-                    )
+                    if locator.transport is CandidateTransport.BROWSER:
+                        candidate = self._cached_browser(locator)
+                    elif locator.transport is CandidateTransport.INCOMING:
+                        candidate = self._discover_incoming(locator)
+                    else:
+                        candidate = None
                     if candidate is None:
                         candidate = self._discover(locator)
                     if candidate.candidate_id in seen:

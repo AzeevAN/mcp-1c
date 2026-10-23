@@ -448,3 +448,151 @@ def test_local_issue_не_раскрывает_настроенный_путь(t
     assert len(snapshot.issues) == 1
     assert snapshot.issues[0].source_id == "missing"
     assert str(tmp_path) not in snapshot.issues[0].message
+
+
+def _h3_incoming_lifecycle(tmp_path):
+    managed, browser, records, operations = _backend(tmp_path)
+    incoming = tmp_path / 'incoming'
+    path = incoming / 'configuration.zip'
+    raw = _archive(path, _configuration('DemoConfiguration'), marker=b'original')
+    lifecycle = _symbol('IntakeLifecycle')(
+        _symbol('CandidateCatalog')(managed / 'catalog'), browser, operations,
+        incoming_root=incoming, directory_settle_seconds=0,
+    )
+    return lifecycle, records, operations, path, raw
+
+
+def _h3_count_discovery_and_hash(lifecycle, monkeypatch):
+    from mcp1c.intake_v2_transport import ZipExportTree
+
+    calls = {'discover': 0, 'hash_phases': [], 'phase': 'refresh'}
+    real_discover = lifecycle._discover
+    real_hash = ZipExportTree.source_sha256
+
+    def discover(locator):
+        calls['discover'] += 1
+        return real_discover(locator)
+
+    def source_hash(tree):
+        calls['hash_phases'].append(calls['phase'])
+        return real_hash(tree)
+
+    monkeypatch.setattr(lifecycle, '_discover', discover)
+    monkeypatch.setattr(ZipExportTree, 'source_sha256', source_hash)
+    return calls
+
+
+def test_h3_два_refresh_неизменного_incoming_используют_один_discover_и_hash(tmp_path, monkeypatch):
+    lifecycle, _records, _operations, _path, _raw = _h3_incoming_lifecycle(tmp_path)
+    calls = _h3_count_discovery_and_hash(lifecycle, monkeypatch)
+
+    first = lifecycle.refresh()
+    second = lifecycle.refresh()
+
+    assert first.issues == second.issues == ()
+    assert len(first.candidates) == 1
+    assert second.candidates == first.candidates
+    assert second.candidates[0].probe == first.candidates[0].probe
+    assert calls['discover'] == 1
+    assert calls['hash_phases'] == ['refresh']
+
+
+@pytest.mark.parametrize('changed_field', ['st_size', 'st_mtime_ns', 'st_ino'],
+                         ids=['size-only', 'mtime-only', 'inode-only'])
+def test_h3_refresh_инвалидирует_cache_по_изменённому_stat_полю(tmp_path, monkeypatch, changed_field):
+    import hashlib
+    import os
+
+    lifecycle, _records, _operations, path, raw = _h3_incoming_lifecycle(tmp_path)
+    calls = _h3_count_discovery_and_hash(lifecycle, monkeypatch)
+    first = lifecycle.refresh()
+    assert len(first.candidates) == 1 and first.issues == ()
+    before = path.stat()
+    if changed_field == 'st_size':
+        _archive(path, _configuration('DemoConfiguration'), marker=b'changed payload with another length')
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    elif changed_field == 'st_mtime_ns':
+        # Содержимое, inode и размер сохраняются; sleep не нужен.
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+        assert path.read_bytes() == raw
+    else:
+        replacement = tmp_path / 'replacement-not-in-incoming'
+        replacement.write_bytes(raw)
+        os.utime(replacement, ns=(before.st_atime_ns, before.st_mtime_ns))
+        os.replace(replacement, path)
+        assert path.read_bytes() == raw
+    after = path.stat()
+    # Не допускаем ложный тест инвалидации: проверяем фактический stat на ФС.
+    assert getattr(after, changed_field) != getattr(before, changed_field)
+    for field in ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns'):
+        if field != changed_field:
+            assert getattr(after, field) == getattr(before, field)
+
+    refreshed = lifecycle.refresh()
+
+    assert refreshed.issues == () and len(refreshed.candidates) == 1
+    assert refreshed.candidates[0].probe.internal_name == 'DemoConfiguration'
+    assert refreshed.candidates[0].probe.raw_sha256 == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert calls['discover'] == 2
+    assert calls['hash_phases'] == ['refresh', 'refresh']
+
+
+@pytest.mark.parametrize('change', ['delete', 'symlink'])
+def test_h3_refresh_после_cache_hit_не_возвращает_исчезнувший_или_symlink_zip(tmp_path, monkeypatch, change):
+    lifecycle, _records, _operations, path, _raw = _h3_incoming_lifecycle(tmp_path)
+    calls = _h3_count_discovery_and_hash(lifecycle, monkeypatch)
+    first = lifecycle.refresh()
+    assert lifecycle.refresh().candidates == first.candidates
+    assert calls['discover'] == 1
+    path.unlink()
+    if change == 'symlink':
+        outside = tmp_path / 'outside.zip'
+        _archive(outside, _configuration('OutsideConfiguration'))
+        path.symlink_to(outside)
+
+    refreshed = lifecycle.refresh()
+
+    assert refreshed.candidates == ()
+    assert calls['discover'] == 1
+    assert calls['hash_phases'] == ['refresh']
+    if change == 'symlink':
+        assert len(refreshed.issues) == 1
+        assert refreshed.issues[0].origin_name == path.name
+    else:
+        assert refreshed.issues == ()
+
+
+def test_h3_refresh_после_purge_восстанавливает_catalog_из_cache_и_start_работает(tmp_path, monkeypatch):
+    lifecycle, records, operations, path, raw = _h3_incoming_lifecycle(tmp_path)
+    calls = _h3_count_discovery_and_hash(lifecycle, monkeypatch)
+    discovered = lifecycle.refresh().candidates[0]
+    # start/prepare/confirm не используют refresh-cache вместо mutation validation.
+    # Их штатные hash-вызовы считаются отдельно и не ограничиваются этим тестом.
+    calls['phase'] = 'mutation'
+    initial = lifecycle.start('h3-before-purge', discovered.candidate_id)
+    operations.fail('h3-before-purge', RuntimeError('Синтетическое завершение job перед purge'))
+    assert records.load_job('h3-before-purge').state is CandidateJobState.FAILED
+
+    lifecycle.purge_configuration('DemoConfiguration')
+
+    assert path.read_bytes() == raw
+    with pytest.raises(KeyError):
+        lifecycle.catalog.load(discovered.candidate_id)
+    with pytest.raises(KeyError):
+        records.load_candidate(discovered.candidate_id)
+    calls['phase'] = 'refresh'
+    refreshed = lifecycle.refresh()
+    assert refreshed.issues == ()
+    assert refreshed.candidates == (discovered,)
+    assert refreshed.candidates[0].probe == discovered.probe
+    assert lifecycle.catalog.load(discovered.candidate_id) == discovered
+    assert calls['discover'] == 1
+    assert calls['hash_phases'].count('refresh') == 1
+
+    calls['phase'] = 'mutation'
+    restarted_candidate = lifecycle.start('h3-after-purge', discovered.candidate_id)
+    assert restarted_candidate == initial
+    assert records.load_candidate(discovered.candidate_id) == restarted_candidate
+    assert records.load_job('h3-after-purge').state is CandidateJobState.READY
+    assert calls['discover'] == 1
+    assert calls['hash_phases'].count('refresh') == 1

@@ -78,8 +78,8 @@ class IncomingScanner:
         # changed size during iteration» уронил бы показ страницы, а `_save`
         # ловит только `OSError`.
         self._замок = threading.RLock()
-        # Показ списка считает хеши всех файлов, и каждый `digest()` раньше
-        # сразу писал файл состояния — два fsync на файл под замком.
+        # Проверка прежних неудач считает хеши изменившихся файлов. Каждый
+        # `digest()` раньше сразу писал состояние — два fsync под замком.
         # Внутри `scan()` запись откладывается до конца прохода, причём только
         # в его собственном потоке: `digest()` вне прохода пишет сразу.
         self._пачка = threading.local()
@@ -237,10 +237,12 @@ class IncomingScanner:
 
     def _состояние(self, путь: Path) -> tuple[str, str]:
         """Состояние дописанного файла — по записи неудачи разбора."""
-        хеш = self.digest(путь)
         with self._замок:
             запись = self._state["failures"].get(путь.name)
-        причина = _причина_неудачи(запись, хеш) if запись is not None else None
+        if запись is None:
+            return STATE_NEW, ""
+        хеш = self.digest(путь)
+        причина = _причина_неудачи(запись, хеш)
         if причина is not None:
             return STATE_FAILED, причина
         return STATE_NEW, ""

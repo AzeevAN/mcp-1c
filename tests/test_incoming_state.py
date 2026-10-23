@@ -276,3 +276,21 @@ def test_состояние_пишется_на_диск_под_замком(tmp
     сканер.digest(файл)
 
     assert занят and all(занят)
+
+
+def test_h3_incoming_без_записи_неудачи_возвращает_new_без_digest(tmp_path, monkeypatch):
+    import pytest
+
+    registry = _реестр(tmp_path)
+    path = состарить(_архив(registry, 'never-failed.zip'))
+    scanner = IncomingScanner(registry)
+
+    def forbidden_digest(_path):
+        pytest.fail('Для STATE_NEW без failure-записи не нужен SHA-256')
+
+    monkeypatch.setattr(scanner, 'digest', forbidden_digest)
+    assert scanner._состояние(path) == (STATE_NEW, '')
+    rows = scanner.scan()
+    assert [(row['name'], row['state'], row['detail']) for row in rows] == [
+        (path.name, STATE_NEW, ''),
+    ]

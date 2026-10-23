@@ -594,3 +594,302 @@ def test_generation_не_публикует_слишком_большой_embedd
 
     assert decoders
     assert all(decoder.produced <= 883_774 for decoder in decoders)
+
+
+def _m7_generation(tmp_path):
+    collection = _collection(tmp_path / 'source-m7')
+    materialized = _materialized(tmp_path, 'm7-core', collection)
+    registry = Registry(tmp_path / 'data')
+    return registry, materialized
+
+
+def _m7_bytes(monkeypatch):
+    from threading import local
+    from mcp1c import member_pack
+    from mcp1c.intake_v2_registry import GenerationBundleStore
+
+    counts = {'copied': 0, 'verify_packed': 0}
+    scope = local()
+    real_verify = GenerationBundleStore.verify
+    real_read = member_pack._PackedReader.read
+    real_copy = member_pack.MemberPackWriter.copy
+
+    def verify(store, *args, **kwargs):
+        scope.depth = getattr(scope, 'depth', 0) + 1
+        try:
+            return real_verify(store, *args, **kwargs)
+        finally:
+            scope.depth -= 1
+
+    def packed_read(reader, *args, **kwargs):
+        block = real_read(reader, *args, **kwargs)
+        if getattr(scope, 'depth', 0):
+            counts['verify_packed'] += len(block)
+        return block
+
+    class CountedSource:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def read(self, *args, **kwargs):
+            block = self.stream.read(*args, **kwargs)
+            counts['copied'] += len(block)
+            return block
+
+        def __getattr__(self, name):
+            return getattr(self.stream, name)
+
+    def copy(writer, relative_path, source, **kwargs):
+        return real_copy(writer, relative_path, CountedSource(source), **kwargs)
+
+    monkeypatch.setattr(GenerationBundleStore, 'verify', verify)
+    monkeypatch.setattr(member_pack._PackedReader, 'read', packed_read)
+    monkeypatch.setattr(member_pack.MemberPackWriter, 'copy', copy)
+    return counts
+
+
+def _m7_published(tmp_path):
+    registry, materialized = _m7_generation(tmp_path)
+    pointer = registry.publish_generation(_stage_b_generation(
+        registry, materialized.manifest, materialized.payloads,
+    ))
+    root = registry.data_dir / pointer.root_path
+    assert (root / PACK_NAME).stat().st_size > 0
+    assert (root / '.verified').is_file(), 'Успешная публикация на обычной ФС должна сохранить verification cache'
+    assert (root / '.cache-key').is_file()
+    return registry, materialized, pointer, root
+
+
+def _m7_remove_marker(root):
+    (root / '.verified').unlink(missing_ok=True)
+    (root / '.cache-key').unlink(missing_ok=True)
+
+
+def test_m7_stage_proof_копирует_members_один_раз_и_переживает_promote(tmp_path, monkeypatch):
+    registry, materialized = _m7_generation(tmp_path)
+    counts = _m7_bytes(monkeypatch)
+    staged = _stage_b_generation(registry, materialized.manifest, materialized.payloads)
+    pack_bytes = (staged.root / PACK_NAME).stat().st_size
+    assert pack_bytes > 0
+    assert getattr(staged, 'verified', False) is True
+    assert counts['copied'] == pack_bytes
+    assert counts['verify_packed'] == 0
+
+    pointer = registry.publish_generation(staged)
+    root = registry.data_dir / pointer.root_path
+    assert (root / '.verified').is_file()
+    assert (root / '.cache-key').is_file()
+    assert registry._generation_store.verify(pointer) == materialized.manifest
+    assert counts['copied'] == pack_bytes
+    assert counts['verify_packed'] == 0
+
+
+def test_m7_warm_restore_поднимает_active_pointer_без_повторного_hash_pack(tmp_path, monkeypatch):
+    registry, materialized, pointer, root = _m7_published(tmp_path)
+    assert (root / '.verified').is_file()
+    counts = _m7_bytes(monkeypatch)
+    restarted = Registry(registry.data_dir)
+
+    assert restarted.restore() == []
+
+    active = restarted.active_generation_pointer(materialized.manifest.identity)
+    assert active is not None and active.generation_id == pointer.generation_id
+    assert materialized.manifest.identity.configuration_name in restarted.snapshot().configurations
+    assert counts['verify_packed'] == 0
+
+
+@pytest.mark.parametrize('damage', ['pack', 'pack-reset-mtime', 'index', 'ready-envelope', 'manifest'])
+def test_m7_старый_marker_не_разрешает_повреждённое_поколение(tmp_path, monkeypatch, damage):
+    import os
+    from mcp1c.intake_v2_registry import BundleStoreError
+
+    registry, materialized, pointer, root = _m7_published(tmp_path)
+    marker = root / '.verified'
+    marker_before = marker.read_bytes()
+    raw_pointer = json.loads(registry.registry_path.read_text(encoding='utf-8'))['generation_manifests'][0]
+    index_path = root / INDEX_NAME
+    index = json.loads(index_path.read_text(encoding='utf-8'))
+    entry = next(item for item in index['entries'] if item['size'] > 0)
+    if damage.startswith('pack'):
+        pack = root / PACK_NAME
+        before = pack.stat()
+        with pack.open('r+b') as stream:
+            stream.seek(entry['offset'])
+            original = stream.read(1)
+            assert len(original) == 1
+            stream.seek(entry['offset'])
+            stream.write(bytes([original[0] ^ 0xFF]))
+        if damage == 'pack-reset-mtime':
+            os.utime(pack, ns=(before.st_atime_ns, before.st_mtime_ns))
+            after = pack.stat()
+            assert after.st_size == before.st_size
+            assert after.st_dev == before.st_dev and after.st_ino == before.st_ino
+            assert after.st_mtime_ns == before.st_mtime_ns
+            assert after.st_ctime_ns != before.st_ctime_ns
+    elif damage == 'index':
+        entry['offset'] = (root / PACK_NAME).stat().st_size + 1
+        index_path.write_text(json.dumps(index, sort_keys=True, separators=(',', ':')) + '\n', encoding='utf-8')
+    elif damage == 'ready-envelope':
+        layer = next(layer for layer in materialized.manifest.layers
+                     if layer.kind is LayerKind.CODE and layer.state is LayerState.READY)
+        envelope = root / layer.relative_path
+        payload = json.loads(envelope.read_text(encoding='utf-8'))
+        payload['m7_tampered'] = True
+        envelope.write_text(json.dumps(payload), encoding='utf-8')
+    else:
+        manifest_path = root / 'manifest.json'
+        manifest_path.write_bytes(manifest_path.read_bytes() + b'\n')
+    counts = _m7_bytes(monkeypatch)
+
+    with pytest.raises(BundleStoreError):
+        registry._generation_store.verify(pointer)
+    if damage.startswith('pack'):
+        assert counts['verify_packed'] > 0
+    assert marker.read_bytes() == marker_before
+    restarted = Registry(registry.data_dir)
+    messages = restarted.restore()
+    assert messages
+    identity = materialized.manifest.identity
+    assert restarted.active_generation_pointer(identity) is None
+    assert restarted.active_generation(identity) is None
+    assert identity.configuration_name not in restarted.snapshot().configurations
+    restarted.save()
+    assert raw_pointer in json.loads(registry.registry_path.read_text(encoding='utf-8'))['generation_manifests']
+
+
+@pytest.mark.parametrize('damage', ['missing', 'broken', 'hmac', 'version', 'directory', 'symlink', 'oversized', 'deep-header'])
+def test_m7_негодный_marker_даёт_cache_miss_с_настоящей_проверкой_pack(tmp_path, monkeypatch, damage):
+    registry, materialized, pointer, root = _m7_published(tmp_path)
+    marker = root / '.verified'
+    raw = marker.read_bytes()
+    marker.unlink()
+    outside = tmp_path / 'outside-marker'
+    if damage == 'broken':
+        marker.write_bytes(b'broken marker')
+    elif damage in {'hmac', 'version'}:
+        header, mac, blob = raw.split(b'\n', 2)
+        if damage == 'hmac':
+            mac = (b'0' if mac[:1] != b'0' else b'1') + mac[1:]
+        else:
+            stamp = json.loads(header)
+            stamp['cache_version'] = -1
+            header = json.dumps(stamp).encode()
+        marker.write_bytes(header + b'\n' + mac + b'\n' + blob)
+    elif damage == 'directory':
+        marker.mkdir()
+    elif damage == 'symlink':
+        outside.write_bytes(raw)
+        marker.symlink_to(outside)
+    elif damage == 'oversized':
+        marker.write_bytes(b'x' * (1024 * 1024 + 1))
+    elif damage == 'deep-header':
+        marker.write_bytes(b'[' * 2000 + b'0' + b']' * 2000 + b'\n' + b'0' * 64 + b'\nx')
+    counts = _m7_bytes(monkeypatch)
+
+    assert registry._generation_store.verify(pointer) == materialized.manifest
+
+    assert counts['verify_packed'] > 0
+    if damage == 'symlink':
+        assert marker.is_symlink()
+        assert outside.read_bytes() == raw
+    if damage == 'directory':
+        assert marker.is_dir()
+    if damage == 'missing':
+        assert not marker.exists()
+
+
+def test_m7_verify_и_direct_restore_не_создают_marker_или_key(tmp_path, monkeypatch):
+    registry, materialized, pointer, root = _m7_published(tmp_path)
+    _m7_remove_marker(root)
+    counts = _m7_bytes(monkeypatch)
+
+    assert registry._generation_store.verify(pointer) == materialized.manifest
+    assert not (root / '.verified').exists() and not (root / '.cache-key').exists()
+    restarted = Registry(registry.data_dir)
+    assert restarted.restore() == []
+    assert restarted.active_generation_pointer(materialized.manifest.identity) is not None
+    assert counts['verify_packed'] > 0
+    assert not (root / '.verified').exists() and not (root / '.cache-key').exists()
+
+
+def test_m7_use_cache_false_принудительно_проверяет_pack_без_перезаписи_marker(tmp_path, monkeypatch):
+    registry, materialized, pointer, root = _m7_published(tmp_path)
+    marker_before = (root / '.verified').read_bytes()
+    counts = _m7_bytes(monkeypatch)
+
+    assert registry._generation_store.verify(pointer, use_cache=False) == materialized.manifest
+
+    assert counts['verify_packed'] > 0
+    assert (root / '.verified').read_bytes() == marker_before
+
+
+def test_m7_stage_proof_не_публикует_изменённый_после_copy_pack(tmp_path):
+    from mcp1c.intake_v2_registry import BundleStoreError
+
+    registry, materialized = _m7_generation(tmp_path)
+    staged = _stage_b_generation(registry, materialized.manifest, materialized.payloads)
+    assert getattr(staged, 'verified', False) is True
+    index = json.loads((staged.root / INDEX_NAME).read_text(encoding='utf-8'))
+    entry = next(item for item in index['entries'] if item['size'] > 0)
+    with (staged.root / PACK_NAME).open('r+b') as stream:
+        stream.seek(entry['offset'])
+        original = stream.read(1)
+        assert len(original) == 1
+        stream.seek(entry['offset'])
+        stream.write(bytes([original[0] ^ 0xFF]))
+
+    with pytest.raises(BundleStoreError):
+        registry.publish_generation(staged)
+    assert registry.active_generation_pointer(materialized.manifest.identity) is None
+
+
+def test_m7_owner_startup_создаёт_marker_после_полной_проверки(tmp_path, monkeypatch):
+    registry, materialized, _pointer, root = _m7_published(tmp_path)
+    _m7_remove_marker(root)
+    counts = _m7_bytes(monkeypatch)
+    restarted = Registry(registry.data_dir)
+
+    restarted.startup()
+
+    assert restarted.role == 'owner'
+    assert restarted.active_generation_pointer(materialized.manifest.identity) is not None
+    assert counts['verify_packed'] > 0
+    assert (root / '.verified').is_file() and (root / '.cache-key').is_file()
+
+
+def test_m7_guest_startup_проверяет_pack_но_не_создаёт_marker_key(tmp_path, monkeypatch):
+    from test_registry_interprocess import _start_server, _stop
+
+    registry, materialized, _pointer, root = _m7_published(tmp_path)
+    owner = _start_server(registry.data_dir)
+    try:
+        _m7_remove_marker(root)
+        counts = _m7_bytes(monkeypatch)
+        guest = Registry(registry.data_dir)
+        guest.startup()
+        assert guest.role == 'guest'
+        assert guest.active_generation_pointer(materialized.manifest.identity) is not None
+        assert counts['verify_packed'] > 0
+        assert not (root / '.verified').exists() and not (root / '.cache-key').exists()
+    finally:
+        _stop(owner)
+
+
+def test_m7_невозможность_записи_marker_не_ломает_stage_publish(tmp_path, monkeypatch):
+    from mcp1c import index_cache
+
+    registry, materialized = _m7_generation(tmp_path)
+    real_save = index_cache.save_blob
+
+    def unavailable(payload, path, **kwargs):
+        if kwargs.get('kind') == 'generation-verification-v1':
+            return None
+        return real_save(payload, path, **kwargs)
+
+    monkeypatch.setattr(index_cache, 'save_blob', unavailable)
+    staged = _stage_b_generation(registry, materialized.manifest, materialized.payloads)
+    assert getattr(staged, 'verified', False) is True
+    pointer = registry.publish_generation(staged)
+    root = registry.data_dir / pointer.root_path
+    assert not (root / '.verified').exists()
+    assert registry._generation_store.verify(pointer) == materialized.manifest

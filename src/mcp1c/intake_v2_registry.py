@@ -13,13 +13,13 @@ import os
 import shutil
 import stat
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import BinaryIO, Mapping
 
-from . import fsio
+from . import fsio, index_cache
 from .intake_v2 import (
     CandidateTransport,
     ExportIdentity,
@@ -31,9 +31,11 @@ from .intake_v2 import (
     decide_recovery,
 )
 from .member_pack import (
+    INDEX_NAME,
     PACK_NAME,
     MemberPackError,
     MemberPackWriter,
+    StoredMemberReader,
     has_member_pack,
     open_stored_member,
 )
@@ -43,6 +45,8 @@ from .source_modes import ActivationManifest
 _HASH_BLOCK_SIZE = 1 << 20
 _MAX_MANIFEST_SIZE = 1 << 20
 _MAX_LAYER_MANIFEST_SIZE = 128 << 20
+_VERIFICATION_LIMIT = 64 << 10
+_VERIFICATION_KIND = "generation-verification-v1"
 
 
 class BundleStoreError(RuntimeError):
@@ -125,8 +129,11 @@ def _hash_stream(kind: LayerKind, stream: BinaryIO) -> str:
     return digest.hexdigest()
 
 
-def _stat_identity(value: os.stat_result) -> tuple[int, int, int, int]:
-    return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns
+def _stat_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        value.st_dev, value.st_ino, value.st_size,
+        value.st_mtime_ns, value.st_ctime_ns,
+    )
 
 
 def hash_layer_payload(kind: LayerKind, path: str | Path) -> str:
@@ -283,11 +290,48 @@ class GenerationPointer:
             raise BundleStoreError("generation pointer содержит неверные поля") from error
 
 
+@dataclass(frozen=True, slots=True)
+class _GenerationVerification:
+    manifest_sha256: str
+    files: tuple[tuple[str, tuple[int, int, int, int, int]], ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return {"manifest_sha256": self.manifest_sha256, "files": self.files}
+
+    @classmethod
+    def from_cache(cls, value: object) -> _GenerationVerification | None:
+        if (
+            type(value) is not dict
+            or set(value) != {"manifest_sha256", "files"}
+            or type(value["manifest_sha256"]) is not str
+            or type(value["files"]) is not tuple
+            or len(value["files"]) > len(LayerKind) + 3
+        ):
+            return None
+        for item in value["files"]:
+            if (
+                type(item) is not tuple or len(item) != 2
+                or type(item[0]) is not str or type(item[1]) is not tuple
+                or len(item[1]) != 5
+                or any(type(part) is not int for part in item[1])
+            ):
+                return None
+        return cls(value["manifest_sha256"], value["files"])
+
+
 @dataclass(frozen=True, slots=True, weakref_slot=True)
 class StagedGeneration:
     manifest: GenerationManifest
     root: Path
     pointer: GenerationPointer
+    _verification: _GenerationVerification | None = field(
+        default=None, repr=False, compare=False
+    )
+
+    @property
+    def verified(self) -> bool:
+        """Байты проверены при копировании; штамп сверяется перед публикацией."""
+        return self._verification is not None
 
 
 def _sha256_value(value: object, label: str) -> str:
@@ -764,7 +808,7 @@ class GenerationBundleStore:
         layer: LayerManifest,
         source: LayerPayloadSource,
         pack: MemberPackWriter,
-    ) -> None:
+    ) -> tuple[int, int, int, int, int]:
         if not layer.payload_sha256:
             raise BundleStoreError(
                 f"{kind.value}: envelope-слой обязан объявить payload_sha256"
@@ -777,6 +821,7 @@ class GenerationBundleStore:
             raise BundleStoreError(
                 f"{kind.value}: контрольная сумма envelope не совпала"
             )
+        copied_stamp = self._regular_stamp(target)
         payload = load_layer_payload(target)
         if payload.kind is not kind:
             raise BundleStoreError(f"{kind.value}: envelope относится к другому слою")
@@ -802,6 +847,84 @@ class GenerationBundleStore:
                 pack,
                 member,
             )
+        if copied_stamp != self._regular_stamp(target):
+            raise BundleStoreError("envelope изменился во время staging")
+        return copied_stamp
+
+    def _regular_stamp(self, path: Path) -> tuple[int, int, int, int, int]:
+        self._validate_path_chain(path)
+        try:
+            info = path.lstat()
+        except OSError as error:
+            raise BundleStoreError("generation file недоступен") from error
+        if not stat.S_ISREG(info.st_mode):
+            raise BundleStoreError("generation file должен быть обычным файлом")
+        return _stat_identity(info)
+
+    def _verification_snapshot(
+        self, root: Path, manifest: GenerationManifest, pointer: GenerationPointer
+    ) -> _GenerationVerification | None:
+        paths = [
+            layer.relative_path for layer in manifest.layers
+            if layer.state is LayerState.READY
+        ]
+        if len(set(paths)) != len(paths) or any(
+            PurePosixPath(path).parts[0] != "layers" for path in paths
+        ):
+            return None
+        # Штамп pack не покрывает отдельные loose members старого формата.
+        try:
+            (root / "payload").lstat()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            return None
+        else:
+            return None
+        for name in (PACK_NAME, INDEX_NAME, "manifest.json"):
+            try:
+                (root / name).lstat()
+            except FileNotFoundError:
+                return None
+            except OSError as error:
+                raise BundleStoreError("generation file недоступен") from error
+        return _GenerationVerification(
+            pointer.manifest_sha256,
+            tuple(
+                (path, self._regular_stamp(root / path))
+                for path in sorted(["manifest.json", PACK_NAME, INDEX_NAME, *paths])
+            ),
+        )
+
+    @staticmethod
+    def _load_verification(
+        root: Path, pointer: GenerationPointer
+    ) -> _GenerationVerification | None:
+        try:
+            value = index_cache.load_blob(
+                root / ".verified", source_sha256=pointer.manifest_sha256,
+                kind=_VERIFICATION_KIND,
+                max_file_bytes=_VERIFICATION_LIMIT,
+                max_payload_bytes=_VERIFICATION_LIMIT,
+            )
+            return _GenerationVerification.from_cache(value)
+        except Exception:
+            # Расходный marker не меняет результат обязательной полной проверки.
+            return None
+
+    @staticmethod
+    def _save_verification(root: Path, proof: _GenerationVerification) -> None:
+        try:
+            payload = proof.to_dict()
+            # Оставляем запас для marshal, подписи и заголовка generic cache.
+            if len(_canonical_json_bytes(payload)) > _VERIFICATION_LIMIT // 2:
+                return
+            index_cache.save_blob(
+                payload, root / ".verified",
+                source_sha256=proof.manifest_sha256, kind=_VERIFICATION_KIND,
+            )
+        except Exception:
+            pass
 
     def stage(
         self,
@@ -849,13 +972,16 @@ class GenerationBundleStore:
             )
         )
         try:
+            copied_stamps: dict[str, tuple[int, int, int, int, int]] = {}
             with MemberPackWriter(temporary) as pack:
                 for kind, layer in sorted(
                     ready.items(), key=lambda item: item[0].value
                 ):
                     source = payloads[kind]
                     if isinstance(source, LayerPayloadSource):
-                        self._stage_envelope(temporary, kind, layer, source, pack)
+                        copied_stamps[layer.relative_path] = self._stage_envelope(
+                            temporary, kind, layer, source, pack
+                        )
                     else:
                         if layer.payload_sha256:
                             raise BundleStoreError(
@@ -869,14 +995,22 @@ class GenerationBundleStore:
                             raise BundleStoreError(
                                 f"{kind.value}: контрольная сумма payload не совпала"
                             )
+                        copied_stamps[layer.relative_path] = self._regular_stamp(target)
+            for name in (PACK_NAME, INDEX_NAME):
+                copied_stamps[name] = self._regular_stamp(temporary / name)
             manifest_path = temporary / "manifest.json"
             with manifest_path.open("xb") as stream:
                 stream.write(manifest.to_json_bytes())
                 stream.flush()
                 os.fsync(stream.fileno())
+                copied_stamps["manifest.json"] = _stat_identity(os.fstat(stream.fileno()))
             _sync_directory(temporary)
-            staged = StagedGeneration(manifest, temporary, pointer)
-            self.verify(staged)
+            loaded = self._load_manifest(temporary, pointer)
+            proof = self._verification_snapshot(temporary, loaded, pointer)
+            if proof is None or dict(proof.files) != copied_stamps:
+                raise BundleStoreError("generation изменилась во время staging")
+            staged = StagedGeneration(manifest, temporary, pointer, proof)
+            self._save_verification(temporary, proof)
             return staged
         except Exception:
             shutil.rmtree(temporary, ignore_errors=True)
@@ -926,7 +1060,8 @@ class GenerationBundleStore:
             raise BundleStoreError("generation member недоступен") from error
 
     def verify(
-        self, target: GenerationPointer | StagedGeneration
+        self, target: GenerationPointer | StagedGeneration, *,
+        allow_cache_write: bool = False, use_cache: bool = True,
     ) -> GenerationManifest:
         if isinstance(target, StagedGeneration):
             root = target.root
@@ -936,19 +1071,60 @@ class GenerationBundleStore:
             pointer = target
         else:
             raise TypeError("target должен быть GenerationPointer или StagedGeneration")
-        manifest = self._load_manifest(root, pointer)
+        self._validate_path_chain(root)
+        try:
+            (root / "manifest.json").lstat()
+        except FileNotFoundError:
+            # Прежний формат допускает manifest внутри pack.
+            before = None
+        except OSError as error:
+            raise BundleStoreError("generation manifest недоступен") from error
+        else:
+            before = self._regular_stamp(root / "manifest.json")
+        try:
+            with StoredMemberReader(root) as reader:
+                manifest = self._load_manifest(root, pointer, reader=reader)
+                if before is not None and before != self._regular_stamp(
+                    root / "manifest.json"
+                ):
+                    raise BundleStoreError("generation manifest изменился во время чтения")
+                snapshot = self._verification_snapshot(root, manifest, pointer)
+                hit = False
+                if use_cache and snapshot is not None:
+                    if isinstance(target, StagedGeneration):
+                        hit = target._verification == snapshot
+                    if not hit:
+                        hit = self._load_verification(root, pointer) == snapshot
+                if not hit:
+                    self._verify_layers(reader, manifest)
+                after = self._verification_snapshot(root, manifest, pointer)
+                if after != snapshot:
+                    raise BundleStoreError("generation изменилась во время проверки")
+                if before is not None and before != self._regular_stamp(
+                    root / "manifest.json"
+                ):
+                    raise BundleStoreError("generation manifest изменился во время проверки")
+            if allow_cache_write and use_cache and snapshot is not None:
+                self._save_verification(root, snapshot)
+        except MemberPackError as error:
+            raise BundleStoreError("generation member недоступен") from error
+        return manifest
+
+    @staticmethod
+    def _verify_layers(reader: StoredMemberReader, manifest: GenerationManifest) -> None:
+        members: dict[str, list[LayerMember]] = {}
         for layer in manifest.layers:
             if layer.state is not LayerState.READY:
                 continue
             if not layer.payload_sha256:
-                with self._open_member(root, layer.relative_path) as stream:
+                with reader.open(layer.relative_path) as stream:
                     actual = _hash_stream(layer.kind, stream)
                 if actual != layer.content_sha256:
                     raise BundleStoreError(
                         f"{layer.kind.value}: контрольная сумма payload не совпала"
                     )
                 continue
-            with self._open_member(root, layer.relative_path) as stream:
+            with reader.open(layer.relative_path) as stream:
                 raw = stream.read(_MAX_LAYER_MANIFEST_SIZE + 1)
             if len(raw) > _MAX_LAYER_MANIFEST_SIZE:
                 raise BundleStoreError(
@@ -971,24 +1147,30 @@ class GenerationBundleStore:
                     f"{layer.kind.value}: смысловая контрольная сумма не совпала"
                 )
             for member in payload.members:
-                with self._open_member(root, member.relative_path) as stream:
-                    digest = hashlib.sha256()
-                    total = 0
-                    for block in iter(
-                        lambda: stream.read(_HASH_BLOCK_SIZE), b""
-                    ):
-                        total += len(block)
-                        digest.update(block)
-                if total != member.size or digest.hexdigest() != member.sha256:
+                members.setdefault(member.relative_path, []).append(member)
+        for path in reader.ordered_paths(members):
+            with reader.open(path) as stream:
+                digest = hashlib.sha256()
+                total = 0
+                for block in iter(lambda: stream.read(_HASH_BLOCK_SIZE), b""):
+                    total += len(block)
+                    digest.update(block)
+            actual = digest.hexdigest()
+            for member in members[path]:
+                if total != member.size or actual != member.sha256:
                     raise BundleStoreError(
                         f"member {member.key}: контрольная сумма или размер не совпали"
                     )
-        return manifest
 
     def _load_manifest(
-        self, root: Path, pointer: GenerationPointer
+        self, root: Path, pointer: GenerationPointer, *,
+        reader: StoredMemberReader | None = None,
     ) -> GenerationManifest:
-        with self._open_member(root, "manifest.json") as stream:
+        source = (
+            reader.open("manifest.json") if reader is not None
+            else self._open_member(root, "manifest.json")
+        )
+        with source as stream:
             raw = stream.read(_MAX_MANIFEST_SIZE + 1)
         if len(raw) > _MAX_MANIFEST_SIZE:
             raise BundleStoreError("generation manifest превышает предел")
@@ -1006,7 +1188,7 @@ class GenerationBundleStore:
         return manifest
 
     def promote(self, staged: StagedGeneration) -> None:
-        self.verify(staged)
+        self.verify(staged, allow_cache_write=True)
         target = self._absolute(staged.pointer.root_path)
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.exists():

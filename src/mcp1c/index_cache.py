@@ -59,6 +59,7 @@ from typing import Iterable, Iterator
 
 from .search import SearchIndex
 from .package_digest import package_digest
+from .fsio import RecordReadError, read_record
 
 logger = logging.getLogger(__name__)
 # Каталоги, о чужом ключе в которых уже предупредили: отказ повторяется на
@@ -255,7 +256,7 @@ class _KeyUnavailable(Exception):
 
 def _read_key_file(key_path: Path) -> bytes | None:
     """Прочитать ключ. ``None`` — файла нет или он испорчен (размер не тот)."""
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
         descriptor = os.open(key_path, flags)
     except FileNotFoundError:
@@ -267,6 +268,7 @@ def _read_key_file(key_path: Path) -> bytes | None:
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode):
             raise _KeyUnavailable("ключ кэша не является обычным файлом")
+        os.set_blocking(descriptor, True)
         # Чужой или доступный другим ключ не берём и не подменяем: его мог
         # подложить кто угодно с записью в каталог, а решать — оператору.
         # На платформе без geteuid (Windows) владельца сверить нечем.
@@ -489,10 +491,20 @@ def save_blob(payload, path: str | Path, *, source_sha256: str, kind: str) -> Pa
     return target
 
 
-def load_blob(path: str | Path, *, source_sha256: str, kind: str):
+def load_blob(
+    path: str | Path,
+    *,
+    source_sha256: str,
+    kind: str,
+    max_file_bytes: int | None = None,
+    max_payload_bytes: int | None = None,
+):
     """Поднять записанное. `None` — кэш не годится, надо строить заново."""
     try:
-        return _read_verified(Path(path), source_sha256, kind)
+        return _read_verified(
+            Path(path), source_sha256, kind,
+            max_file_bytes=max_file_bytes, max_payload_bytes=max_payload_bytes,
+        )
     except _Miss:
         return None
 
@@ -501,19 +513,34 @@ def save(index: SearchIndex, path: str | Path, *, source_sha256: str, kind: str)
     return save_blob(index.export_state(), path, source_sha256=source_sha256, kind=kind)
 
 
-def _read_verified(path: Path, source_sha256: str, kind: str) -> dict:
+def _read_verified(
+    path: Path, source_sha256: str, kind: str, *,
+    max_file_bytes: int | None = None, max_payload_bytes: int | None = None,
+) -> dict:
     """Прочитать файл, сверив штамп до разбора содержимого.
 
     Порядок принципиален: `marshal` на испорченных данных способен уронить
     интерпретатор, и перехватить это уже нельзя. Поэтому чужой блоб до него
     не доходит — сначала заголовок обычным JSON, и только потом всё остальное.
     """
+    file_limit = (
+        max(0, min(MAX_CACHE_FILE_BYTES, max_file_bytes))
+        if max_file_bytes is not None else MAX_CACHE_FILE_BYTES
+    )
+    payload_limit = (
+        max(0, min(MAX_CACHE_PAYLOAD_BYTES, max_payload_bytes))
+        if max_payload_bytes is not None else MAX_CACHE_PAYLOAD_BYTES
+    )
     try:
-        with path.open("rb") as stream:
-            raw = stream.read(MAX_CACHE_FILE_BYTES + 1)
-    except OSError as error:
+        if max_file_bytes is not None:
+            # Малый маркер не должен читать большой файл или ждать FIFO.
+            raw = read_record(path, limit=file_limit)
+        else:
+            with path.open("rb") as stream:
+                raw = stream.read(file_limit + 1)
+    except (OSError, RecordReadError) as error:
         raise _Miss(str(error)) from error
-    if len(raw) > MAX_CACHE_FILE_BYTES:
+    if len(raw) > file_limit:
         raise _Miss("файл превышает предел размера")
 
     separator = raw.find(b"\n", 0, _MAX_HEADER_BYTES + 1)
@@ -528,7 +555,7 @@ def _read_verified(path: Path, source_sha256: str, kind: str) -> dict:
 
     try:
         stamp = json.loads(head.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as error:
         raise _Miss(f"заголовок не читается: {error}") from error
 
     if stamp != _stamp(source_sha256, kind):
@@ -545,12 +572,12 @@ def _read_verified(path: Path, source_sha256: str, kind: str) -> dict:
 
     try:
         decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
-        decoded = decoder.decompress(blob, MAX_CACHE_PAYLOAD_BYTES + 1)
-        if len(decoded) > MAX_CACHE_PAYLOAD_BYTES or decoder.unconsumed_tail:
+        decoded = decoder.decompress(blob, payload_limit + 1)
+        if len(decoded) > payload_limit or decoder.unconsumed_tail:
             raise _Miss("распакованный кэш превышает предел размера")
-        decoded += decoder.flush(MAX_CACHE_PAYLOAD_BYTES + 1 - len(decoded))
+        decoded += decoder.flush(payload_limit + 1 - len(decoded))
         if (
-            len(decoded) > MAX_CACHE_PAYLOAD_BYTES
+            len(decoded) > payload_limit
             or not decoder.eof
             or decoder.unused_data
         ):

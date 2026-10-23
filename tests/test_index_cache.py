@@ -296,3 +296,76 @@ def test_длинное_имя_укорачивается_и_остаётся_р
     # Одно и то же имя всегда даёт один результат: каталог кода должен
     # находиться после перезапуска, а не заводиться заново.
     assert index_cache.safe_name(длинное) == первое
+
+
+@pytest.mark.parametrize('limit', ['file', 'payload', 'global-file-clamp', 'global-payload-clamp'])
+def test_m7_load_blob_соблюдает_малые_caps_до_marshal(tmp_path, monkeypatch, limit):
+    path = tmp_path / 'bounded-marker'
+    assert index_cache.save_blob({'text': 'x' * 4096}, path, source_sha256='stamp', kind='blob') == path
+    file_cap, payload_cap = 1 << 20, 1 << 20
+    if limit == 'file':
+        file_cap = 32
+    elif limit == 'payload':
+        payload_cap = 32
+    elif limit == 'global-file-clamp':
+        monkeypatch.setattr(index_cache, 'MAX_CACHE_FILE_BYTES', 32)
+    else:
+        monkeypatch.setattr(index_cache, 'MAX_CACHE_PAYLOAD_BYTES', 32)
+
+    def forbidden_loads(_payload):
+        pytest.fail('Cache за пределом бюджета не должен доходить до marshal.loads')
+
+    monkeypatch.setattr(index_cache.marshal, 'loads', forbidden_loads)
+    assert index_cache.load_blob(path, source_sha256='stamp', kind='blob',
+        max_file_bytes=file_cap, max_payload_bytes=payload_cap) is None
+
+
+def test_m7_load_blob_принимает_валидный_малый_подписанный_payload_с_caps(tmp_path):
+    path = tmp_path / 'bounded-marker'
+    payload = {'verified': ['one', 'two']}
+    assert index_cache.save_blob(payload, path, source_sha256='stamp', kind='blob') == path
+    assert index_cache.load_blob(path, source_sha256='stamp', kind='blob',
+        max_file_bytes=path.stat().st_size, max_payload_bytes=1024) == payload
+    assert index_cache.load_blob(path, source_sha256='stamp', kind='blob',
+        max_file_bytes=None, max_payload_bytes=None) == payload
+
+
+def test_m7_load_blob_не_читает_symlink_даже_с_правильной_подписью(tmp_path):
+    path = tmp_path / 'bounded-marker'
+    payload = {'verified': True}
+    assert index_cache.save_blob(payload, path, source_sha256='stamp', kind='blob') == path
+    outside = tmp_path / 'actual-marker'
+    path.rename(outside)
+    raw = outside.read_bytes()
+    path.symlink_to(outside)
+    assert index_cache.load_blob(path, source_sha256='stamp', kind='blob',
+        max_file_bytes=4096, max_payload_bytes=4096) is None
+    assert outside.read_bytes() == raw
+
+
+@pytest.mark.skipif(not hasattr(os, 'mkfifo') or not hasattr(os, 'O_NONBLOCK'), reason='Нужны POSIX FIFO и O_NONBLOCK')
+@pytest.mark.parametrize('fifo_target', ['marker', 'key'])
+def test_m7_fifo_cache_marker_или_key_не_блокирует_bounded_load(tmp_path, fifo_target):
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    path = tmp_path / 'bounded-marker'
+    assert index_cache.save_blob({'verified': True}, path, source_sha256='stamp', kind='blob') == path
+    target = path if fifo_target == 'marker' else tmp_path / index_cache.KEY_FILE_NAME
+    target.unlink()
+    os.mkfifo(target, 0o600)
+    script = '''
+import sys
+from mcp1c import index_cache
+assert index_cache.load_blob(sys.argv[1], source_sha256='stamp', kind='blob', max_file_bytes=4096, max_payload_bytes=4096) is None
+print('cache-miss')
+'''
+    env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1] / 'src'))
+    try:
+        result = subprocess.run([sys.executable, '-c', script, str(path)],
+            env=env, capture_output=True, text=True, timeout=3)
+    except subprocess.TimeoutExpired:
+        pytest.fail('FIFO cache marker/key заблокировал read; дочерний процесс остановлен', pytrace=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == 'cache-miss'

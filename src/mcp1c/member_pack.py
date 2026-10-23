@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import BinaryIO, Iterator, Mapping
+from typing import BinaryIO, Iterable, Iterator, Mapping
 
 
 PACK_NAME = "members.pack"
@@ -44,8 +44,14 @@ def _relative_path(value: object) -> str:
     return value
 
 
-def _identity(value: os.stat_result) -> tuple[int, int, int, int]:
-    return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns
+def _identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
 
 
 def _canonical_json(value: object) -> bytes:
@@ -275,10 +281,14 @@ def _open_regular(path: Path, label: str) -> tuple[BinaryIO, os.stat_result]:
         before = path.lstat()
         if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
             raise MemberPackError(f"{label} должен быть обычным файлом")
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+        )
         opened = os.fstat(descriptor)
         if not stat.S_ISREG(opened.st_mode) or _identity(opened) != _identity(before):
             raise MemberPackError(f"{label} изменился во время открытия")
+        os.set_blocking(descriptor, True)
         stream = os.fdopen(descriptor, "rb")
         descriptor = None
         return stream, opened
@@ -304,11 +314,14 @@ def _stat_regular(path: Path, label: str) -> os.stat_result:
 @lru_cache(maxsize=32)
 def _cached_index(
     index_path: str,
-    index_identity: tuple[int, int, int, int],
+    index_identity: tuple[int, int, int, int, int],
     pack_size: int,
 ) -> Mapping[str, MemberPackEntry]:
     path = Path(index_path)
-    with _open_regular(path, "индекс member pack")[0] as source:
+    source, opened = _open_regular(path, "индекс member pack")
+    with source:
+        if _identity(opened) != index_identity:
+            raise MemberPackError("индекс member pack изменился во время открытия")
         raw = source.read(_INDEX_LIMIT + 1)
     if len(raw) > _INDEX_LIMIT:
         raise MemberPackError("индекс member pack превышает предел")
@@ -354,8 +367,11 @@ def _cached_index(
 
 
 class _PackedReader(io.RawIOBase):
-    def __init__(self, source: BinaryIO, offset: int, size: int):
+    def __init__(
+        self, source: BinaryIO, offset: int, size: int, *, close_source: bool = True
+    ):
         self._source = source
+        self._close_source = close_source
         self._remaining = size
         self._source.seek(offset)
 
@@ -366,6 +382,8 @@ class _PackedReader(io.RawIOBase):
         return False
 
     def read(self, size: int = -1) -> bytes:
+        if self.closed:
+            raise ValueError("чтение закрытого member")
         if self._remaining <= 0:
             return b""
         requested = self._remaining if size < 0 else min(size, self._remaining)
@@ -376,7 +394,7 @@ class _PackedReader(io.RawIOBase):
         return payload
 
     def close(self) -> None:
-        if not self.closed:
+        if not self.closed and self._close_source:
             self._source.close()
         super().close()
 
@@ -385,7 +403,9 @@ def _open_loose(root: Path, relative_path: str) -> BinaryIO | None:
     directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(
         os, "O_NOFOLLOW", 0
     )
-    file_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    file_flags = (
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    )
     descriptors: list[int] = []
     file_descriptor: int | None = None
     try:
@@ -402,6 +422,7 @@ def _open_loose(root: Path, relative_path: str) -> BinaryIO | None:
         opened = os.fstat(file_descriptor)
         if not stat.S_ISREG(opened.st_mode):
             raise MemberPackError("loose member должен быть обычным файлом")
+        os.set_blocking(file_descriptor, True)
         stream = os.fdopen(file_descriptor, "rb")
         file_descriptor = None
         return stream
@@ -418,6 +439,156 @@ def _open_loose(root: Path, relative_path: str) -> BinaryIO | None:
             os.close(file_descriptor)
         for descriptor in reversed(descriptors):
             os.close(descriptor)
+
+
+class StoredMemberReader:
+    """Однопоточный reader с одним дескриптором pack на весь обход members."""
+
+    def __init__(self, root: str | Path):
+        self.root = Path(root)
+        self._source: BinaryIO | None = None
+        self._entries: Mapping[str, MemberPackEntry] = {}
+        self._pack_identity: tuple[int, int, int, int, int] | None = None
+        self._index_identity: tuple[int, int, int, int, int] | None = None
+        self._entered = False
+        self._active_view: BinaryIO | None = None
+
+    def __enter__(self) -> StoredMemberReader:
+        if self._entered:
+            raise MemberPackError("reader members уже открыт")
+        try:
+            root_info = self.root.lstat()
+            if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
+                raise MemberPackError("корень members должен быть обычным каталогом")
+            pack_path = self.root / PACK_NAME
+            index_path = self.root / INDEX_NAME
+            pack_exists = pack_path.exists() or pack_path.is_symlink()
+            index_exists = index_path.exists() or index_path.is_symlink()
+            if pack_exists != index_exists:
+                raise MemberPackError("member pack и индекс должны существовать парой")
+            if pack_exists:
+                pack_info = _stat_regular(pack_path, "member pack")
+                index_info = _stat_regular(index_path, "индекс member pack")
+                self._pack_identity = _identity(pack_info)
+                self._index_identity = _identity(index_info)
+                self._source, opened = _open_regular(pack_path, "member pack")
+                if _identity(opened) != self._pack_identity:
+                    raise MemberPackError("member pack изменился во время открытия")
+                self._entries = _cached_index(
+                    str(index_path), self._index_identity, pack_info.st_size
+                )
+                self._verify_identity()
+            self._entered = True
+            return self
+        except BaseException as error:
+            try:
+                self._close()
+            except OSError:
+                pass
+            if isinstance(error, OSError) and not isinstance(error, MemberPackError):
+                raise MemberPackError("корень members недоступен") from error
+            raise
+
+    def _verify_identity(self) -> None:
+        if self._source is None:
+            return
+        opened = os.fstat(self._source.fileno())
+        current_pack = _stat_regular(self.root / PACK_NAME, "member pack")
+        current_index = _stat_regular(self.root / INDEX_NAME, "индекс member pack")
+        if (
+            _identity(opened) != self._pack_identity
+            or _identity(current_pack) != self._pack_identity
+            or _identity(current_index) != self._index_identity
+        ):
+            raise MemberPackError("member pack или индекс изменился во время чтения")
+
+    def _require_entered(self) -> None:
+        if not self._entered:
+            raise MemberPackError("reader members не открыт")
+
+    def _loose(self, relative_path: str) -> BinaryIO:
+        source = _open_loose(self.root, relative_path)
+        if source is None:
+            if self._source is not None:
+                raise MemberPackError("member отсутствует в pack")
+            raise MemberPackError("loose member отсутствует")
+        return source
+
+    def ordered_paths(self, paths: Iterable[str]) -> tuple[str, ...]:
+        """Вернуть packed members по offset, затем loose members по имени."""
+        self._require_entered()
+        packed: list[MemberPackEntry] = []
+        loose: list[str] = []
+        for path in paths:
+            relative_path = _relative_path(path)
+            entry = self._entries.get(relative_path)
+            if entry is not None:
+                packed.append(entry)
+            else:
+                with self._loose(relative_path):
+                    pass
+                loose.append(relative_path)
+        # Пустой диапазон на границе не должен требовать возврата по pack.
+        packed.sort(
+            key=lambda entry: (entry.offset, bool(entry.size), entry.relative_path)
+        )
+        return tuple(entry.relative_path for entry in packed) + tuple(sorted(loose))
+
+    @contextmanager
+    def open(self, relative_path: str) -> Iterator[BinaryIO]:
+        self._require_entered()
+        relative_path = _relative_path(relative_path)
+        if self._active_view is not None:
+            raise MemberPackError("нельзя одновременно читать два member")
+        entry = self._entries.get(relative_path)
+        if entry is not None:
+            assert self._source is not None
+            source: BinaryIO = _PackedReader(
+                self._source, entry.offset, entry.size, close_source=False
+            )
+        else:
+            source = self._loose(relative_path)
+        self._active_view = source
+        try:
+            yield source
+        finally:
+            try:
+                source.close()
+            finally:
+                self._active_view = None
+
+    def _close(self) -> None:
+        try:
+            if self._active_view is not None:
+                self._active_view.close()
+        finally:
+            try:
+                if self._source is not None:
+                    self._source.close()
+            finally:
+                self._active_view = None
+                self._source = None
+                self._entries = {}
+                self._pack_identity = None
+                self._index_identity = None
+                self._entered = False
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        if exc_type is not None:
+            try:
+                self._close()
+            except OSError:
+                pass
+            return
+        try:
+            self._verify_identity()
+        except BaseException:
+            try:
+                self._close()
+            except OSError:
+                pass
+            raise
+        self._close()
 
 
 def open_stored_member(root: str | Path, relative_path: str) -> BinaryIO:
@@ -467,6 +638,7 @@ __all__ = [
     "PACK_NAME",
     "MemberPackError",
     "MemberPackWriter",
+    "StoredMemberReader",
     "has_member_pack",
     "open_stored_member",
 ]

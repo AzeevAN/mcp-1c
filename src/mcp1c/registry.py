@@ -4530,7 +4530,15 @@ class Registry:
         manifests: dict[tuple[str, ...], GenerationManifest] = {}
         for key, pointer in pointers.items():
             try:
-                manifests[key] = self._generation_store.verify(pointer)
+                manifests[key] = self._generation_store.verify(
+                    pointer,
+                    allow_cache_write=(
+                        self.role == "owner"
+                        and getattr(self._restore_scope, "cache_verified", False)
+                        and not self._generation_recovery_blocked
+                        and not self._registry_version_blocked
+                    ),
+                )
             except Exception as error:
                 carried[key] = raw_by_key[key]
                 identity = pointer.identity
@@ -5276,7 +5284,7 @@ class Registry:
         # Флаг снимается только доказанным восстановлением: пока он стоит,
         # все записи в data/ отклоняются (`_ensure_not_blocked`).
         self._generation_recovery_blocked = False
-        messages += self.restore()
+        messages += self._restore_on_startup()
         # Память собрана заново: дальше действует только новый вердикт.
         self._restore_hold = ""
         if self._registry_version_blocked:
@@ -5313,7 +5321,7 @@ class Registry:
             # Гость (CLI reg-add) записал registry.json, пока шёл долгий
             # старт. Его строку нужно поднять, а не затереть и не уронить
             # старт traceback-ом: перечитываем и сохраняем один раз.
-            messages += self.restore()
+            messages += self._restore_on_startup()
             try:
                 self.save()
             except RegistryChangedExternally:
@@ -5322,3 +5330,13 @@ class Registry:
                     "старта; запись отложена до следующей операции."
                 )
         return messages
+
+    def _restore_on_startup(self) -> list[str]:
+        # Прямой restore и гостевой старт остаются читателями поколения;
+        # обновлять расходный маркер может только старт владельца.
+        previous = getattr(self._restore_scope, "cache_verified", False)
+        self._restore_scope.cache_verified = self.role == "owner"
+        try:
+            return self.restore()
+        finally:
+            self._restore_scope.cache_verified = previous

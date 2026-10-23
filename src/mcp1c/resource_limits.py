@@ -56,6 +56,19 @@ V8_LIMITS = ResourceLimits(
 )
 
 
+# Все 2263 контейнера форм из 18 выгрузок (2026-10-23): 2 записи,
+# 2191580 байт внешнего контейнера и 2190866 байт атрибутов с телами.
+# Запас ×2,5; внешний размер ограничивает также сжатый документ V8.
+FORM_V8_LIMITS = ResourceLimits(
+    max_entries=5,
+    max_entry_bytes=5_478_950,
+    max_total_bytes=5_477_165,
+    max_compression_ratio=200,
+)
+FORM_MAX_MODULE_BYTES = 883_773  # Максимум embedded module 353509 ×2,5.
+FORM_MAX_DATA_BYTES = 5_263_508  # Максимум распакованной form 2105403 ×2,5.
+
+
 INTAKE_MAX_UNPACKED_ENV = "MCP1C_INTAKE_MAX_UNPACKED"
 
 # Профиль полной файловой выгрузки (browser-upload, incoming, а с 2026-10-03

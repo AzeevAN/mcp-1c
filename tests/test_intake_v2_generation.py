@@ -9,6 +9,8 @@ import shutil
 
 import pytest
 
+from test_module_content import _m3_bsl, _m3_capture_decoder_output, _m3_form_collection
+
 from mcp1c import tools
 from mcp1c.intake_v2 import LayerKind, LayerState
 from mcp1c.intake_v2_collector import collect_source_b
@@ -567,3 +569,28 @@ def test_tampered_member_изолируется_при_restore_даже_при_�
     assert raw_pointer in json.loads(registry.registry_path.read_text(encoding="utf-8"))[
         "generation_manifests"
     ]
+
+
+
+
+@pytest.mark.parametrize("size", [883_773, 883_774, 883_773 + 65_536])
+def test_generation_не_публикует_слишком_большой_embedded_module(tmp_path, monkeypatch, size):
+    collection = _m3_form_collection(tmp_path / "source", form=b"{19}", module=_m3_bsl(size))
+    decoders = _m3_capture_decoder_output(monkeypatch)
+
+    materialized = _materialized(tmp_path, "form-module-budget", collection)
+
+    code = load_layer_payload(materialized.payloads[LayerKind.CODE].manifest_path)
+    forms = load_layer_payload(materialized.payloads[LayerKind.FORMS].manifest_path)
+    form = next(item for item in forms.semantic["forms"] if item["address"] == "ОбщаяФорма.Budget")
+    if size <= 883_773:
+        member = next(member for member in code.members if member.key == "ОбщаяФорма.Budget")
+        assert member.size == size
+        assert form["structure_state"] == "deferred"
+    else:
+        assert all(member.key != "ОбщаяФорма.Budget" for member in code.members)
+        assert all(item["address"] != "ОбщаяФорма.Budget" for item in code.semantic["modules"])
+        assert form["structure_state"] == "unreadable"
+
+    assert decoders
+    assert all(decoder.produced <= 883_774 for decoder in decoders)

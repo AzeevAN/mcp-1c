@@ -195,3 +195,64 @@ def test_нулевой_адрес_атрибутов_пропускается_�
     with V8Container(rebuilt) as container:
         assert container.namelist() == ["first"]
         assert container.read("first") == b"1"
+
+
+
+
+def _m3_v8_chain(kind):
+    from module_samples import _block
+
+    attrs = _block(b"\0" * 20 + "module".encode("utf-16-le") + b"\0\0")
+    attrs_addr = HEADER_SIZE + BLOCK_HEADER_SIZE + 12
+    data_addr = attrs_addr + len(attrs)
+    table = _block(struct.pack("<III", attrs_addr, data_addr, 0))
+
+    def page_header(total, block_size, next_addr=EMPTY_ADDR):
+        value = (b"\r\n" + f"{total:08x} {block_size:08x} {next_addr:08x}".encode("ascii")
+                 + b" \r\n")
+        assert len(value) == BLOCK_HEADER_SIZE
+        return value
+
+    if kind == "partial-overlap":
+        payload = bytearray(b"\xff" * 64)
+        second_header = page_header(65, 1)
+        payload[8:8 + BLOCK_HEADER_SIZE] = second_header
+        payload[8 + BLOCK_HEADER_SIZE] = ord("B")
+        next_addr = data_addr + BLOCK_HEADER_SIZE + 8
+        body = page_header(65, len(payload), next_addr) + bytes(payload)
+        expected = None
+    elif kind == "total-past-file":
+        body = page_header(4096, 4) + b"\xffABC"
+        expected = None
+    else:
+        first, second, gap = b"\xffABCD", b"EFGH", b"\0" * 7
+        total = len(first) + len(second)
+        next_addr = data_addr + BLOCK_HEADER_SIZE + len(first) + len(gap)
+        body = (page_header(total, len(first), next_addr) + first + gap
+                + page_header(total, len(second)) + second)
+        expected = b"\xffABCDEFGH"
+    return header() + table + attrs + body, expected
+
+
+@pytest.mark.parametrize("reader", ["read", "read_bounded"])
+@pytest.mark.parametrize("kind", ["partial-overlap", "total-past-file"])
+def test_v8_отвергает_перекрытие_блоков_и_невозможный_total(reader, kind):
+    raw, _expected = _m3_v8_chain(kind)
+
+    with pytest.raises(V8ContainerError):
+        with V8Container(raw) as container:
+            if reader == "read":
+                container.read("module")
+            else:
+                container.read_bounded("module", 8192)
+
+
+@pytest.mark.parametrize("reader", ["read", "read_bounded"])
+def test_v8_читает_неперекрывающуюся_цепочку_с_промежутком(reader):
+    raw, expected = _m3_v8_chain("valid")
+
+    with V8Container(raw) as container:
+        actual = (container.read("module") if reader == "read"
+                  else container.read_bounded("module", 8192))
+
+    assert actual == expected

@@ -48,6 +48,7 @@ from .intake_v2_registry import (
     load_layer_payload,
 )
 from .member_pack import PACK_NAME, MemberPackError, MemberPackWriter
+from .resource_limits import FORM_MAX_MODULE_BYTES, FORM_V8_LIMITS
 from .v8container import V8Container, V8ContainerError, V8ResourceLimitError
 
 
@@ -197,10 +198,10 @@ def _module_bodies(
             limit=_MAX_FORM_CONTAINER_SIZE,
         )
         try:
-            with V8Container(payload) as container:
+            with V8Container(payload, limits=FORM_V8_LIMITS) as container:
                 if "module" not in container:
                     continue
-                module = container.read("module")
+                module = container.read_bounded("module", FORM_MAX_MODULE_BYTES)
         except (V8ContainerError, V8ResourceLimitError):
             # Нечитаемая форма остаётся честно представлена в forms-слое;
             # недоказанное тело модуля не публикуется как код.

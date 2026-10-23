@@ -205,60 +205,11 @@ class V8Container:
     # ------------------------------------------------------------- чтение блоков
 
     def _read_document(self, addr: int) -> bytes:
-        """Собрать документ из цепочки блоков, начиная с адреса."""
-        if addr == EMPTY_ADDR or addr == 0:
-            return b""
-
-        chunks: list[bytes] = []
-        total = -1
-        collected = 0
-        visited: set[int] = set()
-
-        while addr != EMPTY_ADDR and addr != 0:
-            if addr in visited:
-                raise V8ContainerError(f"Циклическая ссылка блоков по адресу {addr}.")
-            visited.add(addr)
-
-            header = self._data[addr : addr + BLOCK_HEADER_SIZE]
-            if len(header) < BLOCK_HEADER_SIZE or header[:2] != b"\r\n":
-                raise V8ContainerError(f"Битый заголовок блока по адресу {addr}.")
-
-            try:
-                doc_size = int(header[2:10], 16)
-                block_size = int(header[11:19], 16)
-                next_addr = int(header[20:28], 16)
-            except ValueError as error:
-                raise V8ContainerError(
-                    f"Нечитаемый заголовок блока по адресу {addr}: {header!r}"
-                ) from error
-
-            if total < 0:
-                total = doc_size
-                if total > self._limits.max_entry_bytes:
-                    raise V8ResourceLimitError(
-                        f"Документ контейнера размером {total} байт превышает "
-                        f"предел {self._limits.max_entry_bytes}."
-                    )
-
-            start = addr + BLOCK_HEADER_SIZE
-            # Копируется не больше, чем документу ещё недостаёт: block_size из
-            # заголовка может указывать за конец файла, и тогда каждый
-            # маленький документ копировал бы весь хвост до EOF.
-            wanted = min(block_size, total - collected)
-            chunk = self._data[start : start + wanted]
-            chunks.append(bytes(chunk))
-            collected += len(chunk)
-            if collected > self._limits.max_entry_bytes:
-                raise V8ResourceLimitError(
-                    "Цепочка блоков контейнера превысила предел одной записи."
-                )
-
-            if total >= 0 and collected >= total:
-                break
-            addr = next_addr
-
-        document = b"".join(chunks)
-        return document[:total] if total >= 0 else document
+        """Собрать документ после проверки тех же блоков, что bounded-чтение."""
+        return b"".join(
+            bytes(self._data[start:end])
+            for start, end in self._document_spans(addr)
+        )
 
     def _document_size(self, addr: int) -> int:
         if addr in (EMPTY_ADDR, 0):
@@ -270,19 +221,20 @@ class V8Container:
             size = int(header[2:10], 16)
         except ValueError as error:
             raise V8ContainerError("Нечитаемый размер документа контейнера.") from error
+        if size < 0 or size > len(self._data):
+            raise V8ContainerError("Размер документа больше файла контейнера.")
         if size > self._limits.max_entry_bytes:
             raise V8ResourceLimitError("Документ контейнера превысил предел записи.")
         return size
 
-    def _iter_document_chunks(self, addr: int) -> Iterator[bytes]:
-        """Выбранный документ по частям, сохраняя структурный предел V8."""
+    def _document_spans(self, addr: int) -> Iterator[tuple[int, int]]:
+        """Диапазоны payload; заголовки и использованные байты не пересекаются."""
         total = self._document_size(addr)
         collected = 0
-        visited: set[int] = set()
+        spans: dict[int, int] = {}
         while addr not in (EMPTY_ADDR, 0) and collected < total:
-            if addr in visited:
+            if addr in spans:
                 raise V8ContainerError("Циклическая ссылка блоков контейнера.")
-            visited.add(addr)
             header = self._data[addr : addr + BLOCK_HEADER_SIZE]
             if len(header) < BLOCK_HEADER_SIZE or header[:2] != b"\r\n":
                 raise V8ContainerError("Битый заголовок блока контейнера.")
@@ -291,18 +243,28 @@ class V8Container:
                 next_addr = int(header[20:28], 16)
             except ValueError as error:
                 raise V8ContainerError("Нечитаемый заголовок блока контейнера.") from error
-            remaining = min(block_size, total - collected)
-            offset = addr + BLOCK_HEADER_SIZE
-            while remaining:
-                chunk = bytes(self._data[offset : offset + min(remaining, 64 * 1024)])
-                if not chunk:
-                    break
-                yield chunk
-                size = len(chunk)
-                offset += size
-                remaining -= size
-                collected += size
+            if block_size < 0 or next_addr < 0:
+                raise V8ContainerError("Отрицательный размер или адрес блока контейнера.")
+            start = addr + BLOCK_HEADER_SIZE
+            end = min(len(self._data), start + min(block_size, total - collected))
+            spans[addr] = end
+            yield start, end
+            collected += end - start
             addr = next_addr
+
+        # Сортировка один раз избегает квадратичного поиска пересечений у
+        # длинной цепочки. Неиспользованное заполнение страницы не занято.
+        previous_end = 0
+        for start in sorted(spans):
+            if start < previous_end:
+                raise V8ContainerError("Перекрывающиеся блоки документа контейнера.")
+            previous_end = spans[start]
+
+    def _iter_document_chunks(self, addr: int) -> Iterator[bytes]:
+        """Выбранный документ по частям, сохраняя структурный предел V8."""
+        for start, end in self._document_spans(addr):
+            for offset in range(start, end, 64 * 1024):
+                yield bytes(self._data[offset:min(end, offset + 64 * 1024)])
 
     # ------------------------------------------------------------- таблица
 

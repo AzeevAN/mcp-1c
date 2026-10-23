@@ -18,7 +18,10 @@ from typing import Mapping
 from .bsl_lex import нормализовать
 from .member_pack import open_stored_member
 from .readers.modules import read_module_body
-from .resource_limits import INTAKE_MAX_MODULE_BYTES
+from .resource_limits import (
+    FORM_MAX_DATA_BYTES, FORM_MAX_MODULE_BYTES, FORM_V8_LIMITS,
+    INTAKE_MAX_MODULE_BYTES,
+)
 from .v8container import V8Container, V8ContainerError, V8ResourceLimitError
 
 
@@ -191,7 +194,9 @@ def _read_relative_bytes(root: Path, relative_path: str) -> bytes:
         return stream.read()
 
 
-def _read_bytes(root: Path, address: str, locator: ModuleLocator) -> bytes:
+def _read_bytes(
+    root: Path, address: str, locator: ModuleLocator, max_output_bytes: int
+) -> bytes:
     if locator.kind == "compiled":
         raise ContentReadError(
             "compiled_without_source",
@@ -208,8 +213,8 @@ def _read_bytes(root: Path, address: str, locator: ModuleLocator) -> bytes:
 
     try:
         raw_container = _read_relative_bytes(root, locator.relative_path)
-        with V8Container(raw_container) as container:
-            return container.read(locator.entry)
+        with V8Container(raw_container, limits=FORM_V8_LIMITS) as container:
+            return container.read_bounded(locator.entry, max_output_bytes)
     except KeyError as error:
         raise ContentReadError(
             "container_entry_missing",
@@ -255,8 +260,8 @@ def read_bsl(
     else:
         try:
             raw_container = _read_relative_bytes(root, locator.relative_path)
-            with V8Container(raw_container) as container:
-                raw = container.read_bounded(locator.entry, HISTORICAL_MODULE_BYTES)
+            with V8Container(raw_container, limits=FORM_V8_LIMITS) as container:
+                raw = container.read_bounded(locator.entry, FORM_MAX_MODULE_BYTES)
         except KeyError as error:
             raise ContentReadError(
                 "container_entry_missing", address,
@@ -287,4 +292,5 @@ def read_content_bytes(
     locator: ModuleLocator,
 ) -> bytes:
     """Прочитать файл или запись контейнера без текстовой интерпретации."""
-    return _read_bytes(root, address, locator)
+    limit = FORM_MAX_MODULE_BYTES if locator.entry == "module" else FORM_MAX_DATA_BYTES
+    return _read_bytes(root, address, locator, limit)

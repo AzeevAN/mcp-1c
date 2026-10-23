@@ -10,6 +10,8 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
+from test_module_content import _m3_capture_decoder_output, _m3_form, _m3_form_collection
+
 from module_samples import v8_container_bytes
 from mcp1c.intake_v2 import CandidateTransport, LayerKind
 from mcp1c.intake_v2_collector import DEFAULT_KIND_SPECS, collect_source_b
@@ -2842,3 +2844,26 @@ def test_неизвестный_extended_adapter_отклоняется(tmp_path
         ConversionError, match="для CommonAttributes не реализован adapter nonexistent"
     ):
         convert_collection(_collection(tmp_path), kind_specs=specs)
+
+
+
+
+@pytest.mark.parametrize("size", [5_263_508, 5_263_509, 5_263_508 + 65_536])
+def test_converter_локализует_превышение_предела_v8_form(tmp_path, monkeypatch, size):
+    collection = _m3_form_collection(tmp_path, form=_m3_form(size))
+    decoders = _m3_capture_decoder_output(monkeypatch)
+
+    result = _symbol("convert_collection")(collection)
+
+    form = result.extended.get("ОбщаяФорма.Budget")
+    assert form is not None
+    if size <= 5_263_508:
+        assert form.payload.structure_state.value == "deferred"
+        assert form.payload.container_marker == 19
+    else:
+        assert form.payload.structure_state.value == "unreadable"
+        assert any(item.code == "form_coverage" and item.signature == "unreadable"
+                   for item in result.diagnostics)
+
+    assert decoders
+    assert all(decoder.produced <= 5_263_509 for decoder in decoders)

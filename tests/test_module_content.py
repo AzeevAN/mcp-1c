@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import marshal
+from random import Random
 from types import SimpleNamespace
 
 import pytest
@@ -14,8 +15,10 @@ from mcp1c.module_content import (
     LocatorIdentity,
     ModuleLocator,
     read_bsl,
+    read_content_bytes,
 )
 from mcp1c import tools
+from mcp1c.modules_index import Формы
 
 
 def test_файл_и_запись_контейнера_проходят_один_нормализатор(tmp_path):
@@ -209,3 +212,131 @@ def test_повреждённый_nul_локатор_не_восстанавли
     }
 
     assert LocatorEnvelope.from_state(state, identity) is None
+
+
+
+
+def _m3_entropy(size):
+    return Random(31).randbytes((size + 1) // 2).hex().encode("ascii")[:size]
+
+
+def _m3_bsl(size):
+    from module_samples import _deflate
+
+    prefix, suffix = b"Procedure BudgetProbe()\n// ", b"\nEndProcedure"
+    payload = prefix + _m3_entropy(size - len(prefix) - len(suffix)) + suffix
+    assert len(payload) == size
+    # Длинный комментарий остаётся валидным BSL и не попадает под прежний ratio cap.
+    assert len(payload) <= 200 * len(_deflate(payload))
+    return payload
+
+
+def _m3_form(size):
+    from module_samples import _deflate
+
+    prefix, suffix = b'{19,"', b'"}'
+    payload = prefix + _m3_entropy(size - len(prefix) - len(suffix)) + suffix
+    assert len(payload) == size
+    assert len(payload) <= 200 * len(_deflate(payload))
+    return payload
+
+
+def _m3_form_collection(tmp_path, *, form, module=None):
+    from mcp1c.intake_v2_collector import collect_source_b
+    from mcp1c.intake_v2_probe import probe_export
+    from test_intake_v2_collector import _configuration
+    from test_intake_v2_converter import MemoryTree
+
+    entries = [("form", form)]
+    if module is not None:
+        entries.append(("module", module))
+    tree = MemoryTree({
+        "Configuration.xml": _configuration(),
+        "CommonForm.Budget.Form": v8_container_bytes(entries),
+    })
+    return collect_source_b(tree, probe_export(tree), tmp_path / "collection")
+
+
+def _m3_capture_decoder_output(monkeypatch):
+    from mcp1c import v8container
+
+    original = v8container.zlib.decompressobj
+    decoders = []
+
+    class Decoder:
+        def __init__(self, *args, **kwargs):
+            self.inner = original(*args, **kwargs)
+            self.produced = 0
+            decoders.append(self)
+
+        def decompress(self, *args, **kwargs):
+            result = self.inner.decompress(*args, **kwargs)
+            self.produced += len(result)
+            return result
+
+        def flush(self, *args, **kwargs):
+            result = self.inner.flush(*args, **kwargs)
+            self.produced += len(result)
+            return result
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+    monkeypatch.setattr(v8container.zlib, "decompressobj", Decoder)
+    return decoders
+
+
+@pytest.mark.parametrize("size", [883_773, 883_774, 883_773 + 65_536])
+def test_embedded_bsl_ограничен_отдельным_пределом_формы(tmp_path, monkeypatch, size):
+    payload = _m3_bsl(size)
+    (tmp_path / "Form.bin").write_bytes(v8_container_bytes([("module", payload)]))
+    locator = ModuleLocator.container("Form.bin", "module")
+    decoders = _m3_capture_decoder_output(monkeypatch)
+
+    if size <= 883_773:
+        assert read_bsl(tmp_path, "ОбщаяФорма.Budget", locator) == payload.decode("ascii")
+    else:
+        with pytest.raises(ContentReadError) as caught:
+            read_bsl(tmp_path, "ОбщаяФорма.Budget", locator)
+        assert caught.value.category == "budget_exceeded"
+
+    assert decoders
+    assert all(decoder.produced <= 883_774 for decoder in decoders)
+
+
+def test_обычный_bsl_сохраняет_предел_17_mib_выше_предела_form_module(tmp_path):
+    payload = _m3_bsl(883_774)
+    (tmp_path / "Module.bsl").write_bytes(payload)
+
+    assert read_bsl(tmp_path, "ОбщийМодуль.Budget", ModuleLocator.file("Module.bsl")) == payload.decode("ascii")
+
+
+@pytest.mark.parametrize("size", [5_263_508, 5_263_509, 5_263_508 + 65_536])
+def test_form_content_и_индекс_соблюдают_предел_распакованной_form(tmp_path, monkeypatch, size):
+    payload = _m3_form(size)
+    (tmp_path / "CommonForm.Budget.Form").write_bytes(v8_container_bytes([("form", payload)]))
+    (tmp_path / "CommonForm.Good.Form").write_bytes(v8_container_bytes([("form", b"{19}")]))
+    locator = ModuleLocator.container("CommonForm.Budget.Form", "form")
+    decoders = _m3_capture_decoder_output(monkeypatch)
+
+    if size <= 5_263_508:
+        assert read_content_bytes(tmp_path, "ОбщаяФорма.Budget", locator) == payload
+    else:
+        with pytest.raises(ContentReadError) as caught:
+            read_content_bytes(tmp_path, "ОбщаяФорма.Budget", locator)
+        assert caught.value.category == "budget_exceeded"
+
+    forms = Формы.построить(tmp_path)
+    assert not forms.состав("ОбщаяФорма.Good").битая
+    if size <= 5_263_508:
+        assert not forms.состав("ОбщаяФорма.Budget").битая
+        assert forms.превышений_бюджета == 0
+    else:
+        assert forms.состав("ОбщаяФорма.Budget").битая
+        assert forms.превышений_бюджета == 1
+        assert any(problem.адрес == "ОбщаяФорма.Budget" and problem.категория == "budget_exceeded"
+                   for problem in forms.проблемы)
+
+    # Повторные чтения индексом создают новые decoder: бюджет проверяется для каждого.
+    assert decoders
+    assert all(decoder.produced <= 5_263_509 for decoder in decoders)

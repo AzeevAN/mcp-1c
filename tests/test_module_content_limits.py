@@ -77,7 +77,7 @@ def test_файловый_модуль_строго_ограничен_для_lo
 
 
 def test_form_container_ограничивает_только_выбранный_bsl(tmp_path, monkeypatch):
-    monkeypatch.setattr(module_content, "HISTORICAL_MODULE_BYTES", 8, raising=False)
+    monkeypatch.setattr(module_content, "FORM_MAX_MODULE_BYTES", 8, raising=False)
     data = v8_container_bytes([("form", b"X" * 200), ("module", b"abcdefgh")])
     (tmp_path / "Form.bin").write_bytes(data)
     locator = ModuleLocator.container("Form.bin", "module")
@@ -93,12 +93,17 @@ def test_form_container_ограничивает_только_выбранный
     with pytest.raises(ContentReadError) as caught:
         read_bsl(tmp_path, ADDRESS, locator)
     assert caught.value.category == "budget_exceeded"
-    assert read_content_bytes(tmp_path, ADDRESS, locator) == b"abcdefghi"
+    with pytest.raises(ContentReadError) as raw_caught:
+        read_content_bytes(tmp_path, ADDRESS, locator)
+    assert raw_caught.value.category == "budget_exceeded"
+    assert read_content_bytes(
+        tmp_path, ADDRESS, ModuleLocator.container("Form.bin", "form")
+    ) == b"X" * 200
 
 
 def test_raw_record_не_обходит_лимит_и_дочитывается_только_до_границы(tmp_path,
                                                                      monkeypatch):
-    monkeypatch.setattr(module_content, "HISTORICAL_MODULE_BYTES", 8, raising=False)
+    monkeypatch.setattr(module_content, "FORM_MAX_MODULE_BYTES", 8, raising=False)
     locator = ModuleLocator.container("flat.Form", "module")
     (tmp_path / "flat.Form").write_bytes(_raw_container("module", b"abcdefgh"))
     assert read_bsl(tmp_path, ADDRESS, locator) == "abcdefgh"
@@ -109,7 +114,7 @@ def test_raw_record_не_обходит_лимит_и_дочитывается_�
 
 
 def test_deflate_bomb_останавливается_по_лимиту_выхода(tmp_path, monkeypatch):
-    monkeypatch.setattr(module_content, "HISTORICAL_MODULE_BYTES", 8, raising=False)
+    monkeypatch.setattr(module_content, "FORM_MAX_MODULE_BYTES", 8, raising=False)
     (tmp_path / "Form.bin").write_bytes(
         v8_container_bytes([("module", bytes(range(256)) * 16)])
     )
@@ -156,6 +161,9 @@ def test_ложно_завышенный_размер_документа_не_о
         addr = container.entry("module")._data_addr
     declared = int(raw[addr + 2 : addr + 10], 16)
     raw[addr + 2 : addr + 10] = f"{declared + 1000:08x}".encode("ascii")
+    # Размер физически возможен, но payload цепочки короче декларации:
+    # проверка ratio должна считать реально прочитанные сжатые байты.
+    raw.extend(b"\0" * 1000)
     limits = ResourceLimits(10, 2048, 4096, 2)
     with V8Container(raw, limits=limits) as container:
         with pytest.raises(V8ResourceLimitError):

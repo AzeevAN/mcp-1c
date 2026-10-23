@@ -37,6 +37,7 @@ from .intake_v2_collector import (
 )
 from .model import Configuration, Field, MetadataObject, TabularPart
 from .intake_v2_extensions import ExtensionStructure as NativeExtensionStructure
+from .resource_limits import FORM_MAX_DATA_BYTES, FORM_MAX_MODULE_BYTES, FORM_V8_LIMITS
 from .v8container import V8Container, V8ContainerError, V8ResourceLimitError
 from .xdto import XDTOReadError, package_references, semantic_package_bytes
 
@@ -3117,13 +3118,13 @@ def _common_form_object(
     elif container_artifact is not None:
         try:
             payload = _read_artifact_bytes(collection, container_artifact)
-            with V8Container(payload) as container:
+            with V8Container(payload, limits=FORM_V8_LIMITS) as container:
                 if "module" in container:
                     embedded_module = _module_symbols_from_payload(
                         address,
-                        container.read("module"),
+                        container.read_bounded("module", FORM_MAX_MODULE_BYTES),
                     )
-                result = read_form(container.read("form"))
+                result = read_form(container.read_bounded("form", FORM_MAX_DATA_BYTES))
         except (
             KeyError,
             FormReadError,

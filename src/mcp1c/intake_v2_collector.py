@@ -32,7 +32,10 @@ from .intake_v2 import (
 )
 from .intake_v2_probe import CandidateProbe, ProbeError
 from .intake_v2_transport import TransportError
-from .resource_limits import INTAKE_MAX_MODULE_BYTES, INTAKE_MAX_PARSED_XML_BYTES
+from .resource_limits import (
+    INTAKE_MAX_MODULE_BYTES, INTAKE_MAX_PARSED_XML_BYTES,
+    INTAKE_MAX_RIGHTS_TEXT_BYTES, INTAKE_MAX_RIGHTS_XML_BYTES,
+)
 from .member_pack import MemberPackError, MemberPackWriter, open_stored_member
 
 
@@ -1034,6 +1037,7 @@ def _canonicalize_role(
                     from_file=source,
                     out=writer,
                     with_comments=False,
+                    max_text_bytes=INTAKE_MAX_RIGHTS_TEXT_BYTES,
                     # ElementTree 3.12 при rewrite_prefixes=True добавляет
                     # xmlns:n="" для обычных атрибутов (например version),
                     # а затем сам же не может прочитать полученный XML.
@@ -1300,6 +1304,13 @@ def _preflight(
     # до первого распакованного байта, с именем записи в отказе.
     limit = INTAKE_MAX_PARSED_XML_BYTES
     for step in plan:
+        if step.reads and step.role_kind == "rights":
+            size = tree.size(step.raw_path)
+            if size > INTAKE_MAX_RIGHTS_XML_BYTES:
+                raise CollectorError(
+                    f"{step.source_path}: {size} байт больше предела "
+                    f"{INTAKE_MAX_RIGHTS_XML_BYTES} для Rights.xml"
+                )
         # Модуль читается в память целиком тем же образом: свой предел,
         # отказ всей выгрузки с именем записи до первого распакованного байта.
         # Скомпилированный `.Module` текстом не читается — см.

@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import re
 import time
+import tracemalloc
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
@@ -289,3 +290,135 @@ def test_xdto_отвергает_package_с_dtd():
     assert semantic_package_bytes(package)
     with pytest.raises(XDTOReadError):
         semantic_package_bytes(_with_dtd(package))
+
+
+
+
+class _M4ChunkStream(io.RawIOBase):
+    def __init__(self, chunks, *, chunk_size=4096):
+        super().__init__()
+        self.chunks = iter(chunks)
+        self.pending = b""
+        self.chunk_size = chunk_size
+        self.bytes_read = 0
+
+    def readable(self):
+        return True
+
+    def readinto(self, buffer):
+        while not self.pending:
+            try:
+                self.pending = next(self.chunks)
+            except StopIteration:
+                return 0
+        count = min(len(buffer), len(self.pending), self.chunk_size)
+        buffer[:count] = self.pending[:count]
+        self.pending = self.pending[count:]
+        self.bytes_read += count
+        return count
+
+
+class _M4CountingWriter:
+    def __init__(self):
+        self.chars = 0
+
+    def write(self, value):
+        self.chars += len(value)
+        return len(value)
+
+
+def _m4_ascii_chunks(size):
+    yield b"<r>"
+    while size:
+        count = min(size, 4096)
+        yield b"x" * count
+        size -= count
+    yield b"</r>"
+
+
+@pytest.mark.parametrize("size", [2_217_155, 2_217_156, 2_217_155 * 4])
+def test_canonical_text_cap_ограничивает_память_до_c14n_buffering(size):
+    cap = 2_217_155
+    output = _M4CountingWriter()
+    # Вход не существует одним bytes: его блоки создаются только по мере чтения.
+    with _M4ChunkStream(_m4_ascii_chunks(size)) as stream:
+        tracemalloc.start()
+        try:
+            if size <= cap:
+                xml_safety.canonicalize(from_file=stream, out=output, max_text_bytes=cap)
+            else:
+                with pytest.raises(ET.ParseError):
+                    xml_safety.canonicalize(from_file=stream, out=output, max_text_bytes=cap)
+            _current, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+
+        if size <= cap:
+            assert output.chars == cap + len("<r></r>")
+        if size > cap + 65_536:
+            assert stream.bytes_read <= cap + 65_536 + len("<r></r>")
+    assert peak < 3 * cap
+
+
+@pytest.mark.parametrize(
+    ("text", "cap", "accepted"),
+    [("яя", 4, True), ("яя", 3, False), ("abc", 3, True), ("abc", 2, False)],
+)
+def test_canonical_text_cap_считает_utf8_и_суммирует_data_callbacks(text, cap, accepted):
+    payload = f"<r>{text}</r>".encode("utf-8")
+    with _M4ChunkStream([payload], chunk_size=1) as stream:
+        if accepted:
+            assert xml_safety.canonicalize(from_file=stream, max_text_bytes=cap) == f"<r>{text}</r>"
+        else:
+            with pytest.raises(ET.ParseError):
+                xml_safety.canonicalize(from_file=stream, max_text_bytes=cap)
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        (b"<r>abc<a/>def<b/>ghi</r>", "<r>abc<a></a>def<b></b>ghi</r>"),
+        (b"<r><a>abc</a>def<b>ghi</b>jkl</r>", "<r><a>abc</a>def<b>ghi</b>jkl</r>"),
+    ],
+)
+def test_canonical_text_cap_не_складывает_отдельные_text_и_tail(payload, expected):
+    with _M4ChunkStream([payload], chunk_size=1) as stream:
+        assert xml_safety.canonicalize(from_file=stream, max_text_bytes=3) == expected
+
+
+@pytest.mark.parametrize("with_comments", [False, True])
+def test_игнорируемый_comment_не_разрывает_текстовый_budget(with_comments):
+    payload = b"<r>ab<!-- ignored -->cd</r>"
+    with _M4ChunkStream([payload], chunk_size=1) as stream:
+        if with_comments:
+            assert xml_safety.canonicalize(
+                from_file=stream, with_comments=True, max_text_bytes=3
+            ) == "<r>ab<!-- ignored -->cd</r>"
+        else:
+            with pytest.raises(ET.ParseError):
+                xml_safety.canonicalize(from_file=stream, with_comments=False, max_text_bytes=3)
+
+
+@pytest.mark.parametrize(
+    "payload", [b"<r>abc<?pi x?>def</r>", b"<r>ab<!-- ignored -->c<?pi x?>def</r>"],
+)
+def test_pi_flush_разделяет_канонические_текстовые_сегменты(payload):
+    with _M4ChunkStream([payload], chunk_size=1) as stream:
+        assert xml_safety.canonicalize(
+            from_file=stream, with_comments=False, max_text_bytes=3
+        ) == "<r>abc<?pi x?>def</r>"
+
+
+def test_нормальные_canonical_bytes_совпадают_с_прежним_поведением_и_none():
+    payload = '<r b="2" a="1"><c>текст &amp; хвост</c><!-- ignored --></r>'.encode("utf-8")
+    expected = '<r a="1" b="2"><c>текст &amp; хвост</c></r>'.encode("utf-8")
+
+    ordinary = xml_safety.canonicalize(from_file=io.BytesIO(payload), with_comments=False)
+    unlimited = xml_safety.canonicalize(from_file=io.BytesIO(payload), with_comments=False,
+                                        max_text_bytes=None)
+    limited = xml_safety.canonicalize(from_file=io.BytesIO(payload), with_comments=False,
+                                      max_text_bytes=64)
+
+    assert ordinary.encode("utf-8") == expected
+    assert unlimited.encode("utf-8") == expected
+    assert limited.encode("utf-8") == expected

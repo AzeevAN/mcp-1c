@@ -754,3 +754,74 @@ def test_collector_неожиданный_сбой_классификации_д
     with pytest.raises(CollectorError, match="классифицировать"):
         _collect(_tree(), tmp_path / "failed")
     assert not (tmp_path / "failed").exists()
+
+
+
+
+class _M4DeclaredRightsTree(MemoryTree):
+    def __init__(self, rights_path, declared_size, *, fail_on=""):
+        payloads = _tree().payloads
+        rights = payloads.pop("Roles/Reader/Ext/Rights.xml")
+        payloads[rights_path] = rights
+        super().__init__(payloads, fail_on=fail_on)
+        self.rights_path = rights_path
+        self.declared_size = declared_size
+
+    def size(self, path):
+        return self.declared_size if path == self.rights_path else super().size(path)
+
+
+@pytest.mark.parametrize("rights_path", ["Roles/Reader/Ext/Rights.xml", "Role.Reader.Rights.xml"])
+def test_collector_отказывает_по_размеру_rights_до_открытия(tmp_path, rights_path):
+    CollectorError = _symbol("CollectorError")
+    tree = _M4DeclaredRightsTree(rights_path, 36_558_649, fail_on=rights_path)
+    target = tmp_path / "refused"
+
+    with pytest.raises(CollectorError) as caught:
+        _collect(tree, target)
+
+    message = str(caught.value)
+    assert rights_path in message
+    assert "36558648" in message
+    assert tree.open_count.get(rights_path, 0) == 0
+    assert not target.exists()
+
+
+@pytest.mark.parametrize("rights_path", ["Roles/Reader/Ext/Rights.xml", "Role.Reader.Rights.xml"])
+def test_rights_preflight_принимает_ровно_предел_без_чтения_payload(
+    tmp_path, monkeypatch, rights_path
+):
+    from types import SimpleNamespace
+
+    module = importlib.import_module(SUBJECT)
+    tree = _M4DeclaredRightsTree(rights_path, 36_558_648, fail_on=rights_path)
+    probe = probe_export(tree)
+    plan = module._plan(tree, probe.wrapper, module.DEFAULT_KIND_SPECS)
+    tree.open_count.clear()
+    monkeypatch.setattr(module.shutil, "disk_usage", lambda path: SimpleNamespace(free=1 << 40))
+
+    # Только preflight: фиктивный declared size не передаётся проверке реального копирования.
+    module._preflight(tree, plan, tmp_path)
+
+    assert tree.open_count == {}
+
+
+def test_слишком_длинный_текст_rights_портит_только_слой_ролей(tmp_path):
+    rights_path = "Roles/Reader/Ext/Rights.xml"
+    source = _rights()
+    anchor = b"Allowed = true"
+    assert source.count(anchor) == 1
+    rights = source.replace(anchor, b"x" * 2_217_156)
+    assert len(rights) < 36_558_648
+
+    result = _collect(_tree(**{rights_path: rights}), tmp_path / "collection")
+
+    assert result.roles.state is LayerState.ERROR
+    assert result.roles.artifacts == ()
+    assert rights_path in result.roles.error
+    assert any(item.code == "role_parse_error" and rights_path in item.examples
+               for item in result.diagnostics)
+    assert "Configuration.xml" in {item.source_path for item in result.metadata}
+    assert {item.address for item in result.code} == {
+        "Справочник.Demo.МодульОбъекта", "Справочник.Demo.Форма.Main",
+    }

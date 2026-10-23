@@ -176,8 +176,48 @@ def iterparse(
     yield from ET.iterparse(checked_stream(source), events=events)
 
 
-def canonicalize(*, from_file: BinaryIO, **options: object) -> str | None:
-    return ET.canonicalize(from_file=checked_stream(from_file), **options)
+class _BoundedC14NWriterTarget(ET.C14NWriterTarget):
+    """Предел до накопления одного текстового буфера стандартным C14N."""
+
+    def __init__(self, write, *, max_text_bytes: int, **options):
+        super().__init__(write, **options)
+        self._max_text_bytes = max_text_bytes
+        self._text_bytes = 0
+
+    def data(self, data):
+        if not self._ignored_depth:
+            size = self._text_bytes + len(data.encode("utf-8"))
+            if size > self._max_text_bytes:
+                raise ET.ParseError(
+                    f"текстовый узел XML больше {self._max_text_bytes} UTF-8 байт"
+                )
+            self._text_bytes = size
+        super().data(data)
+
+    def _flush(self, *args, **kwargs):
+        # Границы буфера определяет сам C14N: ignored comments не сбрасывают
+        # его, PI и namespace могут сбросить помимо обычных start/end.
+        try:
+            return super()._flush(*args, **kwargs)
+        finally:
+            self._text_bytes = 0
+
+
+def canonicalize(
+    *, from_file: BinaryIO, out=None, max_text_bytes: int | None = None,
+    **options: object,
+) -> str | None:
+    if max_text_bytes is None:
+        return ET.canonicalize(from_file=checked_stream(from_file), out=out, **options)
+    if max_text_bytes < 0:
+        raise ValueError("предел текстового узла XML должен быть неотрицательным")
+    result = io.StringIO() if out is None else None
+    writer = result if result is not None else out
+    parser = ET.XMLParser(target=_BoundedC14NWriterTarget(
+        writer.write, max_text_bytes=max_text_bytes, **options,
+    ))
+    ET.parse(checked_stream(from_file), parser=parser)
+    return result.getvalue() if result is not None else None
 
 
 __all__ = [

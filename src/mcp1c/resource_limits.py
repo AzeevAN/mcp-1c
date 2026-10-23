@@ -69,6 +69,12 @@ FORM_MAX_MODULE_BYTES = 883_773  # Максимум embedded module 353509 ×2,5
 FORM_MAX_DATA_BYTES = 5_263_508  # Максимум распакованной form 2105403 ×2,5.
 
 
+# Rights.xml и его текстовый узел: максимумы 14623459/886862 UTF-8 байт
+# на крупных выгрузках (2026-10-23), с запасом ×2,5.
+INTAKE_MAX_RIGHTS_XML_BYTES = 36_558_648
+INTAKE_MAX_RIGHTS_TEXT_BYTES = 2_217_155
+
+
 INTAKE_MAX_UNPACKED_ENV = "MCP1C_INTAKE_MAX_UNPACKED"
 
 # Профиль полной файловой выгрузки (browser-upload, incoming, а с 2026-10-03

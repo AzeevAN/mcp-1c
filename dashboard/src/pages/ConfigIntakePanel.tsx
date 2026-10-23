@@ -27,6 +27,7 @@ import {
   useIntakeJobs,
   useIntakeJob,
 } from "../shared/api/configIntake";
+import { useAdminSources } from "../shared/api/sourceAdmin";
 import { refreshSourceDependents } from "../shared/api/sourceFreshness";
 import { StatusBadge, type StatusTone } from "../shared/ui/StatusBadge";
 
@@ -95,6 +96,7 @@ function stateTone(state: IntakeLayerVersion["state"]): StatusTone {
 
 function CandidateRow({
   candidate,
+  loaded,
   configurationNames,
   busy,
   removeBlocked,
@@ -102,6 +104,7 @@ function CandidateRow({
   onDelete,
 }: {
   candidate: IntakeCandidate;
+  loaded: boolean;
   configurationNames: string[];
   busy: boolean;
   removeBlocked: boolean;
@@ -121,6 +124,7 @@ function CandidateRow({
           {transportLabels[candidate.transport]}
           {candidate.configuration_version ? ` · версия ${candidate.configuration_version}` : ""}
           {` · ${layoutLabels[candidate.layout]}`}
+          {loaded && <> · <StatusBadge tone="success">загружено</StatusBadge></>}
         </small>
       </span>
       <div className="intake-candidate-actions">
@@ -293,6 +297,7 @@ function PreviewDialog({
 
 export function ConfigIntakePanel({ configuration }: { configuration?: string } = {}) {
   const intake = useConfigIntake(!configuration);
+  const admin = useAdminSources(!configuration);
   const directorySources = useDirectorySources(Boolean(configuration));
   const storedJobs = useIntakeJobs(Boolean(configuration));
   const queryClient = useQueryClient();
@@ -324,7 +329,7 @@ export function ConfigIntakePanel({ configuration }: { configuration?: string } 
 
   const refresh = async () => {
     setFeedback(null);
-    await intake.refetch();
+    await Promise.all([intake.refetch(), admin.refetch()]);
   };
 
   const chooseFile = (next: File | null) => {
@@ -416,6 +421,7 @@ export function ConfigIntakePanel({ configuration }: { configuration?: string } 
         ...(result.job.commit?.no_op ? [] : [refreshSourceDependents(queryClient)]),
         queryClient.invalidateQueries({ queryKey: ["sources", "intake"], exact: true }),
         queryClient.invalidateQueries({ queryKey: ["sources", "intake", "jobs"], exact: true }),
+        queryClient.invalidateQueries({ queryKey: ["sources", "admin"], exact: true }),
       ]);
       setActiveJobId("");
       setFeedback({
@@ -628,6 +634,9 @@ export function ConfigIntakePanel({ configuration }: { configuration?: string } 
                   return candidate ? (
                     <CandidateRow
                       candidate={candidate}
+                      loaded={candidate.transport === "incoming" && (admin.data?.incoming?.some(
+                        (item) => item.name === candidate.origin_name && item.state === "загружено",
+                      ) ?? false)}
                       configurationNames={intake.data.configuration_names}
                       busy={intakeBusy || Boolean(activeJobId)}
                       removeBlocked={intake.data.jobs.some((item) => item.candidate_id === candidate.id && item.state !== "failed")}

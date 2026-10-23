@@ -2,7 +2,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
+import type { AdminSourcesResponse } from "../shared/api/sourceAdmin";
 import { ConfigIntakePanel } from "./ConfigIntakePanel";
+import { SourcesAdminPanel } from "./SourcesAdminPanel";
 
 const candidate = {
   id: "candidate-001",
@@ -87,13 +89,27 @@ function snapshot(candidates = [candidate]) {
   };
 }
 
-function renderPanel() {
+function adminSnapshot(incoming: AdminSourcesResponse["incoming"] = []): AdminSourcesResponse {
+  return {
+    api_version: "v1",
+    limits: { upload_bytes: 512 * 1024**2 },
+    configuration_names: [],
+    jobs: [],
+    incoming,
+    incoming_exists: true,
+    incoming_dir: "data/incoming/",
+    orphans: [],
+    snapshot_error: "",
+  };
+}
+
+function renderPanel({ withAdmin = false }: { withAdmin?: boolean } = {}) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   render(
     <QueryClientProvider client={client}>
-      <ConfigIntakePanel />
+      {withAdmin ? <SourcesAdminPanel onRequestForget={() => {}} /> : <ConfigIntakePanel />}
     </QueryClientProvider>,
   );
   return client;
@@ -112,6 +128,7 @@ it("удаляет только браузерный ZIP после подтве
   const requests: Array<{ path: string; body: unknown }> = [];
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
+    if (path === "/api/v1/sources/admin") return response(adminSnapshot());
     if (path === "/api/v1/sources/intake/candidates/delete") {
       const body = JSON.parse(String(init?.body));
       requests.push({ path, body });
@@ -135,14 +152,80 @@ it("удаляет только браузерный ZIP после подтве
 });
 
 it("не предлагает удалять ZIP из incoming", async () => {
-  vi.stubGlobal("fetch", vi.fn(async () => response(snapshot([{ ...candidate, transport: "incoming" }]))));
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => response(
+    String(input) === "/api/v1/sources/admin"
+      ? adminSnapshot() : snapshot([{ ...candidate, transport: "incoming" }]),
+  )));
   renderPanel();
   expect(await screen.findByText("СинтетическаяКонфигурация")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Удалить ZIP" })).toBeNull();
 });
 
+it.each([
+  { transport: "incoming", state: "загружено", name: candidate.origin_name, loaded: true },
+  { transport: "browser", state: "загружено", name: candidate.origin_name, loaded: false },
+  { transport: "local-file", state: "загружено", name: candidate.origin_name, loaded: false },
+  { transport: "local-directory", state: "загружено", name: candidate.origin_name, loaded: false },
+  { transport: "incoming", state: "не разобрано", name: candidate.origin_name, loaded: false },
+  { transport: "incoming", state: "загружено", name: "другой-архив.zip", loaded: false },
+])("помечает загрузку только совпавшего incoming: $transport, $state, $name", async ({ transport, state, name, loaded }) => {
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    const path = String(input);
+    if (path === "/api/v1/sources/admin") return response(adminSnapshot([
+      { name, size: 1024, state, detail: "", settling: false },
+    ]));
+    if (path === "/api/v1/sources/intake") return response(snapshot([{ ...candidate, transport }]));
+    if (path === "/api/v1/sources/intake/jobs") return response({ jobs: [] });
+    throw new Error(`Неожиданный запрос ${path}`);
+  }));
+  renderPanel({ withAdmin: true });
+
+  const row = (await screen.findByText(candidate.origin_name)).closest("article")!;
+  const metadata = row.querySelector("small")!;
+  if (loaded) {
+    expect(await within(metadata).findByText("загружено", { exact: true })).toBeInTheDocument();
+  } else {
+    expect(within(row).queryByText("загружено", { exact: true })).not.toBeInTheDocument();
+  }
+  expect(screen.getAllByText(candidate.origin_name)).toHaveLength(1);
+});
+
+it("ручная проверка обновляет статус incoming после внешней замены ZIP", async () => {
+  let state = "загружено";
+  let adminRequests = 0;
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    const path = String(input);
+    if (path === "/api/v1/sources/admin") {
+      adminRequests += 1;
+      return response(adminSnapshot([
+        { name: candidate.origin_name, size: 1024, state, detail: "", settling: false },
+      ]));
+    }
+    if (path === "/api/v1/sources/intake") return response(snapshot([{ ...candidate, transport: "incoming" }]));
+    if (path === "/api/v1/sources/intake/jobs") return response({ jobs: [] });
+    throw new Error(`Неожиданный запрос ${path}`);
+  }));
+  const client = renderPanel({ withAdmin: true });
+  const panel = await screen.findByRole("region", { name: "Полная файловая выгрузка" });
+  const refresh = within(panel).getByRole("button", { name: "Проверить обновления" });
+  await waitFor(() => {
+    expect(refresh).toBeEnabled();
+    expect(client.isFetching({ queryKey: ["sources", "admin"] })).toBe(0);
+  });
+  const beforeRefresh = adminRequests;
+  state = "не разобрано";
+  fireEvent.click(refresh);
+
+  await waitFor(() => expect(adminRequests).toBeGreaterThan(beforeRefresh));
+  await waitFor(() => expect(refresh).toBeEnabled());
+  const row = within(panel).getByText(candidate.origin_name).closest("article")!;
+  await waitFor(() => expect(within(row).queryByText("загружено", { exact: true })).not.toBeInTheDocument());
+});
+
 it("разрешает выбрать ZIP больше 500 МиБ и отклоняет ZIP больше 4 ГиБ", async () => {
-  vi.stubGlobal("fetch", vi.fn(async () => response(snapshot([]))));
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => response(
+    String(input) === "/api/v1/sources/admin" ? adminSnapshot() : snapshot([]),
+  )));
   renderPanel();
   expect(await screen.findByText("ZIP до 4 ГиБ")).toBeInTheDocument();
   const input = document.querySelector<HTMLInputElement>('input[accept=".zip"]')!;
@@ -161,6 +244,7 @@ it("разрешает выбрать ZIP больше 500 МиБ и откло�
 it.each([false, true])("публикует только после confirm и учитывает no_op=%s при обновлении кэша", async (noOp) => {
   const requests: Array<{ path: string; body: unknown }> = [];
   let previewReady = false;
+  let incomingLoaded = false;
   const readyJob = {
     job_id: "job-001",
     candidate_id: candidate.id,
@@ -174,9 +258,18 @@ it.each([false, true])("публикует только после confirm и у
     const path = String(input);
     const body = init?.body ? JSON.parse(String(init.body)) : null;
     requests.push({ path, body });
+    if (path === "/api/v1/sources/admin") {
+      return response(adminSnapshot([
+        {
+          name: candidate.origin_name, size: 1024,
+          state: incomingLoaded ? "загружено" : "не разобрано",
+          detail: "", settling: false,
+        },
+      ]));
+    }
     if (path === "/api/v1/sources/intake") {
       return response({
-        ...snapshot(),
+        ...snapshot([{ ...candidate, transport: "incoming" }]),
         jobs: previewReady ? [readyJob] : [],
       });
     }
@@ -198,6 +291,7 @@ it.each([false, true])("публикует только после confirm и у
       return response({ job: readyJob });
     }
     if (path === "/api/v1/sources/intake/confirm") {
+      incomingLoaded = true;
       return response({
         job: {
           job_id: "job-001",
@@ -217,7 +311,7 @@ it.each([false, true])("публикует только после confirm и у
     }
     throw new Error(`Неожиданный запрос ${path}`);
   }));
-  const client = renderPanel();
+  const client = renderPanel({ withAdmin: true });
   const dependentKeys = [["card", "object", "Synthetic"], ["roles", "catalog", "Synthetic"], ["graph", "Synthetic"], ["queries-setup"]];
   dependentKeys.forEach((key) => client.setQueryData(key, "прежнее поколение"));
 
@@ -245,8 +339,14 @@ it.each([false, true])("публикует только после confirm и у
   fireEvent.click(reopen);
   const reopenedDialog = await screen.findByRole("dialog", { name: "Проверка изменений" });
 
+  const adminRequestsBeforeConfirm = requests.filter(({ path }) => path === "/api/v1/sources/admin").length;
   fireEvent.click(within(reopenedDialog).getByRole("button", { name: "Опубликовать изменения" }));
   expect(await screen.findByText(noOp ? "Изменений нет; активное поколение сохранено." : "Поколение опубликовано", { exact: false })).toBeInTheDocument();
+  await waitFor(() => expect(
+    requests.filter(({ path }) => path === "/api/v1/sources/admin").length,
+  ).toBeGreaterThan(adminRequestsBeforeConfirm));
+  const row = screen.getByText(candidate.origin_name).closest("article")!;
+  expect(await within(row.querySelector("small")!).findByText("загружено", { exact: true })).toBeInTheDocument();
   for (const key of dependentKeys) {
     expect(client.getQueryData(key)).toBe(noOp ? "прежнее поколение" : undefined);
   }
@@ -263,6 +363,7 @@ it("после confirm блокирует закрытие окна и запу�
   });
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
     const path = String(input);
+    if (path === "/api/v1/sources/admin") return response(adminSnapshot());
     if (path === "/api/v1/sources/intake") return response(snapshot());
     if (path === "/api/v1/sources/intake/start") {
       return response({
@@ -354,6 +455,7 @@ it("принимает полный ZIP как durable candidate и обновл
   }
   vi.stubGlobal("XMLHttpRequest", XMLHttpRequestMock);
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    if (String(input) === "/api/v1/sources/admin") return response(adminSnapshot());
     if (String(input) !== "/api/v1/sources/intake") {
       throw new Error(`Неожиданный запрос ${String(input)}`);
     }
@@ -389,6 +491,7 @@ it("для расширения требует выбрать родительс
     const path = String(input);
     const body = init?.body ? JSON.parse(String(init.body)) : null;
     requests.push({ path, body });
+    if (path === "/api/v1/sources/admin") return response(adminSnapshot());
     if (path === "/api/v1/sources/intake") {
       return response({
         api_version: "v1",
@@ -460,6 +563,7 @@ it("для legacy-конфигурации объясняет обязатель
   };
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
     const path = String(input);
+    if (path === "/api/v1/sources/admin") return response(adminSnapshot());
     if (path === "/api/v1/sources/intake") {
       return response({
         ...snapshot([legacyCandidate]),
@@ -492,6 +596,7 @@ it("называет владельца preview и не запрашивает j
     const path = String(input);
     const body = init?.body ? JSON.parse(String(init.body)) : null;
     requests.push({ path, body });
+    if (path === "/api/v1/sources/admin") return response(adminSnapshot());
     if (path === "/api/v1/sources/intake") {
       return response({
         ...snapshot(),
@@ -541,6 +646,7 @@ const editionReason =
 
 it("при смене редакции вместо обновления показывает причину сервера", async () => {
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    if (String(input) === "/api/v1/sources/admin") return response(adminSnapshot());
     if (String(input) === "/api/v1/sources/intake/jobs") return response({ jobs: [] });
     return response(snapshot([{
       ...candidate,
@@ -668,6 +774,7 @@ it("сохранённое preview каталога видно только у �
   ];
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
     const path = String(input);
+    if (path === "/api/v1/sources/admin") return response(adminSnapshot());
     if (path === "/api/v1/sources/directories") return response({
       roots: ["config-a"], bindings: { Demo: "config-a" }, configuration_names: ["Demo", "Other"],
     });
@@ -710,6 +817,7 @@ it("повреждённую готовую job показывает с прич
     const path = String(input);
     const body = init?.body ? JSON.parse(String(init.body)) : null;
     requests.push({ path, body });
+    if (path === "/api/v1/sources/admin") return response(adminSnapshot());
     if (path === "/api/v1/sources/intake/discard") {
       discarded = true;
       return response({ discarded: brokenJob.job_id });

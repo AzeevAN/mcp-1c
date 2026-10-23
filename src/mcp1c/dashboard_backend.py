@@ -928,6 +928,12 @@ def prepare_sources_page(
             for path, size in registry.orphan_sources()
         )
         if authorized:
+            # Сканер общий на data_dir, но runtime реестра принадлежит
+            # текущему запросу, а не первому создателю сканера.
+            active_hashes = frozenset(
+                generation.manifest.raw_sha256
+                for generation in registry.snapshot().generations.values()
+            )
             incoming = tuple(
                 _IncomingRow(
                     name=str(row["name"]),
@@ -936,7 +942,7 @@ def prepare_sources_page(
                     detail=str(row["detail"]),
                     settling=bool(row.get("settling")),
                 )
-                for row in _scanner(registry).scan()
+                for row in _scanner(registry).scan(active_hashes=active_hashes)
             )
             incoming_exists = registry.incoming_dir.is_dir()
         else:

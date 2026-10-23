@@ -1,7 +1,8 @@
 """Каталог `incoming/`: что там лежит и в каком оно состоянии.
 
 Хранится кэш хеша (считать sha256 гигабайта на каждый показ страницы нельзя)
-и причина неудачи прежнего частичного разбора; остальные файлы показываются
+и причина неудачи прежнего частичного разбора. SHA активного поколения
+позволяет пометить тот же архив как «загружено»; остальные файлы показываются
 как «не разобрано». Загрузку выгрузки ведёт intake v2.
 
 Новых неудач сюда никто не пишет: частичная загрузка Source B отключена, а
@@ -21,6 +22,7 @@ from .registry import Registry
 
 STATE_NEW = "не разобрано"
 STATE_FAILED = "разбор не удался"
+STATE_LOADED = "загружено"
 
 # Файл считается дописанным, если `mtime` старше этого возраста. `cp` полутора
 # гигабайт идёт минуты, и файл виден с первой секунды. Сверяется только `mtime`:
@@ -40,6 +42,15 @@ def _sha256_файла(путь: Path) -> str:
         for блок in iter(lambda: поток.read(1 << 20), b""):
             digest.update(блок)
     return digest.hexdigest()
+
+
+def _file_identity(info) -> dict[str, int]:
+    return {
+        "device": info.st_dev,
+        "inode": info.st_ino,
+        "size": info.st_size,
+        "mtime_ns": info.st_mtime_ns,
+    }
 
 
 def _причина_неудачи(запись, хеш: str) -> str | None:
@@ -143,22 +154,27 @@ class IncomingScanner:
         return 0 <= возраст < SETTLE_SECONDS
 
     def digest(self, путь: Path) -> str:
-        """sha256 с кэшем по `(путь, размер, mtime)`."""
+        """sha256 с кэшем по имени и `(dev, ino, size, mtime_ns)`."""
         отпечаток = путь.stat()
+        identity = _file_identity(отпечаток)
         ключ = путь.name
         with self._замок:
             запись = self._state["digests"].get(ключ)
-            если_то_же = (
-                запись
-                and запись["size"] == отпечаток.st_size
-                and запись["mtime"] == отпечаток.st_mtime
-            )
-            if если_то_же:
-                return запись["sha256"]
+            sha = запись.get("sha256") if isinstance(запись, dict) else None
+            if (
+                isinstance(запись, dict)
+                and all(запись.get(field) == value for field, value in identity.items())
+                and isinstance(sha, str)
+                and len(sha) == 64
+                and all(char in "0123456789abcdef" for char in sha)
+            ):
+                return sha
         значение = _sha256_файла(путь)
+        if _file_identity(путь.stat()) != identity:
+            raise OSError("Входящий файл изменился во время расчёта SHA-256")
         with self._замок:
             self._state["digests"][ключ] = {
-                "size": отпечаток.st_size,
+                **identity,
                 "mtime": отпечаток.st_mtime,
                 "sha256": значение,
             }
@@ -172,7 +188,7 @@ class IncomingScanner:
         оставался в `incoming-state.json` навсегда. Наличие проверяется по
         диску в момент уборки, а не по списку начала обхода: отказ файла,
         положенного во время показа, не теряется. Вернувшийся под тем же
-        именем файл всё равно сверяется заново: хеш — по размеру и `mtime`,
+        именем файл всё равно сверяется заново: хеш — по stat4,
         отказ — по хешу.
         """
         with self._замок:
@@ -189,21 +205,22 @@ class IncomingScanner:
         if изменено:
             self._save()
 
-    def scan(self) -> list[dict]:
+    def scan(self, *, active_hashes: frozenset[str] | None = None) -> list[dict]:
         self._пачка.активна = True
         self._пачка.изменено = False
         try:
-            return self._scan()
+            return self._scan(active_hashes)
         finally:
             self._пачка.активна = False
             if self._пачка.изменено:
                 self._save()
 
-    def _scan(self) -> list[dict]:
+    def _scan(self, active_hashes: frozenset[str] | None = None) -> list[dict]:
         каталог = self.registry.incoming_dir
         строки: list[dict] = []
         if not каталог.is_dir():
             return строки
+        загруженные = self._активные_хеши() if active_hashes is None else active_hashes
         for путь in sorted(каталог.glob("*.zip")):
             try:
                 отпечаток = путь.stat()
@@ -218,7 +235,7 @@ class IncomingScanner:
                     # а стоит секунды на каждом показе страницы.
                     состояние, подробность = STATE_NEW, SETTLING_DETAIL
                 else:
-                    состояние, подробность = self._состояние(путь)
+                    состояние, подробность = self._состояние(путь, загруженные)
                 строки.append(
                     {
                         "name": путь.name,
@@ -235,13 +252,25 @@ class IncomingScanner:
         self._забыть_исчезнувшие(каталог)
         return строки
 
-    def _состояние(self, путь: Path) -> tuple[str, str]:
-        """Состояние дописанного файла — по записи неудачи разбора."""
+    def _активные_хеши(self) -> frozenset[str]:
+        return frozenset(
+            generation.manifest.raw_sha256
+            for generation in self.registry.snapshot().generations.values()
+        )
+
+    def _состояние(
+        self, путь: Path, загруженные: frozenset[str] | None = None,
+    ) -> tuple[str, str]:
+        """Состояние дописанного файла по активным поколениям и прежним отказам."""
+        if загруженные is None:
+            загруженные = self._активные_хеши()
         with self._замок:
             запись = self._state["failures"].get(путь.name)
-        if запись is None:
+        if запись is None and not загруженные:
             return STATE_NEW, ""
         хеш = self.digest(путь)
+        if хеш in загруженные:
+            return STATE_LOADED, ""
         причина = _причина_неудачи(запись, хеш)
         if причина is not None:
             return STATE_FAILED, причина

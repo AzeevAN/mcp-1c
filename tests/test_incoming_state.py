@@ -294,3 +294,186 @@ def test_h3_incoming_без_записи_неудачи_возвращает_new
     assert [(row['name'], row['state'], row['detail']) for row in rows] == [
         (path.name, STATE_NEW, ''),
     ]
+
+
+def _i8_active_zip(tmp_path):
+    import hashlib
+    import zipfile
+
+    from mcp1c.intake_v2 import CandidateTransport
+    from mcp1c.intake_v2_collector import collect_source_b
+    from mcp1c.intake_v2_probe import probe_export
+    from mcp1c.intake_v2_transport import ZipExportTree
+    from test_intake_v2_collector import _configuration
+    from test_intake_v2_generation import _materialized, _stage_b_generation
+    from test_intake_v2_lifecycle import _archive
+
+    registry = _реестр(tmp_path)
+    source = tmp_path / 'synthetic-source-b.zip'
+    _archive(source, _configuration('DemoConfiguration'))
+    # Однобайтовый ZIP comment позволяет позже заменить содержимое архива
+    # на другое валидное содержимое с точно тем же размером.
+    with zipfile.ZipFile(source, 'a') as archive:
+        archive.comment = b'A'
+    raw = source.read_bytes()
+    with ZipExportTree(source, transport=CandidateTransport.INCOMING) as tree:
+        probe = probe_export(tree)
+        collection = collect_source_b(tree, probe, tmp_path / 'collected')
+    generation = _materialized(tmp_path, 'i8-loaded', collection)
+    registry.publish_generation(_stage_b_generation(
+        registry, generation.manifest, generation.payloads,
+    ))
+    active = tuple(registry.snapshot().generations.values())
+    assert len(active) == 1
+    assert active[0].manifest.raw_sha256 == hashlib.sha256(raw).hexdigest()
+    assert active[0].manifest.raw_sha256 == generation.manifest.raw_sha256
+    path = registry.incoming_dir / 'renamed-copy.zip'
+    path.write_bytes(raw)
+    состарить(path)
+    return registry, path, raw
+
+
+def _i8_count_file_reads(monkeypatch):
+    from mcp1c import incoming
+
+    real_hash = incoming._sha256_файла
+    reads = []
+
+    def counted_hash(path):
+        reads.append(path)
+        return real_hash(path)
+
+    monkeypatch.setattr(incoming, '_sha256_файла', counted_hash)
+    return reads
+
+
+def test_i8_активный_source_b_помечает_zip_загруженным_без_повторного_чтения(tmp_path, monkeypatch):
+    from mcp1c import incoming
+
+    registry, path, _raw = _i8_active_zip(tmp_path)
+    reads = _i8_count_file_reads(monkeypatch)
+    scanner = IncomingScanner(registry)
+
+    first = scanner.scan()
+    second = scanner.scan()
+
+    assert len(first) == 1
+    assert first[0]['name'] == path.name
+    assert first[0]['state'] == 'загружено'
+    assert second == first
+    assert reads == [path]
+    assert incoming.STATE_LOADED == 'загружено'
+
+
+def test_i8_изменённые_bytes_не_помечаются_загруженными(tmp_path, monkeypatch):
+    registry, path, raw = _i8_active_zip(tmp_path)
+    path.write_bytes(raw + b'changed synthetic ZIP tail')
+    состарить(path)
+    reads = _i8_count_file_reads(monkeypatch)
+
+    rows = IncomingScanner(registry).scan()
+
+    assert len(rows) == 1
+    assert rows[0]['state'] == STATE_NEW
+    assert reads == [path]
+
+
+def test_i8_same_size_inode_replacement_с_тем_же_mtime_пересчитывает_sha(tmp_path, monkeypatch):
+    import hashlib
+    import os
+    import zipfile
+
+    registry, path, raw = _i8_active_zip(tmp_path)
+    reads = _i8_count_file_reads(monkeypatch)
+    scanner = IncomingScanner(registry)
+    assert scanner.scan()[0]['state'] == 'загружено'
+    assert reads == [path]
+    before = path.stat()
+    changed = raw[:-1] + b'B'
+    assert hashlib.sha256(changed).digest() != hashlib.sha256(raw).digest()
+    replacement = tmp_path / 'replacement.zip'
+    replacement.write_bytes(changed)
+    os.utime(replacement, ns=(before.st_atime_ns, before.st_mtime_ns))
+    os.replace(replacement, path)
+    after = path.stat()
+    assert after.st_ino != before.st_ino
+    assert after.st_dev == before.st_dev
+    assert after.st_size == before.st_size
+    assert after.st_mtime_ns == before.st_mtime_ns
+    with zipfile.ZipFile(path) as archive:
+        assert archive.comment == b'B'
+
+    assert scanner.scan()[0]['state'] == STATE_NEW
+    assert reads == [path, path]
+
+
+def test_i8_loaded_приоритетнее_legacy_failure_того_же_sha_без_удаления_failure(tmp_path, monkeypatch):
+    registry, path, _raw = _i8_active_zip(tmp_path)
+    _записать_неудачу(registry, path, 'Прежний отказ разбора')
+    state_path = registry.data_dir / 'incoming-state.json'
+    failure_before = json.loads(state_path.read_text(encoding='utf-8'))['failures'][path.name]
+    reads = _i8_count_file_reads(monkeypatch)
+
+    rows = IncomingScanner(registry).scan()
+
+    assert rows[0]['state'] == 'загружено'
+    assert reads == [path]
+    assert json.loads(state_path.read_text(encoding='utf-8'))['failures'][path.name] == failure_before
+
+
+def test_i8_legacy_digest_без_stat4_пересчитывается_и_не_теряет_failures(tmp_path, monkeypatch):
+    import hashlib
+
+    registry, path, raw = _i8_active_zip(tmp_path)
+    path.write_bytes(raw[:-1] + b'B')
+    состарить(path)
+    info = path.stat()
+    old_hash = hashlib.sha256(raw).hexdigest()
+    old_failure = {'reason': 'Сохранённый прежний отказ', 'sha256': old_hash}
+    state_path = registry.data_dir / 'incoming-state.json'
+    # Минимальный существующий формат расходного digest cache: без device,
+    # inode и mtime_ns. Даже совпадение size/mtime не доказывает тот же файл.
+    state_path.write_text(json.dumps({
+        'digests': {path.name: {'size': info.st_size, 'mtime': info.st_mtime, 'sha256': old_hash}},
+        'failures': {path.name: old_failure},
+    }), encoding='utf-8')
+    reads = _i8_count_file_reads(monkeypatch)
+
+    rows = IncomingScanner(registry).scan()
+
+    assert rows[0]['state'] == STATE_NEW
+    assert reads == [path]
+    assert json.loads(state_path.read_text(encoding='utf-8'))['failures'][path.name] == old_failure
+
+
+def test_i8_снятое_поколение_не_остаётся_loaded_в_живом_scanner(tmp_path, monkeypatch):
+    registry, path, raw = _i8_active_zip(tmp_path)
+    reads = _i8_count_file_reads(monkeypatch)
+    scanner = IncomingScanner(registry)
+    assert scanner.scan()[0]['state'] == 'загружено'
+    assert reads == [path]
+
+    registry.remove('DemoConfiguration')
+    registry.save()
+    assert not registry.snapshot().generations
+    assert path.read_bytes() == raw
+
+    assert scanner.scan()[0]['state'] == STATE_NEW
+    assert reads == [path]
+
+
+def test_i8_admin_использует_поколения_текущего_реестра_при_общем_сканере(tmp_path):
+    from mcp1c.dashboard_backend import prepare_sources_page
+
+    current, path, _raw = _i8_active_zip(tmp_path)
+    # Два runtime одного data_dir используют общий сканер. Пустой runtime
+    # не должен определять активность источников для следующего запроса.
+    empty_runtime = Registry(current.data_dir)
+    empty_page = prepare_sources_page(empty_runtime, authorized=True)
+    assert next(row for row in empty_page.incoming if row.name == path.name).state == STATE_NEW
+
+    active_page = prepare_sources_page(current, authorized=True)
+    assert next(row for row in active_page.incoming if row.name == path.name).state == 'загружено'
+
+    empty_page = prepare_sources_page(empty_runtime, authorized=True)
+    assert next(row for row in empty_page.incoming if row.name == path.name).state == STATE_NEW

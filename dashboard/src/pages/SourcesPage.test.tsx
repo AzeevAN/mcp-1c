@@ -876,3 +876,48 @@ it("не подменяет неизвестное происхождение So
   expect(screen.queryByText("Структура конфигурации")).not.toBeInTheDocument();
   expect(screen.getByLabelText("Состав конфигурации")).toHaveTextContent("Недоступен до повторной загрузки");
 });
+
+
+
+it("показывает feedback при 404 изменения версии платформы", async () => {
+  const fetchMock = vi.mocked(fetch);
+  const regularFetch = fetchMock.getMockImplementation()!;
+  const message = "Изменение платформы выключено: не задан ADMIN_TOKEN.";
+  fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input) === "/api/v1/sources/platform/set") {
+      return new Response(JSON.stringify({ error: message }), {
+        status: 404, headers: { "content-type": "application/json" },
+      });
+    }
+    const response = await regularFetch(input, init);
+    if (String(input) !== "/api/v1/sources") return response;
+    const payload = await response.json();
+    payload.configurations[0] = {
+      ...payload.configurations[0],
+      platform: "8.3.15.1570",
+      activation_mode: "A_ONLY",
+      activation_status: "ACTIVE",
+      platform_declaration: null,
+    };
+    return { ...response, json: async () => payload };
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    render(<MemoryRouter initialEntries={["/sources"]}>
+      <QueryClientProvider client={client}><SourcesPage /></QueryClientProvider>
+    </MemoryRouter>);
+    fireEvent.click(await screen.findByRole("button", { name: /Изменить версию платформы/ }));
+    const dialog = screen.getByRole("dialog", { name: "Версия платформы" });
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Версия платформы" }), {
+      target: { value: "8.3.27.2130" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Сохранить" }));
+
+    expect(await within(dialog).findByRole("status")).toHaveTextContent(message);
+    expect(dialog).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Сохранить" })).toBeEnabled();
+    expect(screen.getByRole("heading", { name: "Источники" })).toBeInTheDocument();
+  } finally {
+    client.clear();
+  }
+});

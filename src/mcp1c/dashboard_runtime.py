@@ -1026,12 +1026,8 @@ def _spa_routes(
             _sources_payload(snapshot, admin=admin_authorized(request))
         )
 
+    @admin_endpoint("Изменение версии платформы", mutation=True)
     async def platform_set_api(request: Request) -> JSONResponse:
-        if not admin_authorized(request):
-            return _json_error("Нужен административный токен.", 401)
-        denied = csrf_denied(request)
-        if denied is not None:
-            return denied
         body = await _json_body(request)
         configuration = body.get("configuration")
         version = body.get("platform_version")
@@ -1047,12 +1043,8 @@ def _spa_routes(
             return _json_error(str(error), 422)
         return JSONResponse({"configuration": configuration, **declaration.to_dict()})
 
+    @admin_endpoint("Изменение версии платформы", mutation=True)
     async def platform_clear_api(request: Request) -> JSONResponse:
-        if not admin_authorized(request):
-            return _json_error("Нужен административный токен.", 401)
-        denied = csrf_denied(request)
-        if denied is not None:
-            return denied
         body = await _json_body(request)
         configuration = body.get("configuration")
         if not isinstance(configuration, str) or not configuration:

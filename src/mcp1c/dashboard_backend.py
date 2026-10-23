@@ -615,6 +615,7 @@ def run_job(
         shutil.rmtree(directory, ignore_errors=True)
 
 _СКАНЕРЫ: dict[str, "IncomingScanner"] = {}
+_СКАНЕРЫ_LOCK = threading.Lock()
 
 def _scanner(registry: Registry) -> "IncomingScanner":
     """Сканер один на каталог данных: его словарь состояния (хеши и отказы
@@ -624,9 +625,10 @@ def _scanner(registry: Registry) -> "IncomingScanner":
     from .incoming import IncomingScanner
 
     ключ = str(registry.data_dir)
-    if ключ not in _СКАНЕРЫ:
-        _СКАНЕРЫ[ключ] = IncomingScanner(registry)
-    return _СКАНЕРЫ[ключ]
+    with _СКАНЕРЫ_LOCK:
+        if ключ not in _СКАНЕРЫ:
+            _СКАНЕРЫ[ключ] = IncomingScanner(registry)
+        return _СКАНЕРЫ[ключ]
 
 SCOPES = {
     "objects": "объектам",

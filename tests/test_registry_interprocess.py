@@ -635,3 +635,140 @@ def test_remove_сверяет_штамп_до_записи(tmp_path, monkeypatc
     payload = json.loads(server.registry_path.read_text(encoding="utf-8"))
     ids = {raw["id"] for raw in payload["sources"]}
     assert "Другая" in ids and "Пример" not in ids
+
+
+def _m6_owner_generation(tmp_path, kind):
+    from test_intake_v2_extensions import _materialized, _stage_active_base
+
+    registry = Registry(tmp_path / 'data')
+    registry.startup()
+    assert registry.role == 'owner'
+    _collection, base = _materialized(tmp_path, 'm6-base')
+    registry.publish_generation(_stage_active_base(registry, base))
+    generation = base
+    if kind == 'extension':
+        _collection, generation = _materialized(
+            tmp_path, 'm6-extension', configuration_name='DemoExtension', extension=True,
+        )
+        registry.publish_generation(registry.stage_generation(
+            generation.manifest, generation.payloads,
+        ))
+    pointer = registry.active_generation_pointer(generation.manifest.identity)
+    assert pointer is not None
+    return registry, pointer
+
+
+def _m6_guest_writes_syntax(registry, tmp_path, monkeypatch):
+    from conftest import write_syntax
+    import test_registry_interprocess as process_helpers
+
+    syntax = write_syntax(tmp_path / 'guest-syntax', '8.3.99.1')
+    # Тот же механизм дочернего процесса, что и _start_server, но lease уже
+    # у родителя: ребёнок обязан записать как guest, а не второй owner.
+    child = f'''
+import sys
+from pathlib import Path
+from mcp1c.registry import Registry
+registry = Registry(sys.argv[1])
+registry.startup()
+assert registry.role == 'guest'
+registry.add_syntax(Path({str(syntax)!r}))
+registry.save()
+print('ready', flush=True)
+sys.stdin.readline()
+'''
+    monkeypatch.setattr(process_helpers, '_SERVER', child)
+    process = process_helpers._start_server(registry.data_dir)
+    try:
+        payload = json.loads(registry.registry_path.read_text(encoding='utf-8'))
+        source = next(row for row in payload['sources'] if row['id'] == 'syntax-8.3.99.1')
+        return source
+    finally:
+        process_helpers._stop(process)
+
+
+@pytest.mark.parametrize('kind', ['configuration', 'extension'])
+def test_m6_accept_noop_перечитывает_guest_и_сохраняет_поколение(tmp_path, monkeypatch, kind):
+    registry, previous = _m6_owner_generation(tmp_path, kind)
+    guest_row = _m6_guest_writes_syntax(registry, tmp_path, monkeypatch)
+
+    accepted = registry.accept_generation_noop(previous, 'm6-accepted-noop')
+
+    assert accepted.generation_id == previous.generation_id
+    assert accepted.root_path == previous.root_path
+    assert accepted.manifest_sha256 == previous.manifest_sha256
+    assert accepted.last_successful_load_job_id == 'm6-accepted-noop'
+    assert accepted.last_successful_load_at
+    assert registry.pending_generation_load(previous.identity, 'm6-accepted-noop') == accepted
+    assert guest_row['id'] in registry.snapshot().sources
+    payload = json.loads(registry.registry_path.read_text(encoding='utf-8'))
+    assert guest_row in payload['sources']
+    restarted = Registry(registry.data_dir)
+    assert restarted.restore() == []
+    restored = restarted.active_generation_pointer(previous.identity)
+    assert restored.generation_id == previous.generation_id
+    assert restored.last_successful_load_job_id == 'm6-accepted-noop'
+    assert guest_row['id'] in restarted.snapshot().sources
+
+
+@pytest.mark.parametrize('kind', ['configuration', 'extension'])
+def test_m6_acknowledge_перечитывает_guest_и_снимает_pending_marker(tmp_path, monkeypatch, kind):
+    registry, previous = _m6_owner_generation(tmp_path, kind)
+    accepted = registry.accept_generation_noop(previous, 'm6-pending-noop')
+    assert registry.pending_generation_load(previous.identity, 'm6-pending-noop') == accepted
+    guest_row = _m6_guest_writes_syntax(registry, tmp_path, monkeypatch)
+
+    registry.acknowledge_generation_load(previous.identity, 'm6-pending-noop')
+
+    assert registry.pending_generation_load(previous.identity, 'm6-pending-noop') is None
+    current = registry.active_generation_pointer(previous.identity)
+    assert current.generation_id == previous.generation_id
+    assert current.last_successful_load_at == accepted.last_successful_load_at
+    assert current.last_successful_load_job_id == 'm6-pending-noop'
+    assert guest_row['id'] in registry.snapshot().sources
+    payload = json.loads(registry.registry_path.read_text(encoding='utf-8'))
+    assert guest_row in payload['sources']
+    restarted = Registry(registry.data_dir)
+    assert restarted.restore() == []
+    assert restarted.pending_generation_load(previous.identity, 'm6-pending-noop') is None
+    assert guest_row['id'] in restarted.snapshot().sources
+
+
+def test_m6_intake_confirm_неразрешимый_registry_conflict_возвращает_409(tmp_path, monkeypatch):
+    from test_intake_v2_api import _client as intake_client, _service, _write_archive
+    from test_runtime_config import _L1_ADMIN
+
+    monkeypatch.setenv('ADMIN_TOKEN', _L1_ADMIN)
+    registry = Registry(tmp_path / 'data')
+    registry.startup()
+    service = _service(registry)
+    archive = registry.incoming_dir / 'm6-source.zip'
+    _write_archive(archive)
+    candidate = service.snapshot()['candidates'][0]
+    create = service.start(candidate['id'], 'create', job_id='m6-create')
+    service.prepare(create)
+    service.confirm(create.job_id)
+
+    _write_archive(archive)
+    candidate = service.snapshot()['candidates'][0]
+    update = service.start(candidate['id'], 'update_full', job_id='m6-noop-conflict')
+    service.prepare(update)
+    assert service.job_payload(update.job_id)['preview']['no_op'] is True
+    assert update.active is not None
+    identity = update.active.manifest.identity
+    before = registry.active_generation_pointer(identity)
+
+    # Постоянный конфликт durable-записи моделирует исчерпание повторов.
+    # Весь путь HTTP → service → coordinator → registry остаётся настоящим.
+    def conflicting_write(_payload):
+        raise RegistryChangedExternally('registry.json изменён другим процессом')
+
+    monkeypatch.setattr(registry, '_write_registry_payload', conflicting_write)
+    client = intake_client(registry, service)
+    response = client.post('/api/v1/sources/intake/confirm',
+        headers={'x-api-token': _L1_ADMIN}, json={'job_id': update.job_id})
+
+    assert response.status_code == 409
+    assert 'registry.json' in response.json()['error']
+    assert registry.active_generation_pointer(identity).generation_id == before.generation_id
+    assert service.job_payload(update.job_id)['commit'] is None

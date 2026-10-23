@@ -3260,6 +3260,7 @@ class Registry:
                 cached[7],
             )
 
+    @_refresh_on_external_change()
     def accept_generation_noop(
         self, expected: GenerationPointer, job_id: str | None
     ) -> GenerationPointer:
@@ -3307,6 +3308,7 @@ class Registry:
             self._retarget_extension_resolution_cache_locked(current, accepted)
             return accepted_pointer
 
+    @_refresh_on_external_change()
     def acknowledge_generation_load(self, identity: ExportIdentity, job_id: str) -> None:
         """Убрать маркер только после durable commit receipt."""
         self._ensure_owner("Очистка подтверждения загрузки")

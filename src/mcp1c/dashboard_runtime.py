@@ -82,6 +82,7 @@ from .registry import (
     KIND_MODULES,
     KIND_SYNTAX,
     Registry,
+    RegistryChangedExternally,
     RegistryError,
     SourceInUseError,
     SourcesChanged,
@@ -829,7 +830,10 @@ _INTAKE_JOB_ERRORS: _IntakeErrorTable = (
 )
 _INTAKE_CONFIRM_ERRORS: _IntakeErrorTable = (
     (404, (IntakeApiNotFound,)),
-    (409, (IntakeApiConflict, OperationConflict, CandidateStoreError)),
+    (
+        409,
+        (IntakeApiConflict, OperationConflict, CandidateStoreError, RegistryChangedExternally),
+    ),
     (
         422,
         (IntakeApiError, LifecycleError, OperationError, IntakeV2ContractError),

@@ -183,7 +183,7 @@ def test_http_по_умолчанию_слушает_loopback_и_не_довер
         "host": "127.0.0.1",
         "port": 8000,
         "forwarded_allow_ips": None,
-        "allowed_hosts": ("127.0.0.1", "localhost", "[::1]"),
+        "allowed_hosts": ("127.0.0.1", "localhost", "[::1]", "host.docker.internal"),
     }
 
 

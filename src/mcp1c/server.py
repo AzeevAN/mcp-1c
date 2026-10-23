@@ -1913,7 +1913,7 @@ def main(argv: list[str] | None = None) -> int:
         forwarded: str | None = None
         if args.transport != "stdio":
             hosts = (
-                configured_allowed_hosts()
+                configured_allowed_hosts(bind_host=args.host)
                 if host_check_required(args.host)
                 else None
             )
@@ -1944,6 +1944,20 @@ def main(argv: list[str] | None = None) -> int:
             "обращаются клиенты, перечислите в MCP1C_ALLOWED_HOSTS.",
             file=sys.stderr,
         )
+
+    if args.transport != "stdio" and hosts is None:
+        if access == ACCESS_HTTPS_PROXY:
+            message = (
+                "Предупреждение: проверка Host/Origin выключена; задайте "
+                "MCP1C_PUBLIC_BASE_URL или MCP1C_ALLOWED_HOSTS для HTTPS proxy."
+            )
+        else:
+            message = (
+                "Предупреждение: проверка Host/Origin выключена; задайте "
+                "конкретный MCP1C_PUBLISHED_ADDRESS, MCP1C_PUBLIC_BASE_URL "
+                "или MCP1C_ALLOWED_HOSTS."
+            )
+        print(message, file=sys.stderr)
 
     if (
         network_http

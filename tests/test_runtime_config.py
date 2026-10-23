@@ -16,6 +16,8 @@ from mcp1c.runtime_config import (
     DashboardModeError,
     TokenConfigurationError,
     access_mode,
+    allowed_hosts,
+    host_check_required,
     dashboard_mode,
     require_tokens,
 )
@@ -132,3 +134,40 @@ def test_require_tokens_принимает_разные_стойкие_токе�
     assert token_is_strong(_L1_ADMIN)
 
     assert require_tokens({"API_TOKEN": _L1_API, "ADMIN_TOKEN": _L1_ADMIN}) is None
+
+
+
+
+@pytest.mark.parametrize(
+    ('mode', 'bind', 'extra', 'required'),
+    [
+        ('local', '0.0.0.0', {}, True),
+        ('local', '::', {}, True),
+        ('local', '192.0.2.10', {}, True),
+        ('https-proxy', '0.0.0.0', {}, False),
+        ('https-proxy', '192.0.2.10', {}, False),
+        ('https-proxy', '0.0.0.0', {'MCP1C_PUBLISHED_ADDRESS': '192.0.2.10'}, False),
+        ('https-proxy', '0.0.0.0', {'MCP1C_PUBLIC_BASE_URL': 'https://mcp.example'}, True),
+        ('https-proxy', '0.0.0.0', {'MCP1C_ALLOWED_HOSTS': 'mcp.lan'}, True),
+        ('http', '0.0.0.0', {}, False),
+        ('http', '::', {'MCP1C_PUBLISHED_ADDRESS': '::'}, False),
+        ('http', '192.0.2.10', {}, True),
+        ('http', '192.0.2.10', {'MCP1C_PUBLISHED_ADDRESS': '0.0.0.0'}, False),
+        ('http', '0.0.0.0', {'MCP1C_PUBLIC_BASE_URL': 'http://mcp.example'}, True),
+        ('http', '0.0.0.0', {'MCP1C_ALLOWED_HOSTS': 'mcp.lan'}, True),
+    ],
+)
+def test_i2_host_guard_следует_топологии(mode, bind, extra, required):
+    environment = {'API_TOKEN': _L1_API, 'MCP1C_ACCESS': mode, **extra}
+    assert host_check_required(bind, environment) is required
+
+
+@pytest.mark.parametrize('mode', ['local', 'http', 'https-proxy'])
+@pytest.mark.parametrize('bare', ['no-api', 'loopback'])
+def test_i2_bare_override_сохраняет_защиту(mode, bare):
+    environment = {'MCP1C_ACCESS': mode}
+    bind = '0.0.0.0'
+    if bare == 'loopback':
+        environment['API_TOKEN'] = _L1_API
+        bind = '127.0.0.1'
+    assert host_check_required(bind, environment) is True

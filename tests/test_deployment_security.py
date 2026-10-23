@@ -129,12 +129,12 @@ def test_compose_передаёт_список_хостов_и_proxy_без_об
 
     assert "MCP1C_TRUSTED_PROXIES: ${MCP1C_TRUSTED_PROXIES:-}" in compose
     assert "MCP1C_ALLOWED_HOSTS: ${MCP1C_ALLOWED_HOSTS:-}" in compose
-    # Пустые значения из Compose не меняют штатный контейнер: прямой режим
-    # не получает доверия proxy, а bind 0.0.0.0 с токеном — проверки Host.
+    # Доверие proxy не зависит от проверки Host: local сохраняет её
+    # и без явного списка дополнительных имён.
     tokens = {"API_TOKEN": "a" * 40, "MCP1C_TRUSTED_PROXIES": "", "MCP1C_ALLOWED_HOSTS": ""}
     assert forwarded_allow_ips(False, tokens) is None
     assert forwarded_allow_ips(True, tokens) == "*"
-    assert host_check_required("0.0.0.0", tokens) is False
+    assert host_check_required("0.0.0.0", tokens) is True
 
 
 def test_код_приложения_не_принадлежит_runtime_пользователю():
@@ -144,3 +144,11 @@ def test_код_приложения_не_принадлежит_runtime_пол�
     assert "chown -R mcp1c /data /app" not in dockerfile
     assert "--chown=10001" not in dockerfile
     assert "PYTHONDONTWRITEBYTECODE=1" in dockerfile
+
+
+
+
+def test_i2_compose_передаёт_серверу_тот_же_адрес_публикации():
+    compose = _compose()
+    assert 'host_ip: "${MCP1C_BIND_ADDRESS:-127.0.0.1}"' in compose
+    assert 'MCP1C_PUBLISHED_ADDRESS: ${MCP1C_BIND_ADDRESS:-127.0.0.1}' in compose

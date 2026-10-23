@@ -72,19 +72,19 @@ def test_публичный_адрес_и_явный_список_расширя
     hosts = allowed_hosts(
         {
             "MCP1C_PUBLIC_BASE_URL": "https://mcp.example.com",
-            "MCP1C_ALLOWED_HOSTS": "192.168.0.5, host.docker.internal:5001",
+            "MCP1C_ALLOWED_HOSTS": "192.168.0.5, port-limited.example:5001",
         }
     )
 
     assert _client(hosts, "https://mcp.example.com").get("/health").status_code == 200
     assert _client(hosts, "http://192.168.0.5:80").get("/health").status_code == 200
     assert (
-        _client(hosts, "http://host.docker.internal:5001").get("/health").status_code
+        _client(hosts, "http://port-limited.example:5001").get("/health").status_code
         == 200
     )
     # Порт, указанный явно, сверяется точно.
     assert (
-        _client(hosts, "http://host.docker.internal:6000").get("/health").status_code
+        _client(hosts, "http://port-limited.example:6000").get("/health").status_code
         == 421
     )
 
@@ -129,8 +129,8 @@ def test_проверка_host_включена_без_токена_и_на_loop
     assert host_check_required("127.0.0.1", {}) is True
     assert host_check_required("0.0.0.0", {}) is True
     assert host_check_required("127.0.0.1", {"API_TOKEN": "x" * 32}) is True
-    # Docker: bind 0.0.0.0, токен обязателен, клиенты приходят по любому имени.
-    assert host_check_required("0.0.0.0", {"API_TOKEN": "x" * 32}) is False
+    # В local контейнер с токеном также защищён от чужого имени сервера.
+    assert host_check_required("0.0.0.0", {"API_TOKEN": "x" * 32}) is True
     assert (
         host_check_required(
             "0.0.0.0", {"API_TOKEN": "x" * 32, "MCP1C_ALLOWED_HOSTS": "mcp.lan"}
@@ -252,7 +252,7 @@ def test_stdio_без_токена_не_требует_флага(tmp_path, monk
     assert запуски == [{"transport": "stdio"}]
 
 
-def test_docker_с_токенами_не_включает_проверку_host(tmp_path, monkeypatch):
+def test_docker_с_токенами_сохраняет_local_проверку_host(tmp_path, monkeypatch):
     monkeypatch.setenv("API_TOKEN", _L1_API)
     monkeypatch.setenv("ADMIN_TOKEN", _L1_ADMIN)
     monkeypatch.delenv("MCP1C_ALLOWED_HOSTS", raising=False)
@@ -264,7 +264,7 @@ def test_docker_с_токенами_не_включает_проверку_host(
         )
         == 0
     )
-    assert параметры["allowed_hosts"] is None
+    assert параметры["allowed_hosts"] == ("127.0.0.1", "localhost", "[::1]", "host.docker.internal")
 
 
 def test_неверный_trusted_proxies_останавливает_старт(tmp_path, monkeypatch):
@@ -557,3 +557,131 @@ def test_https_proxy_предупреждает_о_пустом_trusted_толь
     else:
         assert "MCP1C_TRUSTED_PROXIES" not in captured.err
     _l1_no_tokens_in(captured.out + captured.err, (_L1_API, _L1_ADMIN))
+
+
+
+
+@pytest.mark.parametrize(
+    ('mode', 'extra', 'host', 'status'),
+    [
+        ('local', {}, 'localhost:5001', 200),
+        ('local', {}, '127.0.0.1:5001', 200),
+        ('local', {}, '[::1]:5099', 200),
+        ('local', {}, 'host.docker.internal:5001', 200),
+        ('local', {}, 'evil.example', 421),
+        ('local', {'MCP1C_PUBLIC_BASE_URL': 'https://mcp.example.com'}, 'mcp.example.com:9443', 200),
+        ('local', {'MCP1C_ALLOWED_HOSTS': 'mcp.lan'}, 'mcp.lan:9123', 200),
+        ('local', {'MCP1C_PUBLISHED_ADDRESS': '192.0.2.10'}, '192.0.2.10:5001', 200),
+        ('http', {'MCP1C_PUBLISHED_ADDRESS': '2001:db8::10'}, '[2001:db8::10]:9123', 200),
+        ('http', {'MCP1C_PUBLISHED_ADDRESS': 'localhost'}, 'localhost:9123', 200),
+        ('http', {'MCP1C_PUBLISHED_ADDRESS': '0.0.0.0', 'MCP1C_ALLOWED_HOSTS': 'mcp.lan'}, '0.0.0.0:5001', 421),
+        ('https-proxy', {'MCP1C_PUBLIC_BASE_URL': 'https://mcp.example.com'}, 'mcp.example.com', 200),
+        ('https-proxy', {'MCP1C_PUBLIC_BASE_URL': 'https://mcp.example.com'}, '10.0.0.5', 421),
+        ('https-proxy', {'MCP1C_PUBLIC_BASE_URL': 'https://mcp.example.com', 'MCP1C_PUBLISHED_ADDRESS': '192.0.2.10'}, '192.0.2.10:5001', 421),
+    ],
+)
+def test_i2_реальная_http_граница_проверяет_выведенные_имена(mode, extra, host, status):
+    environment = {'API_TOKEN': _L1_API, 'MCP1C_ACCESS': mode, **extra}
+    assert host_check_required('0.0.0.0', environment)
+    hosts = allowed_hosts(environment, bind_host='0.0.0.0')
+    with _client(hosts) as client:
+        response = client.get('/api/v1/dashboard/bootstrap', headers={'host': host})
+        assert response.status_code == status
+        # Healthcheck контейнера остаётся доступен при любой публикации.
+        assert client.get('/health', headers={'host': '127.0.0.1:8000'}).status_code == 200
+
+
+@pytest.mark.parametrize('mode', ['local', 'http', 'https-proxy'])
+def test_i2_публикация_не_открывает_запись_чужому_origin(mode):
+    environment = {
+        'API_TOKEN': _L1_API, 'MCP1C_ACCESS': mode,
+        'MCP1C_PUBLISHED_ADDRESS': '192.0.2.10',
+        'MCP1C_PUBLIC_BASE_URL': 'https://mcp.example.com',
+    }
+    with _client(allowed_hosts(environment, bind_host='0.0.0.0')) as client:
+        assert client.post('/api/v1/queries', headers={
+            'host': 'mcp.example.com', 'origin': 'https://evil.example',
+        }).status_code == 403
+        assert client.post('/api/v1/queries', headers={
+            'host': 'mcp.example.com', 'origin': 'https://mcp.example.com',
+        }).status_code == 200
+
+
+@pytest.mark.parametrize(
+    ('mode', 'bind', 'extra', 'transport', 'guard', 'warn'),
+    [
+        ('local', '0.0.0.0', {}, 'streamable-http', True, False),
+        ('http', '0.0.0.0', {'MCP1C_PUBLISHED_ADDRESS': '0.0.0.0'}, 'streamable-http', False, True),
+        ('http', '0.0.0.0', {'MCP1C_PUBLISHED_ADDRESS': '192.0.2.10'}, 'streamable-http', True, False),
+        ('http', '192.0.2.10', {}, 'streamable-http', True, False),
+        ('https-proxy', '0.0.0.0', {}, 'streamable-http', False, True),
+        ('https-proxy', '0.0.0.0', {'MCP1C_PUBLIC_BASE_URL': 'https://mcp.example.com'}, 'streamable-http', True, False),
+        ('https-proxy', '0.0.0.0', {}, 'stdio', False, False),
+    ],
+)
+def test_i2_main_передаёт_границу_и_предупреждает_об_отключении(
+    tmp_path, monkeypatch, capsys, mode, bind, extra, transport, guard, warn,
+):
+    # Явный proxy устраняет независимое предупреждение о доверии forwarded-заголовкам.
+    _l1_main_environment(monkeypatch, access=mode, proxies='192.0.2.2' if mode == 'https-proxy' else '')
+    monkeypatch.delenv('MCP1C_PUBLISHED_ADDRESS', raising=False)
+    for name, value in extra.items():
+        monkeypatch.setenv(name, value)
+    http, stdio = _l1_main_stubs(monkeypatch)
+    assert server_module.main([
+        '--data', str(tmp_path), '--host', bind, '--transport', transport,
+    ]) == 0
+    if transport == 'stdio':
+        assert not http
+        assert stdio == [{'transport': 'stdio'}]
+    else:
+        assert (http['allowed_hosts'] is not None) is guard
+        if bind == '192.0.2.10':
+            with _client(http['allowed_hosts']) as client:
+                assert client.get('/health', headers={'host': bind + ':5099'}).status_code == 200
+                assert client.get('/health', headers={'host': 'evil.example'}).status_code == 421
+    captured = capsys.readouterr()
+    # TLS и proxy diagnostics не подменяют предупреждение об отключённой Host-защите.
+    host_warning = 'host' in captured.err.lower()
+    assert host_warning is warn
+    if warn:
+        assert 'предупреждение' in captured.err.lower()
+        if mode == 'https-proxy':
+            assert 'MCP1C_PUBLIC_BASE_URL' in captured.err
+    _l1_no_tokens_in(captured.out + captured.err, (_L1_API, _L1_ADMIN))
+
+
+@pytest.mark.parametrize('mode', ['local', 'http', 'https-proxy'])
+def test_i2_main_sdk_и_внешняя_граница_получают_одну_политику(tmp_path, monkeypatch, mode):
+    _l1_main_environment(monkeypatch, access=mode, proxies='192.0.2.2' if mode == 'https-proxy' else '')
+    monkeypatch.setenv('MCP1C_PUBLISHED_ADDRESS', '192.0.2.10')
+    if mode == 'https-proxy':
+        monkeypatch.setenv('MCP1C_PUBLIC_BASE_URL', 'https://mcp.example.com')
+    settings, served = [], []
+
+    class FakeServer:
+        def streamable_http_app(self, *, host, transport_security):
+            settings.append(transport_security)
+            return _app()
+
+    monkeypatch.setattr(server_module, 'Registry', _FakeRegistry)
+    monkeypatch.setattr(server_module, 'build_server', lambda registry, **kwargs: FakeServer())
+    monkeypatch.setitem(sys.modules, 'uvicorn', SimpleNamespace(
+        run=lambda app, **kwargs: served.append(app),
+    ))
+    assert server_module.main(['--data', str(tmp_path), '--host', '0.0.0.0']) == 0
+    assert len(settings) == len(served) == 1
+    sdk = settings[0]
+    assert sdk.enable_dns_rebinding_protection is True
+    accepted = 'mcp.example.com' if mode == 'https-proxy' else '192.0.2.10'
+    rejected = '192.0.2.10' if mode == 'https-proxy' else 'evil.example'
+    assert accepted + ':*' in sdk.allowed_hosts
+    assert 'https://' + accepted + ':*' in sdk.allowed_origins
+    assert rejected not in sdk.allowed_hosts
+    assert rejected + ':*' not in sdk.allowed_hosts
+    with TestClient(served[0]) as client:
+        assert client.get('/health', headers={'host': accepted + ':5099'}).status_code == 200
+        assert client.get('/health', headers={'host': rejected}).status_code == 421
+        assert client.post('/api/v1/queries', headers={
+            'host': accepted, 'origin': 'https://' + rejected,
+        }).status_code == 403

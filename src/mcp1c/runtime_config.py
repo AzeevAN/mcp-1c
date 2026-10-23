@@ -209,17 +209,46 @@ def _host_entry(raw: str) -> str:
     return hostname if port is None else f"{hostname}:{port}"
 
 
-def allowed_hosts(environ: Mapping[str, str] | None = None) -> tuple[str, ...]:
+def _published_host(source: Mapping[str, str], bind_host: str) -> str | None:
+    # Compose знает внешний bind, тогда как процесс внутри слушает 0.0.0.0.
+    # При bare-запуске адрес самого процесса используется как публикация.
+    raw = source.get("MCP1C_PUBLISHED_ADDRESS", "").strip() or bind_host.strip()
+    if not raw:
+        return None
+    try:
+        address = ipaddress.ip_address(raw.removeprefix("[").removesuffix("]"))
+    except ValueError:
+        parsed = split_host(raw)
+        if parsed is None or parsed[1] is not None:
+            raise HostConfigurationError(
+                "MCP1C_PUBLISHED_ADDRESS должен быть адресом или именем без порта."
+            ) from None
+        return parsed[0]
+    if address.is_unspecified:
+        return None
+    return f"[{address}]" if address.version == 6 else str(address)
+
+
+def allowed_hosts(
+    environ: Mapping[str, str] | None = None, *, bind_host: str = "",
+) -> tuple[str, ...]:
     """Имена, под которыми браузер вправе обращаться к серверу.
 
     Без такого списка страница с чужого сайта после DNS rebinding читает API
-    дашборда как свой origin. Источники: loopback, хост из
-    `MCP1C_PUBLIC_BASE_URL` (по нему уже ходит клиент за файлом модуля) и явный
-    `MCP1C_ALLOWED_HOSTS`. Неверный публичный адрес здесь не роняет старт: о нём
+    дашборда как свой origin. Источники зависят от MCP1C_ACCESS: loopback,
+    локальный Docker alias, конкретный адрес публикации, публичный URL
+    и явный MCP1C_ALLOWED_HOSTS. Неверный публичный адрес здесь не роняет старт: о нём
     сообщит сам инструмент скачивания, как и раньше.
     """
     source = os.environ if environ is None else environ
     entries = list(LOOPBACK_HOSTS)
+    mode = access_mode(source)
+    if mode == ACCESS_LOCAL:
+        entries.append("host.docker.internal")
+    if mode in (ACCESS_LOCAL, ACCESS_HTTP):
+        published = _published_host(source, bind_host)
+        if published is not None:
+            entries.append(published)
     base = source.get("MCP1C_PUBLIC_BASE_URL", "").strip()
     if base:
         try:
@@ -239,22 +268,19 @@ def allowed_hosts(environ: Mapping[str, str] | None = None) -> tuple[str, ...]:
 
 
 def host_check_required(bind_host: str, environ: Mapping[str, str] | None = None) -> bool:
-    """Включать ли проверку Host/Origin для всего HTTP-приложения.
-
-    Rebinding опасен там, где чтение не требует секрета: браузер жертвы
-    токена не знает, а cookie сессии привязана к настоящему имени сервера.
-    Поэтому проверка обязательна без `API_TOKEN` и на loopback (там список
-    имён известен заранее). В контейнере bind `0.0.0.0` и токены обязательны,
-    а клиенты приходят по IP, DNS-имени или `host.docker.internal`, — проверка
-    включается только явным `MCP1C_ALLOWED_HOSTS`, чтобы не сломать штатный
-    Compose.
-    """
+    """Вывести защиту Host/Origin из топологии и явных настроек доступа."""
     source = os.environ if environ is None else environ
-    return (
-        not source.get("API_TOKEN", "")
-        or is_loopback_bind(bind_host)
-        or bool(source.get("MCP1C_ALLOWED_HOSTS", "").strip())
-    )
+    mode = access_mode(source)
+    if not source.get("API_TOKEN", "") or is_loopback_bind(bind_host):
+        return True
+    if mode == ACCESS_LOCAL:
+        return True
+    if (
+        source.get("MCP1C_PUBLIC_BASE_URL", "").strip()
+        or source.get("MCP1C_ALLOWED_HOSTS", "").strip()
+    ):
+        return True
+    return mode == ACCESS_HTTP and _published_host(source, bind_host) is not None
 
 
 def forwarded_allow_ips(

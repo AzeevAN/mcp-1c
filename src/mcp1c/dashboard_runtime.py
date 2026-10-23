@@ -1964,8 +1964,9 @@ def _spa_routes(
                 CandidateStoreError,
             ) as error:
                 return _json_error(str(error), 409)
-        if role_tools_refresh is not None:
-            await role_tools_refresh()
+            finally:
+                if role_tools_refresh is not None:
+                    await role_tools_refresh()
         return JSONResponse({"removed": source_id})
 
     @admin_endpoint("Удаление файла", mutation=True)

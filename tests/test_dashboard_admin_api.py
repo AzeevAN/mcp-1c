@@ -416,3 +416,53 @@ def test_spa_upload_truncated_выгрузка_отклоняется_задан
     snapshot = registry.snapshot()
     assert snapshot.sources == {}
     assert snapshot.configurations == {}
+
+
+def test_remove_ошибка_purge_обновляет_каталог_ролей_и_сохраняет_http_ошибку(tmp_path, monkeypatch):
+    from mcp1c.intake_v2_lifecycle import LifecycleError
+    from test_intake_v2_api import _service, _write_archive
+    from test_runtime_config import _L1_ADMIN
+
+    monkeypatch.delenv('API_TOKEN', raising=False)
+    monkeypatch.setenv('ADMIN_TOKEN', _L1_ADMIN)
+    registry = Registry(tmp_path / 'data')
+    registry.startup()
+    service = _service(registry)
+    _write_archive(registry.incoming_dir / 'l6-configuration.zip')
+    candidate = service.snapshot()['candidates'][0]
+    work = service.start(candidate['id'], 'create', job_id='l6-create')
+    service.prepare(work)
+    service.confirm(work.job_id)
+    configuration = 'DemoConfiguration'
+    assert registry.snapshot().configuration_names == (configuration,)
+    assert service.has_configuration_jobs(configuration) is True
+
+    refreshed_catalogs = []
+
+    async def refresh_role_tools():
+        # Callback видит уже изменённый Registry, даже если очистка intake
+        # после удаления поколения закончилась ошибкой.
+        refreshed_catalogs.append(registry.snapshot().configuration_names)
+        return True
+
+    message = 'Синтетический отказ очистки intake после удаления конфигурации'
+
+    def failed_purge(name):
+        assert name == configuration
+        raise LifecycleError(message)
+
+    monkeypatch.setattr(service, 'purge_configuration', failed_purge)
+    client = живой_клиент(Starlette(routes=routes(
+        registry, mode=DASHBOARD_ON, intake=service,
+        role_tools_refresh=refresh_role_tools,
+    )))
+    _login(client, _L1_ADMIN)
+
+    response = client.post('/api/v1/sources/remove', json={
+        'id': configuration, 'confirmation': configuration,
+    })
+
+    assert response.status_code == 409
+    assert response.json() == {'error': message}
+    assert configuration not in registry.snapshot().configuration_names
+    assert refreshed_catalogs == [()]

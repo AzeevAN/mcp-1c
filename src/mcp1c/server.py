@@ -584,7 +584,7 @@ class MCP1CServer(MCPServer):
 
     async def refresh_role_tools(self) -> bool:
         """Обновить каталог и уведомить подписанные современные сессии."""
-        changed = self._sync_role_tools()
+        changed = await run_in_threadpool(self._sync_role_tools)
         if changed:
             await self._role_subscriptions.publish(ToolsListChanged())
         return changed

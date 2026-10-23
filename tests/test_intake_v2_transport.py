@@ -1,7 +1,7 @@
 """RED-контракты безопасных транспортов CONFIG-INTAKE-V2.
 
-Все входы синтетические. Тесты не создают Registry и не обращаются к ``data/``:
-на этом этапе транспорт только сохраняет, перечисляет и потоково читает байты.
+Все входы синтетические. Транспорт и его отказы в потоке приёма проверяются
+во временных каталогах; рабочий ``data/`` не используется.
 """
 
 from __future__ import annotations
@@ -22,6 +22,13 @@ import pytest
 
 from mcp1c.intake_v2 import CandidateTransport, VirtualExportTree
 from mcp1c.resource_limits import ResourceLimits
+from test_resource_limits import (
+    _m2_forbid_zip_constructor,
+    _m2_oversized_directory,
+    _m2_zip_bytes,
+)
+
+
 
 
 SUBJECT = "mcp1c.intake_v2_transport"
@@ -678,3 +685,75 @@ def test_unknown_и_traversal_path_не_открываются(tmp_path):
         tree.open("../outside.xml")
     with pytest.raises(TransportSecurityError, match="путь"):
         tree.size("/outside.xml")
+
+
+@pytest.mark.parametrize("kind", ["entries", "directory-bytes", "zip64-entries", "zip64-directory-bytes"])
+def test_zip_tree_отказывает_по_eocd_до_zipfile_и_закрывает_дескриптор(
+    tmp_path, monkeypatch, kind
+):
+    ZipExportTree = _symbol("ZipExportTree")
+    TransportLimitError = _symbol("TransportLimitError")
+    module = importlib.import_module(SUBJECT)
+    path = tmp_path / "oversized.zip"
+    path.write_bytes(_m2_oversized_directory(kind))
+    opened = []
+    original = module._open_regular_file
+
+    def capture(path):
+        stream, identity = original(path)
+        opened.append(stream)
+        return stream, identity
+
+    monkeypatch.setattr(module, "_open_regular_file", capture)
+    monkeypatch.setattr(zipfile.ZipFile, "__init__", _m2_forbid_zip_constructor)
+    limits = _small_limits(max_entries=100_000 if kind == "zip64-entries" else 2)
+
+    with pytest.raises(TransportLimitError):
+        ZipExportTree(path, transport=CandidateTransport.INCOMING, limits=limits)
+
+    assert len(opened) == 1
+    assert opened[0].closed
+
+
+def test_zip_tree_читает_обычный_zip_с_комментарием(tmp_path):
+    ZipExportTree = _symbol("ZipExportTree")
+    path = tmp_path / "commented.zip"
+    path.write_bytes(_m2_zip_bytes({"Configuration.xml": b"<MetaDataObject/>"},
+                                  comment=b"synthetic archive comment"))
+    tree = ZipExportTree(path, transport=CandidateTransport.INCOMING, limits=_small_limits())
+    try:
+        assert tree.paths() == ("Configuration.xml",)
+        with tree.open("Configuration.xml") as stream:
+            assert stream.read() == b"<MetaDataObject/>"
+    finally:
+        tree.close()
+
+
+@pytest.mark.parametrize("kind", ["entries", "directory-bytes", "zip64-entries", "zip64-directory-bytes"])
+def test_incoming_refresh_сохраняет_issue_превышенного_eocd_при_повторе(
+    tmp_path, monkeypatch, kind
+):
+    from mcp1c.intake_v2_lifecycle import CandidateCatalog, IntakeLifecycle
+    from test_intake_v2_lifecycle import _backend
+
+    managed, browser, _records, operations = _backend(tmp_path)
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    (incoming / "oversized.zip").write_bytes(_m2_oversized_directory(kind))
+    limits = _small_limits(max_entries=100_000 if kind == "zip64-entries" else 2)
+    lifecycle = IntakeLifecycle(
+        CandidateCatalog(managed / "catalog"), browser, operations,
+        incoming_root=incoming, limits=limits, intake_limits=limits,
+        directory_settle_seconds=0,
+    )
+    monkeypatch.setattr(zipfile.ZipFile, "__init__", _m2_forbid_zip_constructor)
+
+    first = lifecycle.refresh()
+    second = lifecycle.refresh()
+
+    assert first.candidates == ()
+    assert len(first.issues) == 1
+    assert first.issues[0].origin_name == "oversized.zip"
+    assert "предел" in first.issues[0].message.lower()
+    assert second.candidates == ()
+    assert second.issues == first.issues

@@ -20,6 +20,10 @@ from typing import BinaryIO, Iterable
 MIB = 1024 * 1024
 GIB = 1024 * MIB
 
+# Максимальный центральный каталог выгрузок (2026-10-23): 11813788 байт;
+# запас ×2,5 ограничивает память ZipFile до материализации ZipInfo.
+MAX_CENTRAL_DIRECTORY_BYTES = 29_534_470
+
 
 class ResourceLimitError(ValueError):
     """Недоверенный источник требует больше разрешённого бюджета."""
@@ -278,6 +282,32 @@ class LimitedReader:
         )
 
 
+def _precheck_central_directory(stream: BinaryIO, limits: ResourceLimits) -> None:
+    """Проверить ограниченный хвост ZIP до чтения центрального каталога."""
+    position = stream.tell()
+    try:
+        # Stdlib учитывает комментарий EOCD и 64-разрядные поля ZIP64. Сам
+        # ZipFile читает весь size_cd прежде, чем отдаст нам infolist().
+        record = zipfile._EndRecData(stream)
+        if record is None:
+            raise zipfile.BadZipFile("Не найдена конечная запись ZIP")
+        size = record[zipfile._ECD_SIZE]
+        entries = record[zipfile._ECD_ENTRIES_TOTAL]
+        if size > MAX_CENTRAL_DIRECTORY_BYTES:
+            raise ResourceLimitError(
+                f"Центральный каталог ZIP: размер {size} байт превышает предел "
+                f"{MAX_CENTRAL_DIRECTORY_BYTES} байт."
+            )
+        # Файлы и явные записи каталогов имеют отдельный бюджет max_entries.
+        if entries > limits.max_entries * 2:
+            raise ResourceLimitError(
+                f"Центральный каталог ZIP: число записей {entries} превышает "
+                f"предел {limits.max_entries * 2} для файлов и каталогов."
+            )
+    finally:
+        stream.seek(position)
+
+
 class LimitedZipFile:
     """Небольшой façade ZipFile с общей проверкой состава и чтения."""
 
@@ -288,17 +318,40 @@ class LimitedZipFile:
         limits: ResourceLimits = ARCHIVE_LIMITS,
         label: str = "ZIP",
     ):
-        self._zip = zipfile.ZipFile(source)
-        self._infos = [info for info in self._zip.infolist() if not info.is_dir()]
-        self._budget = ResourceBudget(limits, label)
+        owned_source: BinaryIO | None = None
+        archive: zipfile.ZipFile | None = None
         try:
-            self._budget.validate_members(
+            if isinstance(source, (str, os.PathLike)):
+                owned_source = open(source, "rb")
+                stream = owned_source
+            else:
+                stream = source
+            _precheck_central_directory(stream, limits)
+            # Тот же дескриптор: замена пути между проверкой и разбором
+            # не должна подменить уже проверенный архив.
+            archive = zipfile.ZipFile(stream)
+            if owned_source is not None:
+                # Передаём владение ZipFile: его _fpclose держит дескриптор
+                # до закрытия последнего member, даже если архив уже закрыт.
+                archive._filePassed = 0
+                owned_source = None
+            infos = [info for info in archive.infolist() if not info.is_dir()]
+            budget = ResourceBudget(limits, label)
+            budget.validate_members(
                 (info.filename, info.file_size, info.compress_size)
-                for info in self._infos
+                for info in infos
             )
-        except Exception:
-            self._zip.close()
+        except BaseException:
+            try:
+                if archive is not None:
+                    archive.close()
+            finally:
+                if owned_source is not None:
+                    owned_source.close()
             raise
+        self._zip = archive
+        self._infos = infos
+        self._budget = budget
 
     def namelist(self) -> list[str]:
         return [info.filename for info in self._infos]

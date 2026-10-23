@@ -32,6 +32,7 @@ from .resource_limits import (
     ResourceLimitError,
     ResourceLimits,
     intake_archive_limits,
+    _precheck_central_directory,
 )
 
 
@@ -770,6 +771,10 @@ class ZipExportTree:
         source, identity = _open_regular_file(self.path)
         archive: zipfile.ZipFile | None = None
         try:
+            try:
+                _precheck_central_directory(source, limits)
+            except ResourceLimitError as error:
+                raise TransportLimitError(str(error)) from error
             archive = zipfile.ZipFile(source)
             members = self._inspect(archive, limits)
             budget = _read_budget(limits, "ZIP файловой выгрузки")

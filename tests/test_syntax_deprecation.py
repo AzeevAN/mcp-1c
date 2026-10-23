@@ -141,3 +141,20 @@ def test_замена_переносится_если_устаревшая_ст�
     warning = merged.items[OLD_ID].deprecations[0]
     assert warning.platform == "8.3.26.15"
     assert warning.replacements[0].target_id == NEW_ID
+
+
+def test_класс_устаревания_на_вложенных_p_и_ul_сохраняет_блок_div():
+    raw = _page(deprecated=True)
+    assert raw.count(b'<p class="not_used">') == 2
+    raw = raw.replace(b'<p class="not_used">', b'<p class="__DEPRECATED_SHOW_STYLE__">', 1)
+    assert raw.count(b'<ul>') == 1
+    raw = raw.replace(b'<ul>', b'<ul class="__DEPRECATED_SHOW_STYLE__">')
+
+    item = parse_page(OLD_ID + ".html", raw)
+
+    assert item is not None
+    assert item.since == "8.3.10"
+    assert item.deprecations[0].since == "8.3.26"
+    assert [link.href for link in item.deprecations[0].replacements] == [
+        "v8help://SyntaxHelperContext/" + NEW_ID + ".html",
+    ]

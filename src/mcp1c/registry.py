@@ -1957,6 +1957,8 @@ class Registry:
             stored_path=self._relative(index_path),
         )
 
+        source.warnings.extend(syntax.warnings)
+
         предупреждение = search_keys_coverage(syntax.items.keys()).as_warning()
         if предупреждение:
             source.warnings.append(предупреждение)

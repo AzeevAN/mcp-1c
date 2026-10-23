@@ -18,10 +18,11 @@ from __future__ import annotations
 import html
 import io
 import re
+import warnings
 from pathlib import Path
 from typing import Iterator
 
-from .resource_limits import LimitedZipFile
+from .resource_limits import LimitedZipFile, ResourceLimitError, SYNTAX_MAX_PAGE_BYTES
 from .syntax_model import (
     AVAILABILITY,
     KIND_EVENT,
@@ -42,34 +43,57 @@ from .v8container import V8Container, V8ContainerError
 
 FILE_STORAGE = "FileStorage"
 
-_RE_TAG = re.compile(r"<[^>]+>")
+# Внутри тега следующий '<' означает новое открытие, а не продолжение
+# прежнего. Это не даёт незавершённым тегам многократно сканировать весь хвост.
+_RE_TAG = re.compile(rf"<[^<>]{{1,{SYNTAX_MAX_PAGE_BYTES}}}>")
 _RE_BR = re.compile(r"<br\s*/?>", re.I)
 _RE_SPACE = re.compile(r"[ \t ]+")
-_RE_LINK = re.compile(r'<a\s[^>]*href="([^"]*)"[^>]*>(.*?)</a>', re.I | re.S)
+_RE_LINK = re.compile(
+    rf'<a\s[^<>]{{0,{SYNTAX_MAX_PAGE_BYTES}}}href="([^"<>]{{0,{SYNTAX_MAX_PAGE_BYTES}}})"'
+    rf'[^<>]{{0,{SYNTAX_MAX_PAGE_BYTES}}}>'
+    rf'((?:[^<]{{1,{SYNTAX_MAX_PAGE_BYTES}}}+|<(?!/a>|a\s)){{0,{SYNTAX_MAX_PAGE_BYTES}}}?)</a>',
+    re.I | re.S,
+)
 
-# Классы разметки одни и те же во всех версиях справки, а теги — нет: до
-# какой-то версии разделы размечались `div`, позже `p`. Справка от 8.3.5
-# целиком на `div`, от 8.3.27 — на `p`. Поэтому тег в выражениях не
-# фиксируется: иначе на старой справке достаются имена и ничего больше —
-# 18 936 элементов и ноль описаний.
-_RE_PAGETITLE = re.compile(r'class="V8SH_pagetitle"[^>]*>(.*?)</h1>', re.I | re.S)
-_RE_TITLE = re.compile(r'class="V8SH_title"[^>]*>(.*?)</(?:p|div)>', re.I | re.S)
-_RE_HEADING = re.compile(r'class="V8SH_heading"[^>]*>(.*?)</(?:p|div)>', re.I | re.S)
-_RE_CODESAMPLE = re.compile(r'class="V8SH_codesample"[^>]*>(.*?)</(?:pre|div|p)>', re.I | re.S)
+
+def _section_pattern(marker: str, closing: str, *, opening: str = "") -> re.Pattern:
+    # Незакрытый раздел заканчивается перед следующим таким же маркером:
+    # повторные открытия не должны заново обходить оставшуюся страницу.
+    marker = re.escape(f'class="{marker}"')
+    prefix = re.escape(opening) + marker
+    # Поиск буквального class-маркера сохраняет быстрый путь обычных страниц.
+    # У общих разделов маркер может начинаться внутри текстового фрагмента;
+    # проверяем его только на 'c', а не на каждом символе текста.
+    if opening:
+        text = rf'[^<]{{1,{SYNTAX_MAX_PAGE_BYTES}}}+'
+        next_opening = "|" + re.escape(opening[1:]) + marker
+    else:
+        text = rf'[^<c]{{1,{SYNTAX_MAX_PAGE_BYTES}}}+|c(?!{marker[1:]})'
+        next_opening = ""
+    return re.compile(
+        rf'{prefix}[^<>]{{0,{SYNTAX_MAX_PAGE_BYTES}}}>'
+        rf'((?:{text}|<(?!{closing[1:]}{next_opening}))'
+        rf'{{0,{SYNTAX_MAX_PAGE_BYTES}}}?){closing}',
+        re.I | re.S,
+    )
+
+
+# Классы устойчивы, но старые справки используют div вместо p.
+_RE_PAGETITLE = _section_pattern("V8SH_pagetitle", r"</h1>")
+_RE_TITLE = _section_pattern("V8SH_title", r"</(?:p|div)>")
+_RE_HEADING = _section_pattern("V8SH_heading", r"</(?:p|div)>")
+_RE_CODESAMPLE = _section_pattern("V8SH_codesample", r"</(?:pre|div|p)>")
 _RE_VERSION = re.compile(r"начиная с версии\s*([\d.]+)")
-_RE_SINCE_BLOCK = re.compile(
-    r'<div class="__SINCE_SHOW_STYLE__"[^>]*>(.*?)</div>', re.I | re.S
-)
-_RE_DEPRECATED_BLOCK = re.compile(
-    r'<div class="__DEPRECATED_SHOW_STYLE__"[^>]*>(.*?)</div>', re.I | re.S
-)
-_RE_LEGACY_VERSION = re.compile(
-    r'<p class="V8SH_versionInfo"[^>]*>(.*?)</p>', re.I | re.S
-)
+_RE_SINCE_BLOCK = _section_pattern("__SINCE_SHOW_STYLE__", r"</div>", opening="<div ")
+_RE_DEPRECATED_BLOCK = _section_pattern("__DEPRECATED_SHOW_STYLE__", r"</div>", opening="<div ")
+_RE_LEGACY_VERSION = _section_pattern("V8SH_versionInfo", r"</p>", opening="<p ")
 
-# Разбивка тела страницы на разделы по заголовкам V8SH_chapter.
 _RE_CHAPTER = re.compile(
-    r'<(?:p|div) class="V8SH_chapter"[^>]*>(.*?)</(?:p|div)>', re.I | re.S
+    rf'<(?:p|div) class="V8SH_chapter"[^<>]{{0,{SYNTAX_MAX_PAGE_BYTES}}}>'
+    rf'((?:[^<]{{1,{SYNTAX_MAX_PAGE_BYTES}}}+|'
+    rf'<(?!/(?:p|div)>|(?:p|div) class="V8SH_chapter"))'
+    rf'{{0,{SYNTAX_MAX_PAGE_BYTES}}}?)</(?:p|div)>',
+    re.I | re.S,
 )
 
 # «НазваниеРус (NameEng)»
@@ -93,10 +117,14 @@ _MEMBER_CHAPTERS = {
 
 def _text(fragment: str) -> str:
     """HTML-фрагмент -> плоский текст."""
-    fragment = _RE_BR.sub("\n", fragment)
-    fragment = _RE_TAG.sub("", fragment)
-    fragment = html.unescape(fragment)
+    if "<" in fragment:
+        fragment = _RE_BR.sub("\n", fragment)
+        fragment = _RE_TAG.sub("", fragment)
+    if "&" in fragment:
+        fragment = html.unescape(fragment)
     fragment = _RE_SPACE.sub(" ", fragment)
+    if "\n" not in fragment:
+        return fragment.strip()
     return "\n".join(line.strip() for line in fragment.split("\n")).strip()
 
 
@@ -166,7 +194,7 @@ def _parse_availability(fragment: str) -> list[str]:
 def _parse_params(fragment: str) -> list[SyntaxParam]:
     """Параметры размечены блоками <div class="V8SH_rubric">Имя (обязательный)</div>."""
     params: list[SyntaxParam] = []
-    blocks = re.split(r'<div class="V8SH_rubric"[^>]*>', fragment, flags=re.I)
+    blocks = re.split(r'<div class="V8SH_rubric"[^<>]*>', fragment, flags=re.I)
     for block in blocks[1:]:
         head, _, tail = block.partition("</div>")
         head_text = _text(head)
@@ -235,6 +263,7 @@ def _kind_from_path(path: str) -> str:
 
 def parse_page(path: str, raw: bytes) -> SyntaxItem | None:
     """Разобрать одну html-страницу справки."""
+    _check_page_size(path, len(raw))
     body = _decode(raw)
 
     title_match = _RE_PAGETITLE.search(body)
@@ -357,6 +386,25 @@ def open_file_storage(hbk_path: str | Path) -> LimitedZipFile:
     return LimitedZipFile(io.BytesIO(blob), label="FileStorage справки")
 
 
+class SyntaxPageLimitError(ResourceLimitError):
+    """Одна страница справки превышает отдельный предел чтения."""
+
+
+def _check_page_size(path: str, size: int) -> None:
+    if size > SYNTAX_MAX_PAGE_BYTES:
+        raise SyntaxPageLimitError(
+            f"{path}: страница больше предела {SYNTAX_MAX_PAGE_BYTES} байт"
+        )
+
+
+def _read_page(archive: LimitedZipFile, info) -> bytes:
+    _check_page_size(info.filename, info.file_size)
+    with archive.open(info.filename) as stream:
+        raw = stream.read(SYNTAX_MAX_PAGE_BYTES + 1)
+    _check_page_size(info.filename, len(raw))
+    return raw
+
+
 def parse_hbk(hbk_path: str | Path, platform: str = "") -> SyntaxIndex:
     """Разобрать справку целиком."""
     index = SyntaxIndex(source=str(hbk_path))
@@ -364,10 +412,15 @@ def parse_hbk(hbk_path: str | Path, platform: str = "") -> SyntaxIndex:
         index.platforms.append(platform)
 
     with open_file_storage(hbk_path) as archive:
-        for name in archive.namelist():
+        for info in archive.infolist():
+            name = info.filename
             if not name.endswith(".html"):
                 continue
-            item = parse_page(name, archive.read(name))
+            try:
+                item = parse_page(name, _read_page(archive, info))
+            except SyntaxPageLimitError as error:
+                index.warnings.append(str(error))
+                continue
             if item is not None and item.name_ru:
                 for deprecation in item.deprecations:
                     deprecation.platform = platform
@@ -384,9 +437,14 @@ def parse_hbk(hbk_path: str | Path, platform: str = "") -> SyntaxIndex:
 def iter_pages(hbk_path: str | Path) -> Iterator[SyntaxItem]:
     """Потоковый разбор — когда весь индекс в памяти держать не нужно."""
     with open_file_storage(hbk_path) as archive:
-        for name in archive.namelist():
+        for info in archive.infolist():
+            name = info.filename
             if not name.endswith(".html"):
                 continue
-            item = parse_page(name, archive.read(name))
+            try:
+                item = parse_page(name, _read_page(archive, info))
+            except SyntaxPageLimitError as error:
+                warnings.warn(str(error), RuntimeWarning, stacklevel=2)
+                continue
             if item is not None and item.name_ru:
                 yield item

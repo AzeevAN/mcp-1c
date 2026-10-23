@@ -18,12 +18,11 @@ from __future__ import annotations
 import gzip
 import json
 import os
-import tempfile
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
-from . import index_cache, fsio
+from . import fsio, index_cache
 
 from .syntax_model import (
     SyntaxFacts,
@@ -87,35 +86,35 @@ def save_syntax(index: SyntaxIndex, path: str | Path) -> Path:
     # отметка живой записи защищают его от `sweep_syntax`.
     prefix = f".{target.name}."
     with index_cache.live_write(target.parent, prefix):
-        descriptor, raw = tempfile.mkstemp(prefix=prefix, suffix=".tmp", dir=target.parent)
-        tmp = Path(raw)
+        directory = os.open(
+            target.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
         try:
-            # asdict всего индекса одновременно держал в памяти вторую копию
-            # всех страниц и ссылок. Пишем тот же JSON по одной карточке.
-            # mkstemp создаёт 0600, а разобранная справка — единственная
-            # копия (`.hbk` не хранится): root-CLI в контейнере с
-            # `cap_drop: ALL` и хост-пользователь читают её как раньше, с
-            # правами обычного файла.
-            try:
-                os.fchmod(descriptor, fsio.record_mode(target))
-            except OSError:
-                pass
-            with os.fdopen(descriptor, "wb") as raw_stream, gzip.open(
-                raw_stream, "wt", encoding="utf-8", compresslevel=6
-            ) as stream:
-                stream.write(json.dumps(header, ensure_ascii=False, separators=(",", ":"))[:-1])
-                stream.write(',"items":[')
-                for number, item in enumerate(index.items.values()):
-                    if number:
-                        stream.write(",")
-                    json.dump(
-                        _item_to_dict(item), stream, ensure_ascii=False, separators=(",", ":")
+            with fsio.atomic_writer(directory, target.name) as raw_stream:
+                # Карточки пишутся по одной: asdict всего индекса удерживал
+                # вторую копию страниц и ссылок. Права канонического индекса
+                # сохраняются, даже когда его пересоздаёт root-CLI.
+                try:
+                    os.fchmod(raw_stream.fileno(), fsio.record_mode(target))
+                except OSError:
+                    pass
+                with gzip.open(
+                    raw_stream, "wt", encoding="utf-8", compresslevel=6,
+                ) as stream:
+                    stream.write(
+                        json.dumps(header, ensure_ascii=False, separators=(",", ":"))[:-1]
                     )
-                stream.write("]}")
-            os.replace(tmp, target)
-        except BaseException:
-            tmp.unlink(missing_ok=True)
-            raise
+                    stream.write(',"items":[')
+                    for number, item in enumerate(index.items.values()):
+                        if number:
+                            stream.write(",")
+                        json.dump(
+                            _item_to_dict(item), stream,
+                            ensure_ascii=False, separators=(",", ":"),
+                        )
+                    stream.write("]}")
+        finally:
+            os.close(directory)
     return target
 
 

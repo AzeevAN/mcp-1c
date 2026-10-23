@@ -1268,7 +1268,9 @@ class Формы:
                     if корень_xml is not None
                     else None
                 )
-            except (ET.ParseError, ContentReadError, FormStructureError):
+            except (
+                ET.ParseError, ContentReadError, FormStructureError, RecursionError,
+            ):
                 # Индекс расходный: одна повреждённая форма помечается и
                 # не роняет сборку по всей выгрузке.
                 битая = True

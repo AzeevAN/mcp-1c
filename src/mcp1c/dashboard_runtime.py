@@ -867,7 +867,7 @@ def _intake_error_response(
 async def _json_body(request: Request) -> dict:
     try:
         payload = await request.json()
-    except ValueError:
+    except (ValueError, RecursionError):
         return {}
     return payload if isinstance(payload, dict) else {}
 

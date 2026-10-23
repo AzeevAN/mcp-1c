@@ -336,3 +336,27 @@ def test_queries_api_объясняет_отсутствующую_справк�
 
     assert response.status_code == 409
     assert response.json() == {"error": "Справка платформы не подключена."}
+
+
+
+
+def test_queries_api_глубокий_json_даёт_422_и_не_ломает_следующий_поиск(tmp_path, monkeypatch):
+    from test_runtime_config import _L1_API
+
+    monkeypatch.setenv('API_TOKEN', _L1_API)
+    registry = _registry(tmp_path)
+    headers = {'x-api-token': _L1_API, 'content-type': 'application/json'}
+    # Python-объект сам упадёт при сериализации, поэтому передаём готовые байты.
+    nested = b'[' * 100_000 + b'0' + b']' * 100_000
+    with _client(registry, tmp_path) as client:
+        response = client.post('/api/v1/queries', content=nested, headers=headers)
+        assert response.status_code == 422
+        assert isinstance(response.json()['error'], str)
+        assert response.json()['error']
+
+        following = client.post('/api/v1/queries', headers={'x-api-token': _L1_API}, json={
+            'config': '', 'scope': 'objects', 'phrases': ['контрагенты'],
+        })
+        assert following.status_code == 200
+        assert following.json()['results']
+        assert following.json()['results'][0]['hits']

@@ -537,3 +537,40 @@ def test_поиск_пропускает_декоративную_первую_�
     индекс = построить_поиск(о, tmp_path)
     попадания = индекс.search("остатки по учётной политике", limit=5)
     assert попадания and попадания[0].doc.payload.имя == "ТретьяПроверка"
+
+
+
+
+def test_глубокая_структура_form_xml_помечается_битой_и_не_прерывает_индекс(tmp_path):
+    depth = 5_000
+    # Имена различаются: отказ должен быть из-за глубины обхода, а не дубликатов.
+    nested = (
+        '<Form><ChildItems>'
+        + ''.join(f'<UsualGroup name="g{number}"><ChildItems>' for number in range(depth))
+        + '</ChildItems></UsualGroup>' * depth
+        + '</ChildItems></Form>'
+    )
+    good = '<Form><ChildItems><Button name="GoodButton"/></ChildItems></Form>'
+    for name, structure in [('Bad', nested), ('Good', good)]:
+        ext = tmp_path / 'Catalogs' / 'Пример' / 'Forms' / name / 'Ext'
+        (ext / 'Form').mkdir(parents=True)
+        (ext / 'Form' / 'Module.bsl').write_text(
+            'Процедура ПриОткрытии(Отказ)\nКонецПроцедуры\n', encoding='utf-8',
+        )
+        (ext / 'Form.xml').write_text(structure, encoding='utf-8')
+
+    forms = Формы.построить(tmp_path)
+    bad_address = 'Справочник.Пример.Форма.Bad'
+    good_address = 'Справочник.Пример.Форма.Good'
+    broken = forms.состав(bad_address)
+    healthy = forms.состав(good_address)
+    assert broken is not None
+    assert broken.битая is True
+    assert any(
+        problem.адрес == bad_address and problem.категория == 'form_xml_unreadable'
+        for problem in forms.проблемы
+    )
+    assert healthy is not None
+    assert healthy.битая is False
+    assert healthy.элементы == ['GoodButton']
+    assert not any(problem.адрес == good_address for problem in forms.проблемы)

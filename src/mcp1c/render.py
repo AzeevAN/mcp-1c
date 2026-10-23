@@ -19,7 +19,6 @@ from typing import Mapping
 
 from .graph import EDGE_TITLES, Graph
 from .model import Configuration, Field, MetadataObject
-from .structure_origin import StructureOriginView
 from .syntax_model import KIND_TITLES, SyntaxItem, parse_version
 from .xdto import XDTOMemberDetails
 
@@ -1033,26 +1032,7 @@ def _prop_value(value: object) -> str:
     return str(value)
 
 
-def _origin_annotation(sources: tuple[str, ...]) -> str:
-    if not sources:
-        return ""
-    if len(sources) == 1:
-        return (
-            f" · _объявлен расширением «{sources[0]}» "
-            "(статическая выгрузка)_"
-        )
-    names = ", ".join(f"«{name}»" for name in sources)
-    return (
-        f" · _источник неоднозначен: расширения {names} "
-        "(статические выгрузки)_"
-    )
-
-
-def _field_line(
-    item: Field,
-    collapse_after: int,
-    sources: tuple[str, ...] = (),
-) -> str:
+def _field_line(item: Field, collapse_after: int) -> str:
     line = f"- `{item.name}` — {item.type_spec(collapse_after)}"
     if item.synonym and item.synonym != item.name:
         line += f" // {item.synonym}"
@@ -1067,10 +1047,6 @@ def _field_line(
         line += "]"
     if item.indexing:
         line += f" [{item.indexing}]"
-    # Ссылочные поля и табличные части ждут отдельного доказанного корпуса.
-    # Даже если XML похож, до этого решения их происхождение не публикуем.
-    if not item.object_types():
-        line += _origin_annotation(sources)
     return line
 
 
@@ -1084,22 +1060,9 @@ def _fields_section(
     title: str,
     items: list[Field],
     collapse_after: int,
-    *,
-    object_address: str = "",
-    origins: StructureOriginView | None = None,
 ) -> list[str]:
     return _section(
-        title,
-        [
-            _field_line(
-                item,
-                collapse_after,
-                origins.field_sources(f"{object_address}.{item.name}")
-                if origins is not None and object_address
-                else (),
-            )
-            for item in items
-        ],
+        title, [_field_line(item, collapse_after) for item in items]
     )
 
 
@@ -1212,7 +1175,6 @@ def render_object(
     virtual_tables: list | None = None,
     table_availability: list | None = None,
     virtual_table_notes: list[str] | None = None,
-    origins: StructureOriginView | None = None,
 ) -> str:
     """Markdown-описание объекта на заданном уровне детализации."""
     if detail not in DETAIL_LEVELS:
@@ -1225,26 +1187,6 @@ def render_object(
         out.append(obj.comment)
     out.append("")
     out.append(f"Полное имя: `{obj.full_name}` · в коде: `{obj.manager_path}`")
-    object_sources = origins.object_sources(obj.full_name) if origins else ()
-    if object_sources:
-        if len(object_sources) == 1:
-            out.append(
-                f"Объявлен расширением: «{object_sources[0]}» "
-                "(статическая файловая выгрузка)."
-            )
-        else:
-            names = ", ".join(f"«{name}»" for name in object_sources)
-            out.append(
-                "Источник объекта неоднозначен: его объявляют расширения "
-                f"{names} (статические файловые выгрузки)."
-            )
-    if origins and origins.unknown:
-        out.append(
-            "Происхождение структуры: **неизвестно** — "
-            + "; ".join(origins.unknown)
-            + ". Непомеченные элементы нельзя считать частью основной "
-            "конфигурации."
-        )
     out.append("")
 
     if detail == BRIEF:
@@ -1270,13 +1212,7 @@ def render_object(
         out += _section("Свойства", существенные)
 
     out += _unlimited_strings_notice(obj)
-    out += _fields_section(
-        "Реквизиты",
-        obj.attributes,
-        collapse_after,
-        object_address=obj.full_name,
-        origins=origins,
-    )
+    out += _fields_section("Реквизиты", obj.attributes, collapse_after)
     out += _fields_section("Измерения", obj.dimensions, collapse_after)
     out += _fields_section("Ресурсы", obj.resources, collapse_after)
     out += _virtual_tables_section(

@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Mapping
 
-from . import modules_index, source_ids, structure_origin
+from . import modules_index, source_ids
 from .graph import Graph
 from .intake_v2 import ExportIdentity, GenerationManifest, SourceKind
 from .intake_v2_extensions import ExtensionResolution
@@ -241,9 +241,6 @@ class LoadedModules:
     # провайдера.
     версия_кода: str
     каталог: modules_index.ModuleCatalog | None = None
-    # Компактное доказательство происхождения структуры публикуется тем же
-    # поколением и тем же swap, что код. Исходный ZIP после приёма не нужен.
-    структура: structure_origin.StructureCatalog | None = None
     готов: bool = True
     прогресс: tuple[int, int] = (0, 0)
     этап: tuple[int, int] = (4, 4)

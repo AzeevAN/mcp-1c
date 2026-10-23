@@ -1,8 +1,7 @@
-"""Происхождение эффективной структуры из файловых выгрузок расширений.
+"""Source A поверх native-базы с расширением не даёт смешанного overlay.
 
-Тесты используют только синтетические имена и архивы.  Schema v1 намеренно
-уже содержит итоговое поле: новый слой объясняет его происхождение, а не
-меняет контракт структурной выгрузки.
+Тесты используют только синтетические имена и архивы. Schema v1 намеренно
+уже содержит поле расширения: так выглядит эффективная runtime-структура.
 """
 
 from __future__ import annotations
@@ -119,9 +118,9 @@ def test_source_a_не_создаёт_смешанный_overlay_через_lega
     service.prepare(work)
     service.confirm(work.job_id)
 
-    native_catalog = registry.resolve(_CONFIG).modules.структура
-    assert native_catalog is not None and native_catalog.complete
-    assert f"{_OBJECT}.{_FIELD}" not in native_catalog.fields
+    native = registry.resolve(_CONFIG)
+    assert native.modules is not None
+    assert _FIELD not in {f.name for f in native.configuration.config.get(_OBJECT).attributes}
 
     source_a = copy.deepcopy(registry.resolve(_CONFIG).configuration.config)
     for obj in source_a.objects.values():

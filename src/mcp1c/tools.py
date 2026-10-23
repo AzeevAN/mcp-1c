@@ -33,7 +33,6 @@ from . import (
     cursor as cursor_codec,
     replacements,
     source_ids,
-    structure_origin,
 )
 from .bsl_lex import Процедура, прочитать_модуль, разобрать
 from .intake_v2 import ExportIdentity
@@ -812,32 +811,6 @@ def _configuration_code_snapshot(
     raise SourcesChanged(
         "Источники кода изменились дважды; повторите запрос после завершения "
         "загрузки."
-    )
-
-
-def _structure_origin_view(
-    snapshot: _ConfigurationCodeSnapshot,
-) -> structure_origin.StructureOriginView:
-    """Происхождение из тех же поколений, что уже захватил ``get_object``."""
-    base_capture = snapshot.modules.capture
-    base_sha256 = base_capture.source.sha256 if base_capture.source else ""
-    base_catalog = (
-        base_capture.loaded.структура if base_capture.loaded is not None else None
-    )
-    extensions = tuple(
-        (
-            name,
-            view.capture.source.sha256 if view.capture.source else "",
-            view.capture.loaded.структура
-            if view.capture.loaded is not None
-            else None,
-        )
-        for name, view in snapshot.extensions
-    )
-    return structure_origin.resolve(
-        base_sha256=base_sha256,
-        base=base_catalog,
-        extensions=extensions,
     )
 
 
@@ -1856,7 +1829,6 @@ def get_object(
             virtual_tables=table_report.tables,
             table_availability=table_report.availability,
             virtual_table_notes=table_report.notes,
-            origins=_structure_origin_view(snapshot) if snapshot is not None else None,
         )
     if obj.kind == "HTTPСервис":
         bindings = (

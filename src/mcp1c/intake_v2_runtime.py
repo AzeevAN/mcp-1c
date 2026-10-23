@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
-from . import index_cache, source_ids, structure_origin
+from . import index_cache, source_ids
 from .defined_type_contract import resolve_defined_type
 from .module_address import разобрать_плоскую_xml_форму
 from .intake_v2 import (
@@ -72,7 +72,6 @@ class NativeGenerationRuntime:
     code_items_total: int
     locator_generation: int
     roles: LoadedRoleAccess | None
-    declared_structure: structure_origin.DeclaredStructure
     extension_structure: ExtensionStructure | None = None
 
 
@@ -1239,23 +1238,6 @@ def build_generation_runtime(
     # Расширения и стандартные реквизиты уже видны ниже, но исходные ссылки
     # по-прежнему остаются в `Field.types`; аннотация не меняет source-layer.
     _classify_defined_type_references(configuration)
-    if (
-        base_layer.provenance is not None
-        and base_layer.provenance.profile is LayerSourceProfile.SCHEMA_V1
-    ):
-        # Эффективная Source A может уже включать поля активных расширений.
-        # Считать её каталогом исходной B нельзя: legacy-разбор расширения
-        # вычтет такие поля и потеряет их происхождение. Отдельного снимка
-        # декларации B в этом смешанном поколении нет, поэтому честный
-        # результат — unknown, а не реконструкция по эффективной структуре.
-        declared_structure = structure_origin.DeclaredStructure(
-            False,
-            frozenset(),
-            frozenset(),
-            ("Source A не доказывает состав основной файловой выгрузки",),
-        )
-    else:
-        declared_structure = structure_origin.capture_configuration(configuration)
     try:
         materialize_standard_attributes(configuration)
     except StandardAttributeError as error:
@@ -1293,7 +1275,6 @@ def build_generation_runtime(
         ),
         locator_generation=locator_generation,
         roles=roles,
-        declared_structure=declared_structure,
         extension_structure=extension_structure,
     )
 

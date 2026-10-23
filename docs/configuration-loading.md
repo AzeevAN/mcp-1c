@@ -625,9 +625,8 @@ B, сервер работает в режиме `B_FULL`: один соглас
 требуют отдельного режима запроса. Несовместимый overlay в смешанном A/B view
 отклоняется до смены active generation. Повторная Source A с тем же
 семантическим SHA `base_structure` является no-op только внутри уже активного
-`A_ONLY`; после `B_FULL` она всё равно меняет active generation. Компактный
-каталог происхождения основной структуры восстанавливается из проверенного
-слоя native generation и после restart. Старое mixed-поколение получает
+`A_ONLY`; после `B_FULL` она всё равно меняет active generation. Старое
+mixed-поколение получает
 `RELOAD_REQUIRED` и не мигрирует само.
 
 HTTP-сервисы доступны из Source B теми же `search_objects` и `get_object`, что

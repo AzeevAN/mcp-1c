@@ -46,7 +46,7 @@ try:  # pragma: no cover - на Windows межпроцессного flock не�
 except ImportError:  # pragma: no cover
     fcntl = None
 
-from . import coverage_log, index_cache, modules_index, source_ids, structure_origin
+from . import coverage_log, index_cache, modules_index, source_ids
 from .dictionary import Dictionary, DictionaryError
 from .editions import edition_conflict
 from .graph import Graph
@@ -1659,7 +1659,6 @@ class Registry:
         source: Source,
         корень: Path,
         индексы: modules_index.Индексы,
-        структура: structure_origin.StructureCatalog | None = None,
     ) -> LoadedModules:
         """Один готовый пакет — общий путь для кэша, сборки и живой загрузки."""
         всего = len(индексы.оглавление.модули)
@@ -1672,7 +1671,6 @@ class Registry:
             поиск=индексы.поиск,
             версия_кода=source.code_version,
             каталог=индексы.каталог,
-            структура=структура,
             готов=True,
             прогресс=(всего, всего),
         )
@@ -3629,21 +3627,10 @@ class Registry:
         loaded_modules = None
         if prepared.module_source is not None:
             assert prepared.module_indices is not None
-            if prepared.parent_configuration is None:
-                origin_catalog = structure_origin.base_catalog(
-                    prepared.runtime.declared_structure,
-                    prepared.module_source.sha256,
-                )
-            else:
-                # Поколение расширения пока не хранит identity базы, с которой
-                # была доказана дельта. Вычислять её заново при restart по уже
-                # новой базе опасно: смена поколения стала бы незаметной.
-                origin_catalog = None
             loaded_modules = self._готовые_модули(
                 prepared.module_source,
                 root,
                 prepared.module_indices,
-                структура=origin_catalog,
             )
         return prepared.configuration, loaded_modules
 

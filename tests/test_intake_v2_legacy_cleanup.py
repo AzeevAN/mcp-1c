@@ -123,7 +123,8 @@ def test_cleanup_понимает_legacy_строки_без_новых_поле
             "incomplete",
         ):
             source.pop(field, None)
-    registry._write_registry_payload(payload)
+    with registry._registry_commit(payload):
+        pass
     generation = _native_generation(tmp_path, "old-registry")
 
     registry.publish_generation(

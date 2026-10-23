@@ -534,6 +534,11 @@ class Registry:
         self._synonyms = self.dictionary.synonyms()
 
         self._lock = threading.RLock()
+        # Учётное состояние не меняется между снимком и durable commit;
+        # snapshot берёт только _lock и не ждёт диска или гостевого flock.
+        self._registry_write_lock = threading.RLock()
+        self._registry_revision = 0
+        self._registry_commit_blocked = ""
         self._source_reservations: Counter[Path] = Counter()
         self._source_scopes = threading.local()
         # restore() поднимает уже записанные строки теми же add_*, что и
@@ -562,7 +567,7 @@ class Registry:
         # поверх параллельной публикации или remove). Legacy-строки restore
         # поднимает уже без него. Замок реентерабельный: restore поднимает
         # строки через add_configuration, который берёт его сам. Порядок:
-        # startup -> mutation -> cache -> registry.
+        # startup -> mutation -> registry_write -> cache -> registry.
         self._generation_mutation_lock = threading.RLock()
         # До WAL staging ещё принадлежит выполняющемуся intake. Слабые ссылки
         # защищают его при reload, не удерживая брошенный bundle после ошибки.
@@ -1309,7 +1314,7 @@ class Registry:
         # сериализуются с native publish/remove, иначе A затрёт новый runtime,
         # оставив на диске прежний pointer B. Автоповтор изменил бы намерение
         # уже выполняющейся загрузки: конфликт требует явного нового запроса.
-        with self._generation_mutation_lock, self._lock:
+        with self._generation_mutation_lock, self._registry_memory_change():
             if self._configuration_revisions.get(config.name, 0) != revision:
                 raise RegistryError(
                     f"Конфигурация «{config.name}» изменилась во время загрузки "
@@ -1699,7 +1704,7 @@ class Registry:
         живёт в памяти до следующей записи реестра, а сам корпус уже
         опубликован предыдущей атомарной записью.
         """
-        with self._modules_cache_lock:
+        with self._registry_write_lock, self._modules_cache_lock:
             with self._lock:
                 if not self._пакет_кода_актуален(source, loaded):
                     return False
@@ -1725,7 +1730,7 @@ class Registry:
                     coverage_log.remove(self.data_dir, source.id)
                 except OSError:
                     pass
-            with self._lock:
+            with self._registry_memory_change():
                 if not self._пакет_кода_актуален(source, loaded):
                     if записан:
                         try:
@@ -1935,7 +1940,7 @@ class Registry:
         file_key: tuple | None,
     ) -> dict[str, Source]:
         """Поставить учётную запись справки версии; вернуть снимок набора."""
-        with self._lock:
+        with self._registry_memory_change():
             self._check_source_revision(source.id, expected_revision)
             self._advance_source_revision(source.id)
             # Справки разных версий стоят рядом: та же версия — это исправление
@@ -2149,7 +2154,7 @@ class Registry:
                 prepared, problems = reuse, []
             else:
                 prepared, problems = self._prepare_syntax(versions, preloaded)
-            with self._lock:
+            with self._registry_memory_change():
                 if self._fingerprint(self.syntax_versions) == self._fingerprint(versions):
                     if self.syntax is not prepared:
                         self._advance_source_lifecycle_revision()
@@ -2194,10 +2199,6 @@ class Registry:
         # уже снятую identity новым поколением.
         with self._generation_mutation_lock:
             self._remove_serialized(source_id)
-            # Снятие сохраняется самой операцией: при отдельном save()
-            # вызывающего чужая запись между ними оставила бы память без
-            # источника, а файл и каталоги — расходящимися.
-            self._save_unrefreshed()
 
     def _remove_serialized(self, source_id: str) -> None:
         """Снять источник; для конфигурации — весь связанный агрегат.
@@ -2215,116 +2216,97 @@ class Registry:
         # вида недёшева, а тот же замок берут `resolve()` и инструменты MCP.
         отложенная_справка: dict[str, Source] | None = None
 
-        # Тот же порядок, что у writers: cache -> registry. После CAS старый
+        # Порядок writers: registry_write -> cache -> registry. После CAS старый
         # writer не может записать файл между `_drop_cache` и снятием Source.
-        with self._modules_cache_lock, self._lock:
-            # Штамп сверяется до первой записи: отказ записи registry.json
-            # после снятия оставил бы его применённым наполовину.
+        with self._registry_write_lock, self._modules_cache_lock:
+            self._ensure_not_blocked()
+            # Проверка диска не держит read lock и предшествует снятию.
             self._check_registry_stamp()
-            source = self.sources.get(source_id)
-            all_pointers = dict(self._generation_pointers)
-            carried_identities = {}
-            for key, raw in self._carried_generation_pointers.items():
-                identity = self._generation_row_identity(raw)
-                if identity is not None:
-                    carried_identities[key] = identity
-                try:
-                    pointer = GenerationPointer.from_dict(raw)
-                except (BundleStoreError, TypeError, ValueError):
-                    continue
-                all_pointers.setdefault(key, pointer)
-            native_configuration = next(
-                (
-                    (key, pointer)
-                    for key, pointer in all_pointers.items()
-                    if pointer.identity.source_kind is SourceKind.CONFIGURATION
-                    and source_id == pointer.identity.configuration_name
-                ),
-                None,
-            )
-            native_extension = next(
-                (
-                    (key, pointer)
-                    for key, pointer in all_pointers.items()
-                    if pointer.identity.source_kind is SourceKind.EXTENSION
-                    and source_id
-                    == source_ids.extension_modules_id(
-                        pointer.identity.parent_configuration,
-                        index_cache.safe_name(pointer.identity.extension_name),
-                    )
-                ),
-                None,
-            )
-            configuration_removal = (
-                native_configuration is not None
-                or (source is not None and source.kind == KIND_CONFIGURATION)
-                or any(
-                    identity.source_kind is SourceKind.CONFIGURATION
-                    and identity.configuration_name == source_id
-                    for identity in carried_identities.values()
+            with self._lock:
+                source = self.sources.get(source_id)
+                all_pointers = dict(self._generation_pointers)
+                carried_identities = {}
+                for key, raw in self._carried_generation_pointers.items():
+                    identity = self._generation_row_identity(raw)
+                    if identity is not None:
+                        carried_identities[key] = identity
+                    try:
+                        pointer = GenerationPointer.from_dict(raw)
+                    except (BundleStoreError, TypeError, ValueError):
+                        continue
+                    all_pointers.setdefault(key, pointer)
+                native_configuration = next(
+                    (
+                        (key, pointer)
+                        for key, pointer in all_pointers.items()
+                        if pointer.identity.source_kind is SourceKind.CONFIGURATION
+                        and source_id == pointer.identity.configuration_name
+                    ),
+                    None,
                 )
-            )
-            if configuration_removal:
-                native = [
-                    (key, pointer)
-                    for key, pointer in all_pointers.items()
+                native_extension = next(
+                    (
+                        (key, pointer)
+                        for key, pointer in all_pointers.items()
+                        if pointer.identity.source_kind is SourceKind.EXTENSION
+                        and source_id
+                        == source_ids.extension_modules_id(
+                            pointer.identity.parent_configuration,
+                            index_cache.safe_name(pointer.identity.extension_name),
+                        )
+                    ),
+                    None,
+                )
+                configuration_removal = (
+                    native_configuration is not None
+                    or (source is not None and source.kind == KIND_CONFIGURATION)
+                    or any(
+                        identity.source_kind is SourceKind.CONFIGURATION
+                        and identity.configuration_name == source_id
+                        for identity in carried_identities.values()
+                    )
+                )
+                if configuration_removal:
+                    native = [
+                        (key, pointer)
+                        for key, pointer in all_pointers.items()
+                        if (
+                            pointer.identity.source_kind is SourceKind.CONFIGURATION
+                            and pointer.identity.configuration_name == source_id
+                        )
+                        or (
+                            pointer.identity.source_kind is SourceKind.EXTENSION
+                            and pointer.identity.parent_configuration == source_id
+                        )
+                    ]
+                elif native_extension is not None:
+                    native = [native_extension]
+                else:
+                    native = []
+                carried_keys = {
+                    key for key, identity in carried_identities.items()
                     if (
-                        pointer.identity.source_kind is SourceKind.CONFIGURATION
-                        and pointer.identity.configuration_name == source_id
+                        configuration_removal
+                        and (
+                            identity.configuration_name == source_id
+                            if identity.source_kind is SourceKind.CONFIGURATION
+                            else identity.parent_configuration == source_id
+                        )
+                    ) or (
+                        not configuration_removal
+                        and identity.source_kind is SourceKind.EXTENSION
+                        and source_id == source_ids.extension_modules_id(
+                            identity.parent_configuration, index_cache.safe_name(identity.extension_name)
+                        )
                     )
-                    or (
-                        pointer.identity.source_kind is SourceKind.EXTENSION
-                        and pointer.identity.parent_configuration == source_id
-                    )
-                ]
-            elif native_extension is not None:
-                native = [native_extension]
-            else:
-                native = []
-            carried_keys = {
-                key for key, identity in carried_identities.items()
-                if (
-                    configuration_removal
-                    and (
-                        identity.configuration_name == source_id
-                        if identity.source_kind is SourceKind.CONFIGURATION
-                        else identity.parent_configuration == source_id
-                    )
-                ) or (
-                    not configuration_removal
-                    and identity.source_kind is SourceKind.EXTENSION
-                    and source_id == source_ids.extension_modules_id(
-                        identity.parent_configuration, index_cache.safe_name(identity.extension_name)
-                    )
-                )
-            }
-            if (
-                source is None
-                and not native
-                and not carried_keys
-                and source_id in self._carried_source_rows
-            ):
-                # Строку, не поднятую временным сбоем, снимают с учёта так же
-                # явно, как живую: вместе с перенесёнными строками её кода.
-                прежние_перенесённые = self._carried_source_rows
-                self._carried_source_rows = {
-                    sid: raw
-                    for sid, raw in прежние_перенесённые.items()
-                    if sid != source_id and not sid.startswith(f"{source_id}:")
                 }
-                try:
-                    self.save()
-                except BaseException:
-                    self._carried_source_rows = прежние_перенесённые
-                    raise
-                for sid in set(прежние_перенесённые) - set(self._carried_source_rows):
-                    self._advance_source_revision(sid)
-                self._advance_configuration_revision(source_id)
-                return
-            if source is None and not native and not carried_keys:
-                raise RegistryError(f"Источник не зарегистрирован: {source_id}")
+                carried_source_removal = (
+                    source is None and not native and not carried_keys
+                    and source_id in self._carried_source_rows
+                )
+                if source is None and not native and not carried_keys and not carried_source_removal:
+                    raise RegistryError(f"Источник не зарегистрирован: {source_id}")
 
-            if native or carried_keys:
                 next_pointers = dict(self._generation_pointers)
                 for native_key, _native_pointer in native:
                     next_pointers.pop(native_key, None)
@@ -2335,7 +2317,7 @@ class Registry:
                 next_carried_sources = {
                     sid: raw for sid, raw in self._carried_source_rows.items()
                     if sid != source_id and not (
-                        configuration_removal and sid.startswith(f"{source_id}:")
+                        (configuration_removal or carried_source_removal) and sid.startswith(f"{source_id}:")
                     )
                 }
                 next_carried_declarations = dict(self._carried_platform_declarations)
@@ -2349,93 +2331,101 @@ class Registry:
                 next_platform_declarations = dict(self._platform_declarations)
                 if configuration_removal:
                     next_platform_declarations.pop(source_id, None)
-                # Pointer и возможная строка Source A исчезают одной durable
-                # записью ДО удаления generation root. После SIGKILL
-                # restore уже не попытается открыть снятое поколение.
-                self._write_registry_payload(
-                    self._registry_payload(
-                        next_pointers,
-                        sources=next_sources,
-                        platform_declarations=next_platform_declarations,
-                        carried_generation_pointers=next_carried_pointers,
-                        carried_source_rows=next_carried_sources,
-                        carried_platform_declarations=next_carried_declarations,
-                    )
+                payload = self._registry_payload(
+                    next_pointers,
+                    sources=next_sources,
+                    platform_declarations=next_platform_declarations,
+                    carried_generation_pointers=next_carried_pointers,
+                    carried_source_rows=next_carried_sources,
+                    carried_platform_declarations=next_carried_declarations,
                 )
+                accepted = self._prepare_saved_dates_locked(payload)
+                removed_carried_sources = set(self._carried_source_rows) - set(next_carried_sources)
+            cache_sources: list[tuple[str, str]] = []
+            native_cleanup: list[tuple[str, str, str]] = []
+            with self._registry_commit(payload):
                 self._carried_generation_pointers = next_carried_pointers
                 self._carried_source_rows = next_carried_sources
                 self._carried_platform_declarations = next_carried_declarations
 
-            if configuration_removal:
-                self._advance_configuration_revision(source_id)
-                self._platform_declarations.pop(source_id, None)
-            self._advance_source_revision(source_id)
-            текущий = self.sources.pop(source_id, None)
-            if текущий is not None:
-                self._advance_source_lifecycle_revision()
-                self._drop_cache(source_id, текущий.kind)
-                if текущий.kind == KIND_CONFIGURATION:
-                    self.configurations.pop(source_id, None)
-                    self.roles.pop(source_id, None)
-                    self._relation_cache.pop(source_id, None)
-                elif self.syntax_versions.pop(source_id, None) is not None:
-                    self._relation_cache.clear()
-                    отложенная_справка = dict(self.syntax_versions)
+                if carried_source_removal:
+                    for sid in removed_carried_sources:
+                        self._advance_source_revision(sid)
+                    self._advance_configuration_revision(source_id)
+                    self._accept_saved_dates_locked(accepted)
+                    return
 
-            native_pointers: list[GenerationPointer] = []
-            for native_key, native_pointer in native:
-                native_pointers.append(native_pointer)
-                identity = native_pointer.identity
-                self._generation_pointers.pop(native_key, None)
-                self._generation_manifests.pop(native_key, None)
-                self._extension_resolution_cache = None
-                if identity.source_kind is SourceKind.CONFIGURATION:
-                    configuration = identity.configuration_name
-                    modules_id = source_ids.modules_id(configuration)
-                    self.configurations.pop(configuration, None)
-                    self.modules.pop(modules_id, None)
-                    self.roles.pop(configuration, None)
-                    self._relation_cache.pop(configuration, None)
-                    self._drop_cache(configuration, KIND_CONFIGURATION)
-                    self._drop_cache(modules_id, KIND_MODULES)
-                    try:
-                        self._cache_path(configuration, "roles.sqlite").unlink(
-                            missing_ok=True
+                if configuration_removal:
+                    self._advance_configuration_revision(source_id)
+                    self._platform_declarations.pop(source_id, None)
+                self._advance_source_revision(source_id)
+                текущий = self.sources.pop(source_id, None)
+                if текущий is not None:
+                    self._advance_source_lifecycle_revision()
+                    cache_sources.append((source_id, текущий.kind))
+                    if текущий.kind == KIND_CONFIGURATION:
+                        self.configurations.pop(source_id, None)
+                        self.roles.pop(source_id, None)
+                        self._relation_cache.pop(source_id, None)
+                    elif self.syntax_versions.pop(source_id, None) is not None:
+                        self._relation_cache.clear()
+                        отложенная_справка = dict(self.syntax_versions)
+
+                native_pointers: list[GenerationPointer] = []
+                for native_key, native_pointer in native:
+                    native_pointers.append(native_pointer)
+                    identity = native_pointer.identity
+                    self._generation_pointers.pop(native_key, None)
+                    self._generation_manifests.pop(native_key, None)
+                    self._extension_resolution_cache = None
+                    if identity.source_kind is SourceKind.CONFIGURATION:
+                        configuration = identity.configuration_name
+                        modules_id = source_ids.modules_id(configuration)
+                        self.configurations.pop(configuration, None)
+                        self.modules.pop(modules_id, None)
+                        self.roles.pop(configuration, None)
+                        self._relation_cache.pop(configuration, None)
+                        cache_sources.extend((
+                            (configuration, KIND_CONFIGURATION), (modules_id, KIND_MODULES),
+                        ))
+                        native_cleanup.append((
+                            configuration, modules_id,
+                            "Журнал покрытия снятой native-конфигурации не удалён.",
+                        ))
+                    else:
+                        native_source_id = source_ids.extension_modules_id(
+                            identity.parent_configuration,
+                            index_cache.safe_name(identity.extension_name),
                         )
-                    except OSError:
-                        pass
-                    try:
-                        coverage_log.remove(self.data_dir, modules_id)
-                    except OSError:
-                        logger.warning(
-                            "Журнал покрытия снятой native-конфигурации не удалён."
-                        )
-                else:
-                    native_source_id = source_ids.extension_modules_id(
-                        identity.parent_configuration,
-                        index_cache.safe_name(identity.extension_name),
-                    )
-                    self.modules.pop(native_source_id, None)
-                    self.extension_structures.pop(native_source_id, None)
-                    self.extension_relations.pop(native_source_id, None)
-                    self.extension_roles.pop(native_source_id, None)
-                    self._relation_cache.pop(identity.parent_configuration, None)
-                    self._drop_cache(native_source_id, KIND_EXTENSION)
-                    try:
-                        self._cache_path(native_source_id, "roles.sqlite").unlink(
-                            missing_ok=True
-                        )
-                    except OSError:
-                        pass
-                    try:
-                        coverage_log.remove(self.data_dir, native_source_id)
-                    except OSError:
-                        logger.warning(
-                            "Журнал покрытия снятого native-расширения не удалён."
-                        )
+                        self.modules.pop(native_source_id, None)
+                        self.extension_structures.pop(native_source_id, None)
+                        self.extension_relations.pop(native_source_id, None)
+                        self.extension_roles.pop(native_source_id, None)
+                        self._relation_cache.pop(identity.parent_configuration, None)
+                        cache_sources.append((native_source_id, KIND_EXTENSION))
+                        native_cleanup.append((
+                            native_source_id, native_source_id,
+                            "Журнал покрытия снятого native-расширения не удалён.",
+                        ))
+                self._accept_saved_dates_locked(accepted)
+            # Снятый runtime уже не обслуживается; IO не держит read lock,
+            # а writer/cache guards ещё не дают запоздалому writer вернуть кэш.
+            for cached_source_id, kind in cache_sources:
+                self._drop_cache(cached_source_id, kind)
+            for roles_source_id, coverage_source_id, warning in native_cleanup:
+                try:
+                    self._cache_path(roles_source_id, "roles.sqlite").unlink(missing_ok=True)
+                except OSError:
+                    pass
+                try:
+                    coverage_log.remove(self.data_dir, coverage_source_id)
+                except OSError:
+                    logger.warning(warning)
 
         if отложенная_справка is not None:
             self._apply_syntax(отложенная_справка)
+            # Пересборка может изменить status/error оставшихся справок.
+            self._save_unrefreshed()
         for native_pointer in native_pointers:
             try:
                 self._generation_store.remove_pointer_root(native_pointer)
@@ -2859,63 +2849,124 @@ class Registry:
         self._ensure_not_blocked()
         declaration = PlatformDeclaration(version)
         identity = ExportIdentity.configuration(configuration)
-        with self._lock:
-            if (
-                identity.grouping_key not in self._generation_pointers
-                and configuration not in self.configurations
-            ):
-                raise ConfigurationNotLoaded("configuration_not_loaded")
-            next_declarations = dict(self._platform_declarations)
-            next_declarations[configuration] = declaration
-            next_carried = dict(self._carried_platform_declarations)
-            next_carried.pop(configuration, None)
-            self._write_registry_payload(
-                self._registry_payload(
+        with self._registry_write_lock:
+            with self._lock:
+                if (
+                    identity.grouping_key not in self._generation_pointers
+                    and configuration not in self.configurations
+                ):
+                    raise ConfigurationNotLoaded("configuration_not_loaded")
+                next_declarations = dict(self._platform_declarations)
+                next_declarations[configuration] = declaration
+                next_carried = dict(self._carried_platform_declarations)
+                next_carried.pop(configuration, None)
+                payload = self._registry_payload(
                     platform_declarations=next_declarations,
                     carried_platform_declarations=next_carried,
                 )
-            )
-            self._platform_declarations = next_declarations
-            self._carried_platform_declarations = next_carried
+            with self._registry_commit(payload):
+                self._platform_declarations = next_declarations
+                self._carried_platform_declarations = next_carried
         return declaration
 
     @_refresh_on_external_change()
     def clear_platform_version(self, configuration: str) -> None:
         self._ensure_not_blocked()
         identity = ExportIdentity.configuration(configuration)
-        with self._lock:
-            if (
-                identity.grouping_key not in self._generation_pointers
-                and configuration not in self.configurations
-            ):
-                raise ConfigurationNotLoaded("configuration_not_loaded")
-            next_declarations = dict(self._platform_declarations)
-            next_declarations.pop(configuration, None)
-            next_carried = dict(self._carried_platform_declarations)
-            next_carried.pop(configuration, None)
-            self._write_registry_payload(
-                self._registry_payload(
+        with self._registry_write_lock:
+            with self._lock:
+                if (
+                    identity.grouping_key not in self._generation_pointers
+                    and configuration not in self.configurations
+                ):
+                    raise ConfigurationNotLoaded("configuration_not_loaded")
+                next_declarations = dict(self._platform_declarations)
+                next_declarations.pop(configuration, None)
+                next_carried = dict(self._carried_platform_declarations)
+                next_carried.pop(configuration, None)
+                payload = self._registry_payload(
                     platform_declarations=next_declarations,
                     carried_platform_declarations=next_carried,
                 )
-            )
-            self._platform_declarations = next_declarations
-            self._carried_platform_declarations = next_carried
+            with self._registry_commit(payload):
+                self._platform_declarations = next_declarations
+                self._carried_platform_declarations = next_carried
 
-    def _write_registry_payload(self, payload: Mapping[str, object]) -> None:
-        """Durable atomic replace общего Registry pointer."""
+    @contextmanager
+    def _registry_memory_change(self, *, recovery: bool = False):
+        """Сериализовать короткую публикацию учётного состояния в памяти."""
+        if not recovery:
+            self._ensure_not_blocked(allow_restore=True)
+        with self._registry_write_lock:
+            if not recovery:
+                self._ensure_not_blocked(allow_restore=True)
+            with self._lock:
+                try:
+                    yield
+                finally:
+                    self._registry_revision += 1
+
+    def _block_registry_commit(self) -> None:
+        self._registry_commit_blocked = (
+            "Реестр открыт только для чтения: исход записи registry.json "
+            "неопределён. Выполните перезагрузку перед следующей записью."
+        )
+
+    @contextmanager
+    def _registry_commit(
+        self, payload: Mapping[str, object], *, expected_revision: int | None = None,
+    ):
+        """Записать снимок без read lock, затем применить его при живом flock."""
         self._ensure_not_blocked()
-        with self._registry_file_lock():
-            if self._guest:
-                # Гость дописывает свои строки в текущий файл, а не снимок
-                # своей памяти: сервер мог записать своё после чтения гостем.
-                payload = self._guest_patch_locked(payload)
-            else:
-                self._check_registry_stamp()
-            self._write_json_durably(self.registry_path, payload, indent=1)
-            self._registry_stamp = self._registry_file_stamp()
-            if self._guest:
-                self._registry_read_text = json.dumps(payload, ensure_ascii=False)
+        with self._registry_write_lock:
+            self._ensure_not_blocked()
+            with self._lock:
+                revision = (
+                    self._registry_revision if expected_revision is None
+                    else expected_revision
+                )
+                if self._registry_revision != revision:
+                    raise RegistryError("Учётное состояние изменилось до записи реестра")
+            with self._registry_file_lock():
+                before = self._registry_file_stamp()
+                try:
+                    receipt = self._write_registry_payload(payload)
+                except BaseException:
+                    try:
+                        unchanged = self._registry_file_stamp() == before
+                    except BaseException:
+                        unchanged = False
+                    if not unchanged:
+                        with self._lock:
+                            self._block_registry_commit()
+                    raise
+                with self._lock:
+                    if self._registry_revision != revision:
+                        self._block_registry_commit()
+                        raise RegistryRecoveryBlocked(self._registry_commit_blocked)
+                    try:
+                        stamp, read_text = receipt
+                        yield
+                        self._registry_stamp = stamp
+                        if self._guest:
+                            self._registry_read_text = read_text
+                        self._registry_revision += 1
+                    except BaseException:
+                        self._block_registry_commit()
+                        raise
+
+    def _write_registry_payload(self, payload: Mapping[str, object]):
+        """IO-фаза _registry_commit при удержанном writer lock и flock."""
+        if self._guest:
+            # Patch считается от последнего принятого гостем снимка.
+            payload = self._guest_patch_locked(payload)
+        else:
+            self._check_registry_stamp()
+        self._write_json_durably(self.registry_path, payload, indent=1)
+        return (
+            self._registry_file_stamp(),
+            json.dumps(payload, ensure_ascii=False) if self._guest else None,
+        )
 
     def _check_registry_stamp(self) -> None:
         """Отказать, если registry.json сменил другой процесс после чтения."""
@@ -3217,72 +3268,76 @@ class Registry:
     ) -> GenerationPointer:
         """Сохранить дату принятого no-op без смены поколения и payload."""
         self._ensure_owner("Подтверждение загрузки без изменений")
-        with self._generation_mutation_lock, self._lock:
-            self._ensure_not_blocked()
-            key = expected.identity.grouping_key
-            current = self._generation_pointers.get(key)
-            if current is not None and job_id is not None:
-                for pending_job_id, accepted_pointer in current.pending_load_commits:
-                    if pending_job_id == job_id:
-                        return accepted_pointer
-            if (
-                current is None
-                or current.generation_id != expected.generation_id
-                or current.root_path != expected.root_path
-                or current.manifest_sha256 != expected.manifest_sha256
-            ):
-                raise GenerationPublishConflict(
-                    "active generation изменился после построения preview"
+        with self._generation_mutation_lock, self._registry_write_lock:
+            with self._lock:
+                self._ensure_not_blocked()
+                key = expected.identity.grouping_key
+                current = self._generation_pointers.get(key)
+                if current is not None and job_id is not None:
+                    for pending_job_id, accepted_pointer in current.pending_load_commits:
+                        if pending_job_id == job_id:
+                            return accepted_pointer
+                if (
+                    current is None
+                    or current.generation_id != expected.generation_id
+                    or current.root_path != expected.root_path
+                    or current.manifest_sha256 != expected.manifest_sha256
+                ):
+                    raise GenerationPublishConflict(
+                        "active generation изменился после построения preview"
+                    )
+                accepted_pointer = replace(
+                    current,
+                    last_successful_load_at=_accepted_load_time(current.last_successful_load_at),
+                    last_successful_load_job_id=job_id,
+                    pending_load_commits=(),
                 )
-            accepted_pointer = replace(
-                current,
-                last_successful_load_at=_accepted_load_time(current.last_successful_load_at),
-                last_successful_load_job_id=job_id,
-                pending_load_commits=(),
-            )
-            accepted = (
-                replace(
-                    accepted_pointer,
-                    pending_load_commits=(
-                        *current.pending_load_commits,
-                        (job_id, accepted_pointer),
-                    ),
+                accepted = (
+                    replace(
+                        accepted_pointer,
+                        pending_load_commits=(
+                            *current.pending_load_commits,
+                            (job_id, accepted_pointer),
+                        ),
+                    )
+                    if job_id is not None else replace(
+                        accepted_pointer, pending_load_commits=current.pending_load_commits
+                    )
                 )
-                if job_id is not None else replace(
-                    accepted_pointer, pending_load_commits=current.pending_load_commits
-                )
-            )
-            next_pointers = dict(self._generation_pointers)
-            next_pointers[key] = accepted
-            self._write_registry_payload(self._registry_payload(next_pointers))
-            self._generation_pointers = next_pointers
-            self._retarget_extension_resolution_cache_locked(current, accepted)
-            return accepted_pointer
+                next_pointers = dict(self._generation_pointers)
+                next_pointers[key] = accepted
+                payload = self._registry_payload(next_pointers)
+            with self._registry_commit(payload):
+                self._generation_pointers = next_pointers
+                self._retarget_extension_resolution_cache_locked(current, accepted)
+                return accepted_pointer
 
     @_refresh_on_external_change()
     def acknowledge_generation_load(self, identity: ExportIdentity, job_id: str) -> None:
         """Убрать маркер только после durable commit receipt."""
         self._ensure_owner("Очистка подтверждения загрузки")
-        with self._generation_mutation_lock, self._lock:
-            key = identity.grouping_key
-            current = self._generation_pointers.get(key)
-            if current is None or not any(
-                pending_job_id == job_id
-                for pending_job_id, _ in current.pending_load_commits
-            ):
-                return
-            updated = replace(
-                current,
-                pending_load_commits=tuple(
-                    entry for entry in current.pending_load_commits
-                    if entry[0] != job_id
-                ),
-            )
-            next_pointers = dict(self._generation_pointers)
-            next_pointers[key] = updated
-            self._write_registry_payload(self._registry_payload(next_pointers))
-            self._generation_pointers = next_pointers
-            self._retarget_extension_resolution_cache_locked(current, updated)
+        with self._generation_mutation_lock, self._registry_write_lock:
+            with self._lock:
+                key = identity.grouping_key
+                current = self._generation_pointers.get(key)
+                if current is None or not any(
+                    pending_job_id == job_id
+                    for pending_job_id, _ in current.pending_load_commits
+                ):
+                    return
+                updated = replace(
+                    current,
+                    pending_load_commits=tuple(
+                        entry for entry in current.pending_load_commits
+                        if entry[0] != job_id
+                    ),
+                )
+                next_pointers = dict(self._generation_pointers)
+                next_pointers[key] = updated
+                payload = self._registry_payload(next_pointers)
+            with self._registry_commit(payload):
+                self._generation_pointers = next_pointers
+                self._retarget_extension_resolution_cache_locked(current, updated)
 
     def active_activation(
         self, identity: ExportIdentity
@@ -3560,16 +3615,15 @@ class Registry:
         """
         if pointer.identity.source_kind is not SourceKind.CONFIGURATION:
             return 0
-        with self._modules_cache_lock:
+        with self._registry_write_lock, self._modules_cache_lock:
+            self._ensure_not_blocked()
             with self._lock:
-                if (
-                    self._generation_pointers.get(pointer.identity.grouping_key)
-                    != pointer
-                ):
+                if self._generation_pointers.get(pointer.identity.grouping_key) != pointer:
                     return 0
-                _payload, records = self._legacy_cleanup_payload(pointer)
-                if not records:
-                    return 0
+            _payload, records = self._legacy_cleanup_payload(pointer)
+            if not records:
+                return 0
+            with self._lock:
                 memory_sources = {
                     source.id: self.sources.get(source.id)
                     for source, _raw in records
@@ -3580,38 +3634,32 @@ class Registry:
             self._after_legacy_files_removed(pointer)
 
             with self._lock:
-                if (
-                    self._generation_pointers.get(pointer.identity.grouping_key)
-                    != pointer
-                ):
+                if self._generation_pointers.get(pointer.identity.grouping_key) != pointer:
                     return 0
-                payload, current_records = self._legacy_cleanup_payload(pointer)
-                captured = {source.id: raw for source, raw in records}
-                removable = {
-                    source.id
-                    for source, raw in current_records
-                    if captured.get(source.id) == raw
-                }
-                if not removable:
-                    return 0
-                raw_sources = payload["sources"]
-                assert isinstance(raw_sources, list)
-                payload["sources"] = [
-                    raw
-                    for raw in raw_sources
-                    if not (
-                        isinstance(raw, dict)
-                        and raw.get("id") in removable
-                        and captured.get(raw.get("id")) == raw
-                    )
-                ]
-                payload["saved_at"] = _now()
-                self._write_registry_payload(payload)
+            payload, current_records = self._legacy_cleanup_payload(pointer)
+            captured = {source.id: raw for source, raw in records}
+            removable = {
+                source.id for source, raw in current_records
+                if captured.get(source.id) == raw
+            }
+            if not removable:
+                return 0
+            raw_sources = payload["sources"]
+            assert isinstance(raw_sources, list)
+            payload["sources"] = [
+                raw for raw in raw_sources
+                if not (
+                    isinstance(raw, dict) and raw.get("id") in removable
+                    and captured.get(raw.get("id")) == raw
+                )
+            ]
+            payload["saved_at"] = _now()
+            with self._registry_commit(payload):
                 for source_id in removable:
                     if self.sources.get(source_id) is memory_sources[source_id]:
                         self.sources.pop(source_id, None)
                         self._advance_source_lifecycle_revision()
-                return len(removable)
+            return len(removable)
 
     def _build_native_generation_runtime(
         self,
@@ -3930,6 +3978,9 @@ class Registry:
                 RecoveryPhase.PREPARED,
             )
             self._generation_store.write_recovery(prepared)
+            apply_publication = None
+            cleanup_detached = None
+            publication_applied = False
             try:
                 # WAL появляется до тяжёлой сборки runtime: SIGKILL не
                 # оставит бесхозный staging без доказуемого recovery-path.
@@ -3977,148 +4028,163 @@ class Registry:
                     prepared_runtime,
                     runtime_root,
                 )
-                with self._lock:
-                    if expectation_changed():
-                        raise GenerationPublishConflict(
-                            "active generation изменился после построения preview"
-                        )
-                    if (
-                        prepared_runtime.parent_configuration is not None
-                        and self.configurations.get(
-                            manifest.identity.parent_configuration
-                        )
-                        is not prepared_runtime.parent_configuration
-                    ):
-                        raise GenerationPublishConflict(
-                            "родитель расширения изменился во время публикации"
-                        )
-                    detached_extensions: list[GenerationPointer] = []
-                    if (
-                        manifest.identity.source_kind is SourceKind.CONFIGURATION
-                        and pointer.activation is not None
-                        and pointer.activation.mode is ActivationMode.A_ONLY
-                    ):
-                        detached_extensions = [
-                            child
-                            for child in self._generation_pointers.values()
-                            if (
-                                child.identity.source_kind is SourceKind.EXTENSION
-                                and child.identity.parent_configuration
-                                == manifest.identity.configuration_name
+                with self._registry_write_lock, self._modules_cache_lock:
+                    self._ensure_not_blocked()
+                    with self._lock:
+                        if expectation_changed():
+                            raise GenerationPublishConflict(
+                                "active generation изменился после построения preview"
                             )
-                        ]
-                    pending = (
-                        previous.pending_load_commits if previous is not None else ()
-                    )
-                    if accepted_job_id is not None or record_load_at:
-                        accepted_pointer = replace(
-                            pointer,
-                            last_successful_load_at=_accepted_load_time(
-                                previous.last_successful_load_at if previous else None
-                            ),
-                            last_successful_load_job_id=accepted_job_id,
+                        if (
+                            prepared_runtime.parent_configuration is not None
+                            and self.configurations.get(
+                                manifest.identity.parent_configuration
+                            )
+                            is not prepared_runtime.parent_configuration
+                        ):
+                            raise GenerationPublishConflict(
+                                "родитель расширения изменился во время публикации"
+                            )
+                        detached_extensions: list[GenerationPointer] = []
+                        if (
+                            manifest.identity.source_kind is SourceKind.CONFIGURATION
+                            and pointer.activation is not None
+                            and pointer.activation.mode is ActivationMode.A_ONLY
+                        ):
+                            detached_extensions = [
+                                child
+                                for child in self._generation_pointers.values()
+                                if (
+                                    child.identity.source_kind is SourceKind.EXTENSION
+                                    and child.identity.parent_configuration
+                                    == manifest.identity.configuration_name
+                                )
+                            ]
+                        pending = (
+                            previous.pending_load_commits if previous is not None else ()
                         )
-                        pointer = (
-                            replace(
-                                accepted_pointer,
-                                pending_load_commits=(
-                                    *pending,
-                                    (accepted_job_id, accepted_pointer),
+                        if accepted_job_id is not None or record_load_at:
+                            accepted_pointer = replace(
+                                pointer,
+                                last_successful_load_at=_accepted_load_time(
+                                    previous.last_successful_load_at if previous else None
                                 ),
+                                last_successful_load_job_id=accepted_job_id,
                             )
-                            if accepted_job_id is not None else replace(
-                                accepted_pointer, pending_load_commits=pending
-                            )
-                        )
-                    elif pending:
-                        pointer = replace(pointer, pending_load_commits=pending)
-                    prepared = replace(
-                        prepared,
-                        staged=pointer,
-                        detached=tuple(detached_extensions),
-                    )
-                    # Точный cleanup-план обязан стать durable до Registry
-                    # switch: после switch child pointers уже исчезнут из Registry.
-                    self._generation_store.write_recovery(prepared)
-                    next_pointers = dict(self._generation_pointers)
-                    for child in detached_extensions:
-                        next_pointers.pop(child.identity.grouping_key, None)
-                    next_pointers[key] = pointer
-                    self._write_registry_payload(
-                        self._registry_payload(next_pointers)
-                    )
-                    self._generation_pointers = next_pointers
-                    self._extension_resolution_cache = None
-                    self._generation_manifests[key] = manifest
-                    if loaded_configuration is not None:
-                        name = loaded_configuration.config.name
-                        self.configurations[name] = (
-                            self._словарь_конфигурации_locked(loaded_configuration)
-                        )
-                        self._advance_configuration_revision(name)
-                        modules_key = source_ids.modules_id(name)
-                        if loaded_modules is None:
-                            self.modules.pop(modules_key, None)
-                        else:
-                            self.modules[modules_key] = (
-                                self._словарь_модулей_locked(loaded_modules)
-                            )
-                        if prepared_runtime.runtime.roles is None:
-                            self.roles.pop(name, None)
-                        else:
-                            self.roles[name] = prepared_runtime.runtime.roles
-                        if pointer.activation is not None and pointer.activation.mode is ActivationMode.A_ONLY:
-                            for child in detached_extensions:
-                                self._generation_manifests.pop(
-                                    child.identity.grouping_key, None
+                            pointer = (
+                                replace(
+                                    accepted_pointer,
+                                    pending_load_commits=(
+                                        *pending,
+                                        (accepted_job_id, accepted_pointer),
+                                    ),
                                 )
-                                extension_key = source_ids.extension_modules_id(
-                                    child.identity.parent_configuration,
-                                    index_cache.safe_name(child.identity.extension_name),
+                                if accepted_job_id is not None else replace(
+                                    accepted_pointer, pending_load_commits=pending
                                 )
-                                self.modules.pop(extension_key, None)
-                                self.extension_structures.pop(extension_key, None)
-                                self.extension_relations.pop(extension_key, None)
-                                self.extension_roles.pop(extension_key, None)
-                                self._drop_cache(extension_key, KIND_EXTENSION)
-                                try:
-                                    self._cache_path(extension_key, "roles.sqlite").unlink(
-                                        missing_ok=True
+                            )
+                        elif pending:
+                            pointer = replace(pointer, pending_load_commits=pending)
+                        prepared = replace(
+                            prepared,
+                            staged=pointer,
+                            detached=tuple(detached_extensions),
+                        )
+                        # Точный cleanup-план обязан стать durable до Registry
+                        # switch: после switch child pointers уже исчезнут из Registry.
+                        next_pointers = dict(self._generation_pointers)
+                        for child in detached_extensions:
+                            next_pointers.pop(child.identity.grouping_key, None)
+                        next_pointers[key] = pointer
+                        payload = self._registry_payload(next_pointers)
+                        commit_revision = self._registry_revision
+
+                    detached_cleanup: list[str] = []
+
+                    def apply_publication():
+                        self._generation_pointers = next_pointers
+                        self._extension_resolution_cache = None
+                        self._generation_manifests[key] = manifest
+                        if loaded_configuration is not None:
+                            name = loaded_configuration.config.name
+                            self.configurations[name] = (
+                                self._словарь_конфигурации_locked(loaded_configuration)
+                            )
+                            self._advance_configuration_revision(name)
+                            modules_key = source_ids.modules_id(name)
+                            if loaded_modules is None:
+                                self.modules.pop(modules_key, None)
+                            else:
+                                self.modules[modules_key] = (
+                                    self._словарь_модулей_locked(loaded_modules)
+                                )
+                            if prepared_runtime.runtime.roles is None:
+                                self.roles.pop(name, None)
+                            else:
+                                self.roles[name] = prepared_runtime.runtime.roles
+                            if pointer.activation is not None and pointer.activation.mode is ActivationMode.A_ONLY:
+                                for child in detached_extensions:
+                                    self._generation_manifests.pop(
+                                        child.identity.grouping_key, None
                                     )
-                                except OSError:
-                                    pass
-                                try:
-                                    coverage_log.remove(self.data_dir, extension_key)
-                                except OSError:
-                                    pass
+                                    extension_key = source_ids.extension_modules_id(
+                                        child.identity.parent_configuration,
+                                        index_cache.safe_name(child.identity.extension_name),
+                                    )
+                                    self.modules.pop(extension_key, None)
+                                    self.extension_structures.pop(extension_key, None)
+                                    self.extension_relations.pop(extension_key, None)
+                                    self.extension_roles.pop(extension_key, None)
+                                    detached_cleanup.append(extension_key)
+                            else:
+                                self.extension_relations.update(replacement_relations)
+                            self._relation_cache.pop(name, None)
                         else:
-                            self.extension_relations.update(replacement_relations)
-                        self._relation_cache.pop(name, None)
-                    else:
-                        identity = manifest.identity
-                        extension_key = source_ids.extension_modules_id(
-                            identity.parent_configuration,
-                            index_cache.safe_name(identity.extension_name),
-                        )
-                        if loaded_modules is None:
-                            self.modules.pop(extension_key, None)
-                        else:
-                            self.modules[extension_key] = (
-                                self._словарь_модулей_locked(loaded_modules)
+                            identity = manifest.identity
+                            extension_key = source_ids.extension_modules_id(
+                                identity.parent_configuration,
+                                index_cache.safe_name(identity.extension_name),
                             )
-                        structure = prepared_runtime.runtime.extension_structure
-                        assert structure is not None
-                        self.extension_structures[extension_key] = structure
-                        self.extension_relations[extension_key] = (
-                            prepared_runtime.extension_relations
-                        )
-                        if prepared_runtime.runtime.roles is None:
-                            self.extension_roles.pop(extension_key, None)
-                        else:
-                            self.extension_roles[extension_key] = (
-                                prepared_runtime.runtime.roles
+                            if loaded_modules is None:
+                                self.modules.pop(extension_key, None)
+                            else:
+                                self.modules[extension_key] = (
+                                    self._словарь_модулей_locked(loaded_modules)
+                                )
+                            structure = prepared_runtime.runtime.extension_structure
+                            assert structure is not None
+                            self.extension_structures[extension_key] = structure
+                            self.extension_relations[extension_key] = (
+                                prepared_runtime.extension_relations
                             )
-                    self._after_generation_pointer_switch(pointer)
+                            if prepared_runtime.runtime.roles is None:
+                                self.extension_roles.pop(extension_key, None)
+                            else:
+                                self.extension_roles[extension_key] = (
+                                    prepared_runtime.runtime.roles
+                                )
+                    def cleanup_detached() -> None:
+                        for extension_key in dict.fromkeys(detached_cleanup):
+                            self._drop_cache(extension_key, KIND_EXTENSION)
+                            try:
+                                self._cache_path(extension_key, "roles.sqlite").unlink(
+                                    missing_ok=True
+                                )
+                            except OSError:
+                                pass
+                            try:
+                                coverage_log.remove(self.data_dir, extension_key)
+                            except OSError:
+                                pass
+                        detached_cleanup.clear()
+
+                    # WAL и Registry получают один снимок; до IO read lock снят.
+                    self._generation_store.write_recovery(prepared)
+                    with self._registry_commit(payload, expected_revision=commit_revision):
+                        apply_publication()
+                        publication_applied = True
+                    cleanup_detached()
+                self._after_generation_pointer_switch(pointer)
                 self._generation_store.write_recovery(
                     replace(prepared, phase=RecoveryPhase.POINTER_SWITCHED)
                 )
@@ -4152,8 +4218,14 @@ class Registry:
                     # расходиться, дальнейшие записи закрыты до reload.
                     self._generation_recovery_blocked = True
                     raise
-                with self._lock:
-                    if self._generation_pointers.get(key) == pointer:
+                with self._registry_write_lock, self._modules_cache_lock:
+                    with self._registry_memory_change(recovery=True):
+                        accepted = self._generation_pointers.get(key) == pointer
+                        if accepted and not publication_applied and apply_publication is not None:
+                            apply_publication()
+                    if accepted:
+                        if cleanup_detached is not None:
+                            cleanup_detached()
                         # Pointer уже durable: recovery успешно закончил
                         # housekeeping, поэтому повторять принятую операцию
                         # опаснее, чем вернуть её фактический результат.
@@ -4162,6 +4234,10 @@ class Registry:
 
     def recover_generation_publish(self) -> list[str]:
         """По WAL доказуемо оставить старое или завершить новое поколение."""
+        with self._generation_mutation_lock, self._registry_write_lock:
+            return self._recover_generation_publish_serialized()
+
+    def _recover_generation_publish_serialized(self) -> list[str]:
         recovery = self._generation_store.read_recovery()
         if recovery is None:
             return []
@@ -4207,7 +4283,7 @@ class Registry:
             self._generation_store.remove_pointer_root(recovery.staged)
             self._generation_store.remove_staging(recovery.staging_path)
             self._generation_store.clear_recovery()
-            with self._lock:
+            with self._registry_memory_change(recovery=True):
                 if recovery.previous is None:
                     self._generation_pointers.pop(key, None)
                     self._generation_manifests.pop(key, None)
@@ -4250,7 +4326,7 @@ class Registry:
             self._generation_store.remove_pointer_root(child)
         self._generation_store.remove_staging(recovery.staging_path)
         self._generation_store.clear_recovery()
-        with self._lock:
+        with self._registry_memory_change(recovery=True):
             self._generation_pointers[key] = recovery.staged
             self._extension_resolution_cache = None
             self._generation_manifests[key] = manifest
@@ -4304,6 +4380,8 @@ class Registry:
             return
         if self._restore_hold and not restoring:
             raise RegistryRecoveryBlocked(self._restore_hold)
+        if self._registry_commit_blocked and not restoring:
+            raise RegistryRecoveryBlocked(self._registry_commit_blocked)
         if self._registry_version_blocked:
             raise RegistryRecoveryBlocked(self._registry_version_blocked)
         if self._generation_recovery_blocked:
@@ -4321,29 +4399,44 @@ class Registry:
         # перечитывание — только в начале операций, до мутации памяти.
         self._save_unrefreshed()
 
-    def _save_unrefreshed(self) -> None:
-        """Запись без reload: для путей, которые уже держат замки startup."""
-        with self._lock:
-            payload = self._registry_payload()
-            rows = payload["sources"]
-            assert isinstance(rows, list)
-            accepted: list[tuple[str, Source, str]] = []
-            for row in rows:
-                if not isinstance(row, dict):
-                    continue
-                pending = self._pending_configuration_load_dates.get(row.get("id"))
-                if pending is None or self.sources.get(row["id"]) is not pending:
-                    continue
-                accepted_at = _accepted_load_time(pending.last_successful_load_at)
-                row["last_successful_load_at"] = accepted_at
-                accepted.append((row["id"], pending, accepted_at))
-            self._write_registry_payload(payload)
-            for source_id, source, accepted_at in accepted:
+    def _prepare_saved_dates_locked(
+        self, payload: dict[str, object]
+    ) -> list[tuple[str, Source, str]]:
+        rows = payload["sources"]
+        assert isinstance(rows, list)
+        accepted: list[tuple[str, Source, str]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            pending = self._pending_configuration_load_dates.get(row.get("id"))
+            if pending is None or self.sources.get(row["id"]) is not pending:
+                continue
+            accepted_at = _accepted_load_time(pending.last_successful_load_at)
+            row["last_successful_load_at"] = accepted_at
+            accepted.append((row["id"], pending, accepted_at))
+        return accepted
+
+    def _accept_saved_dates_locked(self, accepted: list[tuple[str, Source, str]]) -> None:
+        for source_id, source, accepted_at in accepted:
+            if (
+                self.sources.get(source_id) is source
+                and self._pending_configuration_load_dates.get(source_id) is source
+            ):
                 source.last_successful_load_at = accepted_at
                 self._pending_configuration_load_dates.pop(source_id, None)
-            for source_id, source in tuple(self._pending_configuration_load_dates.items()):
-                if self.sources.get(source_id) is not source:
-                    self._pending_configuration_load_dates.pop(source_id, None)
+        for source_id, source in tuple(self._pending_configuration_load_dates.items()):
+            if self.sources.get(source_id) is not source:
+                self._pending_configuration_load_dates.pop(source_id, None)
+
+    def _save_unrefreshed(self) -> None:
+        """Запись без reload: для путей, которые уже держат замки startup."""
+        self._ensure_not_blocked()
+        with self._registry_write_lock:
+            with self._lock:
+                payload = self._registry_payload()
+                accepted = self._prepare_saved_dates_locked(payload)
+            with self._registry_commit(payload):
+                self._accept_saved_dates_locked(accepted)
 
     def mutate_dictionary(
         self,
@@ -4427,11 +4520,26 @@ class Registry:
     def restore(self) -> list[str]:
         """Поднять источники, записанные в registry.json."""
         previous = getattr(self._restore_scope, "active", False)
+        previous_verified = getattr(self._restore_scope, "registry_verified", False)
         self._restore_scope.active = True
+        self._restore_scope.registry_verified = False
         try:
-            return self._restore_rows()
+            problems = self._restore_rows()
+            if (self._restore_scope.registry_verified
+                    and not self._registry_version_blocked
+                    and not self._generation_recovery_blocked):
+                with self._generation_mutation_lock, self._registry_write_lock:
+                    try:
+                        self.generation_recovery_path.lstat()
+                    except FileNotFoundError:
+                        with self._lock:
+                            self._registry_commit_blocked = ""
+                    except OSError:
+                        pass
+            return problems
         finally:
             self._restore_scope.active = previous
+            self._restore_scope.registry_verified = previous_verified
 
     def _restore_rows(self) -> list[str]:
         # От чтения registry.json до применения native pointers и runtime
@@ -4442,6 +4550,7 @@ class Registry:
         # их подъёма остаётся возможен.
         with ExitStack() as native_phase:
             native_phase.enter_context(self._generation_mutation_lock)
+            native_phase.enter_context(self._registry_write_lock)
             return self._restore_rows_locked(native_phase)
 
     def _restore_rows_locked(self, native_phase: ExitStack) -> list[str]:
@@ -4455,8 +4564,9 @@ class Registry:
                 if stamp is not None
                 else None
             )
-        self._registry_stamp = stamp
-        self._registry_read_text = text
+            with self._registry_memory_change():
+                self._registry_stamp = stamp
+                self._registry_read_text = text
         if text is None:
             self._registry_version_blocked = ""
             return problems
@@ -4572,7 +4682,7 @@ class Registry:
                 problems.append(
                     f"{manifest.identity.configuration_name}: поколение не поднято: {error}"
                 )
-        with self._lock:
+        with self._registry_memory_change():
             for previous in self._generation_pointers.values():
                 self._drop_native_runtime_locked(previous.identity)
             self._generation_pointers = {key: pointers[key] for key in native_runtime}
@@ -4618,7 +4728,7 @@ class Registry:
                 else:
                     invalid_source_rows.append(raw)
                 problems.append(f"{source_id or f'sources[{index}]'}: источник не поднят: {error}")
-        with self._lock:
+        with self._registry_memory_change():
             self._carried_invalid_source_rows = invalid_source_rows
             self._carried_source_rows.update(malformed_sources)
         строка_по_id = {
@@ -4635,7 +4745,7 @@ class Registry:
             if raw is None:
                 return False
             новые_перенесённые[source_id] = raw
-            with self._lock:
+            with self._registry_memory_change():
                 self._carried_source_rows[source_id] = raw
             return True
 
@@ -4689,7 +4799,7 @@ class Registry:
             pointer = pointers[key]
             identity = manifest.identity
             try:
-                with self._lock:
+                with self._registry_memory_change():
                     parent_ready = identity.parent_configuration in self.configurations
                 if not parent_ready:
                     raise RegistryError(
@@ -4704,11 +4814,11 @@ class Registry:
                 assert loaded_configuration is None
                 native_runtime[key] = (prepared, None, loaded_modules)
             except Exception as error:
-                with self._lock:
+                with self._registry_memory_change():
                     carried[key] = raw_by_key[key]
                 problems.append(f"{identity.extension_name}: поколение не поднято: {error}")
                 continue
-            with self._lock:
+            with self._registry_memory_change():
                 self._generation_pointers[key] = pointer
                 self._generation_manifests[key] = manifest
             extension_key = source_ids.extension_modules_id(
@@ -4717,7 +4827,7 @@ class Registry:
             )
             structure = prepared.runtime.extension_structure
             assert structure is not None
-            with self._lock:
+            with self._registry_memory_change():
                 if loaded_modules is None:
                     self.modules.pop(extension_key, None)
                 else:
@@ -4740,7 +4850,7 @@ class Registry:
         # Ревизии снимаются под тем же замком, под которым прочитан
         # registry.json. Remove или публикация, ждавшие native-фазу, пройдут
         # сразу после close(), и legacy-строки ниже сверяются с этим снимком.
-        with self._lock:
+        with self._registry_memory_change():
             ревизии_конфигураций = dict(self._configuration_revisions)
             ревизии_источников = dict(self._source_revisions)
         native_phase.close()
@@ -4838,9 +4948,12 @@ class Registry:
                 prepared,
                 loaded_modules,
             )
-        with self._lock:
+        with self._registry_memory_change():
             self._carried_source_rows = новые_перенесённые
         self._registry_version_blocked = ""
+        # H2 изолирует сбои отдельных строк: они не отменяют проверку
+        # контейнера Registry и сохраняются переносом сырых записей.
+        self._restore_scope.registry_verified = True
         return problems
 
     def bootstrap(self) -> list[str]:
@@ -5260,7 +5373,8 @@ class Registry:
         # Словарь перечитывается первым: правки в нём должны применяться
         # перезагрузкой, без пересборки образа и рестарта контейнера.
         dictionary_messages = self.reload_dictionary()
-        if self._generation_recovery_blocked or self._registry_version_blocked:
+        if (self._generation_recovery_blocked or self._registry_version_blocked
+                or self._registry_commit_blocked):
             self._restore_hold = (
                 "Реестр открыт только для чтения: идёт восстановление после "
                 "сбоя. Повторите операцию после завершения перезагрузки."
@@ -5287,7 +5401,7 @@ class Registry:
         messages += self._restore_on_startup()
         # Память собрана заново: дальше действует только новый вердикт.
         self._restore_hold = ""
-        if self._registry_version_blocked:
+        if self._registry_version_blocked or self._registry_commit_blocked:
             # Сохраняем исходный registry.json и кэш дословно: после ручного
             # исправления следующий startup должен суметь поднять прежнее
             # готовое состояние, а не обнаружить, что fail-closed проверка

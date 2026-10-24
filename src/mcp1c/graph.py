@@ -101,14 +101,6 @@ class Graph:
         self.out: dict[str, list[Edge]] = defaultdict(list)
         self.inc: dict[str, list[Edge]] = defaultdict(list)
         self.unresolved: Counter[str] = Counter()
-        self._object_names = {
-            name.casefold(): name for name in config.objects
-        }
-        self._field_owners = {
-            f"{obj.full_name}.{path}".casefold(): obj.full_name
-            for obj in config.objects.values()
-            for path, _field in obj.all_fields()
-        }
         self._build()
 
     # ------------------------------------------------------------- построение
@@ -129,6 +121,16 @@ class Graph:
         self.inc[target].append(edge)
 
     def _build(self) -> None:
+        # Таблицы нужны только для разрешения типизированных связей.
+        # Готовому графу достаточно сохранённых рёбер.
+        object_names = {
+            name.casefold(): name for name in self.config.objects
+        }
+        field_owners = {
+            f"{obj.full_name}.{path}".casefold(): obj.full_name
+            for obj in self.config.objects.values()
+            for path, _field in obj.all_fields()
+        }
         for obj in self.config.objects.values():
             source = obj.full_name
 
@@ -205,9 +207,9 @@ class Graph:
                     continue
                 target = relation.target
                 if target not in self.config.objects:
-                    target = self._object_names.get(
+                    target = object_names.get(
                         target.casefold(),
-                        self._field_owners.get(target.casefold(), target),
+                        field_owners.get(target.casefold(), target),
                     )
                 via = ", ".join(
                     f"{key}={value}"

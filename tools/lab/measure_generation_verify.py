@@ -11,6 +11,7 @@ import argparse
 from collections.abc import Mapping
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
+import gc
 import hashlib
 import json
 import math
@@ -27,6 +28,7 @@ from tempfile import TemporaryDirectory
 import tempfile
 import threading
 import time
+import tracemalloc
 
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -81,6 +83,8 @@ def _parser():
     parser.add_argument("--tool-latency", action="store_true",
                         help="После publish запустить tools/measure_tool_latency.py; требует --report. "
                              "Приватные stdout/stderr сохраняются рядом с JSON, без перезаписи.")
+    parser.add_argument("--graph-memory", action="store_true",
+                        help="После publish измерить новый Graph на уже загруженной Configuration через tracemalloc.")
     return parser
 
 
@@ -452,16 +456,19 @@ def _actor(connection, mode, root, sources, deadline, previous, tool_latency=Fal
                 _inputs(connection, sources, deadline, previous=previous)
             else:
                 from mcp1c import registry as registry_module, intake_v2_registry, member_pack
-                metrics = _Metrics(registry_module, intake_v2_registry, member_pack)
-                if mode == "publish":
-                    _publish(connection, root, sources, deadline, registry_module, metrics,
-                             tool_latency=tool_latency)
+                if mode == "graph_memory":
+                    _measure_graph_memory(connection, root, deadline, registry_module)
                 else:
-                    registry = registry_module.Registry(root / "data")
-                    for name in ("startup", "reload"):
-                        _measure_stage(connection, metrics, name, registry.startup, registry, deadline)
-                        _emit(connection, **{name + "_snapshot": _fingerprint(registry)})
-                        _emit(connection, query_proof={"stage": name, **_query_proof(registry, deadline)})
+                    metrics = _Metrics(registry_module, intake_v2_registry, member_pack)
+                    if mode == "publish":
+                        _publish(connection, root, sources, deadline, registry_module, metrics,
+                                 tool_latency=tool_latency)
+                    else:
+                        registry = registry_module.Registry(root / "data")
+                        for name in ("startup", "reload"):
+                            _measure_stage(connection, metrics, name, registry.startup, registry, deadline)
+                            _emit(connection, **{name + "_snapshot": _fingerprint(registry)})
+                            _emit(connection, query_proof={"stage": name, **_query_proof(registry, deadline)})
             _emit(connection, actor_code_after=_code_identity(deadline))
             _emit(connection, finished=True)
         except BaseException as error:
@@ -765,6 +772,117 @@ def _run_cli(root, deadline, report):
             process.wait()
 
 
+def _graph_edge_fingerprint(graph, deadline):
+    digest = hashlib.sha256(b"mcp1c-graph-ordered-edges-v1\0")
+    size = 0
+    for edge in graph.edges:
+        values = (edge.source, edge.target, edge.kind, edge.via, edge.weak)
+        if any(not isinstance(value, str) for value in values[:4]) or type(edge.weak) is not bool:
+            raise _Invalid("Ребро Graph имеет неизвестный тип поля.")
+        for chunk in _canonical_chunks(values, deadline):
+            digest.update(chunk)
+            size += len(chunk)
+    return {"sha256": digest.hexdigest(), "canonical_bytes": size}
+
+
+def _graph_bucket_count(buckets, endpoint, deadline):
+    if not isinstance(buckets, Mapping):
+        raise _Invalid("Индекс смежности Graph имеет неизвестный тип.")
+    total = 0
+    for name, edges in buckets.items():
+        _remaining(deadline)
+        if not isinstance(name, str) or not isinstance(edges, list):
+            raise _Invalid("Индекс смежности Graph имеет неизвестный тип записи.")
+        for edge in edges:
+            _remaining(deadline)
+            if getattr(edge, endpoint) != name:
+                raise _Invalid("Индекс смежности Graph не соответствует ребру.")
+        total += len(edges)
+    return total
+
+
+def _measure_graph_memory(connection, root, deadline, registry_module):
+    # Импорт, загрузка конфигурации и её штатного Graph остаются вне tracing.
+    from mcp1c.graph import Graph
+
+    _emit(connection, stage="graph_memory_load")
+    registry = registry_module.Registry(root / "data")
+    registry.startup()
+    if registry.role != "owner":
+        raise _Invalid("Изолированный Registry для Graph не стал владельцем.")
+    loaded = registry.resolve().configuration
+    if loaded is None:
+        raise _Invalid("Нет Configuration для Graph-измерения.")
+    config = loaded.config
+    tracing_was_active = tracemalloc.is_tracing()
+    if tracing_was_active:
+        # Это отдельный собственный actor; прежние traces в окно не входят.
+        tracemalloc.stop()
+    gc.collect()
+    _remaining(deadline)
+    _emit(connection, stage="graph_memory_build")
+    tracemalloc.start(1)
+    try:
+        baseline_current, _baseline_peak = tracemalloc.get_traced_memory()
+        tracemalloc.reset_peak()
+        started = time.perf_counter()
+        graph = Graph(config)
+        build_seconds = time.perf_counter() - started
+        build_current, build_peak = tracemalloc.get_traced_memory()
+        gc.collect()
+        retained_current, after_gc_peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    # graph жив до конца всех замеров. Хеширование и JSON начинаются после stop.
+    _remaining(deadline)
+    _emit(connection, stage="graph_memory_fingerprints")
+    edge_fingerprint = _graph_edge_fingerprint(graph, deadline)
+    unresolved = graph.unresolved
+    if not isinstance(unresolved, Mapping) or any(
+        not isinstance(name, str) or type(count) is not int or count <= 0
+        for name, count in unresolved.items()
+    ):
+        raise _Invalid("Счётчики unresolved Graph имеют неизвестный тип.")
+    unresolved_sha256 = _canonical_hash(unresolved, deadline)
+    out_edges = _graph_bucket_count(graph.out, "source", deadline)
+    inc_edges = _graph_bucket_count(graph.inc, "target", deadline)
+    counts_valid = len(graph.edges) == out_edges == inc_edges
+    row = {
+        "construction_done": True, "complete": counts_valid,
+        "build_seconds": build_seconds, "tracemalloc_frames": 1,
+        "timing_scope": "Только Graph(config) при активном tracemalloc; загрузка, GC и fingerprints вне секунд сборки.",
+        "baseline_current_bytes": baseline_current,
+        "build_current_bytes": build_current, "build_peak_bytes": build_peak,
+        "retained_current_bytes_after_gc": retained_current, "after_gc_peak_bytes": after_gc_peak,
+        "build_current_delta_bytes": build_current - baseline_current,
+        "construction_peak_delta_bytes": build_peak - baseline_current,
+        "retained_delta_bytes": retained_current - baseline_current,
+        "after_gc_peak_delta_bytes": after_gc_peak - baseline_current,
+        "gc_after_build": True, "graph_alive_during_gc": True,
+        "trace_stopped_before_fingerprints": True, "preexisting_tracing_stopped": tracing_was_active,
+        "configuration_object_count": len(config.objects),
+        "configuration_source_sha256": loaded.source.sha256,
+        "configuration_structure_sha256": loaded.structure_sha256,
+        "edge_count": len(graph.edges), "out_node_count": len(graph.out), "inc_node_count": len(graph.inc),
+        "out_edge_count": out_edges, "inc_edge_count": inc_edges, "counts_valid": counts_valid,
+        "edge_ordered_sha256": edge_fingerprint["sha256"],
+        "edge_canonical_bytes": edge_fingerprint["canonical_bytes"],
+        "unresolved_type": type(unresolved).__name__, "unresolved_key_count": len(unresolved),
+        "unresolved_total": sum(unresolved.values()), "unresolved_sha256": unresolved_sha256,
+        "fingerprints_valid": True,
+        "build_helper_presence": {"_object_names": hasattr(graph, "_object_names"),
+                                  "_field_owners": hasattr(graph, "_field_owners")},
+        "allocation_scope": (
+            "Приращение Python-аллокаций нового Graph(config) на уже загруженной Configuration; "
+            "штатный Graph Registry также создан до tracing. Малые аллокации таймера и считывания "
+            "tracemalloc входят в окно. Retained delta снят после GC при живом новом Graph. "
+            "RSS, память контейнера и p95 не измеряются; peak может не измениться. "
+            "Улучшение и отсутствие служебных словарей не являются условием complete."
+        ),
+    }
+    _emit(connection, graph_memory=row)
+
+
 def _latency_artifact_paths(report_path):
     return {name: report_path.with_name(report_path.name + ".latency." + name + ".txt").absolute()
             for name in ("stdout", "stderr")}
@@ -934,6 +1052,8 @@ def _run(args, report, *, latency_outputs=None):
             root = Path(temporary)
             try:
                 configuration = _run_actor("publish", root, sources, deadline, report)
+                if args.graph_memory:
+                    _run_actor("graph_memory", root, sources, deadline, report)
                 if args.tool_latency:
                     _run_tool_latency(root, configuration, deadline, report, latency_outputs)
                 _run_actor("restore", root, sources, deadline, report)
@@ -990,6 +1110,8 @@ def _run(args, report, *, latency_outputs=None):
                     raise _Invalid("Приёмочные условия измерения не выполнены.")
                 if args.tool_latency and report.get("tool_latency_complete") is not True:
                     raise _Invalid("Latency-измерение не выполнило обязательный набор вызовов.")
+                if args.graph_memory and report.get("graph_memory", {}).get("complete") is not True:
+                    raise _Invalid("Graph-измерение не завершилось или не подтвердило структуры рёбер.")
                 report["status"] = "complete"
                 report["stage"] = "finished"
             finally:
@@ -1000,7 +1122,7 @@ def _run(args, report, *, latency_outputs=None):
 
 
 def main(argv=None):
-    report = {"schema_version": 3, "status": "incomplete", "measurements": [],
+    report = {"schema_version": 4, "status": "incomplete", "measurements": [],
               "index_fingerprints": [], "query_proofs": [],
               "measured_at": datetime.now(timezone.utc).isoformat(),
               "method": "production intake; отдельные последовательные процессы publish, restore, CLI",
@@ -1022,7 +1144,6 @@ def main(argv=None):
         latency_outputs = None
         if args.tool_latency:
             latency_outputs = _preflight_latency_artifacts(args, report, artifacts)
-            report["method"] = "production intake; последовательные процессы publish, actual tool latency, restore, CLI"
         elif args.report is not None:
             try:
                 args.report.lstat()
@@ -1031,7 +1152,14 @@ def main(argv=None):
             else:
                 raise _Invalid("Файл отчёта уже существует.")
         report.update(timeout_seconds=args.timeout_seconds, archive_count=1 + len(args.extension_archive),
-                      tool_latency_requested=args.tool_latency)
+                      tool_latency_requested=args.tool_latency, graph_memory_requested=args.graph_memory)
+        if args.graph_memory or args.tool_latency:
+            phases = ["publish"]
+            if args.graph_memory:
+                phases.append("graph memory")
+            if args.tool_latency:
+                phases.append("actual tool latency")
+            report["method"] = "production intake; последовательные процессы " + ", ".join((*phases, "restore", "CLI"))
         _run(args, report, latency_outputs=latency_outputs)
     except KeyboardInterrupt:
         report.update(status="incomplete", error_type="KeyboardInterrupt")

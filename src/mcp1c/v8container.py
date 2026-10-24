@@ -184,7 +184,19 @@ class V8Container:
         )
         self._entries: dict[str, V8Entry] = {}
         self._order: list[str] = []
-        self._read_table()
+        # Пустые блоки не расходуют байтовый бюджет распаковки. Общий хвост
+        # разных атрибутов мог обходиться для каждой строки заново; работа
+        # чтения таблицы поэтому ограничена также физическим размером файла.
+        self._table_header_budget: int | None = len(self._data) * 5 // 2
+        try:
+            self._read_table()
+        except BaseException:
+            self.close()
+            raise
+        finally:
+            # Повторные пользовательские чтения данных не относятся к обходу
+            # метаданных при открытии и сохраняют прежние бюджеты распаковки.
+            self._table_header_budget = None
 
     # ------------------------------------------------------------- жизненный цикл
 
@@ -233,6 +245,12 @@ class V8Container:
         collected = 0
         spans: dict[int, int] = {}
         while addr not in (EMPTY_ADDR, 0) and collected < total:
+            if self._table_header_budget is not None:
+                self._table_header_budget -= BLOCK_HEADER_SIZE
+                if self._table_header_budget < 0:
+                    raise V8ResourceLimitError(
+                        "Обход таблицы контейнера превысил бюджет заголовков блоков."
+                    )
             if addr in spans:
                 raise V8ContainerError("Циклическая ссылка блоков контейнера.")
             header = self._data[addr : addr + BLOCK_HEADER_SIZE]

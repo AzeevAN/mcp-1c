@@ -41,7 +41,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Callable, Iterable, Mapping, TypeVar
 
-from . import coverage_log, fsio, index_cache, modules_index, source_ids
+from . import coverage_log, fsio, index_cache, modules_index, registry_syntax, source_ids
 # Реэкспорты сохраняют доступ к общему fcntl и открытию замка у потребителей.
 from .data_dir_lock import (
     RegistryFileLock,
@@ -113,9 +113,7 @@ from .intake_v2_runtime import (
 from .loader import ExportError, load
 from .model import Configuration
 from .module_content import LocatorIdentity
-from .resource_limits import ResourceLimitError
 from .role_access import LoadedRoleAccess
-from .search_keys import coverage as search_keys_coverage
 from .search import (
     SearchIndex,
     index_configuration,
@@ -131,8 +129,6 @@ from .standard_attributes import (
     StandardAttributeError,
     materialize_standard_attributes,
 )
-from .virtual_tables import build_table_index
-from .v8container import V8ContainerError
 # Типы-данные живут в registry_types; имена реэкспортируются отсюда, чтобы
 # `from mcp1c.registry import X` у потребителей не менялся. `SourcesChanged`
 # сам реестр не бросает — его импортируют tools и дашборд, поэтому pyflakes
@@ -1618,139 +1614,23 @@ class Registry:
         чей разобранный файл не менялся с прошлого приёма, повторно не
         читается. Проверки ниже она уже прошла, учётная запись копируется.
         """
-        self._ensure_not_blocked(allow_restore=True)
-        source_path = Path(path)
-        digest = known_sha256 or _sha256(source_path)
-        platform = platform or _platform_from_path(source_path)
-
-        is_index = source_path.suffix == ".gz"
-        # Ревизия снимается ДО чтения: заменят файл во время разбора — ключ
-        # останется от прежнего, и следующий reload честно перечитает.
-        file_key = (
-            self._syntax_file_key(source_path, digest, platform)
-            if is_index
-            else None
-        )
-        if reuse_loaded and file_key is not None and platform:
-            source_id = f"syntax-{platform}"
-            with self._lock:
-                прежний = self.syntax_versions.get(source_id)
-                годен = (
-                    прежний is not None
-                    and прежний.status == STATUS_READY
-                    and self._syntax_version_keys.get(source_id) == file_key
-                    # Тот же файл под другим путём строки реестра (`mv` плюс
-                    # правка registry.json) перечитывается: запись хранит путь.
-                    and прежний.stored_path == self._relative(source_path)
-                )
-            if годен:
-                source = replace(
-                    прежний, loaded_at=_now(), warnings=list(прежний.warnings)
-                )
-                snapshot = self._register_syntax_source(
-                    source, expected_revision, file_key
-                )
-                if rebuild:
-                    self._apply_syntax(snapshot)
-                return source
-
-        if is_index:
-            syntax = load_syntax(source_path)
-            platform = platform or syntax.max_platform
-        else:
-            try:
-                syntax = parse_hbk(source_path, platform=platform)
-                if not platform:
-                    platform = syntax.derived_platform()
-                    if platform:
-                        syntax.platforms = [platform]
-            except (ResourceLimitError, V8ContainerError) as error:
-                raise RegistryError(f"{source_path.name}: {error}") from error
-
-        # Без версии справку платформы принимать нельзя: она задаёт границы
-        # применимости всему набору, а пустая граница означает «элемент
-        # актуален» — противоположное правде. Вывести версию из данных
-        # удаётся не всегда: в справке 8.3.5 отметок «начиная с версии» нет
-        # ни на одной из 18 936 страниц, они появились позже.
-        if not platform:
-            raise RegistryError(
-                f"{source_path.name}: не удалось определить версию платформы. "
-                "В справках старых платформ версии внутри нет — укажите её при "
-                "загрузке или назовите файл так, чтобы версия была в имени: "
-                "`syntax-8.3.5.1570.hbk`."
-            )
-        if _RE_PLATFORM.fullmatch(platform) is None:
-            raise RegistryError(
-                f"{source_path.name}: версия платформы {platform!r} должна "
-                "состоять из 3 или 4 числовых частей, например 8.3.27.2130."
-            )
-
-        # Разбор прошёл, элементов ноль. Это контейнер 1С, но не справка
-        # синтакс-помощника: так ведёт себя `config_ru.hbk` и прочие справки
-        # интерфейса из того же каталога — сигнатура контейнера на месте,
-        # `FileStorage` есть, страниц синтакс-помощника внутри нет.
-        # Отвергаем до того, как файл скопирован в `data/sources` и записан в
-        # реестр: пустая справка, вставшая на место рабочей, ломает поиск
-        # молча — в списке источников всё выглядит целым.
-        if not len(syntax):
-            raise RegistryError(
-                f"{source_path.name}: разбор не дал ни одного элемента — это не "
-                "справка синтакс-помощника. Нужен `shcntx_ru.hbk` из каталога "
-                "установки платформы, он весит десятки МБ; остальные `.hbk` "
-                "оттуда — справки интерфейса, они не подходят."
-            )
-
-        # Элементы есть, но ни у одного нет описания — это `shcntx_root.hbk`:
-        # языконезависимая часть справки. Дерево страниц и английские
-        # идентификаторы там те же, поэтому проверка на пустоту его пропускает.
-        if not any(item.description for item in syntax.items.values()):
-            raise RegistryError(
-                f"{source_path.name}: ни у одного из {len(syntax)} элементов нет "
-                "описания. Так выглядят языконезависимая часть справки "
-                "(`shcntx_root.hbk` — дерево страниц и английские "
-                "идентификаторы без текстов) и соседние справки платформы. "
-                "Нужен `shcntx_ru.hbk` из каталога установки."
-            )
-
-        if is_index:
-            index_path = source_path
-        else:
-            # Исходный `.hbk` не сохраняем. Восстановление читает разобранный
-            # индекс — `stored_path` у справки указывает именно на него, — а
-            # исходник не открывался ни разу за всю жизнь реестра. Копия стоила
-            # 39 МБ на каждую загруженную справку и не давала ничего: команды
-            # «переразобрать из сохранённого» нет, а повторная загрузка того же
-            # файла отсекается по хешу. Понадобится другой разбор — файл берут
-            # из каталога установки платформы, там он и лежит.
-            имя = platform or source_path.stem
-            index_path = self.index_dir / "syntax" / f"{имя}.json.gz"
-            save_syntax(syntax, index_path)
-            file_key = self._syntax_file_key(index_path, digest, platform)
-
-        source = Source(
-            id=f"syntax-{platform or source_path.stem}",
-            kind=KIND_SYNTAX,
-            origin=source_path.name,
-            sha256=digest,
-            loaded_at=_now(),
+        return registry_syntax.add_syntax(
+            self,
+            path,
             platform=platform,
-            status=STATUS_READY,
-            items_total=len(syntax),
-            stored_path=self._relative(index_path),
+            keep_source=keep_source,
+            known_sha256=known_sha256,
+            rebuild=rebuild,
+            expected_revision=expected_revision,
+            reuse_loaded=reuse_loaded,
+            sha256=_sha256,
+            now=_now,
+            platform_from_path=_platform_from_path,
+            platform_fullmatch=_RE_PLATFORM.fullmatch,
+            parse_hbk=parse_hbk,
+            load_syntax=load_syntax,
+            save_syntax=save_syntax,
         )
-
-        source.warnings.extend(syntax.warnings)
-
-        предупреждение = search_keys_coverage(syntax.items.keys()).as_warning()
-        if предупреждение:
-            source.warnings.append(предупреждение)
-
-        snapshot = self._register_syntax_source(source, expected_revision, file_key)
-
-        if rebuild:
-            # Разобранная справка уже в руках — заново с диска её не читаем.
-            self._apply_syntax(snapshot, {source.id: syntax})
-        return source
 
     def _register_syntax_source(
         self,
@@ -1759,20 +1639,9 @@ class Registry:
         file_key: tuple | None,
     ) -> dict[str, Source]:
         """Поставить учётную запись справки версии; вернуть снимок набора."""
-        with self._registry_memory_change():
-            self._check_source_revision(source.id, expected_revision)
-            self._advance_source_revision(source.id)
-            # Справки разных версий стоят рядом: та же версия — это исправление
-            # и заменяет прежнюю запись, другая версия дополняет набор.
-            self.syntax_versions[source.id] = source
-            self.sources[source.id] = source
-            if file_key is None:
-                self._syntax_version_keys.pop(source.id, None)
-            else:
-                self._syntax_version_keys[source.id] = file_key
-            self._advance_source_lifecycle_revision()
-            self._relation_cache.clear()
-            return dict(self.syntax_versions)
+        return registry_syntax.register_syntax_source(
+            self, source, expected_revision, file_key
+        )
 
     @staticmethod
     def _syntax_file_key(path: Path, digest: str, platform: str) -> tuple | None:
@@ -1781,25 +1650,12 @@ class Registry:
         Повторный разбор того же HBK сохраняет SHA, но заменяет файл
         атомарно — inode и mtime меняются, и переиспользование отпадает.
         """
-        try:
-            stat_result = path.stat()
-        except OSError:
-            return None
-        return (
-            digest,
-            platform,
-            stat_result.st_dev,
-            stat_result.st_ino,
-            stat_result.st_size,
-            stat_result.st_mtime_ns,
-        )
+        return registry_syntax.syntax_file_key(path, digest, platform)
 
     @staticmethod
     def _fingerprint(versions: dict[str, "Source"]) -> tuple:
         """Отпечаток набора справок, решающий, нужна ли пересборка."""
-        return tuple(
-            sorted((sid, source.sha256) for sid, source in versions.items())
-        )
+        return registry_syntax.fingerprint(versions)
 
     def _prepare_syntax(
         self,
@@ -1817,68 +1673,13 @@ class Registry:
         ронять сборку остальных — это то же правило, по которому отдельный
         источник не роняет запуск.
         """
-        if not versions:
-            return None, []
-
-        preloaded = preloaded or {}
-        по_версии = sorted(
-            versions.values(), key=lambda source: parse_version(source.platform)
+        return registry_syntax.prepare_syntax(
+            self,
+            versions,
+            preloaded,
+            load_syntax=load_syntax,
+            merge_syntax=merge_syntax,
         )
-        problems: list[str] = []
-
-        # Готовый слитый вид снимает нужду читать справки версий вовсе — это и
-        # есть смысл кэша: на трёх справках старт без него удваивался.
-        # При повторном разборе того же HBK SHA исходника прежний, а уже
-        # переданный новый индекс должен заменить содержимое слитого вида.
-        merged = (
-            self._cached_merged(по_версии)
-            if len(по_версии) > 1 and not preloaded else None
-        )
-        живые = по_версии
-
-        if merged is None:
-
-            def поднять(source: Source) -> SyntaxIndex | None:
-                index = preloaded.get(source.id)
-                if index is not None:
-                    return index
-                try:
-                    return load_syntax(self._absolute(source.stored_path))
-                except Exception as error:
-                    problems.append(
-                        f"{source.id}: разобранная справка не читается — {error}"
-                    )
-                    return None
-
-            # Сливаем от свежих к старым и поднимаем справку прямо на её шаге:
-            # так в памяти живёт одна разобранная справка плюс накопитель. При
-            # загрузке всех разом пик был 493 МБ против 285.
-            живые = []
-            for source in reversed(по_версии):
-                index = поднять(source)
-                if index is None:
-                    continue
-                живые.append(source)
-                merged = index if merged is None else merge_syntax([index, merged])
-            живые.reverse()
-
-            if merged is not None and len(живые) > 1:
-                self._save_merged(merged, живые)
-
-        if merged is None:
-            return None, problems
-
-        newest = живые[-1]
-        отпечаток = self._syntax_revision(живые)
-        stamp = replace(newest, sha256=отпечаток)
-        loaded = LoadedSyntax(
-            source=newest,
-            syntax=merged,
-            index=self._syntax_index(merged, stamp),
-            by_name=self._syntax_lookup(merged, stamp),
-            tables=build_table_index(merged),
-        )
-        return loaded, problems
 
     def _syntax_revision(self, sources: list["Source"]) -> str:
         """Отпечаток разобранных индексов, а не только исходных справок.
@@ -1887,17 +1688,7 @@ class Registry:
         индекс атомарно. Метаданные файла обесценивают все производные кэши
         без повторного чтения десятков мегабайт на каждом старте.
         """
-        digest = hashlib.sha256()
-        for source in sorted(sources, key=lambda item: item.id):
-            try:
-                stat = self._absolute(source.stored_path).stat()
-                revision = (
-                    f"{stat.st_dev}:{stat.st_ino}:{stat.st_size}:{stat.st_mtime_ns}"
-                )
-            except OSError:
-                revision = "missing"
-            digest.update(f"{source.id}:{source.sha256}:{revision}|".encode())
-        return digest.hexdigest()
+        return registry_syntax.syntax_revision(self, sources)
 
     def _merged_path(self, sources: list["Source"]) -> Path:
         """Имя файла слитого вида — по разобранным индексам и коду.
@@ -1906,37 +1697,14 @@ class Registry:
         правку, тихо отдавал бы результат прежней логики. Тем же штампом
         пользуются остальные производные (`index_cache`), и по той же причине.
         """
-        отпечаток = f"{self._syntax_revision(sources)}:{index_cache._code_digest()}"
-        имя = hashlib.sha256(отпечаток.encode()).hexdigest()[:16]
-        return self._syntax_index_dir() / f"merged-{имя}.json.gz"
+        return registry_syntax.merged_path(self, sources)
 
     def _cached_merged(self, sources: list["Source"]) -> SyntaxIndex | None:
         """Готовый слитый вид с диска. `None` — кэша нет или он не читается."""
-        path = self._merged_path(sources)
-        if not path.exists():
-            return None
-        try:
-            return load_syntax(path)
-        except Exception:
-            # Кэш расходный: не прочитался — соберём заново.
-            path.unlink(missing_ok=True)
-            return None
+        return registry_syntax.cached_merged(self, sources, load_syntax=load_syntax)
 
     def _save_merged(self, merged: SyntaxIndex, sources: list["Source"]) -> None:
-        path = self._merged_path(sources)
-        try:
-            save_syntax(merged, path)
-        except OSError:
-            # Том только на чтение — работать это не мешает.
-            return
-        # Прежние слитые виды больше не нужны: набор справок или код изменились,
-        # и вернуться к ним нельзя. Копить их — растить каталог молча. Гость
-        # не удаляет: «прежний» для него может быть живым видом сервера.
-        if self._guest:
-            return
-        for прежний in self._syntax_index_dir().glob("merged-*.json.gz"):
-            if прежний != path:
-                прежний.unlink(missing_ok=True)
+        return registry_syntax.save_merged(self, merged, sources, save_syntax=save_syntax)
 
     def _apply_syntax(
         self,
@@ -1949,50 +1717,7 @@ class Registry:
         новому набору: наружу не должен попасть вид, не соответствующий
         списку источников.
         """
-        while True:
-            # Ключ снимается до сборки по той же причине, что в add_syntax:
-            # файл, заменённый во время сборки, обесценит ключ, а не вид.
-            key = (
-                self._fingerprint(versions),
-                self._syntax_revision(list(versions.values())),
-            )
-            with self._lock:
-                built = self._syntax_built
-                reuse = (
-                    built[1]
-                    if not preloaded
-                    and built is not None
-                    and built[0] == key
-                    and self.syntax is built[1]
-                    else None
-                )
-            if reuse is not None:
-                # Reload без изменений справок: слитый вид, его поисковый
-                # индекс и таблицы те же — тот же объект, и кэши, привязанные
-                # к нему по identity, остаются в силе.
-                prepared, problems = reuse, []
-            else:
-                prepared, problems = self._prepare_syntax(versions, preloaded)
-            with self._registry_memory_change():
-                if self._fingerprint(self.syntax_versions) == self._fingerprint(versions):
-                    if self.syntax is not prepared:
-                        self._advance_source_lifecycle_revision()
-                    self.syntax = prepared
-                    self._syntax_built = (
-                        (key, prepared)
-                        if prepared is not None and not problems
-                        else None
-                    )
-                    self._relation_cache.clear()
-                    for problem in problems:
-                        source_id = problem.split(":", 1)[0]
-                        source = self.sources.get(source_id)
-                        if source is not None:
-                            source.status = STATUS_ERROR
-                            source.error = problem
-                    return problems
-                versions = dict(self.syntax_versions)
-                preloaded = None
+        return registry_syntax.apply_syntax(self, versions, preloaded)
 
     @_refresh_on_external_change()
     def remove(self, source_id: str) -> None:

@@ -13,10 +13,11 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-from . import fsio
+from . import code_coverage, fsio
+from .code_coverage import _CodeCoveragePayload
 
 if TYPE_CHECKING:
-    from .registry import LoadedModules, Source
+    from .registry_types import LoadedModules, Source
 
 
 SCHEMA_VERSION = 1
@@ -67,16 +68,15 @@ def _problem_sort_key(item) -> tuple:
 
 def build_payload(loaded: "LoadedModules") -> dict[str, Any]:
     """Полный безопасный снимок того же поколения, что публичные агрегаты."""
-    # Локальный импорт разрывает зависимость: registry вызывает запись
-    # журнала, а tools уже импортирует типы registry для публичных ответов.
-    from . import tools
-
     source = loaded.source
     coverage = cast(
-        tools._CodeCoveragePayload,
-        tools._code_coverage(loaded, include_problem_rows=False).to_dict(),
+        _CodeCoveragePayload,
+        code_coverage.get_code_coverage(
+            loaded, include_problem_rows=False,
+            all_code_problems=code_coverage._all_code_problems,
+        ).to_dict(),
     )
-    problems = sorted(tools._iter_code_problems(loaded), key=_problem_sort_key)
+    problems = sorted(code_coverage._iter_code_problems(loaded), key=_problem_sort_key)
     limitations: dict[str, object] = dict(coverage["limitations"])
     limitations["problem_rows_total"] = len(problems)
     return {

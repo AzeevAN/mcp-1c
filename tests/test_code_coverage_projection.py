@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from mcp1c import coverage_log, dashboard_runtime, tools
+from mcp1c import code_coverage, coverage_log, dashboard_runtime, tools
 
 
 @pytest.fixture
@@ -43,8 +43,15 @@ def corpus(monkeypatch):
 
     monkeypatch.setattr(tools, "_code_coverage", aggregate)
     monkeypatch.setattr(
-        tools, "_iter_code_problems", lambda actual: iter(reversed(full_problems))
+        code_coverage, "get_code_coverage",
+        lambda actual, *, include_problem_rows, all_code_problems: aggregate(
+            actual, include_problem_rows=include_problem_rows
+        ),
     )
+    for module in (tools, code_coverage):
+        monkeypatch.setattr(
+            module, "_iter_code_problems", lambda actual: iter(reversed(full_problems))
+        )
     return coverage, loaded
 
 

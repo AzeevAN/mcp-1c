@@ -3737,6 +3737,53 @@ class Registry:
             )
         return prepared.configuration, loaded_modules
 
+    def _install_prepared_locked(
+        self,
+        identity: ExportIdentity,
+        prepared: _PreparedNativeRuntime,
+        loaded_configuration: LoadedConfiguration | None,
+        loaded_modules: LoadedModules | None,
+    ) -> None:
+        """Установить runtime-карты под удерживаемым вызывающим ``_lock``.
+
+        Установка конфигурации двигает её ревизию под тем же ``_lock``.
+        Pointer, пересчёт связей и очистка остаются у вызывающего:
+        публикация и восстановление меняют их в разных границах операции.
+        """
+        if loaded_configuration is not None:
+            name = loaded_configuration.config.name
+            self.configurations[name] = self._словарь_конфигурации_locked(
+                loaded_configuration
+            )
+            self._advance_configuration_revision(name)
+            modules_key = identity.modules_source_id()
+            if loaded_modules is None:
+                self.modules.pop(modules_key, None)
+            else:
+                self.modules[modules_key] = self._словарь_модулей_locked(
+                    loaded_modules
+                )
+            if prepared.runtime.roles is None:
+                self.roles.pop(name, None)
+            else:
+                self.roles[name] = prepared.runtime.roles
+        else:
+            modules_key = identity.modules_source_id()
+            if loaded_modules is None:
+                self.modules.pop(modules_key, None)
+            else:
+                self.modules[modules_key] = self._словарь_модулей_locked(
+                    loaded_modules
+                )
+            structure = prepared.runtime.extension_structure
+            assert structure is not None
+            self.extension_structures[modules_key] = structure
+            self.extension_relations[modules_key] = prepared.extension_relations
+            if prepared.runtime.roles is None:
+                self.extension_roles.pop(modules_key, None)
+            else:
+                self.extension_roles[modules_key] = prepared.runtime.roles
+
     def _save_native_runtime_cache(
         self,
         prepared: _PreparedNativeRuntime,
@@ -4020,23 +4067,14 @@ class Registry:
                         self._generation_pointers = next_pointers
                         self._extension_resolution_cache = None
                         self._generation_manifests[key] = manifest
+                        self._install_prepared_locked(
+                            pointer.identity,
+                            prepared_runtime,
+                            loaded_configuration,
+                            loaded_modules,
+                        )
                         if loaded_configuration is not None:
                             name = loaded_configuration.config.name
-                            self.configurations[name] = (
-                                self._словарь_конфигурации_locked(loaded_configuration)
-                            )
-                            self._advance_configuration_revision(name)
-                            modules_key = pointer.modules_source_id()
-                            if loaded_modules is None:
-                                self.modules.pop(modules_key, None)
-                            else:
-                                self.modules[modules_key] = (
-                                    self._словарь_модулей_locked(loaded_modules)
-                                )
-                            if prepared_runtime.runtime.roles is None:
-                                self.roles.pop(name, None)
-                            else:
-                                self.roles[name] = prepared_runtime.runtime.roles
                             if pointer.activation is not None and pointer.activation.mode is ActivationMode.A_ONLY:
                                 for child in detached_extensions:
                                     self._generation_manifests.pop(
@@ -4051,26 +4089,6 @@ class Registry:
                             else:
                                 self.extension_relations.update(replacement_relations)
                             self._relation_cache.pop(name, None)
-                        else:
-                            extension_key = pointer.modules_source_id()
-                            if loaded_modules is None:
-                                self.modules.pop(extension_key, None)
-                            else:
-                                self.modules[extension_key] = (
-                                    self._словарь_модулей_locked(loaded_modules)
-                                )
-                            structure = prepared_runtime.runtime.extension_structure
-                            assert structure is not None
-                            self.extension_structures[extension_key] = structure
-                            self.extension_relations[extension_key] = (
-                                prepared_runtime.extension_relations
-                            )
-                            if prepared_runtime.runtime.roles is None:
-                                self.extension_roles.pop(extension_key, None)
-                            else:
-                                self.extension_roles[extension_key] = (
-                                    prepared_runtime.runtime.roles
-                                )
                     def cleanup_detached() -> None:
                         for extension_key in dict.fromkeys(detached_cleanup):
                             self._drop_cache(extension_key, KIND_EXTENSION)
@@ -4605,21 +4623,12 @@ class Registry:
                 loaded_modules,
             ) in native_runtime.items():
                 name = loaded_configuration.config.name
-                self.configurations[name] = self._словарь_конфигурации_locked(
-                    loaded_configuration
+                self._install_prepared_locked(
+                    manifests[_key].identity,
+                    _prepared,
+                    loaded_configuration,
+                    loaded_modules,
                 )
-                self._advance_configuration_revision(name)
-                modules_key = source_ids.modules_id(name)
-                if loaded_modules is None:
-                    self.modules.pop(modules_key, None)
-                else:
-                    self.modules[modules_key] = self._словарь_модулей_locked(
-                        loaded_modules
-                    )
-                if _prepared.runtime.roles is None:
-                    self.roles.pop(name, None)
-                else:
-                    self.roles[name] = _prepared.runtime.roles
                 self._relation_cache.pop(name, None)
 
         сырые_строки = payload.get("sources") or []
@@ -4729,24 +4738,15 @@ class Registry:
             with self._registry_memory_change():
                 self._generation_pointers[key] = pointer
                 self._generation_manifests[key] = manifest
-            extension_key = pointer.modules_source_id()
             structure = prepared.runtime.extension_structure
             assert structure is not None
             with self._registry_memory_change():
-                if loaded_modules is None:
-                    self.modules.pop(extension_key, None)
-                else:
-                    self.modules[extension_key] = self._словарь_модулей_locked(
-                        loaded_modules
-                    )
-                self.extension_structures[extension_key] = structure
-                self.extension_relations[extension_key] = (
-                    prepared.extension_relations
+                self._install_prepared_locked(
+                    identity,
+                    prepared,
+                    loaded_configuration,
+                    loaded_modules,
                 )
-                if prepared.runtime.roles is None:
-                    self.extension_roles.pop(extension_key, None)
-                else:
-                    self.extension_roles[extension_key] = prepared.runtime.roles
 
         if not self._guest:
             # Гость не пишет кэш поверх файлов, которые читает сервер.

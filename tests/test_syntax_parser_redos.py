@@ -2,7 +2,10 @@
 
 from copy import copy
 import io
+from pathlib import Path
 from random import Random
+import subprocess
+import sys
 from time import perf_counter
 import zipfile
 
@@ -14,6 +17,54 @@ from mcp1c.registry import Registry
 from mcp1c.resource_limits import ResourceLimitError
 from mcp1c.syntax_model import SyntaxIndex, SyntaxItem
 from module_samples import v8_container_bytes
+
+
+@pytest.mark.parametrize("fragment_kind", ["title", "see_also", "title_cr", "title_cr_bilingual"])
+def test_повторяющиеся_атрибуты_не_блокируют_parse_page(fragment_kind):
+    """Незавершённый тег допустимого размера обрабатывается за ограниченное время."""
+    if fragment_kind == "title":
+        raw = ('<h1 ' + 'class="V8SH_pagetitle" ' * 16_000).encode("utf-8")
+    elif fragment_kind.startswith("title_cr"):
+        title = "A" + "\r" * 50_000 + "Z"
+        if fragment_kind == "title_cr_bilingual":
+            title += "(English)"
+        raw = f'<h1 class="V8SH_pagetitle">{title}</h1>'.encode("utf-8")
+    else:
+        raw = (
+            '<h1 class="V8SH_pagetitle">Synthetic</h1>'
+            '<p class="V8SH_chapter">См. также</p>'
+            '<a ' + 'href="x" ' * 16_000 + '>'
+        ).encode("utf-8")
+    assert len(raw) < 454_773
+
+    code = r"""
+import sys
+from mcp1c.syntax_parser import parse_page
+
+item = parse_page("objects/Synthetic.html", sys.stdin.buffer.read())
+if sys.argv[1] == "title":
+    assert item is None
+elif sys.argv[1].startswith("title_cr"):
+    assert item is not None
+    assert item.name_ru == "A" + "\r" * 50_000 + "Z"
+    assert item.name_en == ("English" if sys.argv[1] == "title_cr_bilingual" else "")
+else:
+    assert item is not None
+    assert item.name_ru == "Synthetic"
+    assert item.see_also == []
+"""
+    # Таймаут завершает дочерний процесс даже при регрессии в регулярном выражении.
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", code, fragment_kind],
+            input=raw,
+            capture_output=True,
+            cwd=Path(syntax_parser.__file__).resolve().parents[1],
+            timeout=3,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail("Разбор повторяющихся атрибутов не завершился за 3 с")
+    assert completed.returncode == 0, completed.stderr.decode("utf-8", errors="replace")
 
 
 def _m5_page(size=None, *, title="Sized"):

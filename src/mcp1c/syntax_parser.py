@@ -49,11 +49,11 @@ _RE_TAG = re.compile(rf"<[^<>]{{1,{SYNTAX_MAX_PAGE_BYTES}}}>")
 _RE_BR = re.compile(r"<br\s*/?>", re.I)
 _RE_SPACE = re.compile(r"[ \t ]+")
 _RE_LINK = re.compile(
-    rf'<a\s[^<>]{{0,{SYNTAX_MAX_PAGE_BYTES}}}href="([^"<>]{{0,{SYNTAX_MAX_PAGE_BYTES}}})"'
-    rf'[^<>]{{0,{SYNTAX_MAX_PAGE_BYTES}}}>'
+    rf'<a\s([^<>]{{0,{SYNTAX_MAX_PAGE_BYTES}}}+)>'
     rf'((?:[^<]{{1,{SYNTAX_MAX_PAGE_BYTES}}}+|<(?!/a>|a\s)){{0,{SYNTAX_MAX_PAGE_BYTES}}}?)</a>',
     re.I | re.S,
 )
+_RE_HREF = re.compile(rf'href="([^"<>]{{0,{SYNTAX_MAX_PAGE_BYTES}}})"', re.I)
 
 
 def _section_pattern(marker: str, closing: str, *, opening: str = "") -> re.Pattern:
@@ -66,12 +66,19 @@ def _section_pattern(marker: str, closing: str, *, opening: str = "") -> re.Patt
     # проверяем его только на 'c', а не на каждом символе текста.
     if opening:
         text = rf'[^<]{{1,{SYNTAX_MAX_PAGE_BYTES}}}+'
+        header = rf'[^<>]{{0,{SYNTAX_MAX_PAGE_BYTES}}}+'
         next_opening = "|" + re.escape(opening[1:]) + marker
     else:
         text = rf'[^<c]{{1,{SYNTAX_MAX_PAGE_BYTES}}}+|c(?!{marker[1:]})'
+        # Повторный class в незавершённом теге тоже завершает поиск:
+        # иначе каждое вхождение заново просматривает весь остаток шапки.
+        header = (
+            rf'(?:[^<>c]{{1,{SYNTAX_MAX_PAGE_BYTES}}}+|c(?!{marker[1:]}))'
+            rf'{{0,{SYNTAX_MAX_PAGE_BYTES}}}+'
+        )
         next_opening = ""
     return re.compile(
-        rf'{prefix}[^<>]{{0,{SYNTAX_MAX_PAGE_BYTES}}}>'
+        rf'{prefix}{header}>'
         rf'((?:{text}|<(?!{closing[1:]}{next_opening}))'
         rf'{{0,{SYNTAX_MAX_PAGE_BYTES}}}?){closing}',
         re.I | re.S,
@@ -95,9 +102,6 @@ _RE_CHAPTER = re.compile(
     rf'{{0,{SYNTAX_MAX_PAGE_BYTES}}}?)</(?:p|div)>',
     re.I | re.S,
 )
-
-# «НазваниеРус (NameEng)»
-_RE_BILINGUAL = re.compile(r"^(.*?)\s*\(([^()]*)\)\s*$")
 
 # «<Выражение> (обязательный)» в шапке параметра
 _RE_PARAM_HEAD = re.compile(r"<([^<>]+)>\s*(?:\(([^)]*)\))?")
@@ -128,19 +132,31 @@ def _text(fragment: str) -> str:
     return "\n".join(line.strip() for line in fragment.split("\n")).strip()
 
 
+def _link_pairs(fragment: str) -> Iterator[tuple[str, str]]:
+    # Адрес выбирается отдельно от поиска закрытия ссылки: повторные href
+    # в одном незакрытом теге не создают перебора всех вариантов атрибутов.
+    for match in _RE_LINK.finditer(fragment):
+        href = None
+        for attribute in _RE_HREF.finditer(match.group(1)):
+            href = attribute.group(1)
+        if href is not None:
+            # Прежний жадный шаблон выбирал последний href в теге.
+            yield href, match.group(2)
+
+
 def _link_texts(fragment: str) -> list[str]:
-    return [_text(text) for _, text in _RE_LINK.findall(fragment)]
+    return [_text(text) for _, text in _link_pairs(fragment)]
 
 
 def _link_hrefs(fragment: str) -> list[str]:
-    return [href for href, _ in _RE_LINK.findall(fragment)]
+    return [href for href, _ in _link_pairs(fragment)]
 
 
 def _links(fragment: str, section: str, *, internal_only: bool = False) -> list[SyntaxLink]:
     """Сохранять подпись вместе с адресом, не связывая две независимые выборки."""
     return [
         SyntaxLink(section=section, label=_text(label), href=href)
-        for href, label in _RE_LINK.findall(fragment)
+        for href, label in _link_pairs(fragment)
         # SyntaxHelperLanguage указывает на ресурс языка, не на HTML-карточку.
         # Старое see_also сохраняется как было; навигация берёт только карточки.
         if not internal_only or href.startswith("v8help://SyntaxHelperContext/")
@@ -150,9 +166,17 @@ def _links(fragment: str, section: str, *, internal_only: bool = False) -> list[
 def _split_bilingual(value: str) -> tuple[str, str]:
     """«ПоляСхемыЗапроса (QuerySchemaFields)» -> (рус, англ)."""
     value = _text(value)
-    match = _RE_BILINGUAL.match(value)
-    if match:
-        return match.group(1).strip(), match.group(2).strip()
+    # Последняя пара скобок задаёт английское имя. Отдельный поиск не
+    # перебирает разбиения длинной пробельной последовательности между .*? и \s*.
+    if value.endswith(")"):
+        opening = value.rfind("(")
+        if opening >= 0:
+            russian = value[:opening].rstrip()
+            english = value[opening + 1:-1]
+            # Прежний шаблон допускал переносы только в пробельном хвосте
+            # русского имени и внутри скобок, но не в самом русском имени.
+            if "\n" not in russian and ")" not in english:
+                return russian.strip(), english.strip()
     return value, ""
 
 

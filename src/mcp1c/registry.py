@@ -926,6 +926,30 @@ class Registry:
             except OSError:
                 continue
 
+    def _forget_native_caches(self, source_id: str, kind: str) -> bool:
+        """Удалить кэш ролей и журнал покрытия снятого native-корпуса.
+
+        Вызывающий уже очистил общие индексы, удерживает
+        ``_registry_write_lock`` и ``_modules_cache_lock``, но не ``_lock``.
+        True означает успех удаления журнала, включая его отсутствие.
+        Ошибка удаления ``roles.sqlite`` игнорируется и на результат не влияет.
+        """
+        if kind == KIND_CONFIGURATION:
+            roles_source_id = source_ids.configuration_of_modules(source_id)
+        elif kind == KIND_EXTENSION:
+            roles_source_id = source_id
+        else:
+            raise ValueError(kind)
+        try:
+            self._cache_path(roles_source_id, "roles.sqlite").unlink(missing_ok=True)
+        except OSError:
+            pass
+        try:
+            coverage_log.remove(self.data_dir, source_id)
+        except OSError:
+            return False
+        return True
+
     def _configuration_index(
         self,
         config: Configuration,
@@ -2312,7 +2336,7 @@ class Registry:
                             (configuration, KIND_CONFIGURATION), (modules_id, KIND_MODULES),
                         ))
                         native_cleanup.append((
-                            configuration, modules_id,
+                            modules_id, KIND_CONFIGURATION,
                             "Журнал покрытия снятой native-конфигурации не удалён.",
                         ))
                     else:
@@ -2324,7 +2348,7 @@ class Registry:
                         self._relation_cache.pop(identity.parent_configuration, None)
                         cache_sources.append((native_source_id, KIND_EXTENSION))
                         native_cleanup.append((
-                            native_source_id, native_source_id,
+                            native_source_id, KIND_EXTENSION,
                             "Журнал покрытия снятого native-расширения не удалён.",
                         ))
                 self._accept_saved_dates_locked(accepted)
@@ -2332,14 +2356,8 @@ class Registry:
             # а writer/cache guards ещё не дают запоздалому writer вернуть кэш.
             for cached_source_id, kind in cache_sources:
                 self._drop_cache(cached_source_id, kind)
-            for roles_source_id, coverage_source_id, warning in native_cleanup:
-                try:
-                    self._cache_path(roles_source_id, "roles.sqlite").unlink(missing_ok=True)
-                except OSError:
-                    pass
-                try:
-                    coverage_log.remove(self.data_dir, coverage_source_id)
-                except OSError:
+            for code_source_id, kind, warning in native_cleanup:
+                if not self._forget_native_caches(code_source_id, kind):
                     logger.warning(warning)
 
         if отложенная_справка is not None:
@@ -4092,16 +4110,7 @@ class Registry:
                     def cleanup_detached() -> None:
                         for extension_key in dict.fromkeys(detached_cleanup):
                             self._drop_cache(extension_key, KIND_EXTENSION)
-                            try:
-                                self._cache_path(extension_key, "roles.sqlite").unlink(
-                                    missing_ok=True
-                                )
-                            except OSError:
-                                pass
-                            try:
-                                coverage_log.remove(self.data_dir, extension_key)
-                            except OSError:
-                                pass
+                            self._forget_native_caches(extension_key, KIND_EXTENSION)
                         detached_cleanup.clear()
 
                     # WAL и Registry получают один снимок; до IO read lock снят.

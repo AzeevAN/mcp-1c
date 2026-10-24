@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections import Counter
 from contextlib import contextmanager
 import hashlib
+import http.client
 import json
 from pathlib import Path
 import re
@@ -325,7 +326,7 @@ def _restart_api(stand) -> dict:
             if health.get("runtime_id") != old:
                 stand.wait_ready()
                 return {"old_runtime_id": old, "runtime_id": health["runtime_id"]}
-        except (OSError, AssertionError, ValueError):
+        except (OSError, http.client.HTTPException, AssertionError, ValueError):
             pass
         time.sleep(POLL_SECONDS)
     raise AssertionError("После API-перезапуска не появился новый runtime_id")

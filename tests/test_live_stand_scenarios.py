@@ -1,10 +1,87 @@
 """Проверки результатов сценариев приёмки на синтетических ответах API."""
 
 import importlib.util
+import http.client
 from pathlib import Path
 import sys
 
 import pytest
+
+
+@pytest.mark.parametrize(
+    "transition_error",
+    [
+        http.client.RemoteDisconnected("процесс перезапускается"),
+        http.client.IncompleteRead(b"{", 20),
+        http.client.BadStatusLine("оборванный заголовок"),
+    ],
+    ids=["disconnected", "incomplete-body", "incomplete-status"],
+)
+def test_restart_waits_through_interrupted_http_response(
+    scenarios, monkeypatch, transition_error
+):
+    class Stand:
+        requested_restarts = 0
+        ready_checks = 0
+
+        def __init__(self):
+            self.health = iter([
+                {"runtime_id": "old"},
+                {"runtime_id": "old"},
+                transition_error,
+                {"runtime_id": "new"},
+            ])
+
+        def json(self, method, path, body=None, *, admin=False):
+            if method == "POST":
+                assert path == "/api/v1/server/restart" and admin
+                return {"state": "restarting"}
+            assert method == "GET" and path == "/health"
+            value = next(self.health)
+            if isinstance(value, Exception):
+                raise value
+            return value
+
+        def wait_ready(self):
+            self.ready_checks += 1
+
+    monkeypatch.setattr(scenarios.time, "sleep", lambda _: None)
+    stand = Stand()
+
+    assert scenarios._restart_api(stand) == {
+        "old_runtime_id": "old", "runtime_id": "new"
+    }
+    assert stand.requested_restarts == 1
+    assert stand.ready_checks == 1
+
+
+def test_restart_does_not_accept_permanently_interrupted_http(
+    scenarios, monkeypatch
+):
+    class Stand:
+        requested_restarts = 0
+        health_reads = 0
+
+        def json(self, method, path, body=None, *, admin=False):
+            if method == "POST":
+                return {"state": "restarting"}
+            self.health_reads += 1
+            if self.health_reads == 1:
+                return {"runtime_id": "old"}
+            raise http.client.IncompleteRead(b"{", 20)
+
+        def wait_ready(self):
+            pytest.fail("Новый процесс не подтвердил готовность")
+
+    clock = iter([0, 1, 241])
+    monkeypatch.setattr(scenarios.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(scenarios.time, "sleep", lambda _: None)
+    stand = Stand()
+
+    with pytest.raises(AssertionError, match="не появился новый runtime_id"):
+        scenarios._restart_api(stand)
+    assert stand.requested_restarts == 1
+    assert stand.health_reads == 2
 
 
 @pytest.fixture(scope="module")

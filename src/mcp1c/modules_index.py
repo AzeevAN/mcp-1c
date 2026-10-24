@@ -74,6 +74,10 @@ from .search import Doc, SearchIndex
 
 Прогресс = Callable[[int, int], None]
 
+# Четыре крупные типовые конфигурации, 2026-10-24: максимальная оценка
+# удержания calls — 31 993 016 байт; лимит с запасом ×2,5.
+_COLD_CALL_REUSE_MAX_BYTES = 79_982_540
+
 
 class _ColdParseReuse:
     """Краткоживущие данные между этапами одной холодной сборки.
@@ -90,6 +94,25 @@ class _ColdParseReuse:
         self._string_ids: dict[str, int] = {}
         self._calls: dict[str, array] = {}
         self._headers: dict[str, tuple[int, list[tuple[int, str]]]] = {}
+        self._max_call_bytes = _COLD_CALL_REUSE_MAX_BYTES
+        self._reuse_calls = True
+        self._retained_call_bytes = self._call_container_bytes()
+
+    def _call_container_bytes(self) -> int:
+        return (
+            sys.getsizeof(self._strings)
+            + sys.getsizeof(self._string_ids)
+            + sys.getsizeof(self._calls)
+        )
+
+    def _check_call_budget(self) -> bool:
+        if self._retained_call_bytes <= self._max_call_bytes:
+            return True
+        # TOC ещё не знает всех целей, поэтому отбрасывать платформенные
+        # вызовы здесь нельзя. Повторный разбор безопаснее неполного графа.
+        self.finish_calls()
+        self._reuse_calls = False
+        return False
 
     def __enter__(self) -> "_ColdParseReuse":
         return self
@@ -101,29 +124,56 @@ class _ColdParseReuse:
     def _string_id(self, value: str) -> int:
         index = self._string_ids.get(value)
         if index is None:
+            before = sys.getsizeof(self._strings) + sys.getsizeof(self._string_ids)
             index = len(self._strings)
             self._strings.append(value)
             self._string_ids[value] = index
+            self._retained_call_bytes += (
+                sys.getsizeof(value) + sys.getsizeof(index)
+                + sys.getsizeof(self._strings) + sys.getsizeof(self._string_ids)
+                - before
+            )
         return index
 
     def parse(self, адрес: str, locator: ModuleLocator) -> list[Процедура]:
         процедуры = разобрать(read_bsl(self._root, адрес, locator))
-        вызовы = array("i")
+        вызовы = None
+        if self._reuse_calls:
+            вызовы = array("i")
+            before = sys.getsizeof(self._calls)
+            self._calls[адрес] = вызовы
+            self._retained_call_bytes += (
+                sys.getsizeof(вызовы) + sys.getsizeof(self._calls) - before
+            )
+            if not self._check_call_budget():
+                вызовы = None
         headers: list[tuple[int, str]] = []
         for ordinal, процедура in enumerate(процедуры):
-            for квалификатор, имя, строка in процедура.вызовы:
-                вызовы.append(self._string_id(квалификатор))
-                вызовы.append(self._string_id(имя))
-                вызовы.append(строка)
+            if вызовы is not None:
+                for квалификатор, имя, строка in процедура.вызовы:
+                    qualifier = self._string_id(квалификатор)
+                    name = self._string_id(имя)
+                    before = sys.getsizeof(вызовы)
+                    вызовы.extend((qualifier, name, строка))
+                    self._retained_call_bytes += sys.getsizeof(вызовы) - before
+                    if not self._check_call_budget():
+                        вызовы = None
+                        break
             if процедура.экспорт:
                 headers.append((ordinal, _первая_строка_шапки(процедура.шапка)))
-        self._calls[адрес] = вызовы
         if headers:
             self._headers[адрес] = (len(процедуры), headers)
         return процедуры
 
-    def calls(self, адрес: str) -> Iterator[tuple[str, str, int]]:
-        вызовы = self._calls.pop(адрес)
+    def calls(
+        self, адрес: str, locator: ModuleLocator
+    ) -> Iterator[tuple[str, str, int]]:
+        вызовы = self._calls.pop(адрес, None)
+        if вызовы is None:
+            for процедура in разобрать(read_bsl(self._root, адрес, locator)):
+                yield from процедура.вызовы
+            return
+        self._retained_call_bytes -= sys.getsizeof(вызовы)
         for i in range(0, len(вызовы), 3):
             yield (
                 self._strings[вызовы[i]],
@@ -135,6 +185,7 @@ class _ColdParseReuse:
         self._calls.clear()
         self._strings.clear()
         self._string_ids.clear()
+        self._retained_call_bytes = self._call_container_bytes()
 
     def pop_headers(self, адрес: str, всего: int) -> list[tuple[int, str]]:
         expected, headers = self._headers.pop(адрес)
@@ -773,7 +824,7 @@ class Вызовы:
                     for вызов in процедура.вызовы
                 )
                 if _разбор is None
-                else _разбор.calls(адрес)
+                else _разбор.calls(адрес, entry.locator)
             )
             for квалификатор, имя, строка in все_вызовы:
                 # Платформенный метод корпусом не объявлен нигде — не

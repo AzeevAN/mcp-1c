@@ -7,6 +7,7 @@
 
 from collections import Counter
 import sys
+import weakref
 
 from mcp1c import bsl_lex, index_cache, modules_index
 from mcp1c.registry import Registry
@@ -144,3 +145,100 @@ def test_холодный_registry_разбирает_каждый_модуль_
         "всего_разборов": sum(разборы.values()),
         "разборов_по_модулю": sorted(разборы.values()),
     }
+
+
+def test_лимит_reuse_освобождает_накопленные_вызовы_и_повторяет_разбор(
+    tmp_path, monkeypatch
+):
+    from mcp1c.module_content import ModuleLocator
+
+    тексты = (
+        "// Первая шапка\nПроцедура Первая() Экспорт\nВторая();\nКонецПроцедуры\n",
+        "// Вторая шапка\nПроцедура Вторая() Экспорт\n"
+        + "\n".join(f"ПлатформенныйМетод{номер}();" for номер in range(500))
+        + "\nПервая();\nКонецПроцедуры\n",
+    )
+    локаторы = []
+    for номер, текст in enumerate(тексты):
+        путь = tmp_path / f"module-{номер}.bsl"
+        путь.write_text(текст, encoding="utf-8")
+        локаторы.append(ModuleLocator.file(путь.name))
+    оригинал = modules_index.разобрать
+    ожидаемые = [
+        [вызов for процедура in оригинал(текст) for вызов in процедура.вызовы]
+        for текст in тексты
+    ]
+    разборы = Counter()
+
+    def считать(текст):
+        разборы[текст] += 1
+        return оригинал(текст)
+
+    monkeypatch.setattr(modules_index, "разобрать", считать)
+    monkeypatch.setattr(modules_index, "_COLD_CALL_REUSE_MAX_BYTES", 2048, raising=False)
+    with modules_index._ColdParseReuse(tmp_path) as разбор:
+        разбор.parse("Первый", локаторы[0])
+        массив = weakref.ref(разбор._calls["Первый"])
+        разбор.parse("Второй", локаторы[1])
+        # Освобождение проверяется до этапа calls, когда и возникал рост.
+        assert массив() is None, "Превышение бюджета держит старые массивы вызовов"
+        assert not разбор._calls and not разбор._strings and not разбор._string_ids
+        assert list(разбор.calls("Первый", локаторы[0])) == ожидаемые[0]
+        assert list(разбор.calls("Второй", локаторы[1])) == ожидаемые[1]
+        разбор.finish_calls()
+        assert разбор.pop_headers("Первый", 1) == [(0, "// Первая шапка")]
+        assert разбор.pop_headers("Второй", 1) == [(0, "// Вторая шапка")]
+    assert разборы == Counter({текст: 2 for текст in тексты})
+
+
+def test_переполнение_reuse_не_меняет_четыре_индекса(
+    корень_кода, monkeypatch
+):
+    каталог = modules_index._единый_каталог(корень_кода, None)
+    оглавление = modules_index.Оглавление.построить(корень_кода, каталог=каталог)
+    вызовы = modules_index.Вызовы.построить(корень_кода, оглавление, каталог=каталог)
+    формы = modules_index.Формы.построить(корень_кода, каталог=каталог)
+    поиск = modules_index.построить_поиск(оглавление, корень_кода, каталог=каталог)
+    monkeypatch.setattr(modules_index, "_COLD_CALL_REUSE_MAX_BYTES", 0, raising=False)
+
+    итог = Registry._построить_индекс_кода("Тест", корень_кода, каталог=каталог)
+
+    assert итог.оглавление._состояние() == оглавление._состояние()
+    assert итог.вызовы._состояние() == вызовы._состояние()
+    assert итог.формы._состояние() == формы._состояние()
+    assert итог.поиск.export_state() == поиск.export_state()
+
+
+def test_quota_останавливает_копирование_текущего_большого_модуля(
+    tmp_path, monkeypatch
+):
+    from array import array
+    from mcp1c.module_content import ModuleLocator
+
+    скопировано = 0
+
+    class НаблюдаемыйМассив(array):
+        def append(self, value):
+            nonlocal скопировано
+            скопировано += 1
+            super().append(value)
+
+        def extend(self, values):
+            nonlocal скопировано
+            values = tuple(values)
+            скопировано += len(values)
+            super().extend(values)
+
+    текст = (
+        "Процедура Большая()\n"
+        + "\n".join(f"ПлатформенныйМетод{номер}();" for номер in range(500))
+        + "\nКонецПроцедуры\n"
+    )
+    (tmp_path / "large.bsl").write_text(текст, encoding="utf-8")
+    monkeypatch.setattr(modules_index, "array", НаблюдаемыйМассив)
+    monkeypatch.setattr(modules_index, "_COLD_CALL_REUSE_MAX_BYTES", 2048, raising=False)
+    with modules_index._ColdParseReuse(tmp_path) as разбор:
+        разбор.parse("Большой", ModuleLocator.file("large.bsl"))
+        assert 0 < скопировано < 500 * 3, (
+            "Reuse сначала скопировал вызовы всего модуля и лишь затем проверил бюджет"
+        )

@@ -8,15 +8,15 @@
 from __future__ import annotations
 
 import ast
+import inspect
 import re
-from pathlib import Path
+import textwrap
 
 import pytest
 from starlette.applications import Starlette
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
-from mcp1c import dashboard_runtime as _i1_runtime
 from mcp1c.dashboard_runtime import DASHBOARD_ON, routes
 from mcp1c.registry import Registry
 
@@ -145,51 +145,26 @@ def _i1_ast_name(node):
     return None
 
 
-def test_все_mutation_routes_имеют_admin_guard_или_актуальное_исключение():
-    tree = ast.parse(Path(_i1_runtime.__file__).read_text(encoding="utf-8"))
-    parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
-    scope_types = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
-
-    def scope_of(node):
-        parent = parents.get(node)
-        while parent is not None and not isinstance(parent, scope_types):
-            parent = parents.get(parent)
-        return parent
-
-    definitions = {}
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            definitions.setdefault((scope_of(node), node.name), []).append(node)
-
-    def endpoint_for(route, name):
-        scope = scope_of(route)
-        while scope is not None:
-            candidates = definitions.get((scope, name), [])
-            if candidates:
-                assert len(candidates) == 1, f"Неоднозначный endpoint {name} в строке {route.lineno}"
-                return candidates[0]
-            scope = scope_of(scope)
-        pytest.fail(f"Endpoint {name} в строке {route.lineno} не найден в AST")
+def test_все_mutation_routes_имеют_admin_guard_или_актуальное_исключение(tmp_path):
+    _, table = _app(tmp_path)
 
     def calls(function, name):
         return any(isinstance(node, ast.Call) and _i1_ast_name(node.func) == name
                    for node in ast.walk(function))
 
     checked, used_exceptions, unguarded = [], set(), []
-    for route in ast.walk(tree):
-        if not isinstance(route, ast.Call) or _i1_ast_name(route.func) != "Route":
+    for route in table:
+        if not isinstance(route, Route):
             continue
-        keywords = {keyword.arg: keyword.value for keyword in route.keywords}
-        methods = ast.literal_eval(keywords["methods"]) if "methods" in keywords else ["GET"]
-        mutations = {method.upper() for method in methods} & {"POST", "PUT", "PATCH", "DELETE"}
+        mutations = (route.methods or {"GET"}) & {"POST", "PUT", "PATCH", "DELETE"}
         if not mutations:
             continue
-        path_node = route.args[0] if route.args else keywords["path"]
-        endpoint_node = route.args[1] if len(route.args) > 1 else keywords["endpoint"]
-        assert isinstance(endpoint_node, ast.Name), f"Неявный endpoint в строке {route.lineno}"
-        endpoint = endpoint_for(route, endpoint_node.id)
-        path = ast.literal_eval(path_node)
-        route_name = ast.literal_eval(keywords["name"]) if "name" in keywords else None
+        original_endpoint = inspect.unwrap(route.endpoint)
+        tree = ast.parse(textwrap.dedent(inspect.getsource(original_endpoint)))
+        definitions = [node for node in tree.body
+                       if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        assert len(definitions) == 1, f"Неоднозначный endpoint {route.path}: {route.name}"
+        endpoint = definitions[0]
         guarded = any(
             isinstance(decorator, ast.Call) and _i1_ast_name(decorator.func) == "admin_endpoint"
             and any(keyword.arg == "mutation" and isinstance(keyword.value, ast.Constant)
@@ -197,7 +172,7 @@ def test_все_mutation_routes_имеют_admin_guard_или_актуально
             for decorator in endpoint.decorator_list
         )
         for method in sorted(mutations):
-            identity = (path, method, route_name, endpoint.name)
+            identity = (route.path, method, route.name, original_endpoint.__name__)
             checked.append(identity)
             if identity in _I1_MUTATION_EXCEPTIONS:
                 used_exceptions.add(identity)
@@ -211,6 +186,6 @@ def test_все_mutation_routes_имеют_admin_guard_или_актуально
             elif not guarded:
                 unguarded.append(identity)
 
-    assert checked, "AST не обнаружил ни одного изменяющего HTTP-метода"
+    assert checked, "Таблица маршрутов не содержит ни одного изменяющего HTTP-метода"
     assert used_exceptions == set(_I1_MUTATION_EXCEPTIONS), "Список исключений устарел"
     assert not unguarded, f"Мутации без admin_endpoint(mutation=True): {unguarded}"

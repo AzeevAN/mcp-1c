@@ -61,7 +61,7 @@ def test_public_package_metadata_and_runtime_contract() -> None:
     project = tomllib.loads(_text("pyproject.toml"))["project"]
     package = _text("src/mcp1c/__init__.py")
     server = _text("src/mcp1c/server.py")
-    dashboard = _text("src/mcp1c/dashboard_runtime.py")
+    dashboard = _text("src/mcp1c/dashboard_routes/sources_intake.py")
 
     assert "mcp>=2.0" in runtime
     assert "cryptography>=44.0" in runtime

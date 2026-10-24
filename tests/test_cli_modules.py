@@ -8,11 +8,7 @@ from pathlib import Path
 import pytest
 
 from mcp1c import cli, index_cache, tools
-from mcp1c.registry import (
-    KIND_MODULES,
-    STATUS_ERROR,
-    STATUS_LOADING,
-)
+from mcp1c.registry import KIND_MODULES
 from native_export import загрузить_код
 
 
@@ -301,31 +297,20 @@ def test_reg_list_использует_общие_состояния_основ�
     assert "расширение Доп: готов — модулей" in output
 
 
-@pytest.mark.parametrize(
-    ("status", "expected"),
-    [
-        (STATUS_LOADING, "строится: этап 2/4 «вызовы», обработано 3 из 11"),
-        (STATUS_ERROR, "ошибка — причина синтетической ошибки"),
-    ],
-)
-def test_reg_list_различает_сборку_и_ошибку(
-    реестр_с_кодом, monkeypatch, capsys, status, expected
-):
-    loaded = реестр_с_кодом.resolve("Пример").modules
-    with реестр_с_кодом._lock:
-        loaded.готов = False
-        loaded.source.status = status
-        loaded.source.error = (
-            "причина синтетической ошибки" if status == STATUS_ERROR else ""
-        )
-        loaded.этап = (2, 4)
-        loaded.название_этапа = "вызовы"
-        loaded.прогресс = (3, 11)
-    monkeypatch.setattr(cli, "_registry", lambda _args: реестр_с_кодом)
+def test_reg_list_показывает_отсутствие_кода_Source_A(tmp_path, monkeypatch, capsys):
+    from conftest import build_configuration, write_export
+    from mcp1c.registry import Registry
+
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    registry = Registry(tmp_path / "data")
+    registry.add_configuration(
+        write_export(incoming, build_configuration(name="Пример"))
+    )
+    monkeypatch.setattr(cli, "_registry", lambda _args: registry)
 
     assert cli.main(["reg-list"]) == 0
-
-    assert expected in capsys.readouterr().out
+    assert "модули     : не загружен" in capsys.readouterr().out
 
 
 def test_reg_list_не_смешивает_metadata_и_код_при_remove_readd(

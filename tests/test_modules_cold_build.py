@@ -138,7 +138,7 @@ def test_холодный_registry_разбирает_каждый_модуль_
     холодный = Registry(реестр.data_dir)
     assert холодный.startup() == []
     готово = холодный.resolve("Пример").modules
-    assert готово is not None and готово.готов
+    assert готово is not None
     assert _прочитать_состояния(холодный.cache_dir, источник) == ожидаемые_состояния
     assert разборы == Counter({текст: 1 for текст in тексты}), {
         "всего_разборов": sum(разборы.values()),

@@ -220,7 +220,6 @@ function ConfigurationNavItem({
   onSelect: () => void;
 }) {
   const limited = configuration.corpora.some((corpus) => corpus.phase === "limited");
-  const failed = configuration.corpora.some((corpus) => corpus.phase === "error");
   return (
     <button
       type="button"
@@ -233,7 +232,7 @@ function ConfigurationNavItem({
         <strong>{configuration.id}</strong>
         <small>{formatNumber(configuration.objects)} объектов · {configuration.corpora.length} корп.</small>
       </span>
-      <i className={failed ? "is-danger" : limited ? "is-warning" : "is-success"} aria-hidden="true" />
+      <i className={limited ? "is-warning" : "is-success"} aria-hidden="true" />
     </button>
   );
 }
@@ -334,12 +333,6 @@ function CorpusCard({
       </header>
 
       <p className="corpus-state">{corpus.state}</p>
-      {corpus.phase === "error" && corpus.error && (
-        <div className="admin-feedback is-danger corpus-diagnostic" role="alert">
-          <ServerCrash size={18} aria-hidden="true" />
-          <span><strong>Техническая причина:</strong> {corpus.error}</span>
-        </div>
-      )}
 
       {expanded && (
         <div className="corpus-details">
@@ -368,9 +361,7 @@ function CorpusCard({
           ) : (
             <div className="coverage-empty">{corpus.phase === "missing"
               ? "Нет загруженного кода для построения таблиц покрытия."
-              : corpus.phase === "building"
-                ? "Таблицы появятся после завершения разбора корпуса."
-                : "Данные покрытия недоступны."}</div>
+              : "Данные покрытия недоступны."}</div>
           )}
 
           <footer className="corpus-footer">

@@ -130,7 +130,7 @@ def test_native_commit_атомарно_подключает_структуру_
         "Owner": ["Справочник.Items"],
     }
     assert catalog.tabular_parts[0].attributes[0].digits == 15
-    assert context.modules is not None and context.modules.готов
+    assert context.modules is not None
     assert "Справочник.Items.МодульОбъекта" in context.modules.оглавление.модули
     assert "ОбщаяФорма.Workspace" in context.modules.формы.модули
     assert "procedure Demo()" in get_procedure(
@@ -158,7 +158,7 @@ def test_native_commit_атомарно_подключает_структуру_
     assert restarted.restore() == []
     restored = restarted.resolve("DemoConfiguration")
     assert restored.configuration.config.get("Справочник.Items") is not None
-    assert restored.modules is not None and restored.modules.готов
+    assert restored.modules is not None
     assert "procedure Demo()" in get_procedure(
         restarted,
         "Справочник.Items.МодульОбъекта::Demo",

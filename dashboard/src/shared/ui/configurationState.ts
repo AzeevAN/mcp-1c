@@ -6,8 +6,6 @@ type StateView = { label: string; tone: StatusTone; detail: string };
 export const corpusPhaseView: Record<CodeCorpus["phase"], { label: string; tone: StatusTone }> = {
   ready: { label: "Готово", tone: "success" },
   limited: { label: "С ограничениями", tone: "warning" },
-  building: { label: "Строится", tone: "info" },
-  error: { label: "Ошибка", tone: "danger" },
   missing: { label: "Не загружен", tone: "info" },
 };
 

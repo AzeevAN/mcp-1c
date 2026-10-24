@@ -198,9 +198,6 @@ def _aggregate_call_metrics(rows: list[dict]) -> dict:
 def _source_row(number: int, loaded, graph=None) -> dict:
     catalog = loaded.каталог
     forms = loaded.формы
-    if catalog is None or forms is None or not loaded.готов:
-        raise RuntimeError("индекс кода не готов")
-
     locators: Counter[str] = Counter()
     evidence: Counter[str] = Counter()
     for entry in catalog.entries.values():

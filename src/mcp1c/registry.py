@@ -691,10 +691,6 @@ class Registry:
                 id(loaded),
                 id(loaded.source),
                 SourceSnapshot.capture(loaded.source),
-                loaded.готов,
-                loaded.этап,
-                loaded.название_этапа,
-                loaded.прогресс,
             )
             for source_id, loaded in sorted(self.modules.items())
         )
@@ -749,12 +745,6 @@ class Registry:
                 source_id: RegistryCodeSnapshot(
                     source=SourceSnapshot.capture(loaded.source),
                     loaded=loaded,
-                    ready=loaded.готов,
-                    status=loaded.source.status,
-                    error=loaded.source.error,
-                    stage=loaded.этап,
-                    stage_title=loaded.название_этапа,
-                    progress=loaded.прогресс,
                 )
                 for source_id, loaded in loaded_modules.items()
             }
@@ -1534,7 +1524,6 @@ class Registry:
         метка: str,
         корень: Path,
         identity: LocatorIdentity | None = None,
-        прогресс: Callable[[int, str, int, int], None] | None = None,
         файлы_каталога: tuple[Path, ...] | None = None,
         каталог: modules_index.ModuleCatalog | None = None,
     ) -> modules_index.Индексы:
@@ -1548,71 +1537,22 @@ class Registry:
         оставляет молчаливое расхождение.
         """
         try:
-            def этап(номер: int, название: str):
-                if прогресс is None:
-                    return None
-                return lambda обработано, всего: прогресс(
-                    номер, название, обработано, всего
-                )
-
-            p = этап(1, "оглавление")
             каталог = каталог or modules_index.build_catalog(
                 корень,
                 identity or LocatorIdentity("direct", "direct", 0),
                 files=файлы_каталога,
-                progress=p,
             )
-            if прогресс is not None:
-                прогресс(
-                    1,
-                    "оглавление",
-                    0,
-                    sum(
-                        entry.locator is not None
-                        for entry in каталог.entries.values()
-                    ),
-                )
             with modules_index._ColdParseReuse(корень) as разбор:
-                p = этап(1, "оглавление")
-                оглавление = (
-                    modules_index.Оглавление.построить(
-                        корень, каталог=каталог, прогресс=p, _разбор=разбор
-                    )
-                    if p is not None
-                    else modules_index.Оглавление.построить(
-                        корень, каталог=каталог, _разбор=разбор
-                    )
+                оглавление = modules_index.Оглавление.построить(
+                    корень, каталог=каталог, _разбор=разбор
                 )
-                p = этап(2, "вызовы")
-                вызовы = (
-                    modules_index.Вызовы.построить(
-                        корень, оглавление, каталог=каталог, прогресс=p,
-                        _разбор=разбор,
-                    )
-                    if p is not None
-                    else modules_index.Вызовы.построить(
-                        корень, оглавление, каталог=каталог, _разбор=разбор
-                    )
+                вызовы = modules_index.Вызовы.построить(
+                    корень, оглавление, каталог=каталог, _разбор=разбор
                 )
                 разбор.finish_calls()
-                p = этап(3, "формы")
-                формы = (
-                    modules_index.Формы.построить(
-                        корень, каталог=каталог, прогресс=p
-                    )
-                    if p is not None
-                    else modules_index.Формы.построить(корень, каталог=каталог)
-                )
-                p = этап(4, "поиск")
-                поиск = (
-                    modules_index.построить_поиск(
-                        оглавление, корень, каталог=каталог, прогресс=p,
-                        _разбор=разбор,
-                    )
-                    if p is not None
-                    else modules_index.построить_поиск(
-                        оглавление, корень, каталог=каталог, _разбор=разбор
-                    )
+                формы = modules_index.Формы.построить(корень, каталог=каталог)
+                поиск = modules_index.построить_поиск(
+                    оглавление, корень, каталог=каталог, _разбор=разбор
                 )
         except OSError as error:
             raise RegistryError(
@@ -1639,7 +1579,6 @@ class Registry:
         индексы: modules_index.Индексы,
     ) -> LoadedModules:
         """Один готовый пакет — общий путь для кэша, сборки и живой загрузки."""
-        всего = len(индексы.оглавление.модули)
         return LoadedModules(
             source=source,
             корень=корень,
@@ -1649,8 +1588,6 @@ class Registry:
             поиск=индексы.поиск,
             версия_кода=source.code_version,
             каталог=индексы.каталог,
-            готов=True,
-            прогресс=(всего, всего),
         )
 
     def _журналировать_ограничения_кода(
@@ -1760,7 +1697,6 @@ class Registry:
         if (
             self.modules.get(source.id) is not loaded
             or loaded.source is not source
-            or not loaded.готов
         ):
             return False
         # Native Source не дублируется строкой ``sources``: его durable-
@@ -3393,7 +3329,7 @@ class Registry:
             return None
         modules = self.modules.get(source_ids.modules_id(identity.configuration_name))
         code_source = (
-            modules.source if modules is not None and modules.готов else None
+            modules.source if modules is not None else None
         )
         return legacy_generation_view(
             identity,
@@ -4358,7 +4294,7 @@ class Registry:
             modules = self.modules.get(source_ids.modules_id(configuration))
             code_source = (
                 modules.source
-                if modules is not None and modules.готов
+                if modules is not None
                 else None
             )
             return legacy_generation_view(

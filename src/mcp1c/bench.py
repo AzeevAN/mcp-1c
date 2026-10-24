@@ -710,22 +710,6 @@ def _loaded_procedure_index(registry, config: str | None, extension: str | None)
     if loaded is None:
         что = f"расширения {extension}" if extension is not None else "конфигурации"
         raise RegistryError(f"Индекс кода {что} не загружен.")
-    if not loaded.готов:
-        if loaded.source.status == "error":
-            # Source.error хранит техническую причину приёма и может
-            # содержать абсолютный путь. Стенд публично сообщает состояние,
-            # а подробность остаётся на административной странице источника.
-            raise RegistryError(
-                "Индекс кода не построен; подробность доступна в состоянии "
-                "источника."
-            )
-        обработано, всего = loaded.прогресс
-        raise RegistryError(
-            "Индекс кода ещё строится: обработано "
-            f"{обработано} из {всего} элементов текущего этапа."
-        )
-    if loaded.поиск is None:
-        raise RegistryError("Готовый индекс кода неполон; перезагрузите источник.")
     return context, loaded
 
 

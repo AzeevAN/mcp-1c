@@ -85,13 +85,13 @@ export function OverviewPage() {
       });
     }
     const problemCorpora = configuration.corpora.filter((corpus) =>
-      ["limited", "error"].includes(corpus.phase),
+      corpus.phase === "limited",
     );
     if (problemCorpora.length) {
       attention.push({
         id: `${configuration.id}:corpora`,
         title: `${configuration.id}: есть ограничения корпусов кода`,
-        detail: `${problemCorpora.length} ${problemCorpora.length === 1 ? "корпус требует" : "корпуса требуют"} проверки покрытия или ошибки разбора.`,
+        detail: `${problemCorpora.length} ${problemCorpora.length === 1 ? "корпус требует" : "корпуса требуют"} проверки покрытия.`,
         to: "/sources",
       });
     }

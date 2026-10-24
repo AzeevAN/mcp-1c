@@ -450,7 +450,7 @@ def test_registry_сохраняет_extension_generation_при_строгой_
     ) is not None
 
     before = registry.resolve("DemoConfiguration", extension="DemoExtension")
-    assert before.extension is not None and before.extension.готов
+    assert before.extension is not None
     assert before.extension_roles is not None and before.extension_roles.ready
     assert before.extension_resolution is not None
     assert before.extension_resolution.relations[0].state.value == "resolved"
@@ -479,7 +479,7 @@ def test_registry_сохраняет_extension_generation_при_строгой_
         extension_pointer
     )
     assert after.configuration.config.get("Справочник.Items") is None
-    assert after.extension is not None and after.extension.готов
+    assert after.extension is not None
     assert after.extension_roles is not None and after.extension_roles.ready
     assert after.extension_resolution is not None
     assert [
@@ -495,7 +495,7 @@ def test_registry_сохраняет_extension_generation_при_строгой_
         "DemoConfiguration",
         extension="DemoExtension",
     )
-    assert restored.extension is not None and restored.extension.готов
+    assert restored.extension is not None
     assert restored.extension_roles is not None and restored.extension_roles.ready
     assert restored.extension_resolution is not None
     assert restored.extension_resolution.relations[0].state.value == "target_missing"
@@ -805,7 +805,7 @@ def test_restore_поднимает_код_native_расширения_из_warm
         "DemoConfiguration",
         extension="DemoExtension",
     )
-    assert restored.extension is not None and restored.extension.готов
+    assert restored.extension is not None
 
 
 def test_startup_sweep_сохраняет_кэши_active_native_расширения(tmp_path):

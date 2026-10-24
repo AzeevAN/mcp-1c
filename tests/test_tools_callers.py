@@ -13,7 +13,7 @@ import pytest
 
 from mcp1c import modules_index, tools
 from mcp1c.model import MetadataObject
-from mcp1c.registry import STATUS_ERROR, Registry, RegistryError
+from mcp1c.registry import Registry, RegistryError
 
 from conftest import build_configuration, write_export
 from module_samples import v8_container_bytes
@@ -568,41 +568,19 @@ def test_get_callers_требует_адрес_процедуры(address, ре�
         tools.get_callers(реестр_с_кодом, address, config="Пример")
 
 
-@pytest.mark.parametrize("state", ["missing", "building", "error"])
-def test_get_callers_честно_показывает_состояние_кода(
-    tmp_path, корень_кода, реестр_из_кода, state
-):
-    if state == "missing":
-        incoming = tmp_path / "incoming"
-        incoming.mkdir()
-        реестр = Registry(tmp_path / "data")
-        реестр.add_configuration(
-            write_export(incoming, build_configuration(name="Пример"))
-        )
-    else:
-        реестр = реестр_из_кода(корень_кода)
-        loaded = реестр.resolve("Пример").modules
-        with реестр._lock:
-            loaded.готов = False
-            loaded.этап = (2, 4)
-            loaded.название_этапа = "вызовы"
-            loaded.прогресс = (1, 3)
-            if state == "error":
-                loaded.source.status = STATUS_ERROR
-                loaded.source.error = "отказ сборки"
-
-    ответ = tools.get_callers(
-        реестр,
-        "ОбщийМодуль.ОбщийПример::Сложить",
-        config="Пример",
+def test_get_callers_честно_показывает_отсутствие_кода(tmp_path):
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    registry = Registry(tmp_path / "data")
+    registry.add_configuration(
+        write_export(incoming, build_configuration(name="Пример"))
     )
 
-    if state == "missing":
-        assert "выгрузка в файлы не загружена" in ответ
-    elif state == "building":
-        assert "этап 2/4" in ответ and "1 из 3" in ответ
-    else:
-        assert "отказ сборки" in ответ
+    answer = tools.get_callers(
+        registry, "ОбщийМодуль.ОбщийПример::Сложить", config="Пример"
+    )
+
+    assert "выгрузка в файлы не загружена" in answer
 
 
 def test_get_callers_предупреждает_о_частичном_разборе(

@@ -249,7 +249,7 @@ def test_generation_pack_с_пустым_member_публикуется_и_чит
         "ОбщийМодуль.a::Ready",
         config="DemoConfiguration",
     )
-    assert restarted.modules["DemoConfiguration:modules"].готов
+    assert "DemoConfiguration:modules" in restarted.modules
 
 
 def test_materializer_сохраняет_compiled_модуль_не_выдавая_его_за_bsl(tmp_path):

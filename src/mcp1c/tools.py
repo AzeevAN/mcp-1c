@@ -44,7 +44,6 @@ from .source_modes import ActivationStatus
 from .registry import (
     KIND_EXTENSION,
     KIND_MODULES,
-    STATUS_ERROR,
     LoadedModules,
     Registry,
     RegistrySnapshot,
@@ -129,12 +128,6 @@ def _clamp(limit: int) -> int:
 class _CodeCapture:
     source: SourceSnapshot | None
     loaded: LoadedModules | None
-    ready: bool
-    status: str
-    error: str
-    stage: tuple[int, int]
-    stage_title: str
-    progress: tuple[int, int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -337,39 +330,15 @@ def _capture_code(snapshot: RegistrySnapshot, source_id: str) -> _CodeCapture:
         return _CodeCapture(
             source=snapshot.sources.get(source_id),
             loaded=None,
-            ready=False,
-            status="",
-            error="",
-            stage=(0, 0),
-            stage_title="",
-            progress=(0, 0),
         )
-    return _CodeCapture(
-        source=code.source,
-        loaded=code.loaded,
-        ready=code.ready,
-        status=code.status,
-        error=code.error,
-        stage=code.stage,
-        stage_title=code.stage_title,
-        progress=code.progress,
-    )
+    return _CodeCapture(source=code.source, loaded=code.loaded)
 
 
 def _capture_is_current(
     snapshot: RegistrySnapshot, source_id: str, capture: _CodeCapture
 ) -> bool:
     current = _capture_code(snapshot, source_id)
-    return (
-        current.source == capture.source
-        and current.loaded is capture.loaded
-        and current.ready == capture.ready
-        and current.status == capture.status
-        and current.error == capture.error
-        and current.stage == capture.stage
-        and current.stage_title == capture.stage_title
-        and current.progress == capture.progress
-    )
+    return current.source == capture.source and current.loaded is capture.loaded
 
 
 def _safe_problem_reason(reason: str) -> str:
@@ -396,8 +365,6 @@ _NEUTRAL_COVERAGE_CATEGORIES = frozenset(
 
 def _iter_code_problems(loaded: LoadedModules):
     """Уникальные обезличенные проблемы без сортировки и общего списка."""
-    if loaded.каталог is None or loaded.формы is None:
-        raise RegistryError("Готовый индекс кода неполон; перезагрузите источник.")
     # ``form_structure_missing`` — итоговое следствие. Когда та же форма уже
     # имеет точную причину (битый XML, синтаксис контейнера, бюджет), второй
     # ряд с тем же адресом только съедает лимит первых двадцати адресов и не
@@ -528,10 +495,8 @@ _CODE_AGGREGATES: "weakref.WeakKeyDictionary[object, _CodeAggregates]" = (
 _CODE_AGGREGATES_LOCK = threading.Lock()
 
 
-def _code_aggregates(loaded: LoadedModules) -> _CodeAggregates | None:
+def _code_aggregates(loaded: LoadedModules) -> _CodeAggregates:
     ключ = loaded.поиск
-    if ключ is None:
-        return None
     with _CODE_AGGREGATES_LOCK:
         запись = _CODE_AGGREGATES.get(ключ)
         if (
@@ -558,31 +523,25 @@ def _code_aggregates(loaded: LoadedModules) -> _CodeAggregates | None:
 def _code_coverage(
     loaded: LoadedModules, *, include_problem_rows: bool = True
 ) -> CodeCoverage:
-    if loaded.каталог is None or loaded.формы is None:
-        raise RegistryError("Готовый индекс кода неполон; перезагрузите источник.")
-    if loaded.оглавление is None:
-        raise RegistryError("Готовый индекс кода неполон; перезагрузите источник.")
     # Два варианта кэшируются раздельно: короткому предупреждению список
     # проблем не нужен, и строить его ради кэша значило бы платить за то, от
     # чего вариант без строк и избавлен. Гонка двух потоков на промахе лишь
     # посчитает одно и то же дважды — результат неизменяем.
     агрегаты = _code_aggregates(loaded)
-    if агрегаты is not None:
-        готовое = (
-            агрегаты.coverage
-            if include_problem_rows
-            else агрегаты.coverage_without_rows
-        )
-        if готовое is not None:
-            return готовое
+    готовое = (
+        агрегаты.coverage
+        if include_problem_rows
+        else агрегаты.coverage_without_rows
+    )
+    if готовое is not None:
+        return готовое
     результат = _compute_code_coverage(
         loaded, include_problem_rows=include_problem_rows
     )
-    if агрегаты is not None:
-        if include_problem_rows:
-            агрегаты.coverage = результат
-        else:
-            агрегаты.coverage_without_rows = результат
+    if include_problem_rows:
+        агрегаты.coverage = результат
+    else:
+        агрегаты.coverage_without_rows = результат
     return результат
 
 
@@ -719,14 +678,11 @@ def _compute_code_coverage(
 
 def _summarize_code(loaded: LoadedModules) -> _CodeSummary:
     """Агрегаты готового пакета без чтения модулей и списка ``Запись``."""
-    if loaded.оглавление is None or loaded.формы is None:
-        raise RegistryError("Готовый индекс кода неполон; перезагрузите источник.")
     агрегаты = _code_aggregates(loaded)
-    if агрегаты is not None and агрегаты.summary is not None:
+    if агрегаты.summary is not None:
         return агрегаты.summary
     результат = _compute_code_summary(loaded)
-    if агрегаты is not None:
-        агрегаты.summary = результат
+    агрегаты.summary = результат
     return результат
 
 
@@ -759,8 +715,8 @@ def _configuration_code_snapshot(
 ) -> _ConfigurationCodeSnapshot:
     """Согласованный снимок конфигурации и всех её корпусов кода.
 
-    Агрегаты считаются вне замка. Перед публикацией проверяются личности всех
-    источников и скалярные поля прогресса; при reparse/remove весь снимок
+    Агрегаты считаются вне замка. Перед публикацией проверяются снимки
+    источников и личности пакетов; при reparse/remove весь снимок
     собирается заново, а не смешивает поколения.
     """
     prefix = source_ids.extension_prefix(name)
@@ -787,7 +743,7 @@ def _configuration_code_snapshot(
 
         base_summary = (
             _summarize_code(base.loaded)
-            if base.loaded is not None and base.ready
+            if base.loaded is not None
             else None
         )
         extension_views = tuple(
@@ -796,7 +752,7 @@ def _configuration_code_snapshot(
                 _CodeView(
                     capture,
                     _summarize_code(capture.loaded)
-                    if capture.loaded is not None and capture.ready
+                    if capture.loaded is not None
                     else None,
                 ),
             )
@@ -881,44 +837,9 @@ def _capture_configurations_list(
     )
 
 
-def _safe_code_error(error: str) -> str:
-    if not error:
-        return "причина не записана"
-    lowered = error.casefold()
-    unsafe_fragments = (
-        "/",
-        "\\",
-        "\n",
-        "\r",
-        "traceback",
-        "errno",
-        "permission denied",
-        ".bsl",
-        ".form",
-        ".zip",
-        ".xml",
-    )
-    if len(error) > 300 or any(
-        fragment in lowered for fragment in unsafe_fragments
-    ):
-        return "подробности ошибки доступны в журнале сервера"
-    return error
-
-
-def _safe_admin_code_error(error: str) -> str:
-    """Оставить техническую причину, но убрать приватное имя origin."""
-    marker = "индекс кода не построился — "
-    _origin, separator, reason = error.partition(marker)
-    if separator:
-        return _safe_code_error(marker + reason)
-    return _safe_code_error(error)
-
-
 def _loaded_partial_warning(
     loaded: LoadedModules, *, corpus: str = ""
 ) -> str | None:
-    if loaded.оглавление is None or loaded.формы is None or loaded.каталог is None:
-        return None
     coverage = _code_coverage(loaded, include_problem_rows=False)
     suffix = f" {corpus}" if corpus else ""
     evidence_note = ""
@@ -960,34 +881,24 @@ def _loaded_partial_warning(
 
 
 def _code_state_text(view: _CodeView) -> str:
-    capture = view.capture
-    if capture.source is None or capture.loaded is None:
+    summary = view.summary
+    if summary is None:
         return "не загружен"
-    if capture.ready and view.summary is not None:
-        summary = view.summary
-        readiness = (
-            "готов с ограничениями"
-            if summary.coverage.has_limitations
-            else "готов"
-        )
-        procedures_label = (
-            f"процедур {summary.procedures} по доступным исходникам"
-            if summary.compiled_modules
-            else f"процедур {summary.procedures}"
-        )
-        return (
-            f"{readiness} — модулей {len(summary.modules)}, {procedures_label}, "
-            f"форм {len(summary.forms)}, "
-            "с недоступным исходным текстом "
-            f"{len(summary.compiled_modules)}"
-        )
-    if capture.status == STATUS_ERROR:
-        return f"ошибка — {_safe_code_error(capture.error)}"
-    stage, stages = capture.stage
-    done, total = capture.progress
+    readiness = (
+        "готов с ограничениями"
+        if summary.coverage.has_limitations
+        else "готов"
+    )
+    procedures_label = (
+        f"процедур {summary.procedures} по доступным исходникам"
+        if summary.compiled_modules
+        else f"процедур {summary.procedures}"
+    )
     return (
-        f"строится: этап {stage}/{stages} «{capture.stage_title}», "
-        f"обработано {done} из {total} элементов этапа"
+        f"{readiness} — модулей {len(summary.modules)}, {procedures_label}, "
+        f"форм {len(summary.forms)}, "
+        "с недоступным исходным текстом "
+        f"{len(summary.compiled_modules)}"
     )
 
 
@@ -1116,18 +1027,9 @@ def _code_state_rows(
         return source.id, relative
 
     def phase(view: _CodeView) -> str:
-        if view.capture.source is None or view.capture.loaded is None:
+        if view.summary is None:
             return "missing"
-        if view.capture.ready and view.summary is not None:
-            return "limited" if view.summary.coverage.has_limitations else "ready"
-        if view.capture.status == STATUS_ERROR:
-            return "error"
-        return "building"
-
-    def diagnostic(view: _CodeView) -> str:
-        if view.capture.status != STATUS_ERROR:
-            return ""
-        return _safe_admin_code_error(view.capture.error)
+        return "limited" if view.summary.coverage.has_limitations else "ready"
 
     rows: list[CodeStateRow] = []
     for snapshot in capture.rows:
@@ -1148,7 +1050,7 @@ def _code_state_rows(
                 source_id,
                 journal_path,
                 phase(snapshot.modules),
-                diagnostic(snapshot.modules),
+                "",
                 KIND_MODULES,
                 native_base is not None,
                 (
@@ -1179,7 +1081,7 @@ def _code_state_rows(
                 source_id,
                 journal_path,
                 phase(view),
-                diagnostic(view),
+                "",
                 KIND_EXTENSION,
                 native_extension is not None,
                 (
@@ -1979,7 +1881,7 @@ def _http_handler_resolutions(view: _CodeView, obj) -> dict[str, HTTPHandlerReso
     if not handlers:
         return {}
     loaded = view.capture.loaded
-    if not view.capture.ready or loaded is None or loaded.оглавление is None:
+    if loaded is None:
         return {
             handler.casefold(): HTTPHandlerResolution("unavailable")
             for handler in handlers
@@ -2022,14 +1924,14 @@ def _object_code_details(
     if summary is None:
         return (), ()
     loaded = view.capture.loaded
-    aggregates = None if loaded is None else _code_aggregates(loaded)
-    index = None if aggregates is None else aggregates.object_index
+    assert loaded is not None
+    aggregates = _code_aggregates(loaded)
+    index = aggregates.object_index
     if index is None:
         index = _build_object_code_index(summary)
-        if aggregates is not None:
-            # Как у summary: гонка может посчитать один неизменяемый ответ
-            # дважды, но публикуется сразу весь готовый пакет индексов.
-            aggregates.object_index = index
+        # Как у summary: гонка может посчитать один неизменяемый ответ
+        # дважды, но публикуется сразу весь готовый пакет индексов.
+        aggregates.object_index = index
     owner = full_name.casefold()
     return (
         index.modules_by_owner.get(owner, ()),
@@ -2109,8 +2011,7 @@ def _object_code_block(view: _CodeView, full_name: str, detail: str) -> str:
 
     modules, forms = _object_code_details(view, full_name)
     loaded = view.capture.loaded
-    if loaded is None:
-        raise RegistryError("Готовый индекс кода неполон; перезагрузите источник.")
+    assert loaded is not None
     form_keys = {form.casefold() for form in forms}
     object_rows: list[CodeProblemRow] = []
     for address, problems in (loaded.каталог.object_problems or {}).items():
@@ -2519,8 +2420,6 @@ def _module_source_file_once(
     if состояние is not None:
         raise RegistryError(состояние)
     assert loaded is not None
-    if loaded.оглавление is None or loaded.каталог is None:
-        raise RegistryError("Готовый индекс кода неполон; перезагрузите источник.")
     canonical = loaded.оглавление.канонический_модуль(address)
     if canonical is None:
         if not _modules_are_current(registry, loaded):
@@ -2674,8 +2573,6 @@ def _сигнатура_из_текста(строки: list[str], процед�
 
 def _прочитать_тело_модуля(loaded: LoadedModules, модуль: str) -> str:
     """Прочитать модуль через каталог локаторов опубликованного поколения."""
-    if loaded.каталог is None:
-        raise OSError("для поколения нет каталога локаторов")
     identity = loaded.каталог.identity
     if (
         identity.source_id != loaded.source.id
@@ -2698,8 +2595,8 @@ def _сигнатура(
 
     В `LoadedModules` сигнатуры и тела не появляются: их держит отдельный
     кэш разборов пакета (`_разбор_модуля`), текст модуля читается только при
-    промахе. Снимки ответа нужны пакету без поискового индекса, у которого
-    кэша нет: один файл не разбирается по разу на каждую строку оглавления.
+    промахе. Снимки ответа позволяют повторно использовать уже найденный
+    разбор для каждой строки оглавления.
     """
     if снимки is None:
         снимки = {}
@@ -2743,38 +2640,6 @@ def _modules_are_current(registry: Registry, loaded: LoadedModules) -> bool:
     return current is not None and current.loaded is loaded
 
 
-def _modules_state_snapshot(
-    registry: Registry,
-    loaded: LoadedModules,
-) -> tuple[
-    bool,
-    str,
-    str,
-    tuple[int, int],
-    str,
-    tuple[int, int],
-]:
-    """Снимок готовности и прогресса одного поколения.
-
-    Фоновый поток меняет эти поля последовательными
-    присваиваниями под `_lock`. Читатель берёт их под тем же замком,
-    иначе видимы невозможные сочетания вроде «этап 2,
-    оглавление» или `status=error` без уже записанной причины. Диск под
-    замком не читается.
-    """
-    current = registry.snapshot().modules.get(loaded.source.id)
-    if current is None or current.loaded is not loaded:
-        raise _StaleModules
-    return (
-        current.ready,
-        current.status,
-        current.error,
-        current.stage,
-        current.stage_title,
-        current.progress,
-    )
-
-
 def _modules_availability_message(
     registry: Registry,
     context,
@@ -2786,21 +2651,9 @@ def _modules_availability_message(
             f"Для конфигурации {context.name} выгрузка в файлы не загружена. "
             "Инструменты про код ответить не могут."
         )
-    готов, status, error, этап, название_этапа, прогресс = (
-        _modules_state_snapshot(registry, loaded)
-    )
-    if готов:
-        return None
-    if status == STATUS_ERROR:
-        причина = _safe_code_error(error)
-        return f"Индекс кода не построен: {причина}"
-    номер_этапа, этапов = этап
-    обработано, всего = прогресс
-    return (
-        f"Индекс кода строится: этап {номер_этапа}/{этапов} "
-        f"«{название_этапа}», обработано {обработано} из {всего} "
-        "элементов этапа. Ответы про код пока недоступны."
-    )
+    if not _modules_are_current(registry, loaded):
+        raise _StaleModules
+    return None
 
 
 def _procedure_matches(
@@ -2900,11 +2753,7 @@ def _search_procedures_once(
     состояние = _modules_availability_message(registry, context, loaded)
     if состояние is not None:
         return состояние
-    if any(
-        индекс is None
-        for индекс in (loaded.оглавление, loaded.вызовы, loaded.поиск)
-    ):
-        raise RegistryError("Готовый индекс кода неполон; перезагрузите источник.")
+    assert loaded is not None
 
     try:
         приоритетные = _scope_modules(loaded, scope)
@@ -3296,13 +3145,10 @@ def _разбор_модуля(loaded: LoadedModules, модуль: str, про�
     дважды; в кэше останется первая запись, обе равны.
     """
     агрегаты = _code_aggregates(loaded)
-    if агрегаты is not None:
-        готовый = _РАЗБОРЫ.взять(агрегаты.пакет, модуль)
-        if готовый is not None:
-            return готовый
+    готовый = _РАЗБОРЫ.взять(агрегаты.пакет, модуль)
+    if готовый is not None:
+        return готовый
     разбор = _parsed_procedures(loaded.оглавление.модуля(модуль), прочитать())
-    if агрегаты is None:
-        return разбор
     return _РАЗБОРЫ.положить(агрегаты.пакет, модуль, разбор)
 
 
@@ -3457,18 +3303,13 @@ def _foreign_extension_warnings(
             (source_id[len(prefix):], code.loaded)
             for source_id, code in snapshot.modules.items()
             if source_id.startswith(prefix)
-            and code.loaded is not None
             and code.loaded is not selected
         ),
         key=lambda item: item[0],
     )
     warnings: list[str] = []
     for extension_name, foreign in кандидаты:
-        try:
-            готов, *_ = _modules_state_snapshot(registry, foreign)
-        except _StaleModules:
-            continue
-        if not готов:
+        if not _modules_are_current(registry, foreign):
             continue
         записи = foreign.оглавление.модуля(module)
         if not записи:
@@ -3525,11 +3366,7 @@ def _get_procedure_once(
     состояние = _modules_availability_message(registry, context, loaded)
     if состояние is not None:
         return состояние
-    if any(
-        индекс is None
-        for индекс in (loaded.оглавление, loaded.вызовы, loaded.формы)
-    ):
-        raise RegistryError("Готовый индекс кода неполон; перезагрузите источник.")
+    assert loaded is not None
     partial_warning = _loaded_partial_warning(loaded)
     warning_prefix = f"> {partial_warning}\n\n" if partial_warning else ""
 
@@ -3904,11 +3741,7 @@ def _get_callers_once(
     состояние = _modules_availability_message(registry, context, loaded)
     if состояние is not None:
         return состояние
-    if any(
-        индекс is None
-        for индекс in (loaded.оглавление, loaded.вызовы, loaded.формы)
-    ):
-        raise RegistryError("Готовый индекс кода неполон; перезагрузите источник.")
+    assert loaded is not None
     partial_warning = _loaded_partial_warning(loaded)
     warning_prefix = f"> {partial_warning}\n\n" if partial_warning else ""
 

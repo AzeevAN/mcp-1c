@@ -15,7 +15,7 @@ import pytest
 from mcp1c import modules_index, tools
 from mcp1c.module_address import путь_модуля
 from mcp1c.model import Field, MetadataObject
-from mcp1c.registry import STATUS_ERROR, Registry, RegistryError
+from mcp1c.registry import Registry, RegistryError
 
 from conftest import build_configuration, write_export, write_syntax
 from module_samples import v8_container_bytes
@@ -132,7 +132,7 @@ def test_warm_cache_сохраняет_scope_вызовы_и_неразреше�
     warm = Registry(registry.data_dir)
     assert warm.startup() == []
     loaded = warm.resolve("Пример").modules
-    assert loaded.готов is True
+    assert loaded is not None
     assert "Документ.Объект.Форма.Основная" in loaded.оглавление.модули
     assert tools.get_callers(
         warm, "ОбщийМодуль.Цель::Рассчитать", config="Пример"
@@ -1169,75 +1169,59 @@ def test_без_кода_отвечает_честной_причиной(tmp_pa
 
 
 @pytest.mark.parametrize("extension", [None, "Доп"], ids=["modules", "extension"])
-@pytest.mark.parametrize("state", ["progress", "error"])
-def test_состояние_сборки_читается_одним_атомарным_снимком(
-    корень_кода, реестр_из_кода, monkeypatch, extension, state
+def test_во_время_сборки_нового_пакета_доступен_прежний_код(
+    корень_кода, реестр_из_кода, архив_кода, monkeypatch, extension
 ):
-    реестр = реестр_из_кода(корень_кода, extension=extension)
-    loaded = реестр.resolve("Пример", extension=extension)
-    loaded = loaded.extension if extension else loaded.modules
-    loaded.готов = False
+    registry = реестр_из_кода(корень_кода, extension=extension)
+    context = registry.resolve("Пример", extension=extension)
+    old = context.extension if extension else context.modules
+    module = корень_кода / "CommonModules" / "ОбщийПример" / "Ext" / "Module.bsl"
+    module.write_text(
+        module.read_text(encoding="utf-8")
+        + "\nПроцедура Новая() Экспорт\nКонецПроцедуры\n",
+        encoding="utf-8",
+    )
+    candidate = архив_кода(корень_кода, extension=extension)
+    started = threading.Event()
+    release = threading.Event()
+    original = Registry._построить_индекс_кода
+    errors = []
 
-    выбор_завершён = threading.Event()
-    продолжить_поиск = threading.Event()
-    промежуточная_запись = threading.Event()
-    завершить_запись = threading.Event()
-    поиск_завершён = threading.Event()
-    настоящий_выбор = tools._selected_modules
+    def pause(*args, **kwargs):
+        started.set()
+        if not release.wait(timeout=5):
+            raise RuntimeError("Не получен сигнал продолжения сборки")
+        return original(*args, **kwargs)
 
-    def задержать_после_выбора(*args, **kwargs):
-        результат = настоящий_выбор(*args, **kwargs)
-        выбор_завершён.set()
-        продолжить_поиск.wait(timeout=3)
-        return результат
+    def publish():
+        try:
+            загрузить_код(registry, candidate, configuration="Пример")
+        except BaseException as error:
+            errors.append(error)
 
-    monkeypatch.setattr(tools, "_selected_modules", задержать_после_выбора)
-    ответы: list[str] = []
-
-    def писать():
-        with реестр._lock:
-            if state == "progress":
-                loaded.этап = (2, 4)
-            else:
-                loaded.source.status = STATUS_ERROR
-            промежуточная_запись.set()
-            завершить_запись.wait(timeout=3)
-            if state == "progress":
-                loaded.название_этапа = "вызовы"
-                loaded.прогресс = (1, 3)
-            else:
-                loaded.source.error = "детерминированный отказ"
-
-    def искать():
-        ответы.append(
-            tools.search_procedures(
-                реестр, "Сложить", config="Пример", extension=extension
-            )
+    monkeypatch.setattr(Registry, "_построить_индекс_кода", staticmethod(pause))
+    worker = threading.Thread(target=publish)
+    worker.start()
+    try:
+        assert started.wait(timeout=3)
+        assert registry.snapshot().modules[old.source.id].loaded is old
+        assert "::Сложить" in tools.search_procedures(
+            registry, "Сложить", config="Пример", extension=extension
         )
-        поиск_завершён.set()
+        assert "::Новая" not in tools.search_procedures(
+            registry, "Новая", config="Пример", extension=extension
+        )
+    finally:
+        release.set()
+        worker.join(timeout=5)
 
-    поток_поиска = threading.Thread(target=искать)
-    поток_поиска.start()
-    assert выбор_завершён.wait(timeout=1)
-    поток_записи = threading.Thread(target=писать)
-    поток_записи.start()
-    assert промежуточная_запись.wait(timeout=1)
-    продолжить_поиск.set()
-    вернулся_в_промежутке = поиск_завершён.wait(timeout=0.1)
-    завершить_запись.set()
-    поток_поиска.join(timeout=3)
-    поток_записи.join(timeout=3)
-
-    assert not вернулся_в_промежутке
-    assert not поток_поиска.is_alive()
-    assert not поток_записи.is_alive()
-    if state == "progress":
-        assert "этап 2/4" in ответы[0]
-        assert "«вызовы»" in ответы[0]
-        assert "обработано 1 из 3" in ответы[0]
-    else:
-        assert "детерминированный отказ" in ответы[0]
-        assert "причина не записана" not in ответы[0]
+    assert not worker.is_alive()
+    assert not errors
+    current = registry.snapshot().modules[old.source.id].loaded
+    assert current is not old
+    assert "::Новая" in tools.search_procedures(
+        registry, "Новая", config="Пример", extension=extension
+    )
 
 
 @pytest.mark.parametrize("extension", [None, "Доп"], ids=["modules", "extension"])
@@ -1247,16 +1231,15 @@ def test_устаревший_снимок_состояния_повторяет
     реестр = реестр_из_кода(корень_кода, extension=extension)
     context = реестр.resolve("Пример", extension=extension)
     старые = context.extension if extension else context.modules
-    старые.готов = False
-    новые = replace(старые, готов=True)
+    новые = replace(старые)
     настоящий_выбор = tools._selected_modules
-    первый = True
+    выборов = 0
 
     def сменить_после_выбора(*args, **kwargs):
-        nonlocal первый
+        nonlocal выборов
         результат = настоящий_выбор(*args, **kwargs)
-        if первый:
-            первый = False
+        выборов += 1
+        if выборов == 1:
             with реестр._lock:
                 реестр.modules[старые.source.id] = новые
         return результат
@@ -1268,7 +1251,8 @@ def test_устаревший_снимок_состояния_повторяет
     )
 
     assert "::Сложить" in ответ
-    assert "индекс кода строится" not in ответ.lower()
+    assert выборов == 2
+    assert реестр.snapshot().modules[старые.source.id].loaded is новые
 
 
 # ------------------------------------------------------ карточка процедуры
@@ -1625,39 +1609,19 @@ def test_get_procedure_частичный_разбор_над_телом(
     assert ответ.index("разобран не до конца") < позиция_тела
 
 
-@pytest.mark.parametrize("state", ["missing", "building", "error"])
-def test_get_procedure_честно_показывает_состояние_кода(
-    tmp_path, корень_кода, реестр_из_кода, state
-):
-    if state == "missing":
-        incoming = tmp_path / "incoming"
-        incoming.mkdir()
-        реестр = Registry(tmp_path / "data")
-        реестр.add_configuration(
-            write_export(incoming, build_configuration(name="Пример"))
-        )
-    else:
-        реестр = реестр_из_кода(корень_кода)
-        loaded = реестр.resolve("Пример").modules
-        with реестр._lock:
-            loaded.готов = False
-            loaded.этап = (2, 4)
-            loaded.название_этапа = "вызовы"
-            loaded.прогресс = (1, 3)
-            if state == "error":
-                loaded.source.status = STATUS_ERROR
-                loaded.source.error = "отказ сборки"
-
-    ответ = tools.get_procedure(
-        реестр, "ОбщийМодуль.ОбщийПример", config="Пример"
+def test_get_procedure_честно_показывает_отсутствие_кода(tmp_path):
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    registry = Registry(tmp_path / "data")
+    registry.add_configuration(
+        write_export(incoming, build_configuration(name="Пример"))
     )
 
-    if state == "missing":
-        assert "выгрузка в файлы не загружена" in ответ
-    elif state == "building":
-        assert "этап 2/4" in ответ and "1 из 3" in ответ
-    else:
-        assert "отказ сборки" in ответ
+    answer = tools.get_procedure(
+        registry, "ОбщийМодуль.ОбщийПример", config="Пример"
+    )
+
+    assert "выгрузка в файлы не загружена" in answer
 
 
 @pytest.mark.parametrize(
@@ -2102,42 +2066,27 @@ def _код_расширения(корень, *, variant="full"):
         (первый / "ObjectModule.bsl").unlink()
 
 
-@pytest.mark.parametrize("state", ["ready", "building", "error", "missing"])
+@pytest.mark.parametrize("state", ["ready", "missing"])
 def test_list_configurations_показывает_реальное_состояние_индекса_кода(
     tmp_path, корень_кода, реестр_из_кода, state
 ):
     if state == "missing":
         incoming = tmp_path / "incoming"
         incoming.mkdir()
-        реестр = Registry(tmp_path / "data")
-        реестр.add_configuration(
+        registry = Registry(tmp_path / "data")
+        registry.add_configuration(
             write_export(incoming, build_configuration(name="Пример"))
         )
     else:
-        реестр = реестр_из_кода(корень_кода)
-        loaded = реестр.resolve("Пример").modules
-        if state != "ready":
-            with реестр._lock:
-                loaded.готов = False
-                loaded.этап = (2, 4)
-                loaded.название_этапа = "вызовы"
-                loaded.прогресс = (1, 3)
-                if state == "error":
-                    loaded.source.status = STATUS_ERROR
-                    loaded.source.error = "отказ сборки"
+        registry = реестр_из_кода(корень_кода)
 
-    ответ = tools.list_configurations(реестр)
+    answer = tools.list_configurations(registry)
 
     if state == "ready":
-        assert "Индекс кода: готов" in ответ
-        assert "процедур" in ответ and "модулей" in ответ and "форм" in ответ
-    elif state == "building":
-        assert "Индекс кода: строится" in ответ
-        assert "этап 2/4" in ответ and "1 из 3" in ответ
-    elif state == "error":
-        assert "Индекс кода: ошибка" in ответ and "отказ сборки" in ответ
+        assert "Индекс кода: готов" in answer
+        assert "процедур" in answer and "модулей" in answer and "форм" in answer
     else:
-        assert "Индекс кода: не загружен" in ответ
+        assert "Индекс кода: не загружен" in answer
 
 
 def test_overview_показывает_подключённый_провайдер_модулей(реестр_с_кодом):
@@ -2146,19 +2095,35 @@ def test_overview_показывает_подключённый_провайде
     assert строка["providers"]["modules"] is True
 
 
-def test_list_configurations_не_раскрывает_путь_из_ошибки(
-    реестр_с_кодом,
+@pytest.mark.parametrize("extension", [None, "Доп"], ids=["modules", "extension"])
+def test_отказ_обновления_сохраняет_код_и_не_раскрывает_путь(
+    корень_кода, реестр_из_кода, архив_кода, monkeypatch, extension
 ):
-    loaded = реестр_с_кодом.resolve("Пример").modules
-    with реестр_с_кодом._lock:
-        loaded.готов = False
-        loaded.source.status = STATUS_ERROR
-        loaded.source.error = "сбой /private/tmp/secret/Module.bsl"
+    registry = реестр_из_кода(корень_кода, extension=extension)
+    before = tools.list_configurations(registry)
+    context = registry.resolve("Пример", extension=extension)
+    old = context.extension if extension else context.modules
+    module = корень_кода / "CommonModules" / "ОбщийПример" / "Ext" / "Module.bsl"
+    module.write_text(
+        module.read_text(encoding="utf-8") + "\n// Новое поколение\n",
+        encoding="utf-8",
+    )
+    candidate = архив_кода(корень_кода, extension=extension)
 
-    ответ = tools.list_configurations(реестр_с_кодом)
+    def fail(*args, **kwargs):
+        raise PermissionError(13, "Permission denied", "/private/secret/Module.bsl")
 
-    assert "Индекс кода: ошибка" in ответ
-    assert "/private/" not in ответ and "Module.bsl" not in ответ
+    monkeypatch.setattr(modules_index.Оглавление, "построить", fail)
+    with pytest.raises(RegistryError, match="файл текущей выгрузки недоступен") as caught:
+        загрузить_код(registry, candidate, configuration="Пример")
+
+    assert "/private/" not in str(caught.value)
+    assert "Permission denied" not in str(caught.value)
+    assert registry.snapshot().modules[old.source.id].loaded is old
+    assert tools.list_configurations(registry) == before
+    assert "::Сложить" in tools.search_procedures(
+        registry, "Сложить", config="Пример", extension=extension
+    )
 
 
 def test_list_configurations_даёт_полную_сводку_расширения(
@@ -2202,33 +2167,21 @@ def test_расширения_в_сводке_упорядочены_стаби�
     )
 
 
-@pytest.mark.parametrize("state", ["building", "error"])
-def test_list_configurations_показывает_состояние_расширения(
-    tmp_path, корень_кода, реестр_из_кода, архив_кода, state
+def test_отказ_первой_загрузки_расширения_не_публикует_корпус(
+    корень_кода, реестр_с_кодом, архив_кода, monkeypatch
 ):
-    реестр = реестр_из_кода(корень_кода)
-    расширение = tmp_path / "extension"
-    _код_расширения(расширение, variant="new")
-    загрузить_код(реестр, 
-        архив_кода(расширение, extension="Доп"), configuration="Пример"
-    )
-    loaded = реестр.resolve("Пример", extension="Доп").extension
-    with реестр._lock:
-        loaded.готов = False
-        loaded.этап = (1, 4)
-        loaded.название_этапа = "оглавление"
-        loaded.прогресс = (7, 11)
-        if state == "error":
-            loaded.source.status = STATUS_ERROR
-            loaded.source.error = "ошибка расширения"
+    before = tools.list_configurations(реестр_с_кодом)
+    candidate = архив_кода(корень_кода, extension="Доп")
 
-    ответ = tools.list_configurations(реестр)
+    def fail(*args, **kwargs):
+        raise ValueError("отказ сборки")
 
-    assert "Расширение `Доп`" in ответ
-    if state == "building":
-        assert "строится" in ответ and "этап 1/4" in ответ and "7 из 11" in ответ
-    else:
-        assert "ошибка" in ответ and "ошибка расширения" in ответ
+    monkeypatch.setattr(modules_index.Оглавление, "построить", fail)
+    with pytest.raises(RegistryError, match="отказ сборки"):
+        загрузить_код(реестр_с_кодом, candidate, configuration="Пример")
+
+    assert "Пример:ext:Доп" not in реестр_с_кодом.snapshot().modules
+    assert tools.list_configurations(реестр_с_кодом) == before
 
 
 def test_сводка_расширения_не_материализует_все_записи(
@@ -2300,41 +2253,20 @@ def test_get_object_brief_вообще_не_обращается_к_провай
     assert "Код объекта" not in ответ
 
 
-@pytest.mark.parametrize("state", ["missing", "building", "error"])
-def test_get_object_честно_показывает_недоступный_индекс_кода(
-    tmp_path, реестр_из_кода, state
-):
-    корень = tmp_path / "code"
-    _код_объекта(корень)
-    конфигурация = _конфигурация_для_блоков()
-    if state == "missing":
-        incoming = tmp_path / "incoming"
-        incoming.mkdir()
-        реестр = Registry(tmp_path / "data")
-        реестр.add_configuration(write_export(incoming, конфигурация))
-    else:
-        реестр = реестр_из_кода(корень, configuration=конфигурация)
-        loaded = реестр.resolve("Пример").modules
-        with реестр._lock:
-            loaded.готов = False
-            loaded.этап = (3, 4)
-            loaded.название_этапа = "формы"
-            loaded.прогресс = (2, 5)
-            if state == "error":
-                loaded.source.status = STATUS_ERROR
-                loaded.source.error = "отказ сборки"
-
-    ответ = tools.get_object(
-        реестр, "Документ.Пример", config="Пример", detail="fields"
+def test_get_object_честно_показывает_отсутствие_кода(tmp_path):
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    registry = Registry(tmp_path / "data")
+    registry.add_configuration(
+        write_export(incoming, _конфигурация_для_блоков())
     )
 
-    assert ответ.count("Код объекта:") == 1
-    if state == "missing":
-        assert "код не загружен" in ответ.lower()
-    elif state == "building":
-        assert "строится" in ответ and "этап 3/4" in ответ and "2 из 5" in ответ
-    else:
-        assert "ошибка" in ответ and "отказ сборки" in ответ
+    answer = tools.get_object(
+        registry, "Документ.Пример", config="Пример", detail="fields"
+    )
+
+    assert answer.count("Код объекта:") == 1
+    assert "код не загружен" in answer.lower()
 
 
 def test_get_related_помечает_перекрытый_объект_расширением(

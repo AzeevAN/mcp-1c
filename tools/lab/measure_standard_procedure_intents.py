@@ -147,13 +147,7 @@ def _measure_index(factory) -> dict:
 
 
 def _ready_sources(registry: Registry):
-    return [
-        loaded
-        for loaded in registry.modules.values()
-        if loaded.готов
-        and loaded.оглавление is not None
-        and loaded.поиск is not None
-    ]
+    return list(registry.modules.values())
 
 
 def measure(data: Path, suite: Path, repeat: int) -> dict:

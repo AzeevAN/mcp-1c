@@ -10,7 +10,7 @@ import pytest
 from module_samples import v8_container_bytes
 from mcp1c import cli, tools
 from mcp1c.form_reader import MAX_BYTES
-from mcp1c.registry import STATUS_ERROR
+from mcp1c.registry import RegistryError
 from native_export import загрузить_код
 
 
@@ -400,13 +400,10 @@ def test_категория_ограничения_пишется_в_журна�
     "call",
     [
         lambda registry: tools.search_procedures(
-            registry, "Проверить", config="Пример"
+            registry, "Сложить", config="Пример"
         ),
         lambda registry: tools.get_procedure(
-            registry, "ОбщийМодуль.Пример", config="Пример"
-        ),
-        lambda registry: tools.get_callers(
-            registry, "ОбщийМодуль.Пример::Проверить", config="Пример"
+            registry, "ОбщийМодуль.ОбщийПример::Сложить", config="Пример"
         ),
     ],
 )
@@ -418,22 +415,36 @@ def test_категория_ограничения_пишется_в_журна�
         "[Errno 13] Permission denied: secret.Form",
     ],
 )
-def test_ошибка_индекса_в_инструментах_кода_обезличена(
-    реестр_из_кода, корень_кода, call, raw_error
+def test_ошибка_чтения_в_инструментах_кода_обезличена(
+    реестр_с_кодом, monkeypatch, call, raw_error
 ):
-    registry = реестр_из_кода(корень_кода)
-    loaded = registry.resolve("Пример").modules
-    with registry._lock:
-        loaded.готов = False
-        loaded.source.status = STATUS_ERROR
-        loaded.source.error = raw_error
+    def fail(*args, **kwargs):
+        raise OSError(raw_error)
 
-    answer = call(registry)
+    monkeypatch.setattr(tools, "read_bsl", fail)
+    with pytest.raises(RegistryError) as caught:
+        call(реестр_с_кодом)
 
-    assert "подробности ошибки доступны в журнале сервера" in answer
-    assert "Traceback" not in answer
-    assert "Permission denied" not in answer
-    assert "/private/" not in answer
+    message = str(caught.value)
+    assert "недоступен" in message
+    assert "Traceback" not in message
+    assert "Permission denied" not in message
+    assert "/private/" not in message
+
+
+def test_обратные_вызовы_читают_опубликованный_индекс_без_диска(
+    реестр_с_кодом, monkeypatch
+):
+    def fail(*args, **kwargs):
+        pytest.fail("Обратные вызовы уже есть в опубликованном индексе")
+
+    monkeypatch.setattr(tools, "read_bsl", fail)
+    answer = tools.get_callers(
+        реестр_с_кодом, "ОбщийМодуль.ОбщийПример::Сложить", config="Пример"
+    )
+
+    assert "ОбщийМодуль.ОбщийПример::Внутренняя" in answer
+    assert "Документ.Пример.МодульОбъекта::ПриЗаписи" in answer
 
 
 def test_агрегаты_кода_считаются_один_раз_на_поколение(

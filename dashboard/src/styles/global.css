@@ -2643,11 +2643,6 @@ h2 {
   border-left-color: var(--amber);
 }
 
-.corpus-card.is-error {
-  border-left-color: var(--red);
-}
-
-.corpus-card.is-building,
 .corpus-card.is-missing {
   border-left-color: var(--blue);
 }
@@ -2741,17 +2736,6 @@ h2 {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.6;
-}
-
-.corpus-diagnostic {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  margin-top: 12px;
-}
-
-.corpus-diagnostic svg {
-  flex: 0 0 auto;
 }
 
 .source-facts {

@@ -393,60 +393,49 @@ def test_cli_без_индекса_кода_завершается_ошибко�
     assert "=== procedures ===" not in output
 
 
-@pytest.mark.parametrize(
-    ("state", "message"),
-    [
-        ("loading", "строится"),
-        ("error", "не построен"),
-        ("incomplete", "неполон"),
-    ],
-)
-def test_неполный_или_неготовый_индекс_не_становится_нулевым_замером(
-    tmp_path, реестр_с_кодом, state, message
-):
+def test_отсутствие_кода_Source_A_не_становится_нулевым_замером(tmp_path):
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    registry = Registry(tmp_path / "data")
+    registry.add_configuration(
+        write_export(incoming, build_configuration(name="Пример"))
+    )
     path = _набор(
-        tmp_path / f"{state}.json",
+        tmp_path / "missing.json",
         [{"query": "Сложить", "expected": ["Сложить"]}],
     )
-    loaded = реестр_с_кодом.resolve("Пример").modules
-    with реестр_с_кодом._lock:
-        if state == "loading":
-            loaded.готов = False
-            loaded.source.status = "loading"
-            loaded.прогресс = (2, 10)
-        elif state == "error":
-            loaded.готов = False
-            loaded.source.status = "error"
-            loaded.source.error = "синтетическая ошибка"
-        else:
-            loaded.поиск = None
 
-    with pytest.raises(RegistryError, match=message):
-        bench.run_procedures(реестр_с_кодом, path, config="Пример")
+    with pytest.raises(RegistryError, match="Индекс кода конфигурации не загружен"):
+        bench.run_procedures(registry, path, config="Пример")
 
 
-def test_ошибка_индекса_не_раскрывает_локальный_путь_источника(
-    tmp_path, реестр_с_кодом
+def test_отказ_обновления_не_портит_замер_прежнего_корпуса(
+    tmp_path, реестр_с_кодом, корень_кода, архив_кода, monkeypatch
 ):
     path = _набор(
-        tmp_path / "error-path.json",
+        tmp_path / "update.json",
         [{"query": "Сложить", "expected": ["Сложить"]}],
     )
-    loaded = реестр_с_кодом.resolve("Пример").modules
-    with реестр_с_кодом._lock:
-        loaded.готов = False
-        loaded.source.status = "error"
-        loaded.source.error = (
-            "Permission denied: /private/secret/customer/Modules.zip"
-        )
+    before = bench.run_procedures(реестр_с_кодом, path, config="Пример")
+    module = корень_кода / "CommonModules" / "ОбщийПример" / "Ext" / "Module.bsl"
+    module.write_text(
+        module.read_text(encoding="utf-8") + "\n// Новое поколение\n",
+        encoding="utf-8",
+    )
+    candidate = архив_кода(корень_кода)
 
+    def fail(*args, **kwargs):
+        raise PermissionError(13, "Permission denied", "/private/secret/Module.bsl")
+
+    monkeypatch.setattr(modules_index.Оглавление, "построить", fail)
     with pytest.raises(RegistryError) as caught:
-        bench.run_procedures(реестр_с_кодом, path, config="Пример")
+        загрузить_код(реестр_с_кодом, candidate, configuration="Пример")
 
-    message = str(caught.value)
-    assert "Индекс кода не построен" in message
-    assert "/private/" not in message
-    assert "Permission denied" not in message
+    assert "/private/" not in str(caught.value)
+    assert "Permission denied" not in str(caught.value)
+    after = bench.run_procedures(реестр_с_кодом, path, config="Пример")
+    assert after.total == before.total == 1
+    assert after.results == before.results
 
 
 def test_cli_не_выбирает_конфигурацию_молча(

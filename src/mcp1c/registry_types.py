@@ -228,31 +228,17 @@ class LoadedModules:
 
     source: Source
     корень: Path
-    # При холодном старте запись появляется раньше самих структур: так
-    # инструменты отличают «код не загружен» от «индекс строится». Ни одна
-    # частичная структура наружу не публикуется — готовый комплект заменяет
-    # эту запись целиком под замком.
-    оглавление: modules_index.Оглавление | None
-    вызовы: modules_index.Вызовы | None
-    формы: modules_index.Формы | None
-    поиск: SearchIndex | None
+    # Пакет публикуется целиком после сборки всех индексов.
+    оглавление: modules_index.Оглавление
+    вызовы: modules_index.Вызовы
+    формы: modules_index.Формы
+    поиск: SearchIndex
     # Версия конфигурации/расширения из Configuration.xml выгрузки в файлы —
     # то же значение, что и `source.code_version`, но под публичным именем
     # провайдера.
     версия_кода: str
-    каталог: modules_index.ModuleCatalog | None = None
-    готов: bool = True
-    прогресс: tuple[int, int] = (0, 0)
-    этап: tuple[int, int] = (4, 4)
-    название_этапа: str = "готово"
+    каталог: modules_index.ModuleCatalog
 
-    def __post_init__(self) -> None:
-        # Обычная загрузка и подъём из кэша создают уже готовый комплект.
-        # Число модулей берётся из оглавления, а не `Source.items_total`:
-        # последнее включает Form.xml и служебные файлы выгрузки.
-        if self.готов and self.оглавление is not None and self.прогресс == (0, 0):
-            всего = len(self.оглавление.модули)
-            self.прогресс = (всего, всего)
 
 @dataclass(frozen=True, slots=True)
 class SourceSnapshot:
@@ -299,16 +285,10 @@ class SourceSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class RegistryCodeSnapshot:
-    """Ссылка на пакет индексов и скопированное состояние его публикации."""
+    """Опубликованный пакет индексов и снимок его источника."""
 
-    source: SourceSnapshot | None
-    loaded: LoadedModules | None
-    ready: bool
-    status: str
-    error: str
-    stage: tuple[int, int]
-    stage_title: str
-    progress: tuple[int, int]
+    source: SourceSnapshot
+    loaded: LoadedModules
 
 
 @dataclass(frozen=True, slots=True)
@@ -341,8 +321,8 @@ class RegistryGenerationSnapshot:
 class RegistrySnapshot:
     """Один структурный снимок реестра, целиком снятый под его lock.
 
-    Карты закрыты ``MappingProxyType``, а изменяемые поля ``Source`` и
-    прогресса кода скопированы в frozen-значения. Тяжёлые индексы не
+    Карты закрыты ``MappingProxyType``, а изменяемые поля ``Source``
+    скопированы в frozen-значения. Тяжёлые индексы не
     копируются: ``LoadedConfiguration``, ``LoadedSyntax`` и ``LoadedModules``
     публикуются поколениями и используются потребителями только для чтения.
     Поздний ``Registry.snapshot_is_current`` проверяет, что такое поколение
@@ -397,7 +377,7 @@ class RegistrySnapshot:
         modules = self.modules.get(source_ids.modules_id(configuration))
         code_source = (
             modules.source
-            if modules is not None and modules.ready
+            if modules is not None
             else None
         )
         return legacy_generation_view(

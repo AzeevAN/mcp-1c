@@ -41,7 +41,7 @@ export type CodeCorpus = {
   label: string;
   kind: "modules" | "extension";
   native_generation: boolean;
-  phase: "ready" | "limited" | "building" | "error" | "missing";
+  phase: "ready" | "limited" | "missing";
   state: string;
   source: SourceItem | null;
   coverage: Coverage | null;
@@ -102,11 +102,5 @@ export function useSources() {
         ? failureCount < 5
         : failureCount < 3,
     retryDelay: (attempt) => Math.min(100 * 2 ** attempt, 500),
-    refetchInterval: (query) =>
-      query.state.data?.configurations.some((configuration) =>
-        configuration.corpora.some((corpus) => corpus.phase === "building"),
-      )
-        ? 2_000
-        : false,
   });
 }

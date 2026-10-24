@@ -6,7 +6,7 @@ import pytest
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
-from mcp1c import tools
+from mcp1c import modules_index, tools
 from mcp1c.dashboard_runtime import (
     DASHBOARD_OFF,
     DASHBOARD_ON,
@@ -15,7 +15,7 @@ from mcp1c.dashboard_runtime import (
     dashboard_mode,
     routes,
 )
-from mcp1c.registry import STATUS_ERROR, Registry
+from mcp1c.registry import Registry, RegistryError
 from test_intake_v2_runtime import _materialized
 from test_intake_v2_extensions import _stage_active_base
 from native_export import загрузить_код
@@ -362,53 +362,44 @@ def test_sources_api_помечает_native_конфигурацию_без_sou
     ]
 
 
-def test_sources_api_показывает_безопасную_причину_только_admin(
-    tmp_path,
-    корень_кода,
-    реестр_из_кода,
-    monkeypatch,
+def test_sources_api_сохраняет_опубликованный_корпус_при_отказе_обновления(
+    tmp_path, корень_кода, реестр_из_кода, архив_кода, monkeypatch
 ):
     monkeypatch.setenv("API_TOKEN", "read-token")
     monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
     registry = реестр_из_кода(корень_кода, name="Пример")
     loaded = registry.resolve("Пример").modules
-    raw = (
-        "private-export.zip: индекс кода не построился — "
-        "IndexError: string index out of range"
+    module = корень_кода / "CommonModules" / "ОбщийПример" / "Ext" / "Module.bsl"
+    module.write_text(
+        module.read_text(encoding="utf-8") + "\n// Новое поколение\n",
+        encoding="utf-8",
     )
-    with registry._lock:
-        loaded.готов = False
-        loaded.source.status = STATUS_ERROR
-        loaded.source.error = raw
+    candidate = архив_кода(корень_кода)
+
+    def fail(*args, **kwargs):
+        raise PermissionError(13, "Permission denied", "/private/secret/Module.bsl")
+
+    monkeypatch.setattr(modules_index.Оглавление, "построить", fail)
+    with pytest.raises(RegistryError) as caught:
+        загрузить_код(registry, candidate, configuration="Пример")
+    assert "/private/" not in str(caught.value)
     app = Starlette(
-        routes=routes(
-            registry,
-            mode=DASHBOARD_ON,
-            static_dir=tmp_path / "dashboard-dist",
-        )
+        routes=routes(registry, mode=DASHBOARD_ON, static_dir=tmp_path / "dashboard-dist")
     )
 
     with TestClient(app) as client:
-        reader = client.get(
-            "/api/v1/sources",
-            headers={"x-api-token": "read-token"},
-        ).json()
-        admin = client.get(
-            "/api/v1/sources",
-            headers={"x-api-token": "admin-token"},
-        ).json()
+        for token in ("read-token", "admin-token"):
+            response = client.get("/api/v1/sources", headers={"x-api-token": token})
+            assert response.status_code == 200
+            corpus = response.json()["configurations"][0]["corpora"][0]
+            assert corpus["phase"] == "ready"
+            assert corpus["error"] == ""
+            assert corpus["coverage"]["procedures"]["total"] > 0
+            assert corpus["journal_url"]
+            assert "/private/" not in response.text
+            assert "Permission denied" not in response.text
 
-    reader_corpus = reader["configurations"][0]["corpora"][0]
-    admin_corpus = admin["configurations"][0]["corpora"][0]
-    assert reader_corpus["error"] == ""
-    assert admin_corpus["error"] == (
-        "индекс кода не построился — "
-        "IndexError: string index out of range"
-    )
-    assert "private-export.zip" not in admin_corpus["error"]
-    assert admin_corpus["journal"] == ""
-    assert admin_corpus["journal_url"] == ""
-    assert loaded.source.error == raw
+    assert registry.snapshot().modules[loaded.source.id].loaded is loaded
 
 
 def test_sources_api_при_двойной_смене_поколения_просит_повторить(

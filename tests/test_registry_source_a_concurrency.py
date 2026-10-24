@@ -93,7 +93,7 @@ def test_source_a_отклоняет_конкурентное_изменение
                 base.version if change == "native" else "2.0"
             )
             if change == "native":
-                assert context.modules is not None and context.modules.готов
+                assert context.modules is not None
                 assert context.roles is not None and context.roles.ready
 
     if change == "native":

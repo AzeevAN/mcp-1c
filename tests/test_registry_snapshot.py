@@ -77,3 +77,30 @@ def test_snapshot_берёт_отпечаток_у_единственной_ре
     )
 
     assert registry.snapshot()._fingerprint is маркер
+
+
+@pytest.mark.parametrize("change", ["package", "source_identity", "source_fields"])
+def test_snapshot_кода_сохраняет_source_и_отвергает_смену_пакета(
+    реестр_с_кодом, change
+):
+    from dataclasses import replace
+
+    registry = реестр_с_кодом
+    loaded = registry.resolve("Пример").modules
+    snapshot = registry.snapshot()
+    captured = snapshot.modules[loaded.source.id]
+    warnings = captured.source.warnings
+    assert registry.snapshot_is_current(snapshot)
+
+    with registry._lock:
+        if change == "package":
+            registry.modules[loaded.source.id] = replace(loaded)
+        elif change == "source_identity":
+            loaded.source = replace(loaded.source)
+        else:
+            loaded.source.warnings.append("предупреждение текущего источника")
+
+    assert captured.source.warnings == warnings
+    assert captured.source.status == "ready"
+    assert captured.source.error == ""
+    assert not registry.snapshot_is_current(snapshot)

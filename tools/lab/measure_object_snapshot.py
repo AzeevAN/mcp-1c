@@ -112,20 +112,14 @@ def _target(registry: Registry):
     for name in snapshot.configuration_names:
         extension_names = snapshot.extension_names(name)
         base = registry.modules.get(source_ids.modules_id(name))
-        if base is None or not base.готов:
+        if base is None:
             continue
         ready_extensions = [
             source_ids.extension_modules_id(name, extension)
             for extension in extension_names
-            if (
-                (
-                    loaded := registry.modules.get(
-                        source_ids.extension_modules_id(name, extension)
-                    )
-                )
-                is not None
-                and loaded.готов
-            )
+            if registry.modules.get(
+                source_ids.extension_modules_id(name, extension)
+            ) is not None
         ]
         if len(ready_extensions) >= max(EXTENSION_COUNTS):
             candidates.append((len(ready_extensions), name, ready_extensions))

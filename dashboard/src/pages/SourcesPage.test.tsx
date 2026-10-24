@@ -448,26 +448,8 @@ it("не изображает состав конфигурации декора
   expect(within(screen.getByLabelText("Состав конфигурации")).queryByText("Активность")).not.toBeInTheDocument();
 });
 
-it("показывает администратору техническую причину ошибки корпуса", async () => {
-  const fetchMock = vi.mocked(fetch);
-  const regularFetch = fetchMock.getMockImplementation()!;
-  fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const response = await regularFetch(input, init);
-    if (String(input) !== "/api/v1/sources") return response;
-    const payload = await response.json();
-    payload.configurations[0].corpora[0] = {
-      ...payload.configurations[0].corpora[0],
-      phase: "error",
-      state: "ошибка — подробности ошибки доступны в журнале сервера",
-      coverage: null,
-      journal: "",
-      journal_url: "",
-      error: "индекс кода не построился — IndexError: string index out of range",
-    };
-    return { ...response, json: async () => payload };
-  });
+it("показывает покрытие опубликованного корпуса без ошибки сборки", async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-
   render(
     <MemoryRouter initialEntries={["/sources"]}>
       <QueryClientProvider client={client}>
@@ -476,9 +458,9 @@ it("показывает администратору техническую п�
     </MemoryRouter>,
   );
 
-  expect(await screen.findByText(/IndexError: string index out of range/)).toBeInTheDocument();
-  expect(screen.queryByText(/private-export\.zip/)).not.toBeInTheDocument();
-  expect(screen.queryByRole("link", { name: "Открыть JSON-журнал" })).not.toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: "Отраслевая конфигурация А" })).toBeInTheDocument();
+  expect(screen.queryByText("Техническая причина:")).not.toBeInTheDocument();
+  expect(screen.getAllByRole("link", { name: "Открыть JSON-журнал" }).length).toBeGreaterThan(0);
 });
 
 it("повторяет чтение снимка после временного 409", async () => {
@@ -829,8 +811,7 @@ it("показывает выбор каталога в шапке выбран�
 
 
 it.each([
-  ["missing", "Не загружен"], ["building", "Строится"],
-  ["error", "Ошибка"], ["ready", "Готово"], ["limited", "С ограничениями"],
+  ["missing", "Не загружен"], ["ready", "Готово"], ["limited", "С ограничениями"],
 ])("показывает реальную фазу основного кода %s в составе", async (phase, label) => {
   const regularFetch = vi.mocked(fetch).getMockImplementation()!;
   vi.mocked(fetch).mockImplementation(async (input, init) => {
@@ -854,7 +835,6 @@ it.each([
   expect(screen.getByLabelText("Состав конфигурации")).toHaveTextContent(label);
   if (phase === "missing") {
     expect(screen.getByText("Нет загруженного кода для построения таблиц покрытия.")).toBeInTheDocument();
-    expect(screen.queryByText("Таблицы появятся после завершения разбора корпуса.")).not.toBeInTheDocument();
   }
 });
 

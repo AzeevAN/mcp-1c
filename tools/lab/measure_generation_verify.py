@@ -394,8 +394,6 @@ def _stage_fingerprints(connection, metrics, name, source_index, registry, deadl
             rows.append({"origin": "cold_builder", "build_index": index,
                          "states": _index_fingerprint(indexes, deadline)})
         for source_id, snapshot in registry.snapshot().modules.items():
-            if not snapshot.ready or snapshot.loaded is None or snapshot.source is None:
-                raise _Invalid("Опубликованный индекс кода не готов.")
             rows.append({"origin": "active", "source_id_sha256": hashlib.sha256(source_id.encode()).hexdigest(),
                          "source_sha256": snapshot.source.sha256,
                          "states": _index_fingerprint(snapshot.loaded, deadline)})
@@ -594,7 +592,7 @@ def _query_proof(registry, deadline):
     # Это тот же ResolvedContext, который выбирают публичные инструменты.
     context = registry.resolve()
     loaded = context.modules
-    if loaded is None or not loaded.готов:
+    if loaded is None:
         raise _Invalid("Нет готового корпуса для публичных запросов.")
     scope = {"config_sha256": hashlib.sha256(context.name.encode()).hexdigest(),
              "extension": None, "scope": None, "source_sha256": loaded.source.sha256,

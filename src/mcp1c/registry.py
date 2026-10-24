@@ -82,7 +82,7 @@ from .source_modes import (
     ActivationMode,
     PlatformDeclaration,
 )
-from .intake_v2_converter import base_layer_data
+from .base_layer import base_layer_data, configuration_from_base_layer
 from .intake_v2_registry import (
     BundleStoreError,
     GenerationBundleStore,
@@ -116,7 +116,6 @@ from .intake_v2_runtime import (
     GenerationRuntimeError,
     NativeGenerationRuntime,
     build_generation_runtime,
-    configuration_from_base_layer,
 )
 from .loader import ExportError, load
 from .model import Configuration

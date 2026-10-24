@@ -12,6 +12,7 @@ from types import MappingProxyType
 from typing import Mapping
 
 from . import fsio
+from .base_layer import base_layer_data
 from .intake_v2 import (
     ExportIdentity,
     GenerationManifest,
@@ -34,7 +35,6 @@ from .intake_v2_converter import (
     ExtendedStructure,
     FormStructureState,
     StructureConversion,
-    base_layer_data,
     extended_layer_data,
 )
 from .intake_v2_registry import (

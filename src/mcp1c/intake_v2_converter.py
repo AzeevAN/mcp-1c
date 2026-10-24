@@ -10,13 +10,19 @@ from __future__ import annotations
 import hashlib
 import json
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import PurePosixPath
 from types import MappingProxyType
 from typing import Iterable, Mapping
 
 from . import xml_safety
+from .base_layer import (
+    _canonical as _canonical,
+    _field_data as _field_data,
+    _order as _order,
+    base_layer_data as base_layer_data,
+)
 from .bsl_lex import нормализовать, разобрать
 from .form_reader import FormReadError, read_form
 from .module_address import разобрать_плоскую_xml_форму
@@ -570,10 +576,6 @@ class _Diagnostics:
             ConversionDiagnostic(code, signature, int(value[0]), tuple(value[1]), severity)
             for (code, signature, severity), value in sorted(self._items.items())
         )
-
-
-def _order(value: str) -> tuple[str, str]:
-    return value.casefold(), value
 
 
 def _tag(element: ET.Element) -> str:
@@ -3986,111 +3988,6 @@ def _attach_form_command_relations(
             forms=current.forms,
             relations=tuple(relations),
         )
-
-
-def _canonical(value: object) -> object:
-    if isinstance(value, Enum):
-        return value.value
-    if is_dataclass(value):
-        return {item.name: _canonical(getattr(value, item.name)) for item in fields(value)}
-    if isinstance(value, Mapping):
-        return {
-            key: _canonical(item)
-            for key, item in sorted(value.items(), key=lambda pair: _order(str(pair[0])))
-        }
-    if isinstance(value, (list, tuple)):
-        return [_canonical(item) for item in value]
-    return value
-
-
-def _field_data(value: Field, *, include_balance: bool = False) -> dict[str, object]:
-    result = {
-        "name": value.name,
-        "synonym": value.synonym,
-        "comment": value.comment,
-        "indexing": value.indexing,
-        "types": sorted(value.types, key=_order),
-        "string_length": value.string_length,
-        "string_allowed_length": value.string_allowed_length,
-        "digits": value.digits,
-        "fraction_digits": value.fraction_digits,
-        "date_parts": value.date_parts,
-    }
-    if include_balance:
-        result["balance"] = value.balance
-    return result
-
-
-def base_layer_data(base: Configuration) -> dict[str, object]:
-    """Вернуть канонические данные только базового структурного слоя.
-
-    Читает слой `intake_v2_runtime.configuration_from_base_layer`; новое поле
-    здесь без поля там отклонит каждое поколение. Согласованность закрепляет
-    `tests/test_intake_v2_layer_roundtrip.py`.
-    """
-    if not isinstance(base, Configuration):
-        raise TypeError("base должен быть Configuration")
-    objects = []
-    for value in sorted(base.objects.values(), key=lambda item: _order(item.full_name)):
-        objects.append(
-            {
-                "full_name": value.full_name,
-                "kind": value.kind,
-                "name": value.name,
-                "synonym": value.synonym,
-                "comment": value.comment,
-                "props": _canonical(value.props),
-                "attributes": sorted(
-                    (
-                        _field_data(item)
-                        for item in value.attributes
-                        if not item.standard
-                    ),
-                    key=lambda item: _order(str(item["name"])),
-                ),
-                "dimensions": sorted(
-                    (_field_data(item, include_balance=True) for item in value.dimensions),
-                    key=lambda item: _order(str(item["name"])),
-                ),
-                "resources": sorted(
-                    (_field_data(item, include_balance=True) for item in value.resources),
-                    key=lambda item: _order(str(item["name"])),
-                ),
-                "tabular_parts": [
-                    {
-                        "name": part.name,
-                        "synonym": part.synonym,
-                        "attributes": sorted(
-                            (_field_data(item) for item in part.attributes),
-                            key=lambda item: _order(str(item["name"])),
-                        ),
-                    }
-                    for part in sorted(value.tabular_parts, key=lambda item: _order(item.name))
-                ],
-                "movements": sorted(value.movements, key=_order),
-                "based_on": sorted(value.based_on, key=_order),
-                "owners": sorted(value.owners, key=_order),
-                "predefined": sorted(value.predefined, key=_order),
-                "enum_values": sorted(value.enum_values, key=lambda item: _order(item[0])),
-                "value_type": _field_data(value.value_type) if value.value_type else None,
-            }
-        )
-    return {
-        "name": base.name,
-        "synonym": base.synonym,
-        "version": base.version,
-        "vendor": base.vendor,
-        "platform": base.platform,
-        "compatibility_mode": base.compatibility_mode,
-        "exported_at": base.exported_at,
-        "exporter_version": base.exporter_version,
-        "schema_version": base.schema_version,
-        "source_format": base.source_format,
-        "truncated": base.truncated,
-        "predefined_available": base.predefined_available,
-        "warnings": list(base.warnings),
-        "objects": objects,
-    }
 
 
 def _extended_payload_data(value: object | None) -> object:

@@ -20,6 +20,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from functools import wraps
 from pathlib import Path
+from typing import cast
 from urllib.parse import quote, urlencode
 
 from starlette.background import BackgroundTask
@@ -159,42 +160,23 @@ def _source_payload(source: tools.SourceStateRow | None) -> dict | None:
 def _coverage_payload(coverage: tools.CodeCoverage | None) -> dict | None:
     if coverage is None:
         return None
+    projection = cast(tools._CodeCoveragePayload, coverage.to_dict())
+    structures = dict(projection["form_structures"])
+    # HTTP-клиент уже читает unreadable, журнал сохраняет unavailable.
+    structures["unreadable"] = structures.pop("unavailable")
+    limitations = projection["limitations"]
     return {
-        "has_limitations": coverage.has_limitations,
-        "modules": {
-            "total": coverage.modules_total,
-            "source_available": coverage.modules_source_available,
-            "empty": coverage.modules_empty,
-            "partial": coverage.modules_partial,
-            "unreadable": coverage.modules_unreadable,
-            "conflict": coverage.modules_conflict,
-            "compiled_without_source": coverage.modules_compiled_without_source,
-        },
-        "procedures": {
-            "total": coverage.procedures_total,
-            "full": coverage.procedures_full,
-            "partial": coverage.procedures_partial,
-        },
-        "form_structures": {
-            "total": coverage.forms_total,
-            "full": coverage.form_structures_full,
-            "partial": coverage.form_structures_partial,
-            "unreadable": coverage.form_structures_unread,
-        },
-        "form_modules": {
-            "total": coverage.forms_total,
-            "read": coverage.form_modules_read,
-            "empty": coverage.form_modules_empty,
-            "missing": coverage.form_modules_missing,
-            "unreadable": coverage.form_modules_unread,
-        },
-        "problems_total": coverage.problems_total,
+        "has_limitations": projection["has_limitations"],
+        "modules": projection["modules"],
+        "procedures": projection["procedures"],
+        "form_structures": structures,
+        "form_modules": projection["form_modules"],
+        "problems_total": limitations["occurrences_total"],
         "problem_categories": [
             {"category": category, "count": count}
-            for category, count in coverage.problem_categories
+            for category, count in limitations["categories"].items()
         ],
     }
-
 
 def _sources_payload(
     snapshot: tools.SourcesSnapshot,

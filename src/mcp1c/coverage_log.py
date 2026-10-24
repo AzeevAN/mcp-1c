@@ -11,7 +11,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from . import fsio
 
@@ -72,8 +72,13 @@ def build_payload(loaded: "LoadedModules") -> dict[str, Any]:
     from . import tools
 
     source = loaded.source
-    coverage = tools._code_coverage(loaded, include_problem_rows=False)
+    coverage = cast(
+        tools._CodeCoveragePayload,
+        tools._code_coverage(loaded, include_problem_rows=False).to_dict(),
+    )
     problems = sorted(tools._iter_code_problems(loaded), key=_problem_sort_key)
+    limitations: dict[str, object] = dict(coverage["limitations"])
+    limitations["problem_rows_total"] = len(problems)
     return {
         "schema_version": SCHEMA_VERSION,
         "kind": KIND,
@@ -92,59 +97,13 @@ def build_payload(loaded: "LoadedModules") -> dict[str, Any]:
             "generation": loaded.каталог.identity.generation,
         },
         "coverage": {
-            "modules": {
-                "total": coverage.modules_total,
-                "source_available": coverage.modules_source_available,
-                "empty": coverage.modules_empty,
-                "partial": coverage.modules_partial,
-                "unreadable": coverage.modules_unreadable,
-                "conflict": coverage.modules_conflict,
-                "compiled_without_source": (
-                    coverage.modules_compiled_without_source
-                ),
-            },
-            "procedures": {
-                "total": coverage.procedures_total,
-                "full": coverage.procedures_full,
-                "partial": coverage.procedures_partial,
-            },
-            "form_structures": {
-                "total": coverage.forms_total,
-                "full": coverage.form_structures_full,
-                "partial": coverage.form_structures_partial,
-                "unavailable": coverage.form_structures_unread,
-            },
-            "form_modules": {
-                "total": coverage.forms_total,
-                "read": coverage.form_modules_read,
-                "empty": coverage.form_modules_empty,
-                "missing": coverage.form_modules_missing,
-                "unreadable": coverage.form_modules_unread,
-            },
-            "limitations": {
-                "categories": dict(coverage.problem_categories),
-                "occurrences_total": coverage.problems_total,
-                "problem_rows_total": len(problems),
-                "unknown_markers": coverage.unknown_markers,
-                "known_markers_incomplete": coverage.known_markers_incomplete,
-                "unsupported_addresses": coverage.unsupported_addresses,
-                "broken_containers": coverage.broken_containers,
-                "unreadable_bodies": coverage.unreadable_bodies,
-                "budget_exceeded": coverage.budget_exceeded,
-                "body_conflicts": coverage.body_conflicts,
-                "compiled_without_source": coverage.compiled_without_source,
-            },
+            "modules": coverage["modules"],
+            "procedures": coverage["procedures"],
+            "form_structures": coverage["form_structures"],
+            "form_modules": coverage["form_modules"],
+            "limitations": limitations,
         },
-        "problems": [
-            {
-                "category": item.category,
-                "address": item.address,
-                "ordinal": item.ordinal,
-                "reason": item.reason,
-                "marker": item.marker,
-            }
-            for item in problems
-        ],
+        "problems": [item.to_dict() for item in problems],
     }
 
 

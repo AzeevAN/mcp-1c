@@ -28,7 +28,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import Iterator, Mapping
+from typing import Iterator, Mapping, TypedDict, cast
 
 from . import (
     coverage_log,
@@ -130,6 +130,38 @@ class _CodeCapture:
     loaded: LoadedModules | None
 
 
+class _CodeProblemPayload(TypedDict):
+    category: str
+    address: str | None
+    ordinal: int
+    reason: str
+    marker: int | None
+
+
+class _CodeCoverageLimitations(TypedDict):
+    categories: dict[str, int]
+    occurrences_total: int
+    unknown_markers: int
+    known_markers_incomplete: int
+    unsupported_addresses: int
+    broken_containers: int
+    unreadable_bodies: int
+    budget_exceeded: int
+    body_conflicts: int
+    compiled_without_source: int
+
+
+class _CodeCoveragePayload(TypedDict):
+    modules: dict[str, int]
+    procedures: dict[str, int]
+    form_structures: dict[str, int]
+    form_modules: dict[str, int]
+    limitations: _CodeCoverageLimitations
+    has_limitations: bool
+    problems: list[_CodeProblemPayload]
+    problems_omitted: int
+
+
 @dataclass(frozen=True, slots=True)
 class CodeProblemRow:
     """Одна обезличенная проблема покрытия готового корпуса кода."""
@@ -139,6 +171,15 @@ class CodeProblemRow:
     ordinal: int
     reason: str
     marker: int | None = None
+
+    def to_dict(self) -> _CodeProblemPayload:
+        return {
+            "category": self.category,
+            "address": self.address,
+            "ordinal": self.ordinal,
+            "reason": self.reason,
+            "marker": self.marker,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +215,57 @@ class CodeCoverage:
     problem_categories: tuple[tuple[str, int], ...]
     problems_total: int
     problems: tuple[CodeProblemRow, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        """Новый JSON-снимок агрегатов и доступной части списка проблем.
+
+        Число строк полного журнала здесь неизвестно: количество вхождений
+        проблем может отличаться от количества обезличенных строк.
+        """
+        return {
+            "modules": {
+                "total": self.modules_total,
+                "source_available": self.modules_source_available,
+                "empty": self.modules_empty,
+                "partial": self.modules_partial,
+                "unreadable": self.modules_unreadable,
+                "conflict": self.modules_conflict,
+                "compiled_without_source": self.modules_compiled_without_source,
+            },
+            "procedures": {
+                "total": self.procedures_total,
+                "full": self.procedures_full,
+                "partial": self.procedures_partial,
+            },
+            "form_structures": {
+                "total": self.forms_total,
+                "full": self.form_structures_full,
+                "partial": self.form_structures_partial,
+                "unavailable": self.form_structures_unread,
+            },
+            "form_modules": {
+                "total": self.forms_total,
+                "read": self.form_modules_read,
+                "empty": self.form_modules_empty,
+                "missing": self.form_modules_missing,
+                "unreadable": self.form_modules_unread,
+            },
+            "limitations": {
+                "categories": dict(self.problem_categories),
+                "occurrences_total": self.problems_total,
+                "unknown_markers": self.unknown_markers,
+                "known_markers_incomplete": self.known_markers_incomplete,
+                "unsupported_addresses": self.unsupported_addresses,
+                "broken_containers": self.broken_containers,
+                "unreadable_bodies": self.unreadable_bodies,
+                "budget_exceeded": self.budget_exceeded,
+                "body_conflicts": self.body_conflicts,
+                "compiled_without_source": self.compiled_without_source,
+            },
+            "has_limitations": self.has_limitations,
+            "problems": [problem.to_dict() for problem in self.problems],
+            "problems_omitted": self.problems_omitted,
+        }
 
     @property
     def problems_omitted(self) -> int:
@@ -840,38 +932,44 @@ def _capture_configurations_list(
 def _loaded_partial_warning(
     loaded: LoadedModules, *, corpus: str = ""
 ) -> str | None:
-    coverage = _code_coverage(loaded, include_problem_rows=False)
+    projection = cast(
+        _CodeCoveragePayload,
+        _code_coverage(loaded, include_problem_rows=False).to_dict(),
+    )
+    structures = projection["form_structures"]
+    modules = projection["form_modules"]
+    limitations = projection["limitations"]
     suffix = f" {corpus}" if corpus else ""
     evidence_note = ""
-    if coverage.compiled_without_source:
+    if limitations["compiled_without_source"]:
         evidence_note = (
             f"В корпусе кода{suffix} исходный текст недоступен у "
-            f"{coverage.compiled_without_source} модулей. Сведения о "
+            f"{limitations['compiled_without_source']} модулей. Сведения о "
             "процедурах, вызовах и перекрытиях приведены только по доступным "
             "исходникам; пустой результат не доказывает отсутствие кода в "
             "таких модулях."
         )
-    if not coverage.has_limitations:
+    if not projection["has_limitations"]:
         return evidence_note or None
     categories = ", ".join(
         f"{category}={count}"
-        for category, count in coverage.problem_categories
+        for category, count in limitations["categories"].items()
     ) or "нет"
     warning = (
         f"Покрытие кода{suffix} неполно: структуры форм: полностью "
-        f"{coverage.form_structures_full}, семантика отложена "
-        f"{coverage.form_structures_partial}, не прочитано "
-        f"{coverage.form_structures_unread}; модули форм: прочитано "
-        f"{coverage.form_modules_read}, пусто {coverage.form_modules_empty}, "
-        f"отсутствует {coverage.form_modules_missing}, не прочитано "
-        f"{coverage.form_modules_unread}; неизвестных маркеров: "
-        f"{coverage.unknown_markers}, известных маркеров с неполной "
-        f"семантикой: {coverage.known_markers_incomplete}, неподдержанных "
-        f"адресов: {coverage.unsupported_addresses}, битых контейнеров: "
-        f"{coverage.broken_containers}, непрочитанных тел: "
-        f"{coverage.unreadable_bodies}, превышений бюджета: "
-        f"{coverage.budget_exceeded}, конфликтов тел: "
-        f"{coverage.body_conflicts}; категории проблем: "
+        f"{structures['full']}, семантика отложена "
+        f"{structures['partial']}, не прочитано "
+        f"{structures['unavailable']}; модули форм: прочитано "
+        f"{modules['read']}, пусто {modules['empty']}, "
+        f"отсутствует {modules['missing']}, не прочитано "
+        f"{modules['unreadable']}; неизвестных маркеров: "
+        f"{limitations['unknown_markers']}, известных маркеров с неполной "
+        f"семантикой: {limitations['known_markers_incomplete']}, неподдержанных "
+        f"адресов: {limitations['unsupported_addresses']}, битых контейнеров: "
+        f"{limitations['broken_containers']}, непрочитанных тел: "
+        f"{limitations['unreadable_bodies']}, превышений бюджета: "
+        f"{limitations['budget_exceeded']}, конфликтов тел: "
+        f"{limitations['body_conflicts']}; категории проблем: "
         f"{categories}. Нулевой счётчик или пустой список не доказывает "
         "отсутствие скрытых данных."
     )
@@ -906,56 +1004,60 @@ def code_coverage_lines(coverage: CodeCoverage | None) -> tuple[str, ...]:
     """Одинаковая диагностика для MCP, CLI и страницы ``/sources``."""
     if coverage is None:
         return ()
+    projection = cast(_CodeCoveragePayload, coverage.to_dict())
+    structures = projection["form_structures"]
+    modules = projection["form_modules"]
+    limitations = projection["limitations"]
     lines: list[str] = []
-    if coverage.has_limitations:
+    if projection["has_limitations"]:
         lines.append(
             "ВНИМАНИЕ: покрытие кода неполно; нулевой счётчик или пустой "
             "список не доказывает отсутствие скрытых данных."
         )
     lines.extend(
         [
-            f"Форм обнаружено: {coverage.forms_total}",
+            f"Форм обнаружено: {structures['total']}",
             "Структуры форм: "
-            f"полностью {coverage.form_structures_full}, "
-            f"семантика отложена {coverage.form_structures_partial}, "
-            f"не прочитано {coverage.form_structures_unread}",
+            f"полностью {structures['full']}, "
+            f"семантика отложена {structures['partial']}, "
+            f"не прочитано {structures['unavailable']}",
             "Модули форм: "
-            f"прочитано {coverage.form_modules_read}, "
-            f"пусто {coverage.form_modules_empty}, "
-            f"отсутствует {coverage.form_modules_missing}, "
-            f"не прочитано {coverage.form_modules_unread}",
+            f"прочитано {modules['read']}, "
+            f"пусто {modules['empty']}, "
+            f"отсутствует {modules['missing']}, "
+            f"не прочитано {modules['unreadable']}",
             "Причины: "
-            f"неизвестных маркеров {coverage.unknown_markers}, "
+            f"неизвестных маркеров {limitations['unknown_markers']}, "
             "известных маркеров с неполной семантикой "
-            f"{coverage.known_markers_incomplete}, "
-            f"неподдержанных адресов {coverage.unsupported_addresses}, "
-            f"битых контейнеров {coverage.broken_containers}, "
-            f"непрочитанных тел {coverage.unreadable_bodies}, "
-            f"превышений бюджета {coverage.budget_exceeded}, "
-            f"конфликтов тел {coverage.body_conflicts}, "
+            f"{limitations['known_markers_incomplete']}, "
+            f"неподдержанных адресов {limitations['unsupported_addresses']}, "
+            f"битых контейнеров {limitations['broken_containers']}, "
+            f"непрочитанных тел {limitations['unreadable_bodies']}, "
+            f"превышений бюджета {limitations['budget_exceeded']}, "
+            f"конфликтов тел {limitations['body_conflicts']}, "
             "модулей с недоступным исходным текстом "
-            f"{coverage.compiled_without_source}",
+            f"{limitations['compiled_without_source']}",
         ]
     )
-    if coverage.problem_categories:
+    if limitations["categories"]:
         lines.append(
             "Категории проблем: "
             + ", ".join(
                 f"{category}={count}"
-                for category, count in coverage.problem_categories
+                for category, count in limitations["categories"].items()
             )
         )
-    for problem in coverage.problems:
+    for problem in projection["problems"]:
         target = (
-            f"`{problem.address}`"
-            if problem.address is not None
-            else f"неадресуемый кандидат #{problem.ordinal}"
+            f"`{problem['address']}`"
+            if problem["address"] is not None
+            else f"неадресуемый кандидат #{problem['ordinal']}"
         )
         lines.append(
-            f"Проблема [{problem.category}] {target} — {problem.reason}"
+            f"Проблема [{problem['category']}] {target} — {problem['reason']}"
         )
-    if coverage.problems_omitted:
-        lines.append(f"Ещё проблем: {coverage.problems_omitted}")
+    if projection["problems_omitted"]:
+        lines.append(f"Ещё проблем: {projection['problems_omitted']}")
     return tuple(lines)
 
 

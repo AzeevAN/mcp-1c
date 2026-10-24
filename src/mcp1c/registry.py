@@ -877,10 +877,7 @@ class Registry:
         for manifest in manifests:
             layers = {layer.kind: layer for layer in manifest.layers}
             if manifest.identity.source_kind is SourceKind.EXTENSION:
-                source_id = source_ids.extension_modules_id(
-                    manifest.identity.parent_configuration,
-                    index_cache.safe_name(manifest.identity.extension_name),
-                )
+                source_id = manifest.identity.modules_source_id()
                 if any(
                     layers.get(kind) is not None
                     and layers[kind].state is LayerState.READY
@@ -906,7 +903,7 @@ class Registry:
                 and layers[kind].state is LayerState.READY
                 for kind in (LayerKind.CODE, LayerKind.FORMS)
             ):
-                source_id = source_ids.modules_id(configuration)
+                source_id = manifest.identity.modules_source_id()
                 names.update(
                     self._cache_path(source_id, kind).name
                     for kind in self.CACHE_KINDS[KIND_MODULES]
@@ -1704,15 +1701,7 @@ class Registry:
         # runtime-объекта, canonical id и root не позволяет отставленному
         # writer записать журнал после переключения поколения.
         for pointer in self._generation_pointers.values():
-            identity = pointer.identity
-            native_source_id = (
-                source_ids.modules_id(identity.configuration_name)
-                if identity.source_kind is SourceKind.CONFIGURATION
-                else source_ids.extension_modules_id(
-                    identity.parent_configuration,
-                    index_cache.safe_name(identity.extension_name),
-                )
-            )
+            native_source_id = pointer.modules_source_id()
             if (
                 native_source_id == source.id
                 and pointer.root_path == source.stored_path
@@ -2189,11 +2178,7 @@ class Registry:
                         (key, pointer)
                         for key, pointer in all_pointers.items()
                         if pointer.identity.source_kind is SourceKind.EXTENSION
-                        and source_id
-                        == source_ids.extension_modules_id(
-                            pointer.identity.parent_configuration,
-                            index_cache.safe_name(pointer.identity.extension_name),
-                        )
+                        and source_id == pointer.modules_source_id()
                     ),
                     None,
                 )
@@ -2235,9 +2220,7 @@ class Registry:
                     ) or (
                         not configuration_removal
                         and identity.source_kind is SourceKind.EXTENSION
-                        and source_id == source_ids.extension_modules_id(
-                            identity.parent_configuration, index_cache.safe_name(identity.extension_name)
-                        )
+                        and source_id == identity.modules_source_id()
                     )
                 }
                 carried_source_removal = (
@@ -2320,7 +2303,7 @@ class Registry:
                     self._extension_resolution_cache = None
                     if identity.source_kind is SourceKind.CONFIGURATION:
                         configuration = identity.configuration_name
-                        modules_id = source_ids.modules_id(configuration)
+                        modules_id = native_pointer.modules_source_id()
                         self.configurations.pop(configuration, None)
                         self.modules.pop(modules_id, None)
                         self.roles.pop(configuration, None)
@@ -2333,10 +2316,7 @@ class Registry:
                             "Журнал покрытия снятой native-конфигурации не удалён.",
                         ))
                     else:
-                        native_source_id = source_ids.extension_modules_id(
-                            identity.parent_configuration,
-                            index_cache.safe_name(identity.extension_name),
-                        )
+                        native_source_id = native_pointer.modules_source_id()
                         self.modules.pop(native_source_id, None)
                         self.extension_structures.pop(native_source_id, None)
                         self.extension_relations.pop(native_source_id, None)
@@ -3132,13 +3112,11 @@ class Registry:
         if identity.source_kind is SourceKind.CONFIGURATION:
             name = identity.configuration_name
             self.configurations.pop(name, None)
-            self.modules.pop(source_ids.modules_id(name), None)
+            self.modules.pop(identity.modules_source_id(), None)
             self.roles.pop(name, None)
         else:
             name = identity.parent_configuration
-            source_id = source_ids.extension_modules_id(
-                name, index_cache.safe_name(identity.extension_name)
-            )
+            source_id = identity.modules_source_id()
             self.modules.pop(source_id, None)
             self.extension_structures.pop(source_id, None)
             self.extension_relations.pop(source_id, None)
@@ -3327,7 +3305,7 @@ class Registry:
         loaded = self.configurations.get(identity.configuration_name)
         if loaded is None:
             return None
-        modules = self.modules.get(source_ids.modules_id(identity.configuration_name))
+        modules = self.modules.get(identity.modules_source_id())
         code_source = (
             modules.source if modules is not None else None
         )
@@ -3616,10 +3594,7 @@ class Registry:
         cache_owner = (
             identity.configuration_name
             if identity.source_kind is SourceKind.CONFIGURATION
-            else source_ids.extension_modules_id(
-                identity.parent_configuration,
-                index_cache.safe_name(identity.extension_name),
-            )
+            else identity.modules_source_id()
         )
         try:
             runtime = build_generation_runtime(
@@ -4051,7 +4026,7 @@ class Registry:
                                 self._словарь_конфигурации_locked(loaded_configuration)
                             )
                             self._advance_configuration_revision(name)
-                            modules_key = source_ids.modules_id(name)
+                            modules_key = pointer.modules_source_id()
                             if loaded_modules is None:
                                 self.modules.pop(modules_key, None)
                             else:
@@ -4067,10 +4042,7 @@ class Registry:
                                     self._generation_manifests.pop(
                                         child.identity.grouping_key, None
                                     )
-                                    extension_key = source_ids.extension_modules_id(
-                                        child.identity.parent_configuration,
-                                        index_cache.safe_name(child.identity.extension_name),
-                                    )
+                                    extension_key = child.modules_source_id()
                                     self.modules.pop(extension_key, None)
                                     self.extension_structures.pop(extension_key, None)
                                     self.extension_relations.pop(extension_key, None)
@@ -4080,11 +4052,7 @@ class Registry:
                                 self.extension_relations.update(replacement_relations)
                             self._relation_cache.pop(name, None)
                         else:
-                            identity = manifest.identity
-                            extension_key = source_ids.extension_modules_id(
-                                identity.parent_configuration,
-                                index_cache.safe_name(identity.extension_name),
-                            )
+                            extension_key = pointer.modules_source_id()
                             if loaded_modules is None:
                                 self.modules.pop(extension_key, None)
                             else:
@@ -4291,7 +4259,7 @@ class Registry:
             loaded = self.configurations.get(configuration)
             if loaded is None:
                 raise UnknownConfiguration(f"Конфигурация не загружена: {configuration}.")
-            modules = self.modules.get(source_ids.modules_id(configuration))
+            modules = self.modules.get(identity.modules_source_id())
             code_source = (
                 modules.source
                 if modules is not None
@@ -4761,10 +4729,7 @@ class Registry:
             with self._registry_memory_change():
                 self._generation_pointers[key] = pointer
                 self._generation_manifests[key] = manifest
-            extension_key = source_ids.extension_modules_id(
-                identity.parent_configuration,
-                index_cache.safe_name(identity.extension_name),
-            )
+            extension_key = pointer.modules_source_id()
             structure = prepared.runtime.extension_structure
             assert structure is not None
             with self._registry_memory_change():

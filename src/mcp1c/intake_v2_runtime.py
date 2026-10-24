@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
-from . import index_cache, source_ids
 from .defined_type_contract import resolve_defined_type
 from .module_address import разобрать_плоскую_xml_форму
 from .intake_v2 import (
@@ -1234,14 +1233,7 @@ def build_generation_runtime(
         ) from error
     code = _ready_payload(root, layers, LayerKind.CODE, required=False)
     forms = _ready_payload(root, layers, LayerKind.FORMS, required=False)
-    source_id = (
-        source_ids.modules_id(configuration.name)
-        if manifest.identity.source_kind is SourceKind.CONFIGURATION
-        else source_ids.extension_modules_id(
-            manifest.identity.parent_configuration,
-            index_cache.safe_name(manifest.identity.extension_name),
-        )
-    )
+    source_id = manifest.identity.modules_source_id()
     code_sha256, locator_generation = _code_identity(layers)
     catalog = _catalog(
         root,

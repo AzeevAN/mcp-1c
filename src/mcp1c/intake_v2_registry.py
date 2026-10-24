@@ -214,6 +214,10 @@ class GenerationPointer:
         ) or len({job_id for job_id, _ in self.pending_load_commits}) != len(self.pending_load_commits):
             raise BundleStoreError("pending_load_commits pointer содержит неверные записи")
 
+    def modules_source_id(self) -> str:
+        """Id корпуса кода активного поколения."""
+        return self.identity.modules_source_id()
+
     @classmethod
     def for_manifest(
         cls,

@@ -17,7 +17,8 @@ from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import BinaryIO, Protocol, runtime_checkable
 
-from . import fsio
+from . import fsio, source_ids
+from .safe_names import safe_name
 
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -203,6 +204,14 @@ class ExportIdentity:
             SourceKind.EXTENSION,
             extension_name=name,
             parent_configuration=parent_configuration,
+        )
+
+    def modules_source_id(self) -> str:
+        """Стабильный id корпуса кода для runtime, кэша и журналов."""
+        if self.source_kind is SourceKind.CONFIGURATION:
+            return source_ids.modules_id(self.configuration_name)
+        return source_ids.extension_modules_id(
+            self.parent_configuration, safe_name(self.extension_name)
         )
 
     @property

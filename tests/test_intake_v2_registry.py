@@ -14,6 +14,7 @@ from dataclasses import replace
 import pytest
 
 from conftest import build_configuration, write_export
+from mcp1c import index_cache
 from mcp1c.intake_v2_converter import base_layer_data
 from mcp1c.model import Configuration
 from mcp1c.registry import Registry
@@ -107,6 +108,54 @@ def _manifest(tmp_path, generation_id: str, *, suffix: str = ""):
         LayerKind.BASE_STRUCTURE: LayerPayloadSource(base),
         LayerKind.CODE: LayerPayloadSource(code),
     }
+
+
+@pytest.mark.parametrize("завершение", ["discard", "promote"])
+def test_verified_не_удерживает_ключи_временных_поколений(tmp_path, завершение):
+    GenerationBundleStore = _symbol("GenerationBundleStore")
+    manifest, payloads = _manifest(tmp_path, "generation-transient-key")
+    store = GenerationBundleStore(tmp_path / "data")
+    staged = store.stage(manifest, payloads)
+    ключ = (staged.root / index_cache.KEY_FILE_NAME).read_bytes()
+    assert staged.root not in index_cache._KEYS
+    assert staged.root not in index_cache._KEY_DIRECTORY_LOCKS
+    assert store._load_verification(staged.root, staged.pointer) == staged._verification
+    assert staged.root not in index_cache._KEYS
+
+    getattr(store, завершение)(staged)
+
+    assert staged.root not in index_cache._KEYS
+    assert staged.root not in index_cache._KEY_DIRECTORY_LOCKS
+    assert not staged.root.exists()
+    if завершение == "promote":
+        root = store.data_dir / staged.pointer.root_path
+        assert (root / index_cache.KEY_FILE_NAME).read_bytes() == ключ
+        assert store.verify(staged.pointer) == manifest
+        assert root not in index_cache._KEYS
+        assert root not in index_cache._KEY_DIRECTORY_LOCKS
+
+
+@pytest.mark.parametrize("операция", ["save", "load"])
+def test_verified_освобождает_ключ_после_ошибки_marker(tmp_path, monkeypatch, операция):
+    GenerationBundleStore = _symbol("GenerationBundleStore")
+    manifest, payloads = _manifest(tmp_path, "generation-failed-marker")
+    store = GenerationBundleStore(tmp_path / "data")
+    staged = store.stage(manifest, payloads)
+    имя = f"{операция}_blob"
+    исходная = getattr(index_cache, имя)
+
+    def сбой(*args, **kwargs):
+        исходная(*args, **kwargs)
+        assert staged.root in index_cache._KEYS
+        raise OSError("синтетический сбой после чтения ключа")
+
+    monkeypatch.setattr(index_cache, имя, сбой)
+    if операция == "save":
+        store._save_verification(staged.root, staged._verification)
+    else:
+        assert store._load_verification(staged.root, staged.pointer) is None
+    assert staged.root not in index_cache._KEYS
+    assert staged.root not in index_cache._KEY_DIRECTORY_LOCKS
 
 
 def test_stage_проверяет_каждый_ready_payload_и_не_хранит_error_payload(tmp_path):

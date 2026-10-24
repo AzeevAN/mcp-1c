@@ -8,10 +8,38 @@
 from __future__ import annotations
 
 import os
+import weakref
 
 import pytest
 
 from mcp1c import index_cache
+
+
+def test_замок_каталога_освобождается_после_получения_ключа(tmp_path, monkeypatch):
+    исходное_чтение = index_cache._read_key_file
+    замки = []
+
+    def читать(путь):
+        замки.append(weakref.ref(index_cache._KEY_DIRECTORY_LOCKS[путь.parent]))
+        return исходное_чтение(путь)
+
+    monkeypatch.setattr(index_cache, "_read_key_file", читать)
+    assert index_cache.save_blob({"a": 1}, tmp_path / "blob", source_sha256="s", kind="blob")
+    assert замки and all(замок() is None for замок in замки)
+    assert tmp_path not in index_cache._KEY_DIRECTORY_LOCKS
+    assert index_cache.load_blob(tmp_path / "blob", source_sha256="s", kind="blob") == {"a": 1}
+
+
+def test_forget_освобождает_ключ_в_памяти_сохраняя_подпись_на_диске(tmp_path):
+    путь = tmp_path / "blob"
+    assert index_cache.save_blob({"a": 1}, путь, source_sha256="s", kind="blob")
+    ключ = (tmp_path / index_cache.KEY_FILE_NAME).read_bytes()
+
+    index_cache.forget_directory_key(tmp_path)
+
+    assert tmp_path not in index_cache._KEYS
+    assert (tmp_path / index_cache.KEY_FILE_NAME).read_bytes() == ключ
+    assert index_cache.load_blob(путь, source_sha256="s", kind="blob") == {"a": 1}
 
 
 def test_поднятый_индекс_отвечает_как_построенный(tmp_path, sample_index, sample_payloads):

@@ -56,6 +56,7 @@ import zlib
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterable, Iterator
+from weakref import WeakValueDictionary
 
 from .search import SearchIndex
 from .safe_names import safe_name as safe_name
@@ -184,7 +185,13 @@ _KEYS_LOCK = threading.Lock()
 # `_KEY_WAIT_SECONDS`) идут под замком своего каталога, а не под общим:
 # иначе секунда ожидания в одном каталоге останавливала бы запись и
 # чтение кэша во всех остальных, ключи которых уже известны.
-_KEY_DIRECTORY_LOCKS: dict[Path, threading.Lock] = {}
+_KEY_DIRECTORY_LOCKS: WeakValueDictionary[Path, threading.Lock] = WeakValueDictionary()
+
+
+def forget_directory_key(directory: str | Path) -> None:
+    """Освободить процессный ключ расходного каталога, сохранив файл ключа."""
+    with _KEYS_LOCK:
+        _KEYS.pop(Path(directory), None)
 
 
 class _Miss(Exception):
@@ -367,6 +374,8 @@ def _key_for(path: Path, *, create: bool) -> bytes:
         if cached is not None:
             return cached
         directory_lock = _KEY_DIRECTORY_LOCKS.setdefault(directory, threading.Lock())
+        # Сильная локальная ссылка живёт и у владельца, и у ожидающего
+        # потока: weak-map не может выдать им разные замки одного каталога.
     # Замок каталога сериализует потоки одного процесса: замена битого ключа
     # (`replace_broken`) двумя потоками сразу подписала бы кэш ключом,
     # которого на диске уже нет.

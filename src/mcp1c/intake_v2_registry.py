@@ -915,6 +915,8 @@ class GenerationBundleStore:
         except Exception:
             # Расходный marker не меняет результат обязательной полной проверки.
             return None
+        finally:
+            index_cache.forget_directory_key(root)
 
     @staticmethod
     def _save_verification(root: Path, proof: _GenerationVerification) -> None:
@@ -929,6 +931,10 @@ class GenerationBundleStore:
             )
         except Exception:
             pass
+        finally:
+            # Один marker на поколение не оправдывает удержания ключа
+            # в памяти процесса; staging вскоре исчезнет при promote или rollback.
+            index_cache.forget_directory_key(root)
 
     def stage(
         self,

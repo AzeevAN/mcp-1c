@@ -24,6 +24,7 @@ import traceback
 from dataclasses import dataclass
 from html import escape
 from pathlib import Path
+from typing import BinaryIO, Callable
 from urllib.parse import quote, urlsplit
 from starlette.datastructures import FormData, UploadFile
 from starlette.formparsers import MultiPartException, MultiPartParser
@@ -452,7 +453,13 @@ class _ProtectedUploadFile(UploadFile):
 class _LimitedUploadParser(MultiPartParser):
     """Multipart с одним файлом и ограниченным временным spool-файлом."""
 
-    def __init__(self, request: Request, file_limit: int) -> None:
+    def __init__(
+        self,
+        request: Request,
+        file_limit: int,
+        *,
+        file_factory: Callable[[], BinaryIO] | None = None,
+    ) -> None:
         super().__init__(
             request.headers,
             request.stream(),
@@ -461,14 +468,22 @@ class _LimitedUploadParser(MultiPartParser):
             max_part_size=MAX_UPLOAD_FIELD_SIZE,
         )
         self.file_limit = file_limit
+        self._file_factory = file_factory
         self._current_file_size = 0
 
     def on_headers_finished(self) -> None:
         super().on_headers_finished()
         file = self._current_part.file
         if file is not None:
+            source = file.file
+            if self._file_factory is not None:
+                source = self._file_factory()
+                # Starlette закрывает отдельный список файлов при ошибке:
+                # он должен владеть новым sink, а не пустым старым spool.
+                self._files_to_close_on_error[-1] = source
+                file.file.close()
             self._current_part.file = _ProtectedUploadFile(
-                file.file, size=file.size, filename=file.filename, headers=file.headers,
+                source, size=file.size, filename=file.filename, headers=file.headers,
             )
 
     def on_part_begin(self) -> None:
@@ -489,6 +504,7 @@ async def limited_upload_form(
     file_limit: int | None = None,
     *,
     allowed_fields: frozenset[str] = frozenset(),
+    file_factory: Callable[[], BinaryIO] | None = None,
 ) -> FormData:
     """Разобрать загрузку, не принимая лишние файлы и поля."""
     if not request.headers.get("content-type", "").lower().startswith(
@@ -498,6 +514,7 @@ async def limited_upload_form(
     parser = _LimitedUploadParser(
         request,
         MAX_UPLOAD if file_limit is None else file_limit,
+        file_factory=file_factory,
     )
     try:
         form = await parser.parse()

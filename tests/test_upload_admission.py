@@ -294,6 +294,7 @@ def test_отмена_фоновой_обёртки_не_освобождает_
 
 def test_отмена_intake_upload_ждёт_worker_до_закрытия_его_файла(tmp_path, monkeypatch):
     from types import SimpleNamespace
+    from mcp1c.intake_v2_transport import BrowserStagingStore
 
     monkeypatch.setenv("API_TOKEN", "synthetic-read")
     monkeypatch.setenv("ADMIN_TOKEN", "synthetic-admin")
@@ -308,7 +309,9 @@ def test_отмена_intake_upload_ждёт_worker_до_закрытия_его
         return {"id": "synthetic-candidate"}
 
     service = SimpleNamespace(
-        lifecycle=SimpleNamespace(browser=SimpleNamespace(max_upload_bytes=1024)),
+        lifecycle=SimpleNamespace(
+            browser=BrowserStagingStore(tmp_path / "managed", max_upload_bytes=1024)
+        ),
         accept_upload=accept,
     )
 

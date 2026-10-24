@@ -1638,6 +1638,7 @@ def _spa_routes(
                 request,
                 service.lifecycle.browser.max_upload_bytes,
                 allowed_fields=frozenset(),
+                file_factory=service.lifecycle.browser._new_upload_writer,
             )
         except dashboard_backend.UploadTooLarge:
             limit = service.lifecycle.browser.max_upload_bytes // 1024 // 1024

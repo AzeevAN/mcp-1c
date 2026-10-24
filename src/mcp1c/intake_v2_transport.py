@@ -116,6 +116,29 @@ def _identity(info: os.stat_result) -> tuple[int, int, int, int]:
     return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
 
 
+_UploadIdentity = tuple[int, int, int, int, int]
+
+
+def _upload_identity(info: os.stat_result) -> _UploadIdentity:
+    return (*_identity(info), info.st_ctime_ns)
+
+
+def _stable_upload_identity(path: Path, stream: BinaryIO) -> _UploadIdentity:
+    """Связать memo с открытым обычным файлом и его текущим путём."""
+    try:
+        before = os.fstat(stream.fileno())
+        current = path.lstat()
+        after = os.fstat(stream.fileno())
+    except OSError as error:
+        raise TransportError("payload browser staging недоступен") from error
+    if not stat.S_ISREG(before.st_mode) or not stat.S_ISREG(current.st_mode):
+        raise TransportSecurityError("payload browser staging должен быть обычным файлом")
+    identity = _upload_identity(before)
+    if identity != _upload_identity(current) or identity != _upload_identity(after):
+        raise TransportUnstableError("payload browser staging изменился во время проверки")
+    return identity
+
+
 def _fingerprint(parts: Iterable[object]) -> str:
     digest = hashlib.sha256()
     for part in parts:
@@ -230,6 +253,109 @@ class StagedUpload:
             raise TransportError("запись browser staging повреждена") from error
 
 
+class _BrowserUploadWriter:
+    """Единственная запись multipart сразу в managed staging.
+
+    Имя временного файла не связано с клиентским filename или будущим id.
+    Пока Store не принял файл, любое закрытие отменяет эту запись.
+    """
+
+    def __init__(self, owner: BrowserStagingStore) -> None:
+        self._owner = owner
+        self._temporary: Path | None = None
+        self._sealed = False
+        self._size = 0
+        self._digest = hashlib.sha256()
+        descriptor, raw_path = tempfile.mkstemp(
+            dir=owner.payloads_dir, prefix=".upload.", suffix=".part"
+        )
+        self._temporary = Path(raw_path)
+        try:
+            self._stream = os.fdopen(descriptor, "w+b")
+        except BaseException:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+            try:
+                self._temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+
+    @property
+    def closed(self) -> bool:
+        return self._stream.closed
+
+    def write(self, data: bytes) -> int:
+        if self._sealed or self.closed:
+            raise TransportError("browser-upload больше не принимает запись")
+        if self._stream.tell() != self._size:
+            raise TransportError("browser-upload допускает только последовательную запись")
+        if self._size + len(data) > self._owner.max_upload_bytes:
+            raise TransportLimitError("browser-upload превышает предел размера")
+        written = 0
+        view = memoryview(data)
+        while written < len(view):
+            count = self._stream.write(view[written:])
+            if not isinstance(count, int) or count <= 0 or count > len(view) - written:
+                raise TransportError("browser-upload записан не полностью")
+            self._digest.update(view[written:written + count])
+            self._size += count
+            written += count
+        return written
+
+    def read(self, size: int = -1) -> bytes:
+        return self._stream.read(size)
+
+    def seek(self, offset: int, whence: int = os.SEEK_SET) -> int:
+        return self._stream.seek(offset, whence)
+
+    def tell(self) -> int:
+        return self._stream.tell()
+
+    def fileno(self) -> int:
+        return self._stream.fileno()
+
+    def flush(self) -> None:
+        self._stream.flush()
+
+    def readable(self) -> bool:
+        return True
+
+    def writable(self) -> bool:
+        return not self._sealed
+
+    def seekable(self) -> bool:
+        return True
+
+    def _seal(self, expected_size: int | None) -> tuple[Path, int, str]:
+        if self._sealed or self.closed or self._temporary is None:
+            raise TransportError("browser-upload уже закрыт или принят")
+        self._sealed = True
+        self._stream.flush()
+        os.fsync(self._stream.fileno())
+        if expected_size is not None and self._size != expected_size:
+            raise TransportUnstableError(
+                "browser-upload завершился с неожиданным размером"
+            )
+        if _stable_upload_identity(self._temporary, self)[2] != self._size:
+            raise TransportUnstableError("browser-upload изменился после записи")
+        return self._temporary, self._size, self._digest.hexdigest()
+
+    def close(self) -> None:
+        try:
+            self._stream.close()
+        finally:
+            temporary = self._temporary
+            self._temporary = None
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+
 class BrowserStagingStore:
     """Управляемое durable-хранилище принятых browser-upload.
 
@@ -262,10 +388,15 @@ class BrowserStagingStore:
         self.records_dir = self.root / "records"
         self.max_upload_bytes = max_upload_bytes
         self.free_space_reserve = free_space_reserve
+        self._sha256_lock = threading.Lock()
+        self._sha256_memo: dict[str, tuple[str, _UploadIdentity]] = {}
         _ensure_regular_directory(self.root, "browser staging")
         _ensure_regular_directory(self.payloads_dir, "каталог payload browser staging")
         _ensure_regular_directory(self.records_dir, "каталог metadata browser staging")
         self._cleanup_after_restart()
+
+    def _new_upload_writer(self) -> _BrowserUploadWriter:
+        return _BrowserUploadWriter(self)
 
     def _payload_path(self, candidate_id: str) -> Path:
         return self.payloads_dir / f"{_candidate_id(candidate_id)}.upload"
@@ -421,50 +552,44 @@ class BrowserStagingStore:
         if payload.exists() or record_path.exists():
             raise TransportError("candidate_id уже существует в browser staging")
 
-        temporary: Path | None = None
+        writer: _BrowserUploadWriter | None = None
+        own_stream = isinstance(stream, _BrowserUploadWriter) and stream._owner is self
         payload_committed = False
+        record_written = False
         record_committed = False
         try:
-            descriptor, raw_path = tempfile.mkstemp(
-                dir=self.payloads_dir,
-                prefix=f".{candidate_id}.",
-                suffix=".part",
-            )
-            temporary = Path(raw_path)
-            digest = hashlib.sha256()
-            total = 0
-            with os.fdopen(descriptor, "wb") as output:
+            if own_stream:
+                writer = stream
+            else:
+                writer = self._new_upload_writer()
                 while True:
                     block = stream.read(_READ_CHUNK)
                     if not block:
                         break
                     if not isinstance(block, bytes):
                         raise TransportError("upload stream должен возвращать bytes")
-                    total += len(block)
-                    if total > self.max_upload_bytes:
-                        raise TransportLimitError(
-                            "browser-upload превышает предел размера"
-                        )
-                    output.write(block)
-                    digest.update(block)
-                output.flush()
-                os.fsync(output.fileno())
-            if expected_size is not None and total != expected_size:
-                raise TransportUnstableError(
-                    "browser-upload завершился с неожиданным размером"
-                )
+                    writer.write(block)
+            temporary, total, digest = writer._seal(expected_size)
             os.link(temporary, payload, follow_symlinks=False)
             payload_committed = True
             temporary.unlink()
-            temporary = None
+            writer._temporary = None
             _sync_directory(self.payloads_dir)
+            # link/unlink меняют ctime. Memo строится только после финального
+            # изменения числа ссылок и связывается с тем же открытым FD.
+            identity = _stable_upload_identity(payload, writer)
             record = StagedUpload(
                 candidate_id=candidate_id,
                 origin_name=origin_name,
                 size=total,
-                sha256=digest.hexdigest(),
+                sha256=digest,
             )
             self._write_record(record)
+            record_written = True
+            if _stable_upload_identity(payload, writer) != identity:
+                raise TransportUnstableError("browser-upload изменился при приёме")
+            with self._sha256_lock:
+                self._sha256_memo[candidate_id] = (record.sha256, identity)
             record_committed = True
             return record
         except OSError as error:
@@ -474,15 +599,21 @@ class BrowserStagingStore:
                 ) from error
             raise TransportError("не удалось сохранить browser-upload") from error
         finally:
-            if temporary is not None:
+            if record_written and not record_committed:
                 try:
-                    temporary.unlink(missing_ok=True)
+                    record_path.unlink(missing_ok=True)
+                    _sync_directory(self.records_dir)
                 except OSError:
                     pass
             if payload_committed and not record_committed:
                 try:
                     payload.unlink(missing_ok=True)
                     _sync_directory(self.payloads_dir)
+                except OSError:
+                    pass
+            if writer is not None and (not own_stream or not record_committed):
+                try:
+                    writer.close()
                 except OSError:
                     pass
 
@@ -555,8 +686,19 @@ class BrowserStagingStore:
             limits=limits,
         )
         try:
-            if tree.source_sha256() != record.sha256:
+            identity = tree._browser_payload_identity()
+            if identity[2] != record.size:
+                raise TransportUnstableError("payload browser staging изменился")
+            with self._sha256_lock:
+                memo = self._sha256_memo.get(record.candidate_id)
+            if memo == (record.sha256, identity):
+                tree._source_sha256 = record.sha256
+            elif tree.source_sha256() != record.sha256:
                 raise TransportError("payload browser staging не совпадает с SHA-256")
+            if tree._browser_payload_identity() != identity:
+                raise TransportUnstableError("payload browser staging изменился")
+            with self._sha256_lock:
+                self._sha256_memo[record.candidate_id] = (record.sha256, identity)
             return tree
         except Exception:
             tree.close()
@@ -564,6 +706,8 @@ class BrowserStagingStore:
 
     def discard(self, candidate_id: str) -> None:
         candidate_id = _candidate_id(candidate_id)
+        with self._sha256_lock:
+            self._sha256_memo.pop(candidate_id, None)
         record = self._record_path(candidate_id)
         payload = self._payload_path(candidate_id)
         pending_record = self.records_dir / f".{candidate_id}.discard.part"
@@ -771,6 +915,11 @@ class ZipExportTree:
         source, identity = _open_regular_file(self.path)
         archive: zipfile.ZipFile | None = None
         try:
+            browser_identity = (
+                _stable_upload_identity(self.path, source)
+                if transport is CandidateTransport.BROWSER
+                else None
+            )
             try:
                 _precheck_central_directory(source, limits)
             except ResourceLimitError as error:
@@ -778,6 +927,11 @@ class ZipExportTree:
             archive = zipfile.ZipFile(source)
             members = self._inspect(archive, limits)
             budget = _read_budget(limits, "ZIP файловой выгрузки")
+            if (
+                browser_identity is not None
+                and _stable_upload_identity(self.path, source) != browser_identity
+            ):
+                raise TransportUnstableError("payload browser staging изменился")
         except (zipfile.BadZipFile, OSError, EOFError) as error:
             if archive is not None:
                 archive.close()
@@ -797,6 +951,16 @@ class ZipExportTree:
         self._archive = archive
         self._closed = False
         self._source_sha256: str | None = None
+        self._browser_identity = browser_identity
+
+    def _browser_payload_identity(self) -> _UploadIdentity:
+        with self._lock:
+            if self._closed or self._browser_identity is None:
+                raise TransportError("browser ZIP tree уже закрыт или недоступен")
+            current = _stable_upload_identity(self.path, self._source)
+            if current != self._browser_identity:
+                raise TransportUnstableError("payload browser staging изменился")
+            return current
 
     @staticmethod
     def _inspect(
@@ -883,6 +1047,8 @@ class ZipExportTree:
         with self._lock:
             if self._closed:
                 raise TransportError("ZIP tree уже закрыт")
+            if self._browser_identity is not None:
+                self._browser_payload_identity()
             if self._source_sha256 is not None:
                 return self._source_sha256
             source, identity = _open_regular_file(self.path)
@@ -906,6 +1072,11 @@ class ZipExportTree:
             return self._source_sha256
 
     def _current_identity(self) -> tuple[int, int, int, int] | None:
+        if self._browser_identity is not None:
+            try:
+                self._browser_payload_identity()
+            except TransportError:
+                return None
         try:
             info = self.path.lstat()
         except OSError:

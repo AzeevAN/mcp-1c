@@ -8,6 +8,7 @@ ZIP читаются на месте; файловый кэш прогревае
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 import hashlib
@@ -29,12 +30,6 @@ import time
 
 _ROOT = Path(__file__).resolve().parents[2]
 _CHUNK = 1024 * 1024
-_MODULES = (
-    "registry", "registry_types", "intake_v2", "intake_v2_api",
-    "intake_v2_lifecycle", "intake_v2_operations", "intake_v2_registry",
-    "intake_v2_transport", "member_pack", "cli", "index_cache", "fsio", "package_digest",
-    "intake_v2_runtime", "module_content", "bsl_lex", "readers.modules",
-)
 
 
 class _Invalid(ValueError):
@@ -116,9 +111,24 @@ def _hash(stream, deadline):
 
 def _code_identity(deadline, *, with_git=False):
     result = {"module_sha256": {}}
-    for name in _MODULES:
-        with (_ROOT / "src" / "mcp1c" / (name.replace(".", "/") + ".py")).open("rb") as stream:
-            result["module_sha256"]["mcp1c." + name] = _hash(stream, deadline)[0]
+    package = _ROOT / "src" / "mcp1c"
+    if not package.is_dir() or package.is_symlink() or package.parent.is_symlink():
+        raise _Invalid("Не найден исходный пакет для контрольных сумм.")
+    for path in sorted(package.rglob("*")):
+        _remaining(deadline)
+        # Отвергаем также symlink-каталоги, которые rglob может не обходить.
+        if path.is_symlink():
+            raise _Invalid("Symlink в исходном пакете не допускается.")
+        if path.suffix == ".py" and path.is_file():
+            if not path.resolve().is_relative_to(package.resolve()):
+                raise _Invalid("Исходный файл вышел за пределы пакета.")
+            result["module_sha256"][path.relative_to(_ROOT / "src").as_posix()] = _checked_hash(path, deadline)
+    if not result["module_sha256"]:
+        raise _Invalid("Не найден исходный пакет для контрольных сумм.")
+    result["script_sha256"] = _checked_hash(Path(__file__), deadline)
+    result["query_suite_sha256"] = _checked_hash(
+        _ROOT / "tests" / "queries" / "modules-procedures.json", deadline
+    )
     if with_git:
         result["git_head"] = None
         try:
@@ -134,6 +144,15 @@ def _code_identity(deadline, *, with_git=False):
         except (OSError, UnicodeError, subprocess.TimeoutExpired):
             pass
     return result
+
+
+def _checked_hash(path, deadline):
+    with _open_source(path)[0] as stream:
+        before = _identity(os.fstat(stream.fileno()))
+        digest, _ = _hash(stream, deadline)
+        if before != _identity(os.fstat(stream.fileno())) or before != _identity(path.lstat()):
+            raise _Invalid("Измеряемый код изменился во время хеширования.")
+        return digest
 
 
 def _emit(connection, **fields):
@@ -167,12 +186,62 @@ class _Metrics:
 
     def __init__(self, registry_module, bundle_module, member_pack):
         self.local = threading.local()
+        self.lock = threading.Lock()
+        self.parse_aliases = set()
         self.counts = {}
         self.reset()
         original_verify = bundle_module.GenerationBundleStore.verify
         original_read = member_pack._PackedReader.read
         original_stage = registry_module.Registry.stage_generation
         original_write = member_pack._EntryWriter.write
+        original_builder = registry_module.Registry._построить_индекс_кода
+        from mcp1c import bsl_lex
+        original_parse = bsl_lex.разобрать
+
+        def parse(*args, **kwargs):
+            if getattr(self.local, "cold_builder", 0):
+                with self.lock:
+                    self.counts["bsl_parse_calls_within_cold_builder"] += 1
+            return original_parse(*args, **kwargs)
+
+        def install_parse_aliases():
+            # Прямые from-import и последующие импорты получают одну обёртку.
+            # Сравнение по identity исключает одноимённые посторонние функции.
+            for name, module in tuple(sys.modules.items()):
+                if module is None or not name.startswith("mcp1c."):
+                    continue
+                for attribute, value in tuple(vars(module).items()):
+                    if value is original_parse:
+                        setattr(module, attribute, parse)
+                        self.parse_aliases.add(name + "." + attribute)
+
+        def cold_builder(*args, **kwargs):
+            depth = getattr(self.local, "cold_builder", 0)
+            if depth == 0:
+                install_parse_aliases()
+                with self.lock:
+                    self.counts["cold_builder_calls"] += 1
+            self.local.cold_builder = depth + 1
+            started = time.monotonic()
+            try:
+                indexes = original_builder(*args, **kwargs)
+            finally:
+                elapsed = time.monotonic() - started
+                self.local.cold_builder = depth
+                if depth == 0:
+                    with self.lock:
+                        self.counts["cold_builder_seconds"] += elapsed
+            if depth == 0:
+                catalog = indexes.каталог
+                if catalog is None:
+                    raise _Invalid("Холодный сборщик не вернул каталог модулей.")
+                eligible = sum(entry.locator is not None and not entry.compiled
+                               for entry in catalog.entries.values())
+                with self.lock:
+                    self.counts["cold_builder_noncompiled_catalog_modules"] += eligible
+                    # Только готовые индексы до конца этапа; текст/AST не удерживаем.
+                    self.built_indexes.append(indexes)
+            return indexes
 
         def verify(instance, *args, **kwargs):
             depth = getattr(self.local, "verify", 0)
@@ -214,13 +283,104 @@ class _Metrics:
         member_pack._PackedReader.read = read
         registry_module.Registry.stage_generation = stage
         member_pack._EntryWriter.write = write
+        registry_module.Registry._построить_индекс_кода = staticmethod(cold_builder)
+        install_parse_aliases()
 
     def reset(self):
+        self.built_indexes = []
         self.counts = dict.fromkeys((
             "verify_calls", "packed_read_calls_within_verify", "packed_bytes_within_verify",
             "stage_calls", "stage_copy_hashed_calls", "stage_copy_hashed_bytes",
             "member_count", "member_bytes",
+            "cold_builder_calls", "cold_builder_seconds",
+            "bsl_parse_calls_within_cold_builder", "cold_builder_noncompiled_catalog_modules",
         ), 0)
+
+
+def _canonical_chunks(value, deadline):
+    """Типизированный поток без marshal reference graph и копии всего состояния."""
+    _remaining(deadline)
+    if value is None:
+        yield b"null;"
+    elif isinstance(value, bool):
+        yield b"bool:1;" if value else b"bool:0;"
+    elif isinstance(value, int):
+        yield b"int:" + str(value).encode("ascii") + b";"
+    elif isinstance(value, float):
+        if not math.isfinite(value):
+            raise _Invalid("Неконечное число в состоянии индекса.")
+        yield b"float:" + value.hex().encode("ascii") + b";"
+    elif isinstance(value, str):
+        yield b"str:" + json.dumps(value, ensure_ascii=True).encode("ascii") + b";"
+    elif isinstance(value, bytes):
+        yield b"bytes-hex:" + str(len(value)).encode("ascii") + b":"
+        for start in range(0, len(value), _CHUNK):
+            _remaining(deadline)
+            yield value[start:start + _CHUNK].hex().encode("ascii")
+        yield b";"
+    elif isinstance(value, Mapping):
+        yield b"map:" + str(len(value)).encode("ascii") + b"{"
+        # Ключи состояний — короткие строки; сортируется их полное кодирование.
+        keys = sorted((b"".join(_canonical_chunks(key, deadline)), key) for key in value)
+        for encoded, key in keys:
+            yield encoded
+            yield from _canonical_chunks(value[key], deadline)
+        yield b"}"
+    elif isinstance(value, (list, tuple)):
+        yield (b"list:" if isinstance(value, list) else b"tuple:") + str(len(value)).encode("ascii") + b"["
+        for item in value:
+            yield from _canonical_chunks(item, deadline)
+        yield b"]"
+    else:
+        raise _Invalid("Неизвестный тип в состоянии индекса.")
+
+
+def _state_hash(index, method, deadline):
+    started = time.monotonic()
+    # Сам класс определяет сохраняемые данные; производные поля не угадываем.
+    state = getattr(type(index), method)(index)
+    digest = hashlib.sha256()
+    size = 0
+    for chunk in _canonical_chunks(state, deadline):
+        digest.update(chunk)
+        size += len(chunk)
+    return {"sha256": digest.hexdigest(), "canonical_bytes": size,
+            "top_level_keys": len(state), "seconds": time.monotonic() - started}
+
+
+def _index_fingerprint(indexes, deadline):
+    states = {}
+    for label, attribute, method in (
+        ("toc", "оглавление", "_состояние"),
+        ("calls", "вызовы", "_состояние"),
+        ("forms", "формы", "_состояние"),
+        ("search", "поиск", "export_state"),
+    ):
+        index = getattr(indexes, attribute)
+        if index is None:
+            raise _Invalid("Неполный комплект индексов кода.")
+        states[label] = _state_hash(index, method, deadline)
+    return states
+
+
+def _stage_fingerprints(connection, metrics, name, source_index, registry, deadline):
+    started = time.monotonic()
+    rows = []
+    try:
+        for index, indexes in enumerate(metrics.built_indexes):
+            rows.append({"origin": "cold_builder", "build_index": index,
+                         "states": _index_fingerprint(indexes, deadline)})
+        for source_id, snapshot in registry.snapshot().modules.items():
+            if not snapshot.ready or snapshot.loaded is None or snapshot.source is None:
+                raise _Invalid("Опубликованный индекс кода не готов.")
+            rows.append({"origin": "active", "source_id_sha256": hashlib.sha256(source_id.encode()).hexdigest(),
+                         "source_sha256": snapshot.source.sha256,
+                         "states": _index_fingerprint(snapshot.loaded, deadline)})
+    finally:
+        metrics.built_indexes.clear()
+    _emit(connection, index_fingerprints={"stage": name, "source_index": source_index,
+                                         "seconds": time.monotonic() - started, "corpora": rows})
+    _emit(connection, parse_aliases=sorted(metrics.parse_aliases))
 
 
 def _fingerprint(registry):
@@ -243,7 +403,7 @@ def _fingerprint(registry):
             "manifests": rows, "registry_role": registry.role}
 
 
-def _measure_stage(connection, metrics, name, function, registry, *, source_index=None):
+def _measure_stage(connection, metrics, name, function, registry, deadline, *, source_index=None):
     metrics.reset()
     _emit(connection, stage=name, source_index=source_index)
     started = time.monotonic()
@@ -252,6 +412,7 @@ def _measure_stage(connection, metrics, name, function, registry, *, source_inde
            "seconds": time.monotonic() - started, **metrics.counts,
            "active_count": len(registry.snapshot().generations)}
     _emit(connection, measurement=row)
+    _stage_fingerprints(connection, metrics, name, source_index, registry, deadline)
 
 
 def _actor(connection, mode, root, sources, deadline, previous):
@@ -278,8 +439,10 @@ def _actor(connection, mode, root, sources, deadline, previous):
                 else:
                     registry = registry_module.Registry(root / "data")
                     for name in ("startup", "reload"):
-                        _measure_stage(connection, metrics, name, registry.startup, registry)
+                        _measure_stage(connection, metrics, name, registry.startup, registry, deadline)
                         _emit(connection, **{name + "_snapshot": _fingerprint(registry)})
+                        _emit(connection, query_proof={"stage": name, **_query_proof(registry, deadline)})
+            _emit(connection, actor_code_after=_code_identity(deadline))
             _emit(connection, finished=True)
         except BaseException as error:
             _emit(connection, error_type=type(error).__name__)
@@ -335,13 +498,125 @@ def _publish(connection, root, sources, deadline, registry_module, metrics):
         _emit(connection, stage="start", source_index=index)
         work = service.start(candidate.candidate_id, "create" if index == 0 else "update_full",
                              parent_configuration=parent if index else "")
-        _measure_stage(connection, metrics, "prepare", lambda: service.prepare(work), registry,
+        _measure_stage(connection, metrics, "prepare", lambda: service.prepare(work), registry, deadline,
                        source_index=index)
-        _measure_stage(connection, metrics, "confirm", lambda: service.confirm(work.job_id), registry,
+        _measure_stage(connection, metrics, "confirm", lambda: service.confirm(work.job_id), registry, deadline,
                        source_index=index)
         if index == 0:
             parent = candidate.probe.internal_name
     _emit(connection, published_snapshot=_fingerprint(registry))
+    _emit(connection, query_proof={"stage": "published", **_query_proof(registry, deadline)})
+
+
+def _response_hash(response):
+    encoded = response.encode("utf-8")
+    return {"sha256": hashlib.sha256(encoded).hexdigest(), "bytes": len(encoded),
+            "lines": len(response.splitlines())}
+
+
+def _canonical_hash(value, deadline):
+    digest = hashlib.sha256()
+    for chunk in _canonical_chunks(value, deadline):
+        digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _caller_sample(loaded, deadline, *, limit=5):
+    """Точные адреса объявлений TOC с подтверждёнными рёбрами корпуса."""
+    toc, calls = loaded.оглавление, loaded.вызовы
+    sample = []
+    # Постинги просматриваются без материализации всех мест и без текстов BSL.
+    for name in sorted(calls._по_имени):
+        _remaining(deadline)
+        posting = calls._по_имени[name]
+        targets = set()
+        for position in range(2, len(posting), 3):
+            if position % 3072 == 2:
+                _remaining(deadline)
+            target = posting[position]
+            if target >= 0:
+                targets.add(calls.модули[target])
+        if not targets:
+            continue
+        declarations = sorted(
+            (record.модуль, record.имя) for record in toc.по_имени(name)
+            if record.модуль in targets
+        )
+        if declarations:
+            module, canonical_name = declarations[0]
+            sample.append(f"{module}::{canonical_name}")
+            if len(sample) == limit:
+                break
+    return sample
+
+
+def _query_proof(registry, deadline):
+    from mcp1c import bench, tools
+
+    started = time.monotonic()
+    suite_path = _ROOT / "tests" / "queries" / "modules-procedures.json"
+    suite = bench.load_cases(suite_path)
+    if suite.domain != "procedures" or len(suite.cases) != 6:
+        raise _Invalid("Ожидался действующий набор из шести procedure-запросов.")
+    # Это тот же ResolvedContext, который выбирают публичные инструменты.
+    context = registry.resolve()
+    loaded = context.modules
+    if loaded is None or not loaded.готов:
+        raise _Invalid("Нет готового корпуса для публичных запросов.")
+    scope = {"config_sha256": hashlib.sha256(context.name.encode()).hexdigest(),
+             "extension": None, "scope": None, "source_sha256": loaded.source.sha256,
+             "search_limit": 10, "callers_limit": 20}
+    public_rows = []
+    for index, case in enumerate(suite.cases):
+        _remaining(deadline)
+        row = {"case_index": index, "query_sha256": hashlib.sha256(case.query.encode()).hexdigest()}
+        try:
+            response = tools.search_procedures(registry, case.query, config=context.name,
+                                               extension=None, scope=None, limit=10)
+            row.update(status="checked", output=_response_hash(response))
+        except Exception as error:
+            row.update(status="not_checked", error_type=type(error).__name__)
+        public_rows.append(row)
+    _remaining(deadline)
+    bench_row = {"expected_case_count": 6}
+    try:
+        measured = bench.run_procedures(registry, suite, config=context.name,
+                                        extension=None, limit=10)
+        stable_results = [
+            {"query": item.query, "expected": item.expected, "got": item.got,
+             "rank": item.rank, "separation": item.separation,
+             "suite": item.suite, "domain": item.domain}
+            for item in measured.results
+        ]
+        bench_row.update(status="checked", case_count=measured.total,
+                         output_sha256=_canonical_hash(stable_results, deadline),
+                         seconds=measured.elapsed, hit1=measured.hit1,
+                         hit5=measured.hit5, hit10=measured.hit10)
+    except Exception as error:
+        # Ни выдуманных нулей, ни пропуска отсутствующего expected-имени.
+        bench_row.update(status="not_checked", error_type=type(error).__name__, case_count=None)
+    callers = []
+    for address in _caller_sample(loaded, deadline):
+        _remaining(deadline)
+        row = {"address_sha256": hashlib.sha256(address.encode()).hexdigest()}
+        try:
+            response = tools.get_callers(registry, address, config=context.name,
+                                         extension=None, limit=20)
+            row.update(status="checked", output=_response_hash(response))
+        except Exception as error:
+            row.update(status="not_checked", error_type=type(error).__name__)
+        callers.append(row)
+    checked = (len(public_rows) == 6 and all(row["status"] == "checked" for row in public_rows)
+               and bench_row["status"] == "checked" and bench_row["case_count"] == 6
+               and 3 <= len(callers) <= 5 and all(row["status"] == "checked" for row in callers))
+    # Времена не входят в стабильный digest; результаты не фильтруются.
+    stable = {"scope": scope, "search_procedures": public_rows, "get_callers": callers,
+              "bench": {key: value for key, value in bench_row.items() if key != "seconds"}}
+    return {"status": "checked" if checked else "partial", **stable,
+            "caller_sample_count": len(callers),
+            "stable_sha256": _canonical_hash(stable, deadline),
+            "seconds": time.monotonic() - started,
+            "extensions": "Индексы расширений покрыты state fingerprints; query suite — основной корпус."}
 
 
 def _stop_actor(process):
@@ -385,10 +660,17 @@ def _run_actor(mode, root, sources, deadline, report):
                     break
                 if "measurement" in event:
                     report["measurements"].append(event.pop("measurement"))
-                if "actor_code" in event:
-                    actor_code = event.pop("actor_code")
-                    report.setdefault("actor_code_sha256", {})[mode] = actor_code["module_sha256"]
-                    if actor_code["module_sha256"] != report["code"]["module_sha256"]:
+                if "index_fingerprints" in event:
+                    report["index_fingerprints"].append(event.pop("index_fingerprints"))
+                if "query_proof" in event:
+                    report["query_proofs"].append(event.pop("query_proof"))
+                for key in ("actor_code", "actor_code_after"):
+                    if key not in event:
+                        continue
+                    actor_code = event.pop(key)
+                    report.setdefault("actor_code_sha256", {}).setdefault(mode, {})[key] = actor_code
+                    expected_code = {key: value for key, value in report["code"].items() if key != "git_head"}
+                    if actor_code != expected_code:
                         raise _Invalid("Код изменился между процессами.")
                 finished = finished or event.pop("finished", False)
                 report.update(event)
@@ -485,7 +767,32 @@ def _run(args, report):
                     and confirmations[0]["member_count"] > 0
                     and confirmations[0]["member_bytes"] > 0
                 )
-                if not all(report[key] for key in ("snapshot_consistent", "source_unchanged", "nonempty_members")):
+                proofs = report["query_proofs"]
+                report["query_results_consistent"] = (
+                    [proof["stage"] for proof in proofs] == ["published", "startup", "reload"]
+                    and all(proof["status"] == "checked" for proof in proofs)
+                    and len({proof["stable_sha256"] for proof in proofs}) == 1
+                )
+                active_rows = [row for row in report["index_fingerprints"]
+                               if row["stage"] in ("startup", "reload") or
+                               (row["stage"] == "confirm" and row["source_index"] == expected - 1)]
+                stable_states = [sorted(
+                    (corpus["source_sha256"], tuple(
+                        (label, state["sha256"]) for label, state in sorted(corpus["states"].items())
+                    )) for corpus in row["corpora"] if corpus["origin"] == "active"
+                ) for row in active_rows]
+                report["index_states_consistent"] = (
+                    len(stable_states) == 3 and all(len(row) == expected for row in stable_states)
+                    and stable_states[0] == stable_states[1] == stable_states[2]
+                )
+                report["code_after"] = _code_identity(deadline)
+                report["code_unchanged"] = report["code_after"] == {
+                    key: value for key, value in report["code"].items() if key != "git_head"
+                }
+                if not all(report[key] for key in (
+                    "snapshot_consistent", "source_unchanged", "nonempty_members",
+                    "query_results_consistent", "index_states_consistent", "code_unchanged",
+                )):
                     raise _Invalid("Приёмочные условия измерения не выполнены.")
                 report["status"] = "complete"
                 report["stage"] = "finished"
@@ -497,10 +804,19 @@ def _run(args, report):
 
 
 def main(argv=None):
-    report = {"schema_version": 1, "status": "incomplete", "measurements": [],
+    report = {"schema_version": 2, "status": "incomplete", "measurements": [],
+              "index_fingerprints": [], "query_proofs": [],
               "measured_at": datetime.now(timezone.utc).isoformat(),
               "method": "production intake; отдельные последовательные процессы publish, restore, CLI",
               "cache_conditions": "Входной SHA256 прогревает файловый кэш; холодный диск не измеряется.",
+              "timing_conditions": (
+                  "seconds этапа включает обёртки счётчиков, без state export/hash и query proof. "
+                  "cold_builder_seconds — время original Registry._построить_индекс_кода с обёрткой parse; "
+                  "это инструментированный runtime cold builder, не время без instrumentation. "
+                  "Fingerprint seconds/canonical_bytes измерены отдельно; тексты и AST не сохраняются."
+              ),
+              "fingerprint_encoding": "typed-canonical-v1: bytes-hex, sorted mappings, ordered lists/tuples",
+              "runtime": {"python": sys.version.split()[0], "byteorder": sys.byteorder},
               "source_unchanged": None, "temporary_directory_removed": False,
               "child_processes_stopped": False}
     args = None

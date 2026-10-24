@@ -3979,6 +3979,22 @@ class Registry:
             self._restore_scope.active = previous
             self._restore_scope.registry_verified = previous_verified
 
+    def _restore_configuration(
+        self, source: Source, revision: int | None = None
+    ) -> Source:
+        """Поднять schema-v1 конфигурацию, сохранив учётную запись источника."""
+        return self.add_configuration(
+            self._absolute(source.stored_path),
+            keep_source=False,
+            known_sha256=source.sha256,
+            expected_id=source.id,
+            known_origin=source.origin,
+            allow_truncated=source.incomplete,
+            replace_native=False,
+            restored_last_successful_load_at=source.last_successful_load_at,
+            expected_revision=revision,
+        )
+
     def _restore_rows(self) -> list[str]:
         # От чтения registry.json до применения native pointers и runtime
         # restore сериализован с publish/remove: иначе снимок, прочитанный до
@@ -4207,15 +4223,8 @@ class Registry:
                 if not stored.exists():
                     problems.append(f"{source.id}: файл источника пропал ({stored})")
                     continue
-                конфигурации_этого_restore[source.id] = self.add_configuration(
-                    stored,
-                    keep_source=False,
-                    known_sha256=source.sha256,
-                    expected_id=source.id,
-                    known_origin=source.origin,
-                    allow_truncated=source.incomplete,
-                    replace_native=False,
-                    restored_last_successful_load_at=source.last_successful_load_at,
+                конфигурации_этого_restore[source.id] = self._restore_configuration(
+                    source
                 )
             except _NativeGenerationActive:
                 continue
@@ -4300,18 +4309,8 @@ class Registry:
                     continue
                 if source.kind == KIND_CONFIGURATION:
                     try:
-                        восстановленный_source = self.add_configuration(
-                            stored,
-                            keep_source=False,
-                            known_sha256=source.sha256,
-                            expected_id=source.id,
-                            known_origin=source.origin,
-                            allow_truncated=source.incomplete,
-                            replace_native=False,
-                            restored_last_successful_load_at=source.last_successful_load_at,
-                            expected_revision=ревизии_конфигураций.get(
-                                source.id, 0
-                            ),
+                        восстановленный_source = self._restore_configuration(
+                            source, ревизии_конфигураций.get(source.id, 0)
                         )
                     except _NativeGenerationActive:
                         # Публикация, дождавшаяся native-фазы, уже сделала

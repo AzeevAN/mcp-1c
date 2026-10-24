@@ -27,6 +27,8 @@ from bisect import bisect_left, bisect_right
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
+from typing import Iterator, Mapping
 
 from . import (
     coverage_log,
@@ -213,6 +215,15 @@ class _CodeSummary:
     overrides: tuple[tuple[str, int], ...]
     overridden_modules: frozenset[str]
     coverage: CodeCoverage
+
+
+@dataclass(frozen=True, slots=True)
+class _ObjectCodeIndex:
+    """Производные адреса пакета без ссылок на поисковый индекс."""
+
+    form_keys: frozenset[str]
+    modules_by_owner: Mapping[str, tuple[str, ...]]
+    forms_by_owner: Mapping[str, tuple[str, ...]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -497,6 +508,7 @@ class _CodeAggregates:
     summary: _CodeSummary | None = None
     coverage: CodeCoverage | None = None
     coverage_without_rows: CodeCoverage | None = None
+    object_index: _ObjectCodeIndex | None = None
     # Корень сверяется отдельно: тело модуля читается с диска по нему.
     корень: object = None
     # Ключ пакета в общем кэше разборов (`_РАЗБОРЫ`): у каждой записи
@@ -1973,14 +1985,7 @@ def _http_handler_resolutions(view: _CodeView, obj) -> dict[str, HTTPHandlerReso
             for handler in handlers
         }
     requested_module = obj.code_address or obj.full_name
-    module = next(
-        (
-            candidate
-            for candidate in loaded.оглавление.модули
-            if candidate.casefold() == requested_module.casefold()
-        ),
-        None,
-    )
+    module = loaded.оглавление.канонический_модуль(requested_module)
     if module is None:
         return {
             handler.casefold(): HTTPHandlerResolution("module_missing")
@@ -2016,28 +2021,57 @@ def _object_code_details(
     summary = view.summary
     if summary is None:
         return (), ()
+    loaded = view.capture.loaded
+    aggregates = None if loaded is None else _code_aggregates(loaded)
+    index = None if aggregates is None else aggregates.object_index
+    if index is None:
+        index = _build_object_code_index(summary)
+        if aggregates is not None:
+            # Как у summary: гонка может посчитать один неизменяемый ответ
+            # дважды, но публикуется сразу весь готовый пакет индексов.
+            aggregates.object_index = index
+    owner = full_name.casefold()
+    return (
+        index.modules_by_owner.get(owner, ()),
+        index.forms_by_owner.get(owner, ()),
+    )
+
+
+def _address_owners(address: str) -> Iterator[str]:
+    """Все владельцы по точному правилу `_belongs_to_object`."""
+    key = address.casefold()
+    yield key
+    position = key.find(".")
+    while position != -1:
+        yield key[:position]
+        position = key.find(".", position + 1)
+
+
+def _build_object_code_index(summary: _CodeSummary) -> _ObjectCodeIndex:
     form_addresses = set(summary.forms)
     form_addresses.update(
         module for module in summary.modules if _is_form_module(module)
     )
-    forms = tuple(
-        sorted(
-            (
-                form
-                for form in form_addresses
-                if _belongs_to_object(form, full_name)
-            ),
-            key=lambda value: (value.casefold(), value),
-        )
+    form_keys = frozenset(form.casefold() for form in form_addresses)
+    modules_by_owner: dict[str, list[str]] = {}
+    forms_by_owner: dict[str, list[str]] = {}
+    for module in summary.modules:
+        if module.casefold() in form_keys:
+            continue
+        for owner in _address_owners(module):
+            modules_by_owner.setdefault(owner, []).append(module)
+    for form in sorted(form_addresses, key=lambda value: (value.casefold(), value)):
+        for owner in _address_owners(form):
+            forms_by_owner.setdefault(owner, []).append(form)
+    return _ObjectCodeIndex(
+        form_keys,
+        MappingProxyType({
+            owner: tuple(values) for owner, values in modules_by_owner.items()
+        }),
+        MappingProxyType({
+            owner: tuple(values) for owner, values in forms_by_owner.items()
+        }),
     )
-    form_keys = {form.casefold() for form in forms}
-    modules = tuple(
-        module
-        for module in summary.modules
-        if _belongs_to_object(module, full_name)
-        and module.casefold() not in form_keys
-    )
-    return modules, forms
 
 
 def _is_form_module(address: str) -> bool:
@@ -2487,13 +2521,7 @@ def _module_source_file_once(
     assert loaded is not None
     if loaded.оглавление is None or loaded.каталог is None:
         raise RegistryError("Готовый индекс кода неполон; перезагрузите источник.")
-    canonical = next(
-        (
-            item for item in loaded.оглавление.модули
-            if item.casefold() == address.casefold()
-        ),
-        None,
-    )
+    canonical = loaded.оглавление.канонический_модуль(address)
     if canonical is None:
         if not _modules_are_current(registry, loaded):
             raise _StaleModules
@@ -3400,7 +3428,14 @@ def _close_matches(
 
 def _similar_address(loaded: LoadedModules, module: str, name: str | None) -> list[str]:
     if name is None:
-        return _close_matches(module, loaded.оглавление.модули, n=5, cutoff=0.45)
+        kind = module.partition(".")[0].casefold()
+        candidates = [
+            item for item in loaded.оглавление.модули
+            if item.partition(".")[0].casefold() == kind
+        ]
+        return _close_matches(
+            module, candidates or loaded.оглавление.модули, n=5, cutoff=0.45
+        )
     кандидаты = [
         f"{module}::{item.имя}" for item in loaded.оглавление.модуля(module)
     ]
@@ -3505,14 +3540,7 @@ def _get_procedure_once(
         raise RegistryError(
             "address должен быть адресом модуля или парой `Модуль::Имя`."
         )
-    канонический_модуль = next(
-        (
-            item
-            for item in loaded.оглавление.модули
-            if item.casefold() == модуль.casefold()
-        ),
-        None,
-    )
+    канонический_модуль = loaded.оглавление.канонический_модуль(модуль)
     if канонический_модуль is None:
         похожие = _similar_address(loaded, модуль, None)
         if not _modules_are_current(registry, loaded):
@@ -3892,14 +3920,7 @@ def _get_callers_once(
             "address должен быть точным адресом процедуры `Модуль::Имя`; "
             "адрес одного модуля для get_callers недостаточен."
         )
-    canonical_module = next(
-        (
-            item
-            for item in loaded.оглавление.модули
-            if item.casefold() == module.casefold()
-        ),
-        None,
-    )
+    canonical_module = loaded.оглавление.канонический_модуль(module)
     if canonical_module is None:
         похожие = _similar_address(loaded, module, None)
         хвост = (

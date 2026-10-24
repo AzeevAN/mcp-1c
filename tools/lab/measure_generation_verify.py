@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Mapping
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -17,6 +17,7 @@ import math
 import multiprocessing
 import os
 from pathlib import Path
+import re
 import secrets
 import signal
 import stat
@@ -30,6 +31,20 @@ import time
 
 _ROOT = Path(__file__).resolve().parents[2]
 _CHUNK = 1024 * 1024
+_LATENCY_REPEAT = 20
+# Парсер stdout привязан к неизменённой версии фактического инструмента.
+_LATENCY_TOOL_SHA256 = "6146b3307b2cd665acd15934c78fea28d0326641e5fe473d3581ce0dbed11c17"
+_LATENCY_LABELS = (
+    "get_object fields", "get_object full", "list_configurations", "get_related",
+    "get_procedure (оглавление модуля)", "get_procedure (процедура)",
+    "get_procedure (опечатка в модуле)", "get_callers", "search_procedures", "search_syntax",
+    "find_roles_for_access", "sources_snapshot (опрос дашборда)",
+)
+_LATENCY_NUMBERS = re.compile(r"first\s+([0-9]+\.[0-9]+)\s+ms\s+median\s+([0-9]+\.[0-9]+)\s+ms")
+_MISSING_SYNTAX = (
+    "Справка платформы не подключена. Загрузите `shcntx_ru.hbk` "
+    "из каталога установки 1С."
+)
 
 
 class _Invalid(ValueError):
@@ -63,6 +78,9 @@ def _parser():
     parser.add_argument("--timeout-seconds", type=_positive, default=900.0,
                         help="Общий бюджет всех этапов, по умолчанию 900 секунд.")
     parser.add_argument("--report", type=Path, help="Создать новый JSON-файл, без перезаписи.")
+    parser.add_argument("--tool-latency", action="store_true",
+                        help="После publish запустить tools/measure_tool_latency.py; требует --report. "
+                             "Приватные stdout/stderr сохраняются рядом с JSON, без перезаписи.")
     return parser
 
 
@@ -129,6 +147,7 @@ def _code_identity(deadline, *, with_git=False):
     result["query_suite_sha256"] = _checked_hash(
         _ROOT / "tests" / "queries" / "modules-procedures.json", deadline
     )
+    result["latency_tool_sha256"] = _checked_hash(_ROOT / "tools" / "measure_tool_latency.py", deadline)
     if with_git:
         result["git_head"] = None
         try:
@@ -415,7 +434,7 @@ def _measure_stage(connection, metrics, name, function, registry, deadline, *, s
     _stage_fingerprints(connection, metrics, name, source_index, registry, deadline)
 
 
-def _actor(connection, mode, root, sources, deadline, previous):
+def _actor(connection, mode, root, sources, deadline, previous, tool_latency=False):
     os.setsid()
     # Никакого .env рабочего каталога и библиотечных сообщений с именами/путями.
     os.chdir(root)
@@ -435,7 +454,8 @@ def _actor(connection, mode, root, sources, deadline, previous):
                 from mcp1c import registry as registry_module, intake_v2_registry, member_pack
                 metrics = _Metrics(registry_module, intake_v2_registry, member_pack)
                 if mode == "publish":
-                    _publish(connection, root, sources, deadline, registry_module, metrics)
+                    _publish(connection, root, sources, deadline, registry_module, metrics,
+                             tool_latency=tool_latency)
                 else:
                     registry = registry_module.Registry(root / "data")
                     for name in ("startup", "reload"):
@@ -450,7 +470,7 @@ def _actor(connection, mode, root, sources, deadline, previous):
             connection.close()
 
 
-def _publish(connection, root, sources, deadline, registry_module, metrics):
+def _publish(connection, root, sources, deadline, registry_module, metrics, *, tool_latency=False):
     from mcp1c.intake_v2 import DurableCandidateStore, SourceKind
     from mcp1c.intake_v2_api import IntakeApiService
     from mcp1c.intake_v2_lifecycle import CandidateCatalog, IntakeLifecycle
@@ -506,6 +526,12 @@ def _publish(connection, root, sources, deadline, registry_module, metrics):
             parent = candidate.probe.internal_name
     _emit(connection, published_snapshot=_fingerprint(registry))
     _emit(connection, query_proof={"stage": "published", **_query_proof(registry, deadline)})
+    if tool_latency:
+        names = tuple(registry.snapshot().configurations)
+        if len(names) != 1:
+            raise _Invalid("Для latency требуется ровно одна опубликованная конфигурация.")
+        # Приватное имя попадёт только в argv сохранённого subprocess-отчёта.
+        _emit(connection, tool_configuration=names[0])
 
 
 def _response_hash(response):
@@ -647,8 +673,10 @@ def _run_actor(mode, root, sources, deadline, report):
     context = multiprocessing.get_context("spawn")
     receiver, sender = context.Pipe(duplex=False)
     process = context.Process(target=_actor, args=(sender, mode, root, sources, deadline,
-                                                  report.get("sources_before")))
+                                                  report.get("sources_before"),
+                                                  report.get("tool_latency_requested", False)))
     finished = False
+    configuration = None
     try:
         process.start()
         sender.close()
@@ -664,6 +692,10 @@ def _run_actor(mode, root, sources, deadline, report):
                     report["index_fingerprints"].append(event.pop("index_fingerprints"))
                 if "query_proof" in event:
                     report["query_proofs"].append(event.pop("query_proof"))
+                if "tool_configuration" in event:
+                    configuration = event.pop("tool_configuration")
+                    if not isinstance(configuration, str) or not configuration:
+                        raise _Invalid("Publish не вернул конфигурацию для latency.")
                 for key in ("actor_code", "actor_code_after"):
                     if key not in event:
                         continue
@@ -683,6 +715,7 @@ def _run_actor(mode, root, sources, deadline, report):
             raise TimeoutError
         if not finished or process.exitcode != 0:
             raise _Invalid("Дочерний процесс не завершил протокол.")
+        return configuration
     finally:
         _stop_actor(process)
         sender.close()
@@ -732,16 +765,177 @@ def _run_cli(root, deadline, report):
             process.wait()
 
 
-def _run(args, report):
+def _latency_artifact_paths(report_path):
+    return {name: report_path.with_name(report_path.name + ".latency." + name + ".txt").absolute()
+            for name in ("stdout", "stderr")}
+
+
+def _preflight_latency_artifacts(args, report, stack):
+    if args.report is None:
+        raise _Invalid("--tool-latency требует --report для приватных артефактов.")
+    paths = _latency_artifact_paths(args.report)
+    # Проверяются все имена до создания любого артефакта и до тяжёлого этапа.
+    for path in (args.report, *paths.values()):
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            raise _Invalid("Файл отчёта или latency-артефакт уже существует.")
+    outputs = {}
+    for name, path in paths.items():
+        descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            stream = os.fdopen(descriptor, "w+b")
+        except BaseException:
+            os.close(descriptor)
+            raise
+        outputs[name] = stack.enter_context(stream)
+    report["tool_latency"] = {"status": "not_started", "repeat": _LATENCY_REPEAT,
+                              **{name + "_path": str(path) for name, path in paths.items()}}
+    return outputs
+
+
+def _parse_tool_latency(stream, deadline):
+    stream.seek(0)
+    rows = []
+    header_sha256 = None
+    for number in range(len(_LATENCY_LABELS) + 2):
+        _remaining(deadline)
+        raw = stream.readline(65537)
+        if not raw:
+            break
+        if len(raw) > 65536:
+            raise _Invalid("Строка latency-артефакта превышает ожидаемый формат.")
+        line = raw.decode("utf-8").rstrip("\r\n")
+        if number == 0:
+            if not line:
+                raise _Invalid("Latency-инструмент не вернул строку выбора корпуса.")
+            header_sha256 = hashlib.sha256(line.encode("utf-8")).hexdigest()
+            continue
+        index = number - 1
+        if index >= len(_LATENCY_LABELS):
+            raise _Invalid("Latency-инструмент вернул лишние строки.")
+        label = _LATENCY_LABELS[index]
+        prefix = f"{label:36s}"
+        if not line.startswith(prefix):
+            raise _Invalid("Набор или порядок latency-меток не совпадает с инструментом.")
+        result = line[len(prefix):].strip()
+        if result.startswith("пропущено: "):
+            reason = result[len("пропущено: "):]
+            allowed = label == "search_syntax" and reason == _MISSING_SYNTAX
+            rows.append({"label": label, "status": "not_checked", "allowed_missing_source": allowed,
+                         "reason": "platform_syntax_not_loaded" if allowed else "private_stdout_contains_error",
+                         "error_text_sha256": hashlib.sha256(reason.encode("utf-8")).hexdigest()})
+            continue
+        match = _LATENCY_NUMBERS.fullmatch(result)
+        if match is None:
+            raise _Invalid("Latency-инструмент вернул неизвестный формат результата.")
+        first, median = map(float, match.groups())
+        if not all(math.isfinite(value) and value >= 0 for value in (first, median)):
+            raise _Invalid("Latency-инструмент вернул некорректное время.")
+        rows.append({"label": label, "status": "measured", "first_ms": first, "median_ms": median})
+    measured = sum(row["status"] == "measured" for row in rows)
+    not_checked = len(rows) - measured
+    required_not_checked = sum(row["status"] == "not_checked" and not row["allowed_missing_source"] for row in rows)
+    complete = header_sha256 is not None and len(rows) == len(_LATENCY_LABELS) and required_not_checked == 0
+    return {"rows": rows, "expected_label_count": len(_LATENCY_LABELS), "parsed_label_count": len(rows),
+            "measured_label_count": measured, "not_checked_label_count": not_checked,
+            "required_not_checked_label_count": required_not_checked,
+            "required_measured_label_count": len(_LATENCY_LABELS) - 1, "time_precision_ms": 0.01,
+            "selection_header_sha256": header_sha256, "coverage_accepted": complete,
+            "invocation_count_basis": "На успешную строку repeat+1 вызовов по алгоритму неизменённого инструмента; "
+                                      "это не отдельный runtime-счётчик. Ответы инструмент не анализирует."}
+
+
+def _run_tool_latency(root, configuration, deadline, report, outputs):
+    _remaining(deadline)
+    if not isinstance(configuration, str) or not configuration:
+        raise _Invalid("Нет опубликованной конфигурации для latency.")
+    expected_code = {key: value for key, value in report["code"].items() if key != "git_head"}
+    row = report["tool_latency"]
+    row["code_before"] = _code_identity(deadline)
+    if row["code_before"] != expected_code:
+        raise _Invalid("Код изменился перед latency-subprocess.")
+    env = os.environ.copy()
+    env.update(API_TOKEN=secrets.token_urlsafe(32), ADMIN_TOKEN=secrets.token_urlsafe(32),
+               PYTHONPATH=str(_ROOT / "src"), PYTHONNOUSERSITE="1", PYTHONIOENCODING="utf-8",
+               TMPDIR=str(root / "tmp"), TEMP=str(root / "tmp"), TMP=str(root / "tmp"))
+    argv = [sys.executable, str(_ROOT / "tools" / "measure_tool_latency.py"),
+            "--data", str(root / "data"), "--config", configuration, "--repeat", str(_LATENCY_REPEAT)]
+    report["stage"] = "tool_latency"
+    row.update(status="incomplete", argv=argv, cwd=str(root), exit_code=None,
+               expected_label_count=len(_LATENCY_LABELS),
+               seconds=None, timed_out=False,
+               cache_conditions="Registry.restore перед first; файловый кэш прогрет publish и входным SHA256. "
+                                "Стенд собственный; после subprocess выполняются штатные restore-проверки.")
+    started = time.monotonic()
+    process = None
+    try:
+        process = subprocess.Popen(argv, cwd=root, env=env, stdout=outputs["stdout"], stderr=outputs["stderr"],
+                                   start_new_session=True)
+        process.wait(timeout=_remaining(deadline))
+    except subprocess.TimeoutExpired:
+        row["timed_out"] = True
+        raise
+    finally:
+        if process is not None:
+            try:
+                if process.poll() is None and os.getpgid(process.pid) == process.pid:
+                    os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            if process.poll() is None:
+                try:
+                    process.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    if process.poll() is None:
+                        try:
+                            if os.getpgid(process.pid) == process.pid:
+                                os.killpg(process.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                        process.kill()
+            process.wait()
+            row["exit_code"] = process.returncode
+            row["process_stopped"] = True
+        row["seconds"] = time.monotonic() - started
+        for name, stream in outputs.items():
+            stream.flush()
+            row[name + "_bytes"] = os.fstat(stream.fileno()).st_size
+    for name, stream in outputs.items():
+        digest, size = _hash(stream, deadline)
+        if size != row[name + "_bytes"]:
+            raise _Invalid("Latency-артефакт изменился во время чтения.")
+        row[name + "_sha256"] = digest
+    row["code_after"] = _code_identity(deadline)
+    row["code_unchanged"] = row["code_after"] == expected_code
+    try:
+        row.update(_parse_tool_latency(outputs["stdout"], deadline))
+    except (ValueError, UnicodeError) as error:
+        row.update(coverage_accepted=False, parse_error_type=type(error).__name__,
+                   parsed_label_count=None, measured_label_count=None, not_checked_label_count=None,
+                   required_not_checked_label_count=None)
+    report["tool_latency_complete"] = (row["exit_code"] == 0 and row["code_unchanged"]
+                                        and row.get("coverage_accepted") is True)
+    if report["tool_latency_complete"]:
+        row["status"] = "complete_with_not_checked" if row["not_checked_label_count"] else "complete"
+
+
+def _run(args, report, *, latency_outputs=None):
     started = time.monotonic()
     deadline = started + args.timeout_seconds
     report["code"] = _code_identity(deadline, with_git=True)
+    if args.tool_latency and report["code"]["latency_tool_sha256"] != _LATENCY_TOOL_SHA256:
+        raise _Invalid("Latency-инструмент не соответствует проверенной версии CLI.")
     sources = [path.absolute() for path in (args.base_archive, *args.extension_archive)]
     try:
         with TemporaryDirectory(prefix="mcp1c-generation-verify-") as temporary:
             root = Path(temporary)
             try:
-                _run_actor("publish", root, sources, deadline, report)
+                configuration = _run_actor("publish", root, sources, deadline, report)
+                if args.tool_latency:
+                    _run_tool_latency(root, configuration, deadline, report, latency_outputs)
                 _run_actor("restore", root, sources, deadline, report)
                 _run_cli(root, deadline, report)
                 _run_actor("sources_after", root, sources, deadline, report)
@@ -794,6 +988,8 @@ def _run(args, report):
                     "query_results_consistent", "index_states_consistent", "code_unchanged",
                 )):
                     raise _Invalid("Приёмочные условия измерения не выполнены.")
+                if args.tool_latency and report.get("tool_latency_complete") is not True:
+                    raise _Invalid("Latency-измерение не выполнило обязательный набор вызовов.")
                 report["status"] = "complete"
                 report["stage"] = "finished"
             finally:
@@ -804,7 +1000,7 @@ def _run(args, report):
 
 
 def main(argv=None):
-    report = {"schema_version": 2, "status": "incomplete", "measurements": [],
+    report = {"schema_version": 3, "status": "incomplete", "measurements": [],
               "index_fingerprints": [], "query_proofs": [],
               "measured_at": datetime.now(timezone.utc).isoformat(),
               "method": "production intake; отдельные последовательные процессы publish, restore, CLI",
@@ -820,23 +1016,31 @@ def main(argv=None):
               "source_unchanged": None, "temporary_directory_removed": False,
               "child_processes_stopped": False}
     args = None
+    artifacts = ExitStack()
     try:
         args = _parser().parse_args(argv)
-        if args.report is not None:
+        latency_outputs = None
+        if args.tool_latency:
+            latency_outputs = _preflight_latency_artifacts(args, report, artifacts)
+            report["method"] = "production intake; последовательные процессы publish, actual tool latency, restore, CLI"
+        elif args.report is not None:
             try:
                 args.report.lstat()
             except FileNotFoundError:
                 pass
             else:
                 raise _Invalid("Файл отчёта уже существует.")
-        report.update(timeout_seconds=args.timeout_seconds, archive_count=1 + len(args.extension_archive))
-        _run(args, report)
+        report.update(timeout_seconds=args.timeout_seconds, archive_count=1 + len(args.extension_archive),
+                      tool_latency_requested=args.tool_latency)
+        _run(args, report, latency_outputs=latency_outputs)
     except KeyboardInterrupt:
         report.update(status="incomplete", error_type="KeyboardInterrupt")
     except Exception as error:
         # Текст исключения может включать приватные пути и имена конфигураций.
         report["status"] = "incomplete"
         report.setdefault("error_type", type(error).__name__)
+    finally:
+        artifacts.close()
     if args is not None and args.report is not None:
         try:
             with args.report.open("x", encoding="utf-8") as stream:

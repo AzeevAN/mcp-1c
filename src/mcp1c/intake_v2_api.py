@@ -275,6 +275,11 @@ class IntakeApiService:
         configuration = candidate.probe.internal_name
         loaded = snapshot.configurations.get(configuration)
         if loaded is None:
+            if configuration in snapshot.registered_configuration_names:
+                return [], (
+                    "Конфигурация уже зарегистрирована, но недоступна. "
+                    "Восстановите источник или явно удалите конфигурацию."
+                )
             return [IntakeAction.CREATE.value], ""
         reason = edition_conflict(
             configuration,
@@ -500,7 +505,7 @@ class IntakeApiService:
         snapshot = self.registry.snapshot()
         exists = configuration in snapshot.configuration_names
         if action is IntakeAction.CREATE:
-            if exists:
+            if exists or configuration in snapshot.registered_configuration_names:
                 raise IntakeApiConflict("Конфигурация уже существует.")
             return None
         if not exists:

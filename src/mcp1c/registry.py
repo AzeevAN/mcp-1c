@@ -540,6 +540,45 @@ class Registry:
             GenerationPointer | None, ExtensionResolution,
         ] | None = None
 
+    def _registered_configuration_names_locked(self) -> frozenset[str]:
+        """Учёт сохраняется и при недоступном runtime; вызывается под `_lock`."""
+        names = set(self.configurations)
+        names.update(
+            source.id for source in self.sources.values()
+            if source.kind == KIND_CONFIGURATION
+        )
+        names.update(
+            source_id for source_id, raw in self._carried_source_rows.items()
+            if raw.get("kind") == KIND_CONFIGURATION
+        )
+        identities = [
+            pointer.identity for pointer in self._generation_pointers.values()
+        ]
+        identities.extend(
+            identity for raw in self._carried_generation_pointers.values()
+            if (identity := self._generation_row_identity(raw)) is not None
+        )
+        names.update(
+            identity.configuration_name for identity in identities
+            if identity.source_kind is SourceKind.CONFIGURATION
+        )
+        return frozenset(names)
+
+    def _identity_registered_locked(self, identity: ExportIdentity) -> bool:
+        """Отличить отсутствие identity от временной потери её runtime."""
+        if identity.source_kind is SourceKind.CONFIGURATION:
+            return (
+                identity.configuration_name
+                in self._registered_configuration_names_locked()
+            )
+        return (
+            identity.grouping_key in self._generation_pointers
+            or any(
+                self._generation_row_identity(raw) == identity
+                for raw in self._carried_generation_pointers.values()
+            )
+        )
+
     def _snapshot_fingerprint_locked(self) -> tuple:
         """Дешёвый CAS-маркер всех полей, видимых через ``snapshot``."""
         generation_rows = tuple(
@@ -581,6 +620,7 @@ class Registry:
             source_rows,
             module_rows,
             generation_rows,
+            self._registered_configuration_names_locked(),
         )
 
     def snapshot(self) -> RegistrySnapshot:
@@ -637,6 +677,9 @@ class Registry:
                 # Python ``id`` после remove/re-add между snapshot и CAS.
                 _source_identities=source_objects,
                 _fingerprint=fingerprint,
+                registered_configuration_names=(
+                    self._registered_configuration_names_locked()
+                ),
             )
 
     def has_ready_roles(self) -> bool:
@@ -1675,9 +1718,13 @@ class Registry:
         """
         return registry_syntax.apply_syntax(self, versions, preloaded)
 
-    @_refresh_on_external_change()
     def remove(self, source_id: str) -> None:
         """Снять источник; A/B основной конфигурации удаляются агрегатом."""
+        self._remove_if_registered(source_id)
+
+    @_refresh_on_external_change()
+    def _remove_if_registered(self, source_id: str, *, missing_ok: bool = False) -> bool:
+        """Снять агрегат A/B; вернуть False лишь для допустимого отсутствия."""
         # Снятие удаляет каталоги и кэш: в fail-closed режиме это стёрло бы
         # данные, которые ещё нужны для ручного разбора журнала.
         self._ensure_not_blocked()
@@ -1687,10 +1734,8 @@ class Registry:
             identity = ExportIdentity.configuration(configuration)
             with self._lock:
                 aggregate_exists = (
-                    configuration in self.configurations
+                    self._identity_registered_locked(identity)
                     or configuration in self.sources
-                    or identity.grouping_key in self._generation_pointers
-                    or identity.grouping_key in self._carried_generation_pointers
                 )
             if aggregate_exists:
                 source_id = configuration
@@ -1698,9 +1743,9 @@ class Registry:
         # проверит старый набор pointers, а publisher сразу после этого вернёт
         # уже снятую identity новым поколением.
         with self._generation_mutation_lock:
-            self._remove_serialized(source_id)
+            return self._remove_serialized(source_id, missing_ok=missing_ok)
 
-    def _remove_serialized(self, source_id: str) -> None:
+    def _remove_serialized(self, source_id: str, *, missing_ok: bool = False) -> bool:
         """Снять источник; для конфигурации — весь связанный агрегат.
 
         `remove()` заранее переводит основной `<Имя>:modules` в тот же id
@@ -1799,6 +1844,8 @@ class Registry:
                     and source_id in self._carried_source_rows
                 )
                 if source is None and not native and not carried_keys and not carried_source_removal:
+                    if missing_ok:
+                        return False
                     raise RegistryError(f"Источник не зарегистрирован: {source_id}")
 
                 next_pointers = dict(self._generation_pointers)
@@ -1847,7 +1894,7 @@ class Registry:
                         self._advance_source_revision(sid)
                     self._advance_configuration_revision(source_id)
                     self._accept_saved_dates_locked(accepted)
-                    return
+                    return True
 
                 if configuration_removal:
                     self._advance_configuration_revision(source_id)
@@ -1922,6 +1969,7 @@ class Registry:
                     "Каталог снятого native-поколения не удалён: %s",
                     error,
                 )
+        return True
 
     # ------------------------------------------------------------- разрешение
 
@@ -3425,6 +3473,9 @@ class Registry:
             ) or (
                 expected_active is not _EXPECTED_GENERATION_VIEW_UNSET
                 and self._generation_view_locked(pointer.identity) != expected_active
+            ) or (
+                expected_active is None
+                and self._identity_registered_locked(pointer.identity)
             )
 
         # Быстрый отказ до тяжёлой сборки. Повторный CAS под mutation lock
@@ -3528,6 +3579,7 @@ class Registry:
                                 "родитель расширения изменился во время публикации"
                             )
                         detached_extensions: list[GenerationPointer] = []
+                        detached_carried_keys: set[tuple[str, ...]] = set()
                         if (
                             manifest.identity.source_kind is SourceKind.CONFIGURATION
                             and pointer.activation is not None
@@ -3542,6 +3594,34 @@ class Registry:
                                     == manifest.identity.configuration_name
                                 )
                             ]
+                            # Недоступное расширение остаётся зарегистрированным.
+                            # Переход A_ONLY снимает и его, иначе возврат тома
+                            # воскресит слой поверх уже принятой новой базы.
+                            for carried_key, raw in self._carried_generation_pointers.items():
+                                identity = self._generation_row_identity(raw)
+                                if (
+                                    identity is None
+                                    or identity.source_kind is not SourceKind.EXTENSION
+                                    or identity.parent_configuration
+                                    != manifest.identity.configuration_name
+                                ):
+                                    continue
+                                detached_carried_keys.add(carried_key)
+                                try:
+                                    child = GenerationPointer.from_dict(raw)
+                                except (BundleStoreError, TypeError, ValueError):
+                                    # Распознанная identity снимается с учёта,
+                                    # но повреждённый путь не даёт права уборки.
+                                    continue
+                                # WAL допускает один root на identity. Лишние
+                                # корни дублирующих строк остаются на диске,
+                                # но все строки снимаются с учёта.
+                                if not any(
+                                    detached.identity == child.identity
+                                    or detached.root_path == child.root_path
+                                    for detached in detached_extensions
+                                ):
+                                    detached_extensions.append(child)
                         pending = (
                             previous.pending_load_commits if previous is not None else ()
                         )
@@ -3578,13 +3658,22 @@ class Registry:
                         for child in detached_extensions:
                             next_pointers.pop(child.identity.grouping_key, None)
                         next_pointers[key] = pointer
-                        payload = self._registry_payload(next_pointers)
+                        next_carried_pointers = {
+                            carried_key: raw
+                            for carried_key, raw in self._carried_generation_pointers.items()
+                            if carried_key not in detached_carried_keys
+                        }
+                        payload = self._registry_payload(
+                            next_pointers,
+                            carried_generation_pointers=next_carried_pointers,
+                        )
                         commit_revision = self._registry_revision
 
                     detached_cleanup: list[str] = []
 
                     def apply_publication():
                         self._generation_pointers = next_pointers
+                        self._carried_generation_pointers = next_carried_pointers
                         self._extension_resolution_cache = None
                         self._generation_manifests[key] = manifest
                         self._install_prepared_locked(
@@ -4006,8 +4095,44 @@ class Registry:
             native_phase.enter_context(self._registry_write_lock)
             return self._restore_rows_locked(native_phase)
 
+    def _reconcile_legacy_sources_locked(self, rows: list[object]) -> None:
+        """После неопределённого commit убрать только отсутствующее на диске.
+
+        Вызывается под mutation/write/read locks после проверки контейнера.
+        Обычный restore сюда не попадает: его несохранённые add_* остаются
+        частью двухфазной загрузки, а не расхождением после сбоя записи.
+        """
+        registered = {
+            raw["id"] for raw in rows
+            if isinstance(raw, dict)
+            and isinstance(raw.get("id"), str)
+            and raw["id"]
+        }
+        removed = (set(self.sources) | set(self._carried_source_rows)) - registered
+        syntax_changed = False
+        for source_id in removed:
+            source = self.sources.pop(source_id, None)
+            raw = self._carried_source_rows.pop(source_id, {})
+            kind = source.kind if source is not None else raw.get("kind")
+            self._pending_configuration_load_dates.pop(source_id, None)
+            self._advance_source_revision(source_id)
+            self._advance_source_lifecycle_revision()
+            if kind == KIND_CONFIGURATION:
+                self._drop_native_runtime_locked(ExportIdentity.configuration(source_id))
+                self._advance_configuration_revision(source_id)
+            if self.syntax_versions.pop(source_id, None) is not None:
+                self._syntax_version_keys.pop(source_id, None)
+                syntax_changed = True
+        if removed:
+            self._relation_cache.clear()
+            self._extension_resolution_cache = None
+        if syntax_changed:
+            self.syntax = None
+            self._syntax_built = None
+
     def _restore_rows_locked(self, native_phase: ExitStack) -> list[str]:
         problems: list[str] = []
+        reconcile_registry = bool(self._registry_commit_blocked)
         with self._registry_file_lock():
             stamp = self._registry_file_stamp()
             # Байты, а не текст: недопустимый UTF-8 разбирается ниже тем же
@@ -4078,6 +4203,9 @@ class Registry:
         if restored_pointers is None:
             return problems
         pointers, raw_by_key, carried, native_configurations = restored_pointers
+        if reconcile_registry:
+            with self._registry_memory_change():
+                self._reconcile_legacy_sources_locked(payload.get("sources") or [])
 
         raw_declarations = payload.get("platform_declarations", {})
         declarations: dict[str, PlatformDeclaration] = {}
@@ -4336,7 +4464,7 @@ class Registry:
             except Exception as error:  # источник не должен ронять запуск
                 problems.append(f"{source.id}: {error}{перенести(source, error)}")
 
-        if self.syntax_versions:
+        if self.syntax_versions or reconcile_registry:
             # Сборка не должна ронять запуск: испорченная справка версии
             # называется в списке проблем, остальные продолжают работать.
             try:

@@ -724,12 +724,6 @@ def handlers(context: DashboardContext) -> dict[str, Endpoint]:
                     "Нельзя удалять конфигурацию во время операции intake.",
                     409,
                 )
-            snapshot = await run_in_threadpool(registry.snapshot)
-            registry_target_exists = (
-                configuration in snapshot.configuration_names
-                or source_id in snapshot.sources
-                or configuration in snapshot.sources
-            )
             try:
                 service = (
                     (await intake_service())
@@ -749,8 +743,10 @@ def handlers(context: DashboardContext) -> dict[str, Endpoint]:
                         service.ensure_configuration_purgeable,
                         configuration,
                     )
-                if registry_target_exists or not has_intake_jobs:
-                    await run_in_threadpool(registry.remove, source_id)
+                removed = await run_in_threadpool(
+                    registry._remove_if_registered, source_id, missing_ok=has_intake_jobs,
+                )
+                if removed:
                     await run_in_threadpool(registry.save)
                 if has_intake_jobs:
                     await run_in_threadpool(

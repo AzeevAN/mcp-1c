@@ -339,6 +339,8 @@ class RegistrySnapshot:
     _owner: object = field(repr=False, compare=False)
     _source_identities: tuple[Source, ...] = field(repr=False, compare=False)
     _fingerprint: tuple = field(repr=False, compare=False)
+    # Учётные строки переживают временную недоступность runtime.
+    registered_configuration_names: frozenset[str] = frozenset()
 
     @property
     def configuration_names(self) -> tuple[str, ...]:

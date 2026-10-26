@@ -551,3 +551,40 @@ def test_r9_битое_поколение_расширения_снимаетс�
     assert snapshot.extension_names(BROKEN) == ()
     assert "DemoConfiguration:ext:DemoExtension" not in snapshot.modules
     assert set(snapshot.configurations) == {BROKEN, HEALTHY}
+
+
+def test_r9_расширение_базы_не_прошедшей_verify_не_видно_без_родителя(
+    two_configurations, tmp_path
+):
+    # Финальное ревью R9: база с испорченным manifest не проходит verify и
+    # не считается native-родителем; прежний runtime её расширения нельзя
+    # оставлять видимым, когда runtime самой базы уже снят.
+    from contextlib import contextmanager
+
+    registry = two_configurations
+    _publish_extension(registry, tmp_path, "r9-verify-extension")
+    registry.startup()
+    extension_key = "DemoConfiguration:ext:DemoExtension"
+    assert extension_key in registry.snapshot().modules
+    payload = read_registry(registry)
+    base_pointer(payload, BROKEN)["manifest_sha256"] = "0" * 64
+    write_registry(registry, payload)
+
+    original_change = registry._registry_memory_change
+    orphans = []
+
+    @contextmanager
+    def observed_change(*args, **kwargs):
+        # Каждый вход видит состояние, опубликованное предыдущим блоком.
+        if extension_key in registry.modules and BROKEN not in registry.configurations:
+            orphans.append(True)
+        with original_change(*args, **kwargs):
+            yield
+
+    registry._registry_memory_change = observed_change
+
+    messages = registry.restore()
+
+    assert_generation_warning(messages, BROKEN)
+    assert not orphans, "расширение было видно без своей базы"
+    assert extension_key not in registry.snapshot().modules

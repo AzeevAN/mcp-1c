@@ -4297,11 +4297,10 @@ class Registry:
             # замены: иначе reload на время сборки прячет исправное
             # расширение от читателей. Не поднявшееся поколение снимается
             # там же, где обнаружен сбой.
-            native_parents = {
-                manifest.identity.configuration_name
-                for manifest in manifests.values()
-                if manifest.identity.source_kind is SourceKind.CONFIGURATION
-            }
+            # Native-родитель — любая native-строка registry.json, в том числе
+            # не прошедшая verify: такая база не поднята, и её расширение
+            # нельзя оставлять видимым без неё.
+            native_parents = native_configurations
             raised_parents = {
                 manifests[key].identity.configuration_name for key in native_runtime
             }

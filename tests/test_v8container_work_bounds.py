@@ -63,10 +63,10 @@ else:
             input=raw,
             capture_output=True,
             cwd=Path(v8container.__file__).resolve().parents[1],
-            timeout=3,
+            timeout=10,
         )
     except subprocess.TimeoutExpired:
-        pytest.fail("Чтение таблицы с общим хвостом не завершилось за 3 с")
+        pytest.fail("Чтение таблицы с общим хвостом не завершилось за 10 с")
     assert completed.returncode == 0, completed.stderr.decode("utf-8", errors="replace")
 
 

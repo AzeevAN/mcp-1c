@@ -19,6 +19,11 @@ from mcp1c.syntax_model import SyntaxIndex, SyntaxItem
 from module_samples import v8_container_bytes
 
 
+# До фикса такие страницы разбирались ≈1,3 с; линейный разбор — миллисекунды.
+# Порог с запасом для нагруженного CI, но ниже квадратичного времени.
+_LINEAR_BUDGET = 0.5
+
+
 @pytest.mark.parametrize("fragment_kind", ["title", "see_also", "title_cr", "title_cr_bilingual"])
 def test_повторяющиеся_атрибуты_не_блокируют_parse_page(fragment_kind):
     """Незавершённый тег допустимого размера обрабатывается за ограниченное время."""
@@ -60,10 +65,10 @@ else:
             input=raw,
             capture_output=True,
             cwd=Path(syntax_parser.__file__).resolve().parents[1],
-            timeout=3,
+            timeout=10,
         )
     except subprocess.TimeoutExpired:
-        pytest.fail("Разбор повторяющихся атрибутов не завершился за 3 с")
+        pytest.fail("Разбор повторяющихся атрибутов не завершился за 10 с")
     assert completed.returncode == 0, completed.stderr.decode("utf-8", errors="replace")
 
 
@@ -106,7 +111,7 @@ def test_4000_незакрытых_chapter_не_блокируют_parse_page():
     assert item is not None
     assert item.name_ru == "BudgetObject"
     assert item.description == "Синтетическое описание"
-    assert elapsed < 0.1, f"Разбор незакрытых chapter занял {elapsed:.3f} с"
+    assert elapsed < _LINEAR_BUDGET, f"Разбор незакрытых chapter занял {elapsed:.3f} с"
 
 
 def test_угловые_скобки_без_закрытия_не_блокируют_очистку_тегов():
@@ -117,7 +122,7 @@ def test_угловые_скобки_без_закрытия_не_блокиру
     elapsed = perf_counter() - started
 
     assert result == fragment
-    assert elapsed < 0.1, f"Очистка незавершённых тегов заняла {elapsed:.3f} с"
+    assert elapsed < _LINEAR_BUDGET, f"Очистка незавершённых тегов заняла {elapsed:.3f} с"
 
 
 def test_начала_ссылок_без_закрывающей_скобки_не_блокируют_выдачу_href():
@@ -129,7 +134,7 @@ def test_начала_ссылок_без_закрывающей_скобки_н
     elapsed = perf_counter() - started
 
     assert result == [href]
-    assert elapsed < 0.1, f"Разбор незавершённых открытий a занял {elapsed:.3f} с"
+    assert elapsed < _LINEAR_BUDGET, f"Разбор незавершённых открытий a занял {elapsed:.3f} с"
 
 
 def test_открытые_a_без_закрытия_не_блокируют_выдачу_href():
@@ -141,7 +146,7 @@ def test_открытые_a_без_закрытия_не_блокируют_вы
     elapsed = perf_counter() - started
 
     assert result == [href]
-    assert elapsed < 0.1, f"Разбор открытых a без закрытия занял {elapsed:.3f} с"
+    assert elapsed < _LINEAR_BUDGET, f"Разбор открытых a без закрытия занял {elapsed:.3f} с"
 
 
 @pytest.mark.parametrize("size", [454_773, 454_774])

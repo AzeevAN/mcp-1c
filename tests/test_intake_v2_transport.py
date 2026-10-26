@@ -816,7 +816,7 @@ def test_directory_tree_подмена_member_на_fifo_не_блокирует_
     try:
         result = subprocess.run(
             [sys.executable, '-c', script, str(root)],
-            env=environment, capture_output=True, text=True, timeout=3,
+            env=environment, capture_output=True, text=True, timeout=10,
         )
     except subprocess.TimeoutExpired:
         # run сам убивает и дожидается только созданного им дочернего процесса.

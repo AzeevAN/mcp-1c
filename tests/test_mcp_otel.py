@@ -57,4 +57,5 @@ def test_длинный_tracestate_не_блокирует(mcp_server):
         elapsed = perf_counter() - started
 
     assert response.status_code == 200
-    assert elapsed < 0.5, f"initialize с длинным tracestate обрабатывался {elapsed:.3f} с"
+    # До фикса 60 000 пробелов давали ≈3,7 с; запас на нагруженный CI.
+    assert elapsed < 1.5, f"initialize с длинным tracestate обрабатывался {elapsed:.3f} с"

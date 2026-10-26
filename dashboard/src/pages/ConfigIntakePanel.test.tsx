@@ -874,6 +874,6 @@ it("помечает влияние на расширения устаревши
   }));
   const dialog = await screen.findByRole("dialog", { name: "Проверка изменений" });
 
-  expect(within(dialog).getByText(/Состав расширений изменился после подготовки preview/))
+  expect(within(dialog).getByText(/Опубликованные поколения конфигурации изменились после подготовки preview/))
     .toBeInTheDocument();
 });

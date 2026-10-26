@@ -43,7 +43,7 @@ export type IntakePreview = {
       state: "resolved" | "target_missing";
     }>;
     truncated: boolean;
-    /** Состав расширений изменился после prepare: снимок устарел. */
+    /** Опубликованные поколения конфигурации изменились после prepare: снимок устарел. */
     stale?: boolean;
   };
   layers: Array<{

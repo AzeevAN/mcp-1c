@@ -636,6 +636,9 @@ class IntakeApiService:
         return expected
 
     def _preview_impacts(self, preview: IntakePreview) -> dict[str, object]:
+        # Снимок состава берётся до расчёта связей: публикация во время расчёта
+        # тогда пометит предупреждение устаревшим, а не спрячется в снимке.
+        basis = [list(item) for item in self._extension_basis(preview.plan.identity)]
         if not preview.materialized.payloads:
             expected = self._preview_active_pointer(
                 preview.plan.identity, preview.expected_previous
@@ -653,7 +656,7 @@ class IntakeApiService:
                 for item in impacts[:_MAX_EXTENSION_IMPACT_ITEMS]
             ],
             "truncated": len(impacts) > _MAX_EXTENSION_IMPACT_ITEMS,
-            "basis": [list(item) for item in self._extension_basis(preview.plan.identity)],
+            "basis": basis,
         }
 
     def _extension_basis(self, identity: ExportIdentity) -> tuple[tuple[str, str, str], ...]:

@@ -1714,3 +1714,25 @@ def test_m7_основа_снимка_меняется_при_публикаци
     after = service._extension_basis(identity)
     assert before != after
     assert any(item[0] == "extension" and item[1] == "DemoExtension" for item in after)
+
+
+def test_m7_основа_снимается_до_расчёта_связей(tmp_path, monkeypatch):
+    # Финальное ревью M7: публикация расширения во время расчёта связей при
+    # prepare не должна попасть в снимок состава — иначе устаревшее
+    # предупреждение выглядело бы свежим.
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    registry = Registry(tmp_path / "data")
+    service = _service(registry)
+    state = {"basis": (("configuration", "Прежняя", "g-0"),)}
+    monkeypatch.setattr(service, "_extension_basis", lambda identity: state["basis"])
+
+    def relations_during_publication(*_args, **_kwargs):
+        state["basis"] = (*state["basis"], ("extension", "Новое", "g-1"))
+        return ()
+
+    monkeypatch.setattr(registry, "preview_extension_relations", relations_during_publication)
+    _candidate, job_id = _m8_prepared(service)
+
+    job = _client(registry, service).get(f"{M8_INTAKE}/jobs/{job_id}", headers=M8_ADMIN).json()["job"]
+
+    assert job["preview"]["extension_impacts"]["stale"] is True

@@ -118,8 +118,19 @@ def test_all_installation_locks_pin_versions_and_hashes() -> None:
 
 
 def test_build_backend_is_pinned() -> None:
+    # Изолированная сборка (`pip install .`, `uvx --from .`) берёт backend из
+    # pyproject, а не из build-lock: версии обязаны совпадать, иначе
+    # обновление ради уязвимости не доходит до такой сборки.
     build_system = tomllib.loads(_text("pyproject.toml"))["build-system"]
-    assert build_system["requires"] == ["setuptools==84.0.0"]
+    pinned = re.search(
+        r"^setuptools==(\S+)$", _text("requirements-build.txt"), re.MULTILINE
+    )
+    locked = re.search(
+        r"^setuptools==(\S+) \\$", _text("requirements-build-lock.txt"), re.MULTILINE
+    )
+    assert pinned and locked
+    assert pinned.group(1) == locked.group(1)
+    assert build_system["requires"] == [f"setuptools=={locked.group(1)}"]
 
 
 def test_docker_uses_digest_and_hashed_runtime_lock() -> None:

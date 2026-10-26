@@ -11,7 +11,7 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Callable, Mapping
+from typing import Mapping
 
 from .intake import is_intentionally_ignored
 from .source_ids import is_code_source_id
@@ -745,7 +745,6 @@ def build_catalog(
     identity: LocatorIdentity,
     *,
     files: tuple[Path, ...] | None = None,
-    progress: Callable[[int, int], None] | None = None,
 ) -> ModuleCatalog:
     """Перечислить источник один раз и вернуть неизменяемый снимок."""
     snapshot = catalog_files(root) if files is None else tuple(
@@ -753,13 +752,9 @@ def build_catalog(
         for path in files
         if not is_intentionally_ignored(path.relative_to(root).as_posix())
     )
-    if progress is not None:
-        progress(0, len(snapshot))
     candidates = []
     for ordinal, path in enumerate(snapshot, 1):
         candidates.append(_candidate(root, path, ordinal))
-        if progress is not None:
-            progress(ordinal, len(snapshot))
 
     groups: dict[str, list[_Candidate]] = {}
     for candidate in candidates:

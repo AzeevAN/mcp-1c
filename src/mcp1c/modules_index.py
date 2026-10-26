@@ -51,7 +51,7 @@ from array import array
 from bisect import insort
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import Iterator
 
 from . import xml_safety
 from . import index_cache
@@ -72,7 +72,6 @@ from .module_content import (
 )
 from .search import Doc, SearchIndex
 
-Прогресс = Callable[[int, int], None]
 
 # Четыре крупные типовые конфигурации, 2026-10-24: максимальная оценка
 # удержания calls — 31 993 016 байт; лимит с запасом ×2,5.
@@ -218,20 +217,6 @@ def файлы_оглавления(корень: Path) -> tuple[Path, ...]:
     )
 
 
-def _сообщить_прогресс(
-    callback: Прогресс | None, обработано: int, всего: int
-) -> None:
-    """Не держит замок реестра на каждом файле большого корпуса.
-
-    На маленькой синтетике сообщается каждый элемент — тест видит настоящий
-    N. На живом корпусе достаточно каждого 32-го и последнего: это не меняет
-    смысл счётчика, но убирает десятки тысяч межпоточных обновлений.
-    """
-    if callback is None:
-        return
-    if всего <= 100 or обработано in (0, всего) or обработано % 32 == 0:
-        callback(обработано, всего)
-
 
 @dataclass(slots=True)
 class Запись:
@@ -363,7 +348,6 @@ class Оглавление:
         корень: Path,
         *,
         каталог: ModuleCatalog | None = None,
-        прогресс: Прогресс | None = None,
         _разбор: _ColdParseReuse | None = None,
     ) -> "Оглавление":
         """Проход по выгрузке: адрес модуля из пути, процедуры — из текста.
@@ -392,8 +376,7 @@ class Оглавление:
         )
         исходные_модули: set[str] = set()
         скомпилированные: set[str] = set()
-        _сообщить_прогресс(прогресс, 0, len(модули_каталога))
-        for обработано, entry in enumerate(модули_каталога, 1):
+        for entry in модули_каталога:
             адрес = entry.address
             locator = entry.locator
             # Непрозрачный source-B descriptor доказывает существование
@@ -413,9 +396,6 @@ class Оглавление:
                 индекс_модуля[адрес] = индекс
 
             if entry.compiled:
-                _сообщить_прогресс(
-                    прогресс, обработано, len(модули_каталога)
-                )
                 continue
 
             assert locator is not None
@@ -450,7 +430,6 @@ class Оглавление:
             if процедуры:
                 del процедура
             del процедуры
-            _сообщить_прогресс(прогресс, обработано, len(модули_каталога))
 
         по_имени, по_модулю = cls._индексы(имена, _модуль, модули)
         return cls(
@@ -771,7 +750,6 @@ class Вызовы:
         оглавление: "Оглавление",
         *,
         каталог: ModuleCatalog | None = None,
-        прогресс: Прогресс | None = None,
         _разбор: _ColdParseReuse | None = None,
     ) -> "Вызовы":
         """Места вызова из `Процедура.вызовы`,
@@ -801,8 +779,7 @@ class Вызовы:
             and entry.locator.kind != "compiled"
             and entry.address in адрес_к_индексу
         )
-        _сообщить_прогресс(прогресс, 0, len(модули_каталога))
-        for обработано, entry in enumerate(модули_каталога, 1):
+        for entry in модули_каталога:
             адрес = entry.address
             индекс_модуля = адрес_к_индексу[адрес]
             # Имена, объявленные в ЭТОМ модуле — для неквалифицированных
@@ -845,7 +822,6 @@ class Вызовы:
                 рёбер += 1
                 if цель != -1:
                     разрешённых += 1
-            _сообщить_прогресс(прогресс, обработано, len(модули_каталога))
 
         return cls(оглавление.модули, _по_имени, рёбер, разрешённых)
 
@@ -1283,7 +1259,6 @@ class Формы:
         корень: Path,
         *,
         каталог: ModuleCatalog | None = None,
-        прогресс: Прогресс | None = None,
     ) -> "Формы":
         """Собрать все доказанные формы из единого каталога локаторов.
 
@@ -1348,8 +1323,7 @@ class Формы:
         формы_каталога = tuple(
             entry for entry in снимок.entries.values() if entry.is_form
         )
-        _сообщить_прогресс(прогресс, 0, len(формы_каталога))
-        for обработано, entry in enumerate(формы_каталога, 1):
+        for entry in формы_каталога:
             адрес = entry.address
             модули.append(адрес)
 
@@ -1575,7 +1549,6 @@ class Формы:
             _имена.append(-1 if имя is None else интерн(имя))
             _синонимы.append(-1 if синоним is None else интерн(синоним))
             _типы.append(-1 if тип is None else интерн(тип))
-            _сообщить_прогресс(прогресс, обработано, len(формы_каталога))
 
         # Сентинел CSR: конец последнего диапазона — общая длина массива.
         _реквизиты_начало.append(len(_реквизиты))
@@ -2051,7 +2024,6 @@ def построить_поиск(
     корень: Path,
     *,
     каталог: ModuleCatalog | None = None,
-    прогресс: Прогресс | None = None,
     _разбор: _ColdParseReuse | None = None,
 ) -> SearchIndex:
     """Поиск словами — только по экспортным: 173 МБ против 473 МБ на живой
@@ -2097,11 +2069,9 @@ def построить_поиск(
         for entry in снимок.entries.values()
         if entry.locator is not None and entry.locator.kind != "compiled"
     )
-    _сообщить_прогресс(прогресс, 0, len(модули_каталога))
-    for обработано, entry in enumerate(модули_каталога, 1):
+    for entry in модули_каталога:
         адрес = entry.address
         if not any(запись.экспорт for запись in оглавление.модуля(адрес)):
-            _сообщить_прогресс(прогресс, обработано, len(модули_каталога))
             continue
         записи = оглавление.модуля(адрес)
         assert entry.locator is not None
@@ -2138,7 +2108,6 @@ def построить_поиск(
                     },
                 )
             )
-        _сообщить_прогресс(прогресс, обработано, len(модули_каталога))
     return индекс
 
 

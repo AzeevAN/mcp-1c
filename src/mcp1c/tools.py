@@ -236,7 +236,6 @@ class CodeStateRow:
     source_id: str = ""
     journal: str = ""
     phase: str = "missing"
-    diagnostic: str = ""
     kind: str = KIND_MODULES
     native_generation: bool = False
     last_successful_load_at: str | None = None
@@ -765,7 +764,6 @@ def _code_state_rows(
                 source_id,
                 journal_path,
                 phase(snapshot.modules),
-                "",
                 KIND_MODULES,
                 native_base is not None,
                 (
@@ -796,7 +794,6 @@ def _code_state_rows(
                 source_id,
                 journal_path,
                 phase(view),
-                "",
                 KIND_EXTENSION,
                 native_extension is not None,
                 (

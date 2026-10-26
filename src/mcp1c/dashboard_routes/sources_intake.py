@@ -116,7 +116,9 @@ def _sources_payload(
                         if corpus.journal and corpus.source_id
                         else ""
                     ),
-                    "error": corpus.diagnostic if admin else "",
+                    # Ключ сохранён ради контракта API: с 4.5.0 индекс кода
+                    # строится синхронно и ошибки фоновой сборки нет — всегда пусто.
+                    "error": "",
                 }
             )
         configurations.append(

@@ -4070,8 +4070,7 @@ class Registry:
             # Поиск процедур получает синонимы при подъёме из кэша; без этой
             # подмены правка словаря доходила до него только после рестарта.
             for modules in self.modules.values():
-                if modules.поиск is not None:
-                    modules.поиск.synonyms = synonyms
+                modules.поиск.synonyms = synonyms
 
     def restore(self) -> list[str]:
         """Поднять источники, записанные в registry.json."""
@@ -4448,8 +4447,6 @@ class Registry:
             with self._registry_memory_change():
                 self._generation_pointers[key] = pointer
                 self._generation_manifests[key] = manifest
-            structure = prepared.runtime.extension_structure
-            assert structure is not None
             with self._registry_memory_change():
                 self._install_prepared_locked(
                     identity,

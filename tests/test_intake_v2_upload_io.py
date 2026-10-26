@@ -281,3 +281,116 @@ def test_intake_http_disconnect_удаляет_незавершённую_заг
     assert service.lifecycle.operations.records.list_jobs() == ()
     assert dashboard_backend.JOBS == [] and dashboard_backend.ФОНОВЫЕ == set()
     assert registry.snapshot().configuration_names == ()
+
+
+# R3 (ревью реализации аудита): ZIP из дашборда уже лежит в `.part` на томе
+# staging, поэтому accept не резервирует его размер второй раз; резерв
+# свободного места и коды ответа при нехватке места закреплены отдельно.
+
+def _usage(free):
+    return lambda _path: type("usage", (), {"total": 1 << 40, "used": 0, "free": free})()
+
+
+def _own_stream(store, payload):
+    writer = store._new_upload_writer()
+    writer.write(payload)
+    return writer
+
+
+def test_r3_own_stream_не_резервирует_размер_архива_второй_раз(tmp_path, monkeypatch):
+    payload = b"z" * 1000
+    store = transport.BrowserStagingStore(
+        tmp_path / "managed", max_upload_bytes=10_000, free_space_reserve=100,
+    )
+    writer = _own_stream(store, payload)
+    # После записи `.part` свободно меньше размера архива, но больше резерва.
+    monkeypatch.setattr(transport.shutil, "disk_usage", _usage(500 + 100))
+
+    record = store.accept("candidate-r3", "demo.zip", writer, expected_size=len(payload))
+
+    assert record.size == len(payload)
+    assert record.sha256 == hashlib.sha256(payload).hexdigest()
+
+
+def test_r3_own_stream_соблюдает_резерв_свободного_места(tmp_path, monkeypatch):
+    payload = b"z" * 1000
+    store = transport.BrowserStagingStore(
+        tmp_path / "managed", max_upload_bytes=10_000, free_space_reserve=100,
+    )
+    writer = _own_stream(store, payload)
+    monkeypatch.setattr(transport.shutil, "disk_usage", _usage(99))
+
+    with pytest.raises(transport.TransportStorageFullError, match="мест"):
+        store.accept("candidate-r3", "demo.zip", writer, expected_size=len(payload))
+
+    assert not any(store.payloads_dir.iterdir())
+    assert not any(store.records_dir.iterdir())
+
+
+def test_r3_own_stream_проверяет_допустимость_expected_size(tmp_path, monkeypatch):
+    store = transport.BrowserStagingStore(
+        tmp_path / "managed", max_upload_bytes=10, free_space_reserve=0,
+    )
+    writer = _own_stream(store, b"1234")
+    monkeypatch.setattr(transport.shutil, "disk_usage", _usage(1 << 30))
+
+    with pytest.raises(transport.TransportLimitError, match="предел"):
+        store.accept("candidate-r3", "demo.zip", writer, expected_size=11)
+    assert not any(store.payloads_dir.iterdir())
+
+
+def test_r3_внешний_поток_по_прежнему_резервирует_размер(tmp_path, monkeypatch):
+    store = transport.BrowserStagingStore(
+        tmp_path / "managed", max_upload_bytes=10_000, free_space_reserve=100,
+    )
+    monkeypatch.setattr(transport.shutil, "disk_usage", _usage(1000 + 99))
+
+    with pytest.raises(transport.TransportStorageFullError, match="мест"):
+        store.accept("candidate-r3", "demo.zip", io.BytesIO(b"z" * 1000), expected_size=1000)
+
+
+@pytest.mark.parametrize("stage", ["link", "record"])
+def test_r3_enospc_при_приёме_убирает_файлы(tmp_path, monkeypatch, stage):
+    import errno
+
+    payload = b"z" * 1000
+    store = transport.BrowserStagingStore(
+        tmp_path / "managed", max_upload_bytes=10_000, free_space_reserve=0,
+    )
+    writer = _own_stream(store, payload)
+    monkeypatch.setattr(transport.shutil, "disk_usage", _usage(1 << 30))
+
+    def no_space(*_args, **_kwargs):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    if stage == "link":
+        monkeypatch.setattr(transport.os, "link", no_space)
+    else:
+        monkeypatch.setattr(store, "_write_record", no_space)
+
+    with pytest.raises(transport.TransportStorageFullError, match="мест"):
+        store.accept("candidate-r3", "demo.zip", writer, expected_size=len(payload))
+
+    assert not any(store.payloads_dir.iterdir()), "`.part` и payload удалены"
+    assert not any(store.records_dir.iterdir())
+
+
+def test_r3_http_нехватка_места_при_приёме_даёт_507(tmp_path, monkeypatch):
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    registry = Registry(tmp_path / "data")
+    service = _service(registry)
+    raw = _archive()
+    client = _client(registry, service)
+    browser = service.lifecycle.browser
+    monkeypatch.setattr(transport.shutil, "disk_usage", _usage(browser.free_space_reserve - 1 if browser.free_space_reserve else 0))
+    if not browser.free_space_reserve:
+        monkeypatch.setattr(browser, "free_space_reserve", 1)
+
+    response = client.post(
+        "/api/v1/sources/intake/upload",
+        headers={"x-api-token": "admin-token"},
+        files={"file": ("configuration.zip", raw)},
+    )
+
+    assert response.status_code == 507
+    assert "мест" in response.json()["error"]

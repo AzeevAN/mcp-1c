@@ -26,7 +26,11 @@ from ..intake_v2_api import (
 )
 from ..intake_v2_lifecycle import LifecycleError
 from ..intake_v2_operations import OperationConflict, OperationError
-from ..intake_v2_transport import TransportError, TransportLimitError
+from ..intake_v2_transport import (
+    TransportError,
+    TransportLimitError,
+    TransportStorageFullError,
+)
 from ..registry import (
     KIND_SYNTAX,
     RegistryChangedExternally,
@@ -471,6 +475,8 @@ def handlers(context: DashboardContext) -> dict[str, Endpoint]:
                 uploaded.file,
                 expected_size=uploaded.size,
             )
+        except TransportStorageFullError as error:
+            return _json_error(str(error), 507)
         except TransportLimitError as error:
             return _json_error(str(error), 413)
         except (LifecycleError, TransportError, ValueError) as error:

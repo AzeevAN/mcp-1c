@@ -58,6 +58,10 @@ class TransportLimitError(TransportError):
     """Вход или managed staging превышает разрешённый бюджет."""
 
 
+class TransportStorageFullError(TransportLimitError):
+    """На томе managed staging не хватает свободного места."""
+
+
 class TransportUnstableError(TransportError):
     """Вход изменился между фиксацией снимка и чтением."""
 
@@ -468,7 +472,9 @@ class BrowserStagingStore:
         if changed_records:
             _sync_directory(self.records_dir)
 
-    def _check_free_space(self, expected_size: int | None) -> None:
+    def _check_free_space(
+        self, expected_size: int | None, *, already_written: bool = False
+    ) -> None:
         planned = self.max_upload_bytes if expected_size is None else expected_size
         if isinstance(planned, bool) or not isinstance(planned, int) or planned < 0:
             raise TransportLimitError("ожидаемый размер upload некорректен")
@@ -478,9 +484,11 @@ class BrowserStagingStore:
             free = shutil.disk_usage(self.root).free
         except OSError as error:
             raise TransportError("не удалось проверить свободное место") from error
-        required = planned + self.free_space_reserve
+        # Upload из дашборда уже записан в `.part` на этом же томе: его размер
+        # занят, повторно резервировать нужно только запас под metadata.
+        required = self.free_space_reserve + (0 if already_written else planned)
         if free < required:
-            raise TransportLimitError(
+            raise TransportStorageFullError(
                 "для browser staging недостаточно свободного места"
             )
 
@@ -546,19 +554,23 @@ class BrowserStagingStore:
     ) -> StagedUpload:
         candidate_id = _candidate_id(candidate_id)
         origin_name = _display_name(origin_name)
-        self._check_free_space(expected_size)
+        own_stream = isinstance(stream, _BrowserUploadWriter) and stream._owner is self
+        if not own_stream:
+            self._check_free_space(expected_size)
         payload = self._payload_path(candidate_id)
         record_path = self._record_path(candidate_id)
         if payload.exists() or record_path.exists():
             raise TransportError("candidate_id уже существует в browser staging")
 
-        writer: _BrowserUploadWriter | None = None
-        own_stream = isinstance(stream, _BrowserUploadWriter) and stream._owner is self
+        writer: _BrowserUploadWriter | None = stream if own_stream else None
         payload_committed = False
         record_written = False
         record_committed = False
         try:
             if own_stream:
+                # Отказ после записи тоже закрывает writer в finally: `.part`
+                # не остаётся до рестарта.
+                self._check_free_space(expected_size, already_written=True)
                 writer = stream
             else:
                 writer = self._new_upload_writer()
@@ -594,7 +606,7 @@ class BrowserStagingStore:
             return record
         except OSError as error:
             if error.errno in {errno.ENOSPC, getattr(errno, "EDQUOT", -1)}:
-                raise TransportLimitError(
+                raise TransportStorageFullError(
                     "для browser staging недостаточно свободного места"
                 ) from error
             raise TransportError("не удалось сохранить browser-upload") from error

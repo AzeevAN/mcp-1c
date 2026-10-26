@@ -1065,8 +1065,32 @@ def _s15(stand) -> dict:
     return observations
 
 
+def run_ui_proof(base_url, admin_token, evidence_dir, *, chrome=None) -> dict:
+    """Браузерная проверка S16; Playwright загружается только по флагу --ui."""
+    import importlib.util
+
+    path = Path(__file__).with_name("live_stand_ui.py")
+    spec = importlib.util.spec_from_file_location("live_stand_ui", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.run_ui_proof(base_url, admin_token, evidence_dir, chrome=chrome)
+
+
 def _s16(stand) -> dict:
-    raise ScenarioSkip("Нужна отдельная UI-проверка через навигацию, консоль и скриншоты")
+    options = getattr(stand, "ui", None)
+    if not options:
+        # Пропуск не считается успехом: итог прогона — PASS_WITHOUT_UI.
+        raise ScenarioSkip(
+            "UI-проверка выключена: запустите приёмку с --ui и --evidence-dir"
+        )
+    result = run_ui_proof(
+        f"http://127.0.0.1:{stand.port}", stand.admin_token,
+        options["evidence_dir"], chrome=options.get("chrome"),
+    )
+    stand._secret_values.update(result.pop("secret_values", ()))
+    _check(result.get("status") == "PASS",
+           "UI-проверка через навигацию не прошла", result)
+    return result
 
 
 def _s17(stand) -> dict:

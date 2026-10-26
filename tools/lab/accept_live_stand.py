@@ -41,7 +41,10 @@ class RunDeadlineExceeded(BaseException):
 def validate_data_copy(path: Path, source: Path) -> Path:
     path, source = Path(path).absolute(), Path(source).resolve()
     if any(item.is_symlink() for item in (path, *path.parents)):
-        raise ValueError("Путь копии не должен проходить через символьную ссылку.")
+        raise ValueError(
+            "Путь копии не должен проходить через символьную ссылку. На macOS "
+            "/tmp и /var — ссылки: используйте /private/tmp/…."
+        )
     target = path.resolve()
     if target == source or source in target.parents or target in source.parents:
         raise ValueError("Копия должна находиться отдельно от рабочего data/.")
@@ -589,6 +592,30 @@ def _copy_data(target: Path, source: Path):
     completion.touch()
 
 
+def overall_result(report: dict, scenarios: list[str], *, ui: bool) -> tuple[str, int]:
+    """Итог прогона: PASS — всё проверено; PASS_WITHOUT_UI — всё, кроме S16.
+
+    SKIP не считается PASS. Без --ui единственный допустимый пропуск — S16,
+    и такой прогон не выдаётся за полный (код 3, а не 0).
+    """
+    statuses = report.get("scenarios", {})
+    environment_ok = (
+        len(statuses) == len(scenarios)
+        and report.get("working_unchanged") and report.get("working_healthy")
+        and not any(key in report for key in ("fatal_error", "cleanup_error", "working_check_error"))
+        and not report.get("differences")
+    )
+    if not environment_ok:
+        return "FAIL", 1
+    if all(item["status"] == "PASS" for item in statuses.values()):
+        return "PASS", 0
+    rest = {name: item for name, item in statuses.items() if name != "S16"}
+    if (not ui and statuses.get("S16", {}).get("status") == "SKIP"
+            and all(item["status"] == "PASS" for item in rest.values())):
+        return "PASS_WITHOUT_UI", 3
+    return "FAIL", 1
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", required=True)
@@ -599,7 +626,14 @@ def main(argv=None) -> int:
     parser.add_argument("--compare", type=Path)
     parser.add_argument("--cleanup", action="store_true")
     parser.add_argument("--timeout-seconds", type=int, default=5400)
+    parser.add_argument("--ui", action="store_true",
+                        help="S16 в браузере через Playwright (иначе S16 — SKIP)")
+    parser.add_argument("--evidence-dir", type=Path,
+                        help="каталог скриншотов S16; обязателен с --ui")
+    parser.add_argument("--chrome", help="путь к своему Chrome вместо Chromium Playwright")
     options = parser.parse_args(argv)
+    if options.ui and options.evidence_dir is None:
+        parser.error("С --ui нужен --evidence-dir для скриншотов.")
     scenarios = options.scenarios.split(",")
     if not scenarios or len(set(scenarios)) != len(scenarios) or any(name not in {f"S{i}" for i in range(1, 19)} for name in scenarios):
         parser.error("Сценарии: уникальные S1–S18 через запятую.")
@@ -612,6 +646,12 @@ def main(argv=None) -> int:
     output = options.report.resolve()
     if output == source or source in output.parents or data_copy in output.parents:
         parser.error("Отчёт должен находиться отдельно от рабочих данных и их копии.")
+    evidence = options.evidence_dir.resolve() if options.evidence_dir else None
+    if evidence is not None and (
+        evidence == source or source in evidence.parents
+        or evidence == data_copy or data_copy in evidence.parents
+    ):
+        parser.error("Каталог доказательств должен быть вне рабочих данных и их копии.")
     report = {"task": TASK, "created_at": datetime.now(timezone.utc).isoformat(),
               "run_kind": "candidate" if options.compare else "baseline",
               "image": options.image, "scenarios": {}, "resources": {"peak_rss_bytes": 0}}
@@ -621,6 +661,9 @@ def main(argv=None) -> int:
     working_identity = (working["Id"], working["State"]["StartedAt"], working["RestartCount"])
     report["working_before"] = {"id": working_identity[0], "started_at": working_identity[1], "restart_count": working_identity[2]}
     stand = Stand(options.image, data_copy, options.port, report)
+    stand.ui = (
+        {"evidence_dir": evidence, "chrome": options.chrome} if options.ui else None
+    )
     start = time.monotonic()
     previous_handler = signal.getsignal(signal.SIGALRM)
 
@@ -682,15 +725,15 @@ def main(argv=None) -> int:
                        "candidate_seconds": item["duration_seconds"]}
                 for name, item in report["scenarios"].items()
             }
+        report["result"] = overall_result(report, scenarios, ui=options.ui)[0]
         output.parent.mkdir(parents=True, exist_ok=True)
         serialized = json.dumps(report, ensure_ascii=False, indent=2)
         for token in stand._secret_values:
             serialized = serialized.replace(token, "<секрет>")
         output.write_text(serialized + "\n", encoding="utf-8")
-    complete = len(report["scenarios"]) == len(scenarios) and all(item["status"] == "PASS" for item in report["scenarios"].values())
-    return 0 if (complete and report.get("working_unchanged") and report.get("working_healthy")
-                 and not any(key in report for key in ("fatal_error", "cleanup_error", "working_check_error"))
-                 and not report.get("differences")) else 1
+    result, code = overall_result(report, scenarios, ui=options.ui)
+    print(f"Итог: {result}", flush=True)
+    return code
 
 
 if __name__ == "__main__":

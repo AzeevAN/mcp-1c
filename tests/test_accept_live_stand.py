@@ -586,3 +586,102 @@ def test_container_cleanup_preserves_existing_resource_receipts(stand, source, m
         "playwright_stopped": True,
         "removed_container": container_id,
     }
+
+
+# M14 (ревью реализации аудита): S16 воспроизводится из репозитория по
+# флагу --ui, а итог отличает полный PASS от PASS без UI — SKIP не PASS.
+
+@pytest.fixture(scope="module")
+def scenarios_module(stand):
+    path = Path(__file__).resolve().parents[1] / "tools/lab/live_stand_scenarios.py"
+    spec = importlib.util.spec_from_file_location("live_stand_scenarios_test", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _m14_report(statuses):
+    return {
+        "scenarios": {name: {"status": status} for name, status in statuses.items()},
+        "working_unchanged": True,
+        "working_healthy": True,
+    }
+
+
+@pytest.mark.parametrize(
+    ("statuses", "ui", "expected"),
+    [
+        ({"S1": "PASS", "S16": "PASS"}, True, ("PASS", 0)),
+        ({"S1": "PASS", "S16": "SKIP"}, False, ("PASS_WITHOUT_UI", 3)),
+        ({"S1": "PASS", "S16": "SKIP"}, True, ("FAIL", 1)),
+        ({"S1": "SKIP", "S16": "PASS"}, True, ("FAIL", 1)),
+        ({"S1": "PASS", "S16": "FAIL"}, True, ("FAIL", 1)),
+        ({"S1": "PASS"}, False, ("PASS", 0)),
+    ],
+)
+def test_m14_итог_различает_pass_без_ui(stand, statuses, ui, expected):
+    report = _m14_report(statuses)
+
+    assert stand.overall_result(report, list(statuses), ui=ui) == expected
+
+
+def test_m14_итог_fail_при_изменении_рабочего_контейнера(stand):
+    report = _m14_report({"S1": "PASS"})
+    report["working_unchanged"] = False
+
+    assert stand.overall_result(report, ["S1"], ui=False) == ("FAIL", 1)
+
+
+def test_m14_s16_без_флага_ui_пропускается_с_причиной(scenarios_module):
+    class FakeStand:
+        ui = None
+
+    with pytest.raises(scenarios_module.ScenarioSkip, match="--ui"):
+        scenarios_module.run_scenario("S16", FakeStand())
+
+
+@pytest.mark.parametrize("status", ["PASS", "FAIL"])
+def test_m14_s16_с_флагом_ui_проводит_браузерную_проверку(
+    scenarios_module, monkeypatch, tmp_path, status
+):
+    calls = []
+
+    def fake_proof(base_url, admin_token, evidence_dir, *, chrome=None):
+        calls.append((base_url, admin_token, evidence_dir, chrome))
+        return {"status": status, "steps": {}, "secret_values": ["cookie-secret"]}
+
+    class FakeStand:
+        port = 5099
+        admin_token = "synthetic-admin"
+        _secret_values = {"synthetic-admin"}
+        ui = {"evidence_dir": tmp_path / "evidence", "chrome": None}
+
+    monkeypatch.setattr(scenarios_module, "run_ui_proof", fake_proof)
+    fake = FakeStand()
+    if status == "PASS":
+        observations = scenarios_module.run_scenario("S16", fake)
+        assert observations["status"] == "PASS"
+    else:
+        with pytest.raises(AssertionError):
+            scenarios_module.run_scenario("S16", fake)
+    assert calls == [("http://127.0.0.1:5099", "synthetic-admin", tmp_path / "evidence", None)]
+    assert "cookie-secret" in fake._secret_values
+
+
+def test_m14_ui_требует_каталог_доказательств(stand, tmp_path):
+    with pytest.raises(SystemExit):
+        stand.main([
+            "--image", "synthetic", "--data-copy", str(tmp_path / "copy"),
+            "--report", str(tmp_path / "report.json"), "--ui",
+        ])
+
+
+def test_m14_symlink_путь_копии_подсказывает_private_tmp(stand, source, tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+
+    with pytest.raises(ValueError, match="/private/tmp"):
+        stand.validate_data_copy(link / "copy", source)

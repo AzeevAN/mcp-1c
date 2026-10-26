@@ -19,9 +19,32 @@ from mcp1c.syntax_model import SyntaxIndex, SyntaxItem
 from module_samples import v8_container_bytes
 
 
-# До фикса такие страницы разбирались ≈1,3 с; линейный разбор — миллисекунды.
-# Порог с запасом для нагруженного CI, но ниже квадратичного времени.
-_LINEAR_BUDGET = 0.5
+# Линейность меряется отношением, а не абсолютным порогом: скорость машины
+# сокращается. Вход в 4 раза больше даёт ≈4× времени у линейного разбора и
+# ≈16× у квадратичного (до фикса: 4n/n = 15,7–16,2, после — 3,8–4,0).
+# Порог 8 — посередине. Минимум из нескольких запусков отсекает паузы
+# планировщика; до 20 мс на большом входе рост не различим и не важен.
+_SCALE = 4
+_MAX_RATIO = 8
+_NOISE_FLOOR = 0.02
+
+
+def _best_time(function, argument, repeats=5):
+    best = float("inf")
+    for _ in range(repeats):
+        started = perf_counter()
+        result = function(argument)
+        best = min(best, perf_counter() - started)
+    return best, result
+
+
+def _assert_linear(function, make_input, size, what):
+    small, _ = _best_time(function, make_input(size // _SCALE))
+    big, result = _best_time(function, make_input(size))
+    assert big < max(_MAX_RATIO * small, _NOISE_FLOOR), (
+        f"{what}: {big:.4f} с на n={size} против {small:.4f} с на n/{_SCALE}"
+    )
+    return result
 
 
 @pytest.mark.parametrize("fragment_kind", ["title", "see_also", "title_cr", "title_cr_bilingual"])
@@ -98,55 +121,52 @@ def _m5_hbk(tmp_path):
 
 
 def test_4000_незакрытых_chapter_не_блокируют_parse_page():
-    raw = (
-        '<h1 class="V8SH_pagetitle">BudgetObject</h1>'
-        '<p class="V8SH_chapter">Описание:</p>Синтетическое описание'
-        + '<p class="V8SH_chapter" a=abcd>' * 4000
-    ).encode("utf-8")
+    def page(count):
+        return (
+            '<h1 class="V8SH_pagetitle">BudgetObject</h1>'
+            '<p class="V8SH_chapter">Описание:</p>Синтетическое описание'
+            + '<p class="V8SH_chapter" a=abcd>' * count
+        ).encode("utf-8")
 
-    started = perf_counter()
-    item = syntax_parser.parse_page("objects/BudgetObject.html", raw)
-    elapsed = perf_counter() - started
+    item = _assert_linear(
+        lambda raw: syntax_parser.parse_page("objects/BudgetObject.html", raw),
+        page, 4000, "Разбор незакрытых chapter",
+    )
 
     assert item is not None
     assert item.name_ru == "BudgetObject"
     assert item.description == "Синтетическое описание"
-    assert elapsed < _LINEAR_BUDGET, f"Разбор незакрытых chapter занял {elapsed:.3f} с"
 
 
 def test_угловые_скобки_без_закрытия_не_блокируют_очистку_тегов():
-    fragment = "<" * 32_000
+    result = _assert_linear(
+        syntax_parser._text, lambda count: "<" * count, 32_000,
+        "Очистка незавершённых тегов",
+    )
 
-    started = perf_counter()
-    result = syntax_parser._text(fragment)
-    elapsed = perf_counter() - started
-
-    assert result == fragment
-    assert elapsed < _LINEAR_BUDGET, f"Очистка незавершённых тегов заняла {elapsed:.3f} с"
+    assert result == "<" * 32_000
 
 
 def test_начала_ссылок_без_закрывающей_скобки_не_блокируют_выдачу_href():
     href = "v8help://SyntaxHelperContext/objects/Good.html"
-    fragment = f'<a href="{href}">Good</a>' + "<a " * 8000
-
-    started = perf_counter()
-    result = syntax_parser._link_hrefs(fragment)
-    elapsed = perf_counter() - started
+    result = _assert_linear(
+        syntax_parser._link_hrefs,
+        lambda count: f'<a href="{href}">Good</a>' + "<a " * count, 8000,
+        "Разбор незавершённых открытий a",
+    )
 
     assert result == [href]
-    assert elapsed < _LINEAR_BUDGET, f"Разбор незавершённых открытий a занял {elapsed:.3f} с"
 
 
 def test_открытые_a_без_закрытия_не_блокируют_выдачу_href():
     href = "v8help://SyntaxHelperContext/objects/Good.html"
-    fragment = f'<a href="{href}">Good</a>' + '<a href="x">' * 4000
-
-    started = perf_counter()
-    result = syntax_parser._link_hrefs(fragment)
-    elapsed = perf_counter() - started
+    result = _assert_linear(
+        syntax_parser._link_hrefs,
+        lambda count: f'<a href="{href}">Good</a>' + '<a href="x">' * count, 4000,
+        "Разбор открытых a без закрытия",
+    )
 
     assert result == [href]
-    assert elapsed < _LINEAR_BUDGET, f"Разбор открытых a без закрытия занял {elapsed:.3f} с"
 
 
 @pytest.mark.parametrize("size", [454_773, 454_774])

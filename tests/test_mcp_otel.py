@@ -31,31 +31,42 @@ def test_длинный_tracestate_не_блокирует(mcp_server):
     app = mcp_server.streamable_http_app(
         transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False)
     )
-    body = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": {
-            "protocolVersion": "2025-06-18",
-            "capabilities": {},
-            "clientInfo": {"name": "synthetic-tracestate-test", "version": "1"},
-            "_meta": {
-                "traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
-                "tracestate": "a=b" + " " * 60_000 + "x",
+    def body(tracestate):
+        return {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "synthetic-tracestate-test", "version": "1"},
+                "_meta": {
+                    "traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+                    "tracestate": tracestate,
+                },
             },
-        },
-    }
+        }
+
     headers = {
         "accept": "application/json, text/event-stream",
         "content-type": "application/json",
     }
 
-    # Запуск транспорта не входит в бюджет обработки одного входящего запроса.
-    with TestClient(app, base_url="http://localhost") as client:
+    def timed(tracestate):
         started = perf_counter()
-        response = client.post("/mcp", json=body, headers=headers)
-        elapsed = perf_counter() - started
+        response = client.post("/mcp", json=body(tracestate), headers=headers)
+        assert response.status_code == 200
+        return perf_counter() - started
 
-    assert response.status_code == 200
-    # До фикса 60 000 пробелов давали ≈3,7 с; запас на нагруженный CI.
-    assert elapsed < 1.5, f"initialize с длинным tracestate обрабатывался {elapsed:.3f} с"
+    # Запуск транспорта и первый запрос не входят в сравнение. Контроль —
+    # тот же initialize с коротким tracestate на той же машине: скорость
+    # машины сокращается. До фикса 60 000 пробелов давали ≈3,7 с против
+    # миллисекунд у короткого; после — столько же, сколько короткий.
+    with TestClient(app, base_url="http://localhost") as client:
+        timed("a=b")
+        control = min(timed("a=b") for _ in range(3))
+        elapsed = timed("a=b" + " " * 60_000 + "x")
+
+    assert elapsed < max(20 * control, 0.1), (
+        f"initialize с длинным tracestate: {elapsed:.3f} с против {control:.3f} с у короткого"
+    )

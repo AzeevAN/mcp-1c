@@ -4264,10 +4264,38 @@ class Registry:
                     f"{manifest.identity.configuration_name}: поколение не поднято: {error}"
                 )
         with self._registry_memory_change():
-            for previous in self._generation_pointers.values():
-                self._drop_native_runtime_locked(previous.identity)
+            # Расширения собираются ниже, уже без `_lock`. Прежний runtime
+            # расширения с проверенным новым поколением остаётся видимым до
+            # замены: иначе reload на время сборки прячет исправное
+            # расширение от читателей. Не поднявшееся поколение снимается
+            # там же, где обнаружен сбой.
+            native_parents = {
+                manifest.identity.configuration_name
+                for manifest in manifests.values()
+                if manifest.identity.source_kind is SourceKind.CONFIGURATION
+            }
+            raised_parents = {
+                manifests[key].identity.configuration_name for key in native_runtime
+            }
+            kept_extensions = {
+                key: (previous, self._generation_manifests[key])
+                for key, previous in self._generation_pointers.items()
+                if previous.identity.source_kind is SourceKind.EXTENSION
+                and key in manifests
+                and key in self._generation_manifests
+                and (
+                    previous.identity.parent_configuration in raised_parents
+                    or previous.identity.parent_configuration not in native_parents
+                )
+            }
+            for key, previous in self._generation_pointers.items():
+                if key not in kept_extensions:
+                    self._drop_native_runtime_locked(previous.identity)
             self._generation_pointers = {key: pointers[key] for key in native_runtime}
             self._generation_manifests = {key: manifests[key] for key in native_runtime}
+            for key, (previous, previous_manifest) in kept_extensions.items():
+                self._generation_pointers[key] = previous
+                self._generation_manifests[key] = previous_manifest
             self._carried_generation_pointers = carried
             self._extension_resolution_cache = None
             self._platform_declarations = declarations
@@ -4381,6 +4409,10 @@ class Registry:
             except Exception as error:
                 with self._registry_memory_change():
                     carried[key] = raw_by_key[key]
+                    previous = self._generation_pointers.pop(key, None)
+                    self._generation_manifests.pop(key, None)
+                    if previous is not None:
+                        self._drop_native_runtime_locked(previous.identity)
                 problems.append(f"{identity.extension_name}: поколение не поднято: {error}")
                 continue
             with self._registry_memory_change():

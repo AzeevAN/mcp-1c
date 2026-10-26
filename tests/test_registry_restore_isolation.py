@@ -473,3 +473,81 @@ def test_неверный_тип_контейнера_реестра_сохра�
     with pytest.raises(RegistryRecoveryBlocked):
         restarted.save()
     assert restarted.registry_path.read_bytes() == before
+
+
+# R9 (ревью реализации аудита): reload не снимает runtime исправного
+# расширения раньше, чем ставит его заново. Сборка runtime расширения идёт
+# без `_lock`; читатель в это окно видел «расширение не загружено».
+
+def _publish_extension(registry, tmp_path, label):
+    _collection, extension = _materialized(
+        tmp_path, label, configuration_name="DemoExtension", extension=True
+    )
+    registry.publish_generation(
+        registry.stage_generation(extension.manifest, extension.payloads)
+    )
+
+
+def test_r9_reload_не_прячет_исправное_расширение(two_configurations, tmp_path):
+    import threading
+
+    from mcp1c.intake_v2 import SourceKind
+
+    registry = two_configurations
+    _publish_extension(registry, tmp_path, "r9-extension")
+    registry.startup()
+    assert registry.snapshot().extension_names(BROKEN) == ("DemoExtension",)
+
+    paused, resume = threading.Event(), threading.Event()
+    original_build = registry._build_native_generation_runtime
+
+    def slow_build(root, manifest):
+        if manifest.identity.source_kind is SourceKind.EXTENSION:
+            paused.set()
+            assert resume.wait(10), "тест не отпустил сборку расширения"
+        return original_build(root, manifest)
+
+    registry._build_native_generation_runtime = slow_build
+    errors = []
+
+    def run_restore():
+        try:
+            errors.extend(registry.restore())
+        except BaseException as error:  # pragma: no cover - диагностика теста
+            errors.append(error)
+
+    worker = threading.Thread(target=run_restore)
+    worker.start()
+    try:
+        assert paused.wait(10), "restore не дошёл до сборки расширения"
+        during = registry.snapshot()
+        assert during.extension_names(BROKEN) == ("DemoExtension",)
+        assert "DemoConfiguration:ext:DemoExtension" in during.modules
+    finally:
+        resume.set()
+        worker.join(10)
+    assert not worker.is_alive()
+    assert not [item for item in errors if not isinstance(item, str)], errors
+    after = registry.snapshot()
+    assert after.extension_names(BROKEN) == ("DemoExtension",)
+    assert "DemoConfiguration:ext:DemoExtension" in after.modules
+
+
+def test_r9_битое_поколение_расширения_снимается_при_reload(two_configurations, tmp_path):
+    registry = two_configurations
+    _publish_extension(registry, tmp_path, "r9-broken-extension")
+    registry.startup()
+    row = next(
+        row for row in read_registry(registry)["generation_manifests"]
+        if row["identity"]["source_kind"] == "extension"
+    )
+    root = registry.data_dir / row["root_path"]
+    root.rename(tmp_path / "parked-extension-generation")
+
+    messages = registry.restore()
+
+    assert any("DemoExtension" in message for message in messages), messages
+    snapshot = registry.snapshot()
+    assert snapshot.extension_names(BROKEN) == ()
+    assert "DemoConfiguration:ext:DemoExtension" not in snapshot.modules
+    assert set(snapshot.configurations) == {BROKEN, HEALTHY}

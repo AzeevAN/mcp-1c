@@ -99,3 +99,18 @@ def test_назначение_версии_не_снимает_защиту_др
     assert bool(reason) is conflict
     if conflict:
         assert 'удалите загруженную конфигурацию' in reason
+
+
+@pytest.mark.parametrize(
+    "version,expected",
+    [
+        ("123456789.1", (123456789, 1)),
+        ("1.123456789.5", (1, 123456789)),
+        ("1234567890.1", None),
+        ("1.1234567890", None),
+    ],
+)
+def test_m11_граница_девять_цифр_в_компоненте_редакции(version, expected):
+    # С L2 компонента длиннее девяти цифр не номер редакции: без предела
+    # огромное число давало необработанный ValueError в int().
+    assert edition(version) == expected

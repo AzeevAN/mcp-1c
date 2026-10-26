@@ -441,3 +441,59 @@ def test_m9_snapshot_доступен_во_время_очистки_покры�
     persisted = json.loads(registry.registry_path.read_text(encoding="utf-8"))
     assert not persisted.get("generation_manifests", [])
     assert {row["id"] for row in persisted["sources"]} == set(after.sources)
+
+
+def test_m12_параллельные_публикации_разных_конфигураций_не_теряют_строк(tmp_path):
+    # Публикации сериализуются mutation lock, запись registry.json идёт вне
+    # `_lock` с CAS по ревизии: ни одна из двух одновременных публикаций не
+    # должна потерять pointer другой ни в памяти, ни на диске.
+    from test_registry_restore_isolation import (
+        MemoryTree, _catalog, _common_attribute, _session_parameter,
+        collect_source_b, configuration_xml, convert_collection,
+        materialize_generation, probe_export,
+    )
+    from test_intake_v2_extensions import _stage_active_base
+
+    def staged(registry, name, generation_id):
+        xml = configuration_xml().replace(
+            b"<Name>DemoConfiguration</Name>", f"<Name>{name}</Name>".encode("utf-8")
+        )
+        tree = MemoryTree({
+            "Configuration.xml": xml,
+            "Catalogs/Items.xml": _catalog(),
+            "CommonAttributes/Tenant.xml": _common_attribute(),
+            "SessionParameters/Tenant.xml": _session_parameter(),
+        })
+        collection = collect_source_b(tree, probe_export(tree), tmp_path / f"c-{generation_id}")
+        generation = materialize_generation(
+            collection, convert_collection(collection), tmp_path / f"m-{generation_id}",
+            generation_id=generation_id,
+        )
+        return _stage_active_base(registry, generation)
+
+    for round_number in range(3):
+        registry = Registry(tmp_path / f"data-{round_number}")
+        names = (f"Первая{round_number}", f"Вторая{round_number}")
+        bundles = [staged(registry, name, f"g{round_number}-{index}") for index, name in enumerate(names)]
+        start = threading.Barrier(2)
+        results, errors = [], []
+
+        def publish(bundle):
+            try:
+                start.wait(5)
+                results.append(registry.publish_generation(bundle))
+            except BaseException as error:  # pragma: no cover - диагностика
+                errors.append(error)
+
+        threads = [threading.Thread(target=publish, args=(bundle,)) for bundle in bundles]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(30)
+        assert not errors, errors
+        assert set(registry.snapshot().configurations) == set(names)
+        rows = json.loads(registry.registry_path.read_text(encoding="utf-8"))["generation_manifests"]
+        assert {row["identity"]["configuration_name"] for row in rows} == set(names)
+        restarted = Registry(registry.data_dir)
+        restarted.startup()
+        assert set(restarted.snapshot().configurations) == set(names)

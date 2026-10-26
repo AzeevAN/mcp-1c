@@ -311,7 +311,7 @@ class IntakeApiService:
             "blocked_reason": blocked_reason,
         }
 
-    def _listed_job_payload(self, job) -> dict[str, object]:
+    def _listed_job_payload(self, job, generations) -> dict[str, object]:
         """Payload job для списка: сбой одной job не скрывает остальные.
 
         Иначе одна DONE-job с утраченным preview (оборванный discard, ручная
@@ -323,7 +323,7 @@ class IntakeApiService:
         job.
         """
         try:
-            return self.job_payload(job.job_id)
+            return self.job_payload(job.job_id, generations=generations)
         except (
             IntakeApiError,
             LifecycleError,
@@ -375,6 +375,9 @@ class IntakeApiService:
         }
 
     def _listed_jobs(self) -> list[dict[str, object]]:
+        # Один снимок поколений на весь список: сверка устаревания preview
+        # не должна снимать реестр заново на каждую готовую операцию.
+        generations = self.registry.snapshot().generations
         with self.lifecycle.stable_jobs() as (jobs, unreadable):
             dated = []
             broken = list(unreadable)
@@ -398,7 +401,7 @@ class IntakeApiService:
                 elif history < 50:
                     listed.append(job)
                     history += 1
-            return [self._listed_job_payload(job) for job in listed] + [
+            return [self._listed_job_payload(job, generations) for job in listed] + [
                 self._unreadable_job_payload(record) for record in broken
             ]
 
@@ -659,7 +662,9 @@ class IntakeApiService:
             "basis": basis,
         }
 
-    def _extension_basis(self, identity: ExportIdentity) -> tuple[tuple[str, str, str], ...]:
+    def _extension_basis(
+        self, identity: ExportIdentity, generations=None,
+    ) -> tuple[tuple[str, str, str], ...]:
         """Состав active-поколений той же конфигурации, кроме самого кандидата.
 
         Снимок влияния расширений считается при prepare; дешёвая сверка этого
@@ -671,8 +676,10 @@ class IntakeApiService:
             if identity.source_kind is SourceKind.CONFIGURATION
             else identity.parent_configuration
         )
+        if generations is None:
+            generations = self.registry.snapshot().generations
         basis = []
-        for generation in self.registry.snapshot().generations.values():
+        for generation in generations.values():
             other = generation.manifest.identity
             context = (
                 other.configuration_name
@@ -787,7 +794,7 @@ class IntakeApiService:
             raise IntakeApiConflict(str(error)) from error
 
     @_store_conflicts
-    def job_payload(self, job_id: str) -> dict[str, object]:
+    def job_payload(self, job_id: str, *, generations=None) -> dict[str, object]:
         _request_identifier(job_id, "job_id")
         try:
             job = self.lifecycle.operations.records.load_job(job_id)
@@ -873,7 +880,7 @@ class IntakeApiService:
         impacts = dict(preview.extension_impacts)
         basis = impacts.pop("basis", None)
         impacts["stale"] = basis is not None and [
-            list(item) for item in self._extension_basis(preview.plan.identity)
+            list(item) for item in self._extension_basis(preview.plan.identity, generations)
         ] != basis
         payload["preview"]["extension_impacts"] = impacts
         return payload

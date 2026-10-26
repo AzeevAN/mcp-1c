@@ -1423,9 +1423,9 @@ def test_m8_список_сериализует_последние_50_и_все_
     calls = []
     original = service.job_payload
 
-    def counted(job_id):
+    def counted(job_id, **kwargs):
         calls.append(job_id)
-        return original(job_id)
+        return original(job_id, **kwargs)
 
     monkeypatch.setattr(service, "job_payload", counted)
     response = _client(registry, service).get(endpoint, headers=M8_ADMIN)
@@ -1641,6 +1641,32 @@ def test_m6_нетерминальная_job_видна_за_пределом_п
     assert len([job_id for job_id in ids if job_id.startswith("m6-history-")]) == 50
 
 
+def test_m6_подготовленный_preview_виден_за_пределом_последних_50(tmp_path, monkeypatch):
+    # Готовая job без commit ждёт подтверждения или отмены и сама не
+    # истекает: за лимитом истории она осталась бы на диске без кнопки.
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    registry = Registry(tmp_path / "data")
+    service = _service(registry)
+    monkeypatch.setattr(registry, "preview_extension_relations", lambda *_a, **_kw: ())
+    _candidate, prepared = _m8_prepared(service, job_id="m6-prepared")
+    operations = service.lifecycle.operations
+    records = operations.records
+    assert records.load_job(prepared).state.value == "done"
+    now = time.time()
+    os.utime(records.jobs_dir / f"{prepared}.json", (now - 10_000, now - 10_000))
+    for index in range(55):
+        job_id = f"m6-history-{index:02d}"
+        operations.create_job(job_id, f"m6-candidate-{index:02d}")
+        operations.fail(job_id, RuntimeError("синтетическая ошибка"))
+        os.utime(records.jobs_dir / f"{job_id}.json", (now - index, now - index))
+
+    rows = _client(registry, service).get(f"{M8_INTAKE}/jobs", headers=M8_ADMIN).json()["jobs"]
+
+    listed = {row["job_id"]: row for row in rows}
+    assert prepared in listed
+    assert listed[prepared]["discardable"] is True
+    assert len([job_id for job_id in listed if job_id.startswith("m6-history-")]) == 50
+
 def test_m6_битый_commit_предупреждает_один_раз(tmp_path, monkeypatch, caplog):
     import logging
 
@@ -1688,7 +1714,9 @@ def test_m7_статус_preview_помечает_impacts_устаревшими
     original = service._extension_basis
     monkeypatch.setattr(
         service, "_extension_basis",
-        lambda identity: (*original(identity), ("extension", "Новое", "g-1")),
+        lambda identity, generations=None: (
+            *original(identity, generations), ("extension", "Новое", "g-1"),
+        ),
     )
     restore_calls = _m8_count_payload_restore(monkeypatch)
 
@@ -1716,6 +1744,30 @@ def test_m7_основа_снимка_меняется_при_публикаци
     assert any(item[0] == "extension" and item[1] == "DemoExtension" for item in after)
 
 
+def test_m7_основа_кандидата_расширения_по_родителю_без_него_самого(tmp_path):
+    # Кандидат-расширение сверяется с поколениями своего родителя: базой
+    # и соседними расширениями, но не с собственным прежним поколением.
+    from mcp1c.intake_v2 import ExportIdentity
+    from test_registry_restore_isolation import _publish_extension, publish_base
+
+    registry = Registry(tmp_path / "data")
+    publish_base(registry, tmp_path, "DemoConfiguration", "m7-base")
+    publish_base(registry, tmp_path, "HealthyConfiguration", "m7-other")
+    _publish_extension(registry, tmp_path, "m7-extension")
+    service = _service(registry)
+
+    neighbour = service._extension_basis(
+        ExportIdentity.extension("Другое", parent_configuration="DemoConfiguration")
+    )
+    itself = service._extension_basis(
+        ExportIdentity.extension("DemoExtension", parent_configuration="DemoConfiguration")
+    )
+
+    assert [item[:2] for item in neighbour] == [
+        ("configuration", "DemoConfiguration"), ("extension", "DemoExtension"),
+    ]
+    assert [item[:2] for item in itself] == [("configuration", "DemoConfiguration")]
+
 def test_m7_основа_снимается_до_расчёта_связей(tmp_path, monkeypatch):
     # Финальное ревью M7: публикация расширения во время расчёта связей при
     # prepare не должна попасть в снимок состава — иначе устаревшее
@@ -1724,7 +1776,9 @@ def test_m7_основа_снимается_до_расчёта_связей(tmp
     registry = Registry(tmp_path / "data")
     service = _service(registry)
     state = {"basis": (("configuration", "Прежняя", "g-0"),)}
-    monkeypatch.setattr(service, "_extension_basis", lambda identity: state["basis"])
+    monkeypatch.setattr(
+        service, "_extension_basis", lambda identity, generations=None: state["basis"]
+    )
 
     def relations_during_publication(*_args, **_kwargs):
         state["basis"] = (*state["basis"], ("extension", "Новое", "g-1"))
@@ -1736,3 +1790,28 @@ def test_m7_основа_снимается_до_расчёта_связей(tmp
     job = _client(registry, service).get(f"{M8_INTAKE}/jobs/{job_id}", headers=M8_ADMIN).json()["job"]
 
     assert job["preview"]["extension_impacts"]["stale"] is True
+
+
+def test_m7_список_операций_снимает_реестр_один_раз(tmp_path, monkeypatch):
+    # Отложенная мелочь M7: сверка состава поколений снимала полный
+    # snapshot реестра на каждую готовую операцию списка.
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    registry = Registry(tmp_path / "data")
+    service = _service(registry)
+    monkeypatch.setattr(registry, "preview_extension_relations", lambda *_a, **_kw: ())
+    for index in range(3):
+        _m8_prepared(service, name=f"Demo{index}", job_id=f"m7-job-{index}")
+    calls = []
+    original = registry.snapshot
+
+    def counted():
+        calls.append(True)
+        return original()
+
+    monkeypatch.setattr(registry, "snapshot", counted)
+
+    rows = service.jobs_snapshot()["jobs"]
+
+    assert len([row for row in rows if row["preview"]]) == 3
+    assert all(row["preview"]["extension_impacts"]["stale"] is False for row in rows)
+    assert len(calls) <= 1

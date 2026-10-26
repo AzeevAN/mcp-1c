@@ -349,7 +349,7 @@ def test_r3_внешний_поток_по_прежнему_резервируе
         store.accept("candidate-r3", "demo.zip", io.BytesIO(b"z" * 1000), expected_size=1000)
 
 
-@pytest.mark.parametrize("stage", ["link", "record"])
+@pytest.mark.parametrize("stage", ["seal", "link", "record"])
 def test_r3_enospc_при_приёме_убирает_файлы(tmp_path, monkeypatch, stage):
     import errno
 
@@ -363,7 +363,11 @@ def test_r3_enospc_при_приёме_убирает_файлы(tmp_path, monke
     def no_space(*_args, **_kwargs):
         raise OSError(errno.ENOSPC, "No space left on device")
 
-    if stage == "link":
+    if stage == "seal":
+        # Отложенная запись на части ФС сообщает о нехватке места только
+        # на fsync при сбросе на диск.
+        monkeypatch.setattr(transport.os, "fsync", no_space)
+    elif stage == "link":
         monkeypatch.setattr(transport.os, "link", no_space)
     else:
         monkeypatch.setattr(store, "_write_record", no_space)

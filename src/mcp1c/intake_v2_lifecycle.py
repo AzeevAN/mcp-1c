@@ -427,7 +427,7 @@ class IntakeLifecycle:
         self.directory_settle_seconds = float(directory_settle_seconds)
         self._lock = threading.RLock()
         self._incoming_cache: dict[
-            str, tuple[tuple[int, int, int, int], DiscoveredCandidate]
+            str, tuple[tuple[int, int, int, int, int], DiscoveredCandidate]
         ] = {}
         self._fail_interrupted_jobs()
         self._expire_unprobed_failed_jobs()
@@ -568,7 +568,9 @@ class IntakeLifecycle:
         self.catalog.save(candidate)
         return candidate
 
-    def _incoming_identity(self, locator: CandidateLocator) -> tuple[int, int, int, int]:
+    def _incoming_identity(
+        self, locator: CandidateLocator
+    ) -> tuple[int, int, int, int, int]:
         if self.incoming_root is None:
             raise LifecycleConflict("incoming больше не настроен")
         try:
@@ -577,7 +579,11 @@ class IntakeLifecycle:
             raise TransportError("ZIP candidate недоступен") from error
         if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
             raise TransportSecurityError("ZIP candidate должен быть обычным файлом")
-        return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
+        # ctime — правка на месте с восстановленным mtime (как в M7/M13).
+        return (
+            info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+            info.st_ctime_ns,
+        )
 
     def _discover_incoming(self, locator: CandidateLocator) -> DiscoveredCandidate:
         before = self._incoming_identity(locator)

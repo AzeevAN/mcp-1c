@@ -596,3 +596,29 @@ def test_h3_refresh_после_purge_восстанавливает_catalog_из
     assert records.load_job('h3-after-purge').state is CandidateJobState.READY
     assert calls['discover'] == 1
     assert calls['hash_phases'].count('refresh') == 1
+
+
+def test_m5_refresh_инвалидирует_cache_при_правке_на_месте_с_прежним_mtime(tmp_path, monkeypatch):
+    # Тот же inode, размер и mtime_ns: меняется только ctime. Правка на месте
+    # не должна оставлять в списке устаревшего кандидата.
+    import hashlib
+    import os
+
+    lifecycle, _records, _operations, path, raw = _h3_incoming_lifecycle(tmp_path)
+    calls = _h3_count_discovery_and_hash(lifecycle, monkeypatch)
+    assert len(lifecycle.refresh().candidates) == 1
+    before = path.stat()
+    changed = raw[:-1] + bytes([raw[-1] ^ 1])
+    with path.open("r+b") as stream:
+        stream.write(changed)
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    after = path.stat()
+    for field in ("st_dev", "st_ino", "st_size", "st_mtime_ns"):
+        assert getattr(after, field) == getattr(before, field)
+    assert after.st_ctime_ns != before.st_ctime_ns
+
+    refreshed = lifecycle.refresh()
+
+    assert calls["discover"] == 2
+    if refreshed.candidates:
+        assert refreshed.candidates[0].probe.raw_sha256 == hashlib.sha256(changed).hexdigest()

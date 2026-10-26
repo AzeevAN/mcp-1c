@@ -496,3 +496,42 @@ def test_r5_ошибка_чтения_при_хешировании_не_пря�
     assert [s["name"] for s in строки] == ["меняется.zip"]
     assert строки[0]["state"] == STATE_NEW
     assert "повторите" in строки[0]["detail"]
+
+
+def test_m5_правка_zip_на_месте_с_прежним_mtime_пересчитывает_sha(tmp_path, monkeypatch):
+    # Тот же inode, размер и mtime_ns — меняется только ctime. Сканер не
+    # должен показывать изменённый архив «загруженным» по старому SHA.
+    import os
+
+    registry, path, raw = _i8_active_zip(tmp_path)
+    reads = _i8_count_file_reads(monkeypatch)
+    scanner = IncomingScanner(registry)
+    assert scanner.scan()[0]["state"] == "загружено"
+    before = path.stat()
+    with path.open("r+b") as stream:
+        stream.write(raw[:-1] + b"B")
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    after = path.stat()
+    for field in ("st_dev", "st_ino", "st_size", "st_mtime_ns"):
+        assert getattr(after, field) == getattr(before, field)
+    assert after.st_ctime_ns != before.st_ctime_ns
+
+    assert scanner.scan()[0]["state"] == STATE_NEW
+    assert reads == [path, path]
+
+
+def test_m5_запись_кэша_без_ctime_считается_промахом(tmp_path, monkeypatch):
+    import json
+
+    registry, path, _raw = _i8_active_zip(tmp_path)
+    scanner = IncomingScanner(registry)
+    assert scanner.scan()[0]["state"] == "загружено"
+    state_path = registry.data_dir / "incoming-state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    for entry in state["digests"].values():
+        entry.pop("ctime_ns", None)
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    reads = _i8_count_file_reads(monkeypatch)
+
+    assert IncomingScanner(registry).scan()[0]["state"] == "загружено"
+    assert reads == [path]

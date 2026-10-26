@@ -53,6 +53,9 @@ def _file_identity(info) -> dict[str, int]:
         "inode": info.st_ino,
         "size": info.st_size,
         "mtime_ns": info.st_mtime_ns,
+        # ctime ловит правку на месте с восстановленным mtime. Старые записи
+        # без поля не совпадают и пересчитываются один раз.
+        "ctime_ns": info.st_ctime_ns,
     }
 
 
@@ -157,7 +160,7 @@ class IncomingScanner:
         return 0 <= возраст < SETTLE_SECONDS
 
     def digest(self, путь: Path) -> str:
-        """sha256 с кэшем по имени и `(dev, ino, size, mtime_ns)`."""
+        """sha256 с кэшем по имени и `(dev, ino, size, mtime_ns, ctime_ns)`."""
         отпечаток = путь.stat()
         identity = _file_identity(отпечаток)
         ключ = путь.name

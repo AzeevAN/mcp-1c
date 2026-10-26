@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import BinaryIO, Mapping
+from typing import BinaryIO, Callable, Mapping
 
 from . import fsio, index_cache
 from .intake_v2 import (
@@ -942,7 +942,14 @@ class GenerationBundleStore:
         payloads: Mapping[LayerKind, str | Path | LayerPayloadSource],
         *,
         activation: ActivationManifest | None = None,
+        reserve_root: Callable[[Callable[[], str]], str] | None = None,
     ) -> StagedGeneration:
+        """Подготовить staging нового поколения.
+
+        ``reserve_root`` получает функцию создания каталога и должен вызвать
+        её сам: так владелец store регистрирует ``.staging-*`` атомарно с
+        созданием, и уборка брошенного staging не видит его без защиты.
+        """
         if not isinstance(manifest, GenerationManifest):
             raise TypeError("manifest должен быть GenerationManifest")
         ready = {
@@ -975,12 +982,13 @@ class GenerationBundleStore:
         self._validate_path_chain(self.data_dir)
         self.root.mkdir(parents=True, exist_ok=True)
         self._validate_path_chain(self.root)
-        temporary = Path(
-            tempfile.mkdtemp(
+        def create() -> str:
+            return tempfile.mkdtemp(
                 prefix=f".staging-{manifest.generation_id}-",
                 dir=self.root,
             )
-        )
+
+        temporary = Path(create() if reserve_root is None else reserve_root(create))
         try:
             copied_stamps: dict[str, tuple[int, int, int, int, int]] = {}
             with MemberPackWriter(temporary) as pack:

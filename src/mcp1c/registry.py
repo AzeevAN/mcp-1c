@@ -443,6 +443,9 @@ class Registry:
         self._live_generation_staging: weakref.WeakValueDictionary[
             Path, StagedGeneration
         ] = weakref.WeakValueDictionary()
+        # Каталоги, которые `stage()` уже создал, но ещё не вернул объект
+        # StagedGeneration. Регистрация идёт под mutation lock вместе с mkdtemp.
+        self._staging_in_progress: set[Path] = set()
         # Версии нужны только для незавершённых публикаций внутри процесса.
         # После удаления счётчик сохраняется: пусто -> B -> пусто тоже смена
         # состояния, которую не обнаружить сравнением одних pointers.
@@ -2698,13 +2701,33 @@ class Registry:
         *,
         activation=None,
     ) -> StagedGeneration:
-        """Подготовить проверяемый bundle, не меняя active pointer."""
-        with self._generation_mutation_lock:
+        """Подготовить проверяемый bundle, не меняя active pointer.
+
+        Копирование и хеши слоёв идут без mutation lock: reload, remove и
+        публикации не ждут staging крупной выгрузки. Под замком только
+        создание каталога и передача защиты объекту StagedGeneration.
+        """
+        reserved: list[Path] = []
+
+        def reserve(create: Callable[[], str]) -> str:
+            with self._generation_mutation_lock:
+                root = create()
+                path = Path(root)
+                self._staging_in_progress.add(path)
+                reserved.append(path)
+                return root
+
+        try:
             staged = self._generation_store.stage(
-                manifest, payloads, activation=activation
+                manifest, payloads, activation=activation, reserve_root=reserve,
             )
-            self._live_generation_staging[staged.root] = staged
+            with self._generation_mutation_lock:
+                self._live_generation_staging[staged.root] = staged
             return staged
+        finally:
+            if reserved:
+                with self._generation_mutation_lock:
+                    self._staging_in_progress.discard(reserved[0])
 
     def discard_staged_generation(self, staged: StagedGeneration) -> None:
         """Убрать только незапубликованный staging неудачной операции."""
@@ -4816,6 +4839,7 @@ class Registry:
                 if (
                     not path.name.startswith(".staging-")
                     or path in self._live_generation_staging
+                    or path in self._staging_in_progress
                     or path.is_symlink()
                     or not path.is_dir()
                 ):

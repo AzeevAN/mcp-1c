@@ -462,3 +462,90 @@ def test_reload_сохраняет_живой_staging_и_убирает_его_�
     registry.startup()
 
     assert not root.exists()
+
+
+# R4 (ревью реализации аудита): подготовка поколения не держит
+# `_generation_mutation_lock` на копировании и хешах, но каталог `.staging-*`
+# защищён от уборки L7 с момента создания.
+
+def _pause_staging_copy(registry, *, fail: bool = False):
+    paused, resume = threading.Event(), threading.Event()
+    store = registry._generation_store
+
+    def pausing(original):
+        def wrapper(*args, **kwargs):
+            if not paused.is_set():
+                paused.set()
+                assert resume.wait(10), 'тест не отпустил staging'
+                if fail:
+                    raise OSError(errno.EIO, 'искусственный сбой staging')
+            return original(*args, **kwargs)
+        return wrapper
+
+    store._stage_envelope = pausing(store._stage_envelope)
+    store._copy_layer = pausing(store._copy_layer)
+    return paused, resume
+
+
+def _staging_dirs(registry):
+    root = registry._generation_store.root
+    return sorted(path for path in root.glob('.staging-*') if path.is_dir())
+
+
+def test_r4_reload_не_ждёт_подготовку_поколения_и_не_трогает_её_staging(tmp_path):
+    manifest, payloads = _manifest(tmp_path, 'r4-live')
+    registry = Registry(tmp_path / 'data')
+    registry.startup()
+    paused, resume = _pause_staging_copy(registry)
+    result: dict[str, object] = {}
+
+    def stage():
+        try:
+            result['staged'] = registry.stage_generation(manifest, payloads)
+        except BaseException as error:  # pragma: no cover - диагностика
+            result['error'] = error
+
+    stager = threading.Thread(target=stage)
+    stager.start()
+    try:
+        assert paused.wait(10), 'staging не дошёл до копирования'
+        staging = _staging_dirs(registry)
+        assert len(staging) == 1
+        reload_done = threading.Event()
+        reloader = threading.Thread(
+            target=lambda: (registry.startup(), reload_done.set())
+        )
+        reloader.start()
+        assert reload_done.wait(10), 'reload ждал копирования staging'
+        reloader.join(10)
+        assert staging[0].is_dir(), 'уборка L7 удалила живой staging'
+    finally:
+        resume.set()
+        stager.join(10)
+    assert 'error' not in result, result
+    staged = result['staged']
+    assert staged.root == staging[0] and staged.root.is_dir()
+    registry.publish_generation(staged)
+    assert registry.active_generation_pointer(manifest.identity) is not None
+
+
+def test_r4_после_сбоя_staging_остаток_убирается_следующим_стартом(tmp_path, monkeypatch):
+    from mcp1c import intake_v2_registry
+
+    manifest, payloads = _manifest(tmp_path, 'r4-failed')
+    registry = Registry(tmp_path / 'data')
+    registry.startup()
+    paused, resume = _pause_staging_copy(registry, fail=True)
+    resume.set()
+    # Остаток должен пережить сбой, чтобы проверить снятие защиты.
+    monkeypatch.setattr(intake_v2_registry.shutil, 'rmtree', lambda *_a, **_k: None)
+
+    with pytest.raises(Exception):
+        registry.stage_generation(manifest, payloads)
+    leftovers = _staging_dirs(registry)
+    assert len(leftovers) == 1
+    monkeypatch.undo()
+
+    registry.startup()
+
+    assert not leftovers[0].exists()

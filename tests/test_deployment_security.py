@@ -152,3 +152,12 @@ def test_i2_compose_передаёт_серверу_тот_же_адрес_пу�
     compose = _compose()
     assert 'host_ip: "${MCP1C_BIND_ADDRESS:-127.0.0.1}"' in compose
     assert 'MCP1C_PUBLISHED_ADDRESS: ${MCP1C_BIND_ADDRESS:-127.0.0.1}' in compose
+
+
+def test_r6_compose_ограничивает_память_и_процессы_контейнера():
+    # Лимиты выведены замером пика (пик cgroup Розницы с расширением ×2,5);
+    # их удаление или правка должны быть видимым решением, а не случайностью.
+    compose = _compose()
+
+    assert "\n    mem_limit: 7564124160\n" in compose
+    assert "\n    pids_limit: 256\n" in compose

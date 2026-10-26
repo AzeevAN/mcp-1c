@@ -117,3 +117,39 @@ def test_bootstrap_использует_нормализованную_карт�
             "Configuration.xml",
             "Catalogs/Т/Ext/ObjectModule.bsl",
         }
+
+
+def test_m2_огромный_центральный_каталог_в_bootstrap_отклоняется_без_zipfile(
+    tmp_path, monkeypatch
+):
+    # Классификатор bootstrap не передаёт центральный каталог сверх предела
+    # в ZipFile; файл получает отказ, остальные источники заводятся.
+    import struct
+
+    from conftest import build_configuration, write_export
+
+    registry = Registry(tmp_path / "data")
+    registry.bootstrap_dir.mkdir(parents=True)
+    write_export(registry.bootstrap_dir, build_configuration(name="Розница"))
+    huge = registry.bootstrap_dir / "огромный-каталог.zip"
+    huge.write_bytes(
+        struct.pack("<4s4H2LH", b"PK\x05\x06", 0, 0, 0, 0, 29_534_471, 0, 0)
+    )
+    real_init = zipfile.ZipFile.__init__
+
+    def guarded(self, file, *args, **kwargs):
+        name = getattr(file, "name", file)
+        if str(name).endswith("огромный-каталог.zip"):
+            self.fp = None
+            raise AssertionError("центральный каталог передан ZipFile до проверки")
+        return real_init(self, file, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "__init__", guarded)
+
+    сообщения = registry.bootstrap()
+
+    assert "Розница" in сообщения
+    assert any(
+        "огромный-каталог.zip" in m and "Центральный каталог" in m for m in сообщения
+    ), сообщения
+    assert "Розница" in registry.configurations

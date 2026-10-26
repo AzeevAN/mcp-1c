@@ -61,6 +61,7 @@ from .data_dir_lock import (
 from .dictionary import Dictionary, DictionaryError
 from .editions import edition_conflict
 from .graph import Graph
+from .resource_limits import ResourceLimitError
 from .intake_v2 import (
     CandidateTransport,
     ExportIdentity,
@@ -293,13 +294,19 @@ def _похоже_на_выгрузку_в_файлы(path: Path) -> bool:
     центрального каталога достаточно.
     """
     from . import intake
+    from .resource_limits import ARCHIVE_LIMITS, _precheck_central_directory
 
     try:
-        with zipfile.ZipFile(path) as zf:
-            карта = intake.карта_архива(zf)
-            имена = tuple(карта)
-            записи, _ = intake._отобранные_записи(zf, карта=карта)
-            есть_код = bool(записи)
+        with path.open("rb") as stream:
+            # Тот же предел центрального каталога, что у остального приёма:
+            # ZipFile читает весь size_cd прежде, чем отдаст состав.
+            # ResourceLimitError уходит вызывающему — отказ этому файлу.
+            _precheck_central_directory(stream, ARCHIVE_LIMITS)
+            with zipfile.ZipFile(stream) as zf:
+                карта = intake.карта_архива(zf)
+                имена = tuple(карта)
+                записи, _ = intake._отобранные_записи(zf, карта=карта)
+                есть_код = bool(записи)
     except (OSError, zipfile.BadZipFile):
         return False
     есть_манифест = any(
@@ -4572,7 +4579,12 @@ class Registry:
             suffix = path.suffix.lower()
             if suffix not in (".zip", ".hbk"):
                 continue
-            if suffix == ".zip" and _похоже_на_выгрузку_в_файлы(path):
+            try:
+                выгрузка_в_файлы = suffix == ".zip" and _похоже_на_выгрузку_в_файлы(path)
+            except ResourceLimitError as error:
+                added.append(f"{path.name}: ОШИБКА — {error}")
+                continue
+            if выгрузка_в_файлы:
                 # Гигабайтную выгрузку нельзя разбирать при каждом старте,
                 # и падать на ней вечно — тоже: упавший файл в реестр не
                 # попадает, а `known` считается один раз до цикла.

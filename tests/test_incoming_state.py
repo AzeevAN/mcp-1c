@@ -477,3 +477,22 @@ def test_i8_admin_использует_поколения_текущего_ре�
 
     empty_page = prepare_sources_page(empty_runtime, authorized=True)
     assert next(row for row in empty_page.incoming if row.name == path.name).state == STATE_NEW
+
+
+def test_r5_ошибка_чтения_при_хешировании_не_прячет_строку(tmp_path, monkeypatch):
+    # Файл меняется или недоступен во время SHA-256: строка остаётся в
+    # списке с объяснением, а не исчезает до следующего обновления.
+    registry = _реестр(tmp_path)
+    состарить(_архив(registry, "меняется.zip"))
+    scanner = IncomingScanner(registry)
+
+    def изменился(_путь):
+        raise OSError("Входящий файл изменился во время расчёта SHA-256")
+
+    monkeypatch.setattr(scanner, "digest", изменился)
+
+    строки = scanner.scan(active_hashes=frozenset({"0" * 64}))
+
+    assert [s["name"] for s in строки] == ["меняется.zip"]
+    assert строки[0]["state"] == STATE_NEW
+    assert "повторите" in строки[0]["detail"]

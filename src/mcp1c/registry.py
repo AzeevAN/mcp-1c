@@ -4442,10 +4442,11 @@ class Registry:
                         self._drop_native_runtime_locked(previous.identity)
                 problems.append(f"{identity.extension_name}: поколение не поднято: {error}")
                 continue
+            # Pointer и runtime — одним блоком: иначе читатель между ними
+            # видит новое поколение расширения со структурой прежнего.
             with self._registry_memory_change():
                 self._generation_pointers[key] = pointer
                 self._generation_manifests[key] = manifest
-            with self._registry_memory_change():
                 self._install_prepared_locked(
                     identity,
                     prepared,

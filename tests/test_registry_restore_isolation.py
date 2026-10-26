@@ -588,3 +588,71 @@ def test_r9_расширение_базы_не_прошедшей_verify_не_в
     assert_generation_warning(messages, BROKEN)
     assert not orphans, "расширение было видно без своей базы"
     assert extension_key not in registry.snapshot().modules
+
+
+def test_r9_указатель_и_runtime_расширения_сменяются_вместе(two_configurations, tmp_path):
+    # Отложенная мелочь R9: новый pointer расширения и его runtime ставились
+    # двумя блоками. Между ними snapshot показывал новое поколение со
+    # структурой прежнего.
+    from contextlib import contextmanager
+    import shutil
+
+    from mcp1c.intake_v2 import SourceKind
+
+    registry = two_configurations
+    extension_key = "DemoConfiguration:ext:DemoExtension"
+    _publish_extension(registry, tmp_path, "r9-pair-old")
+    old_file = registry.registry_path.read_bytes()
+    old_root = registry.data_dir / next(
+        row["root_path"] for row in read_registry(registry)["generation_manifests"]
+        if row["identity"]["source_kind"] == "extension"
+    )
+    shutil.copytree(old_root, tmp_path / "r9-pair-old-root")
+    _publish_extension(registry, tmp_path, "r9-pair-new")
+    new_file = registry.registry_path.read_bytes()
+    # Публикация убрала прежнее поколение; возвращаем его, чтобы reload
+    # перешёл со старого поколения на новое, а не поднял то же самое.
+    if not old_root.exists():
+        shutil.copytree(tmp_path / "r9-pair-old-root", old_root)
+    registry.registry_path.write_bytes(old_file)
+    assert registry.restore() == []
+
+    def extension_pointer():
+        return next(
+            pointer for pointer in registry._generation_pointers.values()
+            if pointer.identity.source_kind is SourceKind.EXTENSION
+        )
+
+    old_pointer = extension_pointer()
+    old_runtime = registry.modules[extension_key]
+    registry.registry_path.write_bytes(new_file)
+    original_change = registry._registry_memory_change
+    torn = []
+
+    @contextmanager
+    def observed_change(*args, **kwargs):
+        # Каждый вход видит состояние, опубликованное предыдущим блоком.
+        with original_change(*args, **kwargs):
+            pointer = next(
+                (
+                    pointer for pointer in registry._generation_pointers.values()
+                    if pointer.identity.source_kind is SourceKind.EXTENSION
+                ),
+                None,
+            )
+            if (
+                pointer is not None
+                and pointer.generation_id != old_pointer.generation_id
+                and registry.modules.get(extension_key) is old_runtime
+            ):
+                torn.append(pointer.generation_id)
+            yield
+
+    registry._registry_memory_change = observed_change
+
+    registry.restore()
+
+    registry._registry_memory_change = original_change
+    assert extension_pointer().generation_id != old_pointer.generation_id
+    assert registry.modules[extension_key] is not old_runtime
+    assert not torn, "новое поколение расширения было видно со старым runtime"

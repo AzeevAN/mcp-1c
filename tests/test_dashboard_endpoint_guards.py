@@ -14,7 +14,7 @@ import textwrap
 
 import pytest
 from starlette.applications import Starlette
-from starlette.routing import Route
+from starlette.routing import Mount, Route, WebSocketRoute
 from starlette.testclient import TestClient
 
 from mcp1c.dashboard_runtime import DASHBOARD_ON, routes
@@ -153,9 +153,7 @@ def test_все_mutation_routes_имеют_admin_guard_или_актуально
                    for node in ast.walk(function))
 
     checked, used_exceptions, unguarded = [], set(), []
-    for route in table:
-        if not isinstance(route, Route):
-            continue
+    for route in _i1_http_routes(table):
         mutations = (route.methods or {"GET"}) & {"POST", "PUT", "PATCH", "DELETE"}
         if not mutations:
             continue
@@ -189,3 +187,54 @@ def test_все_mutation_routes_имеют_admin_guard_или_актуально
     assert checked, "Таблица маршрутов не содержит ни одного изменяющего HTTP-метода"
     assert used_exceptions == set(_I1_MUTATION_EXCEPTIONS), "Список исключений устарел"
     assert not unguarded, f"Мутации без admin_endpoint(mutation=True): {unguarded}"
+
+
+def _i1_http_routes(table, prefix=""):
+    """Все HTTP-маршруты таблицы, включая вложенные в Mount (M10)."""
+    for route in table:
+        if isinstance(route, Mount):
+            yield from _i1_http_routes(route.routes, prefix + route.path)
+        elif isinstance(route, WebSocketRoute):
+            raise AssertionError(
+                f"WebSocket-маршрут {prefix}{route.path} требует отдельной проверки доступа"
+            )
+        elif isinstance(route, Route):
+            yield route
+
+
+def test_m10_mount_с_мутацией_виден_структурной_проверке():
+    async def hidden(request):  # pragma: no cover - вызывается только перечислением
+        return None
+
+    table = [Mount("/nested", routes=[Route("/write", hidden, methods=["POST"])])]
+
+    assert [route.path for route in _i1_http_routes(table)] == ["/write"]
+
+
+def test_m10_изменяющие_custom_route_сервера_только_reload_под_admin_токеном(
+    tmp_path, monkeypatch
+):
+    from mcp1c.server import build_server
+
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    monkeypatch.setenv("API_TOKEN", "read-token")
+    registry = Registry(tmp_path / "data")
+    monkeypatch.setattr(registry, "startup", lambda: [])
+    server = build_server(registry)
+    mutations = sorted(
+        route.path
+        for route in _i1_http_routes(server._custom_starlette_routes)
+        if (route.methods or set()) & {"POST", "PUT", "PATCH", "DELETE"}
+        and not route.path.startswith("/api/v1/")
+        and route.path not in {"/login", "/logout"}
+    )
+    assert mutations == ["/admin/reload"], mutations
+
+    client = TestClient(Starlette(routes=list(server._custom_starlette_routes)))
+    assert client.post("/admin/reload").status_code in {401, 403}
+    assert client.post(
+        "/admin/reload", headers={"x-admin-token": "read-token"}
+    ).status_code in {401, 403}
+    assert client.post(
+        "/admin/reload", headers={"x-admin-token": "admin-token"}
+    ).status_code == 200

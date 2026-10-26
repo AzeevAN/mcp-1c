@@ -329,3 +329,17 @@ def test_source_a_json_сохраняет_null_булевого_свойства
 
     assert props["action_period"] is None
     assert props["base_period"] is None
+
+
+def test_m1_сверхглубокий_manifest_xml_даёт_понятную_ошибку():
+    # I5 для Source A: XML-парсер принимает вложенность, рекурсивный разбор
+    # в dict — нет. Ожидается ошибка выгрузки, а не RecursionError.
+    import io
+
+    from mcp1c import loader
+
+    depth = 5000
+    raw = b"<manifest>" + b"<a>" * depth + b"</a>" * depth + b"</manifest>"
+
+    with pytest.raises(ExportError, match="вложенность"):
+        loader._read_manifest_xml(io.BytesIO(raw))

@@ -3473,11 +3473,23 @@ def _attach_form_command_relations(
                 severity="warning",
             )
             continue
-        for target, declarations in _common_command_references(
-            root,
-            diagnostics,
-            artifact.source_path,
-        ).items():
+        try:
+            references = _common_command_references(
+                root,
+                diagnostics,
+                artifact.source_path,
+            )
+        except RecursionError:
+            # Глубокий Form.xml проходит XML-парсер, но не рекурсивный обход:
+            # ссылки этой формы недоказуемы, остальные формы разбираются.
+            diagnostics.add(
+                "form_command_coverage",
+                "unreadable",
+                artifact.address,
+                severity="warning",
+            )
+            continue
+        for target, declarations in references.items():
             grouped.setdefault(owner, {}).setdefault(
                 (artifact.address, target), set()
             ).update(declarations)

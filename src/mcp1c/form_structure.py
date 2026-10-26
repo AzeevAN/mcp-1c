@@ -147,12 +147,17 @@ def parse_form_xml(root: ET.Element) -> ParsedFormStructure:
                 elements.append(item.get("name", ""))
             walk(item, current_owner, collect_element_names)
 
-    for item in root:
-        kind = local_name(item)
-        if kind == "Events":
-            collect_events(item, None)
-        elif kind == "ChildItems":
-            walk(item, None)
+    try:
+        for item in root:
+            kind = local_name(item)
+            if kind == "Events":
+                collect_events(item, None)
+            elif kind == "ChildItems":
+                walk(item, None)
+    except RecursionError as error:
+        # XML-парсер принимает глубокую вложенность, рекурсивный обход — нет.
+        # Такая форма нечитаема, а не роняет разбор всей выгрузки.
+        raise FormStructureError("слишком глубокая вложенность элементов формы") from error
     return ParsedFormStructure(tuple(attributes), tuple(elements), tuple(events))
 
 

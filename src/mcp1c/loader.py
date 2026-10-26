@@ -171,6 +171,14 @@ def _xml_item(item: ET.Element) -> Any:
     return _xml_dict(item)
 
 
+def _xml_dict_checked(element: ET.Element, where: str) -> dict[str, Any]:
+    """Разобрать элемент, превращая сверхглубокую вложенность в ExportError."""
+    try:
+        return _xml_dict(element)
+    except RecursionError as error:
+        raise ExportError(f"{where}: слишком глубокая вложенность XML.") from error
+
+
 def _xml_dict(element: ET.Element) -> dict[str, Any]:
     data: dict[str, Any] = dict(element.attrib)
     for child in element:
@@ -194,7 +202,7 @@ def _read_objects_xml(
             continue
         if event != "end" or element.tag != "object":
             continue
-        yield _xml_dict(element)
+        yield _xml_dict_checked(element, spec.path)
         element.clear()
 
 
@@ -202,7 +210,7 @@ def _read_manifest_xml(stream: IO[bytes]) -> dict[str, Any]:
     root = xml_safety.parse(stream).getroot()
     if root.tag != "manifest":
         raise ExportError("Корень manifest.xml должен быть <manifest>.")
-    manifest = _xml_dict(root)
+    manifest = _xml_dict_checked(root, "manifest.xml")
     files = root.find("files")
     if files is not None and len(files) == 0:
         manifest["files"] = []

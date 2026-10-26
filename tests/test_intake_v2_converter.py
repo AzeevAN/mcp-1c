@@ -2867,3 +2867,43 @@ def test_converter_локализует_превышение_предела_v8_f
 
     assert decoders
     assert all(decoder.produced <= 5_263_509 for decoder in decoders)
+
+
+# M1 (ревью реализации аудита): глубокий Form.xml проходит XML-парсер, но
+# рекурсивные обходы структуры не должны ронять весь prepare Source B.
+
+def _deep_form_xml(depth: int = 5000) -> bytes:
+    return (
+        b"<Form><ChildItems>"
+        + b"<UsualGroup><ChildItems>" * depth
+        + b"</ChildItems></UsualGroup>" * depth
+        + b"</ChildItems></Form>"
+    )
+
+
+def test_m1_глубокая_общая_форма_нечитаема_а_конвертация_идёт(tmp_path):
+    FormStructureState = _symbol("FormStructureState")
+    convert_collection = _symbol("convert_collection")
+
+    result = convert_collection(
+        _collection(tmp_path, common_forms=True, common_form_xml=_deep_form_xml())
+    )
+
+    form = result.extended.get("ОбщаяФорма.Workspace")
+    assert form is not None
+    assert form.payload.structure_state is FormStructureState.UNREADABLE
+    assert "Справочник.Items" in result.base.objects
+
+
+def test_m1_глубокая_форма_объекта_не_ломает_ссылки_команд(tmp_path):
+    convert_collection = _symbol("convert_collection")
+
+    result = convert_collection(
+        _collection(tmp_path, item_form_xml=_deep_form_xml())
+    )
+
+    assert "Справочник.Items" in result.base.objects
+    assert any(
+        item.code == "form_command_coverage" and item.signature == "unreadable"
+        for item in result.diagnostics
+    ), result.diagnostics

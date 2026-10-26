@@ -388,9 +388,33 @@ class IntakeApiService:
                     continue
                 dated.append((modified, job))
             dated.sort(key=lambda item: (-item[0], item[1].job_id))
-            return [self._listed_job_payload(job) for _modified, job in dated[:50]] + [
+            # Лимит касается только завершённой истории. Незавершённая работа
+            # и неподтверждённый preview сами не истекают: спрятанные за
+            # лимитом, они остались бы на диске без кнопки.
+            listed, history = [], 0
+            for _modified, job in dated:
+                if self._always_listed(job):
+                    listed.append(job)
+                elif history < 50:
+                    listed.append(job)
+                    history += 1
+            return [self._listed_job_payload(job) for job in listed] + [
                 self._unreadable_job_payload(record) for record in broken
             ]
+
+    def _always_listed(self, job) -> bool:
+        if job.state is CandidateJobState.FAILED:
+            return False
+        if job.state is not CandidateJobState.DONE:
+            return True
+        commit = self.lifecycle.operations.commits_dir / f"{job.job_id}.json"
+        try:
+            commit.lstat()
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+        return False
 
     @_store_conflicts
     def jobs_snapshot(self) -> dict[str, object]:

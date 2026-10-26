@@ -1613,3 +1613,54 @@ def test_m8_старый_preview_без_impacts_читается_как_stale_н
     assert confirmed["commit"]["generation_id"] == work.generation_id
     assert registry.active_generation_pointer(identity).generation_id == work.generation_id
     assert registry.snapshot().configuration_names == ("DemoConfiguration",)
+
+
+def test_m6_нетерминальная_job_видна_за_пределом_последних_50(tmp_path, monkeypatch):
+    # Лимит списка не прячет незавершённую работу: она не истекает сама
+    # и иначе осталась бы на диске невидимой.
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    registry = Registry(tmp_path / "data")
+    service = _service(registry)
+    operations = service.lifecycle.operations
+    records = operations.records
+    now = time.time()
+    operations.create_job("m6-pending", "m6-candidate-pending")
+    os.utime(records.jobs_dir / "m6-pending.json", (now - 10_000, now - 10_000))
+    for index in range(55):
+        job_id = f"m6-history-{index:02d}"
+        operations.create_job(job_id, f"m6-candidate-{index:02d}")
+        operations.fail(job_id, RuntimeError("синтетическая ошибка"))
+        os.utime(records.jobs_dir / f"{job_id}.json", (now - index, now - index))
+
+    rows = _client(registry, service).get(f"{M8_INTAKE}/jobs", headers=M8_ADMIN).json()["jobs"]
+
+    ids = [row["job_id"] for row in rows]
+    assert "m6-pending" in ids
+    assert len([job_id for job_id in ids if job_id.startswith("m6-history-")]) == 50
+
+
+def test_m6_битый_commit_предупреждает_один_раз(tmp_path, monkeypatch, caplog):
+    import logging
+
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    now = 2_000_000_000.0
+    monkeypatch.setattr(time, "time", lambda: now)
+    registry = Registry(tmp_path / "data")
+    _write_archive(registry.incoming_dir / "m6.zip")
+    service = _service(registry)
+    candidate = service.snapshot()["candidates"][0]
+    work = service.start(candidate["id"], "create", job_id="m6-broken-commit")
+    service.prepare(work)
+    service.confirm(work.job_id)
+    operations = service.lifecycle.operations
+    commit_path = operations.commits_dir / f"{work.job_id}.json"
+    commit_path.write_text("{не JSON", encoding="utf-8")
+    old = now - 31 * 24 * 3600
+    os.utime(commit_path, (old, old))
+
+    with caplog.at_level(logging.WARNING):
+        for _ in range(3):
+            service.lifecycle._expire_committed_jobs()
+
+    warnings = [r for r in caplog.records if "m6-broken-commit" in r.getMessage()]
+    assert len(warnings) == 1

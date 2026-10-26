@@ -426,6 +426,9 @@ class IntakeLifecycle:
         self.intake_limits = intake_limits
         self.directory_settle_seconds = float(directory_settle_seconds)
         self._lock = threading.RLock()
+        # Битый commit не удаляется и проверялся бы на каждом refresh:
+        # предупреждение о нём пишется один раз за жизнь процесса.
+        self._warned_commit_jobs: set[str] = set()
         self._incoming_cache: dict[
             str, tuple[tuple[int, int, int, int, int], DiscoveredCandidate]
         ] = {}
@@ -521,6 +524,9 @@ class IntakeLifecycle:
                 except KeyError:
                     continue
                 except (CandidateStoreError, IntakeV2ContractError, OperationError) as error:
+                    if job.job_id in self._warned_commit_jobs:
+                        continue
+                    self._warned_commit_jobs.add(job.job_id)
                     logging.getLogger(__name__).warning(
                         "Не удалось удалить давнюю подтверждённую job %s: %s",
                         job.job_id, error,

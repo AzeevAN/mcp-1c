@@ -752,7 +752,7 @@ def handlers(context: DashboardContext) -> dict[str, Endpoint]:
                         configuration,
                     )
                 removed = await run_in_threadpool(
-                    registry._remove_if_registered, source_id, missing_ok=has_intake_jobs,
+                    registry.remove_if_registered, source_id, missing_ok=has_intake_jobs,
                 )
                 if removed:
                     await run_in_threadpool(registry.save)

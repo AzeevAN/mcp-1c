@@ -1729,10 +1729,10 @@ class Registry:
 
     def remove(self, source_id: str) -> None:
         """Снять источник; A/B основной конфигурации удаляются агрегатом."""
-        self._remove_if_registered(source_id)
+        self.remove_if_registered(source_id)
 
     @_refresh_on_external_change()
-    def _remove_if_registered(self, source_id: str, *, missing_ok: bool = False) -> bool:
+    def remove_if_registered(self, source_id: str, *, missing_ok: bool = False) -> bool:
         """Снять агрегат A/B; вернуть False лишь для допустимого отсутствия."""
         # Снятие удаляет каталоги и кэш: в fail-closed режиме это стёрло бы
         # данные, которые ещё нужны для ручного разбора журнала.

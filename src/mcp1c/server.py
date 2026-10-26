@@ -16,27 +16,23 @@ HTTP-эндпоинта — это не транспорт, а обходной 
 
 from __future__ import annotations
 
-import argparse
 import gzip
 import json
 import os
-import sys
+import sys as sys
 import threading
-import uuid
 from functools import wraps
-from pathlib import Path
+from pathlib import Path as Path
 from typing import Annotated, Callable, Literal, ParamSpec, TypeVar
-from urllib.parse import urlencode
 
 from mcp.server import MCPServer
 from mcp.server._otel import OpenTelemetryMiddleware
 from mcp.server.subscriptions import InMemorySubscriptionBus, ToolsListChanged
-from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import CallToolResult, TextContent
 from pydantic import Field
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
-from starlette.responses import JSONResponse, PlainTextResponse, RedirectResponse, Response
+from starlette.responses import JSONResponse, Response
 
 from . import __version__, tools
 from . import server_asgi, server_startup
@@ -70,18 +66,13 @@ from .capabilities import (
     CapabilityContractError,
     CapabilityRuntime,
     CapabilitySettingsStore,
-    resolve_capability_settings,
 )
 from .dashboard_backend import (
     LEVEL_ADMIN,
-    MAX_UPLOAD,
     can_read,
     check_token,
-    header_token_check,
 )
 from .dashboard_runtime import routes as dashboard_routes
-from .intake_v2_transport import MAX_BROWSER_UPLOAD_BYTES
-from .resource_limits import intake_archive_limits
 from .module_download import (
     DOWNLOAD_PATH, TICKET_HEADER, TICKET_LIFETIME_SECONDS, CompressedModuleCache,
     DownloadTicketError, ModuleDownloadTickets, public_base_url,
@@ -110,19 +101,8 @@ from .role_access_service import (
     get_role_access_payload,
 )
 from .runtime_config import (
-    ACCESS_HTTP,
     ACCESS_HTTPS_PROXY,
-    AccessModeError,
-    HostConfigurationError,
-    TokenConfigurationError,
-    split_host,
     access_mode,
-    allowed_hosts as configured_allowed_hosts,
-    forwarded_allow_ips as configured_forwarded_allow_ips,
-    host_check_required,
-    is_loopback_bind,
-    require_tokens,
-    token_is_strong,
 )
 
 # Сколько сервер ждёт владения data/, прежде чем завершиться с ошибкой.

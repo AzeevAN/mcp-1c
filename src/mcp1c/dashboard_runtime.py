@@ -6,27 +6,20 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import hashlib
 import json
 import os
 import re
 import secrets
-import shutil
-import tempfile
-import threading
+import tempfile as tempfile
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
-from functools import wraps
 from pathlib import Path
-from typing import cast
 from urllib.parse import quote, urlencode
 
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
-from starlette.datastructures import UploadFile
-from starlette.formparsers import MultiPartException
 from starlette.requests import Request
 from starlette.responses import (
     FileResponse,
@@ -36,7 +29,7 @@ from starlette.responses import (
 )
 from starlette.routing import Route
 
-from . import __version__, coverage_log, dashboard_backend, source_ids, tools
+from . import coverage_log, dashboard_backend, tools as tools
 from .dashboard_routes import auth, dictionary, roles, sources_intake
 from .dashboard_routes.auth import _secure_cookie as _secure_cookie
 from .dashboard_routes.context import (
@@ -72,49 +65,27 @@ from .capabilities import (
     MAX_SERVER_SETTINGS_BYTES,
 )
 from .dashboard_backend import (
-    COOKIE,
-    LEVEL_ADMIN,
-    SESSION_TTL_SECONDS,
     admin_authorized,
-    admin_token,
-    api_token,
     can_read,
-    check_token,
-    create_session,
-    login_from_foreign_site,
-    csrf_denied,
-    drop_session,
-    session_level,
 )
-from .dictionary import ANY_CONFIGURATION, SOURCE_BUILTIN, DictionaryError
+from .dictionary import ANY_CONFIGURATION as ANY_CONFIGURATION, SOURCE_BUILTIN as SOURCE_BUILTIN
 from .graph_view import DEFAULT_LIMIT as DEFAULT_GRAPH_LIMIT
 from .graph_view import bounds as graph_bounds
 from .graph_view import neighbourhood
 from .heavy_operations import HeavyOperations
 from .intake_v2_api import (
-    IntakeApiConflict,
-    IntakeApiError,
-    IntakeApiInvalid,
-    IntakeApiNotFound,
+    IntakeApiConflict as IntakeApiConflict,
     IntakeApiService,
-    IntakeWork,
 )
-from .intake_v2 import CandidateStoreError, ExportIdentity, IntakeV2ContractError
-from .intake_v2_lifecycle import LifecycleError
-from .intake_v2_operations import OperationConflict, OperationError
-from .intake_v2_transport import (
-    TransportError,
-    TransportLimitError,
-)
+from .intake_v2 import ExportIdentity
+from .intake_v2_lifecycle import LifecycleError as LifecycleError
+from .intake_v2_operations import OperationConflict as OperationConflict
 from .registry import (
     KIND_EXTENSION,
     KIND_MODULES,
-    KIND_SYNTAX,
     Registry,
-    RegistryChangedExternally,
     RegistryError,
-    SourceInUseError,
-    SourcesChanged,
+    SourcesChanged as SourcesChanged,
 )
 from .source_modes import ActivationStatus
 from .process_restart import RestartController
@@ -125,30 +96,12 @@ from .reference_provider import (
     ReferenceQueryError,
     ReferenceService,
 )
-from .role_access_service import (
-    MAX_ACCESS_LIMIT as MAX_ROLE_ACCESS_LIMIT,
-    MAX_FIND_LIMIT as MAX_ROLE_FIND_LIMIT,
-    MAX_PAGE_CHARS as MAX_ROLE_PAGE_CHARS,
-    MAX_OBJECT_QUERY_CHARS,
-    MAX_ROLE_QUERY_CHARS,
-    MAX_ROLE_LIST_LIMIT,
-    MIN_PAGE_CHARS as MIN_ROLE_PAGE_CHARS,
-    RoleAccessQueryError,
-    find_roles_payload,
-    get_role_access_payload,
-    http_status as role_http_status,
-    role_objects_payload,
-    roles_catalog_payload,
-)
 from .render import DETAIL_LEVELS
 from .runtime_config import (
-    ACCESS_HTTPS_PROXY,
     DASHBOARD_MODES,
     DASHBOARD_OFF,
-    DASHBOARD_ON,
-    AccessModeError,
+    DASHBOARD_ON as DASHBOARD_ON,
     DashboardModeError,
-    access_mode,
     dashboard_mode,
 )
 from .search import MAX_QUERY_CHARS

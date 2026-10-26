@@ -11,7 +11,6 @@ import hashlib
 import json
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import PurePosixPath
 from types import MappingProxyType
 from typing import Iterable, Mapping
@@ -59,7 +58,6 @@ from .converter_types import (
     ExtendedStructure,
     ConversionDiagnostic,
     StructureConversion,
-    _extended_payload_data,
     extended_layer_data,
 )
 from .base_layer import (

@@ -14,45 +14,30 @@
 
 from __future__ import annotations
 
-import difflib
-import hashlib
-import heapq
-import json
-import re
-import sys
+import difflib as difflib
 import threading
 import weakref
-from array import array
-from bisect import bisect_left, bisect_right
 from collections import OrderedDict
-from dataclasses import dataclass, field
-from pathlib import Path
-from types import MappingProxyType
-from typing import Iterator, Mapping, cast
+from dataclasses import dataclass
+from pathlib import Path as Path
+from typing import cast
 
 from . import (
     code_coverage,
     coverage_log,
-    cursor as cursor_codec,
-    replacements,
     source_ids,
 )
-from .bsl_lex import Процедура, разобрать
+from .bsl_lex import разобрать
 # Реэкспорты сохраняют прежние имена DTO и вспомогательных функций.
 from .code_coverage import (
-    _CodeCoverageLimitations,
     _CodeCoveragePayload,
-    _CodeProblemPayload,
-    _NEUTRAL_COVERAGE_CATEGORIES,
     _all_code_problems,
-    _iter_code_problems,
-    _safe_problem_reason,
+    _iter_code_problems as _iter_code_problems,
     CodeCoverage,
-    CodeProblemRow,
+    CodeProblemRow as CodeProblemRow,
 )
 from .intake_v2 import ExportIdentity
 from .module_content import read_bsl
-from .module_address import путь_модуля
 from .source_modes import ActivationStatus
 from .registry import (
     KIND_EXTENSION,
@@ -61,40 +46,16 @@ from .registry import (
     Registry,
     RegistrySnapshot,
     RegistryError,
-    SourceSnapshot,
     SourcesChanged,
 )
 from .render import (
-    BRIEF,
-    CallerSite,
-    DETAIL_LEVELS,
     FIELDS,
-    FULL,
-    FormHandlerBinding,
-    HTTPHandlerResolution,
-    MetadataBinding,
     ProcedureMatch,
-    ProcedureOutline,
-    http_service_path,
-    render_callers,
-    render_http_service,
-    render_subsystem,
-    render_module_toc,
-    render_object,
-    render_procedure_card,
-    render_procedure_search,
-    render_standard_procedure_search,
-    render_syntax_item,
-    render_xdto,
 )
-from .search import FIELD_KIND_TITLES
-from .standard_procedure_intents import recognize_standard_procedure_intent
-from .syntax_model import KIND_TITLES, SyntaxItem, parse_version, release
-from .virtual_tables import analyze_virtual_tables
-from .xdto import XDTOReadError, member_details, read_package_member
+from .syntax_model import SyntaxItem as SyntaxItem, parse_version, release
+from .xdto import read_package_member
 
 from . import tools_code, tools_syntax
-from .tools_common import MAX_LIMIT, _clamp, _notes_block, _render_notes
 from .tools_context import (
     CodeToolsContext,
     _CodeCapture,
@@ -103,73 +64,19 @@ from .tools_context import (
     _CodeView,
     _ConfigurationCodeSnapshot,
     _CodeAggregates,
-    _SignatureError,
-    _РазобраннаяПроцедура,
     _РазборМодуля,
 )
 from .tools_code import (
-    MAX_MODULE_SOURCE_FILE_BYTES,
+    MAX_MODULE_SOURCE_FILE_BYTES as MAX_MODULE_SOURCE_FILE_BYTES,
     ModuleSourceFile,
-    _AMBIGUOUS_OWNER,
-    _MODULE_CONTEXT_TITLES,
-    _OwnerBoundaries,
-    _ROLE_KIND_NAMES,
-    _StaleModules,
-    _address_owners,
-    _belongs_to_object,
-    _build_owner_boundaries,
-    _caller_boundaries,
-    _caller_site,
-    _close_matches,
-    _compare_configurations_snapshot,
-    _compilation_context,
-    _decode_http_service_cursor,
-    _decode_subsystem_cursor,
-    _encode_http_service_cursor,
-    _encode_subsystem_cursor,
-    _extension_delta,
-    _fields_section,
-    _form_bindings,
-    _http_handler_resolutions,
-    _http_handlers,
-    _http_service_cursor_digest,
-    _metadata_bindings,
-    _module_owner_lookup,
-    _module_warnings,
-    _modules_are_current,
-    _modules_availability_message,
-    _parsed_procedure,
-    _problem_text,
-    _procedure_body,
-    _procedure_limit,
-    _procedure_window,
-    _retry_stale_modules,
-    _subsystem_cursor_digest,
-    _unsupported_object_kind,
-    _ЦЕНА_ЗАПИСИ_КЭША,
-    _отрезок_процедуры,
-    _сигнатура_из_текста,
-    _строки_модуля,
+    _belongs_to_object as _belongs_to_object,
+    _build_owner_boundaries as _build_owner_boundaries,
+    _caller_site as _caller_site,
+    _close_matches as _close_matches,
+    _module_owner_lookup as _module_owner_lookup,
 )
 from .tools_syntax import (
-    _RE_РАЗДЕЛ_СПРАВКИ,
-    _SYNTAX_LINK_PAGE_SIZE,
-    _SYNTAX_LINK_SECTIONS,
-    _appears_later,
-    _deprecation_block,
-    _deprecation_for_context,
-    _hidden_block,
-    _replacement_block,
-    _syntax_context,
-    _syntax_navigation,
-    _syntax_navigation_page,
-    _syntax_notes_block,
-    _unavailable_here,
-    _unavailable_reason,
-    _отсечённые_однофамильцы,
-    _поисковый_элемент_справки,
-    _пустой_раздел_справки,
-    _точные_элементы,
+    _поисковый_элемент_справки as _поисковый_элемент_справки,
 )
 
 

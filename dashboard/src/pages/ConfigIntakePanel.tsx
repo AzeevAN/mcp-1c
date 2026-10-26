@@ -277,6 +277,12 @@ function PreviewDialog({
                 )}
               </section>
             )}
+            {preview.extension_impacts?.stale && (
+              <p className="intake-extension-impacts">
+                Состав расширений изменился после подготовки preview — связи
+                с расширениями пересчитаются при подтверждении.
+              </p>
+            )}
             <footer>
               <button className="button-danger-quiet" type="button" onClick={onDiscard} disabled={pending}>
                 Отменить и удалить preview

@@ -600,6 +600,7 @@ def test_create_строит_preview_и_публикует_только_посл
         "total": 0,
         "items": [],
         "truncated": False,
+        "stale": False,
     }
     assert {layer["decision"] for layer in preview["preview"]["layers"]} == {
         "apply"
@@ -1302,6 +1303,7 @@ def test_m8_GET_preview_и_jobs_не_восстанавливают_payload(
             "state": "target_missing",
         }] if with_impacts else [],
         "truncated": False,
+        "stale": False,
     }
     if restart:
         service = _service(registry)
@@ -1664,3 +1666,51 @@ def test_m6_битый_commit_предупреждает_один_раз(tmp_pat
 
     warnings = [r for r in caplog.records if "m6-broken-commit" in r.getMessage()]
     assert len(warnings) == 1
+
+
+
+# M7 (ревью реализации аудита): снимок влияния расширений сделан при
+# prepare. Если состав расширений конфигурации потом изменился, статус
+# preview помечает предупреждение устаревшим, не пересчитывая слои (M8).
+
+def test_m7_статус_preview_помечает_impacts_устаревшими_после_смены_расширений(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("ADMIN_TOKEN", "admin-token")
+    registry = Registry(tmp_path / "data")
+    service = _service(registry)
+    monkeypatch.setattr(registry, "preview_extension_relations", lambda *_a, **_kw: ())
+    _candidate, job_id = _m8_prepared(service)
+    client = _client(registry, service)
+    fresh = client.get(f"{M8_INTAKE}/jobs/{job_id}", headers=M8_ADMIN).json()["job"]
+    assert fresh["preview"]["extension_impacts"]["stale"] is False
+
+    original = service._extension_basis
+    monkeypatch.setattr(
+        service, "_extension_basis",
+        lambda identity: (*original(identity), ("extension", "Новое", "g-1")),
+    )
+    restore_calls = _m8_count_payload_restore(monkeypatch)
+
+    stale = client.get(f"{M8_INTAKE}/jobs/{job_id}", headers=M8_ADMIN).json()["job"]
+
+    assert stale["preview"]["extension_impacts"]["stale"] is True
+    assert stale["state"] == "done"
+    assert restore_calls == {"load_layer_payload": 0, "configuration_from_base_layer": 0}
+
+
+def test_m7_основа_снимка_меняется_при_публикации_расширения(tmp_path):
+    from mcp1c.intake_v2 import ExportIdentity
+    from test_registry_restore_isolation import _publish_extension, publish_base
+
+    registry = Registry(tmp_path / "data")
+    publish_base(registry, tmp_path, "DemoConfiguration", "m7-base")
+    service = _service(registry)
+    identity = ExportIdentity.configuration("DemoConfiguration")
+    before = service._extension_basis(identity)
+
+    _publish_extension(registry, tmp_path, "m7-extension")
+
+    after = service._extension_basis(identity)
+    assert before != after
+    assert any(item[0] == "extension" and item[1] == "DemoExtension" for item in after)

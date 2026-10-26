@@ -653,7 +653,37 @@ class IntakeApiService:
                 for item in impacts[:_MAX_EXTENSION_IMPACT_ITEMS]
             ],
             "truncated": len(impacts) > _MAX_EXTENSION_IMPACT_ITEMS,
+            "basis": [list(item) for item in self._extension_basis(preview.plan.identity)],
         }
+
+    def _extension_basis(self, identity: ExportIdentity) -> tuple[tuple[str, str, str], ...]:
+        """Состав active-поколений той же конфигурации, кроме самого кандидата.
+
+        Снимок влияния расширений считается при prepare; дешёвая сверка этого
+        состава при чтении статуса показывает, что снимок устарел (M7), без
+        восстановления слоёв (M8). Публикация пересчитывает связи сама.
+        """
+        configuration = (
+            identity.configuration_name
+            if identity.source_kind is SourceKind.CONFIGURATION
+            else identity.parent_configuration
+        )
+        basis = []
+        for generation in self.registry.snapshot().generations.values():
+            other = generation.manifest.identity
+            context = (
+                other.configuration_name
+                if other.source_kind is SourceKind.CONFIGURATION
+                else other.parent_configuration
+            )
+            if context != configuration or other == identity:
+                continue
+            basis.append((
+                other.source_kind.value,
+                other.extension_name or other.configuration_name,
+                generation.manifest.generation_id,
+            ))
+        return tuple(sorted(basis))
 
     def prepare(self, work: IntakeWork) -> None:
         if not isinstance(work, IntakeWork):
@@ -837,7 +867,12 @@ class IntakeApiService:
                     preview=None,
                 )
                 return payload
-        payload["preview"]["extension_impacts"] = preview.extension_impacts
+        impacts = dict(preview.extension_impacts)
+        basis = impacts.pop("basis", None)
+        impacts["stale"] = basis is not None and [
+            list(item) for item in self._extension_basis(preview.plan.identity)
+        ] != basis
+        payload["preview"]["extension_impacts"] = impacts
         return payload
 
 

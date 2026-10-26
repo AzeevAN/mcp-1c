@@ -846,3 +846,34 @@ it("повреждённую готовую job показывает с прич
     expect(screen.queryByRole("button", { name: "Отменить операцию job-broken-preview" })).toBeNull();
   });
 });
+
+it("помечает влияние на расширения устаревшим после смены их состава", async () => {
+  const staleJob = {
+    job_id: "job-stale-impacts",
+    candidate_id: candidate.id,
+    state: "done",
+    stage: "done",
+    error: "",
+    preview: {
+      ...preview,
+      extension_impacts: { ...preview.extension_impacts, stale: true },
+    },
+    commit: null,
+  };
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    const path = String(input);
+    if (path === "/api/v1/sources/admin") return response(adminSnapshot());
+    if (path === "/api/v1/sources/intake") return response({ ...snapshot(), jobs: [staleJob] });
+    if (path === "/api/v1/sources/intake/jobs/job-stale-impacts") return response({ job: staleJob });
+    throw new Error(`Неожиданный запрос ${path}`);
+  }));
+  renderPanel();
+
+  fireEvent.click(await screen.findByRole("button", {
+    name: "Открыть preview: СинтетическаяКонфигурация · configuration.zip",
+  }));
+  const dialog = await screen.findByRole("dialog", { name: "Проверка изменений" });
+
+  expect(within(dialog).getByText(/Состав расширений изменился после подготовки preview/))
+    .toBeInTheDocument();
+});

@@ -636,10 +636,26 @@ class _PreviewMetadata:
     plan: IntakePlan
 
 
+def _extension_basis(value: object) -> list[list[str]] | None:
+    """Состав active-поколений конфигурации на момент prepare (M7)."""
+    if value is None:
+        return None
+    if not isinstance(value, list) or any(
+        not isinstance(item, list) or len(item) != 3
+        or not all(isinstance(part, str) for part in item)
+        for item in value
+    ):
+        raise OperationStalePreview(
+            "Сохранённый preview содержит неверный снимок состава расширений. "
+            "Подготовьте preview заново."
+        )
+    return [list(item) for item in value]
+
+
 def _extension_impacts(value: object) -> dict[str, object]:
     if (
         not isinstance(value, dict)
-        or set(value) != {"total", "items", "truncated"}
+        or set(value) - {"basis"} != {"total", "items", "truncated"}
         or type(value["total"]) is not int or value["total"] < 0
         or not isinstance(value["items"], list)
         or type(value["truncated"]) is not bool
@@ -658,11 +674,16 @@ def _extension_impacts(value: object) -> dict[str, object]:
             "Сохранённый preview не содержит корректного снимка влияния расширений. "
             "Подготовьте preview заново."
         )
-    return {
+    result: dict[str, object] = {
         "total": value["total"],
         "items": [dict(item) for item in value["items"]],
         "truncated": value["truncated"],
     }
+    # Старые preview без снимка состава читаются: устаревание тогда неизвестно.
+    basis = _extension_basis(value.get("basis"))
+    if basis is not None:
+        result["basis"] = basis
+    return result
 
 
 

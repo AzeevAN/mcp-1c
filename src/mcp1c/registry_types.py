@@ -57,6 +57,14 @@ class RegistryError(Exception):
     """Источник не загружается или запрошено то, чего нет."""
 
 
+class AddressNotFoundError(RegistryError):
+    """Запрошенного адреса нет: объекта, модуля или процедуры.
+
+    Для MCP это обычная ошибка инструмента с подсказками. Дашборд показывает
+    её текст карточкой: там подсказки — ссылки для следующего перехода.
+    """
+
+
 class SourceInUseError(RegistryError):
     """Файл снова используется или ещё готовится к публикации."""
 
@@ -213,6 +221,8 @@ class LoadedSyntax:
     # Тип-родитель (`ДокументОбъект`) -> события, которые платформа вызывает
     # в модуле сама (`platform_events`).
     events: dict[str, tuple[SyntaxItem, ...]] = field(default_factory=dict)
+    # Виды объектов, у которых в справке есть таблицы запроса (`РегистрНакопления`).
+    table_kinds: frozenset[str] = frozenset()
 
     def find_exact(self, name: str) -> list[SyntaxItem]:
         return self.by_name.get(name.strip().lower(), [])

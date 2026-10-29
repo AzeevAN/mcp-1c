@@ -262,3 +262,23 @@ def test_syntax_card_api_отклоняет_некорректное_смеще�
 
     assert response.status_code == 422
     assert "links_offset" in response.json()["error"]
+
+
+def test_карточка_несуществующего_объекта_с_подсказками(tmp_path):
+    registry = _registry(tmp_path)
+
+    with _client(registry, tmp_path) as client:
+        response = client.get(
+            "/api/v1/cards/object",
+            params={
+                "config": "ТестоваяКонфигурация",
+                "name": "Справочник.Контрагент",
+                "detail": "fields",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    markdown = response.json()["markdown"]
+    assert "нет объекта `Справочник.Контрагент`" in markdown
+    assert "Возможно, имелось в виду" in markdown
+    assert "`Справочник.Контрагенты`" in markdown

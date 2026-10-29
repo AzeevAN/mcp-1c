@@ -331,14 +331,6 @@ def _platform_from_path(path: Path) -> str:
     return ""
 
 
-# Метка формата кэшей справки. Меняется, когда элементы справки при чтении
-# получают другие адреса или ключи: отпечаток файлов индекса при этом прежний,
-# и старый кэш отдал бы старые адреса. «-2» — поля таблиц запроса получили
-# таблицу-владельца (2026-10-29).
-_SYNTAX_CACHE_KIND = "syntax-2"
-_LOOKUP_CACHE_KIND = "lookup-2"
-
-
 def _build_name_lookup(syntax: SyntaxIndex) -> dict[str, list[SyntaxItem]]:
     lookup: dict[str, list[SyntaxItem]] = {}
     for item in syntax.items.values():
@@ -948,13 +940,13 @@ class Registry:
     def _syntax_index(self, syntax: SyntaxIndex, source: Source) -> SearchIndex:
         path = self._cache_path(source.id, "syntax")
         cached = index_cache.load(
-            path, syntax.items, source_sha256=source.sha256, kind=_SYNTAX_CACHE_KIND
+            path, syntax.items, source_sha256=source.sha256, kind="syntax"
         )
         if cached is not None:
             return cached
 
         index = index_syntax(syntax)
-        index_cache.save(index, path, source_sha256=source.sha256, kind=_SYNTAX_CACHE_KIND)
+        index_cache.save(index, path, source_sha256=source.sha256, kind="syntax")
         return index
 
     def _syntax_lookup(
@@ -962,7 +954,7 @@ class Registry:
     ) -> dict[str, list[SyntaxItem]]:
         """Словарь имён справки. В кэше — идентификаторы, не сами элементы."""
         path = self._cache_path(source.id, "lookup")
-        raw = index_cache.load_blob(path, source_sha256=source.sha256, kind=_LOOKUP_CACHE_KIND)
+        raw = index_cache.load_blob(path, source_sha256=source.sha256, kind="lookup")
         if raw is not None:
             try:
                 return {key: [syntax.items[i] for i in ids] for key, ids in raw.items()}
@@ -975,7 +967,7 @@ class Registry:
             {key: [item.id for item in items] for key, items in lookup.items()},
             path,
             source_sha256=source.sha256,
-            kind=_LOOKUP_CACHE_KIND,
+            kind="lookup",
         )
         return lookup
 

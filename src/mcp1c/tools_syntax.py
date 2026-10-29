@@ -83,10 +83,14 @@ def _объект_конфигурации(context, query: str, kind: str | None
     wanted = query.strip().casefold()
     if not wanted:
         return []
+    # Только виды, у которых в справке есть таблицы запроса: общий модуль
+    # или роль с тем же именем увели бы агента в пустой вызов.
+    виды = context.syntax.table_kinds
     found = [
         full_name
         for full_name, obj in context.configuration.config.objects.items()
-        if full_name.casefold() == wanted or obj.name.casefold() == wanted
+        if (full_name.casefold() == wanted or obj.name.casefold() == wanted)
+        and full_name.partition(".")[0] in виды
     ]
     return [
         f"В конфигурации есть `{full_name}`: таблицы запроса с подставленными "
@@ -167,7 +171,8 @@ def search_syntax(
         # Справка описывает часть таблиц дважды: регистр бухгалтерии с
         # корреспонденцией и без, а `Остатки` — просто повтором разметки.
         # Две одинаковые строки выглядели ошибкой; вариант — в `get_syntax`.
-        if item.kind == "query_table":
+        # Поля такой таблицы получают те же адреса, что и у её повтора.
+        if item.kind in ("query_table", "query_field"):
             if item.address in показанные:
                 continue
             показанные.add(item.address)
@@ -530,7 +535,8 @@ def _шаблоны_для_имени(context, name: str) -> list[SyntaxItem]:
         if all(
             part.startswith("<") or part.casefold() == wanted.casefold()
             for part, wanted in zip(шаблон[1:], сегменты[1:])
-        ) and item not in найденные:
+        ) and all(item.address != found.address for found in найденные):
+            # Таблицу, описанную дважды, открывает один адрес.
             найденные.append(item)
     return найденные
 
@@ -680,11 +686,13 @@ def get_syntax(
             карточка = get_syntax(
                 registry, глобальные[0].address, config, detail, links_offset
             )
+            остальные = [item for item in exact if item is not глобальные[0]]
             прочие = "\n".join(
                 f"Есть также: `{item.address}` — {KIND_TITLES.get(item.kind, item.kind)}"
-                for item in exact
-                if item is not глобальные[0]
+                for item in остальные[:15]
             )
+            if len(остальные) > 15:
+                прочие += f"\nЕсть также: ещё {len(остальные) - 15}"
             тело, разделитель, оговорки = карточка.partition("\n---\n> **Оговорки")
             return (
                 тело.rstrip("\n") + "\n\n" + прочие + "\n"

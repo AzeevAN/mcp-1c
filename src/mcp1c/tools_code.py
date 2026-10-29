@@ -25,6 +25,7 @@ from .module_address import путь_модуля
 from .registry_types import (
     KIND_EXTENSION,
     LoadedModules,
+    AddressNotFoundError,
     RegistryError,
     SourceSnapshot,
     SourcesChanged,
@@ -344,7 +345,7 @@ def get_object(
         )
         # Адреса, которого нет, — ошибка инструмента с подсказкой, как во
         # всех инструментах по конкретному адресу; пустой поиск — не ошибка.
-        raise RegistryError(
+        raise AddressNotFoundError(
             f"В конфигурации {context.name} нет объекта `{full_name}`.\n\n"
             + (f"Возможно, имелось в виду:\n{suggestion}\n" if suggestion else "")
             + _notes_block(context)
@@ -815,7 +816,7 @@ def get_related(
 
     if full_name not in context.configuration.config.objects:
         похожие = similar_objects(context.configuration, full_name)
-        raise RegistryError(
+        raise AddressNotFoundError(
             f"В конфигурации {context.name} нет объекта `{full_name}`."
             + (
                 "\n\nВозможно, имелось в виду:\n"
@@ -893,6 +894,12 @@ def get_related(
         offset = state["offset"]
 
     end = min(offset + limit, len(rows))
+    # Оба числа на каждой странице: иначе первая страница из одних исходящих
+    # читалась как «на объект никто не ссылается».
+    out.extend((
+        f"Ссылается на: {len(outgoing)} · ссылаются на него: {len(incoming)}",
+        "",
+    ))
     titles = (
         f"## Ссылается на ({len(outgoing)})",
         f"## Ссылаются на него ({len(incoming)})",
@@ -2032,7 +2039,7 @@ def _get_procedure_once(
         if not _modules_are_current(registry, loaded):
             raise _StaleModules
         хвост = "" if not похожие else "\n\nВозможно, имелось в виду:\n" + "\n".join(f"- `{item}`" for item in похожие)
-        raise RegistryError(
+        raise AddressNotFoundError(
             warning_prefix + f"Модуль `{модуль}` в загруженном коде не найден.{хвост}\n"
         )
     модуль = канонический_модуль
@@ -2101,7 +2108,7 @@ def _get_procedure_once(
         if not _modules_are_current(registry, loaded):
             raise _StaleModules
         хвост = "" if not похожие else "\n\nВозможно, имелось в виду:\n" + "\n".join(f"- `{item}`" for item in похожие)
-        raise RegistryError(
+        raise AddressNotFoundError(
             warning_prefix + f"В модуле `{модуль}` нет процедуры `{имя}`.{хвост}\n"
         )
     запись = совпадения[0]
@@ -2429,7 +2436,7 @@ def _get_callers_once(
         )
         if not _modules_are_current(registry, loaded):
             raise _StaleModules
-        raise RegistryError(
+        raise AddressNotFoundError(
             warning_prefix + f"Модуль `{module}` в загруженном коде не найден.{хвост}\n"
         )
     module = canonical_module
@@ -2455,7 +2462,7 @@ def _get_callers_once(
         )
         if not _modules_are_current(registry, loaded):
             raise _StaleModules
-        raise RegistryError(
+        raise AddressNotFoundError(
             warning_prefix + f"В модуле `{module}` нет процедуры `{name}`.{хвост}\n"
         )
     canonical_name = совпадения[0].имя

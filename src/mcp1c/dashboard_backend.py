@@ -47,6 +47,7 @@ from .registry import (
     RegistryChangedExternally,
     RegistryError,
 )
+from .registry_types import AddressNotFoundError
 from .search import FIELD_KIND_TITLES
 from .syntax_model import KIND_TITLES
 from .v8container import V8ContainerError
@@ -876,7 +877,12 @@ def card_text(
     """Буквальный текст карточки для MCP и JSON API SPA."""
     if kind == "syntax":
         return tools.get_syntax(registry, name, config or None, detail, links_offset)
-    return tools.get_object(registry, name, config or None, detail)
+    try:
+        return tools.get_object(registry, name, config or None, detail)
+    except AddressNotFoundError as error:
+        # Для MCP «объекта нет» — ошибка инструмента; карточке нужен тот же
+        # текст с похожими объектами, по которым можно перейти дальше.
+        return str(error)
 
 def kind_title(scope: str, kind: str) -> str:
     """Подпись вида найденного элемента — той же таблицей, что видит агент.

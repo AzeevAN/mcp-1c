@@ -25,7 +25,7 @@ from .search_keys import coverage as search_keys_coverage
 from .syntax_model import SyntaxIndex, parse_version
 from .v8container import V8ContainerError
 from .platform_events import event_catalog
-from .virtual_tables import build_table_index
+from .virtual_tables import build_table_index, table_placeholder
 
 if TYPE_CHECKING:
     from .registry import Registry
@@ -320,6 +320,12 @@ def prepare_syntax(
         by_name=registry._syntax_lookup(merged, stamp),
         tables=build_table_index(merged),
         events=event_catalog(merged),
+        table_kinds=frozenset(
+            parsed[0]
+            for item in merged.items.values()
+            if item.kind == "query_table"
+            and (parsed := table_placeholder(item.full_ru)) is not None
+        ),
     )
     return loaded, problems
 

@@ -818,7 +818,8 @@ def _register_callers_object_and_syntax_tools(
             "которые соединены почти со всем (дополнительные реквизиты, "
             "значения доступа), и список имён на втором шаге правдоподобен, но "
             "бессмыслен. Нужна цепочка через несколько объектов — стройте её "
-            "повторными вызовами по конкретному имени из выдачи."
+            "повторными вызовами по конкретному имени из выдачи. Длинный "
+            "список дочитывается готовым вызовом из блока «Продолжение»."
         )
     )
     @_expected_registry_errors
@@ -826,8 +827,17 @@ def _register_callers_object_and_syntax_tools(
         full_name: Annotated[str, Field(
             description="Полное имя объекта, например `Документ.ЧекККМ`.")],
         config: CONFIG_PARAM = None,
+        limit: Annotated[int, Field(
+            ge=1, le=200, description="Связей на странице, от 1 до 200.")] = 40,
+        cursor: Annotated[str | None, Field(
+            description=(
+                "Непрозрачный cursor из блока «Продолжение» предыдущего ответа "
+                "get_related; передавайте без изменений с теми же full_name и "
+                "config."
+            )
+        )] = None,
     ) -> str:
-        return tools.get_related(registry, full_name, config)
+        return tools.get_related(registry, full_name, config, limit, cursor)
 
     @server.tool(
         description=(

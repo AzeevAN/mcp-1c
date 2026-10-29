@@ -95,7 +95,8 @@ async def test_у_связей_нет_параметра_глубины(инст
     свойства = (связи.input_schema or {}).get("properties") or {}
 
     assert "depth" not in свойства
-    assert set(свойства) == {"full_name", "config"}
+    # Продолжение того же списка прямых связей (2026-10-29), не второй шаг.
+    assert set(свойства) == {"full_name", "config", "limit", "cursor"}
 
 
 async def test_поиск_отправляет_к_подробностям(инструменты):

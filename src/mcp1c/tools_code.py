@@ -755,6 +755,7 @@ def get_related(
     full_name: str,
     config: str | None = None,
     limit: int = 40,
+    cursor: str | None = None,
     *, _ctx: CodeToolsContext,
 ) -> str:
     """Что задевает задача: движения, ссылки, зависимости объекта.
@@ -811,25 +812,69 @@ def get_related(
         names = ", ".join(f"`{item}`" for item in extensions)
         return f"`{value}` *(перекрыто {label} {names})*"
 
+    # Один список: сначала исходящие, затем входящие. Обрезка «… ещё 75»
+    # без продолжения прятала большую часть ответа на «что сломается»: у
+    # документа со 115 входящими связями агент видел 40.
     outgoing = graph.outgoing(full_name, include_weak=False)
-    if outgoing:
-        out.append(f"## Ссылается на ({len(outgoing)})")
-        out.append("")
-        for edge in outgoing[: _clamp(limit)]:
-            out.append(f"- {related_name(edge.target)} — {edge.title}")
-        if len(outgoing) > limit:
-            out.append(f"- … ещё {len(outgoing) - limit}")
-        out.append("")
-
     incoming = graph.incoming(full_name)
-    if incoming:
-        out.append(f"## Ссылаются на него ({len(incoming)})")
+    rows = [(0, edge.target, edge.title) for edge in outgoing] + [
+        (1, edge.source, edge.title) for edge in incoming
+    ]
+    # Свой предел: общий `_clamp` (50) рассчитан на поиск, а связи читаются
+    # списком до конца.
+    limit = max(1, min(int(limit), 200))
+    digest = hashlib.sha256(
+        json.dumps([context.name, full_name, rows], ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+    offset = 0
+    if cursor is not None:
+        try:
+            state = cursor_codec.decode(cursor)
+        except cursor_codec.DECODE_ERRORS:
+            state = None
+        if (
+            not isinstance(state, dict)
+            or set(state) != {"v", "sha256", "offset"}
+            or state["v"] != 1
+            or state["sha256"] != digest
+            or type(state["offset"]) is not int
+            or not 0 < state["offset"] < len(rows)
+        ):
+            raise RegistryError(
+                "Курсор относится к другому объекту, конфигурации или устаревшему "
+                "списку связей; начните чтение заново."
+            )
+        offset = state["offset"]
+
+    end = min(offset + limit, len(rows))
+    titles = (
+        f"## Ссылается на ({len(outgoing)})",
+        f"## Ссылаются на него ({len(incoming)})",
+    )
+    previous = None
+    for side, name, title in rows[offset:end]:
+        if side != previous:
+            if previous is not None:
+                out.append("")
+            out.extend((titles[side], ""))
+            previous = side
+        out.append(f"- {related_name(name)} — {title}")
+    if previous is not None:
         out.append("")
-        for edge in incoming[: _clamp(limit)]:
-            out.append(f"- {related_name(edge.source)} — {edge.title}")
-        if len(incoming) > limit:
-            out.append(f"- … ещё {len(incoming) - limit}")
-        out.append("")
+    if end < len(rows):
+        next_cursor = cursor_codec.encode({"v": 1, "sha256": digest, "offset": end})
+        arguments = json.dumps(
+            {"full_name": full_name, "config": context.name,
+             "cursor": next_cursor, "limit": limit},
+            ensure_ascii=False,
+        )
+        out.extend((
+            f"Связей: {len(rows)}. Показаны {offset + 1}–{end}.",
+            "",
+            "Продолжение (аргументы следующего вызова):",
+            f"`get_related({arguments})`",
+            "",
+        ))
 
     return "\n".join(out) + "\n" + _notes_block(context)
 

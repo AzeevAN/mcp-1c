@@ -1348,7 +1348,7 @@ def _incoming_section(obj: MetadataObject, graph: Graph, limit: int) -> list[str
     for source in sorted(grouped)[:limit]:
         lines.append(f"- `{source}` — {', '.join(sorted(set(grouped[source])))}")
     if len(grouped) > limit:
-        lines.append(f"- … ещё {len(grouped) - limit}")
+        lines.append(f"- … ещё {len(grouped) - limit} — полный список: get_related")
     return _section(f"На объект ссылаются ({len(grouped)})", lines)
 
 

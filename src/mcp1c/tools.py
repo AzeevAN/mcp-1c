@@ -1224,6 +1224,7 @@ def get_related(
     full_name: str,
     config: str | None = None,
     limit: int = 40,
+    cursor: str | None = None,
 ) -> str:
     """Что задевает задача: движения, ссылки, зависимости объекта.
 
@@ -1240,7 +1241,9 @@ def get_related(
     информацию несёт ребро, а не узел. Отвечать «через что» должны пути, а не
     окрестность; такой инструмент потребует живого случая и проверки точности.
     """
-    return tools_code.get_related(registry, full_name, config, limit, _ctx=_code_tools_context())
+    return tools_code.get_related(
+        registry, full_name, config, limit, cursor, _ctx=_code_tools_context()
+    )
 
 
 def _extension_overrides(

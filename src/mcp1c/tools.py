@@ -448,6 +448,11 @@ def _capture_configurations_list(
     )
 
 
+def _modules_word(count: int) -> str:
+    """«у 1 модуля», «у 21 модуля», но «у 11 модулей»."""
+    return "модуля" if count % 10 == 1 and count % 100 != 11 else "модулей"
+
+
 def _loaded_partial_warning(
     loaded: LoadedModules, *, corpus: str = ""
 ) -> str | None:
@@ -461,12 +466,19 @@ def _loaded_partial_warning(
     suffix = f" {corpus}" if corpus else ""
     evidence_note = ""
     if limitations["compiled_without_source"]:
+        count = limitations["compiled_without_source"]
+        # Безымянное «у 3 модулей» не говорит, касается ли пробел модуля,
+        # о котором спрашивают; имена есть в оглавлении.
+        names = loaded.оглавление.скомпилированные()
+        listed = ", ".join(f"`{name}`" for name in names[:5])
+        if len(names) > 5:
+            listed += f" и ещё {len(names) - 5}"
         evidence_note = (
-            f"В корпусе кода{suffix} исходный текст недоступен у "
-            f"{limitations['compiled_without_source']} модулей. Сведения о "
-            "процедурах, вызовах и перекрытиях приведены только по доступным "
-            "исходникам; пустой результат не доказывает отсутствие кода в "
-            "таких модулях."
+            f"В корпусе кода{suffix} исходный текст недоступен у {count} "
+            f"{_modules_word(count)}" + (f": {listed}" if listed else "")
+            + ". Сведения о процедурах, вызовах и перекрытиях приведены только "
+            "по доступным исходникам; пустой результат не доказывает "
+            "отсутствие кода в таких модулях."
         )
     if not projection["has_limitations"]:
         return evidence_note or None

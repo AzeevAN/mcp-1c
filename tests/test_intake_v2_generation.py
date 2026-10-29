@@ -340,7 +340,7 @@ def test_общий_модуль_без_тела_виден_как_opaque_но_�
         "НесуществующаяПроцедура",
         config="DemoConfiguration",
     )
-    assert "исходный текст недоступен у 1 модулей" in answer
+    assert "исходный текст недоступен у 1 модуля: " in answer
     assert "пустой результат не доказывает отсутствие кода" in answer
     assert "Покрытие кода неполно" not in answer
 

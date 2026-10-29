@@ -9,6 +9,7 @@ from . import replacements
 from .registry_types import RegistryError
 from .render import DETAIL_LEVELS, FIELDS, FULL, render_syntax_item
 from .syntax_model import KIND_TITLES, SyntaxItem, parse_version, release
+from .model import KIND_TO_MANAGER
 from .virtual_tables import table_placeholder
 from .tools_common import _clamp, _render_notes
 
@@ -469,6 +470,43 @@ def _точные_элементы(context, name: str) -> list[SyntaxItem]:
     return содержательные or matching
 
 
+# Множественное имя менеджера в коде → вид: `Справочники` → `Справочник`.
+_MANAGER_TO_KIND = {manager: kind for kind, manager in KIND_TO_MANAGER.items()}
+
+
+def _шаблоны_для_имени(context, name: str) -> list[SyntaxItem]:
+    """Шаблоны справки для конкретного имени: `Справочники.Номенклатура.ПустаяСсылка`.
+
+    Справка описывает члены объектов один раз на вид —
+    `СправочникМенеджер.<Имя справочника>.ПустаяСсылка`, — и агент, спросивший
+    так, как пишет в коде, получал «совпадения нет». Первый сегмент — вид в
+    любой из форм кода (`Справочник`, `Справочники`) с окончаниями типов
+    справки, сегмент `<…>` шаблона совпадает с любым одним сегментом.
+    """
+    сегменты = name.strip().split(".")
+    if len(сегменты) < 3 or not all(сегменты):
+        return []
+    вид = _MANAGER_TO_KIND.get(сегменты[0], сегменты[0])
+    первые = {
+        value.casefold()
+        for base in {сегменты[0], вид}
+        for value in (base, base + "Менеджер", base + "Ссылка", base + "Объект")
+    }
+    найденные: list[SyntaxItem] = []
+    for item in context.syntax.find_exact(сегменты[-1]):
+        шаблон = item.address.split(".")
+        if len(шаблон) != len(сегменты) or шаблон[0].casefold() not in первые:
+            continue
+        if not any(part.startswith("<") for part in шаблон[1:-1]):
+            continue
+        if all(
+            part.startswith("<") or part.casefold() == wanted.casefold()
+            for part, wanted in zip(шаблон[1:], сегменты[1:])
+        ) and item not in найденные:
+            найденные.append(item)
+    return найденные
+
+
 def get_syntax(
     registry: Registry,
     name: str,
@@ -496,6 +534,28 @@ def get_syntax(
     # Правильный вывод — что метод есть, но для этой версии нужен другой путь.
     if matching and not exact:
         return _unavailable_here(context, matching)
+
+    if not matching:
+        шаблоны = [item for item in _шаблоны_для_имени(context, name) if keep(item)]
+        if len(шаблоны) == 1:
+            карточка = get_syntax(
+                registry, шаблоны[0].address, config, detail, links_offset
+            )
+            return (
+                f"> Шаблон справки для `{name.strip()}`: в справке члены "
+                "объектов описаны один раз на вид, с `<Имя …>` вместо имени.\n\n"
+                + карточка
+            )
+        if шаблоны:
+            строки = "\n".join(
+                f"- `{item.address}` — {KIND_TITLES.get(item.kind, item.kind)}"
+                for item in шаблоны
+            )
+            return (
+                f"# Шаблоны справки для `{name.strip()}`\n\n{строки}\n\n"
+                "Повторите вызов с адресом из списка.\n"
+                + _syntax_notes_block(context)
+            )
 
     if not exact:
         raw = context.syntax.index.search(name, limit=20)

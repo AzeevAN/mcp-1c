@@ -24,6 +24,7 @@ from typing import Any
 
 from . import fsio, index_cache
 
+from .syntax_parser import returns_types
 from .syntax_model import (
     SyntaxFacts,
     SyntaxIndex,
@@ -160,7 +161,9 @@ def _item_from_dict(raw: dict[str, Any]) -> SyntaxItem:
             title=v.get("title", ""),
             signature=v.get("signature", ""),
             params=[SyntaxParam(**p) for p in v.get("params") or []],
-            returns=list(v.get("returns") or []),
+            returns=returns_types(
+                v.get("returns_description", ""), list(v.get("returns") or [])
+            ),
             returns_description=v.get("returns_description", ""),
             description=v.get("description", ""),
         )

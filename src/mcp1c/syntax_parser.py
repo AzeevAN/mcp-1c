@@ -262,12 +262,45 @@ def _parse_params(fragment: str) -> list[SyntaxParam]:
     return params
 
 
+_RE_RETURNS_HEAD = re.compile(r"\s*Тип:\s*(.*?)(?:\.(?:\s|$)|\n|$)", re.S)
+
+
+def returns_types(description: str, fallback: list[str]) -> list[str]:
+    """Типы возврата по строке `Тип: A, B.` из начала описания.
+
+    Ссылки раздела (`fallback`) берут и значения из пояснения: у
+    `ЗначениеЗаполнено` выходило «Булево, Булево, Истина, Строка…». Из них
+    остаются только названные в строке «Тип:»; если ни одна не названа —
+    имена из самой строки. Строка «Тип:» хранится в описании и у старых
+    индексов, поэтому так же исправляется сохранённое. Без неё
+    (`Прежнее значение…`) типы остаются как были.
+    """
+    match = _RE_RETURNS_HEAD.match(description)
+    if match is None:
+        return fallback
+    head = match.group(1)
+    named: list[str] = []
+    for name in fallback:
+        if name not in named and re.search(
+            rf"(?<!\w){re.escape(name)}(?!\w)", head
+        ):
+            named.append(name)
+    if named:
+        return named
+    # Без ссылок в строке бывает и проза («другой объект, который может
+    # быть макетом»): имя типа пробелов не содержит, кроме шаблона
+    # `<Имя справочника>`.
+    plain = [t.strip() for t in re.split(r"[,;]", head) if t.strip()]
+    names = [t for t in plain if not re.search(r"\s", re.sub(r"<[^<>]*>", "", t))]
+    return names or plain or fallback
+
+
 def _parse_returns(fragment: str) -> tuple[list[str], str]:
-    types = _link_texts(fragment)
     text = _text(fragment)
+    types = _link_texts(fragment)
     if not types:
         types = [t.strip() for t in text.split(".", 1)[0].split(",") if t.strip()]
-    return types, text
+    return returns_types(text, types), text
 
 
 def _kind_from_path(path: str) -> str:

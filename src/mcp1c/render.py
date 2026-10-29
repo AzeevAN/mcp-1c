@@ -1532,6 +1532,12 @@ def render_syntax_item(
             out.append("")
         if variant.returns:
             out.append(f"Возвращает: {', '.join(variant.returns)}")
+            # Первая строка описания — те же типы («Тип: Булево.»), дальше
+            # то, ради чего раздел читают: что именно возвращается.
+            lines = variant.returns_description.splitlines()
+            if lines and lines[0].lstrip().startswith("Тип:"):
+                lines = lines[1:]
+            out.extend(f"  {line.strip()}" for line in lines if line.strip())
             out.append("")
         if variant.description:
             out.append(variant.description)

@@ -24,7 +24,7 @@ from mcp1c.intake_v2 import CandidateTransport, VirtualExportTree
 from mcp1c.resource_limits import ResourceLimits
 from test_resource_limits import (
     _m2_forbid_zip_constructor,
-    _m2_oversized_directory,
+    _m2_write_oversized,
     _m2_zip_bytes,
 )
 
@@ -695,7 +695,7 @@ def test_zip_tree_отказывает_по_eocd_до_zipfile_и_закрыва�
     TransportLimitError = _symbol("TransportLimitError")
     module = importlib.import_module(SUBJECT)
     path = tmp_path / "oversized.zip"
-    path.write_bytes(_m2_oversized_directory(kind))
+    _m2_write_oversized(path, kind)
     opened = []
     original = module._open_regular_file
 
@@ -739,7 +739,7 @@ def test_incoming_refresh_сохраняет_issue_превышенного_eocd
     managed, browser, _records, operations = _backend(tmp_path)
     incoming = tmp_path / "incoming"
     incoming.mkdir()
-    (incoming / "oversized.zip").write_bytes(_m2_oversized_directory(kind))
+    _m2_write_oversized(incoming / "oversized.zip", kind)
     limits = _small_limits(max_entries=100_000 if kind == "zip64-entries" else 2)
     lifecycle = IntakeLifecycle(
         CandidateCatalog(managed / "catalog"), browser, operations,

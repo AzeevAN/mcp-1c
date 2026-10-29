@@ -69,14 +69,78 @@ def _m2_eocd(entries=0, size_cd=0, *, comment=b""):
 
 
 def _m2_zip64_eocd(entries=0, size_cd=0, *, comment=b"", force_sentinels=False):
+    # Хвост согласован как у настоящего ZIP64: каталог из size_cd байт лежит
+    # со смещения 0 и кончается там, где начинается запись ZIP64 EOCD
+    # (reloff локатора == diroffset + size_cd). Новые патчи CPython иначе
+    # отвергают архив как повреждённый раньше нашей проверки предела.
+    # Сами size_cd байт каталога добавляет _m2_zip64_padding().
     record = struct.pack(
         "<4sQ2H2L4Q", b"PK\x06\x06", 44, 45, 45, 0, 0, entries, entries, size_cd, 0
     )
-    locator = struct.pack("<4sLQL", b"PK\x06\x07", 0, 0, 1)
+    locator = struct.pack("<4sLQL", b"PK\x06\x07", 0, size_cd, 1)
     return record + locator + _m2_eocd(
         0xFFFF if force_sentinels else min(entries, 0xFFFF),
         0xFFFFFFFF if force_sentinels else min(size_cd, 0xFFFFFFFF), comment=comment
     )
+
+
+class _M2SparseTail(io.RawIOBase):
+    """Seekable-поток: `padding` нулевых байт, затем `tail`; без выделения памяти."""
+
+    def __init__(self, padding, tail):
+        super().__init__()
+        self._padding = padding
+        self._tail = tail
+        self._pos = 0
+
+    def readable(self):
+        return True
+
+    def seekable(self):
+        return True
+
+    def tell(self):
+        return self._pos
+
+    def seek(self, offset, whence=io.SEEK_SET):
+        base = {
+            io.SEEK_SET: 0,
+            io.SEEK_CUR: self._pos,
+            io.SEEK_END: self._padding + len(self._tail),
+        }[whence]
+        if base + offset < 0:
+            raise OSError("negative seek position")
+        self._pos = base + offset
+        return self._pos
+
+    def read(self, size=-1):
+        total = self._padding + len(self._tail)
+        end = total if size is None or size < 0 else min(total, self._pos + size)
+        if self._pos >= end:
+            return b""
+        zeros = max(0, min(end, self._padding) - self._pos)
+        tail_from = max(self._pos, self._padding) - self._padding
+        tail_to = max(end, self._padding) - self._padding
+        data = b"\0" * zeros + self._tail[tail_from:tail_to]
+        self._pos = end
+        return data
+
+
+def _m2_zip64_padding(kind):
+    """Сколько байт «центрального каталога» лежит перед хвостом данного вида."""
+    return 2**32 + 1 if kind == "zip64-directory-bytes" else 0
+
+
+def _m2_oversized_stream(kind):
+    """Seekable-поток с превышенным каталогом без 4 ГБ в памяти."""
+    return _M2SparseTail(_m2_zip64_padding(kind), _m2_oversized_directory(kind))
+
+
+def _m2_write_oversized(path, kind):
+    """Записать архив на диск; нулевой «каталог» > 4 ГБ — sparse-файлом."""
+    with open(path, "wb") as target:
+        target.seek(_m2_zip64_padding(kind))
+        target.write(_m2_oversized_directory(kind))
 
 
 def _m2_oversized_directory(kind):
@@ -117,7 +181,7 @@ def _m2_zip_bytes(members, *, comment=b""):
 
 @pytest.mark.parametrize("kind", ["entries", "directory-bytes", "zip64-entries", "zip64-directory-bytes"])
 def test_limited_zip_отказывает_по_eocd_до_конструктора_zipfile(kind, monkeypatch):
-    stream = io.BytesIO(_m2_oversized_directory(kind))
+    stream = _m2_oversized_stream(kind)
     monkeypatch.setattr(zipfile.ZipFile, "__init__", _m2_forbid_zip_constructor)
 
     with pytest.raises(ResourceLimitError):
@@ -154,7 +218,7 @@ def test_eocd_precheck_принимает_zip64_sentinel_с_допустимым
 
 def test_limited_zip_закрывает_свой_дескриптор_при_отказе_eocd(tmp_path, monkeypatch):
     path = tmp_path / "oversized.zip"
-    path.write_bytes(_m2_oversized_directory("entries"))
+    _m2_write_oversized(path, "entries")
     checked_streams = []
     original = _m2_resource_limits._precheck_central_directory
 

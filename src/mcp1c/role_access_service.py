@@ -8,6 +8,7 @@ JSON-совместимый payload и не могут разойтись в res
 from __future__ import annotations
 
 import base64
+import difflib
 import hashlib
 import json
 from dataclasses import dataclass
@@ -751,6 +752,29 @@ def _text_payload(
     }
 
 
+def _role_not_found(index, role: str, configuration: str) -> RoleAccessQueryError:
+    """Отказ с тем, что нужно для второй попытки: где искали и что есть рядом.
+
+    Голое «Роль не найдена» не говорило ни конфигурации, ни как узнать
+    точное имя: агент угадывал имя заново. Похожие ищутся по имени и
+    синонимам — роль часто называют так, как она подписана в интерфейсе.
+    """
+    names: dict[str, str] = {}
+    for descriptor in index.list_roles():
+        names.setdefault(descriptor.name.casefold(), descriptor.name)
+        for _language, content in descriptor.synonyms:
+            names.setdefault(content.casefold(), descriptor.name)
+    similar: list[str] = []
+    for key in difflib.get_close_matches(role.casefold(), list(names), n=10, cutoff=0.75):
+        if names[key] not in similar:
+            similar.append(names[key])
+    message = f"Роль «{role}» не найдена в конфигурации {configuration}."
+    if similar:
+        message += " Похожие: " + ", ".join(f"`{name}`" for name in similar[:5]) + "."
+    message += " Точное имя — в `find_roles_for_access` или на странице /roles."
+    return RoleAccessQueryError(message)
+
+
 def get_role_access_payload(
     registry: Registry,
     role: str,
@@ -883,7 +907,7 @@ def get_role_access_payload(
                 limit=limit,
             )
     except KeyError as error:
-        raise RoleAccessQueryError("Роль не найдена") from error
+        raise _role_not_found(index, role, selection.configuration) from error
     except ValueError as error:
         raise RoleAccessQueryError(str(error)) from error
 
@@ -1028,7 +1052,7 @@ def role_objects_payload(
         )
         templates = index.role_templates(descriptor.name, offset=0, limit=20)
     except KeyError as error:
-        raise RoleAccessQueryError("Роль не найдена") from error
+        raise _role_not_found(index, role, selection.configuration) from error
     except ValueError as error:
         raise RoleAccessQueryError(str(error)) from error
     return {

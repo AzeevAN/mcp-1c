@@ -8,6 +8,17 @@ from mcp1c.intake_v2_api import IntakeApiService, IntakeApiConflict
 from mcp1c.intake_v2 import ExportIdentity
 from mcp1c.registry import Registry
 
+from mcp1c.registry_types import RegistryError
+
+
+def _текст_ответа(вызов, *args, **kwargs) -> str:
+    """Ответ инструмента или текст его ошибки: адрес, которого нет, — ошибка."""
+    try:
+        return вызов(*args, **kwargs)
+    except RegistryError as error:
+        return str(error)
+
+
 
 def setup_sources(tmp_path):
     registry = Registry(tmp_path / "data")
@@ -185,7 +196,7 @@ def test_code_changes_are_visible_only_after_publication(tmp_path):
     work = prepare()
     assert '"после"' in get_procedure(registry, address, config="Demo0")
     service.confirm(work.job_id)
-    assert '"после"' not in get_procedure(registry, address, config="Demo0")
+    assert '"после"' not in _текст_ответа(get_procedure, registry, address, config="Demo0")
 
 
 def test_stored_jobs_keep_transport_after_restart_without_discovery(tmp_path, monkeypatch):

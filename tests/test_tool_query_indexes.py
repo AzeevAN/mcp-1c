@@ -25,6 +25,17 @@ from test_intake_v2_converter import _collection
 from test_intake_v2_generation import _materialized, _stage_b_generation
 from test_xdto import _package
 
+from mcp1c.registry_types import RegistryError
+
+
+def _текст_ответа(вызов, *args, **kwargs) -> str:
+    """Ответ инструмента или текст его ошибки: адрес, которого нет, — ошибка."""
+    try:
+        return вызов(*args, **kwargs)
+    except RegistryError as error:
+        return str(error)
+
+
 
 @pytest.fixture
 def реестр_xdto_для_карточек(tmp_path):
@@ -52,8 +63,8 @@ def _ответы_для_golden(реестр_с_кодом, реестр_xdto_д
         "ОбщийМодуль.ОбщийПример::Внутренняя",
         "ОбщийМодуль.ОбщийПример::Сложыть",
     ):
-        ответы[f"get_procedure:{адрес}"] = tools.get_procedure(
-            код, адрес, config="Пример"
+        ответы[f"get_procedure:{адрес}"] = _текст_ответа(
+            tools.get_procedure, код, адрес, config="Пример"
         )
     for адрес in (
         "ОбщийМодуль.ОбщийПример::Сложить",
@@ -246,6 +257,6 @@ def test_неизвестный_модуль_предлагает_адреса_�
         module, loaded.оглавление.модули, n=5, cutoff=0.45
     )
     assert expected == ["Документ.Пример.МодульОбъекта"]
-    response = инструмент(registry, f"{module}::ПриЗаписи", config="Пример")
+    response = _текст_ответа(инструмент, registry, f"{module}::ПриЗаписи", config="Пример")
     suggestions = [line[3:-1] for line in response.splitlines() if line.startswith("- `")]
     assert suggestions == expected

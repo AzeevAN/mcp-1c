@@ -44,7 +44,7 @@ def _реестр(tmp_path, конфигурации: dict[str, list[tuple[str, 
 
 
 def _ответ(вызов) -> str:
-    """Текст ответа «нет объекта»: строка или текст RegistryError (после задачи 13)."""
+    """Текст ответа «нет объекта»: строка ответа или текст RegistryError."""
     try:
         return вызов()
     except RegistryError as ошибка:

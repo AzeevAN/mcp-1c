@@ -39,6 +39,15 @@ from test_intake_v2_converter import (
 )
 
 
+def _текст_ответа(вызов, *args, **kwargs) -> str:
+    """Ответ инструмента или текст его ошибки: адрес, которого нет, — ошибка."""
+    try:
+        return вызов(*args, **kwargs)
+    except RegistryError as error:
+        return str(error)
+
+
+
 def _materialized(tmp_path, name: str, **collection_options):
     collection = _collection(
         tmp_path / f"source-{name}",
@@ -308,7 +317,8 @@ def test_native_common_command_карточка_граф_замена_и_restart
     restarted.publish_generation(
         _stage_b_generation(restarted, removed.manifest, removed.payloads)
     )
-    assert "нет объекта `ОбщаяКоманда.Run`" in get_object(
+    assert "нет объекта `ОбщаяКоманда.Run`" in _текст_ответа(
+        get_object,
         restarted,
         "ОбщаяКоманда.Run",
         config="DemoConfiguration",
@@ -1279,7 +1289,8 @@ def test_subsystem_переживает_restart_и_удаляется_новым
     restarted.publish_generation(
         _stage_b_generation(restarted, removed.manifest, removed.payloads)
     )
-    assert "нет объекта `Подсистема.Sales.Retail`" in get_object(
+    assert "нет объекта `Подсистема.Sales.Retail`" in _текст_ответа(
+        get_object,
         restarted,
         "Подсистема.Sales.Retail",
         config="DemoConfiguration",

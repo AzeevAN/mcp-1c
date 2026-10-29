@@ -20,6 +20,15 @@ from module_samples import v8_container_bytes
 from native_export import загрузить_код
 
 
+def _текст_ответа(вызов, *args, **kwargs) -> str:
+    """Ответ инструмента или текст его ошибки: адрес, которого нет, — ошибка."""
+    try:
+        return вызов(*args, **kwargs)
+    except RegistryError as error:
+        return str(error)
+
+
+
 TARGET = "ОбщийМодуль.Цель::Обработать"
 
 
@@ -549,7 +558,8 @@ def test_поиск_владельца_не_сканирует_десять_ты
 
 
 def test_get_callers_промах_предлагает_точный_похожий_адрес(реестр_с_кодом):
-    ответ = tools.get_callers(
+    ответ = _текст_ответа(
+        tools.get_callers,
         реестр_с_кодом,
         "ОбщийМодуль.ОбщийПример::Слжить",
         config="Пример",

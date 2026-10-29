@@ -342,7 +342,9 @@ def get_object(
         suggestion = "\n".join(
             f"- `{item}`" for item in similar_objects(context.configuration, full_name)
         )
-        return (
+        # Адреса, которого нет, — ошибка инструмента с подсказкой, как во
+        # всех инструментах по конкретному адресу; пустой поиск — не ошибка.
+        raise RegistryError(
             f"В конфигурации {context.name} нет объекта `{full_name}`.\n\n"
             + (f"Возможно, имелось в виду:\n{suggestion}\n" if suggestion else "")
             + _notes_block(context)
@@ -813,7 +815,7 @@ def get_related(
 
     if full_name not in context.configuration.config.objects:
         похожие = similar_objects(context.configuration, full_name)
-        return (
+        raise RegistryError(
             f"В конфигурации {context.name} нет объекта `{full_name}`."
             + (
                 "\n\nВозможно, имелось в виду:\n"
@@ -2030,7 +2032,9 @@ def _get_procedure_once(
         if not _modules_are_current(registry, loaded):
             raise _StaleModules
         хвост = "" if not похожие else "\n\nВозможно, имелось в виду:\n" + "\n".join(f"- `{item}`" for item in похожие)
-        return warning_prefix + f"Модуль `{модуль}` в загруженном коде не найден.{хвост}\n"
+        raise RegistryError(
+            warning_prefix + f"Модуль `{модуль}` в загруженном коде не найден.{хвост}\n"
+        )
     модуль = канонический_модуль
     записи = loaded.оглавление.модуля(модуль)
 
@@ -2097,7 +2101,9 @@ def _get_procedure_once(
         if not _modules_are_current(registry, loaded):
             raise _StaleModules
         хвост = "" if not похожие else "\n\nВозможно, имелось в виду:\n" + "\n".join(f"- `{item}`" for item in похожие)
-        return warning_prefix + f"В модуле `{модуль}` нет процедуры `{имя}`.{хвост}\n"
+        raise RegistryError(
+            warning_prefix + f"В модуле `{модуль}` нет процедуры `{имя}`.{хвост}\n"
+        )
     запись = совпадения[0]
     parsed = _parsed_procedure(разбор, запись)
     текст = прочитанный[0] if прочитанный else _ctx._read_module_snapshot(
@@ -2423,8 +2429,8 @@ def _get_callers_once(
         )
         if not _modules_are_current(registry, loaded):
             raise _StaleModules
-        return warning_prefix + (
-            f"Модуль `{module}` в загруженном коде не найден.{хвост}\n"
+        raise RegistryError(
+            warning_prefix + f"Модуль `{module}` в загруженном коде не найден.{хвост}\n"
         )
     module = canonical_module
     if loaded.оглавление.скомпилирован(module):
@@ -2449,8 +2455,8 @@ def _get_callers_once(
         )
         if not _modules_are_current(registry, loaded):
             raise _StaleModules
-        return warning_prefix + (
-            f"В модуле `{module}` нет процедуры `{name}`.{хвост}\n"
+        raise RegistryError(
+            warning_prefix + f"В модуле `{module}` нет процедуры `{name}`.{хвост}\n"
         )
     canonical_name = совпадения[0].имя
 

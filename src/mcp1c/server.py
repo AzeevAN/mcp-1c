@@ -882,7 +882,9 @@ def _register_callers_object_and_syntax_tools(
                         "по платформе. Русские и английские имена равнозначны.")],
         config: CONFIG_PARAM = None,
         kind: Annotated[str | None, Field(
-            description="Ограничить вид: method, property, event, object, "
+            description="Ограничить вид. query_table — виды таблиц платформы "
+                        "(шаблоны); таблицы объекта конфигурации — в `get_object`. "
+                        "Значения: method, property, event, object, "
                         "query_table, query_field.")] = None,
         limit: LIMIT_PARAM = 10,
     ) -> str:

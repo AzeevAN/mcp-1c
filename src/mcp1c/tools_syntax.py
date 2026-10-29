@@ -71,6 +71,30 @@ def _варианты_таблицы(context, item: SyntaxItem) -> str:
     return f"{len(наборы)} варианта с разным набором полей"
 
 
+def _объект_конфигурации(context, query: str, kind: str | None) -> list[str]:
+    """Подсказка, когда спросили имя объекта конфигурации, а не платформы.
+
+    Справка знает только шаблоны (`РегистрНакопления.<Имя…>.Остатки`), и по
+    `ТоварыНаСкладах` агент получал их, как будто это ответ. Таблицы
+    конкретного регистра с подставленными полями отдаёт `get_object`.
+    """
+    if context.configuration is None or kind not in (None, "query_table", "query_field"):
+        return []
+    wanted = query.strip().casefold()
+    if not wanted:
+        return []
+    found = [
+        full_name
+        for full_name, obj in context.configuration.config.objects.items()
+        if full_name.casefold() == wanted or obj.name.casefold() == wanted
+    ]
+    return [
+        f"В конфигурации есть `{full_name}`: таблицы запроса с подставленными "
+        "полями — `get_object`, раздел «Таблицы запроса»."
+        for full_name in sorted(found)[:5]
+    ]
+
+
 def search_syntax(
     registry: Registry,
     query: str,
@@ -124,6 +148,7 @@ def search_syntax(
         return (
             f"По запросу «{query}» в справке платформы "
             f"ничего не найдено{where}."
+            + "".join(f"\n\n{line}" for line in _объект_конфигурации(context, query, kind))
             + _syntax_notes_block(context)
         )
 
@@ -175,6 +200,9 @@ def search_syntax(
         if resolution is not None and not resolution.exact:
             facts.append(f"сведения по справке {resolution.platform}")
         out.append(f"  {' · '.join(facts)}")
+    подсказка = _объект_конфигурации(context, query, kind)
+    if подсказка:
+        out.extend(["", *подсказка])
     return "\n".join(out + _hidden_block(context, filtered_out)) + "\n" + _syntax_notes_block(context)
 
 

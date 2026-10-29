@@ -846,6 +846,18 @@ class ReferenceProvider:
             "SELECT item_id, value FROM aliases ORDER BY item_id, alias_kind, value"
         ):
             aliases.setdefault(row["item_id"], []).append(row["value"])
+        # Указатель терминов справки: `ЗНАЧЕНИЕ` ведёт на статью
+        # «Использование предопределенных данных конфигурации», в названии
+        # которой этого слова нет. Без указателя статья была пятой.
+        terms: dict[str, list[str]] = {}
+        for row in self._connection.execute(
+            "SELECT target_item_id, name_ru, name_en FROM terms "
+            "WHERE status = 'resolved' AND target_item_id IS NOT NULL "
+            "ORDER BY target_item_id, ordinal"
+        ):
+            terms.setdefault(row["target_item_id"], []).extend(
+                value for value in (row["name_ru"], row["name_en"]) if value
+            )
         migrated: dict[str, list[str]] = {}
         measured: dict[str, list[str]] = {}
         for row in self._connection.execute(
@@ -869,7 +881,10 @@ class ReferenceProvider:
                         _QUERY_TABLE_MARKER.sub("", row["search_text"]),
                     ).strip(),
                 }
-                exact_keys = [row["title_ru"], row["title_en"], *measured.get(item_id, [])]
+                exact_keys = [
+                    row["title_ru"], row["title_en"], *measured.get(item_id, []),
+                    *terms.get(item_id, []),
+                ]
             else:
                 fields = {
                     "name": row["title_ru"], "name_en": row["title_en"],
@@ -880,7 +895,7 @@ class ReferenceProvider:
                 }
                 exact_keys = [
                     item_id, row["title_ru"], row["title_en"], *item_aliases,
-                    *measured.get(item_id, []),
+                    *measured.get(item_id, []), *terms.get(item_id, []),
                 ]
                 exact_keys.extend(
                     value for value in (

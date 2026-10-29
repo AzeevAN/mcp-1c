@@ -24,6 +24,7 @@ from .resource_limits import ResourceLimitError
 from .search_keys import coverage as search_keys_coverage
 from .syntax_model import SyntaxIndex, parse_version
 from .v8container import V8ContainerError
+from .platform_events import event_catalog
 from .virtual_tables import build_table_index
 
 if TYPE_CHECKING:
@@ -318,6 +319,7 @@ def prepare_syntax(
         index=registry._syntax_index(merged, stamp),
         by_name=registry._syntax_lookup(merged, stamp),
         tables=build_table_index(merged),
+        events=event_catalog(merged),
     )
     return loaded, problems
 

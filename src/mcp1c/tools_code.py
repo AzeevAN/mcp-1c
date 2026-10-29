@@ -12,7 +12,7 @@ from bisect import bisect_right
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Iterator
+from typing import TYPE_CHECKING, Callable, Iterator
 
 from . import cursor as cursor_codec, source_ids
 from .bsl_lex import Процедура
@@ -52,6 +52,7 @@ from .render import (
     render_xdto,
 )
 from .search import FIELD_KIND_TITLES
+from .platform_events import module_events
 from .standard_procedure_intents import recognize_standard_procedure_intent
 from .virtual_tables import analyze_virtual_tables
 from .xdto import XDTOReadError, member_details
@@ -1291,11 +1292,37 @@ def _modules_availability_message(
     return None
 
 
+def _события_платформы(context) -> Callable[[str, str], str]:
+    """Событие платформы, которое вызывает процедуру модуля, или "".
+
+    Источник — справка, загруженная для конфигурации, с фильтром её версии;
+    без справки событий не знаем и ничего не помечаем.
+    """
+    syntax = getattr(context, "syntax", None)
+    if syntax is None:
+        return lambda модуль, имя: ""
+    keep = context.syntax_filter()
+    по_модулям: dict[str, dict[str, str]] = {}
+
+    def событие(модуль: str, имя: str) -> str:
+        имена = по_модулям.get(модуль)
+        if имена is None:
+            имена = {
+                событие.casefold(): событие
+                for событие in module_events(syntax.events, модуль, keep)
+            }
+            по_модулям[модуль] = имена
+        return имена.get(имя.casefold(), "")
+
+    return событие
+
+
 def _procedure_matches(
     loaded: LoadedModules,
     записи: list,
     снимки: "dict[str, _РазборМодуля] | None" = None,
     *, _ctx: CodeToolsContext,
+    события: Callable[[str, str], str] | None = None,
 ) -> list[ProcedureMatch]:
     счётчики: dict[str, tuple[dict[str, int], int]] = {}
     результат: list[ProcedureMatch] = []
@@ -1323,6 +1350,9 @@ def _procedure_matches(
                 calls=по_модулям.get(запись.модуль, 0),
                 unresolved_calls=неразрешённых,
                 annotated=запись.перекрыта,
+                platform_event=(
+                    события(запись.модуль, запись.имя) if события else ""
+                ),
             )
         )
     return результат
@@ -1478,8 +1508,13 @@ def _search_procedures_once(
 
     try:
         снимки: dict[str, _РазборМодуля] = {}
-        точные_совпадения = _procedure_matches(loaded, точные, снимки, _ctx=_ctx)
-        словесные_совпадения = _procedure_matches(loaded, слова, снимки, _ctx=_ctx)
+        события = _события_платформы(context)
+        точные_совпадения = _procedure_matches(
+            loaded, точные, снимки, _ctx=_ctx, события=события
+        )
+        словесные_совпадения = _procedure_matches(
+            loaded, слова, снимки, _ctx=_ctx, события=события
+        )
     except (OSError, _SignatureError) as ошибка:
         # Canonical root мог смениться или исчезнуть между resolve и чтением.
         # Сначала identity CAS: ошибка старого поколения — повод повторить,
@@ -1937,6 +1972,7 @@ def _get_procedure_once(
 
     if not разделитель:
         outlines: list[ProcedureOutline] = []
+        событие_платформы = _события_платформы(context)
         for запись in записи:
             parsed = _parsed_procedure(разбор, запись)
             calls = sum(
@@ -1954,6 +1990,7 @@ def _get_procedure_once(
                     calls=calls,
                     directive=parsed.директива,
                     events=loaded.формы.обработчик(модуль, запись.имя) or (),
+                    platform_event=событие_платформы(модуль, запись.имя),
                 )
             )
         if not _ctx._modules_package_is_current(registry, observed):
@@ -2038,6 +2075,12 @@ def _get_procedure_once(
     compilation = _compilation_context(context, модуль, parsed)
     if events:
         compilation.append("события формы: " + ", ".join(events))
+    событие_платформы = _события_платформы(context)(модуль, запись.имя)
+    if событие_платформы:
+        compilation.append(
+            f"событие платформы: {событие_платформы} — вызывается платформой, "
+            "мест вызова в коде у него может не быть"
+        )
     if not _ctx._modules_package_is_current(registry, observed):
         raise _StaleModules
     return render_procedure_card(
@@ -2358,6 +2401,7 @@ def _get_callers_once(
         form_state=form_state,
         warnings=warnings,
         extension=extension,
+        platform_event=_события_платформы(context)(module, canonical_name),
     )
 
 

@@ -38,6 +38,8 @@ class ProcedureMatch:
     calls: int
     unresolved_calls: int
     annotated: bool
+    # Событие, по которому процедуру вызывает сама платформа (`platform_events`).
+    platform_event: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +54,7 @@ class ProcedureOutline:
     calls: int
     directive: str = ""
     events: tuple[str, ...] = ()
+    platform_event: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -512,6 +515,8 @@ def render_module_toc(
             дополнения.append(f"&{item.directive}")
         if item.events:
             дополнения.append("обработчик: " + ", ".join(item.events))
+        if item.platform_event:
+            дополнения.append(f"событие платформы: {item.platform_event}")
         хвост = f" · {' · '.join(дополнения)}" if дополнения else ""
         out.append(
             f"- `{item.address}` — {вид} · {доступ} · строка {item.line} "
@@ -630,6 +635,8 @@ def render_procedure_search(
                 )
             if совпадение.annotated:
                 свойства.append("есть аннотация расширения")
+            if совпадение.platform_event:
+                свойства.append(f"событие платформы: {совпадение.platform_event}")
             out.append(f"- `{совпадение.address}` — {' · '.join(свойства)}")
             out.append(f"  Сигнатура: `{совпадение.signature}`")
         out.append("")
@@ -755,6 +762,7 @@ def render_callers(
     form_state: str,
     warnings: list[str],
     extension: str | None = None,
+    platform_event: str = "",
 ) -> str:
     """Три независимых источника обратных связей, без ложного объединения."""
     источник = (
@@ -872,6 +880,17 @@ def render_callers(
     else:
         out.extend(["Привязок в метаданных нет.", ""])
 
+    if platform_event:
+        out.extend(
+            [
+                "## Вызывается платформой",
+                "",
+                f"- событие `{platform_event}`: платформа вызывает процедуру "
+                "этого модуля по имени, места вызова в коде для этого не нужны.",
+                "",
+            ]
+        )
+
     out.extend(["## Обработчик формы", ""])
     if form_bindings:
         for binding in form_bindings:
@@ -913,6 +932,7 @@ def render_callers(
         and unresolved_total == 0
         and not metadata
         and not form_bindings
+        and not platform_event
         and form_state in ("ready", "not_form")
     ):
         out.extend(

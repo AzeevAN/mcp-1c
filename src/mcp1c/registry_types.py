@@ -210,6 +210,9 @@ class LoadedSyntax:
     # без него `get_object` по регистру перебирал всю справку и стоил 14,8 мс
     # против 0,04 мс на объекте без таблиц.
     tables: dict[str, list[TableTemplate]] = field(default_factory=dict)
+    # Тип-родитель (`ДокументОбъект`) -> события, которые платформа вызывает
+    # в модуле сама (`platform_events`).
+    events: dict[str, tuple[SyntaxItem, ...]] = field(default_factory=dict)
 
     def find_exact(self, name: str) -> list[SyntaxItem]:
         return self.by_name.get(name.strip().lower(), [])

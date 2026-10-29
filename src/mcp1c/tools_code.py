@@ -339,8 +339,9 @@ def get_object(
                 "Курсор относится к другому объекту или конфигурации; "
                 "начните чтение заново."
             )
-        hits = context.configuration.index.search(full_name, limit=5)
-        suggestion = "\n".join(f"- `{h.doc.id}`" for h in hits)
+        suggestion = "\n".join(
+            f"- `{item}`" for item in similar_objects(context.configuration, full_name)
+        )
         return (
             f"В конфигурации {context.name} нет объекта `{full_name}`.\n\n"
             + (f"Возможно, имелось в виду:\n{suggestion}\n" if suggestion else "")
@@ -750,6 +751,38 @@ def _object_code_block(view: _CodeView, full_name: str, detail: str, *, _ctx: Co
     return "\n".join(out).rstrip() + "\n"
 
 
+def similar_objects(
+    configuration, full_name: str, limit: int = 5, *, same_kind_only: bool = False
+) -> list[str]:
+    """Объекты, которые могли иметь в виду под несуществующим именем.
+
+    Полнотекстовый поиск по строке `Документ.НетТакого` поднимал объекты
+    любых видов по слову «документ». Сначала — объекты того же вида с
+    близким именем, и только если их не хватило — поиск по самому имени.
+    """
+    objects = configuration.config.objects
+    вид, _, имя = full_name.strip().partition(".")
+    if not имя:
+        вид, имя = "", вид
+    того_же_вида = {
+        candidate.partition(".")[2].casefold(): candidate
+        for candidate in objects
+        if candidate.partition(".")[0].casefold() == вид.casefold()
+    }
+    найденные = [
+        того_же_вида[key]
+        for key in difflib.get_close_matches(
+            имя.casefold(), list(того_же_вида), n=limit, cutoff=0.6
+        )
+    ]
+    # Сравнение конфигураций ищет тот же объект: другой вид там — шум.
+    if len(найденные) < limit and имя and not same_kind_only:
+        for hit in configuration.index.search(имя, limit=limit * 2):
+            if hit.doc.id in objects and hit.doc.id not in найденные:
+                найденные.append(hit.doc.id)
+    return [item for item in найденные if item != full_name][:limit]
+
+
 def get_related(
     registry: Registry,
     full_name: str,
@@ -779,7 +812,18 @@ def get_related(
     graph = context.configuration.graph
 
     if full_name not in context.configuration.config.objects:
-        return f"В конфигурации {context.name} нет объекта `{full_name}`." + _notes_block(context)
+        похожие = similar_objects(context.configuration, full_name)
+        return (
+            f"В конфигурации {context.name} нет объекта `{full_name}`."
+            + (
+                "\n\nВозможно, имелось в виду:\n"
+                + "\n".join(f"- `{item}`" for item in похожие)
+                + "\n"
+                if похожие
+                else ""
+            )
+            + _notes_block(context)
+        )
 
     overrides, unavailable = _extension_overrides(snapshot, _ctx=_ctx)
     out = [f"# Связи `{full_name}` в {context.name}", ""]
@@ -990,6 +1034,9 @@ def _compare_configurations_snapshot(
         objects.append(obj)
         if obj is None:
             out.append(f"- **{name}** — объекта нет")
+            похожие = similar_objects(loaded, full_name, limit=3, same_kind_only=True)
+            if похожие:
+                out.append("  Похожие: " + ", ".join(f"`{item}`" for item in похожие))
             rows.append(None)
             continue
         rows.append([sorted({a.name for a in obj.attributes}), len(obj.tabular_parts), len(obj.movements)])

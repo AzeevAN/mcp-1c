@@ -644,6 +644,25 @@ def get_syntax(
                 + _syntax_notes_block(context)
             )
 
+        # Голое имя в коде 1С — это глобальный контекст: `Сообщить(…)` без
+        # объекта вызывает `Глобальный контекст.Сообщить`. Показываем его
+        # карточку сразу, остальные — строкой ниже, а не требуем второй вызов.
+        глобальные = [item for item in exact if item.parent_ru == "Глобальный контекст"]
+        if "." not in name.strip() and len(глобальные) == 1:
+            карточка = get_syntax(
+                registry, глобальные[0].address, config, detail, links_offset
+            )
+            прочие = "\n".join(
+                f"Есть также: `{item.address}` — {KIND_TITLES.get(item.kind, item.kind)}"
+                for item in exact
+                if item is not глобальные[0]
+            )
+            тело, разделитель, оговорки = карточка.partition("\n---\n> **Оговорки")
+            return (
+                тело.rstrip("\n") + "\n\n" + прочие + "\n"
+                + (разделитель + оговорки if разделитель else "")
+            )
+
         out = [f"# Одноимённых элементов: {len(exact)}", ""]
         for item in exact[:15]:
             out.append(

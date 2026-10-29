@@ -24,7 +24,7 @@ from typing import Any
 
 from . import fsio, index_cache
 
-from .syntax_parser import returns_types
+from .syntax_parser import attach_query_field_owners, returns_types
 from .syntax_model import (
     SyntaxFacts,
     SyntaxIndex,
@@ -152,6 +152,7 @@ def load_syntax(path: str | Path) -> SyntaxIndex:
     )
     for raw in payload.get("items") or []:
         index.add(_item_from_dict(raw))
+    attach_query_field_owners(index)
     return index
 
 

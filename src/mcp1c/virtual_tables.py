@@ -135,7 +135,7 @@ class VirtualTableReport:
     notes: list[str] = field(default_factory=list)
 
 
-def _placeholder(name: str) -> tuple[str, str] | None:
+def table_placeholder(name: str) -> tuple[str, str] | None:
     """Разобрать имя таблицы справки на вид объекта и суффикс.
 
     `РегистрНакопления.<Имя регистра накопления>.Остатки` → `(«РегистрНакопления», «Остатки»)`.
@@ -524,7 +524,7 @@ def build_table_index(syntax: SyntaxIndex | None) -> dict[str, list[TableTemplat
         if item.kind != "query_table":
             continue
 
-        parsed = _placeholder(item.name_ru)
+        parsed = table_placeholder(item.name_ru)
         if parsed is None:
             continue
 

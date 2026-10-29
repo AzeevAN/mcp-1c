@@ -303,6 +303,26 @@ def _parse_returns(fragment: str) -> tuple[list[str], str]:
     return returns_types(text, types), text
 
 
+def attach_query_field_owners(index: SyntaxIndex) -> None:
+    """Дать полю таблицы запроса адрес через его таблицу.
+
+    Страница поля не называет таблицу, и десять разных `НомерСтроки`
+    выходили одинаковыми строками, а `get_syntax` выводил их все. Таблица
+    известна по идентификатору: `tables/c/t1/fields/LineNumber5` лежит в
+    `tables/c/t1`. Имя поля не меняется — по нему `virtual_tables` строит
+    имена полей объекта. Старые индексы исправляются этим же при чтении.
+    """
+    for item in index.items.values():
+        if item.kind != KIND_QUERY_FIELD or item.parent_ru:
+            continue
+        table_id, separator, _ = item.id.partition("/fields/")
+        table = index.items.get(table_id) if separator else None
+        if table is None:
+            continue
+        item.parent_ru = table.full_ru
+        item.parent_en = table.full_en
+
+
 def _kind_from_path(path: str) -> str:
     if path.startswith("tables/"):
         return KIND_QUERY_FIELD if "/fields/" in path else KIND_QUERY_TABLE
@@ -488,6 +508,7 @@ def parse_hbk(hbk_path: str | Path, platform: str = "") -> SyntaxIndex:
                     item.link_snapshots[0].platform = platform
                 index.add(item)
 
+    attach_query_field_owners(index)
     return index
 
 

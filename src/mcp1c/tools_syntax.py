@@ -9,6 +9,7 @@ from . import replacements
 from .registry_types import RegistryError
 from .render import DETAIL_LEVELS, FIELDS, FULL, render_syntax_item
 from .syntax_model import KIND_TITLES, SyntaxItem, parse_version, release
+from .virtual_tables import table_placeholder
 from .tools_common import _clamp, _render_notes
 
 if TYPE_CHECKING:
@@ -41,6 +42,32 @@ def _syntax_notes_block(context) -> str:
                 "проверены. Компиляция в данном режиме — unknown."
             )
     return _render_notes(notes)
+
+
+def _варианты_таблицы(context, item: SyntaxItem) -> str:
+    """Подпись таблицы, которую справка описывает несколькими страницами.
+
+    Разные наборы полей — это вариант регистра бухгалтерии: корреспонденция
+    добавляет поля (`СуммаОстатокДт`), так же выбирает `virtual_tables`.
+    Одинаковые наборы — повтор разметки, подписывать нечего. Поля берутся из
+    готового индекса шаблонов, без обхода справки.
+    """
+    parsed = table_placeholder(item.name_ru)
+    if parsed is None:
+        return ""
+    kind, suffix = parsed
+    наборы = {
+        frozenset(template.fields)
+        for template in context.syntax.tables.get(kind, ())
+        if template.suffix == suffix
+    }
+    if len(наборы) < 2:
+        return ""
+    if len(наборы) == 2:
+        меньший, больший = sorted(наборы, key=len)
+        if меньший < больший:
+            return "2 варианта: с корреспонденцией и без"
+    return f"{len(наборы)} варианта с разным набором полей"
 
 
 def search_syntax(
@@ -108,10 +135,22 @@ def search_syntax(
             "конфигурация не выбрана — фильтрации по версии нет"
         )
     out.append("")
+    показанные: set[str] = set()
     for hit in hits:
         item: SyntaxItem = hit.doc.payload
+        # Справка описывает часть таблиц дважды: регистр бухгалтерии с
+        # корреспонденцией и без, а `Остатки` — просто повтором разметки.
+        # Две одинаковые строки выглядели ошибкой; вариант — в `get_syntax`.
+        if item.kind == "query_table":
+            if item.address in показанные:
+                continue
+            показанные.add(item.address)
         out.append(f"- `{item.address}` / `{item.full_en}`")
         facts = [KIND_TITLES.get(item.kind, item.kind)]
+        if item.kind == "query_table":
+            варианты = _варианты_таблицы(context, item)
+            if варианты:
+                facts.append(варианты)
         if item.since:
             facts.append(f"с {item.since}")
         deprecation = _deprecation_for_context(context, item)

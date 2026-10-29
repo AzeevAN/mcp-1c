@@ -1260,3 +1260,69 @@ async def test_mcp_ошибка_операции_позволяет_исправ
     assert any(row["role"]["name"] == "Reader" for row in payload["candidates"])
     with pytest.raises(RoleAccessQueryError, match="повтор"):
         find_roles_payload(registry, "Справочник.Orders", ["read", "READ"], config="DemoConfiguration")
+
+
+def _корневые_права():
+    return ((
+        "RootOnly",
+        _descriptor(
+            "RootOnly",
+            uuid="77777777-7777-7777-7777-777777777777",
+        ),
+        _rights(((
+            "Catalog.Orders",
+            (_right("Read", True), _right("View", True)),
+        ),)),
+    ),)
+
+
+def test_пустой_children_объясняет_причину(tmp_path):
+    from mcp1c.role_access_service import get_role_access_payload
+
+    registry = Registry(tmp_path / "data")
+    _publish(
+        registry,
+        tmp_path / "source",
+        configuration="DemoConfiguration",
+        generation_id="generation-1",
+        roles=_корневые_права(),
+    )
+
+    payload = get_role_access_payload(
+        registry,
+        "RootOnly",
+        config="DemoConfiguration",
+        full_name="Справочник.Orders",
+        detail="children",
+    )
+
+    assert payload["mode"] == "children"
+    assert payload["rights_total"] == 0
+    assert payload["note"] == (
+        "Явных прав у подчинённых объектов (реквизитов, табличных частей) нет; "
+        "права самого объекта — detail=summary или audit."
+    )
+
+
+def test_непустой_children_без_пояснения(tmp_path):
+    from mcp1c.role_access_service import get_role_access_payload
+
+    registry = Registry(tmp_path / "data")
+    _publish(
+        registry,
+        tmp_path / "source",
+        configuration="DemoConfiguration",
+        generation_id="generation-1",
+        roles=_summary_roles(),
+    )
+
+    payload = get_role_access_payload(
+        registry,
+        "CompactReader",
+        config="DemoConfiguration",
+        full_name="Справочник.Orders",
+        detail="children",
+    )
+
+    assert payload["rights_total"] == 3
+    assert "note" not in payload

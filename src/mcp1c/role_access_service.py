@@ -913,7 +913,7 @@ def get_role_access_payload(
 
     if detail != "summary":
         cursor_kind = "role-children" if detail == "children" else "role-audit"
-        return {
+        payload = {
             **state,
             "mode": detail,
             "role": _descriptor(page.role),
@@ -935,6 +935,14 @@ def get_role_access_payload(
                 ),
             },
         }
+        if detail == "children" and page.total == 0:
+            # Пустой список читался как «прав нет вовсе», хотя права самого
+            # объекта в этот режим не входят.
+            payload["note"] = (
+                "Явных прав у подчинённых объектов (реквизитов, табличных "
+                "частей) нет; права самого объекта — detail=summary или audit."
+            )
+        return payload
 
     aggregates = {item.target.casefold(): item for item in objects_page.objects}
     selected_targets = [target] if target else [

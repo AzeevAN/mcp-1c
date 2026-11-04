@@ -2459,6 +2459,7 @@ h2 {
 }
 
 .configuration-facts > div {
+  min-width: 0;
   min-height: 88px;
   display: grid;
   align-content: center;
@@ -2471,6 +2472,11 @@ h2 {
   border-right: 0;
 }
 
+.configuration-facts > div:nth-child(n + 3) {
+  justify-items: center;
+  text-align: center;
+}
+
 .configuration-facts span,
 .source-facts dt {
   color: var(--subtle);
@@ -2481,8 +2487,11 @@ h2 {
 }
 
 .configuration-facts strong {
+  min-width: 0;
+  max-width: 100%;
   color: var(--ink-900);
   font-size: 16px;
+  overflow-wrap: anywhere;
 }
 
 .configuration-origin {
@@ -2550,9 +2559,12 @@ h2 {
 
 .platform-value-link {
   width: fit-content;
+  min-width: 0;
+  max-width: 100%;
   display: inline-flex;
-  align-items: baseline;
-  gap: 8px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
   padding: 0;
   border: 0;
   color: var(--blue-deep);

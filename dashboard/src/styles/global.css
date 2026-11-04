@@ -6702,6 +6702,10 @@ h2 {
     flex-direction: column;
   }
 
+  .configuration-hero-copy {
+    width: 100%;
+  }
+
   .metrics-grid,
   .state-samples,
   .overview-agent-metrics,

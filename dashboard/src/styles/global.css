@@ -6706,6 +6706,11 @@ h2 {
     width: 100%;
   }
 
+  .configuration-hero > .configuration-hero-copy,
+  .configuration-hero > .configuration-hero-actions {
+    flex-basis: auto;
+  }
+
   .metrics-grid,
   .state-samples,
   .overview-agent-metrics,

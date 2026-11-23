@@ -330,11 +330,18 @@ class SyntaxIndex:
         эту конфигурацию» — не то же самое, что версия объединённого
         источника: та всегда самая свежая.
         """
-        target = release(parse_version(platform))
-        for known in self.platforms:
-            if release(parse_version(known)) == target:
+        asked = parse_version(platform)
+        target = release(asked)
+        same_release = [
+            known for known in self.platforms
+            if release(parse_version(known)) == target
+        ]
+        # Справок одного релиза может быть несколько (сборки 8.5.1.1343 и
+        # 8.5.1.1522, issue #16): справка ровно этой сборки точнее соседней.
+        for known in same_release:
+            if parse_version(known) == asked:
                 return known
-        return ""
+        return same_release[0] if same_release else ""
 
     def has_help_for(self, platform: str) -> bool:
         """Загружена ли справка ровно этого релиза платформы."""
@@ -353,17 +360,26 @@ class SyntaxIndex:
             )
 
         chain = self._chain(item)
-        target = release(parse_version(platform))
-        for facts in chain:
-            if release(parse_version(facts.platform)) == target:
-                return Resolution(
-                    signature=facts.signature,
-                    availability=list(facts.availability),
-                    name_ru=facts.name_ru or item.name_ru,
-                    platform=facts.platform,
-                    asked=platform,
-                    exact=True,
-                )
+        asked = parse_version(platform)
+        target = release(asked)
+        same_release = [
+            facts for facts in chain
+            if release(parse_version(facts.platform)) == target
+        ]
+        if same_release:
+            # Справка ровно этой сборки — по ней; иначе первая того же релиза.
+            facts = next(
+                (f for f in same_release if parse_version(f.platform) == asked),
+                same_release[0],
+            )
+            return Resolution(
+                signature=facts.signature,
+                availability=list(facts.availability),
+                name_ru=facts.name_ru or item.name_ru,
+                platform=facts.platform,
+                asked=platform,
+                exact=True,
+            )
         below = [f for f in chain if release(parse_version(f.platform)) < target]
         above = [f for f in chain if release(parse_version(f.platform)) > target]
         lower = below[-1] if below else None

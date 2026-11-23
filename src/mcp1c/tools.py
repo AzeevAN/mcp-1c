@@ -1024,7 +1024,12 @@ def _coverage_section(capture: _ListConfigurationsCapture) -> list[str]:
         else:
             unknown_platform = True
     покрытие = {
-        "loaded": [platform for _, platform in sorted(платформы_справок.items())],
+        # Все справки, а не по одной на релиз: сборки одного релиза
+        # в `платформы_справок` схлопываются (issue #16).
+        "loaded": sorted(
+            (source.platform for _, source in capture.syntax_versions),
+            key=parse_version,
+        ),
         "missing": [
             {"platform": platform, "configurations": names}
             for key, (platform, names) in sorted(нужные.items())

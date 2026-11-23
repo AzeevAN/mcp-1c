@@ -2257,6 +2257,12 @@ class Registry:
                 release(parse_version(source.platform)): source.platform
                 for source in self.syntax_versions.values()
             }
+            # Сборки одного релиза в словаре выше схлопываются; загружены
+            # все — все и называем (issue #16).
+            загруженные = sorted(
+                (source.platform for source in self.syntax_versions.values()),
+                key=parse_version,
+            )
             нужные: dict[tuple[int, ...], tuple[str, list[str]]] = {}
             unknown_platform = False
             for name in sorted(self.configurations):
@@ -2283,7 +2289,7 @@ class Registry:
             if key not in нужные and not unknown_platform
         ]
         return {
-            "loaded": [platform for _, platform in sorted(платформы_справок.items())],
+            "loaded": загруженные,
             "missing": missing,
             "unused": unused,
         }
